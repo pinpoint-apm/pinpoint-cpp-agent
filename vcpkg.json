@@ -1,0 +1,5 @@
+{
+  "name" : "pinpoint-cpp",
+  "version-string" : "0.1.0",
+  "dependencies" : [ "grpc", "protobuf", "yaml-cpp", "spdlog", "fmt", "abseil", "cpp-httplib" ]
+}

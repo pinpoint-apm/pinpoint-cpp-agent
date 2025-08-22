@@ -1,0 +1,26 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+cc_library(
+    name = "pinpoint-cpp",
+    visibility = ["//visibility:public"],
+    includes = ["include"],
+    srcs = glob(["src/*.cpp", "src/*.h"]),
+    hdrs = [
+        "include/pinpoint/tracer.h",
+    ],
+    strip_include_prefix = "include/",
+    deps = [
+        "//v1:annotation_grpc_cc",
+        "//v1:cmd_grpc_cc",
+        "//v1:span_grpc_cc",
+        "//v1:stat_grpc_cc",
+        "//v1:service_grpc_cc",
+        "//v1:thread_dump_grpc_cc",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_github_jbeder_yaml_cpp//:yaml-cpp",
+        "@com_github_gabime_spdlog//:spdlog",
+        "@com_google_absl//absl/strings",
+    ],
+)
