@@ -1,6 +1,6 @@
 # Pinpoint C++ Agent
 
-The C++ SDK Library for [Pinpoint](https://github.com/pinpoint-apm/pinpoint).
+The C++ Client Library for [Pinpoint](https://github.com/pinpoint-apm/pinpoint).
 
 Pinpoint C++ Agent enables you to monitor C++ applications using Pinpoint.
 Developers can instrument C++ applications using the APIs provided in this library.
