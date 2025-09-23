@@ -77,7 +77,13 @@ namespace pinpoint {
 
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
         if (yaml[cname]) {
-            return yaml[cname].as<bool>() ;
+            try {
+                return yaml[cname].as<bool>();
+            } catch (const YAML::TypedBadConversion<bool>& e) {
+                LOG_WARN("Failed to convert '{}' to boolean: {}. Using default value: {}", 
+                         std::string(cname), e.what(), default_value);
+                return default_value;
+            }
         }
 
         return default_value;
@@ -85,7 +91,13 @@ namespace pinpoint {
 
     static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
         if (yaml[cname]) {
-            return yaml[cname].as<std::string>();
+            try {
+                return yaml[cname].as<std::string>();
+            } catch (const YAML::TypedBadConversion<std::string>& e) {
+                LOG_WARN("Failed to convert '{}' to string: {}. Using default value: '{}'", 
+                         std::string(cname), e.what(), default_value);
+                return default_value;
+            }
         }
 
         return default_value;
@@ -94,7 +106,13 @@ namespace pinpoint {
     static std::vector<std::string> get_string_vector(const YAML::Node& yaml, std::string_view cname,
                                                       std::vector<std::string> default_value) {
         if (yaml[cname]) {
-            return yaml[cname].as<std::vector<std::string>>();
+            try {
+                return yaml[cname].as<std::vector<std::string>>();
+            } catch (const YAML::TypedBadConversion<std::vector<std::string>>& e) {
+                LOG_WARN("Failed to convert '{}' to string vector: {}. Using default value", 
+                         std::string(cname), e.what());
+                return default_value;
+            }
         }
 
         return default_value;
@@ -102,7 +120,13 @@ namespace pinpoint {
 
     static int get_int(const YAML::Node& yaml, std::string_view cname, int default_value) {
         if (yaml[cname]) {
-            return yaml[cname].as<int>() ;
+            try {
+                return yaml[cname].as<int>();
+            } catch (const YAML::TypedBadConversion<int>& e) {
+                LOG_WARN("Failed to convert '{}' to int: {}. Using default value: {}", 
+                         std::string(cname), e.what(), default_value);
+                return default_value;
+            }
         }
 
         return default_value;
@@ -110,7 +134,13 @@ namespace pinpoint {
 
     static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
         if (yaml[cname]) {
-            return yaml[cname].as<double>() ;
+            try {
+                return yaml[cname].as<double>();
+            } catch (const YAML::TypedBadConversion<double>& e) {
+                LOG_WARN("Failed to convert '{}' to double: {}. Using default value: {}", 
+                         std::string(cname), e.what(), default_value);
+                return default_value;
+            }
         }
 
         return default_value;

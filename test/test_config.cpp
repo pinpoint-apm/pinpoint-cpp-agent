@@ -603,4 +603,85 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     EXPECT_EQ(config.agent_id_, "test-agent-123") << "Agent ID should come from file";
 }
 
+// ========== Exception Handling Tests ==========
+
+// Test type conversion exception handling
+TEST_F(ConfigTest, TypeConversionExceptionHandlingTest) {
+    // YAML with invalid type conversions
+    std::string invalid_type_yaml = R"(
+ApplicationName: ValidString
+ApplicationType: "not_a_number"  # Should be int, will use default
+Enable: "invalid_bool"           # Should be bool, will use default
+Collector:
+  GrpcAgentPort: "not_a_port"    # Should be int, will use default
+  GrpcHost: 123                  # Should be string, but numeric should work
+Sampling:
+  PercentRate: "not_a_double"    # Should be double, will use default
+Http:
+  Server:
+    StatusCodeErrors: "not_an_array"  # Should be array, will use default
+)";
+    
+    set_config_string(invalid_type_yaml);
+    
+    // Capture log output to verify error messages are logged
+    testing::internal::CaptureStderr();
+    
+    Config config = make_config();
+    
+    std::string captured_output = testing::internal::GetCapturedStderr();
+    
+    // Valid conversions should work
+    EXPECT_EQ(config.app_name_, "ValidString") << "Valid string should be parsed correctly";
+    
+    // Invalid conversions should use default values
+    EXPECT_EQ(config.app_type_, 1300) << "Invalid int should use default value";
+    EXPECT_TRUE(config.enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid port should use default value";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100.0) << "Invalid double should use default value";
+    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Invalid array should use default value";
+    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "Default array should contain '5xx'";
+    
+    // Note: We can't easily check stderr output in this test environment without additional setup
+    // but the error messages should be logged for invalid conversions
+}
+
+// Test mixed valid and invalid configurations
+TEST_F(ConfigTest, MixedValidInvalidConfigurationTest) {
+    std::string mixed_yaml = R"(
+ApplicationName: ValidApp
+ApplicationType: 1305            # Valid int
+Enable: true                     # Valid bool
+Collector:
+  GrpcHost: valid.host.com       # Valid string
+  GrpcAgentPort: "invalid_port"  # Invalid int, should use default
+  GrpcSpanPort: 9999             # Valid int
+Sampling:
+  Type: PERCENT                  # Valid string
+  PercentRate: 50.5              # Valid double
+  CounterRate: "not_a_number"    # Invalid int, should use default
+Span:
+  QueueSize: 2048                # Valid int
+  MaxEventDepth: "invalid"       # Invalid int, should use default
+)";
+    
+    set_config_string(mixed_yaml);
+    Config config = make_config();
+    
+    // Valid values should be parsed correctly
+    EXPECT_EQ(config.app_name_, "ValidApp") << "Valid app name should be parsed";
+    EXPECT_EQ(config.app_type_, 1305) << "Valid app type should be parsed";
+    EXPECT_TRUE(config.enable) << "Valid enable should be parsed";
+    EXPECT_EQ(config.collector.host, "valid.host.com") << "Valid host should be parsed";
+    EXPECT_EQ(config.collector.span_port, 9999) << "Valid span port should be parsed";
+    EXPECT_EQ(config.sampling.type, "PERCENT") << "Valid sampling type should be parsed";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 50.5) << "Valid percent rate should be parsed";
+    EXPECT_EQ(config.span.queue_size, 2048) << "Valid queue size should be parsed";
+    
+    // Invalid values should use defaults
+    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid agent port should use default";
+    EXPECT_EQ(config.sampling.counter_rate, 1) << "Invalid counter rate should use default";
+    EXPECT_EQ(config.span.max_event_depth, 64) << "Invalid max event depth should use default";
+}
+
 } // namespace pinpoint
