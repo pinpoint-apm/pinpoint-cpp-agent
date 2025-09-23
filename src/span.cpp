@@ -15,7 +15,6 @@
  */
 
 #include <algorithm>
-#include <random>
 
 #include "logging.h"
 #include "agent.h"
