@@ -40,6 +40,17 @@ target_link_libraries(test_cache
 set_target_properties(test_cache PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_cache COMMAND test_cache)
 
+# HTTP tests
+add_executable(test_http test_http.cpp)
+target_include_directories(test_http PRIVATE ../src)
+target_link_libraries(test_http 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_http PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_http COMMAND test_http)
+
 #add_executable(pinpoint_tracer_test tracer_test.cpp)
 #target_link_libraries(pinpoint_tracer_test ${PINPOINT_CPP_LIBRARY})
 #add_test(NAME pinpoint_tracer_test COMMAND pinpoint_tracer_test)
