@@ -21,6 +21,8 @@
 #include <random>
 #include <string>
 #include <sstream>
+#include <algorithm>
+#include <cstring>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
@@ -220,15 +222,48 @@ namespace pinpoint {
         }
     }
 
+    static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
+        auto result = stob_(env_value);
+        if (result.has_value()) {
+            return result.value();
+        } else {
+            LOG_WARN("Failed to parse boolean value '{}' for environment variable '{}'. Using default value: {}", 
+                     env_value, env_name, default_value);
+            return default_value;
+        }
+    }
+
+    static int safe_env_stoi(const char* env_name, const char* env_value, int default_value) {
+        auto result = stoi_(env_value);
+        if (result.has_value()) {
+            return result.value();
+        } else {
+            LOG_WARN("Invalid integer value '{}' for environment variable '{}'. Using default value: {}", 
+                     env_value, env_name, default_value);
+            return default_value;
+        }
+    }
+
+    static double safe_env_stod(const char* env_name, const char* env_value, double default_value) {
+        auto result = stod_(env_value);
+        if (result.has_value()) {
+            return result.value();
+        } else {
+            LOG_WARN("Invalid double value '{}' for environment variable '{}'. Using default value: {}", 
+                     env_value, env_name, default_value);
+            return default_value;
+        }
+    }
+
     static void load_env_config(Config& config) {
         if(const char* env_p = std::getenv("PINPOINT_CPP_ENABLE")) {
-            config.enable = stob_(env_p);
+            config.enable = safe_env_stob("PINPOINT_CPP_ENABLE", env_p, true);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_APPLICATION_NAME")) {
             config.app_name_ = std::string(env_p);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_APPLICATION_TYPE")) {
-            config.app_type_ = stoi_(env_p);
+            config.app_type_ = safe_env_stoi("PINPOINT_CPP_APPLICATION_TYPE", env_p, 1300);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_AGENT_ID")) {
             config.agent_id_ = std::string(env_p);
@@ -244,77 +279,77 @@ namespace pinpoint {
             config.log.file_path = std::string(env_p);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_LOG_MAX_FILE_SIZE")) {
-            config.log.max_file_size = stoi_(env_p);
+            config.log.max_file_size = safe_env_stoi("PINPOINT_CPP_LOG_MAX_FILE_SIZE", env_p, 10);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_GRPC_HOST")) {
             config.collector.host = std::string(env_p);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_GRPC_AGENT_PORT")) {
-            config.collector.agent_port = stoi_(env_p);
+            config.collector.agent_port = safe_env_stoi("PINPOINT_CPP_GRPC_AGENT_PORT", env_p, 9991);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_GRPC_SPAN_PORT")) {
-            config.collector.span_port = stoi_(env_p);
+            config.collector.span_port = safe_env_stoi("PINPOINT_CPP_GRPC_SPAN_PORT", env_p, 9993);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_GRPC_STAT_PORT")) {
-            config.collector.stat_port = stoi_(env_p);
+            config.collector.stat_port = safe_env_stoi("PINPOINT_CPP_GRPC_STAT_PORT", env_p, 9992);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_STAT_ENABLE")) {
-            config.stat.enable = stob_(env_p);
+            config.stat.enable = safe_env_stob("PINPOINT_CPP_STAT_ENABLE", env_p, true);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_STAT_BATCH_COUNT")) {
-            config.stat.batch_count = stoi_(env_p);
+            config.stat.batch_count = safe_env_stoi("PINPOINT_CPP_STAT_BATCH_COUNT", env_p, 6);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_STAT_BATCH_INTERVAL")) {
-            config.stat.collect_interval = stoi_(env_p);
+            config.stat.collect_interval = safe_env_stoi("PINPOINT_CPP_STAT_BATCH_INTERVAL", env_p, 5000);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_SAMPLING_TYPE")) {
             config.sampling.type = std::string(env_p);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SAMPLING_COUNTER_RATE")) {
-            config.sampling.counter_rate = stoi_(env_p);
+            config.sampling.counter_rate = safe_env_stoi("PINPOINT_CPP_SAMPLING_COUNTER_RATE", env_p, 1);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE")) {
-            config.sampling.percent_rate = stod_(env_p);
+            config.sampling.percent_rate = safe_env_stod("PINPOINT_CPP_SAMPLING_PERCENT_RATE", env_p, 100.0);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT")) {
-            config.sampling.new_throughput = stoi_(env_p);
+            config.sampling.new_throughput = safe_env_stoi("PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT", env_p, 0);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT")) {
-            config.sampling.cont_throughput = stoi_(env_p);
+            config.sampling.cont_throughput = safe_env_stoi("PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT", env_p, 0);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_SPAN_QUEUE_SIZE")) {
-            config.span.queue_size = stoi_(env_p);
+            config.span.queue_size = safe_env_stoi("PINPOINT_CPP_SPAN_QUEUE_SIZE", env_p, 1024);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH")) {
-            config.span.max_event_depth = stoi_(env_p);
+            config.span.max_event_depth = safe_env_stoi("PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH", env_p, 64);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE")) {
-            config.span.max_event_sequence = stoi_(env_p);
+            config.span.max_event_sequence = safe_env_stoi("PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE", env_p, 5000);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE")) {
-            config.span.event_chunk_size = stoi_(env_p);
+            config.span.event_chunk_size = safe_env_stoi("PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE", env_p, 20);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_IS_CONTAINER")) {
-            config.is_container = stob_(env_p);
+            config.is_container = safe_env_stob("PINPOINT_CPP_IS_CONTAINER", env_p, false);
             needContainerCheck = false;
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT")) {
-            config.http.url_stat.enable = stob_(env_p);
+            config.http.url_stat.enable = safe_env_stob("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", env_p, false);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_URL_STAT_LIMIT")) {
-            config.http.url_stat.limit = stoi_(env_p);
+            config.http.url_stat.limit = safe_env_stoi("PINPOINT_CPP_HTTP_URL_STAT_LIMIT", env_p, 1024);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH")) {
-            config.http.url_stat.path_depth = stoi_(env_p);
+            config.http.url_stat.path_depth = safe_env_stoi("PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH", env_p, 1);
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX")) {
-            config.http.url_stat.method_prefix = stob_(env_p);
+            config.http.url_stat.method_prefix = safe_env_stob("PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX", env_p, false);
         }
 
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS")) {

@@ -37,7 +37,11 @@ namespace pinpoint {
             } else if (compare_string(token, "1xx")) {
                 errors.push_back(new HttpStatusInformational());
             } else {
-                errors.push_back(new HttpStatusDefault(stoi_(token)));
+                auto result = stoi_(token);
+                if (result.has_value()) {
+                    errors.push_back(new HttpStatusDefault(result.value()));
+                }
+                // If parsing fails, ignore the invalid token
             }
         }
     }

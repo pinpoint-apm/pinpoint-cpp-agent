@@ -83,9 +83,11 @@ namespace pinpoint {
         std::getline(ss, item, '^');
         trace_id_.AgentId = item;
         std::getline(ss, item, '^');
-        trace_id_.StartTime = stoll_(item);
+        auto start_time_result = stoll_(item);
+        trace_id_.StartTime = start_time_result.value_or(0);
         std::getline(ss, item, '^');
-        trace_id_.Sequence = stoll_(item);
+        auto sequence_result = stoll_(item);
+        trace_id_.Sequence = sequence_result.value_or(0);
     }
 
     void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
@@ -280,11 +282,17 @@ namespace pinpoint {
         if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
             data_->setSpanId(generate_span_id());
         } else {
-            data_->setSpanId(stoll_(span_id.value()));
+            auto result = stoll_(span_id.value());
+            if (result.has_value()) {
+                data_->setSpanId(result.value());
+            }
         }
 
         if (const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID); parent_span_id.has_value()) {
-            data_->setParentSpanId(stoll_(parent_span_id.value()));
+            auto result = stoll_(parent_span_id.value());
+            if (result.has_value()) {
+                data_->setParentSpanId(result.value());
+            }
         }
 
         if (const auto parent_app_name = reader.Get(HEADER_PARENT_APP_NAME); parent_app_name.has_value()) {
@@ -292,11 +300,17 @@ namespace pinpoint {
         }
 
         if (const auto parent_app_type = reader.Get(HEADER_PARENT_APP_TYPE); parent_app_type.has_value()) {
-            data_->setParentAppType(stoi_(parent_app_type.value()));
+            auto result = stoi_(parent_app_type.value());
+            if (result.has_value()) {
+                data_->setParentAppType(result.value());
+            }
         }
 
         if (const auto flag = reader.Get(HEADER_FLAG); flag.has_value()) {
-            data_->setFlags(stoi_(flag.value()));
+            auto result = stoi_(flag.value());
+            if (result.has_value()) {
+                data_->setFlags(result.value());
+            }
         }
 
         if (const auto host = reader.Get(HEADER_HOST); host.has_value()) {

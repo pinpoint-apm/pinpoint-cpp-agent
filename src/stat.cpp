@@ -108,7 +108,8 @@ namespace pinpoint {
         }
 
         buf[i - 3] = '\0';
-        return stoi_(p);
+        auto result = stoi_(p);
+        return result.value_or(0);
     }
 
 
@@ -127,7 +128,8 @@ namespace pinpoint {
             }
         }
 
-        return stoi_(p);
+        auto result = stoi_(p);
+        return result.value_or(0);
     }
 
     //Virtual Memory(Kb) currently used by current process

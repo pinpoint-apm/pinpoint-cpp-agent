@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <string>
+#include <optional>
 
 namespace pinpoint {
 
@@ -27,10 +28,10 @@ namespace pinpoint {
     std::string get_host_name();
     std::string get_host_ip_addr();
 
-    int stoi_(std::string_view str);
-    int64_t stoll_(std::string_view str);
-    double stod_(std::string_view str);
-    bool stob_(std::string_view str);
+    std::optional<int> stoi_(std::string_view str);
+    std::optional<int64_t> stoll_(std::string_view str);
+    std::optional<double> stod_(std::string_view str);
+    std::optional<bool> stob_(std::string_view str);
 
     bool compare_string(std::string_view str1, std::string_view str2);
 

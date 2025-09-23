@@ -79,36 +79,36 @@ namespace pinpoint {
         return std::equal(str1.begin(), str1.end(), str2.begin(), iequal());
     }
 
-    int stoi_(std::string_view str) {
+    std::optional<int> stoi_(std::string_view str) {
         int out = 0;
         if (absl::SimpleAtoi(str.data(), &out)) {
             return out;
         }
-        return -1;
+        return std::nullopt;
     }
 
-    int64_t stoll_(std::string_view str) {
+    std::optional<int64_t> stoll_(std::string_view str) {
         int64_t out = 0;
         if (absl::SimpleAtoi(str.data(), &out)) {
             return out;
         }
-        return -1;
+        return std::nullopt;
     }
 
-    double stod_(std::string_view str) {
+    std::optional<double> stod_(std::string_view str) {
         double out = 0;
         if (absl::SimpleAtod(str.data(), &out)) {
             return out;
         }
-        return -1;
+        return std::nullopt;
     }
 
-    bool stob_(std::string_view str) {
+    std::optional<bool> stob_(std::string_view str) {
         bool out = false;
         if (absl::SimpleAtob(str.data(), &out)) {
             return out;
         }
-        return false;
+        return std::nullopt;
     }
 
  }

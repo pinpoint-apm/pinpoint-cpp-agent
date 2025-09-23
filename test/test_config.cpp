@@ -684,4 +684,77 @@ Span:
     EXPECT_EQ(config.span.max_event_depth, 64) << "Invalid max event depth should use default";
 }
 
+// ========== Environment Variable Validation Tests ==========
+
+// Test environment variable validation for invalid values
+TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
+    // Set invalid environment variables
+    setenv("PINPOINT_CPP_ENABLE", "invalid_bool", 1);                  // Invalid bool
+    setenv("PINPOINT_CPP_APPLICATION_TYPE", "not_a_number", 1);        // Invalid int
+    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "invalid_port", 1);         // Invalid int
+    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "not_a_double", 1);   // Invalid double
+    setenv("PINPOINT_CPP_STAT_ENABLE", "maybe", 1);                    // Invalid bool
+    setenv("PINPOINT_CPP_SPAN_QUEUE_SIZE", "abc", 1);                  // Invalid int
+    
+    Config config = make_config();
+    
+    // All invalid values should use defaults
+    EXPECT_TRUE(config.enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config.app_type_, 1300) << "Invalid int should use default value";
+    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid port should use default value";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100.0) << "Invalid double should use default value";
+    EXPECT_TRUE(config.stat.enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config.span.queue_size, 1024) << "Invalid int should use default value";
+}
+
+// Test environment variable validation for valid values
+TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
+    // Set valid environment variables
+    setenv("PINPOINT_CPP_ENABLE", "false", 1);                  // Valid bool
+    setenv("PINPOINT_CPP_APPLICATION_TYPE", "1500", 1);         // Valid int
+    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "8080", 1);          // Valid int
+    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "75.5", 1);    // Valid double
+    setenv("PINPOINT_CPP_STAT_ENABLE", "1", 1);                 // Valid bool
+    setenv("PINPOINT_CPP_SPAN_QUEUE_SIZE", "2048", 1);          // Valid int
+    
+    Config config = make_config();
+    
+    // All valid values should be parsed correctly
+    EXPECT_FALSE(config.enable) << "Valid bool should be parsed correctly";
+    EXPECT_EQ(config.app_type_, 1500) << "Valid int should be parsed correctly";
+    EXPECT_EQ(config.collector.agent_port, 8080) << "Valid port should be parsed correctly";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 75.5) << "Valid double should be parsed correctly";
+    EXPECT_TRUE(config.stat.enable) << "Valid bool should be parsed correctly";
+    EXPECT_EQ(config.span.queue_size, 2048) << "Valid int should be parsed correctly";
+}
+
+// Test environment variable validation for boolean edge cases
+TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
+    // Test various valid boolean representations
+    setenv("PINPOINT_CPP_ENABLE", "TRUE", 1);
+    setenv("PINPOINT_CPP_STAT_ENABLE", "False", 1);
+    setenv("PINPOINT_CPP_IS_CONTAINER", "yes", 1);
+    setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "NO", 1);
+    
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.enable) << "TRUE should be parsed as true";
+    EXPECT_FALSE(config.stat.enable) << "False should be parsed as false";
+    EXPECT_TRUE(config.is_container) << "yes should be parsed as true";
+    EXPECT_FALSE(config.http.url_stat.enable) << "NO should be parsed as false";
+}
+
+// Test environment variable validation for negative values
+TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
+    // Set valid negative values where applicable
+    setenv("PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH", "-1", 1);       // Valid -1 (should be processed by make_config validation)
+    setenv("PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE", "-1", 1);    // Valid -1 (should be processed by make_config validation)
+    
+    Config config = make_config();
+    
+    // These should be parsed as -1 and then validated by make_config to INT32_MAX
+    EXPECT_EQ(config.span.max_event_depth, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
+    EXPECT_EQ(config.span.max_event_sequence, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
+}
+
 } // namespace pinpoint
