@@ -1,0 +1,5 @@
+/bazel-*
+/build
+/build_*
+/cmake-build-debug
+/.cache

@@ -4,6 +4,42 @@ else()
   set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
 endif()
 
+# Find GoogleTest
+find_package(GTest CONFIG REQUIRED)
+
+# RateLimiter tests
+add_executable(test_limiter test_limiter.cpp)
+target_include_directories(test_limiter PRIVATE ../src)
+target_link_libraries(test_limiter 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_limiter PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_limiter COMMAND test_limiter)
+
+# Sampling tests
+add_executable(test_sampling test_sampling.cpp)
+target_include_directories(test_sampling PRIVATE ../src)
+target_link_libraries(test_sampling 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_sampling PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_sampling COMMAND test_sampling)
+
+# Cache tests
+add_executable(test_cache test_cache.cpp)
+target_include_directories(test_cache PRIVATE ../src)
+target_link_libraries(test_cache 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_cache PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_cache COMMAND test_cache)
+
 #add_executable(pinpoint_tracer_test tracer_test.cpp)
 #target_link_libraries(pinpoint_tracer_test ${PINPOINT_CPP_LIBRARY})
 #add_test(NAME pinpoint_tracer_test COMMAND pinpoint_tracer_test)
