@@ -104,7 +104,8 @@ set(SRCS src/agent.cpp
          src/url_stat.cpp
          src/http.cpp
          src/cache.cpp
-         src/utility.cpp)
+         src/utility.cpp
+         src/sql.cpp)
 
 if (BUILD_SHARED_LIBS)
   add_library(pinpoint_cpp SHARED ${SRCS} ${PROTOS})
