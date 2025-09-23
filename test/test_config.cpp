@@ -1,0 +1,606 @@
+/*
+ * Copyright 2020-present NAVER Corp.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "../src/config.h"
+#include <gtest/gtest.h>
+#include <string>
+#include <fstream>
+#include <cstdlib>
+#include <unistd.h>
+
+namespace pinpoint {
+
+class ConfigTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Save current environment variables
+        SaveEnvironmentVariables();
+        
+        // Clear any existing config
+        set_config_string("");
+        
+        // Create a temporary directory for test files
+        temp_dir_ = "/tmp/pinpoint_config_test_" + std::to_string(getpid());
+        mkdir(temp_dir_.c_str(), 0755);
+    }
+
+    void TearDown() override {
+        // Restore environment variables
+        RestoreEnvironmentVariables();
+        
+        // Clean up temporary files
+        system(("rm -rf " + temp_dir_).c_str());
+    }
+
+private:
+    void SaveEnvironmentVariables() {
+        // Save environment variables that might affect config
+        saved_env_vars_["PINPOINT_CPP_ENABLE"] = GetEnvVar("PINPOINT_CPP_ENABLE");
+        saved_env_vars_["PINPOINT_CPP_APPLICATION_NAME"] = GetEnvVar("PINPOINT_CPP_APPLICATION_NAME");
+        saved_env_vars_["PINPOINT_CPP_APPLICATION_TYPE"] = GetEnvVar("PINPOINT_CPP_APPLICATION_TYPE");
+        saved_env_vars_["PINPOINT_CPP_AGENT_ID"] = GetEnvVar("PINPOINT_CPP_AGENT_ID");
+        saved_env_vars_["PINPOINT_CPP_AGENT_NAME"] = GetEnvVar("PINPOINT_CPP_AGENT_NAME");
+        saved_env_vars_["PINPOINT_CPP_LOG_LEVEL"] = GetEnvVar("PINPOINT_CPP_LOG_LEVEL");
+        saved_env_vars_["PINPOINT_CPP_GRPC_HOST"] = GetEnvVar("PINPOINT_CPP_GRPC_HOST");
+        saved_env_vars_["PINPOINT_CPP_GRPC_AGENT_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_AGENT_PORT");
+        saved_env_vars_["PINPOINT_CPP_GRPC_SPAN_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_SPAN_PORT");
+        saved_env_vars_["PINPOINT_CPP_GRPC_STAT_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_STAT_PORT");
+        saved_env_vars_["PINPOINT_CPP_SAMPLING_TYPE"] = GetEnvVar("PINPOINT_CPP_SAMPLING_TYPE");
+        saved_env_vars_["PINPOINT_CPP_SAMPLING_PERCENT_RATE"] = GetEnvVar("PINPOINT_CPP_SAMPLING_PERCENT_RATE");
+        saved_env_vars_["PINPOINT_CPP_IS_CONTAINER"] = GetEnvVar("PINPOINT_CPP_IS_CONTAINER");
+        saved_env_vars_["PINPOINT_CPP_CONFIG_FILE"] = GetEnvVar("PINPOINT_CPP_CONFIG_FILE");
+        
+        // Clear environment variables for clean test
+        for (const auto& pair : saved_env_vars_) {
+            unsetenv(pair.first.c_str());
+        }
+    }
+    
+    void RestoreEnvironmentVariables() {
+        for (const auto& pair : saved_env_vars_) {
+            if (!pair.second.empty()) {
+                setenv(pair.first.c_str(), pair.second.c_str(), 1);
+            } else {
+                unsetenv(pair.first.c_str());
+            }
+        }
+    }
+    
+    std::string GetEnvVar(const std::string& name) {
+        const char* value = std::getenv(name.c_str());
+        return value ? std::string(value) : std::string();
+    }
+
+protected:
+    std::map<std::string, std::string> saved_env_vars_;
+    std::string temp_dir_;
+    
+    // Test YAML configurations
+    const std::string complete_config_yaml_ = R"(
+ApplicationName: "MyTestApp"
+ApplicationType: 1300
+AgentId: "test-agent-123"
+AgentName: "TestAgentName"
+Enable: true
+IsContainer: true
+
+Log:
+  Level: "debug"
+  FilePath: "/tmp/pinpoint.log"
+  MaxFileSize: 20
+
+Collector:
+  GrpcHost: "test.collector.host"
+  GrpcAgentPort: 9000
+  GrpcSpanPort: 9001
+  GrpcStatPort: 9002
+
+Sampling:
+  Type: "PERCENT"
+  CounterRate: 20
+  PercentRate: 0.1
+  NewThroughput: 50
+  ContinueThroughput: 60
+
+Span:
+  QueueSize: 512
+  MaxEventDepth: 32
+  MaxEventSequence: 512
+  EventChunkSize: 50
+
+Stat:
+  Enable: true
+  BatchCount: 10
+  BatchInterval: 7000
+
+Http:
+  CollectUrlStat: true
+  UrlStatLimit: 2048
+  UrlStatPathDepth: 3
+  UrlStatMethodPrefix: true
+  
+  Server:
+    StatusCodeErrors: ["5xx", "401", "403"]
+    ExcludeUrl: ["/health", "/metrics"]
+    ExcludeMethod: ["PUT", "DELETE"]
+    RecordRequestHeader: ["Authorization", "Accept"]
+    RecordRequestCookie: ["session"]
+    RecordResponseHeader: ["Content-Type"]
+  
+  Client:
+    RecordRequestHeader: ["User-Agent"]
+    RecordRequestCookie: ["tracking"]
+    RecordResponseHeader: ["headers-all"]
+)";
+
+    const std::string partial_config_yaml_ = R"(
+ApplicationName: "PartialApp"
+ApplicationType: 1301
+
+Collector:
+  GrpcHost: "partial.host"
+  GrpcAgentPort: 8000
+
+Sampling:
+  Type: "COUNTER"
+  CounterRate: 5
+
+Http:
+  Server:
+    StatusCodeErrors: ["4xx"]
+)";
+
+    const std::string invalid_yaml_ = R"(
+ApplicationName: "InvalidApp"
+  InvalidIndentation: true
+UnmatchedQuote: "this is invalid
+)";
+
+    const std::string extreme_values_yaml_ = R"(
+Sampling:
+  CounterRate: -100
+  PercentRate: 150.5
+  NewThroughput: -50
+  ContinueThroughput: -30
+
+Span:
+  QueueSize: 0
+  MaxEventDepth: -1
+  MaxEventSequence: -1
+  EventChunkSize: 0
+)";
+};
+
+// ========== Default Configuration Tests ==========
+
+// Test default configuration values
+TEST_F(ConfigTest, DefaultConfigurationTest) {
+    Config config = make_config();
+    
+    // Test basic default values
+    EXPECT_EQ(config.app_name_, "") << "Default app name should be empty";
+    EXPECT_EQ(config.app_type_, 1300) << "Default app type should be 1300"; // DEFAULT_APP_TYPE
+    EXPECT_FALSE(config.agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
+    EXPECT_EQ(config.agent_name_, "") << "Default agent name should be empty";
+    EXPECT_TRUE(config.enable) << "Should be enabled by default";
+    
+    // Test log defaults
+    EXPECT_EQ(config.log.level, "info") << "Default log level should be info";
+    EXPECT_EQ(config.log.file_path, "") << "Default log file path should be empty";
+    EXPECT_EQ(config.log.max_file_size, 10) << "Default max file size should be 10MB";
+    
+    // Test collector defaults
+    EXPECT_EQ(config.collector.host, "") << "Default collector host should be empty";
+    EXPECT_EQ(config.collector.agent_port, 9991) << "Default agent port should be 9991";
+    EXPECT_EQ(config.collector.span_port, 9993) << "Default span port should be 9993";
+    EXPECT_EQ(config.collector.stat_port, 9992) << "Default stat port should be 9992";
+    
+    // Test sampling defaults
+    EXPECT_EQ(config.sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
+    EXPECT_EQ(config.sampling.counter_rate, 1) << "Default counter rate should be 1";
+    EXPECT_EQ(config.sampling.percent_rate, 100) << "Default percent rate should be 100";
+    EXPECT_EQ(config.sampling.new_throughput, 0) << "Default new throughput should be 0";
+    EXPECT_EQ(config.sampling.cont_throughput, 0) << "Default continue throughput should be 0";
+    
+    // Test span defaults
+    EXPECT_EQ(config.span.queue_size, 1024) << "Default queue size should be 1024";
+    EXPECT_EQ(config.span.max_event_depth, 64) << "Default max event depth should be 64";
+    EXPECT_EQ(config.span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
+    EXPECT_EQ(config.span.event_chunk_size, 20) << "Default event chunk size should be 20";
+    
+    // Test stat defaults
+    EXPECT_TRUE(config.stat.enable) << "Stat should be enabled by default";
+    EXPECT_EQ(config.stat.batch_count, 6) << "Default batch count should be 6";
+    EXPECT_EQ(config.stat.collect_interval, 5000) << "Default collect interval should be 5000ms";
+    
+    // Test HTTP defaults
+    EXPECT_FALSE(config.http.url_stat.enable) << "URL stat should be disabled by default";
+    EXPECT_EQ(config.http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
+    EXPECT_EQ(config.http.url_stat.path_depth, 1) << "Default path depth should be 1";
+    EXPECT_FALSE(config.http.url_stat.method_prefix) << "Method prefix should be false by default";
+    
+    // Test HTTP server defaults
+    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Should have default status error";
+    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "Default status error should be 5xx";
+    EXPECT_TRUE(config.http.server.exclude_url.empty()) << "Exclude URL list should be empty by default";
+    EXPECT_TRUE(config.http.server.exclude_method.empty()) << "Exclude method list should be empty by default";
+    EXPECT_TRUE(config.http.server.rec_request_header.empty()) << "Request header list should be empty by default";
+    EXPECT_TRUE(config.http.server.rec_request_cookie.empty()) << "Request cookie list should be empty by default";
+    EXPECT_TRUE(config.http.server.rec_response_header.empty()) << "Response header list should be empty by default";
+    
+    // Test HTTP client defaults
+    EXPECT_TRUE(config.http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
+    EXPECT_TRUE(config.http.client.rec_request_cookie.empty()) << "Client request cookie list should be empty by default";
+    EXPECT_TRUE(config.http.client.rec_response_header.empty()) << "Client response header list should be empty by default";
+}
+
+// Test generated agent ID
+TEST_F(ConfigTest, GeneratedAgentIdTest) {
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.agent_id_.empty()) << "Agent ID should be generated when not provided";
+    EXPECT_GE(config.agent_id_.length(), 5) << "Generated agent ID should have reasonable length";
+    
+    // Test that multiple calls generate different IDs
+    Config config2 = make_config();
+    EXPECT_NE(config.agent_id_, config2.agent_id_) << "Multiple calls should generate different agent IDs";
+}
+
+// ========== YAML Configuration Tests ==========
+
+// Test complete YAML configuration
+TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
+    set_config_string(complete_config_yaml_);
+    Config config = make_config();
+    
+    // Test basic values
+    EXPECT_EQ(config.app_name_, "MyTestApp") << "App name should match YAML";
+    EXPECT_EQ(config.app_type_, 1300) << "App type should match YAML";
+    EXPECT_EQ(config.agent_id_, "test-agent-123") << "Agent ID should match YAML";
+    EXPECT_EQ(config.agent_name_, "TestAgentName") << "Agent name should match YAML";
+    EXPECT_TRUE(config.enable) << "Enable should match YAML";
+    EXPECT_TRUE(config.is_container) << "IsContainer should match YAML";
+    
+    // Test log configuration
+    EXPECT_EQ(config.log.level, "debug") << "Log level should match YAML";
+    EXPECT_EQ(config.log.file_path, "/tmp/pinpoint.log") << "Log file path should match YAML";
+    EXPECT_EQ(config.log.max_file_size, 20) << "Log max file size should match YAML";
+    
+    // Test collector configuration
+    EXPECT_EQ(config.collector.host, "test.collector.host") << "Collector host should match YAML";
+    EXPECT_EQ(config.collector.agent_port, 9000) << "Agent port should match YAML";
+    EXPECT_EQ(config.collector.span_port, 9001) << "Span port should match YAML";
+    EXPECT_EQ(config.collector.stat_port, 9002) << "Stat port should match YAML";
+    
+    // Test sampling configuration
+    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match YAML";
+    EXPECT_EQ(config.sampling.counter_rate, 20) << "Counter rate should match YAML";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0.1) << "Percent rate should match YAML";
+    EXPECT_EQ(config.sampling.new_throughput, 50) << "New throughput should match YAML";
+    EXPECT_EQ(config.sampling.cont_throughput, 60) << "Continue throughput should match YAML";
+    
+    // Test span configuration
+    EXPECT_EQ(config.span.queue_size, 512) << "Queue size should match YAML";
+    EXPECT_EQ(config.span.max_event_depth, 32) << "Max event depth should match YAML";
+    EXPECT_EQ(config.span.max_event_sequence, 512) << "Max event sequence should match YAML";
+    EXPECT_EQ(config.span.event_chunk_size, 50) << "Event chunk size should match YAML";
+    
+    // Test stat configuration
+    EXPECT_TRUE(config.stat.enable) << "Stat enable should match YAML";
+    EXPECT_EQ(config.stat.batch_count, 10) << "Batch count should match YAML";
+    EXPECT_EQ(config.stat.collect_interval, 7000) << "Collect interval should match YAML";
+    
+    // Test HTTP configuration
+    EXPECT_TRUE(config.http.url_stat.enable) << "URL stat enable should match YAML";
+    EXPECT_EQ(config.http.url_stat.limit, 2048) << "URL stat limit should match YAML";
+    EXPECT_EQ(config.http.url_stat.path_depth, 3) << "URL stat path depth should match YAML";
+    EXPECT_TRUE(config.http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
+    
+    // Test HTTP server configuration
+    EXPECT_EQ(config.http.server.status_errors.size(), 3) << "Should have 3 status errors";
+    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "First status error should be 5xx";
+    EXPECT_EQ(config.http.server.status_errors[1], "401") << "Second status error should be 401";
+    EXPECT_EQ(config.http.server.status_errors[2], "403") << "Third status error should be 403";
+    
+    EXPECT_EQ(config.http.server.exclude_url.size(), 2) << "Should have 2 exclude URLs";
+    EXPECT_EQ(config.http.server.exclude_url[0], "/health") << "First exclude URL should be /health";
+    EXPECT_EQ(config.http.server.exclude_url[1], "/metrics") << "Second exclude URL should be /metrics";
+    
+    EXPECT_EQ(config.http.server.exclude_method.size(), 2) << "Should have 2 exclude methods";
+    EXPECT_EQ(config.http.server.exclude_method[0], "PUT") << "First exclude method should be PUT";
+    EXPECT_EQ(config.http.server.exclude_method[1], "DELETE") << "Second exclude method should be DELETE";
+    
+    EXPECT_EQ(config.http.server.rec_request_header.size(), 2) << "Should have 2 request headers";
+    EXPECT_EQ(config.http.server.rec_request_header[0], "Authorization") << "First request header should be Authorization";
+    EXPECT_EQ(config.http.server.rec_request_header[1], "Accept") << "Second request header should be Accept";
+    
+    EXPECT_EQ(config.http.server.rec_request_cookie.size(), 1) << "Should have 1 request cookie";
+    EXPECT_EQ(config.http.server.rec_request_cookie[0], "session") << "Request cookie should be session";
+    
+    EXPECT_EQ(config.http.server.rec_response_header.size(), 1) << "Should have 1 response header";
+    EXPECT_EQ(config.http.server.rec_response_header[0], "Content-Type") << "Response header should be Content-Type";
+    
+    // Test HTTP client configuration
+    EXPECT_EQ(config.http.client.rec_request_header.size(), 1) << "Should have 1 client request header";
+    EXPECT_EQ(config.http.client.rec_request_header[0], "User-Agent") << "Client request header should be User-Agent";
+    
+    EXPECT_EQ(config.http.client.rec_request_cookie.size(), 1) << "Should have 1 client request cookie";
+    EXPECT_EQ(config.http.client.rec_request_cookie[0], "tracking") << "Client request cookie should be tracking";
+    
+    EXPECT_EQ(config.http.client.rec_response_header.size(), 1) << "Should have 1 client response header";
+    EXPECT_EQ(config.http.client.rec_response_header[0], "headers-all") << "Client response header should be headers-all";
+}
+
+// Test partial YAML configuration
+TEST_F(ConfigTest, PartialYamlConfigurationTest) {
+    set_config_string(partial_config_yaml_);
+    Config config = make_config();
+    
+    // Test overridden values
+    EXPECT_EQ(config.app_name_, "PartialApp") << "App name should match partial YAML";
+    EXPECT_EQ(config.app_type_, 1301) << "App type should match partial YAML";
+    EXPECT_EQ(config.collector.host, "partial.host") << "Collector host should match partial YAML";
+    EXPECT_EQ(config.collector.agent_port, 8000) << "Agent port should match partial YAML";
+    EXPECT_EQ(config.sampling.type, "COUNTER") << "Sampling type should match partial YAML";
+    EXPECT_EQ(config.sampling.counter_rate, 5) << "Counter rate should match partial YAML";
+    
+    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Should have 1 status error from partial YAML";
+    EXPECT_EQ(config.http.server.status_errors[0], "4xx") << "Status error should be 4xx from partial YAML";
+    
+    // Test values that should remain default
+    EXPECT_EQ(config.collector.span_port, 9993) << "Span port should remain default";
+    EXPECT_EQ(config.collector.stat_port, 9992) << "Stat port should remain default";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100) << "Percent rate should remain default";
+    EXPECT_EQ(config.log.level, "info") << "Log level should remain default";
+    EXPECT_EQ(config.span.queue_size, 1024) << "Queue size should remain default";
+}
+
+// Test empty YAML configuration
+TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
+    set_config_string("");
+    Config config = make_config();
+    
+    // Should have all default values
+    EXPECT_EQ(config.app_name_, "") << "App name should be default (empty)";
+    EXPECT_EQ(config.app_type_, 1300) << "App type should be default";
+    EXPECT_EQ(config.log.level, "info") << "Log level should be default";
+    EXPECT_EQ(config.collector.agent_port, 9991) << "Agent port should be default";
+}
+
+// ========== Environment Variable Tests ==========
+
+// Test environment variable configuration
+TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
+    // Set environment variables
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "EnvApp", 1);
+    setenv("PINPOINT_CPP_APPLICATION_TYPE", "1302", 1);
+    setenv("PINPOINT_CPP_AGENT_ID", "env-agent-456", 1);
+    setenv("PINPOINT_CPP_LOG_LEVEL", "error", 1);
+    setenv("PINPOINT_CPP_GRPC_HOST", "env.collector.host", 1);
+    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "8888", 1);
+    setenv("PINPOINT_CPP_SAMPLING_TYPE", "PERCENT", 1);
+    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "25.5", 1);
+    setenv("PINPOINT_CPP_IS_CONTAINER", "true", 1);
+    
+    Config config = make_config();
+    
+    // Test environment variable values
+    EXPECT_EQ(config.app_name_, "EnvApp") << "App name should match environment variable";
+    EXPECT_EQ(config.app_type_, 1302) << "App type should match environment variable";
+    EXPECT_EQ(config.agent_id_, "env-agent-456") << "Agent ID should match environment variable";
+    EXPECT_EQ(config.log.level, "error") << "Log level should match environment variable";
+    EXPECT_EQ(config.collector.host, "env.collector.host") << "Collector host should match environment variable";
+    EXPECT_EQ(config.collector.agent_port, 8888) << "Agent port should match environment variable";
+    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match environment variable";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 25.5) << "Percent rate should match environment variable";
+    EXPECT_TRUE(config.is_container) << "IsContainer should match environment variable";
+}
+
+// Test environment variable override YAML
+TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
+    // Set YAML config
+    set_config_string(partial_config_yaml_);
+    
+    // Set environment variables that should override YAML
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "EnvOverrideApp", 1);
+    setenv("PINPOINT_CPP_GRPC_HOST", "env.override.host", 1);
+    
+    Config config = make_config();
+    
+    // Environment variables should override YAML
+    EXPECT_EQ(config.app_name_, "EnvOverrideApp") << "Environment variable should override YAML app name";
+    EXPECT_EQ(config.collector.host, "env.override.host") << "Environment variable should override YAML collector host";
+    
+    // YAML values should remain where no environment variable is set
+    EXPECT_EQ(config.app_type_, 1301) << "App type should remain from YAML";
+    EXPECT_EQ(config.collector.agent_port, 8000) << "Agent port should remain from YAML";
+}
+
+// ========== File Configuration Tests ==========
+
+// Test configuration file reading
+TEST_F(ConfigTest, ConfigurationFileReadingTest) {
+    // Create a temporary config file
+    std::string config_file = temp_dir_ + "/test_config.yaml";
+    std::ofstream file(config_file);
+    file << partial_config_yaml_;
+    file.close();
+    
+    // Set environment variable to point to config file
+    setenv("PINPOINT_CPP_CONFIG_FILE", config_file.c_str(), 1);
+    
+    Config config = make_config();
+    
+    // Values should be loaded from file
+    EXPECT_EQ(config.app_name_, "PartialApp") << "App name should be loaded from file";
+    EXPECT_EQ(config.app_type_, 1301) << "App type should be loaded from file";
+    EXPECT_EQ(config.collector.host, "partial.host") << "Collector host should be loaded from file";
+}
+
+// Test missing configuration file
+TEST_F(ConfigTest, MissingConfigurationFileTest) {
+    // Set environment variable to point to non-existent file
+    std::string missing_file = temp_dir_ + "/missing_config.yaml";
+    setenv("PINPOINT_CPP_CONFIG_FILE", missing_file.c_str(), 1);
+    
+    Config config = make_config();
+    
+    // Should use default values when file is missing
+    EXPECT_EQ(config.app_name_, "") << "App name should be default when file is missing";
+    EXPECT_EQ(config.app_type_, 1300) << "App type should be default when file is missing";
+}
+
+// ========== Validation Logic Tests ==========
+
+// Test value validation and correction
+TEST_F(ConfigTest, ValueValidationTest) {
+    set_config_string(extreme_values_yaml_);
+    Config config = make_config();
+    
+    // Test sampling value corrections
+    EXPECT_EQ(config.sampling.counter_rate, 0) << "Negative counter rate should be corrected to 0";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100) << "Percent rate > 100 should be corrected to 100";
+    EXPECT_EQ(config.sampling.new_throughput, 0) << "Negative new throughput should be corrected to 0";
+    EXPECT_EQ(config.sampling.cont_throughput, 0) << "Negative continue throughput should be corrected to 0";
+    
+    // Test span value corrections
+    EXPECT_EQ(config.span.queue_size, 1024) << "Queue size < 1 should be corrected to default (1024)";
+    EXPECT_EQ(config.span.max_event_depth, INT32_MAX) << "Max event depth -1 should be corrected to INT32_MAX";
+    EXPECT_EQ(config.span.max_event_sequence, INT32_MAX) << "Max event sequence -1 should be corrected to INT32_MAX";
+    EXPECT_EQ(config.span.event_chunk_size, 20) << "Event chunk size < 1 should be corrected to default (20)";
+}
+
+// Test edge case percent rates
+TEST_F(ConfigTest, PercentRateEdgeCasesTest) {
+    // Test very small percent rate
+    std::string small_percent_yaml = R"(
+Sampling:
+  PercentRate: 0.005
+)";
+    set_config_string(small_percent_yaml);
+    Config config = make_config();
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0.01) << "Very small percent rate should be corrected to minimum (0.01)";
+    
+    // Test negative percent rate
+    std::string negative_percent_yaml = R"(
+Sampling:
+  PercentRate: -5.0
+)";
+    set_config_string(negative_percent_yaml);
+    config = make_config();
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
+}
+
+// ========== Error Handling Tests ==========
+
+// Test invalid YAML handling
+TEST_F(ConfigTest, InvalidYamlHandlingTest) {
+    set_config_string(invalid_yaml_);
+    Config config = make_config();
+    
+    // Should fallback to default values when YAML is invalid
+    EXPECT_EQ(config.app_name_, "") << "App name should be default when YAML is invalid";
+    EXPECT_EQ(config.app_type_, 1300) << "App type should be default when YAML is invalid";
+    EXPECT_EQ(config.log.level, "info") << "Log level should be default when YAML is invalid";
+}
+
+// ========== Configuration String Generation Tests ==========
+
+// Test configuration to string conversion
+TEST_F(ConfigTest, ConfigurationToStringTest) {
+    set_config_string(complete_config_yaml_);
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Check that generated string contains expected values
+    EXPECT_TRUE(config_string.find("ApplicationName: MyTestApp") != std::string::npos) 
+        << "Config string should contain application name";
+    EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
+        << "Config string should contain application type";
+    EXPECT_TRUE(config_string.find("GrpcHost: test.collector.host") != std::string::npos) 
+        << "Config string should contain GRPC host";
+    EXPECT_TRUE(config_string.find("Type: PERCENT") != std::string::npos) 
+        << "Config string should contain sampling type";
+    EXPECT_TRUE(config_string.find("Level: debug") != std::string::npos) 
+        << "Config string should contain log level";
+}
+
+// Test round-trip configuration (string -> config -> string)
+TEST_F(ConfigTest, ConfigurationRoundTripTest) {
+    set_config_string(complete_config_yaml_);
+    Config config = make_config();
+    
+    std::string generated_config_string = to_config_string(config);
+    
+    // Use generated string as new config
+    set_config_string(generated_config_string);
+    Config config2 = make_config();
+    
+    // Both configs should have same values
+    EXPECT_EQ(config.app_name_, config2.app_name_) << "App name should match after round-trip";
+    EXPECT_EQ(config.app_type_, config2.app_type_) << "App type should match after round-trip";
+    EXPECT_EQ(config.collector.host, config2.collector.host) << "Collector host should match after round-trip";
+    EXPECT_EQ(config.sampling.type, config2.sampling.type) << "Sampling type should match after round-trip";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, config2.sampling.percent_rate) << "Percent rate should match after round-trip";
+    EXPECT_EQ(config.http.server.status_errors.size(), config2.http.server.status_errors.size()) 
+        << "Status errors count should match after round-trip";
+}
+
+// Test empty configuration string generation
+TEST_F(ConfigTest, EmptyConfigurationStringTest) {
+    set_config_string("");
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Should contain default values
+    EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
+        << "Config string should contain default application type";
+    EXPECT_TRUE(config_string.find("Level: info") != std::string::npos) 
+        << "Config string should contain default log level";
+    EXPECT_TRUE(config_string.find("Type: COUNTER") != std::string::npos) 
+        << "Config string should contain default sampling type";
+}
+
+// ========== Integration Tests ==========
+
+// Test complete configuration flow
+TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
+    // Create config file
+    std::string config_file = temp_dir_ + "/complete_config.yaml";
+    std::ofstream file(config_file);
+    file << complete_config_yaml_;
+    file.close();
+    
+    // Set environment variables
+    setenv("PINPOINT_CPP_CONFIG_FILE", config_file.c_str(), 1);
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "OverriddenApp", 1); // Should override file
+    setenv("PINPOINT_CPP_LOG_LEVEL", "warn", 1); // Should override file
+    
+    Config config = make_config();
+    
+    // Environment variables should override file values
+    EXPECT_EQ(config.app_name_, "OverriddenApp") << "Environment variable should override file app name";
+    EXPECT_EQ(config.log.level, "warn") << "Environment variable should override file log level";
+    
+    // File values should be used where no environment variable exists
+    EXPECT_EQ(config.app_type_, 1300) << "App type should come from file";
+    EXPECT_EQ(config.collector.host, "test.collector.host") << "Collector host should come from file";
+    EXPECT_EQ(config.agent_id_, "test-agent-123") << "Agent ID should come from file";
+}
+
+} // namespace pinpoint
