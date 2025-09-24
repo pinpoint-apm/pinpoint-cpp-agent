@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "spdlog/sinks/rotating_file_sink.h"
 #include "logging.h"
 
 namespace pinpoint {

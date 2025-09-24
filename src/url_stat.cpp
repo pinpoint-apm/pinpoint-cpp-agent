@@ -20,7 +20,6 @@
 #include "absl/strings/str_cat.h"
 #include "agent.h"
 #include "logging.h"
-#include "grpc.h"
 #include "url_stat.h"
 
 namespace pinpoint {

@@ -16,11 +16,8 @@
 
 #pragma once
 
-#include <chrono>
 #include <condition_variable>
-#include <iostream>
 #include <string>
-#include <thread>
 #include <queue>
 
 #include <grpc/grpc.h>
@@ -31,16 +28,11 @@
 #include <grpcpp/security/credentials.h>
 
 #include "v1/Service.grpc.pb.h"
-#include "v1/Service.pb.h"
-#include "v1/Annotation.grpc.pb.h"
-#include "v1/Annotation.pb.h"
 
 #include "agent.h"
 #include "span.h"
-#include "span_event.h"
 #include "stat.h"
 #include "url_stat.h"
-#include "utility.h"
 
 namespace pinpoint {
     enum GrpcRequestStatus {SEND_OK, SEND_FAIL};

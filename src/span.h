@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <mutex>
 #include <stack>
 #include <vector>

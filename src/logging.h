@@ -20,7 +20,6 @@
 #include <string>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include "spdlog/sinks/rotating_file_sink.h"
 
 namespace pinpoint {
 
@@ -52,8 +51,8 @@ namespace pinpoint {
     void init_logger();
     void shutdown_logger();
 
-    #define LOG_DEBUG(...) Logger::getInstance().getLogger()->debug(__VA_ARGS__);
-    #define LOG_INFO(...) Logger::getInstance().getLogger()->info(__VA_ARGS__);
-    #define LOG_WARN(...) Logger::getInstance().getLogger()->warn(__VA_ARGS__);
-    #define LOG_ERROR(...) Logger::getInstance().getLogger()->error(__VA_ARGS__);
+    #define LOG_DEBUG(...) (Logger::getInstance().getLogger()->debug(__VA_ARGS__))
+    #define LOG_INFO(...) (Logger::getInstance().getLogger()->info(__VA_ARGS__))
+    #define LOG_WARN(...) (Logger::getInstance().getLogger()->warn(__VA_ARGS__))
+    #define LOG_ERROR(...) (Logger::getInstance().getLogger()->error(__VA_ARGS__))
 }

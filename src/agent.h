@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <thread>
 
 #include "pinpoint/tracer.h"
 #include "config.h"

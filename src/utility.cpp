@@ -19,12 +19,10 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <iostream>
 #include <random>
 #include <cctype>
 
 #include "absl/strings/numbers.h"
-#include "logging.h"
 #include "utility.h"
 
 namespace pinpoint {
