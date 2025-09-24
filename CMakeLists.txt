@@ -133,6 +133,7 @@ protobuf_generate(
   LANGUAGE grpc
   PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
   GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+  PLUGIN_OPTIONS generate_mock_code=true
 )
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

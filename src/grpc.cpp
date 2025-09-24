@@ -429,8 +429,8 @@ namespace pinpoint {
     static int socket_id = 0;
 
     GrpcAgent::GrpcAgent(AgentService* agent) : GrpcClient(agent, AGENT) {
-        agent_stub_ = v1::Agent::NewStub(channel_);
-        meta_stub_ = v1::Metadata::NewStub(channel_);
+        set_agent_stub(v1::Agent::NewStub(channel_));
+        set_meta_stub(v1::Metadata::NewStub(channel_));
     }
 
     constexpr auto REGISTER_TIMEOUT = std::chrono::seconds(60);
@@ -677,8 +677,8 @@ namespace pinpoint {
 
     //GrpcSpan
 
-    GrpcSpan::GrpcSpan(AgentService* agent) : GrpcClient(agent, SPAN), span_stub_(nullptr) {
-        span_stub_ = v1::Span::NewStub(channel_);
+    GrpcSpan::GrpcSpan(AgentService* agent) : GrpcClient(agent, SPAN) {
+        set_span_stub(v1::Span::NewStub(channel_));
     }
 
     bool GrpcSpan::start_span_stream() {
@@ -857,7 +857,7 @@ namespace pinpoint {
     //GrpcStat
 
     GrpcStats::GrpcStats(AgentService* agent): GrpcClient(agent, STATS) {
-        stats_stub_ = v1::Stat::NewStub(channel_);
+        set_stats_stub(v1::Stat::NewStub(channel_));
     }
 
     bool GrpcStats::start_stats_stream() {

@@ -93,7 +93,7 @@ namespace pinpoint {
         ~MetaData() {}
     } MetaData;
 
-    class GrpcAgent final : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
+    class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
         explicit GrpcAgent(AgentService* agent);
 
@@ -110,9 +110,13 @@ namespace pinpoint {
         void OnReadDone(bool ok) override;
         void OnDone(const grpc::Status& s) override;
 
+    protected:
+        void set_agent_stub(std::unique_ptr<v1::Agent::StubInterface> stub) { agent_stub_ = std::move(stub); }
+        void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
+
     private:
-        std::unique_ptr<v1::Agent::Stub> agent_stub_{};
-        std::unique_ptr<v1::Metadata::Stub> meta_stub_{};
+        std::unique_ptr<v1::Agent::StubInterface> agent_stub_{};
+        std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
 
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
@@ -130,7 +134,7 @@ namespace pinpoint {
         GrpcRequestStatus send_string_meta(StringMeta& str_meta);
     };
 
-    class GrpcSpan final : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
+    class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
     public:
         explicit GrpcSpan(AgentService* agent);
 
@@ -142,8 +146,11 @@ namespace pinpoint {
         void OnWriteDone(bool ok) override;
         void OnDone(const grpc::Status& status) override;
 
+    protected:
+        void set_span_stub(std::unique_ptr<v1::Span::StubInterface> stub) { span_stub_ = std::move(stub); }
+        
     private:
-        std::unique_ptr<v1::Span::Stub> span_stub_{};
+        std::unique_ptr<v1::Span::StubInterface> span_stub_{};
         std::unique_ptr<v1::PSpanMessage> msg_{};
         google::protobuf::Empty reply_{};
 
@@ -159,7 +166,7 @@ namespace pinpoint {
         void empty_span_queue() noexcept;
     };
 
-    class GrpcStats final : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
+    class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
         explicit GrpcStats(AgentService* agent);
 
@@ -171,8 +178,11 @@ namespace pinpoint {
         void OnWriteDone(bool ok) override;
         void OnDone(const grpc::Status& status) override;
 
+    protected:
+        void set_stats_stub(std::unique_ptr<v1::Stat::StubInterface> stub) { stats_stub_ = std::move(stub); }
+
     private:
-        std::unique_ptr<v1::Stat::Stub> stats_stub_{};
+        std::unique_ptr<v1::Stat::StubInterface> stats_stub_{};
         std::unique_ptr<v1::PStatMessage> msg_{};
         google::protobuf::Empty reply_{};
 
