@@ -105,6 +105,7 @@ class StatTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
+        mock_agent_service_->setExiting(false);  // Ensure clean state
         init_agent_stats();
     }
 
@@ -245,10 +246,11 @@ TEST_F(StatTest, AgentStatsWorkerStopTest) {
         agent_stats.agentStatsWorker();
     });
     
-    // Let it run briefly
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Give worker time to start
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     
-    // Stop the worker
+    // Signal to stop and wait
+    mock_agent_service_->setExiting(true);
     agent_stats.stopAgentStatsWorker();
     
     // Wait for thread to finish
@@ -265,10 +267,11 @@ TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
         agent_stats.agentStatsWorker();
     });
     
-    // Let it run longer to ensure stats collection interval passes
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    // Let it run briefly to start up
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
-    // Stop the worker
+    // Signal to stop and wait
+    mock_agent_service_->setExiting(true);
     agent_stats.stopAgentStatsWorker();
     
     // Wait for thread to finish

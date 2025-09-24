@@ -94,6 +94,16 @@ target_link_libraries(test_stat
 set_target_properties(test_stat PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_stat COMMAND test_stat)
 
+# Add test_url_stat
+add_executable(test_url_stat test_url_stat.cpp)
+target_link_libraries(test_url_stat 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_url_stat PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_url_stat COMMAND test_url_stat)
+
 #add_executable(pinpoint_tracer_test tracer_test.cpp)
 #target_link_libraries(pinpoint_tracer_test ${PINPOINT_CPP_LIBRARY})
 #add_test(NAME pinpoint_tracer_test COMMAND pinpoint_tracer_test)
