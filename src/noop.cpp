@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "agent.h"
 #include "logging.h"
 #include "stat.h"
 #include "utility.h"
@@ -40,7 +39,7 @@ namespace pinpoint {
         return noop.agent();
     }
 
-    UnsampledSpan::UnsampledSpan(AgentImpl *agent) : NoopSpan(),
+    UnsampledSpan::UnsampledSpan(AgentService *agent) : NoopSpan(),
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         url_stat_(nullptr), agent_(agent) {

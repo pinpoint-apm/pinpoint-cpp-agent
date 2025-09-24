@@ -17,15 +17,15 @@
 #include <algorithm>
 
 #include "logging.h"
-#include "agent.h"
 #include "noop.h"
+#include "stat.h"
 #include "span.h"
 
 namespace pinpoint {
 
     static std::atomic<int32_t> async_id_gen{1};
 
-    SpanData::SpanData(AgentImpl* agent, std::string_view operation) :
+    SpanData::SpanData(AgentService* agent, std::string_view operation) :
         trace_id_{},
         span_id_{},
         parent_span_id_{-1},
@@ -174,7 +174,7 @@ namespace pinpoint {
             if (overflow_ > 0) { return (retval); } \
         } while(0)
 
-    SpanImpl::SpanImpl(AgentImpl* agent, std::string_view operation, std::string_view rpc_point) :
+    SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point) :
         agent_(agent), data_(nullptr), overflow_(0), finished_(false) {
         data_ = std::make_shared<SpanData>(agent, operation);
         data_->setRpcName(rpc_point);

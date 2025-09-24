@@ -28,17 +28,11 @@
 #include "stat.h"
 #include "grpc.h"
 #include "url_stat.h"
+#include "agent_service.h"
 
 namespace pinpoint {
 
-	class GrpcAgent;
-	class GrpcSpan;
-	class GrpcStats;
-	class SpanData;
-	struct ApiMeta;
-	struct StringMeta;
-
-    class AgentImpl final : public Agent {
+    class AgentImpl final : public Agent, public AgentService {
     public:
 		explicit AgentImpl(const Config& options);
         ~AgentImpl() override;
@@ -48,28 +42,29 @@ namespace pinpoint {
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
 		bool Enable() override;
 		void Shutdown() override;
-    	bool isExiting() const { return shutting_down_; }
 
-    	std::string_view getAppName() const { return config_.app_name_; }
-    	int32_t getAppType() const { return config_.app_type_; }
-    	std::string_view getAgentId() const { return config_.agent_id_; }
-    	std::string_view getAgentName() const {	return config_.agent_name_; }
-    	const Config& getConfig() const { return config_; }
-    	int64_t getStartTime() const { return start_time_; }
+    	bool isExiting() const override { return shutting_down_; }
+    	std::string_view getAppName() const override { return config_.app_name_; }
+    	int32_t getAppType() const override { return config_.app_type_; }
+    	std::string_view getAgentId() const override { return config_.agent_id_; }
+    	std::string_view getAgentName() const override {	return config_.agent_name_; }
 
-    	TraceId generateTraceId();
-    	void recordSpan(std::unique_ptr<SpanChunk> span) const;
-    	void recordUrlStat(std::unique_ptr<UrlStat> stat) const;
-    	void recordStats(StatsType stats) const;
+    	const Config& getConfig() const override { return config_; }
+    	int64_t getStartTime() const override { return start_time_; }
 
-    	int32_t cacheApi(std::string_view api_str, int32_t api_type) const;
-    	void removeCacheApi(const ApiMeta& api_meta) const;
-    	int32_t cacheError(std::string_view error_name) const;
-    	void removeCacheError(const StringMeta& str_meta) const;
+    	TraceId generateTraceId() override;
+    	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
+    	void recordUrlStat(std::unique_ptr<UrlStat> stat) const override;
+    	void recordStats(StatsType stats) const override;
 
-    	bool isStatusFail(int status) const;
-    	void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const;
-    	void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const;
+    	int32_t cacheApi(std::string_view api_str, int32_t api_type) const override;
+    	void removeCacheApi(const ApiMeta& api_meta) const override;
+    	int32_t cacheError(std::string_view error_name) const override;
+    	void removeCacheError(const StringMeta& str_meta) const override;
+
+    	bool isStatusFail(int status) const override;
+    	void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
+    	void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
 
     private:
 

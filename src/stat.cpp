@@ -24,7 +24,7 @@
 #include <cctype>
 #include <unistd.h>
 
-#include "agent.h"
+#include "config.h"
 #include "logging.h"
 #include "utility.h"
 #include "stat.h"

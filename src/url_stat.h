@@ -24,6 +24,7 @@
 #include <string>
 
 #include "config.h"
+#include "agent_service.h"
 
 namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
@@ -75,7 +76,7 @@ namespace pinpoint {
         int64_t tickTime_;
     };
 
-    struct UrlKey  {
+    struct UrlKey {
         std::string url_;
         int64_t tick_;
         bool operator<(const UrlKey &o)  const {
@@ -83,7 +84,7 @@ namespace pinpoint {
         }
     };
 
-    struct UrlStat  {
+    struct UrlStat {
         std::string url_pattern_;
         std::string method_;
         int status_code_;
@@ -113,11 +114,9 @@ namespace pinpoint {
         std::mutex mutex_;
     };
 
-    class AgentImpl;
-
     class UrlStats {
     public:
-        explicit UrlStats(AgentImpl* agent) : agent_(agent) {}
+        explicit UrlStats(AgentService* agent) : agent_(agent) {}
 
         void enqueueUrlStats(std::unique_ptr<UrlStat> stats) noexcept;
         void addUrlStatsWorker();
@@ -126,7 +125,7 @@ namespace pinpoint {
         void stopSendUrlStatsWorker();
 
     private:
-        AgentImpl* agent_{};
+        AgentService* agent_{};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
         std::queue<std::unique_ptr<UrlStat>> url_stats_{};

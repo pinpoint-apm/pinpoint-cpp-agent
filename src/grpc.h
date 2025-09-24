@@ -29,10 +29,8 @@
 
 #include "v1/Service.grpc.pb.h"
 
-#include "agent.h"
+#include "agent_service.h"
 #include "span.h"
-#include "stat.h"
-#include "url_stat.h"
 
 namespace pinpoint {
     enum GrpcRequestStatus {SEND_OK, SEND_FAIL};
@@ -41,12 +39,12 @@ namespace pinpoint {
 
     class GrpcClient {
     public:
-        explicit GrpcClient(AgentImpl* agent, ClientType client_type);
+        explicit GrpcClient(AgentService* agent, ClientType client_type);
         bool readyChannel();
         void closeChannel() { channel_.reset(); }
 
     protected:
-        AgentImpl* agent_{};
+        AgentService* agent_{};
         std::shared_ptr<grpc::Channel> channel_{};
         std::mutex channel_mutex_{};
         std::string client_name_{};
@@ -97,7 +95,7 @@ namespace pinpoint {
 
     class GrpcAgent final : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
-        explicit GrpcAgent(AgentImpl* agent);
+        explicit GrpcAgent(AgentService* agent);
 
         GrpcRequestStatus registerAgent();
         void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
@@ -134,7 +132,7 @@ namespace pinpoint {
 
     class GrpcSpan final : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
     public:
-        explicit GrpcSpan(AgentImpl* agent);
+        explicit GrpcSpan(AgentService* agent);
 
         void enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept;
         void sendSpanWorker();
@@ -163,7 +161,7 @@ namespace pinpoint {
 
     class GrpcStats final : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
-        explicit GrpcStats(AgentImpl* agent);
+        explicit GrpcStats(AgentService* agent);
 
         void enqueueStats(StatsType stats) noexcept;
         void sendStatsWorker();

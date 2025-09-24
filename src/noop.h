@@ -17,6 +17,7 @@
 #pragma once
 
 #include "pinpoint/tracer.h"
+#include "agent_service.h"
 #include "url_stat.h"
 
 namespace pinpoint {
@@ -89,11 +90,9 @@ namespace pinpoint {
         TraceId empty_trace_id;
     };
 
-    class AgentImpl;
-
     class UnsampledSpan final : public NoopSpan {
     public:
-        explicit UnsampledSpan(AgentImpl *agent);
+        explicit UnsampledSpan(AgentService *agent);
         ~UnsampledSpan() override {}
 
         void EndSpan() override;
@@ -108,7 +107,7 @@ namespace pinpoint {
         int64_t span_id_;
         int64_t start_time_;
         std::unique_ptr<UrlStat> url_stat_;
-        AgentImpl *agent_;
+        AgentService *agent_;
     };
 
     class NoopAgent final : public Agent {

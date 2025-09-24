@@ -18,7 +18,6 @@
 #include <sstream>
 
 #include "absl/strings/str_cat.h"
-#include "agent.h"
 #include "logging.h"
 #include "url_stat.h"
 
@@ -207,8 +206,6 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(send_mutex_);
         constexpr auto timeout = std::chrono::seconds(30);
-
-        init_agent_stats();
 
         while (!agent_->isExiting()) {
             if (!send_cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {

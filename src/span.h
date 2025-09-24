@@ -20,6 +20,7 @@
 #include <stack>
 #include <vector>
 
+#include "agent_service.h"
 #include "span_event.h"
 #include "url_stat.h"
 #include "utility.h"
@@ -54,11 +55,9 @@ namespace pinpoint {
         std::stack<std::shared_ptr<SpanEventImpl>> stack_;
     };
 
-	class AgentImpl;
-
     class SpanData final {
     public:
-        SpanData(AgentImpl* agent, std::string_view operation);
+        SpanData(AgentService* agent, std::string_view operation);
         ~SpanData() = default;
 
     	TraceId& getTraceId() { return trace_id_; }
@@ -150,7 +149,7 @@ namespace pinpoint {
     	void clearFinishedEvents() { finished_events.clear(); }
 
         std::shared_ptr<PinpointAnnotation> getAnnotations() const { return annotations_; }
-    	AgentImpl* getAgent() const { return agent_; }
+    	AgentService* getAgent() const { return agent_; }
 
     private:
     	TraceId trace_id_;
@@ -193,7 +192,7 @@ namespace pinpoint {
 
         std::unique_ptr<UrlStat> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;
-    	AgentImpl *agent_;
+    	AgentService *agent_;
     };
 
 	class SpanChunk final {
@@ -217,7 +216,7 @@ namespace pinpoint {
 
     class SpanImpl final : public Span {
     public:
-        SpanImpl(AgentImpl* agent, std::string_view operation, std::string_view rpc_point);
+        SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point);
         ~SpanImpl() override = default;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {
@@ -248,7 +247,7 @@ namespace pinpoint {
     	void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
     private:
-    	AgentImpl *agent_;
+		AgentService *agent_;
     	std::shared_ptr<SpanData> data_;
     	int32_t overflow_;
     	bool finished_;

@@ -17,7 +17,6 @@
 #include <memory>
 #include <string>
 #include <unistd.h>
-#include <iterator>
 #include <grpcpp/client_context.h>
 
 #include "absl/strings/str_cat.h"
@@ -28,7 +27,7 @@
 
 namespace pinpoint {
 
-    static void build_grpc_context(grpc::ClientContext* context, const AgentImpl* agent, int socket_id) {
+    static void build_grpc_context(grpc::ClientContext* context, const AgentService* agent, int socket_id) {
         auto& config = agent->getConfig();
 
         context->AddMetadata("applicationname", config.app_name_);
@@ -358,7 +357,7 @@ namespace pinpoint {
         return uri_stat;
     }
 
-    GrpcClient::GrpcClient(AgentImpl* agent, ClientType client_type) : agent_{agent} {
+    GrpcClient::GrpcClient(AgentService* agent, ClientType client_type) : agent_{agent} {
         auto& config = agent_->getConfig();
         auto addr = absl::StrCat(config.collector.host, ":");
 
@@ -429,7 +428,7 @@ namespace pinpoint {
 
     static int socket_id = 0;
 
-    GrpcAgent::GrpcAgent(AgentImpl* agent) : GrpcClient(agent, AGENT) {
+    GrpcAgent::GrpcAgent(AgentService* agent) : GrpcClient(agent, AGENT) {
         agent_stub_ = v1::Agent::NewStub(channel_);
         meta_stub_ = v1::Metadata::NewStub(channel_);
     }
@@ -678,7 +677,7 @@ namespace pinpoint {
 
     //GrpcSpan
 
-    GrpcSpan::GrpcSpan(AgentImpl* agent) : GrpcClient(agent, SPAN), span_stub_(nullptr) {
+    GrpcSpan::GrpcSpan(AgentService* agent) : GrpcClient(agent, SPAN), span_stub_(nullptr) {
         span_stub_ = v1::Span::NewStub(channel_);
     }
 
@@ -857,7 +856,7 @@ namespace pinpoint {
 
     //GrpcStat
 
-    GrpcStats::GrpcStats(AgentImpl* agent): GrpcClient(agent, STATS) {
+    GrpcStats::GrpcStats(AgentService* agent): GrpcClient(agent, STATS) {
         stats_stub_ = v1::Stat::NewStub(channel_);
     }
 

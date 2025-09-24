@@ -9,7 +9,7 @@ include(CMakeDependentOption)
 
 project(pinpoint-cpp VERSION 1.0.0)
 
-option(BUILD_TESTING "Build tests" OFF)
+option(BUILD_TESTING "Build tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_SHARED_LIBS "Build as a shared library" ON)
 option(BUILD_STATIC_LIBS "Build as a static library" ON)

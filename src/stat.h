@@ -21,6 +21,8 @@
 #include <mutex>
 #include <vector>
 
+#include "agent_service.h"
+
 namespace pinpoint {
     struct AgentStatsSnapshot {
         int64_t    sample_time_{};
@@ -53,17 +55,14 @@ namespace pinpoint {
     void add_active_span(int64_t spanId, int64_t start_time);
     void drop_active_span(int64_t spanId);
 
-    enum StatsType {AGENT_STATS, URL_STATS};
-    class AgentImpl;
-
     class AgentStats {
     public:
-        explicit AgentStats(AgentImpl* agent) : agent_(agent) {}
+        explicit AgentStats(AgentService* agent) : agent_(agent) {}
         void agentStatsWorker();
         void stopAgentStatsWorker();
 
     private:
-        AgentImpl* agent_{};
+        AgentService* agent_{};
         std::mutex mutex_{};
         std::condition_variable cond_var_{};
     };

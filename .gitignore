@@ -1,5 +1,5 @@
 /bazel-*
 /build
 /build_*
-/cmake-build-debug
+/cmake-build-*
 /.cache
