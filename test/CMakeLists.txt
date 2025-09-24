@@ -104,6 +104,26 @@ target_link_libraries(test_url_stat
 set_target_properties(test_url_stat PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_url_stat COMMAND test_url_stat)
 
+# Add test_span_event
+add_executable(test_span_event test_span_event.cpp)
+target_link_libraries(test_span_event 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_span_event PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_span_event COMMAND test_span_event)
+
+# Add test_span
+add_executable(test_span test_span.cpp)
+target_link_libraries(test_span 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_span PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_span COMMAND test_span)
+
 #add_executable(pinpoint_tracer_test tracer_test.cpp)
 #target_link_libraries(pinpoint_tracer_test ${PINPOINT_CPP_LIBRARY})
 #add_test(NAME pinpoint_tracer_test COMMAND pinpoint_tracer_test)
