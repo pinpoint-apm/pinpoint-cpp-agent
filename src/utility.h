@@ -19,11 +19,15 @@
 #include <chrono>
 #include <string>
 #include <optional>
+#include <vector>
+#include <string_view>
 
 namespace pinpoint {
 
     int64_t generate_span_id();
     int64_t to_milli_seconds(const std::chrono::system_clock::time_point& tm);
+
+    std::vector<unsigned char> generate_sql_uid(std::string_view sql);
 
     std::string get_host_name();
     std::string get_host_ip_addr();

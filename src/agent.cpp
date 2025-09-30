@@ -24,6 +24,7 @@
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
+#include "utility.h"
 
 namespace pinpoint {
 
@@ -57,6 +58,7 @@ namespace pinpoint {
         api_cache_ = std::make_unique<IdCache>(kCacheSize);
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
+        sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
 
         if (!config_.http.server.exclude_url.empty()) {
             http_url_filter_ = std::make_unique<HttpUrlFilter>(config_.http.server.exclude_url);
@@ -358,6 +360,32 @@ namespace pinpoint {
     void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const {
         if (enabled_) {
             sql_cache_->remove(sql_meta.str_val_);
+        }
+    }
+
+    std::vector<unsigned char> AgentImpl::cacheSqlUid(std::string_view sql) const try {
+        if (!enabled_) {
+            return {};
+        }
+        
+        const auto key = std::string(sql.data());
+        const auto [uid, old] = sql_uid_cache_->get(key);
+        if (old) {
+            return uid;
+        }
+        
+        auto meta = std::make_unique<MetaData>(META_SQL_UID, uid, sql);
+        grpc_agent_->enqueueMeta(std::move(meta));
+        
+        return uid;
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to cache sql uid meta: exception = {}", e.what());
+        return {};
+    }
+
+    void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const {
+        if (enabled_) {
+            sql_uid_cache_->remove(sql_uid_meta.sql_);
         }
     }
 

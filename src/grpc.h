@@ -81,15 +81,25 @@ namespace pinpoint {
         ~StringMeta() {}
     } StringMeta;
 
+    typedef struct SqlUidMeta {
+        std::vector<unsigned char> uid_;
+        std::string sql_;
+        SqlUidMeta(std::vector<unsigned char> uid, std::string_view sql) 
+            : uid_(std::move(uid)), sql_(sql) {}
+        ~SqlUidMeta() {}
+    } SqlUidMeta;
+
     typedef union MetaValue {
         ApiMeta api_meta_;
         StringMeta str_meta_;
+        SqlUidMeta sql_uid_meta_;
         MetaValue(int32_t id, int32_t api_type, std::string_view api_str) : api_meta_(id, api_type, api_str) {}
         MetaValue(int32_t id, std::string_view str_val, StringMetaType type) : str_meta_(id, str_val, type) {}
+        MetaValue(std::vector<unsigned char> uid, std::string_view sql) : sql_uid_meta_(std::move(uid), sql) {}
         ~MetaValue() {}
     } MetaValue;
 
-    enum MetaType {META_API, META_STRING};
+    enum MetaType {META_API, META_STRING, META_SQL_UID};
     typedef struct MetaData {
         MetaType meta_type_;
         MetaValue value_;
@@ -97,6 +107,8 @@ namespace pinpoint {
             : meta_type_(meta_type), value_(id, api_type, api_str) {}
         MetaData(enum MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
             : meta_type_(meta_type), value_(id, str_val, str_type) {}
+        MetaData(enum MetaType meta_type, std::vector<unsigned char> uid, std::string_view sql)
+            : meta_type_(meta_type), value_(std::move(uid), sql) {}
         ~MetaData() {}
     } MetaData;
 
@@ -140,6 +152,7 @@ namespace pinpoint {
         GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
         GrpcRequestStatus send_error_meta(StringMeta& error_meta);
         GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
+        GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
     };
 
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {

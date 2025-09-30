@@ -72,6 +72,15 @@ public:
         string_values_[key].push_back(std::string(s1) + ":" + std::string(s2));
     }
 
+    void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override {
+        // Store as string for simplification - convert bytes to hex string
+        std::string hex_uid;
+        for (auto byte : uid) {
+            hex_uid += std::to_string(static_cast<int>(byte)) + ",";
+        }
+        string_values_[key].push_back(hex_uid + ":" + std::string(s1) + ":" + std::string(s2));
+    }
+
     void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override {
         // Store as string for simplification
         string_values_[key].push_back(std::string(s));

@@ -21,6 +21,15 @@
 
 namespace pinpoint {
 
+    enum AnnotationType {
+        ANNOTATION_TYPE_INT = 0,
+        ANNOTATION_TYPE_STRING = 1,
+        ANNOTATION_TYPE_STRING_STRING = 2,
+        ANNOTATION_TYPE_INT_STRING_STRING = 3,
+        ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING = 4,
+        ANNOTATION_TYPE_BYTES_STRING_STRING = 5
+    };
+
     typedef struct StringStringValue {
         std::string stringValue1;
         std::string stringValue2;
@@ -53,12 +62,23 @@ namespace pinpoint {
         ~LongIntIntByteByteStringValue() {}
     } LongIntIntByteByteStringValue;
 
+    typedef struct BytesStringStringValue {
+        std::vector<unsigned char> bytesValue;
+        std::string stringValue1;
+        std::string stringValue2;
+
+        BytesStringStringValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : bytesValue(std::move(bytesVal)), stringValue1(strVal1), stringValue2(strVal2) {}
+        ~BytesStringStringValue() {}
+    } BytesStringStringValue;
+
     typedef union AnnotationValue {
         int intValue;
         std::string stringValue;
         StringStringValue stringStringValue;
         IntStringStringValue intStringStringValue;
         LongIntIntByteByteStringValue longIntIntByteByteStringValue;
+        BytesStringStringValue bytesStringStringValue;
 
         AnnotationValue(const int intVal) : intValue(intVal) {}
         AnnotationValue(std::string_view strVal) : stringValue(strVal) {}
@@ -67,21 +87,25 @@ namespace pinpoint {
             : intStringStringValue(intVal, strVal1, strVal2) {}
         AnnotationValue(const int64_t longVal, const int32_t intVal1, const int32_t intVal2, const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : longIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal) {}
+        AnnotationValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : bytesStringStringValue(std::move(bytesVal), strVal1, strVal2) {}
         ~AnnotationValue() {}
     } AnnotationValue;
 
     typedef struct AnnotationData {
-        int dataType;
+        AnnotationType dataType;
         AnnotationValue data;
 
-        AnnotationData(const int dType, const int intVal) : dataType(dType), data(intVal) {}
-        AnnotationData(const int dType, std::string_view strVal) : dataType(dType), data(strVal) {}
-        AnnotationData(const int dType, std::string_view strVal1, std::string_view strVal2) : dataType(dType), data(strVal1, strVal2) {}
-        AnnotationData(const int dType, const int intVal, std::string_view strVal1, std::string_view strVal2)
+        AnnotationData(const AnnotationType dType, const int intVal) : dataType(dType), data(intVal) {}
+        AnnotationData(const AnnotationType dType, std::string_view strVal) : dataType(dType), data(strVal) {}
+        AnnotationData(const AnnotationType dType, std::string_view strVal1, std::string_view strVal2) : dataType(dType), data(strVal1, strVal2) {}
+        AnnotationData(const AnnotationType dType, const int intVal, std::string_view strVal1, std::string_view strVal2)
             : dataType(dType), data(intVal, strVal1, strVal2) {}
-        AnnotationData(const int dType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
+        AnnotationData(const AnnotationType dType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal) : dataType(dType),
             data(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal) {}
+        AnnotationData(const AnnotationType dType, std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : dataType(dType), data(std::move(bytesVal), strVal1, strVal2) {}
     } AnnotationData;
 
     class PinpointAnnotation final : public Annotation {
@@ -93,6 +117,7 @@ namespace pinpoint {
         void AppendString(int32_t key, std::string_view s) override;
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override;
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override;
+        void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override;
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override;
 
         std::list<std::pair<int32_t,std::shared_ptr<AnnotationData>>>& getAnnotations() { return annotation_list_; }

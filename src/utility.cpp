@@ -24,6 +24,7 @@
 
 #include "absl/strings/numbers.h"
 #include "utility.h"
+#include "MurmurHash3.h"
 
 namespace pinpoint {
 
@@ -107,6 +108,13 @@ namespace pinpoint {
             return out;
         }
         return std::nullopt;
+    }
+
+    std::vector<unsigned char> generate_sql_uid(std::string_view sql) {
+        // MurmurHash3_x64_128 produces 16 bytes (128 bits) of output
+        std::vector<unsigned char> result(16);
+        MurmurHash3_x64_128(sql.data(), static_cast<int>(sql.length()), 0, result.data());
+        return result;
     }
 
  }

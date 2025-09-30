@@ -94,11 +94,11 @@ namespace pinpoint {
         annotation->set_key(key);
         const auto annotation_value = new v1::PAnnotationValue();
 
-        if (val->dataType == 0) {
+        if (val->dataType == ANNOTATION_TYPE_INT) {
             annotation_value->set_intvalue(val->data.intValue);
-        } else if (val->dataType == 1) {
+        } else if (val->dataType == ANNOTATION_TYPE_STRING) {
             annotation_value->set_stringvalue(val->data.stringValue);
-        } else if (val->dataType == 2) {
+        } else if (val->dataType == ANNOTATION_TYPE_STRING_STRING) {
             const auto ssv = new v1::PStringStringValue();
             const auto s1 = new google::protobuf::StringValue();
             s1->set_value(val->data.stringStringValue.stringValue1);
@@ -109,7 +109,7 @@ namespace pinpoint {
             ssv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_stringstringvalue(ssv);
-        } else if (val->dataType == 3) {
+        } else if (val->dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
             auto issv = new v1::PIntStringStringValue();
             issv->set_intvalue(val->data.intStringStringValue.intValue);
 
@@ -122,7 +122,7 @@ namespace pinpoint {
             issv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_intstringstringvalue(issv);
-        } else if (val->dataType == 4) {
+        } else if (val->dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
             auto liibbsv = new v1::PLongIntIntByteByteStringValue();
             liibbsv->set_longvalue(val->data.longIntIntByteByteStringValue.longValue);
             liibbsv->set_intvalue1(val->data.longIntIntByteByteStringValue.intValue1);
@@ -135,6 +135,20 @@ namespace pinpoint {
             liibbsv->set_allocated_stringvalue(s);
 
             annotation_value->set_allocated_longintintbytebytestringvalue(liibbsv);
+        } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
+            auto bssv = new v1::PBytesStringStringValue();
+            auto& bv = val->data.bytesStringStringValue.bytesValue;
+            bssv->set_bytesvalue(std::string(bv.begin(), bv.end()));
+
+            const auto s1 = new google::protobuf::StringValue();
+            s1->set_value(val->data.bytesStringStringValue.stringValue1);
+            bssv->set_allocated_stringvalue1(s1);
+
+            const auto s2 = new google::protobuf::StringValue();
+            s2->set_value(val->data.bytesStringStringValue.stringValue2);
+            bssv->set_allocated_stringvalue2(s2);
+
+            annotation_value->set_allocated_bytesstringstringvalue(bssv);
         }
         annotation->set_allocated_value(annotation_value);
     }
@@ -536,6 +550,30 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
+    GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+
+        v1::PSqlUidMetaData grpc_sql_uid_meta;
+
+        grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
+        grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
+
+        v1::PResult reply;
+        grpc::ClientContext ctx;
+
+        build_grpc_context(&ctx, agent_, 0);
+        set_deadline(ctx, META_TIMEOUT);
+        const grpc::Status status = meta_stub_->RequestSqlUidMetaData(&ctx, grpc_sql_uid_meta, &reply);
+
+        if (status.ok()) {
+            LOG_DEBUG("success to send sql uid metadata");
+            return SEND_OK;
+        }
+
+        LOG_ERROR("failed to send sql uid metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+        return SEND_FAIL;
+    }
+
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
@@ -578,6 +616,10 @@ namespace pinpoint {
                     if (send_sql_meta(meta->value_.str_meta_) != SEND_OK) {
                         agent_->removeCacheSql(meta->value_.str_meta_);
                     }
+                }
+            } else if (meta->meta_type_ == META_SQL_UID) {
+                if (send_sql_uid_meta(meta->value_.sql_uid_meta_) != SEND_OK) {
+                    agent_->removeCacheSqlUid(meta->value_.sql_uid_meta_);
                 }
             }
 

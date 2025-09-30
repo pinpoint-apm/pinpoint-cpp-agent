@@ -19,6 +19,7 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace pinpoint {
 
@@ -26,6 +27,11 @@ namespace pinpoint {
         int32_t id;
         bool    old;
     } CacheResult;
+
+    typedef struct {
+        std::vector<unsigned char> uid;
+        bool    old;
+    } SqlUidCacheResult;
 
     class IdCache {
     public:
@@ -44,6 +50,24 @@ namespace pinpoint {
         size_t max_size_{};
         std::mutex mutex_{};
         int32_t id_sequence_{0};
+    };
+
+    class SqlUidCache {
+    public:
+        explicit SqlUidCache(const size_t max_size) : max_size_(max_size) {}
+        ~SqlUidCache() = default;
+
+        SqlUidCacheResult get(const std::string& key);
+        void remove(const std::string& key);
+
+    private:
+        void put(const std::string& key, const std::vector<unsigned char>& uid);
+
+        typedef std::pair<std::string, std::vector<unsigned char>> key_uid_pair_t;
+        std::list<key_uid_pair_t> cache_list_{};
+        std::unordered_map<std::string, std::list<key_uid_pair_t>::iterator> cache_map_{};
+        size_t max_size_{};
+        std::mutex mutex_{};
     };
 
 } // namespace pinpoint

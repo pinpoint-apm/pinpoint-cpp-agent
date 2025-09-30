@@ -71,7 +71,10 @@ namespace pinpoint {
 
         auto& config = parent_span_->getAgent()->getConfig();
         if (config.sql.enable_sql_stats) {
-            return;
+            auto sql_uid = parent_span_->getAgent()->cacheSqlUid(result.normalized_sql);
+            if (!sql_uid.empty()) {
+                annotations_->AppendBytesStringString(ANNOTATION_SQL_UID, sql_uid, result.parameters, args);
+            }
         } else {
             auto sql_id = parent_span_->getAgent()->cacheSql(result.normalized_sql);
             if (sql_id) {

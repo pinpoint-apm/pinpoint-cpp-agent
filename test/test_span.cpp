@@ -94,6 +94,15 @@ public:
         // Mock implementation
     }
 
+    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
+        // Mock implementation - return test uid
+        return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    }
+
+    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
+        // Mock implementation
+    }
+
     bool isStatusFail(int status) const override {
         return status >= 400;
     }

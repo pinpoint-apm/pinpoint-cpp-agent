@@ -38,6 +38,7 @@ namespace pinpoint {
 
 	constexpr int32_t ANNOTATION_API = 12;
 	constexpr int32_t ANNOTATION_SQL_ID = 20;
+	constexpr int32_t ANNOTATION_SQL_UID = 25;
 	constexpr int32_t ANNOTATION_HTTP_URL = 40;
 	constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
 	constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
@@ -101,6 +102,7 @@ namespace pinpoint {
         virtual void AppendString(int32_t key, std::string_view s) = 0;
         virtual void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) = 0;
         virtual void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) = 0;
+        virtual void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) = 0;
         virtual void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) = 0;
     };
 

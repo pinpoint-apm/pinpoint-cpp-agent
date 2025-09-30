@@ -52,7 +52,7 @@ TEST_F(AnnotationTest, AppendIntPositiveTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 0) << "DataType should be 0 for int";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
     EXPECT_EQ(pair.second->data.intValue, value) << "Int value should match";
 }
 
@@ -68,7 +68,7 @@ TEST_F(AnnotationTest, AppendIntNegativeTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 0) << "DataType should be 0 for int";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
     EXPECT_EQ(pair.second->data.intValue, value) << "Negative int value should match";
 }
 
@@ -84,7 +84,7 @@ TEST_F(AnnotationTest, AppendIntZeroTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 0) << "DataType should be 0 for int";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
     EXPECT_EQ(pair.second->data.intValue, value) << "Zero value should match";
 }
 
@@ -119,7 +119,7 @@ TEST_F(AnnotationTest, AppendStringNormalTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, value) << "String value should match";
 }
 
@@ -135,7 +135,7 @@ TEST_F(AnnotationTest, AppendStringEmptyTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, value) << "Empty string should match";
 }
 
@@ -151,7 +151,7 @@ TEST_F(AnnotationTest, AppendStringSpecialCharsTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, value) << "Special characters string should match";
 }
 
@@ -167,7 +167,7 @@ TEST_F(AnnotationTest, AppendStringUnicodeTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, value) << "Unicode string should match";
 }
 
@@ -186,7 +186,7 @@ TEST_F(AnnotationTest, AppendStringStringNormalTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 2) << "DataType should be 2 for string-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue1, value1) << "First string should match";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue2, value2) << "Second string should match";
 }
@@ -204,7 +204,7 @@ TEST_F(AnnotationTest, AppendStringStringEmptyTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 2) << "DataType should be 2 for string-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue1, value1) << "First empty string should match";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue2, value2) << "Second empty string should match";
 }
@@ -222,7 +222,7 @@ TEST_F(AnnotationTest, AppendStringStringMixedTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 2) << "DataType should be 2 for string-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue1, value1) << "Header name should match";
     EXPECT_EQ(pair.second->data.stringStringValue.stringValue2, value2) << "Header value should match";
 }
@@ -243,7 +243,7 @@ TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 3) << "DataType should be 3 for int-string-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_INT_STRING_STRING) << "DataType should be ANNOTATION_TYPE_INT_STRING_STRING for int-string-string";
     EXPECT_EQ(pair.second->data.intStringStringValue.intValue, intValue) << "Int value should match";
     EXPECT_EQ(pair.second->data.intStringStringValue.stringValue1, string1) << "First string should match";
     EXPECT_EQ(pair.second->data.intStringStringValue.stringValue2, string2) << "Second string should match";
@@ -263,7 +263,7 @@ TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 3) << "DataType should be 3 for int-string-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_INT_STRING_STRING) << "DataType should be ANNOTATION_TYPE_INT_STRING_STRING for int-string-string";
     EXPECT_EQ(pair.second->data.intStringStringValue.intValue, intValue) << "Negative int value should match";
     EXPECT_EQ(pair.second->data.intStringStringValue.stringValue1, string1) << "Empty string should match";
     EXPECT_EQ(pair.second->data.intStringStringValue.stringValue2, string2) << "Non-empty string should match";
@@ -288,7 +288,7 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringNormalTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 4) << "DataType should be 4 for long-int-int-byte-byte-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) << "DataType should be ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING for long-int-int-byte-byte-string";
     
     auto& complexData = pair.second->data.longIntIntByteByteStringValue;
     EXPECT_EQ(complexData.longValue, longValue) << "Long value should match";
@@ -316,7 +316,7 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringExtremeTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 4) << "DataType should be 4 for long-int-int-byte-byte-string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) << "DataType should be ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING for long-int-int-byte-byte-string";
     
     auto& complexData = pair.second->data.longIntIntByteByteStringValue;
     EXPECT_EQ(complexData.longValue, longValue) << "Extreme long value should match";
@@ -325,6 +325,150 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringExtremeTest) {
     EXPECT_EQ(complexData.byteValue1, byte1) << "Byte1 value should match";
     EXPECT_EQ(complexData.byteValue2, byte2) << "Byte2 value should match";
     EXPECT_EQ(complexData.stringValue, stringValue) << "Empty string should match";
+}
+
+// ========== AppendBytesStringString Tests ==========
+
+// Test AppendBytesStringString with normal values
+TEST_F(AnnotationTest, AppendBytesStringStringNormalTest) {
+    int32_t key = 700;
+    std::vector<unsigned char> bytesValue = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; // "Hello" in hex
+    std::string string1 = "SQL Query";
+    std::string string2 = "SELECT * FROM users WHERE id = ?";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
+}
+
+// Test AppendBytesStringString with empty bytes
+TEST_F(AnnotationTest, AppendBytesStringStringEmptyBytesTest) {
+    int32_t key = 701;
+    std::vector<unsigned char> bytesValue; // Empty bytes
+    std::string string1 = "Empty Bytes";
+    std::string string2 = "Test with no binary data";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_TRUE(bytesData.bytesValue.empty()) << "Bytes value should be empty";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
+}
+
+// Test AppendBytesStringString with empty strings
+TEST_F(AnnotationTest, AppendBytesStringStringEmptyStringsTest) {
+    int32_t key = 702;
+    std::vector<unsigned char> bytesValue = {0xAB, 0xCD, 0xEF};
+    std::string string1 = "";
+    std::string string2 = "";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should be empty";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should be empty";
+}
+
+// Test AppendBytesStringString with binary data
+TEST_F(AnnotationTest, AppendBytesStringStringBinaryDataTest) {
+    int32_t key = 703;
+    // Binary data with all possible byte values
+    std::vector<unsigned char> bytesValue;
+    for (int i = 0; i < 256; ++i) {
+        bytesValue.push_back(static_cast<unsigned char>(i));
+    }
+    std::string string1 = "Binary Data Test";
+    std::string string2 = "Contains all byte values from 0x00 to 0xFF";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_EQ(bytesData.bytesValue.size(), 256) << "Should contain 256 bytes";
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Binary data should match exactly";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
+}
+
+// Test AppendBytesStringString with special characters in strings
+TEST_F(AnnotationTest, AppendBytesStringStringSpecialCharsTest) {
+    int32_t key = 704;
+    std::vector<unsigned char> bytesValue = {0x01, 0x02, 0x03, 0x04, 0x05};
+    std::string string1 = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
+    std::string string2 = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "Special characters string should match";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Unicode string should match";
+}
+
+// Test AppendBytesStringString with large bytes array
+TEST_F(AnnotationTest, AppendBytesStringStringLargeBytesTest) {
+    int32_t key = 705;
+    // Create a large bytes array (10KB)
+    std::vector<unsigned char> bytesValue(10240);
+    for (size_t i = 0; i < bytesValue.size(); ++i) {
+        bytesValue[i] = static_cast<unsigned char>(i % 256);
+    }
+    std::string string1 = "Large Data";
+    std::string string2 = "10KB of binary data for testing";
+    
+    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+    
+    auto& bytesData = pair.second->data.bytesStringStringValue;
+    EXPECT_EQ(bytesData.bytesValue.size(), 10240) << "Should contain 10240 bytes";
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Large bytes array should match exactly";
+    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
+    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
 }
 
 // ========== Multiple Annotations Tests ==========
@@ -336,34 +480,36 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     annotation->AppendStringString(3, "Key", "Value");
     annotation->AppendIntStringString(4, 100, "Method", "POST");
     annotation->AppendLongIntIntByteByteString(5, 123456789LL, 1, 2, 3, 4, "Complex");
+    std::vector<unsigned char> bytesValue = {0xDE, 0xAD, 0xBE, 0xEF};
+    annotation->AppendBytesStringString(6, bytesValue, "Binary", "Data");
     
     auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 5) << "Should have exactly 5 annotations";
+    EXPECT_EQ(annotations.size(), 6) << "Should have exactly 6 annotations";
     
     auto it = annotations.begin();
     
     // Check first annotation (Int)
     EXPECT_EQ(it->first, 1) << "First annotation key should match";
-    EXPECT_EQ(it->second->dataType, 0) << "First annotation should be int type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_INT) << "First annotation should be int type";
     EXPECT_EQ(it->second->data.intValue, 42) << "First annotation value should match";
     
     // Check second annotation (String)
     ++it;
     EXPECT_EQ(it->first, 2) << "Second annotation key should match";
-    EXPECT_EQ(it->second->dataType, 1) << "Second annotation should be string type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_STRING) << "Second annotation should be string type";
     EXPECT_EQ(it->second->data.stringValue, "Test String") << "Second annotation value should match";
     
     // Check third annotation (StringString)
     ++it;
     EXPECT_EQ(it->first, 3) << "Third annotation key should match";
-    EXPECT_EQ(it->second->dataType, 2) << "Third annotation should be string-string type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_STRING_STRING) << "Third annotation should be string-string type";
     EXPECT_EQ(it->second->data.stringStringValue.stringValue1, "Key") << "Third annotation first string should match";
     EXPECT_EQ(it->second->data.stringStringValue.stringValue2, "Value") << "Third annotation second string should match";
     
     // Check fourth annotation (IntStringString)
     ++it;
     EXPECT_EQ(it->first, 4) << "Fourth annotation key should match";
-    EXPECT_EQ(it->second->dataType, 3) << "Fourth annotation should be int-string-string type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_INT_STRING_STRING) << "Fourth annotation should be int-string-string type";
     EXPECT_EQ(it->second->data.intStringStringValue.intValue, 100) << "Fourth annotation int should match";
     EXPECT_EQ(it->second->data.intStringStringValue.stringValue1, "Method") << "Fourth annotation first string should match";
     EXPECT_EQ(it->second->data.intStringStringValue.stringValue2, "POST") << "Fourth annotation second string should match";
@@ -371,7 +517,7 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     // Check fifth annotation (Complex)
     ++it;
     EXPECT_EQ(it->first, 5) << "Fifth annotation key should match";
-    EXPECT_EQ(it->second->dataType, 4) << "Fifth annotation should be complex type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) << "Fifth annotation should be complex type";
     auto& complexData = it->second->data.longIntIntByteByteStringValue;
     EXPECT_EQ(complexData.longValue, 123456789LL) << "Fifth annotation long should match";
     EXPECT_EQ(complexData.intValue1, 1) << "Fifth annotation int1 should match";
@@ -379,6 +525,16 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(complexData.byteValue1, 3) << "Fifth annotation byte1 should match";
     EXPECT_EQ(complexData.byteValue2, 4) << "Fifth annotation byte2 should match";
     EXPECT_EQ(complexData.stringValue, "Complex") << "Fifth annotation string should match";
+    
+    // Check sixth annotation (BytesStringString)
+    ++it;
+    EXPECT_EQ(it->first, 6) << "Sixth annotation key should match";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "Sixth annotation should be bytes-string-string type";
+    auto& bytesData = it->second->data.bytesStringStringValue;
+    std::vector<unsigned char> expectedBytes = {0xDE, 0xAD, 0xBE, 0xEF};
+    EXPECT_EQ(bytesData.bytesValue, expectedBytes) << "Sixth annotation bytes should match";
+    EXPECT_EQ(bytesData.stringValue1, "Binary") << "Sixth annotation first string should match";
+    EXPECT_EQ(bytesData.stringValue2, "Data") << "Sixth annotation second string should match";
 }
 
 // Test insertion order preservation
@@ -416,17 +572,17 @@ TEST_F(AnnotationTest, SameKeyMultipleTimesTest) {
     
     auto it = annotations.begin();
     EXPECT_EQ(it->first, key) << "First annotation key should match";
-    EXPECT_EQ(it->second->dataType, 0) << "First annotation should be int type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_INT) << "First annotation should be int type";
     EXPECT_EQ(it->second->data.intValue, 1) << "First annotation value should be 1";
     
     ++it;
     EXPECT_EQ(it->first, key) << "Second annotation key should match";
-    EXPECT_EQ(it->second->dataType, 0) << "Second annotation should be int type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_INT) << "Second annotation should be int type";
     EXPECT_EQ(it->second->data.intValue, 2) << "Second annotation value should be 2";
     
     ++it;
     EXPECT_EQ(it->first, key) << "Third annotation key should match";
-    EXPECT_EQ(it->second->dataType, 1) << "Third annotation should be string type";
+    EXPECT_EQ(it->second->dataType, ANNOTATION_TYPE_STRING) << "Third annotation should be string type";
     EXPECT_EQ(it->second->data.stringValue, "Three") << "Third annotation value should be 'Three'";
 }
 
@@ -444,7 +600,7 @@ TEST_F(AnnotationTest, VeryLongStringTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, longString) << "Very long string should match";
     EXPECT_EQ(pair.second->data.stringValue.length(), 10000) << "String length should be 10000";
 }
@@ -461,7 +617,7 @@ TEST_F(AnnotationTest, NullCharactersInStringTest) {
     
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second->dataType, 1) << "DataType should be 1 for string";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
     EXPECT_EQ(pair.second->data.stringValue, stringWithNulls) << "String with null characters should match";
     EXPECT_EQ(pair.second->data.stringValue.length(), 17) << "String length should include null characters";
 }

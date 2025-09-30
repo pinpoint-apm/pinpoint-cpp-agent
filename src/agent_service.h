@@ -20,10 +20,11 @@
  
  namespace pinpoint {
  
-     struct Config;
-     struct ApiMeta;
-     struct StringMeta;
-     class SpanChunk;
+    struct Config;
+    struct ApiMeta;
+    struct StringMeta;
+    struct SqlUidMeta;
+    class SpanChunk;
       struct UrlStat;
       enum StatsType {AGENT_STATS, URL_STATS};
 
@@ -45,12 +46,14 @@
          virtual void recordUrlStat(std::unique_ptr<UrlStat> stat) const = 0;
          virtual void recordStats(StatsType stats) const = 0;
  
-         virtual int32_t cacheApi(std::string_view api_str, int32_t api_type) const = 0;
-         virtual void removeCacheApi(const ApiMeta& api_meta) const = 0;
-         virtual int32_t cacheError(std::string_view error_name) const = 0;
-         virtual void removeCacheError(const StringMeta& error_meta) const = 0;
-         virtual int32_t cacheSql(std::string_view sql_query) const = 0;
-         virtual void removeCacheSql(const StringMeta& sql_meta) const = 0;
+        virtual int32_t cacheApi(std::string_view api_str, int32_t api_type) const = 0;
+        virtual void removeCacheApi(const ApiMeta& api_meta) const = 0;
+        virtual int32_t cacheError(std::string_view error_name) const = 0;
+        virtual void removeCacheError(const StringMeta& error_meta) const = 0;
+        virtual int32_t cacheSql(std::string_view sql_query) const = 0;
+        virtual void removeCacheSql(const StringMeta& sql_meta) const = 0;
+        virtual std::vector<unsigned char> cacheSqlUid(std::string_view sql) const = 0;
+        virtual void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const = 0;
  
          virtual bool isStatusFail(int status) const = 0;
          virtual void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const = 0;
