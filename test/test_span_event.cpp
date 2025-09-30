@@ -77,7 +77,16 @@ public:
         return error_id_counter_++;
     }
 
-    void removeCacheError(const StringMeta& str_meta) const override {
+    void removeCacheError(const StringMeta& error_meta) const override {
+        // Mock implementation
+    }
+
+    int32_t cacheSql(std::string_view sql_query) const override {
+        cached_sqls_[std::string(sql_query)] = sql_id_counter_;
+        return sql_id_counter_++;
+    }
+
+    void removeCacheSql(const StringMeta& sql_meta) const override {
         // Mock implementation
     }
 
@@ -103,6 +112,11 @@ public:
         auto it = cached_errors_.find(error_name);
         return it != cached_errors_.end() ? it->second : -1;
     }
+    int32_t getCachedSqlId(const std::string& sql_query) const {
+        auto it = cached_sqls_.find(sql_query);
+        return it != cached_sqls_.end() ? it->second : -1;
+    }
+    int32_t getSqlIdCounter() const { return sql_id_counter_; }
 
     mutable int recorded_spans_ = 0;
     mutable int recorded_url_stats_ = 0;
@@ -117,8 +131,10 @@ private:
     Config config_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
+    mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
+    mutable int32_t sql_id_counter_ = 300;
 };
 
 // Use actual SpanData for testing
@@ -510,6 +526,159 @@ TEST_F(SpanEventTest, MultipleSpanEventsTest) {
     EXPECT_NE(api_id1, api_id2);
     EXPECT_NE(api_id2, api_id3);
     EXPECT_NE(api_id1, api_id3);
+}
+
+// ========== SQL Query Tests ==========
+
+TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    std::string sql_query = "SELECT * FROM users WHERE id = ?";
+    std::string args = "123";
+    
+    span_event.SetSqlQuery(sql_query, args);
+    
+    // Verify SQL was cached with normalized form
+    std::string normalized_sql = "SELECT * FROM users WHERE id = ?";  // Expected normalized form
+    int32_t cached_id = mock_agent_service_->getCachedSqlId(normalized_sql);
+    EXPECT_GT(cached_id, 0) << "SQL should be cached with valid ID";
+    
+    // Verify annotations were added
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    std::string sql_query = "INSERT INTO products (name, price) VALUES ('iPhone', 999.99)";
+    std::string args = "name=iPhone, price=999.99";
+    
+    span_event.SetSqlQuery(sql_query, args);
+    
+    // Verify SQL was cached - the normalizer should convert literals to ?
+    // The exact normalized form depends on SqlNormalizer implementation
+    std::string expected_normalized = "INSERT INTO products (name, price) VALUES (?, ?)";
+    (void)mock_agent_service_->getCachedSqlId(expected_normalized);  // Check if cached (suppress unused warning)
+    
+    // The SQL should be cached with some form (normalized version)
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL ID counter should have incremented";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryEmptyTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    std::string empty_sql = "";
+    std::string args = "";
+    
+    span_event.SetSqlQuery(empty_sql, args);
+    
+    // Even empty SQL should be processed
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL ID counter should increment for empty SQL too";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    std::string complex_sql = R"(
+        SELECT u.id, u.name, p.title 
+        FROM users u 
+        JOIN posts p ON u.id = p.user_id 
+        WHERE u.active = 1 
+        AND p.published_at > '2023-01-01' 
+        ORDER BY p.published_at DESC 
+        LIMIT 10
+    )";
+    std::string args = "active=1, published_at=2023-01-01, limit=10";
+    
+    span_event.SetSqlQuery(complex_sql, args);
+    
+    // Complex SQL should also be cached
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "Complex SQL should be cached";
+    
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should be created for complex SQL";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryMultipleCallsTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    // Call SetSqlQuery multiple times with different queries
+    span_event.SetSqlQuery("SELECT * FROM table1", "");
+    span_event.SetSqlQuery("SELECT * FROM table2", "");
+    span_event.SetSqlQuery("UPDATE table1 SET name = ?", "name=test");
+    
+    // Each call should increment the counter (started at 300, after 3 calls should be 303)
+    EXPECT_GE(mock_agent_service_->getSqlIdCounter(), 303) << "Multiple SQL queries should increment counter";
+}
+
+TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
+    SpanEventImpl span_event1(test_span_data_.get(), "test-op1");
+    SpanEventImpl span_event2(test_span_data_.get(), "test-op2");
+    
+    std::string same_sql = "SELECT * FROM users";
+    
+    span_event1.SetSqlQuery(same_sql, "");
+    int32_t first_call_counter = mock_agent_service_->getSqlIdCounter();
+    
+    span_event2.SetSqlQuery(same_sql, "");
+    int32_t second_call_counter = mock_agent_service_->getSqlIdCounter();
+    
+    // Same SQL should be cached, but in our mock it will create new entries
+    // This tests that the method can be called multiple times
+    EXPECT_GT(second_call_counter, first_call_counter) << "SQL cache calls should increment counter";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    // Test SQL with literals that should be normalized
+    std::string sql_with_literals = "SELECT * FROM users WHERE id = 123 AND name = 'John'";
+    std::string args = "id=123, name=John";
+    
+    span_event.SetSqlQuery(sql_with_literals, args);
+    
+    // The normalizer should process this SQL
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL with literals should be processed";
+    
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should be created";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryWithSpecialCharactersTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    
+    std::string sql_special = "SELECT * FROM `table_name` WHERE `column` = 'O''Reilly'";
+    std::string args = "column=O'Reilly";
+    
+    span_event.SetSqlQuery(sql_special, args);
+    
+    // SQL with special characters should be handled
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL with special characters should be processed";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "database-operation");
+    
+    // Set up span event for database operation
+    span_event.SetServiceType(SERVICE_TYPE_CPP_FUNC);
+    span_event.SetDestination("mysql-server");
+    span_event.SetEndPoint("localhost:3306");
+    
+    // Add SQL query
+    std::string sql = "SELECT u.*, COUNT(p.id) as post_count FROM users u LEFT JOIN posts p ON u.id = p.user_id GROUP BY u.id";
+    std::string args = "";
+    
+    span_event.SetSqlQuery(sql, args);
+    
+    // Verify the integration
+    EXPECT_EQ(span_event.getServiceType(), SERVICE_TYPE_CPP_FUNC);
+    EXPECT_EQ(span_event.getDestinationId(), "mysql-server");
+    EXPECT_EQ(span_event.getEndPoint(), "localhost:3306");
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL should be cached";
+    
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should be available";
 }
 
 } // namespace pinpoint

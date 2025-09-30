@@ -71,7 +71,15 @@ public:
         return 100; // Mock return value
     }
 
-    void removeCacheError(const StringMeta& str_meta) const override {
+    void removeCacheError(const StringMeta& error_meta) const override {
+        // Mock implementation
+    }
+
+    int32_t cacheSql(std::string_view sql_query) const override {
+        return 300; // Mock return value
+    }
+
+    void removeCacheSql(const StringMeta& sql_meta) const override {
         // Mock implementation
     }
 

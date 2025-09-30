@@ -95,7 +95,15 @@ public:
         }
         return cached_errors_[std::string(error_name)];
     }
-    void removeCacheError(const StringMeta& str_meta) const override {}
+    void removeCacheError(const StringMeta& error_meta) const override {}
+    
+    int32_t cacheSql(std::string_view sql_query) const override {
+        if (cached_sqls_.find(std::string(sql_query)) == cached_sqls_.end()) {
+            cached_sqls_[std::string(sql_query)] = sql_id_counter_++;
+        }
+        return cached_sqls_[std::string(sql_query)];
+    }
+    void removeCacheSql(const StringMeta& sql_meta) const override {}
 
     bool isStatusFail(int status) const override { return status >= 400; }
     void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
@@ -114,8 +122,10 @@ public:
     mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
+    mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
+    mutable int32_t sql_id_counter_ = 300;
 
 private:
     bool is_exiting_;
@@ -180,7 +190,7 @@ TEST_F(GrpcTest, GrpcAgentMetaOperationsTest) {
     agent.enqueueMeta(std::move(api_meta));
     
     // Test enqueueMeta with string metadata
-    auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string");
+    auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
     agent.enqueueMeta(std::move(str_meta));
     
     SUCCEED() << "Meta enqueue operations should complete successfully";
@@ -264,10 +274,11 @@ TEST_F(GrpcTest, ApiMetaTest) {
 }
 
 TEST_F(GrpcTest, StringMetaTest) {
-    StringMeta str_meta(2, "test.string.value");
+    StringMeta str_meta(2, "test.string.value", STRING_META_ERROR);
     
     EXPECT_EQ(str_meta.id_, 2);
     EXPECT_EQ(str_meta.str_val_, "test.string.value");
+    EXPECT_EQ(str_meta.type_, STRING_META_ERROR);
 }
 
 TEST_F(GrpcTest, MetaDataApiTest) {
@@ -280,11 +291,29 @@ TEST_F(GrpcTest, MetaDataApiTest) {
 }
 
 TEST_F(GrpcTest, MetaDataStringTest) {
-    MetaData meta_data(META_STRING, 2, "test.string");
+    MetaData meta_data(META_STRING, 2, "test.string", STRING_META_ERROR);
     
     EXPECT_EQ(meta_data.meta_type_, META_STRING);
     EXPECT_EQ(meta_data.value_.str_meta_.id_, 2);
     EXPECT_EQ(meta_data.value_.str_meta_.str_val_, "test.string");
+    EXPECT_EQ(meta_data.value_.str_meta_.type_, STRING_META_ERROR);
+}
+
+TEST_F(GrpcTest, MetaDataSqlTest) {
+    MetaData meta_data(META_STRING, 3, "SELECT * FROM users", STRING_META_SQL);
+    
+    EXPECT_EQ(meta_data.meta_type_, META_STRING);
+    EXPECT_EQ(meta_data.value_.str_meta_.id_, 3);
+    EXPECT_EQ(meta_data.value_.str_meta_.str_val_, "SELECT * FROM users");
+    EXPECT_EQ(meta_data.value_.str_meta_.type_, STRING_META_SQL);
+}
+
+TEST_F(GrpcTest, StringMetaSqlTest) {
+    StringMeta sql_meta(4, "INSERT INTO table VALUES (?)", STRING_META_SQL);
+    
+    EXPECT_EQ(sql_meta.id_, 4);
+    EXPECT_EQ(sql_meta.str_val_, "INSERT INTO table VALUES (?)");
+    EXPECT_EQ(sql_meta.type_, STRING_META_SQL);
 }
 
 // Integration Tests
@@ -337,6 +366,10 @@ TEST_F(GrpcTest, GrpcEnumValuesTest) {
     // Test MetaType enum
     EXPECT_EQ(META_API, 0);
     EXPECT_EQ(META_STRING, 1);
+    
+    // Test StringMetaType enum
+    EXPECT_EQ(STRING_META_ERROR, 0);
+    EXPECT_EQ(STRING_META_SQL, 1);
 }
 
 TEST_F(GrpcTest, MultipleClientInstancesTest) {

@@ -51,6 +51,7 @@ namespace pinpoint {
         void SetEndPoint(std::string_view end_point) override {}
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}
+        void SetSqlQuery(std::string_view sql_query, std::string_view args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }

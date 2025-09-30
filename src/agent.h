@@ -60,7 +60,9 @@ namespace pinpoint {
     	int32_t cacheApi(std::string_view api_str, int32_t api_type) const override;
     	void removeCacheApi(const ApiMeta& api_meta) const override;
     	int32_t cacheError(std::string_view error_name) const override;
-    	void removeCacheError(const StringMeta& str_meta) const override;
+    	void removeCacheError(const StringMeta& error_meta) const override;
+    	int32_t cacheSql(std::string_view sql_query) const override;
+    	void removeCacheSql(const StringMeta& sql_meta) const override;
 
     	bool isStatusFail(int status) const override;
     	void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
@@ -72,6 +74,7 @@ namespace pinpoint {
         std::unique_ptr<TraceSampler> sampler_{};
     	std::unique_ptr<IdCache> api_cache_{};
     	std::unique_ptr<IdCache> error_cache_{};
+    	std::unique_ptr<IdCache> sql_cache_{};
 
     	std::unique_ptr<GrpcAgent> grpc_agent_{};
     	std::unique_ptr<GrpcSpan> grpc_span_{};

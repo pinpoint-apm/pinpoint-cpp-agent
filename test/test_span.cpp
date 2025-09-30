@@ -81,7 +81,16 @@ public:
         return error_id_counter_++;
     }
 
-    void removeCacheError(const StringMeta& str_meta) const override {
+    void removeCacheError(const StringMeta& error_meta) const override {
+        // Mock implementation
+    }
+
+    int32_t cacheSql(std::string_view sql_query) const override {
+        cached_sqls_[std::string(sql_query)] = sql_id_counter_;
+        return sql_id_counter_++;
+    }
+
+    void removeCacheSql(const StringMeta& sql_meta) const override {
         // Mock implementation
     }
 
@@ -126,8 +135,10 @@ private:
     Config config_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
+    mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
+    mutable int32_t sql_id_counter_ = 300;
 };
 
 // Mock TraceContextReader for testing

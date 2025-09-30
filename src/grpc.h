@@ -67,10 +67,17 @@ namespace pinpoint {
         ~ApiMeta() {}
     } ApiMeta;
 
+    enum StringMetaType {
+        STRING_META_ERROR,
+        STRING_META_SQL
+    };
+
     typedef struct StringMeta {
         int32_t id_;
         std::string str_val_;
-        StringMeta(int32_t id, std::string_view str_val) : id_(id), str_val_(str_val) {}
+        StringMetaType type_;
+        StringMeta(int32_t id, std::string_view str_val, StringMetaType type) 
+            : id_(id), str_val_(str_val), type_(type) {}
         ~StringMeta() {}
     } StringMeta;
 
@@ -78,7 +85,7 @@ namespace pinpoint {
         ApiMeta api_meta_;
         StringMeta str_meta_;
         MetaValue(int32_t id, int32_t api_type, std::string_view api_str) : api_meta_(id, api_type, api_str) {}
-        MetaValue(int32_t id, std::string_view str_val) : str_meta_(id, str_val) {}
+        MetaValue(int32_t id, std::string_view str_val, StringMetaType type) : str_meta_(id, str_val, type) {}
         ~MetaValue() {}
     } MetaValue;
 
@@ -88,8 +95,8 @@ namespace pinpoint {
         MetaValue value_;
         MetaData(enum MetaType meta_type, int32_t id, int32_t api_type, std::string_view api_str)
             : meta_type_(meta_type), value_(id, api_type, api_str) {}
-        MetaData(enum MetaType meta_type, int32_t id, std::string_view str_val)
-            : meta_type_(meta_type), value_(id, str_val) {}
+        MetaData(enum MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
+            : meta_type_(meta_type), value_(id, str_val, str_type) {}
         ~MetaData() {}
     } MetaData;
 
@@ -131,7 +138,8 @@ namespace pinpoint {
         GrpcStreamStatus write_and_await_ping_stream();
 
         GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
-        GrpcRequestStatus send_string_meta(StringMeta& str_meta);
+        GrpcRequestStatus send_error_meta(StringMeta& error_meta);
+        GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
     };
 
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {

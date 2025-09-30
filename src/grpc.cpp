@@ -488,27 +488,51 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
-    GrpcRequestStatus GrpcAgent::send_string_meta(StringMeta& str_meta) {
+    GrpcRequestStatus GrpcAgent::send_error_meta(StringMeta& error_meta) {
         std::unique_lock<std::mutex> lock(channel_mutex_);
 
-        v1::PStringMetaData grpc_str_meta;
+        v1::PStringMetaData grpc_error_meta;
 
-        grpc_str_meta.set_stringid(str_meta.id_);
-        grpc_str_meta.set_stringvalue(str_meta.str_val_);
+        grpc_error_meta.set_stringid(error_meta.id_);
+        grpc_error_meta.set_stringvalue(error_meta.str_val_);
 
         v1::PResult reply;
         grpc::ClientContext ctx;
 
         build_grpc_context(&ctx, agent_, 0);
         set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestStringMetaData(&ctx, grpc_str_meta, &reply);
+        const grpc::Status status = meta_stub_->RequestStringMetaData(&ctx, grpc_error_meta, &reply);
 
         if (status.ok()) {
-            LOG_DEBUG("success to send string metadata");
+            LOG_DEBUG("success to send error metadata");
             return SEND_OK;
         }
 
-        LOG_ERROR("failed to send string metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+        LOG_ERROR("failed to send error metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+        return SEND_FAIL;
+    }
+
+    GrpcRequestStatus GrpcAgent::send_sql_meta(StringMeta& sql_meta) {
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+
+        v1::PSqlMetaData grpc_sql_meta;
+
+        grpc_sql_meta.set_sqlid(sql_meta.id_);
+        grpc_sql_meta.set_sql(sql_meta.str_val_);
+
+        v1::PResult reply;
+        grpc::ClientContext ctx;
+
+        build_grpc_context(&ctx, agent_, 0);
+        set_deadline(ctx, META_TIMEOUT);
+        const grpc::Status status = meta_stub_->RequestSqlMetaData(&ctx, grpc_sql_meta, &reply);
+
+        if (status.ok()) {
+            LOG_DEBUG("success to send sql metadata");
+            return SEND_OK;
+        }
+
+        LOG_ERROR("failed to send sql metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
         return SEND_FAIL;
     }
 
@@ -546,8 +570,14 @@ namespace pinpoint {
                     agent_->removeCacheApi(meta->value_.api_meta_);
                 }
             } else if (meta->meta_type_ == META_STRING) {
-                if (send_string_meta(meta->value_.str_meta_) != SEND_OK) {
-                    agent_->removeCacheError(meta->value_.str_meta_);
+                if (meta->value_.str_meta_.type_ == STRING_META_ERROR) {
+                    if (send_error_meta(meta->value_.str_meta_) != SEND_OK) {
+                        agent_->removeCacheError(meta->value_.str_meta_);
+                    }
+                } else if (meta->value_.str_meta_.type_ == STRING_META_SQL) {
+                    if (send_sql_meta(meta->value_.str_meta_) != SEND_OK) {
+                        agent_->removeCacheSql(meta->value_.str_meta_);
+                    }
                 }
             }
 

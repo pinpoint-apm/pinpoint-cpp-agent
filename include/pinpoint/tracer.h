@@ -37,6 +37,7 @@ namespace pinpoint {
 	const std::string HEADER_HOST = "Pinpoint-Host";
 
 	constexpr int32_t ANNOTATION_API = 12;
+	constexpr int32_t ANNOTATION_SQL_ID = 20;
 	constexpr int32_t ANNOTATION_HTTP_URL = 40;
 	constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
 	constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
@@ -116,6 +117,7 @@ namespace pinpoint {
         virtual void SetEndPoint(std::string_view end_point) = 0;
         virtual void SetError(std::string_view error_message) = 0;
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
+		virtual void SetSqlQuery(std::string_view sql_query, std::string_view args) = 0;
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 
         virtual AnnotationPtr GetAnnotations() const = 0;

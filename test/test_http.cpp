@@ -478,15 +478,18 @@ TEST_F(HttpTest, HttpStatusErrorsCustomArray8Test) {
 
 // Test HttpUrlFilter with simple exact patterns
 TEST_F(HttpTest, HttpUrlFilterSimplePatternsTest) {
-    std::vector<std::string> cfg = {"/api/users", "/admin/dashboard"};
+    std::vector<std::string> cfg = {"/api/users", "/admin/dashboard", "/headers*"};
     HttpUrlFilter filter(cfg);
     
     // Should match exact URLs
     EXPECT_TRUE(filter.isFiltered("/api/users")) << "Should match exact URL /api/users";
     EXPECT_TRUE(filter.isFiltered("/admin/dashboard")) << "Should match exact URL /admin/dashboard";
-    
+    EXPECT_TRUE(filter.isFiltered("/headers")) << "Should match exact URL /headers";
+    EXPECT_TRUE(filter.isFiltered("/headersall")) << "Should match exact URL /headersall";
+
     // Should not match different URLs
     EXPECT_FALSE(filter.isFiltered("/api/posts")) << "Should not match /api/posts";
+    EXPECT_FALSE(filter.isFiltered("/headers/all")) << "Should not match /headers/all";
     EXPECT_FALSE(filter.isFiltered("/users")) << "Should not match /users";
     EXPECT_FALSE(filter.isFiltered("/admin")) << "Should not match /admin";
     EXPECT_FALSE(filter.isFiltered("/api/users/123")) << "Should not match longer path";

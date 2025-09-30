@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-#include "logging.h"
-#include "utility.h"
-#include "span_event.h"
-
 #include "agent.h"
 #include "span.h"
+#include "span_event.h"
+#include "sql.h"
+#include "utility.h"
 
 namespace pinpoint {
 
@@ -64,6 +63,16 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
         error_func_id_ = parent_span_->getAgent()->cacheError(error_name);
         error_string_ = error_message;
+    }
+
+    void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
+        SqlNormalizer normalizer(64*1024);
+        SqlNormalizeResult result = normalizer.normalize(sql_query);
+
+        auto sql_id = parent_span_->getAgent()->cacheSql(result.normalized_sql);
+        if (sql_id) {
+            annotations_->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
+        }
     }
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) {

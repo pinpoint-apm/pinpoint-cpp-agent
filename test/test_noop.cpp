@@ -80,7 +80,15 @@ public:
         }
         return cached_errors_[std::string(error_name)];
     }
-    void removeCacheError(const StringMeta& str_meta) const override {}
+    void removeCacheError(const StringMeta& error_meta) const override {}
+
+    int32_t cacheSql(std::string_view sql_query) const override {
+        if (cached_sqls_.find(std::string(sql_query)) == cached_sqls_.end()) {
+            cached_sqls_[std::string(sql_query)] = sql_id_counter_++;
+        }
+        return cached_sqls_[std::string(sql_query)];
+    }
+    void removeCacheSql(const StringMeta& sql_meta) const override {}
 
     bool isStatusFail(int status) const override { return status >= 400; }
     void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
@@ -102,8 +110,10 @@ public:
     mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
+    mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
+    mutable int32_t sql_id_counter_ = 300;
 
 private:
     bool is_exiting_;
