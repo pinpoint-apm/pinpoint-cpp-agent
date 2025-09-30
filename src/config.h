@@ -87,6 +87,11 @@ namespace pinpoint {
                 std::vector<std::string> rec_response_header;
             } client;
         } http;
+
+        struct {
+            int max_bind_args_size;
+            bool enable_sql_stats;
+        } sql;
     };
 
     void read_config_from_file(const char* config_file_path);

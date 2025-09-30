@@ -62,6 +62,8 @@ private:
         saved_env_vars_["PINPOINT_CPP_SAMPLING_PERCENT_RATE"] = GetEnvVar("PINPOINT_CPP_SAMPLING_PERCENT_RATE");
         saved_env_vars_["PINPOINT_CPP_IS_CONTAINER"] = GetEnvVar("PINPOINT_CPP_IS_CONTAINER");
         saved_env_vars_["PINPOINT_CPP_CONFIG_FILE"] = GetEnvVar("PINPOINT_CPP_CONFIG_FILE");
+        saved_env_vars_["PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE"] = GetEnvVar("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE");
+        saved_env_vars_["PINPOINT_CPP_SQL_ENABLE_SQL_STATS"] = GetEnvVar("PINPOINT_CPP_SQL_ENABLE_SQL_STATS");
         
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
@@ -144,6 +146,10 @@ Http:
     RecordRequestHeader: ["User-Agent"]
     RecordRequestCookie: ["tracking"]
     RecordResponseHeader: ["headers-all"]
+
+Sql:
+  MaxBindArgsSize: 2048
+  EnableSqlStats: true
 )";
 
     const std::string partial_config_yaml_ = R"(
@@ -161,6 +167,10 @@ Sampling:
 Http:
   Server:
     StatusCodeErrors: ["4xx"]
+
+Sql:
+  MaxBindArgsSize: 512
+  EnableSqlStats: false
 )";
 
     const std::string invalid_yaml_ = R"(
@@ -245,6 +255,10 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_TRUE(config.http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
     EXPECT_TRUE(config.http.client.rec_request_cookie.empty()) << "Client request cookie list should be empty by default";
     EXPECT_TRUE(config.http.client.rec_response_header.empty()) << "Client response header list should be empty by default";
+    
+    // Test SQL defaults
+    EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
+    EXPECT_FALSE(config.sql.enable_sql_stats) << "SQL stats should be disabled by default";
 }
 
 // Test generated agent ID
@@ -342,6 +356,10 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     
     EXPECT_EQ(config.http.client.rec_response_header.size(), 1) << "Should have 1 client response header";
     EXPECT_EQ(config.http.client.rec_response_header[0], "headers-all") << "Client response header should be headers-all";
+    
+    // Test SQL configuration
+    EXPECT_EQ(config.sql.max_bind_args_size, 2048) << "Max bind args size should match YAML";
+    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
 }
 
 // Test partial YAML configuration
@@ -366,6 +384,10 @@ TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100) << "Percent rate should remain default";
     EXPECT_EQ(config.log.level, "info") << "Log level should remain default";
     EXPECT_EQ(config.span.queue_size, 1024) << "Queue size should remain default";
+    
+    // Test SQL configuration from partial YAML
+    EXPECT_EQ(config.sql.max_bind_args_size, 512) << "Max bind args size should match partial YAML";
+    EXPECT_FALSE(config.sql.enable_sql_stats) << "SQL stats should be disabled as per partial YAML";
 }
 
 // Test empty YAML configuration
@@ -394,6 +416,8 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv("PINPOINT_CPP_SAMPLING_TYPE", "PERCENT", 1);
     setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "25.5", 1);
     setenv("PINPOINT_CPP_IS_CONTAINER", "true", 1);
+    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "4096", 1);
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
     
     Config config = make_config();
     
@@ -407,6 +431,10 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match environment variable";
     EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 25.5) << "Percent rate should match environment variable";
     EXPECT_TRUE(config.is_container) << "IsContainer should match environment variable";
+    
+    // Test SQL environment variable values
+    EXPECT_EQ(config.sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
+    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
 }
 
 // Test environment variable override YAML
@@ -417,12 +445,16 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set environment variables that should override YAML
     setenv("PINPOINT_CPP_APPLICATION_NAME", "EnvOverrideApp", 1);
     setenv("PINPOINT_CPP_GRPC_HOST", "env.override.host", 1);
+    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "8192", 1);
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
     
     Config config = make_config();
     
     // Environment variables should override YAML
     EXPECT_EQ(config.app_name_, "EnvOverrideApp") << "Environment variable should override YAML app name";
     EXPECT_EQ(config.collector.host, "env.override.host") << "Environment variable should override YAML collector host";
+    EXPECT_EQ(config.sql.max_bind_args_size, 8192) << "Environment variable should override YAML max bind args size";
+    EXPECT_TRUE(config.sql.enable_sql_stats) << "Environment variable should override YAML SQL stats setting";
     
     // YAML values should remain where no environment variable is set
     EXPECT_EQ(config.app_type_, 1301) << "App type should remain from YAML";
@@ -755,6 +787,135 @@ TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     // These should be parsed as -1 and then validated by make_config to INT32_MAX
     EXPECT_EQ(config.span.max_event_depth, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
     EXPECT_EQ(config.span.max_event_sequence, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
+}
+
+// ========== SQL Configuration Specific Tests ==========
+
+// Test SQL configuration with various bind args sizes
+TEST_F(ConfigTest, SqlMaxBindArgsSizeValidationTest) {
+    // Test default
+    Config config1 = make_config();
+    EXPECT_EQ(config1.sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
+    
+    // Test YAML configuration with different values
+    set_config_string(R"(
+Sql:
+  MaxBindArgsSize: 256
+  EnableSqlStats: true
+)");
+    Config config2 = make_config();
+    EXPECT_EQ(config2.sql.max_bind_args_size, 256) << "Max bind args size should match YAML";
+    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    
+    // Test environment variable override
+    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "16384", 1);
+    Config config3 = make_config();
+    EXPECT_EQ(config3.sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
+}
+
+// Test SQL stats enable/disable configurations  
+TEST_F(ConfigTest, SqlStatsEnableTest) {
+    // Test default (disabled)
+    Config config1 = make_config();
+    EXPECT_FALSE(config1.sql.enable_sql_stats) << "SQL stats should be disabled by default";
+    
+    // Test enabling via YAML
+    set_config_string(R"(
+Sql:
+  EnableSqlStats: true
+)");
+    Config config2 = make_config();
+    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    
+    // Test enabling via environment variable
+    set_config_string("");
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
+    Config config3 = make_config();
+    EXPECT_TRUE(config3.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
+    
+    // Test disabling via environment variable  
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "false", 1);
+    Config config4 = make_config();
+    EXPECT_FALSE(config4.sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
+}
+
+// Test SQL configuration edge cases
+TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
+    // Test zero bind args size
+    set_config_string(R"(
+Sql:
+  MaxBindArgsSize: 0
+  EnableSqlStats: false
+)");
+    Config config1 = make_config();
+    EXPECT_EQ(config1.sql.max_bind_args_size, 0) << "Zero bind args size should be allowed";
+    EXPECT_FALSE(config1.sql.enable_sql_stats) << "SQL stats should be disabled";
+    
+    // Test very large bind args size
+    set_config_string(R"(
+Sql:
+  MaxBindArgsSize: 1048576
+  EnableSqlStats: true
+)");
+    Config config2 = make_config();
+    EXPECT_EQ(config2.sql.max_bind_args_size, 1048576) << "Large bind args size should be allowed";
+    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled";
+}
+
+// Test SQL configuration string generation
+TEST_F(ConfigTest, SqlConfigurationToStringTest) {
+    set_config_string(R"(
+Sql:
+  MaxBindArgsSize: 2048
+  EnableSqlStats: true
+)");
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Check that SQL configuration is included in generated string
+    EXPECT_TRUE(config_string.find("MaxBindArgsSize: 2048") != std::string::npos) 
+        << "Config string should contain SQL max bind args size";
+    EXPECT_TRUE(config_string.find("EnableSqlStats: true") != std::string::npos) 
+        << "Config string should contain SQL stats enable setting";
+}
+
+// Test SQL configuration round-trip
+TEST_F(ConfigTest, SqlConfigurationRoundTripTest) {
+    const std::string sql_config = R"(
+ApplicationName: "SqlTestApp"
+Sql:
+  MaxBindArgsSize: 3072
+  EnableSqlStats: true
+)";
+    
+    set_config_string(sql_config);
+    Config config1 = make_config();
+    
+    std::string generated_config_string = to_config_string(config1);
+    
+    // Use generated string as new config
+    set_config_string(generated_config_string);
+    Config config2 = make_config();
+    
+    // SQL configs should match after round-trip
+    EXPECT_EQ(config1.sql.max_bind_args_size, config2.sql.max_bind_args_size) 
+        << "Max bind args size should match after round-trip";
+    EXPECT_EQ(config1.sql.enable_sql_stats, config2.sql.enable_sql_stats) 
+        << "SQL stats enable should match after round-trip";
+}
+
+// Test invalid SQL environment variable values
+TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
+    // Test invalid max bind args size (should fallback to default)
+    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "invalid", 1);
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "invalid", 1);
+    
+    Config config = make_config();
+    
+    // Should fallback to defaults when environment variable is invalid
+    EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Should use default when env var is invalid";
+    EXPECT_FALSE(config.sql.enable_sql_stats) << "Should use default when env var is invalid";
 }
 
 } // namespace pinpoint

@@ -69,9 +69,14 @@ namespace pinpoint {
         SqlNormalizer normalizer(64*1024);
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
-        auto sql_id = parent_span_->getAgent()->cacheSql(result.normalized_sql);
-        if (sql_id) {
-            annotations_->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
+        auto& config = parent_span_->getAgent()->getConfig();
+        if (config.sql.enable_sql_stats) {
+            return;
+        } else {
+            auto sql_id = parent_span_->getAgent()->cacheSql(result.normalized_sql);
+            if (sql_id) {
+                annotations_->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
+            }
         }
     }
 

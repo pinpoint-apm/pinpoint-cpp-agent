@@ -71,6 +71,8 @@ namespace pinpoint {
         config.http.client.rec_request_header = {};
         config.http.client.rec_request_cookie = {};
         config.http.client.rec_response_header = {};
+        config.sql.max_bind_args_size = 1024;
+        config.sql.enable_sql_stats = false;
         config.log.level = "info";
         config.log.file_path = "";
         config.log.max_file_size = 10; //MB
@@ -218,6 +220,11 @@ namespace pinpoint {
         if (yaml["IsContainer"]) {
             config.is_container = get_boolean(yaml, "IsContainer", false);
             needContainerCheck = false;
+        }
+
+        if (auto& sql = yaml["Sql"]) {
+            config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", 1024);
+            config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", false);
         }
     }
 
@@ -377,6 +384,13 @@ namespace pinpoint {
         }
         if(const char* env_p = std::getenv("PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER")) {
             config.http.client.rec_response_header = absl::StrSplit(env_p, ',');
+        }
+
+        if(const char* env_p = std::getenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE")) {
+            config.sql.max_bind_args_size = safe_env_stoi("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", env_p, 1024);
+        }
+        if(const char* env_p = std::getenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS")) {
+            config.sql.enable_sql_stats = safe_env_stob("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", env_p, false);
         }
     }
 
@@ -638,6 +652,13 @@ namespace pinpoint {
 
         emitter << YAML::EndMap;
         emitter << YAML::EndMap;
+
+        emitter << YAML::Key << "Sql";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "MaxBindArgsSize" << YAML::Value << config.sql.max_bind_args_size;
+        emitter << YAML::Key << "EnableSqlStats" << YAML::Value << config.sql.enable_sql_stats;
+        emitter << YAML::EndMap;
+
         emitter << YAML::EndMap;
 
         return emitter.c_str();
