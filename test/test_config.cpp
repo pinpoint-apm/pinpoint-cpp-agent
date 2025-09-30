@@ -48,22 +48,22 @@ protected:
 private:
     void SaveEnvironmentVariables() {
         // Save environment variables that might affect config
-        saved_env_vars_["PINPOINT_CPP_ENABLE"] = GetEnvVar("PINPOINT_CPP_ENABLE");
-        saved_env_vars_["PINPOINT_CPP_APPLICATION_NAME"] = GetEnvVar("PINPOINT_CPP_APPLICATION_NAME");
-        saved_env_vars_["PINPOINT_CPP_APPLICATION_TYPE"] = GetEnvVar("PINPOINT_CPP_APPLICATION_TYPE");
-        saved_env_vars_["PINPOINT_CPP_AGENT_ID"] = GetEnvVar("PINPOINT_CPP_AGENT_ID");
-        saved_env_vars_["PINPOINT_CPP_AGENT_NAME"] = GetEnvVar("PINPOINT_CPP_AGENT_NAME");
-        saved_env_vars_["PINPOINT_CPP_LOG_LEVEL"] = GetEnvVar("PINPOINT_CPP_LOG_LEVEL");
-        saved_env_vars_["PINPOINT_CPP_GRPC_HOST"] = GetEnvVar("PINPOINT_CPP_GRPC_HOST");
-        saved_env_vars_["PINPOINT_CPP_GRPC_AGENT_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_AGENT_PORT");
-        saved_env_vars_["PINPOINT_CPP_GRPC_SPAN_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_SPAN_PORT");
-        saved_env_vars_["PINPOINT_CPP_GRPC_STAT_PORT"] = GetEnvVar("PINPOINT_CPP_GRPC_STAT_PORT");
-        saved_env_vars_["PINPOINT_CPP_SAMPLING_TYPE"] = GetEnvVar("PINPOINT_CPP_SAMPLING_TYPE");
-        saved_env_vars_["PINPOINT_CPP_SAMPLING_PERCENT_RATE"] = GetEnvVar("PINPOINT_CPP_SAMPLING_PERCENT_RATE");
-        saved_env_vars_["PINPOINT_CPP_IS_CONTAINER"] = GetEnvVar("PINPOINT_CPP_IS_CONTAINER");
-        saved_env_vars_["PINPOINT_CPP_CONFIG_FILE"] = GetEnvVar("PINPOINT_CPP_CONFIG_FILE");
-        saved_env_vars_["PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE"] = GetEnvVar("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE");
-        saved_env_vars_["PINPOINT_CPP_SQL_ENABLE_SQL_STATS"] = GetEnvVar("PINPOINT_CPP_SQL_ENABLE_SQL_STATS");
+        saved_env_vars_[env::ENABLE] = GetEnvVar(env::ENABLE);
+        saved_env_vars_[env::APPLICATION_NAME] = GetEnvVar(env::APPLICATION_NAME);
+        saved_env_vars_[env::APPLICATION_TYPE] = GetEnvVar(env::APPLICATION_TYPE);
+        saved_env_vars_[env::AGENT_ID] = GetEnvVar(env::AGENT_ID);
+        saved_env_vars_[env::AGENT_NAME] = GetEnvVar(env::AGENT_NAME);
+        saved_env_vars_[env::LOG_LEVEL] = GetEnvVar(env::LOG_LEVEL);
+        saved_env_vars_[env::GRPC_HOST] = GetEnvVar(env::GRPC_HOST);
+        saved_env_vars_[env::GRPC_AGENT_PORT] = GetEnvVar(env::GRPC_AGENT_PORT);
+        saved_env_vars_[env::GRPC_SPAN_PORT] = GetEnvVar(env::GRPC_SPAN_PORT);
+        saved_env_vars_[env::GRPC_STAT_PORT] = GetEnvVar(env::GRPC_STAT_PORT);
+        saved_env_vars_[env::SAMPLING_TYPE] = GetEnvVar(env::SAMPLING_TYPE);
+        saved_env_vars_[env::SAMPLING_PERCENT_RATE] = GetEnvVar(env::SAMPLING_PERCENT_RATE);
+        saved_env_vars_[env::IS_CONTAINER] = GetEnvVar(env::IS_CONTAINER);
+        saved_env_vars_[env::CONFIG_FILE] = GetEnvVar(env::CONFIG_FILE);
+        saved_env_vars_[env::SQL_MAX_BIND_ARGS_SIZE] = GetEnvVar(env::SQL_MAX_BIND_ARGS_SIZE);
+        saved_env_vars_[env::SQL_ENABLE_SQL_STATS] = GetEnvVar(env::SQL_ENABLE_SQL_STATS);
         
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
@@ -407,17 +407,17 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 // Test environment variable configuration
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "EnvApp", 1);
-    setenv("PINPOINT_CPP_APPLICATION_TYPE", "1302", 1);
-    setenv("PINPOINT_CPP_AGENT_ID", "env-agent-456", 1);
-    setenv("PINPOINT_CPP_LOG_LEVEL", "error", 1);
-    setenv("PINPOINT_CPP_GRPC_HOST", "env.collector.host", 1);
-    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "8888", 1);
-    setenv("PINPOINT_CPP_SAMPLING_TYPE", "PERCENT", 1);
-    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "25.5", 1);
-    setenv("PINPOINT_CPP_IS_CONTAINER", "true", 1);
-    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "4096", 1);
-    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
+    setenv(env::APPLICATION_NAME, "EnvApp", 1);
+    setenv(env::APPLICATION_TYPE, "1302", 1);
+    setenv(env::AGENT_ID, "env-agent-456", 1);
+    setenv(env::LOG_LEVEL, "error", 1);
+    setenv(env::GRPC_HOST, "env.collector.host", 1);
+    setenv(env::GRPC_AGENT_PORT, "8888", 1);
+    setenv(env::SAMPLING_TYPE, "PERCENT", 1);
+    setenv(env::SAMPLING_PERCENT_RATE, "25.5", 1);
+    setenv(env::IS_CONTAINER, "true", 1);
+    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "4096", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     
     Config config = make_config();
     
@@ -443,10 +443,10 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     set_config_string(partial_config_yaml_);
     
     // Set environment variables that should override YAML
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "EnvOverrideApp", 1);
-    setenv("PINPOINT_CPP_GRPC_HOST", "env.override.host", 1);
-    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "8192", 1);
-    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
+    setenv(env::APPLICATION_NAME, "EnvOverrideApp", 1);
+    setenv(env::GRPC_HOST, "env.override.host", 1);
+    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "8192", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     
     Config config = make_config();
     
@@ -472,7 +472,7 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     file.close();
     
     // Set environment variable to point to config file
-    setenv("PINPOINT_CPP_CONFIG_FILE", config_file.c_str(), 1);
+    setenv(env::CONFIG_FILE, config_file.c_str(), 1);
     
     Config config = make_config();
     
@@ -486,7 +486,7 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
 TEST_F(ConfigTest, MissingConfigurationFileTest) {
     // Set environment variable to point to non-existent file
     std::string missing_file = temp_dir_ + "/missing_config.yaml";
-    setenv("PINPOINT_CPP_CONFIG_FILE", missing_file.c_str(), 1);
+    setenv(env::CONFIG_FILE, missing_file.c_str(), 1);
     
     Config config = make_config();
     
@@ -619,9 +619,9 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     file.close();
     
     // Set environment variables
-    setenv("PINPOINT_CPP_CONFIG_FILE", config_file.c_str(), 1);
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "OverriddenApp", 1); // Should override file
-    setenv("PINPOINT_CPP_LOG_LEVEL", "warn", 1); // Should override file
+    setenv(env::CONFIG_FILE, config_file.c_str(), 1);
+    setenv(env::APPLICATION_NAME, "OverriddenApp", 1); // Should override file
+    setenv(env::LOG_LEVEL, "warn", 1); // Should override file
     
     Config config = make_config();
     
@@ -721,12 +721,12 @@ Span:
 // Test environment variable validation for invalid values
 TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     // Set invalid environment variables
-    setenv("PINPOINT_CPP_ENABLE", "invalid_bool", 1);                  // Invalid bool
-    setenv("PINPOINT_CPP_APPLICATION_TYPE", "not_a_number", 1);        // Invalid int
-    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "invalid_port", 1);         // Invalid int
-    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "not_a_double", 1);   // Invalid double
-    setenv("PINPOINT_CPP_STAT_ENABLE", "maybe", 1);                    // Invalid bool
-    setenv("PINPOINT_CPP_SPAN_QUEUE_SIZE", "abc", 1);                  // Invalid int
+    setenv(env::ENABLE, "invalid_bool", 1);                  // Invalid bool
+    setenv(env::APPLICATION_TYPE, "not_a_number", 1);        // Invalid int
+    setenv(env::GRPC_AGENT_PORT, "invalid_port", 1);         // Invalid int
+    setenv(env::SAMPLING_PERCENT_RATE, "not_a_double", 1);   // Invalid double
+    setenv(env::STAT_ENABLE, "maybe", 1);                    // Invalid bool
+    setenv(env::SPAN_QUEUE_SIZE, "abc", 1);                  // Invalid int
     
     Config config = make_config();
     
@@ -742,12 +742,12 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
 // Test environment variable validation for valid values
 TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     // Set valid environment variables
-    setenv("PINPOINT_CPP_ENABLE", "false", 1);                  // Valid bool
-    setenv("PINPOINT_CPP_APPLICATION_TYPE", "1500", 1);         // Valid int
-    setenv("PINPOINT_CPP_GRPC_AGENT_PORT", "8080", 1);          // Valid int
-    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", "75.5", 1);    // Valid double
-    setenv("PINPOINT_CPP_STAT_ENABLE", "1", 1);                 // Valid bool
-    setenv("PINPOINT_CPP_SPAN_QUEUE_SIZE", "2048", 1);          // Valid int
+    setenv(env::ENABLE, "false", 1);                  // Valid bool
+    setenv(env::APPLICATION_TYPE, "1500", 1);         // Valid int
+    setenv(env::GRPC_AGENT_PORT, "8080", 1);          // Valid int
+    setenv(env::SAMPLING_PERCENT_RATE, "75.5", 1);    // Valid double
+    setenv(env::STAT_ENABLE, "1", 1);                 // Valid bool
+    setenv(env::SPAN_QUEUE_SIZE, "2048", 1);          // Valid int
     
     Config config = make_config();
     
@@ -763,10 +763,10 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
 // Test environment variable validation for boolean edge cases
 TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
     // Test various valid boolean representations
-    setenv("PINPOINT_CPP_ENABLE", "TRUE", 1);
-    setenv("PINPOINT_CPP_STAT_ENABLE", "False", 1);
-    setenv("PINPOINT_CPP_IS_CONTAINER", "yes", 1);
-    setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "NO", 1);
+    setenv(env::ENABLE, "TRUE", 1);
+    setenv(env::STAT_ENABLE, "False", 1);
+    setenv(env::IS_CONTAINER, "yes", 1);
+    setenv(env::HTTP_COLLECT_URL_STAT, "NO", 1);
     
     Config config = make_config();
     
@@ -779,8 +779,8 @@ TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
 // Test environment variable validation for negative values
 TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     // Set valid negative values where applicable
-    setenv("PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH", "-1", 1);       // Valid -1 (should be processed by make_config validation)
-    setenv("PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE", "-1", 1);    // Valid -1 (should be processed by make_config validation)
+    setenv(env::SPAN_MAX_EVENT_DEPTH, "-1", 1);       // Valid -1 (should be processed by make_config validation)
+    setenv(env::SPAN_MAX_EVENT_SEQUENCE, "-1", 1);    // Valid -1 (should be processed by make_config validation)
     
     Config config = make_config();
     
@@ -808,7 +808,7 @@ Sql:
     EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
     // Test environment variable override
-    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "16384", 1);
+    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "16384", 1);
     Config config3 = make_config();
     EXPECT_EQ(config3.sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
 }
@@ -829,12 +829,12 @@ Sql:
     
     // Test enabling via environment variable
     set_config_string("");
-    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     Config config3 = make_config();
     EXPECT_TRUE(config3.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     
     // Test disabling via environment variable  
-    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "false", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "false", 1);
     Config config4 = make_config();
     EXPECT_FALSE(config4.sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
 }
@@ -908,8 +908,8 @@ Sql:
 // Test invalid SQL environment variable values
 TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
     // Test invalid max bind args size (should fallback to default)
-    setenv("PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE", "invalid", 1);
-    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "invalid", 1);
+    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "invalid", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "invalid", 1);
     
     Config config = make_config();
     

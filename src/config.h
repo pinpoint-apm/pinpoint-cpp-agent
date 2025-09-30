@@ -21,6 +21,51 @@
 
 namespace pinpoint {
 
+    // Environment variable names as constexpr
+    namespace env {
+        constexpr const char* ENABLE = "PINPOINT_CPP_ENABLE";
+        constexpr const char* APPLICATION_NAME = "PINPOINT_CPP_APPLICATION_NAME";
+        constexpr const char* APPLICATION_TYPE = "PINPOINT_CPP_APPLICATION_TYPE";
+        constexpr const char* AGENT_ID = "PINPOINT_CPP_AGENT_ID";
+        constexpr const char* AGENT_NAME = "PINPOINT_CPP_AGENT_NAME";
+        constexpr const char* LOG_LEVEL = "PINPOINT_CPP_LOG_LEVEL";
+        constexpr const char* LOG_FILE_PATH = "PINPOINT_CPP_LOG_FILE_PATH";
+        constexpr const char* LOG_MAX_FILE_SIZE = "PINPOINT_CPP_LOG_MAX_FILE_SIZE";
+        constexpr const char* GRPC_HOST = "PINPOINT_CPP_GRPC_HOST";
+        constexpr const char* GRPC_AGENT_PORT = "PINPOINT_CPP_GRPC_AGENT_PORT";
+        constexpr const char* GRPC_SPAN_PORT = "PINPOINT_CPP_GRPC_SPAN_PORT";
+        constexpr const char* GRPC_STAT_PORT = "PINPOINT_CPP_GRPC_STAT_PORT";
+        constexpr const char* STAT_ENABLE = "PINPOINT_CPP_STAT_ENABLE";
+        constexpr const char* STAT_BATCH_COUNT = "PINPOINT_CPP_STAT_BATCH_COUNT";
+        constexpr const char* STAT_BATCH_INTERVAL = "PINPOINT_CPP_STAT_BATCH_INTERVAL";
+        constexpr const char* SAMPLING_TYPE = "PINPOINT_CPP_SAMPLING_TYPE";
+        constexpr const char* SAMPLING_COUNTER_RATE = "PINPOINT_CPP_SAMPLING_COUNTER_RATE";
+        constexpr const char* SAMPLING_PERCENT_RATE = "PINPOINT_CPP_SAMPLING_PERCENT_RATE";
+        constexpr const char* SAMPLING_NEW_THROUGHPUT = "PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT";
+        constexpr const char* SAMPLING_CONTINUE_THROUGHPUT = "PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT";
+        constexpr const char* SPAN_QUEUE_SIZE = "PINPOINT_CPP_SPAN_QUEUE_SIZE";
+        constexpr const char* SPAN_MAX_EVENT_DEPTH = "PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH";
+        constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE";
+        constexpr const char* SPAN_EVENT_CHUNK_SIZE = "PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE";
+        constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
+        constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
+        constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
+        constexpr const char* HTTP_URL_STAT_PATH_DEPTH = "PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH";
+        constexpr const char* HTTP_URL_STAT_METHOD_PREFIX = "PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX";
+        constexpr const char* HTTP_SERVER_STATUS_CODE_ERRORS = "PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS";
+        constexpr const char* HTTP_SERVER_EXCLUDE_URL = "PINPOINT_CPP_HTTP_SERVER_EXCLUDE_URL";
+        constexpr const char* HTTP_SERVER_EXCLUDE_METHOD = "PINPOINT_CPP_HTTP_SERVER_EXCLUDE_METHOD";
+        constexpr const char* HTTP_SERVER_RECORD_REQUEST_HEADER = "PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER";
+        constexpr const char* HTTP_SERVER_RECORD_REQUEST_COOKIE = "PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE";
+        constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER";
+        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_HEADER";
+        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE";
+        constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER";
+        constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE";
+        constexpr const char* SQL_ENABLE_SQL_STATS = "PINPOINT_CPP_SQL_ENABLE_SQL_STATS";
+        constexpr const char* CONFIG_FILE = "PINPOINT_CPP_CONFIG_FILE";
+    }
+
     struct Config {
         std::string app_name_;
         int32_t app_type_;
