@@ -24,7 +24,7 @@ namespace pinpoint {
 
     SpanEventImpl::SpanEventImpl(SpanData* span, std::string_view operation) :
         parent_span_(span),
-        service_type_{DEFAULT_SERVICE_TYPE},
+        service_type_{DEFAULT_SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
         sequence_{span->getEventSequence()},
         depth_{span->getEventDepth()},

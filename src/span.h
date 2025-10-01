@@ -220,7 +220,7 @@ namespace pinpoint {
         ~SpanImpl() override = default;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {
-    		return NewSpanEvent(operation, DEFAULT_SERVICE_TYPE);
+    		return NewSpanEvent(operation, DEFAULT_SPAN_EVENT_SERVICE_TYPE);
     	}
     	SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override;
         SpanEventPtr GetSpanEvent() override;

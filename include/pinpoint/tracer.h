@@ -46,11 +46,29 @@ namespace pinpoint {
 	constexpr int32_t ANNOTATION_HTTP_RESPONSE_HEADER = 55;
 
 	constexpr int32_t APP_TYPE_CPP = 1300;
+	constexpr int32_t SERVICE_TYPE_CPP = APP_TYPE_CPP;
 	constexpr int32_t SERVICE_TYPE_CPP_FUNC = 1301;
 	constexpr int32_t SERVICE_TYPE_CPP_HTTP_CLIENT = 9800;
 	constexpr int32_t SERVICE_TYPE_ASYNC = 100;
+
+	constexpr int32_t SERVICE_TYPE_MYSQL_QUERY = 2101;
+	constexpr int32_t SERVICE_TYPE_MSSQL_QUERY = 2201;
+	constexpr int32_t SERVICE_TYPE_ORACLE_QUERY = 2301;
+	constexpr int32_t SERVICE_TYPE_PGSQL_QUERY = 2501;
+	constexpr int32_t SERVICE_TYPE_CASSANDRA_QUERY = 2601;
+	constexpr int32_t SERVICE_TYPE_MONGODB_QUERY = 2651;
+
+	constexpr int32_t SERVICE_TYPE_MEMCACHED = 8050;
+	constexpr int32_t SERVICE_TYPE_REDIS = 8203;
+	constexpr int32_t SERVICE_TYPE_KFAKA = 8660;
+	constexpr int32_t SERVICE_TYPE_HBASE = 8800;
+
+	constexpr int32_t SERVICE_TYPE_GRPC_CLIENT = 9160;
+	constexpr int32_t SERVICE_TYPE_GRPC_SERVER = 1130;
+
 	constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
-	constexpr int32_t DEFAULT_SERVICE_TYPE = SERVICE_TYPE_CPP_FUNC;
+	constexpr int32_t DEFAULT_SPAN_SERVICE_TYPE = SERVICE_TYPE_CPP;
+	constexpr int32_t DEFAULT_SPAN_EVENT_SERVICE_TYPE = SERVICE_TYPE_CPP_FUNC;
 
 	constexpr int32_t API_TYPE_DEFAULT = 0;
 	constexpr int32_t API_TYPE_WEB_REQUEST = 100;

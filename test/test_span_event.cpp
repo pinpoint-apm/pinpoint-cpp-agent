@@ -200,7 +200,7 @@ TEST_F(SpanEventTest, ConstructorTest) {
     SpanEventImpl span_event(test_span_data_.get(), "test-operation");
     
     EXPECT_NE(span_event.getParentSpan(), nullptr) << "Parent span should be set";
-    EXPECT_EQ(span_event.getServiceType(), DEFAULT_SERVICE_TYPE) << "Default service type should be set";
+    EXPECT_EQ(span_event.getServiceType(), DEFAULT_SPAN_EVENT_SERVICE_TYPE) << "Default service type should be set";
     EXPECT_EQ(span_event.getOperationName(), "test-operation") << "Operation name should match";
     EXPECT_GT(span_event.getStartTime(), 0) << "Start time should be set";
     EXPECT_EQ(span_event.getStartElapsed(), 0) << "Initial start elapsed should be 0";
