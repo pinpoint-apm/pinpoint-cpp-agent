@@ -45,7 +45,7 @@ namespace pinpoint {
         };
         
         State state = State::Normal;
-        size_t param_index = 1;
+        size_t param_index = 0;
         const size_t sql_length = limited_sql.length();
         
         for (size_t i = 0; i < sql_length; ++i) {
@@ -70,14 +70,12 @@ namespace pinpoint {
                     if (c == '\'' || c == '"' || c == '`') {
                         std::string string_literal;
                         char quote_char = c;
-                        string_literal += c; // Include opening quote
                         i++; // Skip opening quote
                         
                         // Read the entire string literal including closing quote
                         bool closed = false;
                         while (i < sql_length) {
                             char str_c = limited_sql[i];
-                            string_literal += str_c;
                             
                             if (str_c == quote_char) {
                                 // Check for escaped quote
@@ -88,10 +86,8 @@ namespace pinpoint {
                                     closed = true;
                                     break;
                                 }
-                            } else if (str_c == '\\' && i + 1 < sql_length) {
-                                // Handle backslash escapes
-                                i++;
-                                string_literal += limited_sql[i];
+                            } else {
+                                string_literal += str_c;
                             }
                             i++;
                         }
