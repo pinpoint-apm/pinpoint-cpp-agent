@@ -45,11 +45,29 @@ public:
     bool connect();
     void disconnect();
     
+    // SQL query type enum
+    enum class QueryType {
+        SELECT,
+        INSERT,
+        UPDATE,
+        DELETE,
+        OTHER
+    };
+    
     // Traced SQL execution methods
     void executeSelectQuery(const std::string& sql, const std::vector<std::string>& params = {});
-    void executeInsertQuery(const std::string& sql, const std::vector<std::string>& params = {});
-    void executeUpdateQuery(const std::string& sql, const std::vector<std::string>& params = {});
-    void executeDeleteQuery(const std::string& sql, const std::vector<std::string>& params = {});
+    void executeDMLQuery(QueryType type, const std::string& sql, const std::vector<std::string>& params = {});
+    
+    // Convenience wrappers for common DML operations
+    void executeInsertQuery(const std::string& sql, const std::vector<std::string>& params = {}) {
+        executeDMLQuery(QueryType::INSERT, sql, params);
+    }
+    void executeUpdateQuery(const std::string& sql, const std::vector<std::string>& params = {}) {
+        executeDMLQuery(QueryType::UPDATE, sql, params);
+    }
+    void executeDeleteQuery(const std::string& sql, const std::vector<std::string>& params = {}) {
+        executeDMLQuery(QueryType::DELETE, sql, params);
+    }
     
     // Run demo scenarios
     void runDemo();
@@ -67,6 +85,18 @@ private:
                           const std::vector<std::string>& params, bool success, 
                           const std::string& error = "");
     std::string formatParameters(const std::vector<std::string>& params);
+    
+    // Helper to convert QueryType to string
+    std::string queryTypeToString(QueryType type) const {
+        switch (type) {
+            case QueryType::SELECT: return "SELECT";
+            case QueryType::INSERT: return "INSERT";
+            case QueryType::UPDATE: return "UPDATE";
+            case QueryType::DELETE: return "DELETE";
+            case QueryType::OTHER:  return "OTHER";
+            default: return "UNKNOWN";
+        }
+    }
 };
 
 DatabaseDemo::DatabaseDemo(const DatabaseConfig& config) 
@@ -201,27 +231,33 @@ void DatabaseDemo::executeSelectQuery(const std::string& sql, const std::vector<
     traceSqlExecution(span, sql, params, success, error);
 }
 
-void DatabaseDemo::executeInsertQuery(const std::string& sql, const std::vector<std::string>& params) {
-    auto span = createSqlSpanEvent("INSERT");
+// Unified DML query execution (INSERT, UPDATE, DELETE)
+void DatabaseDemo::executeDMLQuery(QueryType type, const std::string& sql, const std::vector<std::string>& params) {
+    std::string queryTypeName = queryTypeToString(type);
+    auto span = createSqlSpanEvent(queryTypeName);
     bool success = false;
     std::string error;
     
     try {
         auto start = std::chrono::high_resolution_clock::now();
         
+        // Prepare and bind parameters
         auto stmt = session_->sql(sql);
         if (!params.empty()) {
             for (size_t i = 0; i < params.size(); ++i) {
                 stmt.bind(params[i]);
             }
         }
+        
+        // Execute query
         auto result = stmt.execute();
         uint64_t affectedRows = result.getAffectedItemsCount();
         
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         
-        std::cout << "INSERT Query executed: " << sql << std::endl;
+        // Log results
+        std::cout << queryTypeName << " Query executed: " << sql << std::endl;
         if (!params.empty()) {
             std::cout << "  Parameters: " << formatParameters(params) << std::endl;
         }
@@ -232,90 +268,10 @@ void DatabaseDemo::executeInsertQuery(const std::string& sql, const std::vector<
         
     } catch (const mysqlx::Error& e) {
         error = std::string("MySQL X DevAPI Error: ") + e.what();
-        std::cerr << "INSERT failed: " << error << std::endl;
+        std::cerr << queryTypeName << " failed: " << error << std::endl;
     } catch (const std::exception& e) {
         error = std::string("Exception: ") + e.what();
-        std::cerr << "INSERT failed: " << error << std::endl;
-    }
-    
-    traceSqlExecution(span, sql, params, success, error);
-}
-
-void DatabaseDemo::executeUpdateQuery(const std::string& sql, const std::vector<std::string>& params) {
-    auto span = createSqlSpanEvent("UPDATE");
-    bool success = false;
-    std::string error;
-    
-    try {
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        auto stmt = session_->sql(sql);
-        if (!params.empty()) {
-            for (size_t i = 0; i < params.size(); ++i) {
-                stmt.bind(params[i]);
-            }
-        }
-        auto result = stmt.execute();
-        uint64_t affectedRows = result.getAffectedItemsCount();
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        std::cout << "UPDATE Query executed: " << sql << std::endl;
-        if (!params.empty()) {
-            std::cout << "  Parameters: " << formatParameters(params) << std::endl;
-        }
-        std::cout << "  Affected rows: " << affectedRows << std::endl;
-        std::cout << "  Execution time: " << duration.count() << "ms" << std::endl;
-        
-        success = true;
-        
-    } catch (const mysqlx::Error& e) {
-        error = std::string("MySQL X DevAPI Error: ") + e.what();
-        std::cerr << "UPDATE failed: " << error << std::endl;
-    } catch (const std::exception& e) {
-        error = std::string("Exception: ") + e.what();
-        std::cerr << "UPDATE failed: " << error << std::endl;
-    }
-    
-    traceSqlExecution(span, sql, params, success, error);
-}
-
-void DatabaseDemo::executeDeleteQuery(const std::string& sql, const std::vector<std::string>& params) {
-    auto span = createSqlSpanEvent("DELETE");
-    bool success = false;
-    std::string error;
-    
-    try {
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        auto stmt = session_->sql(sql);
-        if (!params.empty()) {
-            for (size_t i = 0; i < params.size(); ++i) {
-                stmt.bind(params[i]);
-            }
-        }
-        auto result = stmt.execute();
-        uint64_t affectedRows = result.getAffectedItemsCount();
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        std::cout << "DELETE Query executed: " << sql << std::endl;
-        if (!params.empty()) {
-            std::cout << "  Parameters: " << formatParameters(params) << std::endl;
-        }
-        std::cout << "  Affected rows: " << affectedRows << std::endl;
-        std::cout << "  Execution time: " << duration.count() << "ms" << std::endl;
-        
-        success = true;
-        
-    } catch (const mysqlx::Error& e) {
-        error = std::string("MySQL X DevAPI Error: ") + e.what();
-        std::cerr << "DELETE failed: " << error << std::endl;
-    } catch (const std::exception& e) {
-        error = std::string("Exception: ") + e.what();
-        std::cerr << "DELETE failed: " << error << std::endl;
+        std::cerr << queryTypeName << " failed: " << error << std::endl;
     }
     
     traceSqlExecution(span, sql, params, success, error);
