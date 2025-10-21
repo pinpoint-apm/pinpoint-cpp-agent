@@ -148,6 +148,13 @@ pinpoint::SpanPtr DatabaseDemo::createSqlSpanEvent(const std::string& operation)
     return span;
 }
 
+static int random_number() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dis(100, 300);
+    return dis(gen);
+}
+
 void DatabaseDemo::traceSqlExecution(pinpoint::SpanPtr span, const std::string& sql, 
                                     const std::vector<std::string>& params, bool success, 
                                     const std::string& error) {
@@ -163,6 +170,8 @@ void DatabaseDemo::traceSqlExecution(pinpoint::SpanPtr span, const std::string& 
     } catch (const std::exception& e) {
         std::cerr << "Error in SQL tracing: " << e.what() << std::endl;;
     }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(random_number()));
     span->EndSpanEvent();
 }
 

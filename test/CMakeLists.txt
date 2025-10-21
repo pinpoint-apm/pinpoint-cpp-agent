@@ -138,9 +138,6 @@ add_test(NAME test_noop COMMAND test_noop)
 add_executable(test_grpc test_grpc.cpp)
 target_link_libraries(test_grpc 
     ${PINPOINT_CPP_LIBRARY} 
-    GTest::gtest 
-    GTest::gtest_main
-    GTest::gmock
     GTest::gmock_main
 )
 set_target_properties(test_grpc PROPERTIES CXX_STANDARD 17)
@@ -150,14 +147,7 @@ add_test(NAME test_grpc COMMAND test_grpc)
 add_executable(test_grpc_with_mocks test_grpc_with_mocks.cpp)
 target_link_libraries(test_grpc_with_mocks 
     ${PINPOINT_CPP_LIBRARY} 
-    GTest::gtest 
-    GTest::gtest_main
-    GTest::gmock
     GTest::gmock_main
 )
 set_target_properties(test_grpc_with_mocks PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_grpc_with_mocks COMMAND test_grpc_with_mocks)
-
-#add_executable(pinpoint_tracer_test tracer_test.cpp)
-#target_link_libraries(pinpoint_tracer_test ${PINPOINT_CPP_LIBRARY})
-#add_test(NAME pinpoint_tracer_test COMMAND pinpoint_tracer_test)
