@@ -54,6 +54,10 @@ public:
         recorded_url_stats_++;
     }
 
+    void recordException(SpanData* span_data) const override {
+        recorded_exceptions_++;
+    }
+
     void recordStats(StatsType stats) const override {
         recorded_stats_calls_++;
         last_stats_type_ = stats;
@@ -108,6 +112,7 @@ public:
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     mutable int recorded_spans_ = 0;
     mutable int recorded_url_stats_ = 0;
+    mutable int recorded_exceptions_ = 0;
     mutable int recorded_stats_calls_ = 0;
     mutable StatsType last_stats_type_ = AGENT_STATS;
 

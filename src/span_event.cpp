@@ -14,13 +14,16 @@
  * limitations under the License.
  */
 
-#include "agent.h"
+#include "callstack.h"
+#include "logging.h"
 #include "span.h"
 #include "span_event.h"
 #include "sql.h"
 #include "utility.h"
 
 namespace pinpoint {
+
+    std::atomic<int32_t> Exception::exception_id_gen{1};
 
     SpanEventImpl::SpanEventImpl(SpanData* span, std::string_view operation) :
         parent_span_(span),
@@ -63,6 +66,24 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
         error_func_id_ = parent_span_->getAgent()->cacheError(error_name);
         error_string_ = error_message;
+    }
+
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
+        SetError(error_name, error_message);
+
+        try {
+            auto callstack = std::make_unique<CallStack>(error_message);
+            reader.ForEach([&](std::string_view module, std::string_view function, std::string_view file, int line) {
+                callstack->push(module, function, file, line);
+                return;
+            });
+
+            auto exception = std::make_unique<Exception>(std::move(callstack));
+            parent_span_->addException(std::move(exception));
+            annotations_->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
+        } catch (const std::exception& e) {
+            LOG_ERROR("call stack trace exception = {}", e.what());
+        }
     }
 
     void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {

@@ -19,7 +19,7 @@
 
 namespace pinpoint {
 
-    void PinpointAnnotation::AppendInt(int32_t key, int i) {
+    void PinpointAnnotation::AppendInt(int32_t key, int32_t i) {
         try {
             auto a = std::make_shared<AnnotationData>(ANNOTATION_TYPE_INT, i);
             annotation_list_.emplace_back(key, a);
@@ -28,6 +28,14 @@ namespace pinpoint {
         }
     }
 
+    void PinpointAnnotation::AppendLong(int32_t key, int64_t l) {
+        try {
+            auto a = std::make_shared<AnnotationData>(ANNOTATION_TYPE_LONG, l);
+            annotation_list_.emplace_back(key, a);
+        } catch (const std::exception& e) {
+            LOG_ERROR("make annotation data exception = {}", e.what());
+        }
+    }
     void PinpointAnnotation::AppendString(int32_t key, std::string_view s) {
         try {
             auto a = std::make_shared<AnnotationData>(ANNOTATION_TYPE_STRING, s);

@@ -55,8 +55,12 @@ private:
 
 class MockAnnotation : public Annotation {
 public:
-    void AppendInt(int32_t key, int i) override {
+    void AppendInt(int32_t key, int32_t i) override {
         int_values_[key].push_back(i);
+    }
+
+    void AppendLong(int32_t key, int64_t l) override {
+        long_values_[key].push_back(l);
     }
 
     void AppendString(int32_t key, std::string_view s) override {
@@ -101,7 +105,8 @@ public:
     }
 
 private:
-    std::map<int32_t, std::vector<int> > int_values_;
+    std::map<int32_t, std::vector<int32_t> > int_values_;
+    std::map<int32_t, std::vector<int64_t> > long_values_;
     std::map<int32_t, std::vector<std::string> > string_values_;
     std::map<int32_t, std::vector<std::pair<std::string, std::string> > > string_string_values_;
 };

@@ -77,6 +77,9 @@ public:
     void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
         recorded_url_stats_++;
     }
+    void recordException(SpanData* span_data) const override {
+        recorded_exceptions_++;
+    }
     void recordStats(StatsType stats) const override {
         recorded_stats_calls_++;
         last_stats_type_ = stats;
@@ -126,6 +129,7 @@ public:
     mutable int recorded_stats_calls_ = 0;
     mutable StatsType last_stats_type_ = AGENT_STATS;
     mutable int recorded_url_stats_ = 0;
+    mutable int recorded_exceptions_ = 0;
     mutable int recorded_server_headers_ = 0;
     mutable int recorded_client_headers_ = 0;
     mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;

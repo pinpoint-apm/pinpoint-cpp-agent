@@ -57,15 +57,15 @@ namespace pinpoint {
         agent_info.set_allocated_servermetadata(meta_data);
     }
 
-    v1::PTransactionId* build_transaction_id(SpanData *span) {
-        auto& [agent_id, start_time, sequence] = span->getTraceId();
-        const auto tid = new v1::PTransactionId();
+    v1::PTransactionId* build_transaction_id(TraceId& tid) {
+        auto& [agent_id, start_time, sequence] = tid;
+        const auto ptid = new v1::PTransactionId();
 
-        tid->set_agentid(agent_id);
-        tid->set_agentstarttime(start_time);
-        tid->set_sequence(sequence);
+        ptid->set_agentid(agent_id);
+        ptid->set_agentstarttime(start_time);
+        ptid->set_sequence(sequence);
 
-        return tid;
+        return ptid;
     }
 
     v1::PAcceptEvent* build_accept_event(SpanData *span) {
@@ -205,7 +205,7 @@ namespace pinpoint {
         const auto grpc_span = new v1::PSpan();
 
         grpc_span->set_version(1);
-        const auto tid = build_transaction_id(span);
+        const auto tid = build_transaction_id(span->getTraceId());
         grpc_span->set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
@@ -255,7 +255,7 @@ namespace pinpoint {
         const auto grpc_span = new v1::PSpanChunk();
         grpc_span->set_version(1);
 
-        const auto tid = build_transaction_id(span);
+        const auto tid = build_transaction_id(span->getTraceId());
         grpc_span->set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
@@ -574,6 +574,49 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
+    GrpcRequestStatus GrpcAgent::send_exception_meta(ExceptionMeta& exception_meta) {
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+
+        v1::PExceptionMetaData grpc_exception_meta;
+
+        grpc_exception_meta.set_allocated_transactionid(build_transaction_id(exception_meta.txid_));
+        grpc_exception_meta.set_spanid(exception_meta.span_id_);
+        grpc_exception_meta.set_uritemplate(exception_meta.url_template_);
+
+        for (const auto& exception : exception_meta.exceptions_) {
+            const auto grpc_exception = grpc_exception_meta.add_exceptions();
+            auto callstack = exception->getCallStack();
+            grpc_exception->set_exceptionid(exception->getId());
+            grpc_exception->set_exceptionclassname(callstack->getModuleName());
+            grpc_exception->set_exceptionmessage(callstack->getErrorMessage());
+            grpc_exception->set_starttime(callstack->getErrorTime());
+            grpc_exception->set_exceptiondepth(1);
+
+            for (const auto& frame : callstack->getStack()) {
+                const auto grpc_callstack = grpc_exception->add_stacktraceelement();
+                grpc_callstack->set_classname(frame.module);  
+                grpc_callstack->set_filename(frame.file);
+                grpc_callstack->set_linenumber(frame.line);
+                grpc_callstack->set_methodname(frame.function);
+            }
+        }
+
+        v1::PResult reply;
+        grpc::ClientContext ctx;
+
+        build_grpc_context(&ctx, agent_, 0);
+        set_deadline(ctx, META_TIMEOUT);
+        const grpc::Status status = meta_stub_->RequestExceptionMetaData(&ctx, grpc_exception_meta, &reply);
+
+        if (status.ok()) {
+            LOG_DEBUG("success to send exception metadata");
+            return SEND_OK;
+        }
+
+        LOG_ERROR("failed to send exception metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+        return SEND_FAIL;
+    }
+
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
@@ -621,6 +664,8 @@ namespace pinpoint {
                 if (send_sql_uid_meta(meta->value_.sql_uid_meta_) != SEND_OK) {
                     agent_->removeCacheSqlUid(meta->value_.sql_uid_meta_);
                 }
+            } else if (meta->meta_type_ == META_EXCEPTION) {
+                send_exception_meta(meta->value_.exception_meta_);
             }
 
             lock.lock();

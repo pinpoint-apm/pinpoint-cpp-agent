@@ -32,7 +32,8 @@ namespace pinpoint {
         NoopAnnotation() {}
         ~NoopAnnotation() override {}
 
-        void AppendInt(int32_t key, int i) override {}
+        void AppendInt(int32_t key, int32_t i) override {}
+        void AppendLong(int32_t key, int64_t l) override {}
         void AppendString(int32_t key, std::string_view s) override {}
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override {}
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override {}
@@ -52,6 +53,7 @@ namespace pinpoint {
         void SetEndPoint(std::string_view end_point) override {}
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}
+        void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 

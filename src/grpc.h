@@ -30,6 +30,7 @@
 #include "v1/Service.grpc.pb.h"
 
 #include "agent_service.h"
+#include "callstack.h"
 #include "span.h"
 
 namespace pinpoint {
@@ -89,17 +90,30 @@ namespace pinpoint {
         ~SqlUidMeta() {}
     } SqlUidMeta;
 
+    typedef struct ExceptionMeta {
+        TraceId txid_;
+        int64_t span_id_;
+        std::string url_template_;
+        std::vector<std::unique_ptr<Exception>> exceptions_;
+        ExceptionMeta(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
+            : txid_(txid), span_id_(span_id), url_template_(url_template), exceptions_(std::move(exceptions)) {}
+        ~ExceptionMeta() {}
+    } ExceptionMeta;
+
     typedef union MetaValue {
         ApiMeta api_meta_;
         StringMeta str_meta_;
         SqlUidMeta sql_uid_meta_;
+        ExceptionMeta exception_meta_;
         MetaValue(int32_t id, int32_t api_type, std::string_view api_str) : api_meta_(id, api_type, api_str) {}
         MetaValue(int32_t id, std::string_view str_val, StringMetaType type) : str_meta_(id, str_val, type) {}
         MetaValue(std::vector<unsigned char> uid, std::string_view sql) : sql_uid_meta_(std::move(uid), sql) {}
+        MetaValue(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions) 
+            : exception_meta_(txid, span_id, url_template, std::move(exceptions)) {}
         ~MetaValue() {}
     } MetaValue;
 
-    enum MetaType {META_API, META_STRING, META_SQL_UID};
+    enum MetaType {META_API, META_STRING, META_SQL_UID, META_EXCEPTION};
     typedef struct MetaData {
         MetaType meta_type_;
         MetaValue value_;
@@ -109,6 +123,8 @@ namespace pinpoint {
             : meta_type_(meta_type), value_(id, str_val, str_type) {}
         MetaData(enum MetaType meta_type, std::vector<unsigned char> uid, std::string_view sql)
             : meta_type_(meta_type), value_(std::move(uid), sql) {}
+        MetaData(enum MetaType meta_type, TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
+            : meta_type_(meta_type), value_(txid, span_id, url_template, std::move(exceptions)) {}
         ~MetaData() {}
     } MetaData;
 
@@ -153,6 +169,7 @@ namespace pinpoint {
         GrpcRequestStatus send_error_meta(StringMeta& error_meta);
         GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
         GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
+        GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
     };
 
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {

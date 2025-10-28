@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agent_service.h"
+#include "callstack.h"
 #include "span_event.h"
 #include "url_stat.h"
 #include "utility.h"
@@ -130,6 +131,12 @@ namespace pinpoint {
 
     	void setUrlStat(std::string_view url_pattern, std::string_view method, int status_code);
     	void sendUrlStat();
+		std::string getUrlTemplate() {
+			if (url_stat_) {
+				return url_stat_->url_pattern_;
+			}
+			return "NULL";
+		}
 
     	void setStartTime(std::chrono::system_clock::time_point start_time) { start_time_ = to_milli_seconds(start_time); }
         int64_t getStartTime() const { return start_time_; }
@@ -147,6 +154,10 @@ namespace pinpoint {
         std::vector<std::shared_ptr<SpanEventImpl>>& getFinishedEvents() { return finished_events; }
     	size_t getFinishedEventsCount() const { return finished_events.size(); }
     	void clearFinishedEvents() { finished_events.clear(); }
+
+        void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
+        std::vector<std::unique_ptr<Exception>> getExceptions() { return std::move(exceptions_); }
+    	void sendExceptions();
 
         std::shared_ptr<PinpointAnnotation> getAnnotations() const { return annotations_; }
     	AgentService* getAgent() const { return agent_; }
@@ -192,6 +203,7 @@ namespace pinpoint {
 
         std::unique_ptr<UrlStat> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;
+        std::vector<std::unique_ptr<Exception>> exceptions_;
     	AgentService *agent_;
     };
 

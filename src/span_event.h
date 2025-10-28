@@ -36,6 +36,7 @@ namespace pinpoint {
         void SetEndPoint(std::string_view endpoint) override { endpoint_ = endpoint; }
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
+        void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
         AnnotationPtr GetAnnotations() const override { return annotations_; }

@@ -23,11 +23,12 @@ namespace pinpoint {
 
     enum AnnotationType {
         ANNOTATION_TYPE_INT = 0,
-        ANNOTATION_TYPE_STRING = 1,
-        ANNOTATION_TYPE_STRING_STRING = 2,
-        ANNOTATION_TYPE_INT_STRING_STRING = 3,
-        ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING = 4,
-        ANNOTATION_TYPE_BYTES_STRING_STRING = 5
+        ANNOTATION_TYPE_LONG = 1,
+        ANNOTATION_TYPE_STRING = 2,
+        ANNOTATION_TYPE_STRING_STRING = 3,
+        ANNOTATION_TYPE_INT_STRING_STRING = 4,
+        ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING = 5,
+        ANNOTATION_TYPE_BYTES_STRING_STRING = 6
     };
 
     typedef struct StringStringValue {
@@ -73,14 +74,16 @@ namespace pinpoint {
     } BytesStringStringValue;
 
     typedef union AnnotationValue {
-        int intValue;
+        int32_t intValue;
+        int64_t longValue;
         std::string stringValue;
         StringStringValue stringStringValue;
         IntStringStringValue intStringStringValue;
         LongIntIntByteByteStringValue longIntIntByteByteStringValue;
         BytesStringStringValue bytesStringStringValue;
 
-        AnnotationValue(const int intVal) : intValue(intVal) {}
+        AnnotationValue(const int32_t intVal) : intValue(intVal) {}
+        AnnotationValue(const int64_t longVal) : longValue(longVal) {}
         AnnotationValue(std::string_view strVal) : stringValue(strVal) {}
         AnnotationValue(std::string_view strVal1, std::string_view strVal2) : stringStringValue(strVal1, strVal2) {}
         AnnotationValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
@@ -96,7 +99,8 @@ namespace pinpoint {
         AnnotationType dataType;
         AnnotationValue data;
 
-        AnnotationData(const AnnotationType dType, const int intVal) : dataType(dType), data(intVal) {}
+        AnnotationData(const AnnotationType dType, const int32_t intVal) : dataType(dType), data(intVal) {}
+        AnnotationData(const AnnotationType dType, const int64_t longVal) : dataType(dType), data(longVal) {}
         AnnotationData(const AnnotationType dType, std::string_view strVal) : dataType(dType), data(strVal) {}
         AnnotationData(const AnnotationType dType, std::string_view strVal1, std::string_view strVal2) : dataType(dType), data(strVal1, strVal2) {}
         AnnotationData(const AnnotationType dType, const int intVal, std::string_view strVal1, std::string_view strVal2)
@@ -113,7 +117,8 @@ namespace pinpoint {
         PinpointAnnotation() {}
         ~PinpointAnnotation() override = default;
 
-        void AppendInt(int32_t key, int i) override;
+        void AppendInt(int32_t key, int32_t i) override;
+        void AppendLong(int32_t key, int64_t l) override;
         void AppendString(int32_t key, std::string_view s) override;
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override;
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override;

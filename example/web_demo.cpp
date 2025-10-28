@@ -2,12 +2,47 @@
 #include <sstream>
 #include <iostream>
 
+#include <cpptrace/utils.hpp>
+#include <cpptrace/cpptrace.hpp>
+#include <cpptrace/formatting.hpp>
+
 #include "pinpoint/tracer.h"
 #include "3rd_party/httplib.h"
 #include "http_trace_context.h"
 
 // Thread local storage for span
 thread_local pinpoint::SpanPtr current_span;
+
+bool startsWith(const std::string& str, const std::string& prefix) {
+    if (str.length() < prefix.length()) {
+        return false;
+    }
+    return str.compare(0, prefix.length(), prefix) == 0;
+}
+
+class CppTraceCallStackReader : public pinpoint::CallStackReader {
+public:
+    CppTraceCallStackReader() = default;
+    ~CppTraceCallStackReader() override = default;
+
+    void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const override {
+        auto stack_trace = cpptrace::generate_trace();
+        for (const auto& frame : stack_trace.frames) {
+            auto symbol = cpptrace::prune_symbol(frame.symbol);
+            if (!startsWith(symbol, "std::")) {
+                auto module = std::string("unknown");
+                auto function = symbol;
+
+                auto pos = symbol.rfind("::");
+                if (pos != std::string::npos) {
+                    function = symbol.substr(pos + 2);
+                    module = symbol.substr(0, pos);
+                }
+                callback(module, function, frame.filename, frame.line.value_or(0));
+            }
+        }
+    }
+};
 
 // Helper functions for thread local span management
 void set_span_context(pinpoint::SpanPtr span) { current_span = span; }
@@ -167,7 +202,9 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
         
         std::string err_msg = "Outgoing call failed: Unable to connect to localhost:9000";
         std::cout << err_msg << std::endl;
-        se->SetError(err_msg);
+
+        CppTraceCallStackReader reader;
+        se->SetError("HandleOutgoingError", err_msg, reader);
     }
     
     json_response << "}";

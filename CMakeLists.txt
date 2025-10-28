@@ -6,6 +6,7 @@ set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
         "Toolchain to use for building this package and dependencies")
 
 include(CMakeDependentOption)
+include(FetchContent)
 
 project(pinpoint-cpp VERSION 1.0.0)
 
@@ -32,6 +33,14 @@ list(APPEND LINK_LIBS fmt::fmt)
 
 find_package(absl CONFIG REQUIRED)
 list(APPEND LINK_LIBS absl::strings)
+
+FetchContent_Declare(
+  cpptrace
+  GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
+  GIT_TAG        v1.0.4
+)
+FetchContent_MakeAvailable(cpptrace)
+list(APPEND LINK_LIBS cpptrace::cpptrace)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

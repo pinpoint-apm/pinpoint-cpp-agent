@@ -389,6 +389,17 @@ namespace pinpoint {
         }
     }
 
+    void AgentImpl::recordException(SpanData* span_data) const {
+        if (!enabled_) {
+            return;
+        }
+
+        auto meta = std::make_unique<MetaData>(META_EXCEPTION, span_data->getTraceId(), 
+                                               span_data->getSpanId(), span_data->getUrlTemplate(),
+                                               span_data->getExceptions());
+        grpc_agent_->enqueueMeta(std::move(meta));
+    }
+
     bool AgentImpl::isStatusFail(const int status) const {
         if (enabled_ && http_status_errors_) {
             return http_status_errors_->isErrorCode(status);

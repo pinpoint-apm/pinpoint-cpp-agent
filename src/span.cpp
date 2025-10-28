@@ -103,6 +103,12 @@ namespace pinpoint {
         }
     }
 
+    void SpanData::sendExceptions() {
+        if (!exceptions_.empty()) {
+            agent_->recordException(this);
+        }
+    }
+
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
                          span_data_(span_data), event_chunk_{}, final_(final), key_time_(0) {
         const auto& events = span_data_->getFinishedEvents();
@@ -244,6 +250,7 @@ namespace pinpoint {
         } else {
             drop_active_span(data_->getSpanId());
             collect_response_time(data_->getElapsed());
+            data_->sendExceptions();
             data_->sendUrlStat();
         }
 

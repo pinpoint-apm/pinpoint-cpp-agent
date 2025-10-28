@@ -39,6 +39,7 @@ namespace pinpoint {
 	constexpr int32_t ANNOTATION_API = 12;
 	constexpr int32_t ANNOTATION_SQL_ID = 20;
 	constexpr int32_t ANNOTATION_SQL_UID = 25;
+	constexpr int32_t ANNOTATION_EXCEPTION_ID = -52;
 	constexpr int32_t ANNOTATION_HTTP_URL = 40;
 	constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
 	constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
@@ -112,11 +113,18 @@ namespace pinpoint {
 		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const = 0;
 	};
 
+	class CallStackReader {
+	public:
+		virtual ~CallStackReader() = default;
+		virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
+	};
+	
     class Annotation {
     public:
         virtual ~Annotation() = default;
 
-        virtual void AppendInt(int32_t key, int i) = 0;
+        virtual void AppendInt(int32_t key, int32_t i) = 0;
+        virtual void AppendLong(int32_t key, int64_t l) = 0;
         virtual void AppendString(int32_t key, std::string_view s) = 0;
         virtual void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) = 0;
         virtual void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) = 0;
@@ -137,6 +145,7 @@ namespace pinpoint {
         virtual void SetEndPoint(std::string_view end_point) = 0;
         virtual void SetError(std::string_view error_message) = 0;
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
+        virtual void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) = 0;
 		virtual void SetSqlQuery(std::string_view sql_query, std::string_view args) = 0;
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 

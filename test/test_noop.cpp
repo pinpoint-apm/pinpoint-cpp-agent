@@ -62,6 +62,9 @@ public:
         last_url_stat_method_ = stat->method_;
         last_url_stat_status_code_ = stat->status_code_;
     }
+    void recordException(SpanData* span_data) const override {
+        recorded_exceptions_++;
+    }
     void recordStats(StatsType stats) const override {
         recorded_stats_calls_++;
         last_stats_type_ = stats;
@@ -111,6 +114,7 @@ public:
     mutable int recorded_stats_calls_ = 0;
     mutable StatsType last_stats_type_ = AGENT_STATS;
     mutable int recorded_url_stats_ = 0;
+    mutable int recorded_exceptions_ = 0;
     mutable std::string last_url_stat_url_;
     mutable std::string last_url_stat_method_;
     mutable int last_url_stat_status_code_ = 0;
