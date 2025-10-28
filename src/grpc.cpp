@@ -20,6 +20,7 @@
 #include <grpcpp/client_context.h>
 
 #include "absl/strings/str_cat.h"
+#include "annotation.h"
 #include "version.h"
 #include "logging.h"
 #include "stat.h"
@@ -96,6 +97,8 @@ namespace pinpoint {
 
         if (val->dataType == ANNOTATION_TYPE_INT) {
             annotation_value->set_intvalue(val->data.intValue);
+        } else if (val->dataType == ANNOTATION_TYPE_LONG) {
+            annotation_value->set_longvalue(val->data.longValue);
         } else if (val->dataType == ANNOTATION_TYPE_STRING) {
             annotation_value->set_stringvalue(val->data.stringValue);
         } else if (val->dataType == ANNOTATION_TYPE_STRING_STRING) {

@@ -26,20 +26,29 @@ public:
     ~CppTraceCallStackReader() override = default;
 
     void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const override {
-        auto stack_trace = cpptrace::generate_trace();
+        auto stack_trace = cpptrace::generate_trace(2, 32);
         for (const auto& frame : stack_trace.frames) {
             auto symbol = cpptrace::prune_symbol(frame.symbol);
-            if (!startsWith(symbol, "std::")) {
-                auto module = std::string("unknown");
-                auto function = symbol;
-
-                auto pos = symbol.rfind("::");
-                if (pos != std::string::npos) {
-                    function = symbol.substr(pos + 2);
-                    module = symbol.substr(0, pos);
-                }
-                callback(module, function, frame.filename, frame.line.value_or(0));
+            if (startsWith(symbol, "std::")) {
+                continue;
             }
+
+            auto module = std::string("unknown");
+            auto function = symbol;
+            auto file = cpptrace::basename(frame.filename);
+
+            auto pos = symbol.rfind("::");
+            if (pos != std::string::npos) {
+                module = symbol.substr(0, pos);
+                function = symbol.substr(pos + 2);
+            } else {
+                pos = file.find(".");
+                if (pos != std::string::npos) {
+                    module = file.substr(0, pos);
+                }
+            }
+
+            callback(module, function, file, frame.line.value_or(0));
         }
     }
 };
@@ -61,15 +70,13 @@ int main() {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
 
     auto agent = pinpoint::CreateAgent();
-
     httplib::Server server;
     
     // Register /users/:id endpoint
     server.Get(R"(/users/(\d+))", wrap_handler(handle_users));
-    
     // Register /outgoing endpoint
     server.Get("/outgoing", wrap_handler(handle_outgoing));
-    
+   
     std::cout << "Web demo server starting on http://localhost:8088" << std::endl;
     std::cout << "Try: http://localhost:8088/users/123?name=foo" << std::endl;
     std::cout << "Try: http://localhost:8088/outgoing" << std::endl;

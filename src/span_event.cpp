@@ -79,8 +79,8 @@ namespace pinpoint {
             });
 
             auto exception = std::make_unique<Exception>(std::move(callstack));
-            parent_span_->addException(std::move(exception));
             annotations_->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
+            parent_span_->addException(std::move(exception));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
