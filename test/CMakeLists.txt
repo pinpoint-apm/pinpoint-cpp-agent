@@ -62,6 +62,17 @@ target_link_libraries(test_annotation
 set_target_properties(test_annotation PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_annotation COMMAND test_annotation)
 
+# CallStack tests
+add_executable(test_callstack test_callstack.cpp)
+target_include_directories(test_callstack PRIVATE ../src)
+target_link_libraries(test_callstack 
+    ${PINPOINT_CPP_LIBRARY} 
+    GTest::gtest 
+    GTest::gtest_main
+)
+set_target_properties(test_callstack PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_callstack COMMAND test_callstack)
+
 # Config tests
 add_executable(test_config test_config.cpp)
 target_include_directories(test_config PRIVATE ../src)

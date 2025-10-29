@@ -105,6 +105,89 @@ TEST_F(AnnotationTest, AppendIntExtremeValuesTest) {
     EXPECT_EQ(it->second->data.intValue, INT32_MIN) << "INT32_MIN should match";
 }
 
+// ========== AppendLong Tests ==========
+
+// Test AppendLong with positive long
+TEST_F(AnnotationTest, AppendLongPositiveTest) {
+    int32_t key = 150;
+    int64_t value = 1234567890123456789LL;
+    
+    annotation->AppendLong(key, value);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
+    EXPECT_EQ(pair.second->data.longValue, value) << "Long value should match";
+}
+
+// Test AppendLong with negative long
+TEST_F(AnnotationTest, AppendLongNegativeTest) {
+    int32_t key = 151;
+    int64_t value = -1234567890123456789LL;
+    
+    annotation->AppendLong(key, value);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
+    EXPECT_EQ(pair.second->data.longValue, value) << "Negative long value should match";
+}
+
+// Test AppendLong with zero
+TEST_F(AnnotationTest, AppendLongZeroTest) {
+    int32_t key = 152;
+    int64_t value = 0LL;
+    
+    annotation->AppendLong(key, value);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
+    EXPECT_EQ(pair.second->data.longValue, value) << "Zero value should match";
+}
+
+// Test AppendLong with extreme values
+TEST_F(AnnotationTest, AppendLongExtremeValuesTest) {
+    annotation->AppendLong(250, INT64_MAX);
+    annotation->AppendLong(251, INT64_MIN);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 2) << "Should have exactly 2 annotations";
+    
+    auto it = annotations.begin();
+    EXPECT_EQ(it->first, 250) << "First key should match";
+    EXPECT_EQ(it->second->data.longValue, INT64_MAX) << "INT64_MAX should match";
+    
+    ++it;
+    EXPECT_EQ(it->first, 251) << "Second key should match";
+    EXPECT_EQ(it->second->data.longValue, INT64_MIN) << "INT64_MIN should match";
+}
+
+// Test AppendLong with timestamp-like values
+TEST_F(AnnotationTest, AppendLongTimestampTest) {
+    int32_t key = 153;
+    int64_t timestamp = 1609459200000LL; // 2021-01-01 00:00:00 in milliseconds
+    
+    annotation->AppendLong(key, timestamp);
+    
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, key) << "Key should match";
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
+    EXPECT_EQ(pair.second->data.longValue, timestamp) << "Timestamp value should match";
+}
+
 // ========== AppendString Tests ==========
 
 // Test AppendString with normal string

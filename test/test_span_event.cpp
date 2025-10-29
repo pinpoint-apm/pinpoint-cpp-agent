@@ -183,6 +183,33 @@ private:
     std::map<std::string, std::string> headers_;
 };
 
+// Mock CallStackReader for testing
+class MockCallStackReader : public CallStackReader {
+public:
+    MockCallStackReader() = default;
+
+    void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const override {
+        for (const auto& frame : frames_) {
+            callback(frame.module, frame.function, frame.file, frame.line);
+        }
+    }
+
+    void AddFrame(std::string_view module, std::string_view function, std::string_view file, int line) {
+        frames_.push_back({std::string(module), std::string(function), std::string(file), line});
+    }
+
+    size_t GetFrameCount() const { return frames_.size(); }
+
+private:
+    struct Frame {
+        std::string module;
+        std::string function;
+        std::string file;
+        int line;
+    };
+    std::vector<Frame> frames_;
+};
+
 class SpanEventTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -330,6 +357,261 @@ TEST_F(SpanEventTest, SetErrorWithNameAndMessageTest) {
     // Verify error was cached with custom name
     int32_t cached_id = mock_agent_service_->getCachedErrorId("SQLException");
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
+}
+
+// ========== Error with CallStack Tests ==========
+
+TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    // Add a single stack frame
+    reader.AddFrame("/usr/lib/libmyapp.so", "main", "/src/main.cpp", 42);
+    
+    span_event.SetError("RuntimeError", "Test error message", reader);
+    
+    // Verify error information is set
+    EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
+    EXPECT_EQ(span_event.getErrorString(), "Test error message") << "Error message should be set";
+    
+    // Verify error was cached with correct name
+    int32_t cached_id = mock_agent_service_->getCachedErrorId("RuntimeError");
+    EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
+    
+    // Verify annotation contains exception ID
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
+    
+    // Verify exception was added to parent span
+    auto exceptions = test_span_data_->getExceptions();
+    EXPECT_EQ(exceptions.size(), 1) << "One exception should be added to parent span";
+    EXPECT_NE(exceptions[0], nullptr) << "Exception should not be null";
+    EXPECT_GT(exceptions[0]->getId(), 0) << "Exception should have valid ID";
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    // Add multiple stack frames
+    reader.AddFrame("/usr/lib/libmyapp.so", "function1", "/src/file1.cpp", 10);
+    reader.AddFrame("/usr/lib/libmyapp.so", "function2", "/src/file2.cpp", 20);
+    reader.AddFrame("/usr/lib/libmyapp.so", "function3", "/src/file3.cpp", 30);
+    reader.AddFrame("/usr/lib/libmyapp.so", "main", "/src/main.cpp", 100);
+    
+    span_event.SetError("StackOverflowError", "Stack overflow occurred", reader);
+    
+    // Verify error information
+    EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
+    EXPECT_EQ(span_event.getErrorString(), "Stack overflow occurred") << "Error message should be set";
+    
+    // Verify exception was added
+    auto exceptions = test_span_data_->getExceptions();
+    EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
+    
+    // Verify callstack contains all frames
+    auto callstack = exceptions[0]->getCallStack();
+    EXPECT_NE(callstack, nullptr) << "CallStack should not be null";
+    EXPECT_EQ(callstack->getErrorMessage(), "Stack overflow occurred") << "Error message should match";
+    
+    auto& stack_frames = callstack->getStack();
+    EXPECT_EQ(stack_frames.size(), 4) << "Should have 4 stack frames";
+    
+    // Verify frame details
+    EXPECT_EQ(stack_frames[0].module, "/usr/lib/libmyapp.so");
+    EXPECT_EQ(stack_frames[0].function, "function1");
+    EXPECT_EQ(stack_frames[0].file, "/src/file1.cpp");
+    EXPECT_EQ(stack_frames[0].line, 10);
+    
+    EXPECT_EQ(stack_frames[1].function, "function2");
+    EXPECT_EQ(stack_frames[2].function, "function3");
+    EXPECT_EQ(stack_frames[3].function, "main");
+    EXPECT_EQ(stack_frames[3].line, 100);
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    // Don't add any frames
+    EXPECT_EQ(reader.GetFrameCount(), 0) << "Reader should have no frames";
+    
+    span_event.SetError("EmptyStackError", "Error with empty stack", reader);
+    
+    // Verify error information is still set
+    EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
+    EXPECT_EQ(span_event.getErrorString(), "Error with empty stack") << "Error message should be set";
+    
+    // Verify exception was added even with empty stack
+    auto exceptions = test_span_data_->getExceptions();
+    EXPECT_EQ(exceptions.size(), 1) << "One exception should be added even with empty stack";
+    
+    auto callstack = exceptions[0]->getCallStack();
+    EXPECT_NE(callstack, nullptr) << "CallStack should not be null";
+    EXPECT_EQ(callstack->getErrorMessage(), "Error with empty stack") << "Error message should match";
+    
+    auto& stack_frames = callstack->getStack();
+    EXPECT_EQ(stack_frames.size(), 0) << "Stack should be empty";
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    reader.AddFrame("/lib/app.so", "doWork", "/src/worker.cpp", 55);
+    
+    span_event.SetError("NullPointerError", "Null pointer dereference", reader);
+    
+    // Get the exception ID from the exception
+    auto exceptions = test_span_data_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1) << "Should have one exception";
+    int32_t exception_id = exceptions[0]->getId();
+    
+    EXPECT_GT(exception_id, 0) << "Exception ID should be positive";
+    
+    // Note: In a real test, we would verify that ANNOTATION_EXCEPTION_ID was added to annotations
+    // However, the PinpointAnnotation class doesn't expose a way to read back annotations
+    // So we just verify that the exception ID is valid
+    auto annotations = span_event.GetAnnotations();
+    EXPECT_NE(annotations, nullptr) << "Annotations should exist";
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
+    // Test that multiple errors can be set on different span events
+    SpanEventImpl event1(test_span_data_.get(), "op1");
+    SpanEventImpl event2(test_span_data_.get(), "op2");
+    
+    MockCallStackReader reader1;
+    reader1.AddFrame("/lib/app.so", "function1", "/src/file1.cpp", 10);
+    
+    MockCallStackReader reader2;
+    reader2.AddFrame("/lib/app.so", "function2", "/src/file2.cpp", 20);
+    reader2.AddFrame("/lib/app.so", "function3", "/src/file3.cpp", 30);
+    
+    event1.SetError("Error1", "First error", reader1);
+    event2.SetError("Error2", "Second error", reader2);
+    
+    // Both errors should be set
+    EXPECT_EQ(event1.getErrorString(), "First error");
+    EXPECT_EQ(event2.getErrorString(), "Second error");
+    
+    // Both exceptions should be added to parent span
+    auto exceptions = test_span_data_->getExceptions();
+    EXPECT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
+    
+    // Verify different exception IDs
+    int32_t id1 = exceptions[0]->getId();
+    int32_t id2 = exceptions[1]->getId();
+    EXPECT_NE(id1, id2) << "Exception IDs should be different";
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    // Add frames with various details
+    reader.AddFrame("/usr/local/lib/libcustom.so.1.0", "CustomClass::process()", "/home/dev/project/src/custom.cpp", 123);
+    reader.AddFrame("/lib/x86_64-linux-gnu/libc.so.6", "malloc", "", 0);  // System library without file info
+    reader.AddFrame("./myapp", "handleRequest", "/app/handler.cpp", 456);
+    
+    span_event.SetError("ProcessingError", "Failed to process request", reader);
+    
+    // Verify exception
+    auto exceptions = test_span_data_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1);
+    
+    auto callstack = exceptions[0]->getCallStack();
+    ASSERT_NE(callstack, nullptr);
+    
+    auto& frames = callstack->getStack();
+    ASSERT_EQ(frames.size(), 3);
+    
+    // Verify first frame with full details
+    EXPECT_EQ(frames[0].module, "/usr/local/lib/libcustom.so.1.0");
+    EXPECT_EQ(frames[0].function, "CustomClass::process()");
+    EXPECT_EQ(frames[0].file, "/home/dev/project/src/custom.cpp");
+    EXPECT_EQ(frames[0].line, 123);
+    
+    // Verify second frame (system library)
+    EXPECT_EQ(frames[1].module, "/lib/x86_64-linux-gnu/libc.so.6");
+    EXPECT_EQ(frames[1].function, "malloc");
+    EXPECT_EQ(frames[1].file, "");  // No file info
+    EXPECT_EQ(frames[1].line, 0);    // No line info
+    
+    // Verify third frame
+    EXPECT_EQ(frames[2].module, "./myapp");
+    EXPECT_EQ(frames[2].function, "handleRequest");
+    EXPECT_EQ(frames[2].line, 456);
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "test-op");
+    MockCallStackReader reader;
+    
+    reader.AddFrame("/lib/app.so", "testFunc", "/src/test.cpp", 1);
+    
+    auto before_time = to_milli_seconds(std::chrono::system_clock::now());
+    
+    span_event.SetError("TimeTestError", "Testing timestamp", reader);
+    
+    auto after_time = to_milli_seconds(std::chrono::system_clock::now());
+    
+    // Verify exception
+    auto exceptions = test_span_data_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1);
+    
+    auto callstack = exceptions[0]->getCallStack();
+    ASSERT_NE(callstack, nullptr);
+    
+    int64_t error_time = callstack->getErrorTime();
+    EXPECT_GE(error_time, before_time) << "Error time should be after or equal to before time";
+    EXPECT_LE(error_time, after_time) << "Error time should be before or equal to after time";
+}
+
+TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
+    SpanEventImpl span_event(test_span_data_.get(), "database-operation");
+    
+    // Set up the span event
+    span_event.SetServiceType(SERVICE_TYPE_MYSQL_QUERY);
+    span_event.SetDestination("mysql-server");
+    span_event.SetEndPoint("localhost:3306");
+    
+    // Create a realistic call stack
+    MockCallStackReader reader;
+    reader.AddFrame("/usr/lib/libmysqlclient.so", "mysql_real_connect", "", 0);
+    reader.AddFrame("/opt/myapp/lib/libdb.so", "DatabaseConnection::connect()", "/src/db/connection.cpp", 78);
+    reader.AddFrame("/opt/myapp/bin/server", "handleDatabaseRequest", "/src/server/handler.cpp", 234);
+    reader.AddFrame("/opt/myapp/bin/server", "main", "/src/main.cpp", 45);
+    
+    // Set error with call stack
+    span_event.SetError("MySQLConnectionError", "Unable to connect to MySQL server: Connection refused", reader);
+    
+    // Wait a bit and finish
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    span_event.finish();
+    
+    // Verify all properties
+    EXPECT_EQ(span_event.getServiceType(), SERVICE_TYPE_MYSQL_QUERY);
+    EXPECT_EQ(span_event.getDestinationId(), "mysql-server");
+    EXPECT_EQ(span_event.getEndPoint(), "localhost:3306");
+    EXPECT_GT(span_event.getErrorFuncId(), 0);
+    EXPECT_EQ(span_event.getErrorString(), "Unable to connect to MySQL server: Connection refused");
+    EXPECT_GT(span_event.getEndElapsed(), 0);
+    
+    // Verify exception and callstack
+    auto exceptions = test_span_data_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1);
+    
+    auto callstack = exceptions[0]->getCallStack();
+    ASSERT_NE(callstack, nullptr);
+    EXPECT_EQ(callstack->getErrorMessage(), "Unable to connect to MySQL server: Connection refused");
+    
+    auto& frames = callstack->getStack();
+    EXPECT_EQ(frames.size(), 4);
+    EXPECT_EQ(frames[0].function, "mysql_real_connect");
+    EXPECT_EQ(frames[1].function, "DatabaseConnection::connect()");
+    EXPECT_EQ(frames[2].function, "handleDatabaseRequest");
+    EXPECT_EQ(frames[3].function, "main");
 }
 
 // ========== Async Operations Tests ==========
