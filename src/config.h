@@ -64,6 +64,7 @@ namespace pinpoint {
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE";
         constexpr const char* SQL_ENABLE_SQL_STATS = "PINPOINT_CPP_SQL_ENABLE_SQL_STATS";
         constexpr const char* CONFIG_FILE = "PINPOINT_CPP_CONFIG_FILE";
+        constexpr const char* ENABLE_CALLSTACK_TRACE = "PINPOINT_CPP_ENABLE_CALLSTACK_TRACE";
     }
 
     struct Config {
@@ -74,6 +75,7 @@ namespace pinpoint {
 
         bool enable;
         bool is_container;
+        bool enable_callstack_trace;
 
         struct {
             std::string level;

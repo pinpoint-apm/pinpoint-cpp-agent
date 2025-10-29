@@ -64,6 +64,7 @@ private:
         saved_env_vars_[env::CONFIG_FILE] = GetEnvVar(env::CONFIG_FILE);
         saved_env_vars_[env::SQL_MAX_BIND_ARGS_SIZE] = GetEnvVar(env::SQL_MAX_BIND_ARGS_SIZE);
         saved_env_vars_[env::SQL_ENABLE_SQL_STATS] = GetEnvVar(env::SQL_ENABLE_SQL_STATS);
+        saved_env_vars_[env::ENABLE_CALLSTACK_TRACE] = GetEnvVar(env::ENABLE_CALLSTACK_TRACE);
         
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
@@ -259,6 +260,9 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     // Test SQL defaults
     EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
     EXPECT_FALSE(config.sql.enable_sql_stats) << "SQL stats should be disabled by default";
+    
+    // Test CallStack trace default
+    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled by default";
 }
 
 // Test generated agent ID
@@ -916,6 +920,288 @@ TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
     // Should fallback to defaults when environment variable is invalid
     EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Should use default when env var is invalid";
     EXPECT_FALSE(config.sql.enable_sql_stats) << "Should use default when env var is invalid";
+}
+
+// ========== CallStack Trace Configuration Tests ==========
+
+// Test default callstack trace configuration
+TEST_F(ConfigTest, CallstackTraceDefaultTest) {
+    Config config = make_config();
+    
+    // Default should be false
+    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled by default";
+}
+
+// Test enabling callstack trace via YAML
+TEST_F(ConfigTest, CallstackTraceEnableViaYamlTest) {
+    set_config_string(R"(
+EnableCallstackTrace: true
+)");
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled as per YAML";
+}
+
+// Test disabling callstack trace via YAML
+TEST_F(ConfigTest, CallstackTraceDisableViaYamlTest) {
+    set_config_string(R"(
+EnableCallstackTrace: false
+)");
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled as per YAML";
+}
+
+// Test enabling callstack trace via environment variable
+TEST_F(ConfigTest, CallstackTraceEnableViaEnvironmentVariableTest) {
+    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
+    
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled as per environment variable";
+}
+
+// Test disabling callstack trace via environment variable
+TEST_F(ConfigTest, CallstackTraceDisableViaEnvironmentVariableTest) {
+    setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
+    
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled as per environment variable";
+}
+
+// Test environment variable overrides YAML for callstack trace
+TEST_F(ConfigTest, CallstackTraceEnvironmentVariableOverrideYamlTest) {
+    // Set YAML to disable
+    set_config_string(R"(
+EnableCallstackTrace: false
+)");
+    
+    // Set environment variable to enable (should override YAML)
+    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
+    
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
+}
+
+// Test environment variable overrides YAML (opposite case)
+TEST_F(ConfigTest, CallstackTraceEnvironmentVariableOverrideYamlOppositeTest) {
+    // Set YAML to enable
+    set_config_string(R"(
+EnableCallstackTrace: true
+)");
+    
+    // Set environment variable to disable (should override YAML)
+    setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
+    
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
+}
+
+// Test callstack trace in complete configuration
+TEST_F(ConfigTest, CallstackTraceInCompleteConfigurationTest) {
+    const std::string complete_config = R"(
+ApplicationName: "CallstackTestApp"
+ApplicationType: 1300
+EnableCallstackTrace: true
+
+Log:
+  Level: "debug"
+
+Collector:
+  GrpcHost: "test.host"
+  GrpcAgentPort: 9000
+)";
+    
+    set_config_string(complete_config);
+    Config config = make_config();
+    
+    EXPECT_EQ(config.app_name_, "CallstackTestApp") << "App name should match";
+    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled";
+    EXPECT_EQ(config.log.level, "debug") << "Other config values should also be loaded";
+}
+
+// Test callstack trace configuration string generation
+TEST_F(ConfigTest, CallstackTraceConfigurationToStringTest) {
+    set_config_string(R"(
+EnableCallstackTrace: true
+)");
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Check that callstack trace configuration is included in generated string
+    EXPECT_TRUE(config_string.find("EnableCallstackTrace: true") != std::string::npos) 
+        << "Config string should contain EnableCallstackTrace setting";
+}
+
+// Test callstack trace configuration string generation when disabled
+TEST_F(ConfigTest, CallstackTraceConfigurationToStringDisabledTest) {
+    set_config_string(R"(
+EnableCallstackTrace: false
+)");
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Check that callstack trace configuration is included in generated string
+    EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
+        << "Config string should contain EnableCallstackTrace setting as false";
+}
+
+// Test callstack trace configuration round-trip
+TEST_F(ConfigTest, CallstackTraceConfigurationRoundTripTest) {
+    const std::string callstack_config = R"(
+ApplicationName: "RoundTripApp"
+EnableCallstackTrace: true
+)";
+    
+    set_config_string(callstack_config);
+    Config config1 = make_config();
+    
+    EXPECT_TRUE(config1.enable_callstack_trace) << "Initial config should have callstack trace enabled";
+    
+    std::string generated_config_string = to_config_string(config1);
+    
+    // Use generated string as new config
+    set_config_string(generated_config_string);
+    Config config2 = make_config();
+    
+    // CallStack trace config should match after round-trip
+    EXPECT_EQ(config1.enable_callstack_trace, config2.enable_callstack_trace) 
+        << "CallStack trace setting should match after round-trip";
+    EXPECT_TRUE(config2.enable_callstack_trace) << "CallStack trace should still be enabled after round-trip";
+}
+
+// Test invalid callstack trace environment variable value
+TEST_F(ConfigTest, CallstackTraceInvalidEnvironmentVariableTest) {
+    // Test invalid boolean value (should fallback to default)
+    setenv(env::ENABLE_CALLSTACK_TRACE, "invalid_bool", 1);
+    
+    Config config = make_config();
+    
+    // Should fallback to default (false) when environment variable is invalid
+    EXPECT_FALSE(config.enable_callstack_trace) << "Should use default (false) when env var is invalid";
+}
+
+// Test various valid boolean representations for callstack trace
+TEST_F(ConfigTest, CallstackTraceBooleanRepresentationsTest) {
+    // Test "1" as true
+    setenv(env::ENABLE_CALLSTACK_TRACE, "1", 1);
+    Config config1 = make_config();
+    EXPECT_TRUE(config1.enable_callstack_trace) << "1 should be parsed as true";
+    
+    // Test "0" as false
+    setenv(env::ENABLE_CALLSTACK_TRACE, "0", 1);
+    Config config2 = make_config();
+    EXPECT_FALSE(config2.enable_callstack_trace) << "0 should be parsed as false";
+    
+    // Test "TRUE" as true
+    setenv(env::ENABLE_CALLSTACK_TRACE, "TRUE", 1);
+    Config config3 = make_config();
+    EXPECT_TRUE(config3.enable_callstack_trace) << "TRUE should be parsed as true";
+    
+    // Test "False" as false
+    setenv(env::ENABLE_CALLSTACK_TRACE, "False", 1);
+    Config config4 = make_config();
+    EXPECT_FALSE(config4.enable_callstack_trace) << "False should be parsed as false";
+    
+    // Test "yes" as true
+    setenv(env::ENABLE_CALLSTACK_TRACE, "yes", 1);
+    Config config5 = make_config();
+    EXPECT_TRUE(config5.enable_callstack_trace) << "yes should be parsed as true";
+    
+    // Test "NO" as false
+    setenv(env::ENABLE_CALLSTACK_TRACE, "NO", 1);
+    Config config6 = make_config();
+    EXPECT_FALSE(config6.enable_callstack_trace) << "NO should be parsed as false";
+}
+
+// Test callstack trace with invalid YAML type
+TEST_F(ConfigTest, CallstackTraceInvalidYamlTypeTest) {
+    // YAML with invalid type for EnableCallstackTrace
+    const std::string invalid_type_yaml = R"(
+EnableCallstackTrace: "not_a_boolean"
+)";
+    
+    set_config_string(invalid_type_yaml);
+    Config config = make_config();
+    
+    // Should use default value when YAML type is invalid
+    EXPECT_FALSE(config.enable_callstack_trace) << "Should use default (false) when YAML type is invalid";
+}
+
+// Test callstack trace mixed with other configurations
+TEST_F(ConfigTest, CallstackTraceMixedConfigurationTest) {
+    const std::string mixed_config = R"(
+ApplicationName: "MixedApp"
+ApplicationType: 1305
+Enable: true
+EnableCallstackTrace: true
+
+Log:
+  Level: "warn"
+  MaxFileSize: 50
+
+Collector:
+  GrpcHost: "mixed.collector.host"
+
+Sampling:
+  Type: "PERCENT"
+  PercentRate: 25.0
+
+Sql:
+  MaxBindArgsSize: 2048
+  EnableSqlStats: true
+)";
+    
+    set_config_string(mixed_config);
+    Config config = make_config();
+    
+    // Verify all config values including callstack trace
+    EXPECT_EQ(config.app_name_, "MixedApp") << "App name should match";
+    EXPECT_EQ(config.app_type_, 1305) << "App type should match";
+    EXPECT_TRUE(config.enable) << "Enable should be true";
+    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled";
+    EXPECT_EQ(config.log.level, "warn") << "Log level should match";
+    EXPECT_EQ(config.log.max_file_size, 50) << "Log max file size should match";
+    EXPECT_EQ(config.collector.host, "mixed.collector.host") << "Collector host should match";
+    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match";
+    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 25.0) << "Percent rate should match";
+    EXPECT_EQ(config.sql.max_bind_args_size, 2048) << "SQL max bind args size should match";
+    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled";
+}
+
+// Test callstack trace environment variable with other environment variables
+TEST_F(ConfigTest, CallstackTraceEnvironmentVariableWithOthersTest) {
+    setenv(env::APPLICATION_NAME, "EnvMixedApp", 1);
+    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
+    setenv(env::LOG_LEVEL, "error", 1);
+    
+    Config config = make_config();
+    
+    // Verify all environment variables are loaded correctly
+    EXPECT_EQ(config.app_name_, "EnvMixedApp") << "App name should match env var";
+    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled via env var";
+    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled via env var";
+    EXPECT_EQ(config.log.level, "error") << "Log level should match env var";
+}
+
+// Test callstack trace default value is included in string output
+TEST_F(ConfigTest, CallstackTraceDefaultInStringOutputTest) {
+    // Don't set any config, use defaults
+    Config config = make_config();
+    
+    std::string config_string = to_config_string(config);
+    
+    // Check that callstack trace is included in output even with default value
+    EXPECT_TRUE(config_string.find("EnableCallstackTrace") != std::string::npos) 
+        << "Config string should contain EnableCallstackTrace key";
+    EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
+        << "Config string should show default value (false)";
 }
 
 } // namespace pinpoint

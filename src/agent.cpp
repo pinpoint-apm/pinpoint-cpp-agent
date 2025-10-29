@@ -390,7 +390,7 @@ namespace pinpoint {
     }
 
     void AgentImpl::recordException(SpanData* span_data) const {
-        if (!enabled_) {
+        if (!enabled_ || !config_.enable_callstack_trace) {
             return;
         }
 

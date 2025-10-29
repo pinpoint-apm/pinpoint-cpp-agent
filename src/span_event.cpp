@@ -71,6 +71,10 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
         SetError(error_name, error_message);
 
+        if (!parent_span_->getAgent()->getConfig().enable_callstack_trace) {
+            return;
+        }
+
         try {
             auto callstack = std::make_unique<CallStack>(error_message);
             reader.ForEach([&](std::string_view module, std::string_view function, std::string_view file, int line) {

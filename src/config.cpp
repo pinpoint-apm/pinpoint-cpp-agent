@@ -76,6 +76,7 @@ namespace pinpoint {
         config.log.level = "info";
         config.log.file_path = "";
         config.log.max_file_size = 10; //MB
+        config.enable_callstack_trace = false;
     }
 
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
@@ -226,6 +227,8 @@ namespace pinpoint {
             config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", 1024);
             config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", false);
         }
+
+        config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", false);
     }
 
     static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
@@ -391,6 +394,9 @@ namespace pinpoint {
         }
         if(const char* env_p = std::getenv(env::SQL_ENABLE_SQL_STATS)) {
             config.sql.enable_sql_stats = safe_env_stob(env::SQL_ENABLE_SQL_STATS, env_p, false);
+        }
+        if(const char* env_p = std::getenv(env::ENABLE_CALLSTACK_TRACE)) {
+            config.enable_callstack_trace = safe_env_stob(env::ENABLE_CALLSTACK_TRACE, env_p, false);
         }
     }
 
@@ -659,6 +665,7 @@ namespace pinpoint {
         emitter << YAML::Key << "EnableSqlStats" << YAML::Value << config.sql.enable_sql_stats;
         emitter << YAML::EndMap;
 
+        emitter << YAML::Key << "EnableCallstackTrace" << YAML::Value << config.enable_callstack_trace;
         emitter << YAML::EndMap;
 
         return emitter.c_str();
