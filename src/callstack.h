@@ -16,9 +16,12 @@
 
 #pragma once
 
-#include <vector>
-#include <string>
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "utility.h"
 
 namespace pinpoint {

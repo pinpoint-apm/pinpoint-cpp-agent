@@ -29,13 +29,18 @@ public:
         auto stack_trace = cpptrace::generate_trace(2, 32);
         for (const auto& frame : stack_trace.frames) {
             auto symbol = cpptrace::prune_symbol(frame.symbol);
-            if (startsWith(symbol, "std::")) {
+            if (symbol.empty() || startsWith(symbol, "std::")) {
                 continue;
             }
 
             auto module = std::string("unknown");
             auto function = symbol;
             auto file = cpptrace::basename(frame.filename);
+            auto line = frame.line.value_or(0);
+            if (file.empty()) {
+                file = "unknown";
+                line = 0;
+            }
 
             auto pos = symbol.rfind("::");
             if (pos != std::string::npos) {
@@ -48,7 +53,7 @@ public:
                 }
             }
 
-            callback(module, function, file, frame.line.value_or(0));
+            callback(module, function, file, line);
         }
     }
 };
