@@ -16,32 +16,51 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Fetch gRPC (includes Protobuf and Abseil as submodules)
-FetchContent_Declare(
-  gRPC
-  GIT_REPOSITORY https://github.com/grpc/grpc.git
-  GIT_TAG        v1.66.0
-)
-set(FETCHCONTENT_QUIET OFF)
-set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(gRPC_BUILD_CSHARP_EXT OFF CACHE BOOL "" FORCE)
-set(gRPC_ABSL_PROVIDER "module" CACHE STRING "" FORCE)
-set(gRPC_PROTOBUF_PROVIDER "module" CACHE STRING "" FORCE)
-set(gRPC_ZLIB_PROVIDER "module" CACHE STRING "" FORCE)
-set(gRPC_CARES_PROVIDER "module" CACHE STRING "" FORCE)
-set(gRPC_RE2_PROVIDER "module" CACHE STRING "" FORCE)
-set(gRPC_SSL_PROVIDER "module" CACHE STRING "" FORCE)
-set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
-set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(gRPC)
+# Try to find gRPC installed on the system first
+find_package(gRPC CONFIG QUIET)
+find_package(Protobuf CONFIG QUIET)
 
-# Include protobuf-generate module for protobuf_generate() function
-include(${grpc_SOURCE_DIR}/third_party/protobuf/cmake/protobuf-generate.cmake)
+if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
+  message(STATUS "gRPC not found on system, fetching from source...")
+  
+  # Fetch gRPC (includes Protobuf and Abseil as submodules)
+  FetchContent_Declare(
+    gRPC
+    GIT_REPOSITORY https://github.com/grpc/grpc.git
+    GIT_TAG        v1.66.0
+  )
+  set(FETCHCONTENT_QUIET OFF)
+  set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(gRPC_BUILD_CSHARP_EXT OFF CACHE BOOL "" FORCE)
+  set(gRPC_ABSL_PROVIDER "module" CACHE STRING "" FORCE)
+  set(gRPC_PROTOBUF_PROVIDER "module" CACHE STRING "" FORCE)
+  set(gRPC_ZLIB_PROVIDER "module" CACHE STRING "" FORCE)
+  set(gRPC_CARES_PROVIDER "module" CACHE STRING "" FORCE)
+  set(gRPC_RE2_PROVIDER "module" CACHE STRING "" FORCE)
+  set(gRPC_SSL_PROVIDER "module" CACHE STRING "" FORCE)
+  set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+  set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(gRPC)
+  
+  # Include protobuf-generate module for protobuf_generate() function
+  include(${grpc_SOURCE_DIR}/third_party/protobuf/cmake/protobuf-generate.cmake)
+else()
+  message(STATUS "Using system gRPC and Protobuf")
+  
+  # Find absl (required when using system gRPC)
+  find_package(absl CONFIG REQUIRED)
+  
+  # Include protobuf-generate module from system installation
+  include(${Protobuf_DIR}/../protobuf-generate.cmake OPTIONAL)
+  if(NOT COMMAND protobuf_generate)
+    # Fallback: try to include from CMake modules
+    include(FindProtobuf)
+  endif()
+endif()
 
 list(APPEND LINK_LIBS protobuf::libprotobuf)
 list(APPEND LINK_LIBS grpc grpc++ grpc++_reflection)
@@ -65,54 +84,104 @@ list(APPEND LINK_LIBS
   absl::int128
 )
 
-# Fetch yaml-cpp
-FetchContent_Declare(
-  yaml-cpp
-  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-  GIT_TAG        0.8.0
-)
-set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(yaml-cpp)
+# Try to find yaml-cpp on the system first
+find_package(yaml-cpp CONFIG QUIET)
+
+if(NOT yaml-cpp_FOUND)
+  message(STATUS "yaml-cpp not found on system, fetching from source...")
+  
+  # Fetch yaml-cpp
+  FetchContent_Declare(
+    yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG        0.8.0
+  )
+  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(yaml-cpp)
+else()
+  message(STATUS "Using system yaml-cpp")
+endif()
+
 list(APPEND LINK_LIBS yaml-cpp::yaml-cpp)
 
-# Fetch fmt
-FetchContent_Declare(
-  fmt
-  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-  GIT_TAG        11.0.2
-)
-FetchContent_MakeAvailable(fmt)
+# Try to find fmt on the system first
+find_package(fmt CONFIG QUIET)
+
+if(NOT fmt_FOUND)
+  message(STATUS "fmt not found on system, fetching from source...")
+  
+  # Fetch fmt
+  FetchContent_Declare(
+    fmt
+    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+    GIT_TAG        11.0.2
+  )
+  FetchContent_MakeAvailable(fmt)
+else()
+  message(STATUS "Using system fmt")
+endif()
+
 list(APPEND LINK_LIBS fmt::fmt)
 
-# Fetch spdlog
-FetchContent_Declare(
-  spdlog
-  GIT_REPOSITORY https://github.com/gabime/spdlog.git
-  GIT_TAG        v1.14.1
-)
-FetchContent_MakeAvailable(spdlog)
+# Try to find spdlog on the system first
+find_package(spdlog CONFIG QUIET)
+
+if(NOT spdlog_FOUND)
+  message(STATUS "spdlog not found on system, fetching from source...")
+  
+  # Fetch spdlog
+  FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG        v1.14.1
+  )
+  FetchContent_MakeAvailable(spdlog)
+else()
+  message(STATUS "Using system spdlog")
+endif()
+
 list(APPEND LINK_LIBS spdlog::spdlog)
 
-FetchContent_Declare(
-  cpptrace
-  GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
-  GIT_TAG        v1.0.4
-)
-FetchContent_MakeAvailable(cpptrace)
+# Try to find cpptrace on the system first
+find_package(cpptrace CONFIG QUIET)
+
+if(NOT cpptrace_FOUND)
+  message(STATUS "cpptrace not found on system, fetching from source...")
+  
+  # Fetch cpptrace
+  FetchContent_Declare(
+    cpptrace
+    GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
+    GIT_TAG        v1.0.4
+  )
+  FetchContent_MakeAvailable(cpptrace)
+else()
+  message(STATUS "Using system cpptrace")
+endif()
+
 list(APPEND LINK_LIBS cpptrace::cpptrace)
 
 # Fetch GoogleTest (for testing)
 if (BUILD_TESTING)
-  FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.15.2
-  )
-  # For Windows: Prevent overriding the parent project's compiler/linker settings
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
+  # Try to find GoogleTest on the system first
+  find_package(GTest CONFIG QUIET)
+  
+  if(NOT GTest_FOUND)
+    message(STATUS "GoogleTest not found on system, fetching from source...")
+    
+    FetchContent_Declare(
+      googletest
+      GIT_REPOSITORY https://github.com/google/googletest.git
+      GIT_TAG        v1.15.2
+    )
+    # For Windows: Prevent overriding the parent project's compiler/linker settings
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+  else()
+    message(STATUS "Using system GoogleTest")
+  endif()
 endif()
 
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
