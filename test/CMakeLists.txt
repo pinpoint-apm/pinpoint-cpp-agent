@@ -4,8 +4,7 @@ else()
   set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
 endif()
 
-# Find GoogleTest
-find_package(GTest CONFIG REQUIRED)
+# GoogleTest is fetched via FetchContent in main CMakeLists.txt
 
 # RateLimiter tests
 add_executable(test_limiter test_limiter.cpp)
