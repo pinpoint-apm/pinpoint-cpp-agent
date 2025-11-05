@@ -13,6 +13,59 @@ target_link_libraries(http_server ${PINPOINT_CPP_LIBRARY})
 add_executable(web_demo web_demo.cpp)
 target_link_libraries(web_demo ${PINPOINT_CPP_LIBRARY})
 
+set(GRPC_DEMO_PROTO ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo/testapp.proto)
+
+add_library(grpc_demo_proto STATIC)
+
+protobuf_generate(
+    TARGET grpc_demo_proto
+    LANGUAGE cpp
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo
+    PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/grpc_demo
+    PROTOS ${GRPC_DEMO_PROTO}
+)
+
+protobuf_generate(
+    TARGET grpc_demo_proto
+    LANGUAGE grpc
+    PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo
+    PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/grpc_demo
+    PROTOS ${GRPC_DEMO_PROTO}
+)
+
+target_include_directories(grpc_demo_proto PUBLIC
+    ${CMAKE_CURRENT_BINARY_DIR}/grpc_demo
+    ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo
+)
+
+target_link_libraries(grpc_demo_proto PUBLIC grpc++ protobuf::libprotobuf)
+set_target_properties(grpc_demo_proto PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+add_executable(grpc_server grpc_demo/grpc_server.cpp)
+target_include_directories(grpc_server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo
+    ${CMAKE_CURRENT_BINARY_DIR}/grpc_demo
+)
+target_link_libraries(grpc_server
+    ${PINPOINT_CPP_LIBRARY}
+    grpc_demo_proto
+    grpc++_reflection
+)
+set_target_properties(grpc_server PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+add_executable(grpc_client grpc_demo/grpc_client.cpp)
+target_include_directories(grpc_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/grpc_demo
+    ${CMAKE_CURRENT_BINARY_DIR}/grpc_demo
+)
+target_link_libraries(grpc_client
+    ${PINPOINT_CPP_LIBRARY}
+    grpc_demo_proto
+)
+set_target_properties(grpc_client PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
 # MySQL Connector C++ X DevAPI support
 find_path(MYSQLCPPCONN_INCLUDE_DIR mysqlx/xdevapi.h
     PATHS /usr/local/include /opt/homebrew/include /usr/include
