@@ -34,14 +34,38 @@
 #include "span.h"
 
 namespace pinpoint {
+    /**
+     * @brief Return codes used by gRPC request helpers.
+     */
     enum GrpcRequestStatus {SEND_OK, SEND_FAIL};
+    /**
+     * @brief State machine transitions used while streaming data to the collector.
+     */
     enum GrpcStreamStatus {STREAM_WRITE, STREAM_CONTINUE, STREAM_DONE, STREAM_EXCEPTION};
+    /**
+     * @brief Identifies the type of gRPC client sharing common facilities.
+     */
     enum ClientType {AGENT, SPAN, STATS};
 
+    /**
+     * @brief Base client that encapsulates channel management shared by all gRPC workers.
+     */
     class GrpcClient {
     public:
+        /**
+         * @brief Constructs a client bound to an `AgentService` and client type.
+         *
+         * @param agent Owning agent service.
+         * @param client_type Which collector service this client targets.
+         */
         explicit GrpcClient(AgentService* agent, ClientType client_type);
+        /**
+         * @brief Ensures the gRPC channel is connected and ready for use.
+         *
+         * @return `true` if the channel is ready or successfully re-initialized.
+         */
         bool readyChannel();
+        /// @brief Releases the current channel handle.
         void closeChannel() { channel_.reset(); }
 
     protected:
@@ -57,9 +81,15 @@ namespace pinpoint {
         GrpcStreamStatus grpc_status_{};
         bool force_queue_empty_{false};
 
+        /**
+         * @brief Blocks until the channel becomes ready or the deadline is exceeded.
+         */
         bool wait_channel_ready() const;
     };
 
+    /**
+     * @brief Metadata describing an API string cached on the collector.
+     */
     typedef struct ApiMeta {
         int32_t id_;
         int32_t type_;
@@ -68,11 +98,17 @@ namespace pinpoint {
         ~ApiMeta() {}
     } ApiMeta;
 
+    /**
+     * @brief Type tag for cached string metadata.
+     */
     enum StringMetaType {
         STRING_META_ERROR,
         STRING_META_SQL
     };
 
+    /**
+     * @brief Metadata describing a cached string value (error or SQL).
+     */
     typedef struct StringMeta {
         int32_t id_;
         std::string str_val_;
@@ -82,6 +118,9 @@ namespace pinpoint {
         ~StringMeta() {}
     } StringMeta;
 
+    /**
+     * @brief Metadata describing a cached SQL UID.
+     */
     typedef struct SqlUidMeta {
         std::vector<unsigned char> uid_;
         std::string sql_;
@@ -90,6 +129,9 @@ namespace pinpoint {
         ~SqlUidMeta() {}
     } SqlUidMeta;
 
+    /**
+     * @brief Metadata bundle carrying exception call stacks for a completed span.
+     */
     typedef struct ExceptionMeta {
         TraceId txid_;
         int64_t span_id_;
@@ -100,6 +142,9 @@ namespace pinpoint {
         ~ExceptionMeta() {}
     } ExceptionMeta;
 
+    /**
+     * @brief Tagged union covering all metadata variants queued by the agent.
+     */
     typedef union MetaValue {
         ApiMeta api_meta_;
         StringMeta str_meta_;
@@ -113,7 +158,13 @@ namespace pinpoint {
         ~MetaValue() {}
     } MetaValue;
 
+    /**
+     * @brief Type discriminator for metadata payloads.
+     */
     enum MetaType {META_API, META_STRING, META_SQL_UID, META_EXCEPTION};
+    /**
+     * @brief Metadata item queued for transmission to the collector.
+     */
     typedef struct MetaData {
         MetaType meta_type_;
         MetaValue value_;
@@ -128,21 +179,39 @@ namespace pinpoint {
         ~MetaData() {}
     } MetaData;
 
+    /**
+     * @brief gRPC client responsible for agent registration, ping and metadata upload.
+     */
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
         explicit GrpcAgent(AgentService* agent);
 
+        /**
+         * @brief Registers the agent with the collector and starts ping streaming.
+         */
         GrpcRequestStatus registerAgent();
+        /**
+         * @brief Adds metadata to the outbound queue.
+         *
+         * @param meta Metadata payload (ownership transferred).
+         */
         void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
 
+        /// @brief Worker loop that periodically sends ping requests.
         void sendPingWorker();
+        /// @brief Stops the ping worker loop.
         void stopPingWorker();
+        /// @brief Worker loop that streams metadata payloads.
         void sendMetaWorker();
+        /// @brief Stops the metadata worker loop.
         void stopMetaWorker();
 
         //grpc::ClientBidiReactor
+        /// @brief Notification invoked after each write completes.
         void OnWriteDone(bool ok) override;
+        /// @brief Notification invoked when a server ping response is available.
         void OnReadDone(bool ok) override;
+        /// @brief Final notification when the stream terminates.
         void OnDone(const grpc::Status& s) override;
 
     protected:
@@ -172,16 +241,28 @@ namespace pinpoint {
         GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
     };
 
+    /**
+     * @brief gRPC client that streams span chunks to the collector.
+     */
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
     public:
         explicit GrpcSpan(AgentService* agent);
 
+        /**
+         * @brief Adds a span chunk to the outbound queue.
+         *
+         * @param span Span chunk payload (ownership transferred).
+         */
         void enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept;
+        /// @brief Worker loop that streams queued spans.
         void sendSpanWorker();
+        /// @brief Stops the span worker loop and drains the queue.
         void stopSpanWorker();
 
         //grpc::ClientWriteReactor
+        /// @brief Invoked when a write completes on the stream.
         void OnWriteDone(bool ok) override;
+        /// @brief Invoked when the stream finishes or errors.
         void OnDone(const grpc::Status& status) override;
 
     protected:
@@ -204,16 +285,28 @@ namespace pinpoint {
         void empty_span_queue() noexcept;
     };
 
+    /**
+     * @brief gRPC client that streams agent and URL statistics to the collector.
+     */
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
         explicit GrpcStats(AgentService* agent);
 
+        /**
+         * @brief Queues a statistics payload to be sent.
+         *
+         * @param stats Type selector that determines which payload to build.
+         */
         void enqueueStats(StatsType stats) noexcept;
+        /// @brief Worker loop that streams statistics.
         void sendStatsWorker();
+        /// @brief Stops the statistics worker loop.
         void stopStatsWorker();
 
         //grpc::ClientWriteReactor
+        /// @brief Invoked when a write completes on the stream.
         void OnWriteDone(bool ok) override;
+        /// @brief Called when the stream finishes.
         void OnDone(const grpc::Status& status) override;
 
     protected:

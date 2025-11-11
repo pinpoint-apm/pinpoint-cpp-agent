@@ -21,6 +21,9 @@
 
 namespace pinpoint {
 
+    /**
+     * @brief Simple token-bucket rate limiter used for sampling throughput limits.
+     */
     class RateLimiter {
     public:
         explicit RateLimiter(const uint64_t tps) {
@@ -29,6 +32,11 @@ namespace pinpoint {
                      std::chrono::steady_clock::now().time_since_epoch()).count();
         }
 
+        /**
+         * @brief Consumes a token if available, replenishing tokens based on elapsed time.
+         *
+         * @return `true` when the call is permitted.
+         */
         bool allow();
 
     private:

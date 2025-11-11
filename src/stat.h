@@ -24,6 +24,9 @@
 #include "agent_service.h"
 
 namespace pinpoint {
+    /**
+     * @brief Snapshot of runtime statistics collected from the agent process.
+     */
     struct AgentStatsSnapshot {
         int64_t    sample_time_{};
         double     system_cpu_time_{};
@@ -42,23 +45,45 @@ namespace pinpoint {
         int32_t    active_requests_[4]{};
     };
 
+    /**
+     * @brief Initializes the statistics subsystem.
+     */
     void init_agent_stats();
+    /**
+     * @brief Fills the provided snapshot with the latest metrics.
+     *
+     * @param stat Snapshot to populate.
+     */
     void collect_agent_stat(AgentStatsSnapshot &stat);
+    /// @brief Updates the response time histogram.
     void collect_response_time(int64_t resTime);
+    /// @brief Increments the counter for sampled new traces.
     void incr_sample_new();
+    /// @brief Increments the counter for unsampled new traces.
     void incr_unsample_new();
+    /// @brief Increments the counter for sampled continuing traces.
     void incr_sample_cont();
+    /// @brief Increments the counter for unsampled continuing traces.
     void incr_unsample_cont();
+    /// @brief Increments the counter for skipped new traces.
     void incr_skip_new();
+    /// @brief Increments the counter for skipped continuing traces.
     void incr_skip_cont();
 
+    /// @brief Registers an active span with its start time.
     void add_active_span(int64_t spanId, int64_t start_time);
+    /// @brief Removes an active span from tracking.
     void drop_active_span(int64_t spanId);
 
+    /**
+     * @brief Worker responsible for periodically sending agent statistics to the collector.
+     */
     class AgentStats {
     public:
         explicit AgentStats(AgentService* agent) : agent_(agent) {}
+        /// @brief Background loop that gathers and sends agent statistics.
         void agentStatsWorker();
+        /// @brief Signals the worker to stop processing.
         void stopAgentStatsWorker();
 
     private:
@@ -67,5 +92,8 @@ namespace pinpoint {
         std::condition_variable cond_var_{};
     };
 
+    /**
+     * @brief Returns the shared buffer of collected agent stats snapshots.
+     */
     std::vector<AgentStatsSnapshot>& get_agent_stat_snapshots();
 }

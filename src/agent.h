@@ -32,15 +32,49 @@
 
 namespace pinpoint {
 
+    /**
+     * @brief Concrete agent implementation that wires together configuration, samplers and transports.
+     *
+     * `AgentImpl` orchestrates span creation, metadata caching, gRPC workers and statistics collection.
+     * It implements both `Agent` (SDK surface) and `AgentService` (internal service boundary).
+     */
     class AgentImpl final : public Agent, public AgentService {
     public:
+		/**
+		 * @brief Constructs an agent using the provided configuration.
+		 *
+		 * @param options Resolved agent configuration.
+		 */
 		explicit AgentImpl(const Config& options);
         ~AgentImpl() override;
 
+		/**
+		 * @brief Creates a new span for an outbound operation.
+		 *
+		 * @param operation Logical operation name.
+		 * @param rpc_point RPC endpoint or service name.
+		 */
 		SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) override;
+		/**
+		 * @brief Creates a span and extracts the context from an incoming request.
+		 *
+		 * @param operation Logical operation name.
+		 * @param rpc_point RPC endpoint or service name.
+		 * @param reader Trace context reader provided by user code.
+		 */
 		SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) override;
+    	/**
+    	 * @brief Creates a span for HTTP requests while recording request method.
+    	 *
+    	 * @param operation Operation name.
+    	 * @param rpc_point RPC endpoint.
+    	 * @param method HTTP method name.
+    	 * @param reader Trace context reader provided by user code.
+    	 */
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
+		/// @brief Returns whether the agent is enabled for tracing.
 		bool Enable() override;
+		/// @brief Initiates a graceful shutdown of the agent.
 		void Shutdown() override;
 
     	bool isExiting() const override { return shutting_down_; }
@@ -106,8 +140,11 @@ namespace pinpoint {
     	bool enabled_{false};
     	bool shutting_down_{false};
 
+    	/// @brief Starts background threads responsible for gRPC communication.
     	void init_grpc_workers();
+    	/// @brief Signals all gRPC workers to stop and joins their threads.
     	void close_grpc_workers();
+    	/// @brief Waits for all gRPC workers to finish execution.
     	void wait_grpc_workers();
     };
 

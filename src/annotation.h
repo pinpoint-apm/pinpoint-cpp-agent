@@ -21,6 +21,9 @@
 
 namespace pinpoint {
 
+    /**
+     * @brief Enumerates the supported annotation payload formats.
+     */
     enum AnnotationType {
         ANNOTATION_TYPE_INT = 0,
         ANNOTATION_TYPE_LONG = 1,
@@ -31,6 +34,9 @@ namespace pinpoint {
         ANNOTATION_TYPE_BYTES_STRING_STRING = 6
     };
 
+    /**
+     * @brief Container for annotations composed of two string values.
+     */
     typedef struct StringStringValue {
         std::string stringValue1;
         std::string stringValue2;
@@ -40,6 +46,9 @@ namespace pinpoint {
         ~StringStringValue() {}
     } StringStringValue;
 
+    /**
+     * @brief Container for annotations carrying an int and two strings.
+     */
     typedef struct IntStringStringValue {
         int intValue;
         std::string stringValue1;
@@ -50,6 +59,9 @@ namespace pinpoint {
         ~IntStringStringValue() {}
     } IntStringStringValue;
 
+    /**
+     * @brief Container for complex annotations that track timing and network details.
+     */
     typedef struct LongIntIntByteByteStringValue {
         int64_t longValue;
         int32_t intValue1;
@@ -63,6 +75,9 @@ namespace pinpoint {
         ~LongIntIntByteByteStringValue() {}
     } LongIntIntByteByteStringValue;
 
+    /**
+     * @brief Container for annotations with binary payloads and additional strings.
+     */
     typedef struct BytesStringStringValue {
         std::vector<unsigned char> bytesValue;
         std::string stringValue1;
@@ -73,6 +88,9 @@ namespace pinpoint {
         ~BytesStringStringValue() {}
     } BytesStringStringValue;
 
+    /**
+     * @brief Union wrapper for all supported annotation value variants.
+     */
     typedef union AnnotationValue {
         int32_t intValue;
         int64_t longValue;
@@ -95,6 +113,9 @@ namespace pinpoint {
         ~AnnotationValue() {}
     } AnnotationValue;
 
+    /**
+     * @brief Annotation payload paired with its declared type.
+     */
     typedef struct AnnotationData {
         AnnotationType dataType;
         AnnotationValue data;
@@ -112,19 +133,81 @@ namespace pinpoint {
             : dataType(dType), data(std::move(bytesVal), strVal1, strVal2) {}
     } AnnotationData;
 
+    /**
+     * @brief Concrete annotation implementation used by the Pinpoint agent.
+     *
+     * Accumulates annotation key/value pairs before they are serialized into spans.
+     */
     class PinpointAnnotation final : public Annotation {
     public:
         PinpointAnnotation() {}
         ~PinpointAnnotation() override = default;
 
+        /**
+         * @brief Appends an integer value annotation.
+         *
+         * @param key Annotation identifier.
+         * @param i Integer value to store.
+         */
         void AppendInt(int32_t key, int32_t i) override;
+        /**
+         * @brief Appends a long value annotation.
+         *
+         * @param key Annotation identifier.
+         * @param l Long value to store.
+         */
         void AppendLong(int32_t key, int64_t l) override;
+        /**
+         * @brief Appends a string value annotation.
+         *
+         * @param key Annotation identifier.
+         * @param s String value to store.
+         */
         void AppendString(int32_t key, std::string_view s) override;
+        /**
+         * @brief Appends an annotation containing two strings.
+         *
+         * @param key Annotation identifier.
+         * @param s1 First string.
+         * @param s2 Second string.
+         */
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override;
+        /**
+         * @brief Appends an annotation containing an integer and two strings.
+         *
+         * @param key Annotation identifier.
+         * @param i Integer payload.
+         * @param s1 First string.
+         * @param s2 Second string.
+         */
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override;
+        /**
+         * @brief Appends an annotation containing binary data and two strings.
+         *
+         * @param key Annotation identifier.
+         * @param uid Binary payload.
+         * @param s1 First string.
+         * @param s2 Second string.
+         */
         void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override;
+        /**
+         * @brief Appends a detailed network annotation used for RPC metadata.
+         *
+         * @param key Annotation identifier.
+         * @param l Long payload (typically elapsed time).
+         * @param i1 First integer payload.
+         * @param i2 Second integer payload.
+         * @param b1 First byte payload.
+         * @param b2 Second byte payload.
+         * @param s String payload.
+         */
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override;
 
+        /**
+         * @brief Returns the internal annotation map for serialization.
+         *
+         * @return Reference to the stored annotations.
+         */
         std::list<std::pair<int32_t,std::shared_ptr<AnnotationData>>>& getAnnotations() { return annotation_list_; }
 
     private:

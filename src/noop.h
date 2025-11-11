@@ -22,25 +22,50 @@
 
 namespace pinpoint {
 
+    /**
+     * @brief Returns a shared noop annotation instance.
+     */
     AnnotationPtr noopAnnotation();
+    /**
+     * @brief Returns a shared noop span event instance.
+     */
     SpanEventPtr noopSpanEvent();
+    /**
+     * @brief Returns a shared noop span instance.
+     */
     SpanPtr noopSpan();
+    /**
+     * @brief Returns a shared noop agent instance.
+     */
     AgentPtr noopAgent();
 
+    /**
+     * @brief Annotation implementation that ignores all appended values.
+     */
     class NoopAnnotation final : public Annotation {
     public:
         NoopAnnotation() {}
         ~NoopAnnotation() override {}
 
+        /// @brief No-op append for integer annotations.
         void AppendInt(int32_t key, int32_t i) override {}
+        /// @brief No-op append for long annotations.
         void AppendLong(int32_t key, int64_t l) override {}
+        /// @brief No-op append for string annotations.
         void AppendString(int32_t key, std::string_view s) override {}
+        /// @brief No-op append for string/string annotations.
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override {}
+        /// @brief No-op append for int/string/string annotations.
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override {}
+        /// @brief No-op append for bytes/string/string annotations.
         void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override {}
+        /// @brief No-op append for extended RPC annotations.
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override {}
     };
 
+    /**
+     * @brief Span event implementation that ignores all recording operations.
+     */
     class NoopSpanEvent final : public SpanEvent {
     public:
         NoopSpanEvent() {}
@@ -60,6 +85,9 @@ namespace pinpoint {
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
     };
 
+    /**
+     * @brief Span implementation used when tracing is disabled.
+     */
     class NoopSpan : public Span {
     public:
         NoopSpan() : empty_trace_id{} {}
@@ -94,6 +122,9 @@ namespace pinpoint {
         TraceId empty_trace_id;
     };
 
+    /**
+     * @brief Lightweight span used when requests are explicitly marked as unsampled.
+     */
     class UnsampledSpan final : public NoopSpan {
     public:
         explicit UnsampledSpan(AgentService *agent);
@@ -114,6 +145,9 @@ namespace pinpoint {
         AgentService *agent_;
     };
 
+    /**
+     * @brief Agent implementation that always returns noop spans.
+     */
     class NoopAgent final : public Agent {
     public:
         NoopAgent() {}
@@ -129,6 +163,9 @@ namespace pinpoint {
         void Shutdown() override {}
     };
 
+    /**
+     * @brief Trace context reader that never returns any context information.
+     */
     class NoopTraceContextReader final : public TraceContextReader {
     public:
         NoopTraceContextReader() = default;
@@ -137,6 +174,9 @@ namespace pinpoint {
         std::optional<std::string> Get(std::string_view key) const override { return std::nullopt; }
     };
 
+    /**
+     * @brief Convenience holder for all noop implementations.
+     */
     class Noop {
     public:
         Noop() :
@@ -146,9 +186,13 @@ namespace pinpoint {
             noop_annotation_(std::make_shared<NoopAnnotation>())
         {}
 
+        /// @brief Returns the shared noop agent.
         AgentPtr agent() const { return noop_agent_; }
+        /// @brief Returns the shared noop span.
         SpanPtr span() const { return noop_span_; }
+        /// @brief Returns the shared noop span event.
         SpanEventPtr spanEvent() const { return noop_event_; }
+        /// @brief Returns the shared noop annotation.
         AnnotationPtr annotation() const { return noop_annotation_; }
 
     private:

@@ -21,7 +21,9 @@
 
 namespace pinpoint {
 
-    // Environment variable names as constexpr
+    /**
+     * @brief Environment variable names that override configuration values.
+     */
     namespace env {
         constexpr const char* ENABLE = "PINPOINT_CPP_ENABLE";
         constexpr const char* APPLICATION_NAME = "PINPOINT_CPP_APPLICATION_NAME";
@@ -67,6 +69,12 @@ namespace pinpoint {
         constexpr const char* ENABLE_CALLSTACK_TRACE = "PINPOINT_CPP_ENABLE_CALLSTACK_TRACE";
     }
 
+    /**
+     * @brief Aggregated runtime configuration used by the Pinpoint agent.
+     *
+     * The structure mirrors values available in the YAML configuration file and environment
+     * overrides. Nested structures keep related options together for readability.
+     */
     struct Config {
         std::string app_name_;
         int32_t app_type_;
@@ -141,8 +149,29 @@ namespace pinpoint {
         } sql;
     };
 
+    /**
+     * @brief Reads configuration from a YAML file on disk.
+     *
+     * @param config_file_path Absolute or relative path to the configuration file.
+     */
     void read_config_from_file(const char* config_file_path);
+    /**
+     * @brief Sets the raw YAML configuration source used by `make_config`.
+     *
+     * @param cfg_str YAML configuration string.
+     */
     void set_config_string(std::string_view cfg_str);
+    /**
+     * @brief Builds a `Config` object by combining defaults, the cached YAML and environment overrides.
+     *
+     * @return Resolved configuration ready to be consumed by the agent.
+     */
     Config make_config();
+    /**
+     * @brief Serializes a `Config` object back into its YAML representation.
+     *
+     * @param config Configuration instance to serialize.
+     * @return YAML string.
+     */
     std::string to_config_string(const Config& config);
 }  // namespace pinpoint
