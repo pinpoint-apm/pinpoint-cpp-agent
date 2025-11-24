@@ -15,7 +15,11 @@ if(MYSQLCPPCONN_INCLUDE_DIR AND MYSQLCPPCONNX_LIBRARY)
     message(STATUS "  Library: ${MYSQLCPPCONNX_LIBRARY}")
     
     add_executable(db_demo db_demo.cpp)
-    target_include_directories(db_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${MYSQLCPPCONN_INCLUDE_DIR})
+    target_include_directories(db_demo PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${MYSQLCPPCONN_INCLUDE_DIR}
+    )
     target_link_libraries(db_demo ${PINPOINT_CPP_LIBRARY} ${MYSQLCPPCONNX_LIBRARY})
     
     # Set C++ standard to 14 or higher (required by MySQL Connector C++)
