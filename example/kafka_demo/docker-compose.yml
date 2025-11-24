@@ -27,19 +27,20 @@ services:
       context: ../../
       dockerfile: example/kafka_demo/Dockerfile
     image: pinpoint-cpp-kafka-demo
-    command: /app/build/example/kafka_producer
+    command: /app/build/example/kafka_demo/kafka_producer
     environment:
       - KAFKA_BROKERS=kafka:9092
+    ports:
+      - "8090:8090"
     depends_on:
       - kafka
     restart: on-failure
 
   consumer:
     image: pinpoint-cpp-kafka-demo
-    command: /app/build/example/kafka_consumer
+    command: /app/build/example/kafka_demo/kafka_consumer
     environment:
       - KAFKA_BROKERS=kafka:9092
     depends_on:
       - kafka
     restart: on-failure
-
