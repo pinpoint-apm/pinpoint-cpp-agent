@@ -102,11 +102,11 @@ if ! test_mysql_connection; then
 fi
 
 # Check if db_demo exists and is executable
-DB_DEMO_PATH="../build/example/db_demo"
+DB_DEMO_PATH="../../build/example/mysql_demo/db_demo"
 if [ ! -f "$DB_DEMO_PATH" ]; then
     echo -e "${RED}✗ db_demo not found at $DB_DEMO_PATH${NC}"
     echo -e "${YELLOW}Please build the project first:${NC}"
-    echo "  cd .. && cmake --build build --target db_demo"
+    echo "  cd ../.. && cmake --build build --target db_demo"
     exit 1
 fi
 
