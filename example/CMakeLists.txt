@@ -27,3 +27,9 @@ option(BUILD_KAFKA_EXAMPLE "Build Kafka example" ON)
 if (BUILD_KAFKA_EXAMPLE)
     add_subdirectory(kafka_demo)
 endif()
+
+option(BUILD_REDIS_EXAMPLE "Build Redis example" ON)
+if (BUILD_REDIS_EXAMPLE)
+    add_subdirectory(redis_demo)
+endif()
+

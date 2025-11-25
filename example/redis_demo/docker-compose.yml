@@ -1,0 +1,21 @@
+version: '3'
+services:
+  redis:
+    image: redis:7.0
+    ports:
+      - "6379:6379"
+    container_name: pinpoint-redis
+
+  redis-example:
+    build:
+      context: ../../
+      dockerfile: example/redis_demo/Dockerfile
+    image: pinpoint-cpp-redis-demo
+    command: /app/build/example/redis_demo/redis_example
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: on-failure
+
