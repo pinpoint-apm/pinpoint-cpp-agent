@@ -33,3 +33,13 @@ if (BUILD_REDIS_EXAMPLE)
     add_subdirectory(redis_demo)
 endif()
 
+option(BUILD_MONGODB_EXAMPLE "Build MongoDB example" ON)
+if (BUILD_MONGODB_EXAMPLE)
+    add_subdirectory(mongodb_demo)
+endif()
+
+option(BUILD_CURL_EXAMPLE "Build cURL example" ON)
+if (BUILD_CURL_EXAMPLE)
+    add_subdirectory(curl_demo)
+endif()
+

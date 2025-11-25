@@ -1,0 +1,23 @@
+version: '3'
+services:
+  # A simple echo server to test requests against
+  httpbin:
+    image: kennethreitz/httpbin
+    ports:
+      - "80:80"
+    container_name: pinpoint-httpbin
+
+  curl-example:
+    build:
+      context: ../../
+      dockerfile: example/curl_demo/Dockerfile
+    image: pinpoint-cpp-curl-demo
+    command: /app/build/example/curl_demo/curl_example
+    ports:
+      - "8091:8091"
+    environment:
+      - TARGET_URL=http://httpbin:80/get
+    depends_on:
+      - httpbin
+    restart: on-failure
+
