@@ -1,0 +1,20 @@
+version: '3'
+services:
+  mongo:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    container_name: pinpoint-mongo
+
+  mongo-example:
+    build:
+      context: ../../
+      dockerfile: example/mongodb_demo/Dockerfile
+    image: pinpoint-cpp-mongo-demo
+    command: /app/build/example/mongodb_demo/mongo_example
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+    depends_on:
+      - mongo
+    restart: on-failure
+
