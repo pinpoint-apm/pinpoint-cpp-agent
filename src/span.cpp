@@ -42,7 +42,7 @@ namespace pinpoint {
         acceptor_host_{},
         event_sequence_{0},
         event_depth_(1),
-        logging_info_{},
+        logging_flag_{0},
         flags_{},
         err_{},
         error_func_id_{},
@@ -413,6 +413,18 @@ namespace pinpoint {
     void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
         CHECK_FINISHED();
         agent_->recordServerHeader(which, reader, data_->getAnnotations());
+    }
+
+	const std::string LOG_TRACE_ID_KEY = "PtxId";
+	const std::string LOG_SPAN_ID_KEY = "PspanId";
+
+    void SpanImpl::SetLogging(TraceContextWriter& writer) {
+        CHECK_FINISHED();
+
+        data_->setLoggingFlag();
+
+        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceId().ToString());
+        writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
     }
 
 }  // namespace pinpoint

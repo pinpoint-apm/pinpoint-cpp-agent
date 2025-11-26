@@ -281,6 +281,8 @@ namespace pinpoint {
 		virtual void SetStatusCode(int status) = 0;
 		/// @brief Records URL statistics for the span.
 		virtual void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) = 0;
+		/// @brief Records the logging flag and injects the span context into a logger.
+		virtual void SetLogging(TraceContextWriter& writer) = 0;
 		/// @brief Records HTTP headers for the span.
 		virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 

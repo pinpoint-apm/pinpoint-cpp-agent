@@ -393,8 +393,8 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     EXPECT_EQ(span_data.getAcceptorHost(), "localhost");
     
     // Test flags and logging
-    span_data.setLoggingInfo(999);
-    EXPECT_EQ(span_data.getLoggingInfo(), 999);
+    span_data.setLoggingFlag();
+    EXPECT_EQ(span_data.getLoggingFlag(), 1);
     
     span_data.setFlags(0x12345);
     EXPECT_EQ(span_data.getFlags(), 0x12345);
@@ -656,6 +656,23 @@ TEST_F(SpanTest, SpanImplRecordHeaderTest) {
     span.RecordHeader(HTTP_REQUEST, header_reader);
     
     EXPECT_GT(mock_agent_service_->recorded_server_headers_, 0) << "Header should be recorded";
+}
+
+TEST_F(SpanTest, SpanImplSetLoggingTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    MockTraceContextWriter writer;
+
+    // Before setting logging, verify initial state through data access (indirectly via SpanImpl if possible, 
+    // but since data_ is private we rely on writer output)
+
+    span.SetLogging(writer);
+
+    // Verify flag was set and context was injected
+    auto ptx_id = writer.Get("PtxId");
+    EXPECT_TRUE(ptx_id.has_value()) << "PtxId should be injected";
+
+    auto pspan_id = writer.Get("PspanId");
+    EXPECT_TRUE(pspan_id.has_value()) << "PspanId should be injected";
 }
 
 TEST_F(SpanTest, SpanImplInjectContextTest) {

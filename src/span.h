@@ -154,9 +154,9 @@ namespace pinpoint {
         std::string& getAcceptorHost() { return acceptor_host_; }
 
         /// @brief Sets logging verbosity information.
-        void setLoggingInfo(int32_t logging_info) { logging_info_ = logging_info; }
+        void setLoggingFlag() { logging_flag_ = 1; }
         /// @brief Returns logging verbosity information.
-        int32_t getLoggingInfo() const { return logging_info_; }
+        int32_t getLoggingFlag() const { return logging_flag_; }
 
         /// @brief Sets span flag bits.
         void setFlags(int flags) { flags_ = flags; }
@@ -291,7 +291,7 @@ namespace pinpoint {
     	int32_t event_sequence_;
     	int32_t event_depth_;
 
-    	int32_t logging_info_;
+    	int32_t logging_flag_;
     	int flags_;
     	int err_;
     	int32_t error_func_id_;
@@ -404,6 +404,8 @@ namespace pinpoint {
     	void SetStatusCode(int status) override;
         /// @brief Captures URL statistics for the span.
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
+        /// @brief Records the logging flag and injects the span context into a logger.
+        void SetLogging(TraceContextWriter& writer) override;
     	/// @brief Records HTTP headers into span annotations.
     	void RecordHeader(HeaderType which, HeaderReader& reader) override;
 

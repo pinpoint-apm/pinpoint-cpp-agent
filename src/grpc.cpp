@@ -226,6 +226,7 @@ namespace pinpoint {
         } else {
             build_string_annotation(grpc_span->add_annotation(), ANNOTATION_API, span->getOperationName());
         }
+        grpc_span->set_loggingtransactioninfo(span->getLoggingFlag());
         grpc_span->set_flag(span->getFlags());
         grpc_span->set_err(span->getErr());
 

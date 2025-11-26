@@ -111,6 +111,7 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message) override {}
         void SetStatusCode(int status) override {}
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override {}
+        void SetLogging(TraceContextWriter& writer) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 
         TraceId& GetTraceId() override { return empty_trace_id; }
