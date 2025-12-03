@@ -19,6 +19,7 @@
 #include <thread>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 
 #include "../src/stat.h"
 #include "../src/config.h"
@@ -128,21 +129,29 @@ protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
         mock_agent_service_->setExiting(false);  // Ensure clean state
-        init_agent_stats();
+        
+        // Create AgentStats instance
+        agent_stats_ = std::make_unique<AgentStats>(mock_agent_service_.get());
+        // Initialize
+        agent_stats_->initAgentStats();
     }
 
     void TearDown() override {
+        // Reset global instance
+        AgentStats::setInstance(nullptr);
+        agent_stats_.reset();
         mock_agent_service_.reset();
     }
 
     std::unique_ptr<MockAgentService> mock_agent_service_;
+    std::unique_ptr<AgentStats> agent_stats_;
 };
 
 // ========== Agent Stats Global Functions Tests ==========
 
 TEST_F(StatTest, InitAgentStatsTest) {
-    // Test that init_agent_stats() doesn't crash
-    init_agent_stats();
+    // Test that initAgentStats() doesn't crash
+    agent_stats_->initAgentStats();
     SUCCEED(); // If we reach here, initialization was successful
 }
 
@@ -152,8 +161,8 @@ TEST_F(StatTest, CollectAgentStatTest) {
     // Initialize snapshot with zeros
     memset(&snapshot, 0, sizeof(snapshot));
     
-    // Test that collect_agent_stat() fills the snapshot
-    collect_agent_stat(snapshot);
+    // Test that collectAgentStat() fills the snapshot
+    agent_stats_->collectAgentStat(snapshot);
     
     // Verify that sample_time is set (should be > 0 after collection)
     EXPECT_GT(snapshot.sample_time_, 0) << "Sample time should be set";
@@ -167,14 +176,14 @@ TEST_F(StatTest, CollectAgentStatTest) {
 }
 
 TEST_F(StatTest, CollectResponseTimeTest) {
-    // Test response time collection
+    // Test response time collection via global function wrapper
     collect_response_time(100);
     collect_response_time(200);
     collect_response_time(50);
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // After collecting response times, average and max should be calculated
     // Note: The exact values depend on implementation, but they should be reasonable
@@ -183,7 +192,7 @@ TEST_F(StatTest, CollectResponseTimeTest) {
 }
 
 TEST_F(StatTest, SamplingCountersTest) {
-    // Test sample counting functions
+    // Test sample counting functions via global function wrappers
     incr_sample_new();
     incr_sample_new();
     incr_unsample_new();
@@ -194,7 +203,7 @@ TEST_F(StatTest, SamplingCountersTest) {
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // Verify counters are incremented
     EXPECT_EQ(snapshot.num_sample_new_, 2) << "Sample new counter should be 2";
@@ -210,13 +219,13 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     int64_t span_id_2 = 67890;
     int64_t start_time = 1234567890;
     
-    // Add active spans
+    // Add active spans via global function wrappers
     add_active_span(span_id_1, start_time);
     add_active_span(span_id_2, start_time + 100);
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // Active spans should be reflected in the snapshot
     // The exact distribution depends on implementation but total should be > 0
@@ -228,7 +237,7 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     drop_active_span(span_id_1);
     
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // Should have fewer active spans now
     int new_total_active = snapshot.active_requests_[0] + snapshot.active_requests_[1] + 
@@ -245,7 +254,7 @@ TEST_F(StatTest, GetAgentStatSnapshotsTest) {
     // Collect some stats
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // The snapshots vector should be accessible
     EXPECT_GE(snapshots.size(), initial_size) << "Snapshots vector should be accessible";
@@ -254,18 +263,18 @@ TEST_F(StatTest, GetAgentStatSnapshotsTest) {
 // ========== AgentStats Class Tests ==========
 
 TEST_F(StatTest, AgentStatsConstructorTest) {
-    AgentStats agent_stats(mock_agent_service_.get());
-    
-    // Test that constructor doesn't crash
+    // AgentStats instance is already created in SetUp
+    // Test that we can create another one (though singleton might get overwritten)
+    AgentStats another_stats(mock_agent_service_.get());
     SUCCEED();
 }
 
 TEST_F(StatTest, AgentStatsWorkerStopTest) {
-    AgentStats agent_stats(mock_agent_service_.get());
+    // AgentStats instance is already created in SetUp
     
     // Start worker in a separate thread
-    std::thread worker_thread([&agent_stats]() {
-        agent_stats.agentStatsWorker();
+    std::thread worker_thread([this]() {
+        agent_stats_->agentStatsWorker();
     });
     
     // Give worker time to start
@@ -273,7 +282,7 @@ TEST_F(StatTest, AgentStatsWorkerStopTest) {
     
     // Signal to stop and wait
     mock_agent_service_->setExiting(true);
-    agent_stats.stopAgentStatsWorker();
+    agent_stats_->stopAgentStatsWorker();
     
     // Wait for thread to finish
     worker_thread.join();
@@ -282,11 +291,11 @@ TEST_F(StatTest, AgentStatsWorkerStopTest) {
 }
 
 TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
-    AgentStats agent_stats(mock_agent_service_.get());
+    // AgentStats instance is already created in SetUp
     
     // Start worker in a separate thread
-    std::thread worker_thread([&agent_stats]() {
-        agent_stats.agentStatsWorker();
+    std::thread worker_thread([this]() {
+        agent_stats_->agentStatsWorker();
     });
     
     // Let it run briefly to start up
@@ -294,7 +303,7 @@ TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
     
     // Signal to stop and wait
     mock_agent_service_->setExiting(true);
-    agent_stats.stopAgentStatsWorker();
+    agent_stats_->stopAgentStatsWorker();
     
     // Wait for thread to finish
     worker_thread.join();
@@ -307,18 +316,19 @@ TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
 TEST_F(StatTest, AgentStatsWithExitingAgentTest) {
     mock_agent_service_->setExiting(true);
     
-    AgentStats agent_stats(mock_agent_service_.get());
+    // Re-create stats to pick up exiting state if checked in constructor or init
+    // But SetUp already created one. 
     
     // Start worker in a separate thread
-    std::thread worker_thread([&agent_stats]() {
-        agent_stats.agentStatsWorker();
+    std::thread worker_thread([this]() {
+        agent_stats_->agentStatsWorker();
     });
     
     // Let it run briefly
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     // Stop the worker
-    agent_stats.stopAgentStatsWorker();
+    agent_stats_->stopAgentStatsWorker();
     
     // Wait for thread to finish
     worker_thread.join();
@@ -337,7 +347,7 @@ TEST_F(StatTest, MultipleResponseTimeCollectionTest) {
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // Verify that max response time is the maximum we inserted
     EXPECT_EQ(snapshot.response_time_max_, 300) << "Max response time should be 300";
@@ -351,7 +361,7 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     // First, get the current state to see how many spans exist
     AgentStatsSnapshot initial_snapshot;
     memset(&initial_snapshot, 0, sizeof(initial_snapshot));
-    collect_agent_stat(initial_snapshot);
+    agent_stats_->collectAgentStat(initial_snapshot);
     
     int initial_total = initial_snapshot.active_requests_[0] + initial_snapshot.active_requests_[1] + 
                        initial_snapshot.active_requests_[2] + initial_snapshot.active_requests_[3];
@@ -368,7 +378,7 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
-    collect_agent_stat(snapshot);
+    agent_stats_->collectAgentStat(snapshot);
     
     // Verify that we have added 4 more spans
     int final_total = snapshot.active_requests_[0] + snapshot.active_requests_[1] + 

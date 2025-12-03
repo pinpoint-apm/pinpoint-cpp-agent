@@ -1116,7 +1116,9 @@ namespace pinpoint {
             stats_queue_.pop();
         }
 
-        init_agent_stats();
+        if (auto* stats = AgentStats::getInstance()) {
+            stats->initAgentStats();
+        }
         delete take_url_stat_snapshot();
         force_queue_empty_ = false;
     } catch (const std::exception &e) {
