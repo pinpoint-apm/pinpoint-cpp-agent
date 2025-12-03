@@ -28,6 +28,13 @@
 #include "utility.h"
 
 namespace pinpoint {
+    
+    // Span status and flag constants
+    constexpr int SPAN_FLAG_NONE = 0;
+    constexpr int SPAN_ERR_NONE = 0;
+    constexpr int SPAN_ERR_TRUE = 1;
+    constexpr int32_t SPAN_LOGGING_FLAG_OFF = 0;
+    constexpr int32_t SPAN_LOGGING_FLAG_ON = 1;
 
     /**
      * @brief Thread-safe stack wrapper used to manage nested span events.
@@ -155,7 +162,7 @@ namespace pinpoint {
         std::string& getAcceptorHost() { return acceptor_host_; }
 
         /// @brief Sets logging verbosity information.
-        void setLoggingFlag() { logging_flag_ = 1; }
+        void setLoggingFlag() { logging_flag_ = SPAN_LOGGING_FLAG_ON; }
         /// @brief Returns logging verbosity information.
         int32_t getLoggingFlag() const { return logging_flag_; }
 
@@ -425,4 +432,3 @@ namespace pinpoint {
     };
 
 }  // namespace pinpoint
-

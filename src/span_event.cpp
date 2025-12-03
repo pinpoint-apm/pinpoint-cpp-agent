@@ -91,7 +91,8 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
-        SqlNormalizer normalizer(64*1024);
+        // Use a thread-local or static instance since SqlNormalizer is now stateless/thread-safe for normalize()
+        static const SqlNormalizer normalizer(64*1024); 
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
         auto& config = parent_span_->getAgent()->getConfig();
