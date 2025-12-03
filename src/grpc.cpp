@@ -28,6 +28,13 @@
 
 namespace pinpoint {
 
+    namespace {
+        // gRPC channel configuration constants
+        constexpr int KEEPALIVE_TIME_MS = 30 * 1000;        // 30 seconds
+        constexpr int KEEPALIVE_TIMEOUT_MS = 60 * 1000;     // 60 seconds
+        constexpr int MAX_MESSAGE_LENGTH = 4 * 1024 * 1024; // 4 MB
+    }
+
     static void build_grpc_context(grpc::ClientContext* context, const AgentService* agent, int socket_id) {
         auto& config = agent->getConfig();
 
@@ -240,7 +247,6 @@ namespace pinpoint {
             build_annotation(grpc_span->add_annotation(), key, val);
         }
 
-        grpc_span->set_err(span->getErr());
         if (auto err_str = span->getErrorString(); !err_str.empty()) {
             const auto exceptInfo = new v1::PIntStringValue();
             exceptInfo->set_intvalue(span->getErrorFuncId());
@@ -392,9 +398,9 @@ namespace pinpoint {
 
         grpc::ChannelArguments channel_args;
 
-        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 30*1000);
-        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 60*1000);
-        channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, 4 * 1024 * 1024);
+        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, KEEPALIVE_TIME_MS);
+        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, KEEPALIVE_TIMEOUT_MS);
+        channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, MAX_MESSAGE_LENGTH);
 
         channel_ = grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), channel_args);
     }
@@ -650,27 +656,31 @@ namespace pinpoint {
             meta_queue_.pop();
             lock.unlock();
 
-            if (meta->meta_type_ == META_API) {
-                if (send_api_meta(meta->value_.api_meta_) != SEND_OK) {
-                    agent_->removeCacheApi(meta->value_.api_meta_);
-                }
-            } else if (meta->meta_type_ == META_STRING) {
-                if (meta->value_.str_meta_.type_ == STRING_META_ERROR) {
-                    if (send_error_meta(meta->value_.str_meta_) != SEND_OK) {
-                        agent_->removeCacheError(meta->value_.str_meta_);
+            // Use std::visit for type-safe variant handling
+            std::visit([this](auto&& value) {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, ApiMeta>) {
+                    if (send_api_meta(value) != SEND_OK) {
+                        agent_->removeCacheApi(value);
                     }
-                } else if (meta->value_.str_meta_.type_ == STRING_META_SQL) {
-                    if (send_sql_meta(meta->value_.str_meta_) != SEND_OK) {
-                        agent_->removeCacheSql(meta->value_.str_meta_);
+                } else if constexpr (std::is_same_v<T, StringMeta>) {
+                    if (value.type_ == STRING_META_ERROR) {
+                        if (send_error_meta(value) != SEND_OK) {
+                            agent_->removeCacheError(value);
+                        }
+                    } else if (value.type_ == STRING_META_SQL) {
+                        if (send_sql_meta(value) != SEND_OK) {
+                            agent_->removeCacheSql(value);
+                        }
                     }
+                } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
+                    if (send_sql_uid_meta(value) != SEND_OK) {
+                        agent_->removeCacheSqlUid(value);
+                    }
+                } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
+                    send_exception_meta(value);
                 }
-            } else if (meta->meta_type_ == META_SQL_UID) {
-                if (send_sql_uid_meta(meta->value_.sql_uid_meta_) != SEND_OK) {
-                    agent_->removeCacheSqlUid(meta->value_.sql_uid_meta_);
-                }
-            } else if (meta->meta_type_ == META_EXCEPTION) {
-                send_exception_meta(meta->value_.exception_meta_);
-            }
+            }, meta->value_);
 
             lock.lock();
         }

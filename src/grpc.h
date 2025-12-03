@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <string>
 #include <queue>
+#include <variant>
 
 #include <grpc/grpc.h>
 #include <grpcpp/alarm.h>
@@ -90,13 +91,14 @@ namespace pinpoint {
     /**
      * @brief Metadata describing an API string cached on the collector.
      */
-    typedef struct ApiMeta {
+    struct ApiMeta {
         int32_t id_;
         int32_t type_;
         std::string api_str_;
-        ApiMeta(int32_t id, int32_t type, std::string_view api_str) : id_(id), type_(type), api_str_(api_str) {}
-        ~ApiMeta() {}
-    } ApiMeta;
+        
+        ApiMeta(int32_t id, int32_t type, std::string_view api_str) 
+            : id_(id), type_(type), api_str_(api_str) {}
+    };
 
     /**
      * @brief Type tag for cached string metadata.
@@ -109,75 +111,76 @@ namespace pinpoint {
     /**
      * @brief Metadata describing a cached string value (error or SQL).
      */
-    typedef struct StringMeta {
+    struct StringMeta {
         int32_t id_;
         std::string str_val_;
         StringMetaType type_;
+        
         StringMeta(int32_t id, std::string_view str_val, StringMetaType type) 
             : id_(id), str_val_(str_val), type_(type) {}
-        ~StringMeta() {}
-    } StringMeta;
+    };
 
     /**
      * @brief Metadata describing a cached SQL UID.
      */
-    typedef struct SqlUidMeta {
+    struct SqlUidMeta {
         std::vector<unsigned char> uid_;
         std::string sql_;
+        
         SqlUidMeta(std::vector<unsigned char> uid, std::string_view sql) 
             : uid_(std::move(uid)), sql_(sql) {}
-        ~SqlUidMeta() {}
-    } SqlUidMeta;
+    };
 
     /**
      * @brief Metadata bundle carrying exception call stacks for a completed span.
      */
-    typedef struct ExceptionMeta {
+    struct ExceptionMeta {
         TraceId txid_;
         int64_t span_id_;
         std::string url_template_;
         std::vector<std::unique_ptr<Exception>> exceptions_;
+        
         ExceptionMeta(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
             : txid_(txid), span_id_(span_id), url_template_(url_template), exceptions_(std::move(exceptions)) {}
-        ~ExceptionMeta() {}
-    } ExceptionMeta;
+        
+        // Delete copy constructor and copy assignment
+        ExceptionMeta(const ExceptionMeta&) = delete;
+        ExceptionMeta& operator=(const ExceptionMeta&) = delete;
+        
+        // Default move constructor and move assignment
+        ExceptionMeta(ExceptionMeta&&) = default;
+        ExceptionMeta& operator=(ExceptionMeta&&) = default;
+    };
 
     /**
-     * @brief Tagged union covering all metadata variants queued by the agent.
+     * @brief Type-safe variant covering all metadata variants queued by the agent.
      */
-    typedef union MetaValue {
-        ApiMeta api_meta_;
-        StringMeta str_meta_;
-        SqlUidMeta sql_uid_meta_;
-        ExceptionMeta exception_meta_;
-        MetaValue(int32_t id, int32_t api_type, std::string_view api_str) : api_meta_(id, api_type, api_str) {}
-        MetaValue(int32_t id, std::string_view str_val, StringMetaType type) : str_meta_(id, str_val, type) {}
-        MetaValue(std::vector<unsigned char> uid, std::string_view sql) : sql_uid_meta_(std::move(uid), sql) {}
-        MetaValue(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions) 
-            : exception_meta_(txid, span_id, url_template, std::move(exceptions)) {}
-        ~MetaValue() {}
-    } MetaValue;
+    using MetaValue = std::variant<ApiMeta, StringMeta, SqlUidMeta, ExceptionMeta>;
 
     /**
      * @brief Type discriminator for metadata payloads.
      */
     enum MetaType {META_API, META_STRING, META_SQL_UID, META_EXCEPTION};
+    
     /**
      * @brief Metadata item queued for transmission to the collector.
      */
-    typedef struct MetaData {
+    struct MetaData {
         MetaType meta_type_;
         MetaValue value_;
-        MetaData(enum MetaType meta_type, int32_t id, int32_t api_type, std::string_view api_str)
-            : meta_type_(meta_type), value_(id, api_type, api_str) {}
-        MetaData(enum MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
-            : meta_type_(meta_type), value_(id, str_val, str_type) {}
-        MetaData(enum MetaType meta_type, std::vector<unsigned char> uid, std::string_view sql)
-            : meta_type_(meta_type), value_(std::move(uid), sql) {}
-        MetaData(enum MetaType meta_type, TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
-            : meta_type_(meta_type), value_(txid, span_id, url_template, std::move(exceptions)) {}
-        ~MetaData() {}
-    } MetaData;
+        
+        MetaData(MetaType meta_type, int32_t id, int32_t api_type, std::string_view api_str)
+            : meta_type_(meta_type), value_(ApiMeta(id, api_type, api_str)) {}
+        
+        MetaData(MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
+            : meta_type_(meta_type), value_(StringMeta(id, str_val, str_type)) {}
+        
+        MetaData(MetaType meta_type, std::vector<unsigned char> uid, std::string_view sql)
+            : meta_type_(meta_type), value_(SqlUidMeta(std::move(uid), sql)) {}
+        
+        MetaData(MetaType meta_type, TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
+            : meta_type_(meta_type), value_(ExceptionMeta(txid, span_id, url_template, std::move(exceptions))) {}
+    };
 
     /**
      * @brief gRPC client responsible for agent registration, ping and metadata upload.

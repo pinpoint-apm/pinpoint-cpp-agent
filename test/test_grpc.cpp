@@ -298,27 +298,30 @@ TEST_F(GrpcTest, MetaDataApiTest) {
     MetaData meta_data(META_API, 1, 100, "test.api");
     
     EXPECT_EQ(meta_data.meta_type_, META_API);
-    EXPECT_EQ(meta_data.value_.api_meta_.id_, 1);
-    EXPECT_EQ(meta_data.value_.api_meta_.type_, 100);
-    EXPECT_EQ(meta_data.value_.api_meta_.api_str_, "test.api");
+    const auto& api_meta = std::get<ApiMeta>(meta_data.value_);
+    EXPECT_EQ(api_meta.id_, 1);
+    EXPECT_EQ(api_meta.type_, 100);
+    EXPECT_EQ(api_meta.api_str_, "test.api");
 }
 
 TEST_F(GrpcTest, MetaDataStringTest) {
     MetaData meta_data(META_STRING, 2, "test.string", STRING_META_ERROR);
     
     EXPECT_EQ(meta_data.meta_type_, META_STRING);
-    EXPECT_EQ(meta_data.value_.str_meta_.id_, 2);
-    EXPECT_EQ(meta_data.value_.str_meta_.str_val_, "test.string");
-    EXPECT_EQ(meta_data.value_.str_meta_.type_, STRING_META_ERROR);
+    const auto& str_meta = std::get<StringMeta>(meta_data.value_);
+    EXPECT_EQ(str_meta.id_, 2);
+    EXPECT_EQ(str_meta.str_val_, "test.string");
+    EXPECT_EQ(str_meta.type_, STRING_META_ERROR);
 }
 
 TEST_F(GrpcTest, MetaDataSqlTest) {
     MetaData meta_data(META_STRING, 3, "SELECT * FROM users", STRING_META_SQL);
     
     EXPECT_EQ(meta_data.meta_type_, META_STRING);
-    EXPECT_EQ(meta_data.value_.str_meta_.id_, 3);
-    EXPECT_EQ(meta_data.value_.str_meta_.str_val_, "SELECT * FROM users");
-    EXPECT_EQ(meta_data.value_.str_meta_.type_, STRING_META_SQL);
+    const auto& str_meta = std::get<StringMeta>(meta_data.value_);
+    EXPECT_EQ(str_meta.id_, 3);
+    EXPECT_EQ(str_meta.str_val_, "SELECT * FROM users");
+    EXPECT_EQ(str_meta.type_, STRING_META_SQL);
 }
 
 TEST_F(GrpcTest, StringMetaSqlTest) {
