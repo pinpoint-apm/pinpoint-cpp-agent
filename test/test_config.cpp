@@ -203,7 +203,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     
     // Test basic default values
     EXPECT_EQ(config.app_name_, "") << "Default app name should be empty";
-    EXPECT_EQ(config.app_type_, 1300) << "Default app type should be 1300"; // DEFAULT_APP_TYPE
+    EXPECT_EQ(config.app_type_, 1300) << "Default app type should be 1300"; // defaults::APP_TYPE
     EXPECT_FALSE(config.agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
     EXPECT_EQ(config.agent_name_, "") << "Default agent name should be empty";
     EXPECT_TRUE(config.enable) << "Should be enabled by default";

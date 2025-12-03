@@ -33,7 +33,7 @@ namespace pinpoint {
         parent_app_type_{1},
         parent_app_namespace_{},
         app_type_{agent->getAppType()},
-		service_type_{DEFAULT_SPAN_SERVICE_TYPE},
+		service_type_{defaults::SPAN_SERVICE_TYPE},
         operation_{operation},
         api_id_{},
         rpc_name_{},

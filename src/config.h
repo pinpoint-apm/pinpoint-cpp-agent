@@ -18,8 +18,32 @@
 
 #include <string>
 #include <yaml-cpp/yaml.h>
+#include "pinpoint/tracer.h"
+#include "sampling.h"
 
 namespace pinpoint {
+
+    namespace defaults {
+        constexpr int AGENT_PORT = 9991;
+        constexpr int SPAN_PORT = 9993;
+        constexpr int STAT_PORT = 9992;
+        constexpr int STAT_BATCH_COUNT = 6;
+        constexpr int STAT_INTERVAL_MS = 5000;
+        constexpr int SAMPLING_COUNTER_RATE = 1;
+        constexpr double SAMPLING_PERCENT_RATE = 100.0;
+        constexpr int SPAN_QUEUE_SIZE = 1024;
+        constexpr int SPAN_MAX_EVENT_DEPTH = 64;
+        constexpr int SPAN_MAX_EVENT_SEQUENCE = 5000;
+        constexpr int SPAN_EVENT_CHUNK_SIZE = 20;
+        constexpr int HTTP_URL_STAT_LIMIT = 1024;
+        constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
+        constexpr int LOG_MAX_FILE_SIZE_MB = 10;
+        constexpr const char* LOG_LEVEL = "info";
+
+        constexpr int32_t APP_TYPE = APP_TYPE_CPP;
+        constexpr int32_t SPAN_SERVICE_TYPE = SERVICE_TYPE_CPP;
+        constexpr int32_t SPAN_EVENT_SERVICE_TYPE = SERVICE_TYPE_CPP_FUNC;
+    }
 
     /**
      * @brief Environment variable names that override configuration values.
@@ -77,58 +101,58 @@ namespace pinpoint {
      */
     struct Config {
         std::string app_name_;
-        int32_t app_type_;
+        int32_t app_type_ = defaults::APP_TYPE;
         std::string agent_id_;
         std::string agent_name_;
 
-        bool enable;
-        bool is_container;
-        bool enable_callstack_trace;
+        bool enable = true;
+        bool is_container = false;
+        bool enable_callstack_trace = false;
 
         struct {
-            std::string level;
+            std::string level = defaults::LOG_LEVEL;
             std::string file_path;
-            int max_file_size;
+            int max_file_size = defaults::LOG_MAX_FILE_SIZE_MB;
         } log;
 
         struct {
             std::string host;
-            int agent_port;
-            int span_port;
-            int stat_port;
+            int agent_port = defaults::AGENT_PORT;
+            int span_port = defaults::SPAN_PORT;
+            int stat_port = defaults::STAT_PORT;
         } collector;
 
         struct {
-            bool enable;
-            int batch_count;
-            int collect_interval;
+            bool enable = true;
+            int batch_count = defaults::STAT_BATCH_COUNT;
+            int collect_interval = defaults::STAT_INTERVAL_MS;
         } stat;
 
         struct {
-            std::string type;
-            int counter_rate;
-            double percent_rate;
-            int new_throughput;
-            int cont_throughput;
+            std::string type = COUNTER_SAMPLING;
+            int counter_rate = defaults::SAMPLING_COUNTER_RATE;
+            double percent_rate = defaults::SAMPLING_PERCENT_RATE;
+            int new_throughput = 0;
+            int cont_throughput = 0;
         } sampling;
 
         struct {
-            size_t queue_size;
-            int max_event_depth;
-            int max_event_sequence;
-            size_t event_chunk_size;
+            size_t queue_size = defaults::SPAN_QUEUE_SIZE;
+            int max_event_depth = defaults::SPAN_MAX_EVENT_DEPTH;
+            int max_event_sequence = defaults::SPAN_MAX_EVENT_SEQUENCE;
+            size_t event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         } span;
 
         struct {
             struct {
-                bool enable;
-                int limit;
-                int path_depth;
-                bool method_prefix;
+                bool enable = false;
+                int limit = defaults::HTTP_URL_STAT_LIMIT;
+                int path_depth = 1;
+                bool method_prefix = false;
             } url_stat;
 
             struct {
-                std::vector<std::string> status_errors;
+                std::vector<std::string> status_errors = {"5xx"};
                 std::vector<std::string> exclude_url;
                 std::vector<std::string> exclude_method;
                 std::vector<std::string> rec_request_header;
@@ -144,8 +168,8 @@ namespace pinpoint {
         } http;
 
         struct {
-            int max_bind_args_size;
-            bool enable_sql_stats;
+            int max_bind_args_size = defaults::SQL_MAX_BIND_ARGS_SIZE;
+            bool enable_sql_stats = false;
         } sql;
     };
 

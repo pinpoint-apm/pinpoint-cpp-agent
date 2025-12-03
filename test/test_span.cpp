@@ -332,7 +332,7 @@ TEST_F(SpanTest, SpanDataConstructorTest) {
     
     EXPECT_EQ(span_data.getOperationName(), "test-operation") << "Operation name should match";
     EXPECT_EQ(span_data.getAppType(), 1300) << "App type should match agent's app type";
-    EXPECT_EQ(span_data.getServiceType(), DEFAULT_SPAN_SERVICE_TYPE) << "Default service type should be set";
+    EXPECT_EQ(span_data.getServiceType(), defaults::SPAN_SERVICE_TYPE) << "Default service type should be set";
     EXPECT_GT(span_data.getApiId(), 0) << "API ID should be cached and positive";
     EXPECT_EQ(span_data.getParentSpanId(), -1) << "Initial parent span ID should be -1";
     EXPECT_EQ(span_data.getParentAppType(), 1) << "Default parent app type should be 1";

@@ -70,10 +70,6 @@ namespace pinpoint {
 	constexpr int32_t SERVICE_TYPE_GRPC_CLIENT = 9160;
 	constexpr int32_t SERVICE_TYPE_GRPC_SERVER = 1130;
 
-	constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
-	constexpr int32_t DEFAULT_SPAN_SERVICE_TYPE = SERVICE_TYPE_CPP;
-	constexpr int32_t DEFAULT_SPAN_EVENT_SERVICE_TYPE = SERVICE_TYPE_CPP_FUNC;
-
 	constexpr int32_t API_TYPE_DEFAULT = 0;
 	constexpr int32_t API_TYPE_WEB_REQUEST = 100;
 	constexpr int32_t API_TYPE_INVOCATION = 200;

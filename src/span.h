@@ -22,6 +22,7 @@
 
 #include "agent_service.h"
 #include "callstack.h"
+#include "config.h"
 #include "span_event.h"
 #include "url_stat.h"
 #include "utility.h"
@@ -355,7 +356,7 @@ namespace pinpoint {
         ~SpanImpl() override = default;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {
-    		return NewSpanEvent(operation, DEFAULT_SPAN_EVENT_SERVICE_TYPE);
+    		return NewSpanEvent(operation, defaults::SPAN_EVENT_SERVICE_TYPE);
     	}
     	/**
     	 * @brief Creates a new span event associated with this span.
