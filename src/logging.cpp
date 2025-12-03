@@ -16,34 +16,61 @@
 
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "logging.h"
+#include <vector>
+
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#endif
 
 namespace pinpoint {
-    std::unique_ptr<Logger> Logger::instance_;
-    std::once_flag Logger::init_flag_;
+
+    Logger::Logger() {
+        // Default to stdout sink initially
+        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        logger_ = std::make_shared<spdlog::logger>("pinpoint", console_sink);
+        // Default level
+        logger_->set_level(spdlog::level::info);
+        // Register to spdlog global registry for potential access
+        spdlog::register_logger(logger_);
+    }
 
     void init_logger() {
-        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setLogLevel(LOG_LEVEL_INFO);
     }
 
     void shutdown_logger() {
         spdlog::shutdown();
     }
 
-    void Logger::setLogLevel(const std::string& log_level) const {
-        if (const auto level = log_level.c_str(); !strcasecmp(level, "debug")) {
+    void Logger::setLogLevel(const std::string& log_level) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto level = log_level.c_str();
+        if (!strcasecmp(level, LOG_LEVEL_DEBUG)) {
             logger_->set_level(spdlog::level::debug);
-        } else if (!strcasecmp(level, "info")) {
+        } else if (!strcasecmp(level, LOG_LEVEL_INFO)) {
             logger_->set_level(spdlog::level::info);
-        } else if (!strcasecmp(level, "warning")) {
+        } else if (!strcasecmp(level, LOG_LEVEL_WARN)) {
             logger_->set_level(spdlog::level::warn);
-        } else if (!strcasecmp(level, "error")) {
+        } else if (!strcasecmp(level, LOG_LEVEL_ERROR)) {
             logger_->set_level(spdlog::level::err);
         }
     }
 
     void Logger::setFileLogger(const std::string& log_file_path, const int max_size) {
-        spdlog::drop("pinpoint");
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        // Prepare new sink
         const auto size = max_size * 1024 * 1024;
-        logger_ = spdlog::rotating_logger_mt("pinpoint", log_file_path, size, 1);
+        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_file_path, size, 1);
+        
+        // Swap sinks safely
+        // Note: spdlog::logger::sinks() returns a reference to the vector of sinks.
+        // We replace the existing sinks with the new file sink.
+        auto& sinks = logger_->sinks();
+        sinks.clear();
+        sinks.push_back(file_sink);
+        
+        // Force flush on error? Optional configuration
+        logger_->flush_on(spdlog::level::err);
     }
 }

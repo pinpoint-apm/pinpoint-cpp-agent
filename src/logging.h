@@ -18,10 +18,17 @@
 
 #include <memory>
 #include <string>
+#include <mutex>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 namespace pinpoint {
+
+    // Log levels
+    constexpr const char* LOG_LEVEL_DEBUG = "debug";
+    constexpr const char* LOG_LEVEL_INFO = "info";
+    constexpr const char* LOG_LEVEL_WARN = "warning";
+    constexpr const char* LOG_LEVEL_ERROR = "error";
 
     /**
      * @brief Thread-safe singleton wrapper around the internal `spdlog` logger.
@@ -44,11 +51,8 @@ namespace pinpoint {
          * @return Reference to the global `Logger`.
          */
         static Logger& getInstance() {
-            // Singleton
-            std::call_once(init_flag_, []() {
-                instance_.reset(new Logger);
-            });
-            return *(instance_);
+            static Logger instance;
+            return instance;
         }
 
         /**
@@ -62,7 +66,7 @@ namespace pinpoint {
          *
          * @param log_level One of the level strings accepted by `spdlog`.
          */
-        void setLogLevel(const std::string& log_level) const;
+        void setLogLevel(const std::string& log_level);
         /**
          * @brief Switches the logger to file output with log rotation support.
          *
@@ -72,11 +76,10 @@ namespace pinpoint {
         void setFileLogger(const std::string& log_file_path, const int max_size);
 
     private:
-        static std::unique_ptr<Logger> instance_;
-        static std::once_flag init_flag_;
         std::shared_ptr<spdlog::logger>	logger_;
+        mutable std::mutex mutex_;
 
-        Logger() : logger_(spdlog::stdout_color_mt("pinpoint")) {}
+        Logger();
     };
 
     /**
