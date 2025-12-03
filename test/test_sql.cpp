@@ -175,7 +175,7 @@ TEST_F(SqlTest, StringLiteralHandlingTest) {
 // Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
     EXPECT_EQ(result.parameters, "John\\");
 }
 

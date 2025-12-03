@@ -17,8 +17,6 @@
 #include "sql.h"
 #include <algorithm>
 #include <cctype>
-#include <sstream>
-#include <vector>
 
 namespace pinpoint {
 
@@ -32,10 +30,14 @@ namespace pinpoint {
         }
         
         // Limit SQL length to prevent memory issues
-        std::string limited_sql(sql.substr(0, std::min(sql.length(), max_sql_length_)));
+        const size_t sql_length = std::min(sql.length(), max_sql_length_);
         
-        std::ostringstream result_stream;
-        std::vector<std::string> parameters;
+        std::string normalized_sql;
+        normalized_sql.reserve(sql_length);
+        
+        std::string parameters;
+        // Reserve some initial space for parameters to avoid frequent reallocations
+        parameters.reserve(64);
         
         enum class State {
             Normal,
@@ -45,12 +47,11 @@ namespace pinpoint {
         };
         
         State state = State::Normal;
-        size_t param_index = 0;
-        const size_t sql_length = limited_sql.length();
+        int param_index = 0;
         
         for (size_t i = 0; i < sql_length; ++i) {
-            char c = limited_sql[i];
-            char next_c = (i + 1 < sql_length) ? limited_sql[i + 1] : '\0';
+            char c = sql[i];
+            char next_c = (i + 1 < sql_length) ? sql[i + 1] : '\0';
             
             switch (state) {
                 case State::Normal: {
@@ -66,40 +67,68 @@ namespace pinpoint {
                         continue;
                     }
                     
-                    // Handle start of string literals - extract and replace with indexed placeholders
-                    if (c == '\'' || c == '"' || c == '`') {
-                        std::string string_literal;
+                    // Handle start of string literals
+                    if (isQuoteChar(c)) {
                         char quote_char = c;
-                        i++; // Skip opening quote
-                        
-                        // Read the entire string literal including closing quote
+                        size_t start_idx = i + 1; // Start of content (after opening quote)
+                        size_t current_idx = start_idx;
                         bool closed = false;
-                        while (i < sql_length) {
-                            char str_c = limited_sql[i];
-                            
-                            if (str_c == quote_char) {
-                                // Check for escaped quote
-                                if (i + 1 < sql_length && limited_sql[i + 1] == quote_char) {
-                                    i++; // Skip the escaped quote
-                                    string_literal += limited_sql[i];
+                        
+                        // Scan for closing quote
+                        while (current_idx < sql_length) {
+                            if (sql[current_idx] == quote_char) {
+                                // Check for escaped quote (e.g. 'don''t')
+                                if (current_idx + 1 < sql_length && sql[current_idx + 1] == quote_char) {
+                                    current_idx += 2; // Skip both quotes
                                 } else {
                                     closed = true;
                                     break;
                                 }
                             } else {
-                                string_literal += str_c;
+                                current_idx++;
                             }
-                            i++;
                         }
-                        
+
                         if (closed) {
-                            // Add to parameters and replace with indexed placeholder
-                            parameters.push_back(string_literal);
-                            result_stream << quote_char << param_index << '$' << quote_char;
+                            // Extract content, handling escaped quotes if necessary
+                            std::string content;
+                            size_t content_len = current_idx - start_idx;
+                            content.reserve(content_len);
+                            
+                            for (size_t k = start_idx; k < current_idx; ++k) {
+                                if (sql[k] == quote_char && k + 1 < current_idx && sql[k + 1] == quote_char) {
+                                    content += quote_char;
+                                    k++; // Skip escaped char
+                                } else {
+                                    content += sql[k];
+                                }
+                            }
+
+                            // Add to parameters
+                            if (param_index > 0) {
+                                parameters += ',';
+                            }
+                            parameters += content;
+
+                            // Add placeholder to SQL
+                            normalized_sql += quote_char;
+                            normalized_sql += std::to_string(param_index);
+                            normalized_sql += '$';
+                            normalized_sql += quote_char;
+                            
                             param_index++;
+                            i = current_idx; // Move main loop index to closing quote
                         } else {
-                            // Malformed string - include as is
-                            result_stream << string_literal;
+                            // Malformed string - include as is from the opening quote
+                            // We only add the opening quote here, the rest will be processed in next iterations
+                            // But waiting... if we just add 'c', the loop continues. 
+                            // The original logic consumed the whole string.
+                            // Let's consume it all as is.
+                            normalized_sql += quote_char;
+                            for (size_t k = start_idx; k < sql_length; ++k) {
+                                normalized_sql += sql[k];
+                            }
+                            i = sql_length; // End loop
                         }
                         
                         continue;
@@ -107,38 +136,52 @@ namespace pinpoint {
                     
                     
                     // Handle numeric literals
-                    if (std::isdigit(c) || (c == '-' && next_c != '\0' && std::isdigit(next_c))) {
+                    // Check for digit, or minus sign followed by digit
+                    if (std::isdigit(static_cast<unsigned char>(c)) || (c == '-' && next_c != '\0' && std::isdigit(static_cast<unsigned char>(next_c)))) {
                         std::string number;
                         
+                        size_t num_start = i;
                         if (c == '-') {
-                            number += c;
                             i++;
-                            c = limited_sql[i];
                         }
                         
                         // Read the entire number (including decimals)
-                        while (i < sql_length && (std::isdigit(limited_sql[i]) || limited_sql[i] == '.')) {
-                            number += limited_sql[i];
-                            i++;
+                        while (i < sql_length) {
+                            char nc = sql[i];
+                            if (std::isdigit(static_cast<unsigned char>(nc)) || nc == '.') {
+                                i++;
+                            } else {
+                                break;
+                            }
                         }
-                        i--; // Back up one since the loop will increment
                         
-                        // Add to parameters and replace with indexed placeholder
-                        parameters.push_back(number);
-                        result_stream << param_index << '#';
+                        // Extract number string
+                        number.assign(sql.data() + num_start, i - num_start);
+                        
+                        // Add to parameters
+                        if (param_index > 0) {
+                            parameters += ',';
+                        }
+                        parameters += number;
+
+                        // Add placeholder
+                        normalized_sql += std::to_string(param_index);
+                        normalized_sql += '#';
+                        
                         param_index++;
+                        i--; // Back up one since the loop will increment
                         continue;
                     }
                     
                     // Regular character
-                    result_stream << c;
+                    normalized_sql += c;
                     break;
                 }
                 
                 case State::InLineComment: {
                     if (c == '\n' || c == '\r') {
                         state = State::Normal;
-                        result_stream << c;
+                        normalized_sql += c;
                     }
                     // Skip all other characters in line comment
                     break;
@@ -155,25 +198,13 @@ namespace pinpoint {
                 case State::InBlockCommentEnd: {
                     state = State::Normal;
                     // Add space to replace the comment
-                    result_stream << ' ';
+                    normalized_sql += ' ';
                     break;
                 }
             }
         }
         
-        // Get the normalized SQL
-        std::string normalized_sql = result_stream.str();
-        
-        // Build parameters string (comma-separated)
-        std::ostringstream params_stream;
-        for (size_t i = 0; i < parameters.size(); ++i) {
-            if (i > 0) {
-                params_stream << ',';
-            }
-            params_stream << parameters[i];
-        }
-        
-        return SqlNormalizeResult(normalized_sql, params_stream.str());
+        return SqlNormalizeResult(std::move(normalized_sql), std::move(parameters));
     }
 
     bool SqlNormalizer::isQuoteChar(char c) {
