@@ -19,6 +19,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -70,7 +71,12 @@ namespace pinpoint {
         /// @brief Returns the maximum observed elapsed time.
         int64_t max() const { return max_; }
         /// @brief Returns the bucket value at the specified index.
-        int32_t histogram(int index) const { return histogram_[index]; }
+        int32_t histogram(int index) const { 
+            if (index < 0 || index >= URL_STATS_BUCKET_SIZE) {
+                return 0;
+            }
+            return histogram_[index]; 
+        }
 
     private:
         int64_t total_;
@@ -84,7 +90,7 @@ namespace pinpoint {
      */
     class EachUrlStat {
     public:
-        EachUrlStat(std::string url, int64_t tick) : url_(std::move(url)), tickTime_(tick) {}
+        explicit EachUrlStat(int64_t tick) : tickTime_(tick) {}
         ~EachUrlStat() = default;
 
         /// @brief Returns the histogram aggregating all responses.
@@ -95,7 +101,6 @@ namespace pinpoint {
         int64_t tick() const { return tickTime_; }
 
     private:
-        std::string url_;
         UrlStatHistogram totalHistogram_;
         UrlStatHistogram failedHistogram_;
         int64_t tickTime_;
@@ -107,8 +112,11 @@ namespace pinpoint {
     struct UrlKey {
         std::string url_;
         int64_t tick_;
-        bool operator<(const UrlKey &o)  const {
-            return url_ < o.url_ || (url_ == o.url_ && tick_ < o.tick_);
+        bool operator<(const UrlKey &o) const {
+            if (url_ != o.url_) {
+                return url_ < o.url_;
+            }
+            return tick_ < o.tick_;
         }
     };
 
@@ -132,13 +140,9 @@ namespace pinpoint {
      */
     class UrlStatSnapshot {
     public:
-        UrlStatSnapshot() :count_(0), urlMap_{}, mutex_() {}
-        ~UrlStatSnapshot() {
-            for(auto& iter : urlMap_) {
-                delete iter.second;
-            }
-            urlMap_.clear();
-        }
+        UrlStatSnapshot() : urlMap_{}, mutex_() {}
+        ~UrlStatSnapshot() = default;
+        
         /**
          * @brief Adds a URL statistic to the snapshot using bucketization rules.
          *
@@ -147,11 +151,10 @@ namespace pinpoint {
          */
         void add(const UrlStat* us, const Config& config);
         /// @brief Returns the map storing statistics per URL/tick.
-        std::map<UrlKey, EachUrlStat*>& getEachStats() { return urlMap_; }
+        std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() { return urlMap_; }
 
     private:
-        int count_;
-        std::map<UrlKey, EachUrlStat*> urlMap_;
+        std::map<UrlKey, std::unique_ptr<EachUrlStat>> urlMap_;
         std::mutex mutex_;
     };
 

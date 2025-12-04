@@ -18,6 +18,7 @@
 
 #include <mutex>
 #include <stack>
+#include <stdexcept>
 #include <vector>
 
 #include "agent_service.h"
@@ -57,9 +58,13 @@ namespace pinpoint {
          * @brief Removes and returns the most recent span event.
          *
          * @return Span event that was at the top of the stack.
+         * @throws std::runtime_error if the stack is empty.
          */
         std::shared_ptr<SpanEventImpl> pop() {
             std::unique_lock<std::mutex> lock(mutex_);
+            if (stack_.empty()) {
+                throw std::runtime_error("Cannot pop from empty EventStack");
+            }
             auto item = stack_.top();
             stack_.pop();
             return item;
@@ -67,9 +72,13 @@ namespace pinpoint {
 
         /**
          * @brief Returns (without removing) the top span event.
+         * @throws std::runtime_error if the stack is empty.
          */
         std::shared_ptr<SpanEventImpl> top() {
             std::unique_lock<std::mutex> lock(mutex_);
+            if (stack_.empty()) {
+                throw std::runtime_error("Cannot get top from empty EventStack");
+            }
             return stack_.top();
         }
 

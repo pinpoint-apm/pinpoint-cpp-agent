@@ -15,7 +15,6 @@
  */
 
 #include <mutex>
-#include <sstream>
 
 #include "absl/strings/str_cat.h"
 #include "logging.h"
@@ -23,25 +22,87 @@
 
 namespace pinpoint {
 
-    static TickClock tick_clock(30);
-    static std::mutex snapshot_mutex;
-    static UrlStatSnapshot *url_stats_snapshot;
+    // URL stat configuration constants
+    constexpr int URL_STAT_TICK_INTERVAL_SECONDS = 30;
+    constexpr int URL_STAT_SEND_INTERVAL_SECONDS = 30;
+    
+    // Histogram bucket thresholds (in milliseconds)
+    constexpr int32_t BUCKET_THRESHOLD_100MS = 100;
+    constexpr int32_t BUCKET_THRESHOLD_300MS = 300;
+    constexpr int32_t BUCKET_THRESHOLD_500MS = 500;
+    constexpr int32_t BUCKET_THRESHOLD_1S = 1000;
+    constexpr int32_t BUCKET_THRESHOLD_3S = 3000;
+    constexpr int32_t BUCKET_THRESHOLD_5S = 5000;
+    constexpr int32_t BUCKET_THRESHOLD_8S = 8000;
+    
+    // HTTP status code threshold
+    constexpr int HTTP_STATUS_ERROR_THRESHOLD = 400;
+
+    /**
+     * @brief Singleton class to manage global URL statistics snapshot state.
+     * 
+     * This class encapsulates the global URL statistics snapshot and provides
+     * thread-safe access to it. It replaces the previous global static variables
+     * with a cleaner, RAII-compliant design.
+     */
+    class UrlStatSnapshotManager {
+    public:
+        static UrlStatSnapshotManager& getInstance() {
+            static UrlStatSnapshotManager instance;
+            return instance;
+        }
+
+        // Delete copy and move constructors
+        UrlStatSnapshotManager(const UrlStatSnapshotManager&) = delete;
+        UrlStatSnapshotManager& operator=(const UrlStatSnapshotManager&) = delete;
+        UrlStatSnapshotManager(UrlStatSnapshotManager&&) = delete;
+        UrlStatSnapshotManager& operator=(UrlStatSnapshotManager&&) = delete;
+
+        void initialize() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            snapshot_ = std::make_unique<UrlStatSnapshot>();
+        }
+
+        void add(const UrlStat* us, const Config& config) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (snapshot_) {
+                snapshot_->add(us, config);
+            }
+        }
+
+        UrlStatSnapshot* takeSnapshot() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            auto* old_snapshot = snapshot_.release();
+            snapshot_ = std::make_unique<UrlStatSnapshot>();
+            return old_snapshot;
+        }
+
+        TickClock& getTickClock() {
+            return tick_clock_;
+        }
+
+    private:
+        UrlStatSnapshotManager() 
+            : tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
+              snapshot_(nullptr) {}
+
+        ~UrlStatSnapshotManager() = default;
+
+        TickClock tick_clock_;
+        std::unique_ptr<UrlStatSnapshot> snapshot_;
+        std::mutex mutex_;
+    };
 
     void init_url_stat() {
-        std::unique_lock<std::mutex> lock(snapshot_mutex);
-        url_stats_snapshot = new UrlStatSnapshot();
+        UrlStatSnapshotManager::getInstance().initialize();
     }
 
     void add_url_stat_snapshot(const UrlStat* us, const Config& config) {
-        std::unique_lock<std::mutex> lock(snapshot_mutex);
-        url_stats_snapshot->add(us, config);
+        UrlStatSnapshotManager::getInstance().add(us, config);
     }
 
     UrlStatSnapshot* take_url_stat_snapshot() {
-        std::unique_lock<std::mutex> lock(snapshot_mutex);
-        const auto snapshot = url_stats_snapshot;
-        url_stats_snapshot = new UrlStatSnapshot();
-        return snapshot;
+        return UrlStatSnapshotManager::getInstance().takeSnapshot();
     }
 
     int64_t TickClock::tick(const std::chrono::system_clock::time_point end_time) const {
@@ -51,24 +112,15 @@ namespace pinpoint {
         return end_millis.count() - cutoff.count();
     }
 
-    static int getBucket(int32_t elapsed) {
-        if (elapsed < 100) {
-            return 0;
-        } else if (elapsed < 300) {
-            return 1;
-        } else if (elapsed < 500) {
-            return 2;
-        } else if (elapsed < 1000) {
-            return 3;
-        } else if (elapsed < 3000) {
-            return 4;
-        } else if (elapsed < 5000) {
-            return 5;
-        } else if (elapsed < 8000) {
-            return 6;
-        } else {
-            return 7;
-        }
+    static constexpr int getBucket(int32_t elapsed) noexcept {
+        if (elapsed < BUCKET_THRESHOLD_100MS) return 0;
+        if (elapsed < BUCKET_THRESHOLD_300MS) return 1;
+        if (elapsed < BUCKET_THRESHOLD_500MS) return 2;
+        if (elapsed < BUCKET_THRESHOLD_1S) return 3;
+        if (elapsed < BUCKET_THRESHOLD_3S) return 4;
+        if (elapsed < BUCKET_THRESHOLD_5S) return 5;
+        if (elapsed < BUCKET_THRESHOLD_8S) return 6;
+        return 7;
     }
 
     void UrlStatHistogram::add(int32_t elapsed) {
@@ -79,12 +131,8 @@ namespace pinpoint {
         histogram_[getBucket(elapsed)]++;
     }
 
-    static int url_status(int status)  {
-        if (status/100 < 4) {
-            return URL_STATUS_SUCCESS;
-        } else {
-            return URL_STATUS_FAIL;
-        }
+    static constexpr int url_status(int status) noexcept {
+        return status < HTTP_STATUS_ERROR_THRESHOLD ? URL_STATUS_SUCCESS : URL_STATUS_FAIL;
     }
 
     void UrlStatSnapshot::add(const UrlStat* us, const Config& config) {
@@ -96,19 +144,20 @@ namespace pinpoint {
             url = absl::StrCat(us->method_, " ", url);
         }
 
+        auto& tick_clock = UrlStatSnapshotManager::getInstance().getTickClock();
         const auto key = UrlKey{url, tick_clock.tick(us->end_time_)};
         LOG_DEBUG("url stats snapshot add : {}, {}", key.url_, key.tick_);
 
         EachUrlStat *e;
         if (const auto f = urlMap_.find(key); f == urlMap_.end()) {
-            if (count_ >= config.http.url_stat.limit) {
+            if (urlMap_.size() >= static_cast<size_t>(config.http.url_stat.limit)) {
                 return;
             }
-            e = new EachUrlStat(url, key.tick_);
-            urlMap_[key] =  e;
-            count_++;
+            auto new_stat = std::make_unique<EachUrlStat>(key.tick_);
+            e = new_stat.get();
+            urlMap_[key] = std::move(new_stat);
         } else {
-            e = f->second;
+            e = f->second.get();
         }
 
         e->getTotalHistogram().add(us->elapsed_);
@@ -118,19 +167,24 @@ namespace pinpoint {
     }
 
     std::string trim_url_path(std::string_view url, int depth) {
-        std::stringstream ss;
-        auto len = url.size();
+        if (url.empty()) {
+            return "";
+        }
+        
+        if (depth < 1) { 
+            depth = 1; 
+        }
+
+        std::string result;
+        result.reserve(url.size());  // Pre-allocate to avoid reallocation
+        result += url[0];
+        
         bool tailing = false;
-
-        if (depth < 1) { depth = 1; }
-
-        ss << url[0];
-        for (size_t i = 1; i < len; i++) {
+        for (size_t i = 1; i < url.size(); i++) {
             if (url[i] == '?') {
                 break;
             }
-
-            ss << url[i];
+            result += url[i];
             if (url[i] == '/') {
                 depth--;
                 if (depth == 0) {
@@ -139,21 +193,22 @@ namespace pinpoint {
                 }
             }
         }
-
+        
         if (tailing) {
-            ss << '*';
+            result += '*';
         }
-        return ss.str();
+        return result;
     }
 
     void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStat> stats) noexcept try {
-        if (auto& config = agent_->getConfig(); !config.http.url_stat.enable) {
+        const auto& config = agent_->getConfig();
+        if (!config.http.url_stat.enable) {
             return;
         }
 
         std::unique_lock<std::mutex> lock(add_mutex_);
 
-        if (auto& config = agent_->getConfig(); url_stats_.size() < config.span.queue_size) {
+        if (url_stats_.size() < config.span.queue_size) {
             url_stats_.push(std::move(stats));
         } else {
             LOG_DEBUG("drop url stats: overflow max queue size {}", config.span.queue_size);
@@ -205,7 +260,7 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(send_mutex_);
-        constexpr auto timeout = std::chrono::seconds(30);
+        const auto timeout = std::chrono::seconds(URL_STAT_SEND_INTERVAL_SECONDS);
 
         while (!agent_->isExiting()) {
             if (!send_cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {

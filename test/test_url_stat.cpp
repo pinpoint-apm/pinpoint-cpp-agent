@@ -225,10 +225,9 @@ TEST_F(UrlStatTest, UrlStatHistogramMaxTrackingTest) {
 // ========== EachUrlStat Tests ==========
 
 TEST_F(UrlStatTest, EachUrlStatConstructorTest) {
-    std::string url = "/api/users";
     int64_t tick = 1234567890;
     
-    EachUrlStat stat(url, tick);
+    EachUrlStat stat(tick);
     
     EXPECT_EQ(stat.tick(), tick) << "Tick should match constructor parameter";
     
@@ -241,7 +240,7 @@ TEST_F(UrlStatTest, EachUrlStatConstructorTest) {
 }
 
 TEST_F(UrlStatTest, EachUrlStatHistogramModificationTest) {
-    EachUrlStat stat("/api/test", 12345);
+    EachUrlStat stat(12345);
     
     auto& total_hist = stat.getTotalHistogram();
     auto& fail_hist = stat.getFailHistogram();

@@ -376,7 +376,7 @@ namespace pinpoint {
         const auto& m = snapshot->getEachStats();
         for(const auto& [key, each_stats] : m) {
             const auto url_stat = uri_stat->add_eachuristat();
-            build_each_url_stat(url_stat, key, each_stats);
+            build_each_url_stat(url_stat, key, each_stats.get());
         }
         return uri_stat;
     }
