@@ -16,12 +16,27 @@
 
 #pragma once
 
+#include <memory>
 #include <regex>
 #include <vector>
 
 #include "pinpoint/tracer.h"
 
 namespace pinpoint {
+
+    // HTTP status code range constants
+    namespace http_status {
+        constexpr int INFORMATIONAL_MIN = 100;
+        constexpr int INFORMATIONAL_MAX = 199;
+        constexpr int SUCCESS_MIN = 200;
+        constexpr int SUCCESS_MAX = 299;
+        constexpr int REDIRECTION_MIN = 300;
+        constexpr int REDIRECTION_MAX = 399;
+        constexpr int CLIENT_ERROR_MIN = 400;
+        constexpr int CLIENT_ERROR_MAX = 499;
+        constexpr int SERVER_ERROR_MIN = 500;
+        constexpr int SERVER_ERROR_MAX = 599;
+    }
 
     /**
      * @brief Strategy interface for testing whether an HTTP status code indicates an error.
@@ -40,9 +55,7 @@ namespace pinpoint {
      */
     class HttpStatusDefault: public HttpStatusCode {
     public:
-        explicit HttpStatusDefault(int code) {
-            status_code_ = code;
-        }
+        explicit HttpStatusDefault(int code) : status_code_(code) {}
 
         bool isError(int status_code) noexcept override {
             return status_code_ == status_code;
@@ -58,7 +71,8 @@ namespace pinpoint {
     class HttpStatusInformational : public HttpStatusCode {
     public:
         bool isError(int status_code) noexcept override {
-            return 100 <= status_code && status_code <= 199;
+            return http_status::INFORMATIONAL_MIN <= status_code && 
+                   status_code <= http_status::INFORMATIONAL_MAX;
         }
     };
 
@@ -68,7 +82,8 @@ namespace pinpoint {
     class HttpStatusSuccess : public HttpStatusCode {
     public:
         bool isError(int status_code) noexcept override {
-            return 200 <= status_code && status_code <= 299;
+            return http_status::SUCCESS_MIN <= status_code && 
+                   status_code <= http_status::SUCCESS_MAX;
         }
     };
 
@@ -78,7 +93,8 @@ namespace pinpoint {
     class HttpStatusRedirection : public HttpStatusCode {
     public:
         bool isError(int status_code) noexcept override {
-            return 300 <= status_code && status_code <= 399;
+            return http_status::REDIRECTION_MIN <= status_code && 
+                   status_code <= http_status::REDIRECTION_MAX;
         }
     };
 
@@ -88,7 +104,8 @@ namespace pinpoint {
     class HttpStatusClientError : public HttpStatusCode {
     public:
         bool isError(int status_code) noexcept override {
-            return 400 <= status_code && status_code <= 499;
+            return http_status::CLIENT_ERROR_MIN <= status_code && 
+                   status_code <= http_status::CLIENT_ERROR_MAX;
         }
     };
 
@@ -98,7 +115,8 @@ namespace pinpoint {
     class HttpStatusServerError : public HttpStatusCode {
     public:
         bool isError(int status_code) noexcept override {
-            return 500 <= status_code && status_code <= 599;
+            return http_status::SERVER_ERROR_MIN <= status_code && 
+                   status_code <= http_status::SERVER_ERROR_MAX;
         }
     };
 
@@ -116,7 +134,7 @@ namespace pinpoint {
         bool isErrorCode(int status_code) const noexcept;
 
     private:
-        std::vector<HttpStatusCode *> errors;
+        std::vector<std::unique_ptr<HttpStatusCode>> errors;
     };
 
     /**
@@ -124,7 +142,7 @@ namespace pinpoint {
      */
     class HttpHeaderRecorder {
     public:
-        HttpHeaderRecorder(int anno_key, std::vector<std::string>& cfg);
+        HttpHeaderRecorder(int anno_key, std::vector<std::string> cfg);
         ~HttpHeaderRecorder() = default;
 
         /**
@@ -157,13 +175,12 @@ namespace pinpoint {
         bool isFiltered(std::string_view url) const;
 
     private:
-        std::vector<std::string> cfg_;
         std::vector<std::regex> pattern_;
 
         /// @brief Converts an Ant-style path to a regular expression.
         static std::string convert_to_regex(std::string_view antPath);
-        /// @brief Appends a single character to the regex buffer, escaping when needed.
-        static void write_char(std::stringstream& buf, char c);
+        /// @brief Appends a single character to the string buffer, escaping when needed.
+        static void append_escaped_char(std::string& buf, char c);
     };
 
     /**
