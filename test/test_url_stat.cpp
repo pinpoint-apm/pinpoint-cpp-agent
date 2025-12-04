@@ -408,7 +408,7 @@ TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     add_url_stat_snapshot(&stat, config);
     
     // Take snapshot
-    std::unique_ptr<UrlStatSnapshot> snapshot(take_url_stat_snapshot());
+    auto snapshot = take_url_stat_snapshot();
     EXPECT_NE(snapshot.get(), nullptr) << "Snapshot should not be null";
     
     auto& stats = snapshot->getEachStats();
@@ -486,7 +486,7 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     add_worker.join();
     
     // Take snapshot and verify
-    std::unique_ptr<UrlStatSnapshot> snapshot(take_url_stat_snapshot());
+    auto snapshot = take_url_stat_snapshot();
     auto& stats = snapshot->getEachStats();
     
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain processed stats";

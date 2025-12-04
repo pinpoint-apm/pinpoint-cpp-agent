@@ -150,8 +150,8 @@ namespace pinpoint {
          * @param config Agent configuration for histogram settings.
          */
         void add(const UrlStat* us, const Config& config);
-        /// @brief Returns the map storing statistics per URL/tick.
-        std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() { return urlMap_; }
+        /// @brief Returns the const map storing statistics per URL/tick.
+        const std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() const { return urlMap_; }
 
     private:
         std::map<UrlKey, std::unique_ptr<EachUrlStat>> urlMap_;
@@ -195,7 +195,7 @@ namespace pinpoint {
     /// @brief Adds a runtime statistic to the current snapshot buffer.
     void add_url_stat_snapshot(const UrlStat* us, const Config& config);
     /// @brief Extracts the latest URL statistic snapshot for transmission.
-    UrlStatSnapshot* take_url_stat_snapshot();
+    std::unique_ptr<UrlStatSnapshot> take_url_stat_snapshot();
     /**
      * @brief Trims a URL path using the configured depth.
      *

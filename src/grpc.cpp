@@ -369,7 +369,7 @@ namespace pinpoint {
         url_stat->set_timestamp(each_stats->tick());
     }
 
-    v1::PAgentUriStat* build_url_stat(UrlStatSnapshot* snapshot) {
+    v1::PAgentUriStat* build_url_stat(const UrlStatSnapshot* snapshot) {
         const auto uri_stat = new v1::PAgentUriStat();
 
         uri_stat->set_bucketversion(URL_STATS_BUCKET_VERSION);
@@ -1051,9 +1051,8 @@ namespace pinpoint {
         if (stats == AGENT_STATS) {
             msg_->set_allocated_agentstatbatch(build_agent_stat_batch(get_agent_stat_snapshots()));
         } else {
-            const auto snapshot = take_url_stat_snapshot();
-            msg_->set_allocated_agenturistat(build_url_stat(snapshot));
-            delete snapshot;
+            auto snapshot = take_url_stat_snapshot();
+            msg_->set_allocated_agenturistat(build_url_stat(snapshot.get()));
         }
 
         return STREAM_WRITE;
@@ -1092,7 +1091,8 @@ namespace pinpoint {
         if (auto* stats = AgentStats::getInstance()) {
             stats->initAgentStats();
         }
-        delete take_url_stat_snapshot();
+        // Clear URL stat snapshot
+        (void)take_url_stat_snapshot();
         force_queue_empty_ = false;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to empty span queue: exception = {}", e.what());

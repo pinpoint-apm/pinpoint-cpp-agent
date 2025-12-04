@@ -70,9 +70,9 @@ namespace pinpoint {
             }
         }
 
-        UrlStatSnapshot* takeSnapshot() {
+        std::unique_ptr<UrlStatSnapshot> takeSnapshot() {
             std::unique_lock<std::mutex> lock(mutex_);
-            auto* old_snapshot = snapshot_.release();
+            auto old_snapshot = std::move(snapshot_);
             snapshot_ = std::make_unique<UrlStatSnapshot>();
             return old_snapshot;
         }
@@ -101,7 +101,7 @@ namespace pinpoint {
         UrlStatSnapshotManager::getInstance().add(us, config);
     }
 
-    UrlStatSnapshot* take_url_stat_snapshot() {
+    std::unique_ptr<UrlStatSnapshot> take_url_stat_snapshot() {
         return UrlStatSnapshotManager::getInstance().takeSnapshot();
     }
 
