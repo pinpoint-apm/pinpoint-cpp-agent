@@ -894,16 +894,17 @@ namespace pinpoint {
         LOG_DEBUG("span - next_write");
         // should be hold stream_mutex_
 
-        span_queue_mutex_.lock();
-        if (agent_->isExiting() || span_queue_.empty()) {
-            span_queue_mutex_.unlock();
-            LOG_DEBUG("span - queue empty");
-            return STREAM_CONTINUE;
-        }
+        std::unique_ptr<SpanChunk> span_chunk;
+        {
+            std::unique_lock<std::mutex> lock(span_queue_mutex_);
+            if (agent_->isExiting() || span_queue_.empty()) {
+                LOG_DEBUG("span - queue empty");
+                return STREAM_CONTINUE;
+            }
 
-        auto span_chunk = std::move(span_queue_.front());
-        span_queue_.pop();
-        span_queue_mutex_.unlock();
+            span_chunk = std::move(span_queue_.front());
+            span_queue_.pop();
+        }
 
         const auto span = span_chunk->getSpanData();
         msg_ = std::make_unique<v1::PSpanMessage>();
@@ -1073,16 +1074,17 @@ namespace pinpoint {
         LOG_DEBUG("stats - next_write");
         // should be hold stream_mutex_
 
-        stats_queue_mutex_.lock();
-        if (agent_->isExiting() || stats_queue_.empty()) {
-            stats_queue_mutex_.unlock();
-            LOG_DEBUG("stats - queue empty");
-            return STREAM_CONTINUE;
-        }
+        StatsType stats;
+        {
+            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+            if (agent_->isExiting() || stats_queue_.empty()) {
+                LOG_DEBUG("stats - queue empty");
+                return STREAM_CONTINUE;
+            }
 
-        auto stats = stats_queue_.front();
-        stats_queue_.pop();
-        stats_queue_mutex_.unlock();
+            stats = stats_queue_.front();
+            stats_queue_.pop();
+        }
 
         msg_ = std::make_unique<v1::PStatMessage>();
         if (stats == AGENT_STATS) {
