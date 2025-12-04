@@ -55,7 +55,7 @@ namespace pinpoint {
          * @param line Line number within the file.
          */
         void push(std::string_view module, std::string_view function, std::string_view file, int line) {
-            stack_.emplace_back(StackFrame{module.data(), function.data(), file.data(), line});
+            stack_.emplace_back(StackFrame{std::string(module), std::string(function), std::string(file), line});
         }
 
         /**

@@ -396,7 +396,7 @@ namespace pinpoint {
 
         auto meta = std::make_unique<MetaData>(META_EXCEPTION, span_data->getTraceId(), 
                                                span_data->getSpanId(), span_data->getUrlTemplate(),
-                                               span_data->getExceptions());
+                                               span_data->takeExceptions());
         grpc_agent_->enqueueMeta(std::move(meta));
     }
 

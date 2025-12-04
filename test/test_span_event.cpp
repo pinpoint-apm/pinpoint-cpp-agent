@@ -33,7 +33,10 @@ namespace pinpoint {
 // Mock implementation of AgentService for SpanEvent testing
 class MockAgentService : public AgentService {
 public:
-    MockAgentService() : is_exiting_(false), start_time_(1234567890), trace_id_counter_(0) {}
+    MockAgentService() : is_exiting_(false), start_time_(1234567890), trace_id_counter_(0) {
+        // Enable callstack trace for exception tests
+        config_.enable_callstack_trace = true;
+    }
 
     // AgentService interface implementation
     bool isExiting() const override { return is_exiting_; }
@@ -383,7 +386,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
     
     // Verify exception was added to parent span
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added to parent span";
     EXPECT_NE(exceptions[0], nullptr) << "Exception should not be null";
     EXPECT_GT(exceptions[0]->getId(), 0) << "Exception should have valid ID";
@@ -406,7 +409,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
     EXPECT_EQ(span_event.getErrorString(), "Stack overflow occurred") << "Error message should be set";
     
     // Verify exception was added
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
     
     // Verify callstack contains all frames
@@ -443,7 +446,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     EXPECT_EQ(span_event.getErrorString(), "Error with empty stack") << "Error message should be set";
     
     // Verify exception was added even with empty stack
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added even with empty stack";
     
     auto callstack = exceptions[0]->getCallStack();
@@ -463,7 +466,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
     span_event.SetError("NullPointerError", "Null pointer dereference", reader);
     
     // Get the exception ID from the exception
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1) << "Should have one exception";
     int32_t exception_id = exceptions[0]->getId();
     
@@ -496,7 +499,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_EQ(event2.getErrorString(), "Second error");
     
     // Both exceptions should be added to parent span
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     EXPECT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
     
     // Verify different exception IDs
@@ -517,7 +520,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
     span_event.SetError("ProcessingError", "Failed to process request", reader);
     
     // Verify exception
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     auto callstack = exceptions[0]->getCallStack();
@@ -557,7 +560,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     auto after_time = to_milli_seconds(std::chrono::system_clock::now());
     
     // Verify exception
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     auto callstack = exceptions[0]->getCallStack();
@@ -599,7 +602,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
     EXPECT_GT(span_event.getEndElapsed(), 0);
     
     // Verify exception and callstack
-    auto exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     auto callstack = exceptions[0]->getCallStack();

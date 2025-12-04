@@ -37,6 +37,8 @@ public:
         config_.span.event_chunk_size = 10;
         config_.span.max_event_depth = 64;
         config_.span.max_event_sequence = 512;
+        // Enable callstack trace for exception tests
+        config_.enable_callstack_trace = true;
     }
 
     // AgentService interface implementation

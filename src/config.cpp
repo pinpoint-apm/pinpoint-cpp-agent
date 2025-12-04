@@ -419,11 +419,11 @@ namespace pinpoint {
     }
 
     constexpr int NONE_SAMPLING_COUNTER_RATE = 0;
-    constexpr int NONE_SAMPLING_PERCENT_RATE = 0;
+    constexpr double NONE_SAMPLING_PERCENT_RATE = 0.0;
     constexpr int NONE_SAMPLING_NEW_THROUGHPUT = 0;
     constexpr int NONE_SAMPLING_CONTINUE_THROUGHPUT = 0;
-    constexpr int MIN_SAMPLING_PERCENT_RATE = 0.01;
-    constexpr int MAX_SAMPLING_PERCENT_RATE = 100;
+    constexpr double MIN_SAMPLING_PERCENT_RATE = 0.01;
+    constexpr double MAX_SAMPLING_PERCENT_RATE = 100.0;
     constexpr int MIN_SPAN_QUEUE_SIZE = 1;
     constexpr int UNLIMITED_SIZE = -1;
     constexpr int MIN_SPAN_EVENT_DEPTH = 2;

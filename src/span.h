@@ -74,10 +74,13 @@ namespace pinpoint {
         }
 
         /// @brief Returns the number of events contained in the stack.
-        size_t size() const { return stack_.size(); }
+        size_t size() const { 
+            std::unique_lock<std::mutex> lock(mutex_);
+            return stack_.size(); 
+        }
 
     private:
-        std::mutex mutex_;
+        mutable std::mutex mutex_;
         std::stack<std::shared_ptr<SpanEventImpl>> stack_;
     };
 
@@ -265,8 +268,10 @@ namespace pinpoint {
 
         /// @brief Appends a captured exception call stack.
         void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
-        /// @brief Transfers the collected exceptions to the caller.
-        std::vector<std::unique_ptr<Exception>> getExceptions() { return std::move(exceptions_); }
+        /// @brief Returns a const reference to the collected exceptions.
+        const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
+        /// @brief Transfers ownership of the collected exceptions to the caller.
+        std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
     	/**
     	 * @brief Streams the collected exceptions through the agent service.
     	 */
