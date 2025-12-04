@@ -450,8 +450,6 @@ namespace pinpoint {
 
     //GrpcAgent
 
-    static int socket_id = 0;
-
     GrpcAgent::GrpcAgent(AgentService* agent) : GrpcClient(agent, AGENT) {
         set_agent_stub(v1::Agent::NewStub(channel_));
         set_meta_stub(v1::Metadata::NewStub(channel_));
@@ -487,106 +485,78 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
-    GrpcRequestStatus GrpcAgent::send_api_meta(ApiMeta& api_meta) {
+    template<typename Request, typename StubMethod>
+    GrpcRequestStatus GrpcAgent::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
         std::unique_lock<std::mutex> lock(channel_mutex_);
 
-        v1::PApiMetaData grpc_api_meta;
+        v1::PResult reply;
+        grpc::ClientContext ctx;
 
+        build_grpc_context(&ctx, agent_, 0);
+        set_deadline(ctx, META_TIMEOUT);
+        
+        const grpc::Status status = stub_method(&ctx, request, &reply);
+
+        if (status.ok()) {
+            LOG_DEBUG("success to send {} metadata", operation_name);
+            return SEND_OK;
+        }
+
+        LOG_ERROR("failed to send {} metadata: {}, {}", 
+                  operation_name, static_cast<int>(status.error_code()), status.error_message());
+        return SEND_FAIL;
+    }
+
+    GrpcRequestStatus GrpcAgent::send_api_meta(ApiMeta& api_meta) {
+        v1::PApiMetaData grpc_api_meta;
         grpc_api_meta.set_apiid(api_meta.id_);
         grpc_api_meta.set_apiinfo(api_meta.api_str_);
         grpc_api_meta.set_type(api_meta.type_);
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PApiMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestApiMetaData(ctx, req, reply);
+        };
 
-        build_grpc_context(&ctx, agent_, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestApiMetaData(&ctx, grpc_api_meta, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send api metadata: {}, {}", api_meta.api_str_, api_meta.id_);
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send api metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
+        return send_meta_helper(stub_method, grpc_api_meta, "api");
     }
 
     GrpcRequestStatus GrpcAgent::send_error_meta(StringMeta& error_meta) {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         v1::PStringMetaData grpc_error_meta;
-
         grpc_error_meta.set_stringid(error_meta.id_);
         grpc_error_meta.set_stringvalue(error_meta.str_val_);
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PStringMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestStringMetaData(ctx, req, reply);
+        };
 
-        build_grpc_context(&ctx, agent_, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestStringMetaData(&ctx, grpc_error_meta, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send error metadata");
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send error metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
+        return send_meta_helper(stub_method, grpc_error_meta, "error");
     }
 
     GrpcRequestStatus GrpcAgent::send_sql_meta(StringMeta& sql_meta) {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         v1::PSqlMetaData grpc_sql_meta;
-
         grpc_sql_meta.set_sqlid(sql_meta.id_);
         grpc_sql_meta.set_sql(sql_meta.str_val_);
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestSqlMetaData(ctx, req, reply);
+        };
 
-        build_grpc_context(&ctx, agent_, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestSqlMetaData(&ctx, grpc_sql_meta, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send sql metadata");
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send sql metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
+        return send_meta_helper(stub_method, grpc_sql_meta, "sql");
     }
 
     GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         v1::PSqlUidMetaData grpc_sql_uid_meta;
-
         grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
         grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestSqlUidMetaData(ctx, req, reply);
+        };
 
-        build_grpc_context(&ctx, agent_, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestSqlUidMetaData(&ctx, grpc_sql_uid_meta, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send sql uid metadata");
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send sql uid metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
+        return send_meta_helper(stub_method, grpc_sql_uid_meta, "sql uid");
     }
 
     GrpcRequestStatus GrpcAgent::send_exception_meta(ExceptionMeta& exception_meta) {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         v1::PExceptionMetaData grpc_exception_meta;
 
         grpc_exception_meta.set_allocated_transactionid(build_transaction_id(exception_meta.txid_));
@@ -611,20 +581,11 @@ namespace pinpoint {
             }
         }
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PExceptionMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestExceptionMetaData(ctx, req, reply);
+        };
 
-        build_grpc_context(&ctx, agent_, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        const grpc::Status status = meta_stub_->RequestExceptionMetaData(&ctx, grpc_exception_meta, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send exception metadata");
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send exception metadata: {}, {}", static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
+        return send_meta_helper(stub_method, grpc_exception_meta, "exception");
     }
 
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
@@ -703,7 +664,7 @@ namespace pinpoint {
         }
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), agent_, ++socket_id);
+        build_grpc_context(stream_context_.get(), agent_, ++socket_id_);
         agent_stub_->async()->PingSession(stream_context_.get(), this);
 
         AddHold();

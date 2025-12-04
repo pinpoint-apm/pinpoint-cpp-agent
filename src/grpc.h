@@ -228,6 +228,7 @@ namespace pinpoint {
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
+        int socket_id_{0};
 
         std::queue<std::unique_ptr<MetaData>> meta_queue_{};
         std::mutex meta_queue_mutex_{};
@@ -237,6 +238,8 @@ namespace pinpoint {
         void finish_ping_stream();
         GrpcStreamStatus write_and_await_ping_stream();
 
+        template<typename Request, typename StubMethod>
+        GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);
         GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
         GrpcRequestStatus send_error_meta(StringMeta& error_meta);
         GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
