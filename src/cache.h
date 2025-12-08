@@ -16,28 +16,136 @@
 
 #pragma once
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace pinpoint {
 
     /**
-     * @brief Result returned from `IdCache::get`.
+     * @brief Generic LRU cache result structure.
+     * 
+     * @tparam ValueType Type of the cached value.
      */
-    typedef struct {
-        int32_t id;
-        bool    old;
-    } CacheResult;
+    template<typename ValueType>
+    struct LruCacheResult {
+        ValueType value;
+        bool found;  // true if entry already existed in cache
+    };
+
+    /**
+     * @brief Result returned from `IdCache::get`.
+     * 
+     * Type alias for LruCacheResult<int32_t>.
+     * Use `.value` to access the ID and `.found` to check if it existed in cache.
+     */
+    using CacheResult = LruCacheResult<int32_t>;
 
     /**
      * @brief Result returned from `SqlUidCache::get`.
+     * 
+     * Type alias for LruCacheResult<std::vector<unsigned char>>.
+     * Use `.value` to access the UID and `.found` to check if it existed in cache.
      */
-    typedef struct {
-        std::vector<unsigned char> uid;
-        bool    old;
-    } SqlUidCacheResult;
+    using SqlUidCacheResult = LruCacheResult<std::vector<unsigned char>>;
+
+    /**
+     * @brief Thread-safe LRU cache implementation template.
+     * 
+     * Provides O(1) lookup, insertion, and removal using a combination of
+     * std::list (for LRU ordering) and std::unordered_map (for fast lookup).
+     * 
+     * @tparam ValueType Type of values stored in the cache.
+     */
+    template<typename ValueType>
+    class LruCacheImpl {
+    public:
+        explicit LruCacheImpl(size_t max_size) : max_size_(max_size) {}
+        ~LruCacheImpl() = default;
+
+        // Delete copy and move operations (mutex is not movable)
+        LruCacheImpl(const LruCacheImpl&) = delete;
+        LruCacheImpl& operator=(const LruCacheImpl&) = delete;
+        LruCacheImpl(LruCacheImpl&&) = delete;
+        LruCacheImpl& operator=(LruCacheImpl&&) = delete;
+
+        /**
+         * @brief Retrieves or creates a cache entry.
+         * 
+         * @param key The key to look up.
+         * @param generator Function to generate a new value if key not found.
+         * @return Result containing the value and whether it was found.
+         */
+        template<typename Generator>
+        LruCacheResult<ValueType> get(const std::string& key, Generator&& generator) {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            const auto it = cache_map_.find(key);
+            if (it != cache_map_.end()) {
+                // Move accessed item to front (most recently used)
+                cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
+                return LruCacheResult<ValueType>{it->second->second, true};
+            }
+
+            // Not found - generate new value and insert
+            auto new_value = generator();
+            put(key, std::move(new_value));
+            return LruCacheResult<ValueType>{cache_list_.front().second, false};
+        }
+
+        /**
+         * @brief Removes an entry from the cache.
+         * 
+         * @param key The key to remove.
+         */
+        void remove(const std::string& key) {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            const auto it = cache_map_.find(key);
+            if (it != cache_map_.end()) {
+                cache_list_.erase(it->second);
+                cache_map_.erase(it);
+            }
+        }
+
+    private:
+        /**
+         * @brief Inserts a new key/value pair while preserving LRU ordering.
+         * 
+         * Assumes the lock is already held by the caller.
+         * 
+         * @param key The key to insert.
+         * @param value The value to insert (moved).
+         */
+        void put(const std::string& key, ValueType&& value) {
+            // Insert new entry at front
+            cache_list_.emplace_front(key, std::move(value));
+            
+            // Exception-safe: if emplace fails, we won't update the map
+            try {
+                cache_map_.emplace(key, cache_list_.begin());
+            } catch (...) {
+                cache_list_.pop_front();  // Rollback
+                throw;
+            }
+
+            // Evict least recently used entry if over capacity
+            if (cache_map_.size() > max_size_) {
+                const auto& victim_key = cache_list_.back().first;
+                cache_map_.erase(victim_key);
+                cache_list_.pop_back();
+            }
+        }
+
+        using KeyValuePair = std::pair<std::string, ValueType>;
+        std::list<KeyValuePair> cache_list_{};
+        std::unordered_map<std::string, typename std::list<KeyValuePair>::iterator> cache_map_{};
+        const size_t max_size_{};
+        mutable std::mutex mutex_{};
+    };
 
     /**
      * @brief LRU cache that assigns numeric identifiers to frequently used strings.
@@ -47,8 +155,14 @@ namespace pinpoint {
      */
     class IdCache {
     public:
-        explicit IdCache(const size_t max_size) : max_size_(max_size) {}
+        explicit IdCache(size_t max_size) : cache_(max_size) {}
         ~IdCache() = default;
+
+        // Delete copy and move operations
+        IdCache(const IdCache&) = delete;
+        IdCache& operator=(const IdCache&) = delete;
+        IdCache(IdCache&&) = delete;
+        IdCache& operator=(IdCache&&) = delete;
 
         /**
          * @brief Looks up or inserts a string identifier.
@@ -57,28 +171,19 @@ namespace pinpoint {
          * @return CacheResult containing the identifier and whether the entry already existed.
          */
         CacheResult get(const std::string& key);
+
         /**
          * @brief Evicts a cached string from the cache.
          *
          * @param key Entry to remove.
          */
-        void remove(const std::string& key);
+        void remove(const std::string& key) {
+            cache_.remove(key);
+        }
 
     private:
-        /**
-         * @brief Inserts a new key/id pair while preserving the LRU ordering.
-         *
-         * @param key String to insert.
-         * @param id Newly assigned identifier.
-         */
-        void put(const std::string& key, int32_t id);
-
-        typedef std::pair<std::string, int32_t> key_id_pair_t;
-        std::list<key_id_pair_t> cache_list_{};
-        std::unordered_map<std::string, std::list<key_id_pair_t>::iterator> cache_map_{};
-        size_t max_size_{};
-        std::mutex mutex_{};
-        int32_t id_sequence_{0};
+        LruCacheImpl<int32_t> cache_;
+        std::atomic<int32_t> id_sequence_{0};
     };
 
     /**
@@ -86,8 +191,14 @@ namespace pinpoint {
      */
     class SqlUidCache {
     public:
-        explicit SqlUidCache(const size_t max_size) : max_size_(max_size) {}
+        explicit SqlUidCache(size_t max_size) : cache_(max_size) {}
         ~SqlUidCache() = default;
+
+        // Delete copy and move operations
+        SqlUidCache(const SqlUidCache&) = delete;
+        SqlUidCache& operator=(const SqlUidCache&) = delete;
+        SqlUidCache(SqlUidCache&&) = delete;
+        SqlUidCache& operator=(SqlUidCache&&) = delete;
 
         /**
          * @brief Looks up or inserts an SQL UID entry.
@@ -96,27 +207,18 @@ namespace pinpoint {
          * @return Cache result containing UID bytes and whether the entry existed.
          */
         SqlUidCacheResult get(const std::string& key);
+
         /**
          * @brief Removes a cached SQL UID entry.
          *
          * @param key Normalized SQL string.
          */
-        void remove(const std::string& key);
+        void remove(const std::string& key) {
+            cache_.remove(key);
+        }
 
     private:
-        /**
-         * @brief Inserts a new SQL UID entry while preserving the LRU ordering.
-         *
-         * @param key Normalized SQL string.
-         * @param uid UID byte vector associated with the key.
-         */
-        void put(const std::string& key, const std::vector<unsigned char>& uid);
-
-        typedef std::pair<std::string, std::vector<unsigned char>> key_uid_pair_t;
-        std::list<key_uid_pair_t> cache_list_{};
-        std::unordered_map<std::string, std::list<key_uid_pair_t>::iterator> cache_map_{};
-        size_t max_size_{};
-        std::mutex mutex_{};
+        LruCacheImpl<std::vector<unsigned char>> cache_;
     };
 
 } // namespace pinpoint

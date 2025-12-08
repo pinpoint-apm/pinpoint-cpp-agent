@@ -44,8 +44,8 @@ TEST_F(CacheTest, BasicGetCacheMissTest) {
     
     auto result = cache.get("key1");
     
-    EXPECT_EQ(result.id, 1) << "First key should get ID 1";
-    EXPECT_FALSE(result.old) << "First access should be cache miss (old=false)";
+    EXPECT_EQ(result.value, 1) << "First key should get ID 1";
+    EXPECT_FALSE(result.found) << "First access should be cache miss (found=false)";
 }
 
 // Test cache hit after initial miss
@@ -54,13 +54,13 @@ TEST_F(CacheTest, BasicGetCacheHitTest) {
     
     // First access - cache miss
     auto result1 = cache.get("key1");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_FALSE(result1.found);
     
     // Second access - cache hit
     auto result2 = cache.get("key1");
-    EXPECT_EQ(result2.id, 1) << "Same key should return same ID";
-    EXPECT_TRUE(result2.old) << "Second access should be cache hit (old=true)";
+    EXPECT_EQ(result2.value, 1) << "Same key should return same ID";
+    EXPECT_TRUE(result2.found) << "Second access should be cache hit (found=true)";
 }
 
 // Test multiple different keys get different IDs
@@ -71,18 +71,18 @@ TEST_F(CacheTest, MultipleDifferentKeysTest) {
     auto result2 = cache.get("key2");
     auto result3 = cache.get("key3");
     
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_EQ(result2.id, 2);
-    EXPECT_EQ(result3.id, 3);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_EQ(result2.value, 2);
+    EXPECT_EQ(result3.value, 3);
     
-    EXPECT_FALSE(result1.old);
-    EXPECT_FALSE(result2.old);
-    EXPECT_FALSE(result3.old);
+    EXPECT_FALSE(result1.found);
+    EXPECT_FALSE(result2.found);
+    EXPECT_FALSE(result3.found);
     
     // Verify all different IDs
-    EXPECT_NE(result1.id, result2.id);
-    EXPECT_NE(result2.id, result3.id);
-    EXPECT_NE(result1.id, result3.id);
+    EXPECT_NE(result1.value, result2.value);
+    EXPECT_NE(result2.value, result3.value);
+    EXPECT_NE(result1.value, result3.value);
 }
 
 // Test ID sequence is incremental
@@ -92,8 +92,8 @@ TEST_F(CacheTest, IdSequenceIncrementalTest) {
     std::vector<int32_t> ids;
     for (int i = 0; i < 5; ++i) {
         auto result = cache.get("key" + std::to_string(i));
-        ids.push_back(result.id);
-        EXPECT_FALSE(result.old) << "Key " << i << " should be cache miss";
+        ids.push_back(result.value);
+        EXPECT_FALSE(result.found) << "Key " << i << " should be cache miss";
     }
     
     // Verify IDs are sequential
@@ -113,24 +113,24 @@ TEST_F(CacheTest, LRUEvictionTest) {
     auto result2 = cache.get("key2"); // ID: 2
     auto result3 = cache.get("key3"); // ID: 3
     
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_EQ(result2.id, 2);
-    EXPECT_EQ(result3.id, 3);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_EQ(result2.value, 2);
+    EXPECT_EQ(result3.value, 3);
     
     // Add one more item - should evict key1 (oldest in LRU order)
     auto result4 = cache.get("key4"); // ID: 4, evicts key1
-    EXPECT_EQ(result4.id, 4);
-    EXPECT_FALSE(result4.old);
+    EXPECT_EQ(result4.value, 4);
+    EXPECT_FALSE(result4.found);
     
     // Check that key1 was evicted by verifying it gets a new ID
     auto result1_again = cache.get("key1"); // Should get new ID: 5
-    EXPECT_GT(result1_again.id, 4) << "Evicted key should get new ID";
-    EXPECT_FALSE(result1_again.old) << "Evicted key should be cache miss";
+    EXPECT_GT(result1_again.value, 4) << "Evicted key should get new ID";
+    EXPECT_FALSE(result1_again.found) << "Evicted key should be cache miss";
     
     // Verify key4 is still in cache (was just added)
     auto result4_check = cache.get("key4");
-    EXPECT_EQ(result4_check.id, 4) << "Recently added key should still be in cache";
-    EXPECT_TRUE(result4_check.old) << "Recently added key should be cache hit";
+    EXPECT_EQ(result4_check.value, 4) << "Recently added key should still be in cache";
+    EXPECT_TRUE(result4_check.found) << "Recently added key should be cache hit";
 }
 
 // Test LRU ordering - accessing item moves it to front
@@ -144,27 +144,27 @@ TEST_F(CacheTest, LRUOrderingTest) {
     
     // Access key1 again - should move it to front of LRU list
     auto result1 = cache.get("key1");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_TRUE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_TRUE(result1.found);
     
     // Add new key - should evict the oldest (key2, since key1 was recently accessed)
     auto result4 = cache.get("key4"); // ID: 4
-    EXPECT_EQ(result4.id, 4);
+    EXPECT_EQ(result4.value, 4);
     
     // Verify key1 is still in cache (was recently accessed)
     auto result1_check = cache.get("key1");
-    EXPECT_EQ(result1_check.id, 1) << "Recently accessed key should still be in cache";
-    EXPECT_TRUE(result1_check.old) << "Recently accessed key should be cache hit";
+    EXPECT_EQ(result1_check.value, 1) << "Recently accessed key should still be in cache";
+    EXPECT_TRUE(result1_check.found) << "Recently accessed key should be cache hit";
     
     // Verify key4 is in cache (was just added)
     auto result4_check = cache.get("key4");
-    EXPECT_EQ(result4_check.id, 4) << "Recently added key should be in cache";
-    EXPECT_TRUE(result4_check.old) << "Recently added key should be cache hit";
+    EXPECT_EQ(result4_check.value, 4) << "Recently added key should be in cache";
+    EXPECT_TRUE(result4_check.found) << "Recently added key should be cache hit";
     
     // Check if key2 was evicted by seeing if it gets a new ID
     auto result2_check = cache.get("key2");
-    EXPECT_GT(result2_check.id, 4) << "Evicted key should get new ID";
-    EXPECT_FALSE(result2_check.old) << "Evicted key should be cache miss";
+    EXPECT_GT(result2_check.value, 4) << "Evicted key should get new ID";
+    EXPECT_FALSE(result2_check.found) << "Evicted key should be cache miss";
 }
 
 // Remove functionality tests
@@ -175,21 +175,21 @@ TEST_F(CacheTest, BasicRemoveTest) {
     
     // Add item to cache
     auto result1 = cache.get("key1");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_FALSE(result1.found);
     
     // Verify it's in cache
     auto result2 = cache.get("key1");
-    EXPECT_EQ(result2.id, 1);
-    EXPECT_TRUE(result2.old);
+    EXPECT_EQ(result2.value, 1);
+    EXPECT_TRUE(result2.found);
     
     // Remove the item
     cache.remove("key1");
     
     // Verify it's no longer in cache
     auto result3 = cache.get("key1");
-    EXPECT_EQ(result3.id, 2) << "Removed key should get new ID";
-    EXPECT_FALSE(result3.old) << "Removed key should be cache miss";
+    EXPECT_EQ(result3.value, 2) << "Removed key should get new ID";
+    EXPECT_FALSE(result3.found) << "Removed key should be cache miss";
 }
 
 // Test remove non-existent key (should not crash)
@@ -201,8 +201,8 @@ TEST_F(CacheTest, RemoveNonExistentKeyTest) {
     
     // Cache should still work normally
     auto result = cache.get("key1");
-    EXPECT_EQ(result.id, 1);
-    EXPECT_FALSE(result.old);
+    EXPECT_EQ(result.value, 1);
+    EXPECT_FALSE(result.found);
 }
 
 // Test remove from middle of cache
@@ -220,15 +220,15 @@ TEST_F(CacheTest, RemoveFromMiddleTest) {
     // Verify key1 and key3 are still accessible
     auto result1 = cache.get("key1");
     auto result3 = cache.get("key3");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_EQ(result3.id, 3);
-    EXPECT_TRUE(result1.old);
-    EXPECT_TRUE(result3.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_EQ(result3.value, 3);
+    EXPECT_TRUE(result1.found);
+    EXPECT_TRUE(result3.found);
     
     // Verify key2 is no longer in cache
     auto result2 = cache.get("key2");
-    EXPECT_EQ(result2.id, 4); // New ID
-    EXPECT_FALSE(result2.old);
+    EXPECT_EQ(result2.value, 4); // New ID
+    EXPECT_FALSE(result2.found);
 }
 
 // Edge case tests
@@ -238,18 +238,18 @@ TEST_F(CacheTest, CacheSize1Test) {
     IdCache cache(1);
     
     auto result1 = cache.get("key1");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_FALSE(result1.found);
     
     // Add second item - should evict first
     auto result2 = cache.get("key2");
-    EXPECT_EQ(result2.id, 2);
-    EXPECT_FALSE(result2.old);
+    EXPECT_EQ(result2.value, 2);
+    EXPECT_FALSE(result2.found);
     
     // First item should be evicted
     auto result1_again = cache.get("key1");
-    EXPECT_EQ(result1_again.id, 3);
-    EXPECT_FALSE(result1_again.old);
+    EXPECT_EQ(result1_again.value, 3);
+    EXPECT_FALSE(result1_again.found);
 }
 
 // Test empty string key
@@ -257,12 +257,12 @@ TEST_F(CacheTest, EmptyStringKeyTest) {
     IdCache cache(5);
     
     auto result1 = cache.get("");
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_FALSE(result1.found);
     
     auto result2 = cache.get("");
-    EXPECT_EQ(result2.id, 1);
-    EXPECT_TRUE(result2.old);
+    EXPECT_EQ(result2.value, 1);
+    EXPECT_TRUE(result2.found);
 }
 
 // Test very long key
@@ -272,12 +272,12 @@ TEST_F(CacheTest, LongKeyTest) {
     std::string long_key(1000, 'a'); // 1000 character key
     
     auto result1 = cache.get(long_key);
-    EXPECT_EQ(result1.id, 1);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value, 1);
+    EXPECT_FALSE(result1.found);
     
     auto result2 = cache.get(long_key);
-    EXPECT_EQ(result2.id, 1);
-    EXPECT_TRUE(result2.old);
+    EXPECT_EQ(result2.value, 1);
+    EXPECT_TRUE(result2.found);
 }
 
 // Thread safety tests
@@ -297,7 +297,7 @@ TEST_F(CacheTest, ConcurrentGetTest) {
             for (int j = 0; j < operations_per_thread; ++j) {
                 std::string key = "thread" + std::to_string(i) + "_key" + std::to_string(j);
                 auto result = cache.get(key);
-                ids.push_back(result.id);
+                ids.push_back(result.value);
             }
             return ids;
         }));
@@ -356,7 +356,7 @@ TEST_F(CacheTest, ConcurrentGetRemoveTest) {
     
     // Cache should still be functional
     auto result = cache.get("test_key");
-    EXPECT_GT(result.id, 0) << "Cache should still be functional after concurrent operations";
+    EXPECT_GT(result.value, 0) << "Cache should still be functional after concurrent operations";
 }
 
 // Test concurrent access to same key
@@ -381,16 +381,16 @@ TEST_F(CacheTest, ConcurrentSameKeyTest) {
     }
     
     // All should have the same ID
-    int32_t first_id = results[0].id;
+    int32_t first_id = results[0].value;
     for (const auto& result : results) {
-        EXPECT_EQ(result.id, first_id) << "All accesses to same key should return same ID";
+        EXPECT_EQ(result.value, first_id) << "All accesses to same key should return same ID";
     }
     
-    // Only one should be cache miss (old=false), others should be hits (old=true)
+    // Only one should be cache miss (found=false), others should be hits (found=true)
     int cache_misses = 0;
     int cache_hits = 0;
     for (const auto& result : results) {
-        if (result.old) {
+        if (result.found) {
             cache_hits++;
         } else {
             cache_misses++;
@@ -413,9 +413,9 @@ TEST_F(CacheTest, ManyItemsTest) {
     std::vector<int32_t> original_ids;
     for (int i = 0; i < total_items; ++i) {
         auto result = cache.get("key" + std::to_string(i));
-        original_ids.push_back(result.id);
-        EXPECT_EQ(result.id, i + 1);
-        EXPECT_FALSE(result.old);
+        original_ids.push_back(result.value);
+        EXPECT_EQ(result.value, i + 1);
+        EXPECT_FALSE(result.found);
     }
     
     // Only the most recent cache_size items should still be in cache
@@ -425,7 +425,7 @@ TEST_F(CacheTest, ManyItemsTest) {
     
     for (int i = total_items - cache_size; i < total_items; ++i) {
         auto result = cache.get("key" + std::to_string(i));
-        if (result.old && result.id == original_ids[i]) {
+        if (result.found && result.value == original_ids[i]) {
             items_still_in_cache++;
         }
     }
@@ -437,8 +437,8 @@ TEST_F(CacheTest, ManyItemsTest) {
     // First few items should definitely be evicted
     for (int i = 0; i < cache_size / 2; ++i) {
         auto result = cache.get("key" + std::to_string(i));
-        EXPECT_GT(result.id, total_items) << "Early items should be evicted and get new IDs";
-        EXPECT_FALSE(result.old) << "Early items should be cache miss";
+        EXPECT_GT(result.value, total_items) << "Early items should be evicted and get new IDs";
+        EXPECT_FALSE(result.found) << "Early items should be cache miss";
         items_evicted++;
     }
     
@@ -483,8 +483,8 @@ TEST_F(SqlUidCacheTest, BasicGetCacheMissTest) {
     
     auto result = cache.get("SELECT * FROM users WHERE id = ?");
     
-    EXPECT_EQ(result.uid.size(), 16) << "UID should be 16 bytes";
-    EXPECT_FALSE(result.old) << "First access should be cache miss (old=false)";
+    EXPECT_EQ(result.value.size(), 16) << "UID should be 16 bytes";
+    EXPECT_FALSE(result.found) << "First access should be cache miss (found=false)";
 }
 
 // Test cache hit after initial miss
@@ -495,14 +495,14 @@ TEST_F(SqlUidCacheTest, BasicGetCacheHitTest) {
     
     // First access - cache miss
     auto result1 = cache.get(sql);
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_FALSE(result1.found);
     
     // Second access - cache hit
     auto result2 = cache.get(sql);
-    EXPECT_EQ(result2.uid.size(), 16) << "UID should be 16 bytes";
-    EXPECT_TRUE(areUidsEqual(result1.uid, result2.uid)) << "Same key should return same UID";
-    EXPECT_TRUE(result2.old) << "Second access should be cache hit (old=true)";
+    EXPECT_EQ(result2.value.size(), 16) << "UID should be 16 bytes";
+    EXPECT_TRUE(areUidsEqual(result1.value, result2.value)) << "Same key should return same UID";
+    EXPECT_TRUE(result2.found) << "Second access should be cache hit (found=true)";
 }
 
 // Test multiple different keys get different UIDs
@@ -513,18 +513,18 @@ TEST_F(SqlUidCacheTest, MultipleDifferentKeysTest) {
     auto result2 = cache.get("SELECT * FROM products WHERE name = ?");
     auto result3 = cache.get("INSERT INTO orders (user_id, product_id) VALUES (?, ?)");
     
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_EQ(result2.uid.size(), 16);
-    EXPECT_EQ(result3.uid.size(), 16);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_EQ(result2.value.size(), 16);
+    EXPECT_EQ(result3.value.size(), 16);
     
-    EXPECT_FALSE(result1.old);
-    EXPECT_FALSE(result2.old);
-    EXPECT_FALSE(result3.old);
+    EXPECT_FALSE(result1.found);
+    EXPECT_FALSE(result2.found);
+    EXPECT_FALSE(result3.found);
     
     // Verify all different UIDs
-    EXPECT_TRUE(areUidsDifferent(result1.uid, result2.uid)) << "Different SQLs should have different UIDs";
-    EXPECT_TRUE(areUidsDifferent(result2.uid, result3.uid)) << "Different SQLs should have different UIDs";
-    EXPECT_TRUE(areUidsDifferent(result1.uid, result3.uid)) << "Different SQLs should have different UIDs";
+    EXPECT_TRUE(areUidsDifferent(result1.value, result2.value)) << "Different SQLs should have different UIDs";
+    EXPECT_TRUE(areUidsDifferent(result2.value, result3.value)) << "Different SQLs should have different UIDs";
+    EXPECT_TRUE(areUidsDifferent(result1.value, result3.value)) << "Different SQLs should have different UIDs";
 }
 
 // Test same SQL always produces same UID
@@ -537,7 +537,7 @@ TEST_F(SqlUidCacheTest, ConsistentUidGenerationTest) {
     auto result1 = cache1.get(sql);
     auto result2 = cache2.get(sql);
     
-    EXPECT_TRUE(areUidsEqual(result1.uid, result2.uid)) << "Same SQL should always produce same UID across different cache instances";
+    EXPECT_TRUE(areUidsEqual(result1.value, result2.value)) << "Same SQL should always produce same UID across different cache instances";
 }
 
 // LRU policy tests
@@ -551,24 +551,24 @@ TEST_F(SqlUidCacheTest, LRUEvictionTest) {
     auto result2 = cache.get("SELECT * FROM table2");
     auto result3 = cache.get("SELECT * FROM table3");
     
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_EQ(result2.uid.size(), 16);
-    EXPECT_EQ(result3.uid.size(), 16);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_EQ(result2.value.size(), 16);
+    EXPECT_EQ(result3.value.size(), 16);
     
     // Add one more item - should evict first SQL (oldest in LRU order)
     auto result4 = cache.get("SELECT * FROM table4");
-    EXPECT_EQ(result4.uid.size(), 16);
-    EXPECT_FALSE(result4.old);
+    EXPECT_EQ(result4.value.size(), 16);
+    EXPECT_FALSE(result4.found);
     
     // Check that first SQL was evicted by verifying it gets same UID but is cache miss
     auto result1_again = cache.get("SELECT * FROM table1");
-    EXPECT_TRUE(areUidsEqual(result1.uid, result1_again.uid)) << "Same SQL should get same UID even after eviction";
-    EXPECT_FALSE(result1_again.old) << "Evicted SQL should be cache miss";
+    EXPECT_TRUE(areUidsEqual(result1.value, result1_again.value)) << "Same SQL should get same UID even after eviction";
+    EXPECT_FALSE(result1_again.found) << "Evicted SQL should be cache miss";
     
     // Verify table4 is still in cache (was just added)
     auto result4_check = cache.get("SELECT * FROM table4");
-    EXPECT_TRUE(areUidsEqual(result4.uid, result4_check.uid)) << "Recently added SQL should still be in cache";
-    EXPECT_TRUE(result4_check.old) << "Recently added SQL should be cache hit";
+    EXPECT_TRUE(areUidsEqual(result4.value, result4_check.value)) << "Recently added SQL should still be in cache";
+    EXPECT_TRUE(result4_check.found) << "Recently added SQL should be cache hit";
 }
 
 // Test LRU ordering - accessing item moves it to front
@@ -587,27 +587,27 @@ TEST_F(SqlUidCacheTest, LRUOrderingTest) {
     
     // Access sql1 again - should move it to front of LRU list
     auto result1 = cache.get(sql1);
-    EXPECT_TRUE(areUidsEqual(result1_original.uid, result1.uid));
-    EXPECT_TRUE(result1.old);
+    EXPECT_TRUE(areUidsEqual(result1_original.value, result1.value));
+    EXPECT_TRUE(result1.found);
     
     // Add new SQL - should evict the oldest (sql2, since sql1 was recently accessed)
     auto result4 = cache.get(sql4);
-    EXPECT_EQ(result4.uid.size(), 16);
+    EXPECT_EQ(result4.value.size(), 16);
     
     // Verify sql1 is still in cache (was recently accessed)
     auto result1_check = cache.get(sql1);
-    EXPECT_TRUE(areUidsEqual(result1_original.uid, result1_check.uid)) << "Recently accessed SQL should still be in cache";
-    EXPECT_TRUE(result1_check.old) << "Recently accessed SQL should be cache hit";
+    EXPECT_TRUE(areUidsEqual(result1_original.value, result1_check.value)) << "Recently accessed SQL should still be in cache";
+    EXPECT_TRUE(result1_check.found) << "Recently accessed SQL should be cache hit";
     
     // Verify sql4 is in cache (was just added)
     auto result4_check = cache.get(sql4);
-    EXPECT_TRUE(areUidsEqual(result4.uid, result4_check.uid)) << "Recently added SQL should be in cache";
-    EXPECT_TRUE(result4_check.old) << "Recently added SQL should be cache hit";
+    EXPECT_TRUE(areUidsEqual(result4.value, result4_check.value)) << "Recently added SQL should be in cache";
+    EXPECT_TRUE(result4_check.found) << "Recently added SQL should be cache hit";
     
     // Check if sql2 was evicted by seeing if it's cache miss
     auto result2_check = cache.get(sql2);
-    EXPECT_TRUE(areUidsEqual(result2_original.uid, result2_check.uid)) << "Same SQL should get same UID even after eviction";
-    EXPECT_FALSE(result2_check.old) << "Evicted SQL should be cache miss";
+    EXPECT_TRUE(areUidsEqual(result2_original.value, result2_check.value)) << "Same SQL should get same UID even after eviction";
+    EXPECT_FALSE(result2_check.found) << "Evicted SQL should be cache miss";
 }
 
 // Remove functionality tests
@@ -620,21 +620,21 @@ TEST_F(SqlUidCacheTest, BasicRemoveTest) {
     
     // Add item to cache
     auto result1 = cache.get(sql);
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_FALSE(result1.found);
     
     // Verify it's in cache
     auto result2 = cache.get(sql);
-    EXPECT_TRUE(areUidsEqual(result1.uid, result2.uid));
-    EXPECT_TRUE(result2.old);
+    EXPECT_TRUE(areUidsEqual(result1.value, result2.value));
+    EXPECT_TRUE(result2.found);
     
     // Remove the item
     cache.remove(sql);
     
     // Verify it's no longer in cache but gets same UID when regenerated
     auto result3 = cache.get(sql);
-    EXPECT_TRUE(areUidsEqual(result1.uid, result3.uid)) << "Same SQL should get same UID after removal";
-    EXPECT_FALSE(result3.old) << "Removed SQL should be cache miss";
+    EXPECT_TRUE(areUidsEqual(result1.value, result3.value)) << "Same SQL should get same UID after removal";
+    EXPECT_FALSE(result3.found) << "Removed SQL should be cache miss";
 }
 
 // Test remove non-existent key (should not crash)
@@ -646,8 +646,8 @@ TEST_F(SqlUidCacheTest, RemoveNonExistentKeyTest) {
     
     // Cache should still work normally
     auto result = cache.get("SELECT * FROM users");
-    EXPECT_EQ(result.uid.size(), 16);
-    EXPECT_FALSE(result.old);
+    EXPECT_EQ(result.value.size(), 16);
+    EXPECT_FALSE(result.found);
 }
 
 // Test remove from middle of cache
@@ -669,15 +669,15 @@ TEST_F(SqlUidCacheTest, RemoveFromMiddleTest) {
     // Verify sql1 and sql3 are still accessible
     auto result1 = cache.get(sql1);
     auto result3 = cache.get(sql3);
-    EXPECT_TRUE(areUidsEqual(original1.uid, result1.uid));
-    EXPECT_TRUE(areUidsEqual(original3.uid, result3.uid));
-    EXPECT_TRUE(result1.old);
-    EXPECT_TRUE(result3.old);
+    EXPECT_TRUE(areUidsEqual(original1.value, result1.value));
+    EXPECT_TRUE(areUidsEqual(original3.value, result3.value));
+    EXPECT_TRUE(result1.found);
+    EXPECT_TRUE(result3.found);
     
     // Verify sql2 is no longer in cache
     auto result2 = cache.get(sql2);
-    EXPECT_TRUE(areUidsEqual(original2.uid, result2.uid)) << "Same SQL should get same UID";
-    EXPECT_FALSE(result2.old);
+    EXPECT_TRUE(areUidsEqual(original2.value, result2.value)) << "Same SQL should get same UID";
+    EXPECT_FALSE(result2.found);
 }
 
 // Edge case tests
@@ -690,19 +690,19 @@ TEST_F(SqlUidCacheTest, CacheSize1Test) {
     std::string sql2 = "SELECT * FROM table2";
     
     auto result1 = cache.get(sql1);
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_FALSE(result1.found);
     
     // Add second item - should evict first
     auto result2 = cache.get(sql2);
-    EXPECT_EQ(result2.uid.size(), 16);
-    EXPECT_FALSE(result2.old);
-    EXPECT_TRUE(areUidsDifferent(result1.uid, result2.uid));
+    EXPECT_EQ(result2.value.size(), 16);
+    EXPECT_FALSE(result2.found);
+    EXPECT_TRUE(areUidsDifferent(result1.value, result2.value));
     
     // First item should be evicted
     auto result1_again = cache.get(sql1);
-    EXPECT_TRUE(areUidsEqual(result1.uid, result1_again.uid)) << "Same SQL should get same UID";
-    EXPECT_FALSE(result1_again.old);
+    EXPECT_TRUE(areUidsEqual(result1.value, result1_again.value)) << "Same SQL should get same UID";
+    EXPECT_FALSE(result1_again.found);
 }
 
 // Test empty string key
@@ -710,12 +710,12 @@ TEST_F(SqlUidCacheTest, EmptyStringKeyTest) {
     SqlUidCache cache(5);
     
     auto result1 = cache.get("");
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_FALSE(result1.found);
     
     auto result2 = cache.get("");
-    EXPECT_TRUE(areUidsEqual(result1.uid, result2.uid));
-    EXPECT_TRUE(result2.old);
+    EXPECT_TRUE(areUidsEqual(result1.value, result2.value));
+    EXPECT_TRUE(result2.found);
 }
 
 // Test very long SQL key
@@ -725,12 +725,12 @@ TEST_F(SqlUidCacheTest, LongSqlKeyTest) {
     std::string long_sql = "SELECT * FROM users WHERE " + std::string(1000, 'x') + " = ?"; // 1000+ character SQL
     
     auto result1 = cache.get(long_sql);
-    EXPECT_EQ(result1.uid.size(), 16);
-    EXPECT_FALSE(result1.old);
+    EXPECT_EQ(result1.value.size(), 16);
+    EXPECT_FALSE(result1.found);
     
     auto result2 = cache.get(long_sql);
-    EXPECT_TRUE(areUidsEqual(result1.uid, result2.uid));
-    EXPECT_TRUE(result2.old);
+    EXPECT_TRUE(areUidsEqual(result1.value, result2.value));
+    EXPECT_TRUE(result2.found);
 }
 
 // Thread safety tests
@@ -750,7 +750,7 @@ TEST_F(SqlUidCacheTest, ConcurrentGetTest) {
             for (int j = 0; j < operations_per_thread; ++j) {
                 std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE col" + std::to_string(j) + " = ?";
                 auto result = cache.get(sql);
-                uids.push_back(result.uid);
+                uids.push_back(result.value);
             }
             return uids;
         }));
@@ -793,17 +793,17 @@ TEST_F(SqlUidCacheTest, ConcurrentSameSqlTest) {
     }
     
     // All should have the same UID
-    std::vector<unsigned char> first_uid = results[0].uid;
+    std::vector<unsigned char> first_uid = results[0].value;
     for (const auto& result : results) {
-        EXPECT_EQ(result.uid.size(), 16) << "All UIDs should be 16 bytes";
-        EXPECT_TRUE(areUidsEqual(result.uid, first_uid)) << "All accesses to same SQL should return same UID";
+        EXPECT_EQ(result.value.size(), 16) << "All UIDs should be 16 bytes";
+        EXPECT_TRUE(areUidsEqual(result.value, first_uid)) << "All accesses to same SQL should return same UID";
     }
     
-    // Only one should be cache miss (old=false), others should be hits (old=true)
+    // Only one should be cache miss (found=false), others should be hits (found=true)
     int cache_misses = 0;
     int cache_hits = 0;
     for (const auto& result : results) {
-        if (result.old) {
+        if (result.found) {
             cache_hits++;
         } else {
             cache_misses++;
@@ -851,7 +851,7 @@ TEST_F(SqlUidCacheTest, ConcurrentGetRemoveTest) {
     
     // Cache should still be functional
     auto result = cache.get("SELECT * FROM test_table");
-    EXPECT_EQ(result.uid.size(), 16) << "Cache should still be functional after concurrent operations";
+    EXPECT_EQ(result.value.size(), 16) << "Cache should still be functional after concurrent operations";
 }
 
 // Test cache behavior with many SQL statements
@@ -865,9 +865,9 @@ TEST_F(SqlUidCacheTest, ManySqlStatementsTest) {
     for (int i = 0; i < total_sqls; ++i) {
         std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE id = ?";
         auto result = cache.get(sql);
-        original_uids.push_back(result.uid);
-        EXPECT_EQ(result.uid.size(), 16);
-        EXPECT_FALSE(result.old);
+        original_uids.push_back(result.value);
+        EXPECT_EQ(result.value.size(), 16);
+        EXPECT_FALSE(result.found);
     }
     
     // Only the most recent cache_size items should still be in cache
@@ -878,7 +878,7 @@ TEST_F(SqlUidCacheTest, ManySqlStatementsTest) {
     for (int i = total_sqls - cache_size; i < total_sqls; ++i) {
         std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE id = ?";
         auto result = cache.get(sql);
-        if (result.old && areUidsEqual(result.uid, original_uids[i])) {
+        if (result.found && areUidsEqual(result.value, original_uids[i])) {
             items_still_in_cache++;
         }
     }
@@ -889,8 +889,8 @@ TEST_F(SqlUidCacheTest, ManySqlStatementsTest) {
     for (int i = 0; i < cache_size / 2; ++i) {
         std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE id = ?";
         auto result = cache.get(sql);
-        EXPECT_TRUE(areUidsEqual(result.uid, original_uids[i])) << "Same SQL should get same UID even after eviction";
-        EXPECT_FALSE(result.old) << "Early items should be cache miss";
+        EXPECT_TRUE(areUidsEqual(result.value, original_uids[i])) << "Same SQL should get same UID even after eviction";
+        EXPECT_FALSE(result.found) << "Early items should be cache miss";
         items_evicted++;
     }
     
@@ -913,9 +913,9 @@ TEST_F(SqlUidCacheTest, UidConsistencyTest) {
     
     // Get UIDs from all cache instances for each SQL
     for (const auto& sql : test_sqls) {
-        auto uid1 = cache1.get(sql).uid;
-        auto uid2 = cache2.get(sql).uid;
-        auto uid3 = cache3.get(sql).uid;
+        auto uid1 = cache1.get(sql).value;
+        auto uid2 = cache2.get(sql).value;
+        auto uid3 = cache3.get(sql).value;
         
         EXPECT_EQ(uid1.size(), 16);
         EXPECT_EQ(uid2.size(), 16);
