@@ -140,6 +140,8 @@ namespace pinpoint {
     	bool enabled_{false};
     	bool shutting_down_{false};
 
+    	/// @brief Initializes HTTP header recorders for server and client.
+    	void init_header_recorders();
     	/// @brief Starts background threads responsible for gRPC communication.
     	void init_grpc_workers();
     	/// @brief Signals all gRPC workers to stop and joins their threads.

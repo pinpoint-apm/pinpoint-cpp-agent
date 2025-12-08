@@ -103,12 +103,10 @@ namespace pinpoint {
     }
 
     bool compare_string(std::string_view str1, std::string_view str2) {
-        // Check length first for early return and safety
         if (str1.size() != str2.size()) {
             return false;
         }
 
-        // Safe comparison with length check
         return std::equal(str1.begin(), str1.end(), str2.begin(), char_iequal());
     }
 
@@ -116,23 +114,10 @@ namespace pinpoint {
         // Template helper for safe string conversions
         template<typename T, typename ConversionFunc>
         std::optional<T> safe_string_convert(std::string_view str, ConversionFunc&& func) {
-            // absl::SimpleAtoi family expects null-terminated strings
-            // string_view doesn't guarantee this, so we create a temporary string
-            // if the view doesn't point to a null-terminated buffer
-            
-            // Check if string_view points to null-terminated data
-            const bool is_null_terminated = (str.data()[str.size()] == '\0');
-            
             T result{};
-            bool success = false;
             
-            if (is_null_terminated) {
-                success = func(str.data(), &result);
-            } else {
-                // Create temporary null-terminated string
-                std::string temp(str);
-                success = func(temp.c_str(), &result);
-            }
+            std::string temp(str);
+            const bool success = func(temp.c_str(), &result);
             
             return success ? std::optional<T>(result) : std::nullopt;
         }

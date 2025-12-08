@@ -17,6 +17,7 @@
 #include <string>
 #include <exception>
 #include <utility>
+#include <mutex>
 
 #include <yaml-cpp/yaml.h>
 #include "absl/strings/str_cat.h"
@@ -28,12 +29,17 @@
 
 namespace pinpoint {
 
+    // Constants
     constexpr int kCacheSize = 1024;
     constexpr int kMaxAppNameLength = 24;
     constexpr int kMaxAgentIdLength = 24;
     constexpr int kMaxAgentNameLength = 255;
 
-    static AgentPtr global_agent{nullptr};
+    // Global agent singleton with thread-safe access
+    namespace {
+        AgentPtr global_agent{nullptr};
+        std::mutex global_agent_mutex;
+    }
 
     AgentImpl::AgentImpl(const Config& options) :
         config_(options),
@@ -70,43 +76,46 @@ namespace pinpoint {
             http_status_errors_ = std::make_unique<HttpStatusErrors>(config_.http.server.status_errors);
         }
 
-        http_srv_header_recorder_[HTTP_REQUEST] = nullptr;
-        http_srv_header_recorder_[HTTP_RESPONSE] = nullptr;
-        http_srv_header_recorder_[HTTP_COOKIE] = nullptr;
-
-        if (!config_.http.server.rec_request_header.empty()) {
-            http_srv_header_recorder_[HTTP_REQUEST] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_REQUEST_HEADER, config_.http.server.rec_request_header);
-        }
-        if (!config_.http.server.rec_response_header.empty()) {
-            http_srv_header_recorder_[HTTP_RESPONSE] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.server.rec_response_header);
-        }
-        if (!config_.http.server.rec_request_cookie.empty()) {
-            http_srv_header_recorder_[HTTP_COOKIE] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_COOKIE, config_.http.server.rec_request_cookie);
-        }
-
-
-        http_cli_header_recorder_[HTTP_REQUEST] = nullptr;
-        http_cli_header_recorder_[HTTP_RESPONSE] = nullptr;
-        http_cli_header_recorder_[HTTP_COOKIE] = nullptr;
-
-        if (!config_.http.client.rec_request_header.empty()) {
-            http_cli_header_recorder_[HTTP_REQUEST] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_REQUEST_HEADER, config_.http.client.rec_request_header);
-        }
-        if (!config_.http.client.rec_response_header.empty()) {
-            http_cli_header_recorder_[HTTP_RESPONSE] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.client.rec_response_header);
-        }
-        if (!config_.http.client.rec_request_cookie.empty()) {
-            http_cli_header_recorder_[HTTP_COOKIE] =
-                std::make_unique<HttpHeaderRecorder>(ANNOTATION_HTTP_COOKIE, config_.http.client.rec_request_cookie);
-        }
+        // Initialize HTTP header recorders
+        init_header_recorders();
 
         init_url_stat();
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
+    }
+
+    void AgentImpl::init_header_recorders() {
+        // Server-side header recorders
+        struct HeaderRecorderConfig {
+            HeaderType type;
+            int32_t annotation_key;
+            const std::vector<std::string>& config_value;
+        };
+
+        const HeaderRecorderConfig server_configs[] = {
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_.http.server.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.server.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_.http.server.rec_request_cookie}
+        };
+
+        const HeaderRecorderConfig client_configs[] = {
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_.http.client.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.client.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_.http.client.rec_request_cookie}
+        };
+
+        for (const auto& cfg : server_configs) {
+            if (!cfg.config_value.empty()) {
+                http_srv_header_recorder_[cfg.type] =
+                    std::make_unique<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+            }
+        }
+
+        for (const auto& cfg : client_configs) {
+            if (!cfg.config_value.empty()) {
+                http_cli_header_recorder_[cfg.type] =
+                    std::make_unique<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+            }
+        }
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -158,27 +167,37 @@ namespace pinpoint {
     void AgentImpl::wait_grpc_workers() {
         std::mutex m;
         std::condition_variable cv;
+        bool finished = false;
 
-        std::thread t1([this, &m, &cv] {
-            init_thread_.join();
-            url_stat_add_thread_.join();
-            url_stat_send_thread_.join();
-            agent_stat_thread_.join();
-            ping_thread_.join();
-            meta_thread_.join();
-            span_thread_.join();
-            stat_thread_.join();
+        std::thread t1([this, &m, &cv, &finished] {
+            // Join all worker threads
+            if (init_thread_.joinable()) init_thread_.join();
+            if (url_stat_add_thread_.joinable()) url_stat_add_thread_.join();
+            if (url_stat_send_thread_.joinable()) url_stat_send_thread_.join();
+            if (agent_stat_thread_.joinable()) agent_stat_thread_.join();
+            if (ping_thread_.joinable()) ping_thread_.join();
+            if (meta_thread_.joinable()) meta_thread_.join();
+            if (span_thread_.joinable()) span_thread_.join();
+            if (stat_thread_.joinable()) stat_thread_.join();
 
-            std::unique_lock<std::mutex> l(m);
-            cv.notify_one();
+            {
+                std::unique_lock<std::mutex> l(m);
+                finished = true;
+                cv.notify_one();
+            }
         });
 
-        std::unique_lock<std::mutex> l(m);
-        auto s = cv.wait_for(l, std::chrono::seconds(5));
-        if (s == std::cv_status::timeout) {
-            LOG_INFO("wait grpc workers: timeout");
+        {
+            std::unique_lock<std::mutex> l(m);
+            auto status = cv.wait_for(l, std::chrono::seconds(5), [&finished] { return finished; });
+            
+            if (!status) {
+                LOG_WARN("wait grpc workers: timeout - some threads may still be running");
+                t1.detach();  // Let it finish in background
+            } else {
+                t1.join();  // Clean join if completed in time
+            }
         }
-        t1.detach();
     }
 
     AgentImpl::~AgentImpl() {
@@ -252,7 +271,12 @@ namespace pinpoint {
         LOG_INFO("agent shutdown");
         enabled_ = false;
         shutting_down_ = true;
-        global_agent = noopAgent();
+        
+        {
+            std::lock_guard<std::mutex> lock(global_agent_mutex);
+            global_agent = noopAgent();
+        }
+        
         close_grpc_workers();
         shutdown_logger();
     }
@@ -289,9 +313,10 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = absl::StrCat(api_str.data(), "_", api_type);
-        const auto [id, old] = api_cache_->get(key);
-        if (old) {
+        // Convert string_view to string to ensure null-termination for absl::StrCat
+        const auto key = absl::StrCat(std::string(api_str), "_", api_type);
+        const auto [id, found] = api_cache_->get(key);
+        if (found) {
             return id;
         }
 
@@ -316,9 +341,9 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = std::string(error_name.data());
-        const auto [id, old] = error_cache_->get(key);
-        if (old) {
+        const auto key = std::string(error_name);
+        const auto [id, found] = error_cache_->get(key);
+        if (found) {
             return id;
         }
 
@@ -342,9 +367,9 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = std::string(sql_query.data());
-        const auto [id, old] = sql_cache_->get(key);
-        if (old) {
+        const auto key = std::string(sql_query);
+        const auto [id, found] = sql_cache_->get(key);
+        if (found) {
             return id;
         }
 
@@ -368,9 +393,9 @@ namespace pinpoint {
             return {};
         }
         
-        const auto key = std::string(sql.data());
-        const auto [uid, old] = sql_uid_cache_->get(key);
-        if (old) {
+        const auto key = std::string(sql);
+        const auto [uid, found] = sql_uid_cache_->get(key);
+        if (found) {
             return uid;
         }
         
@@ -468,6 +493,8 @@ namespace pinpoint {
     }
 
     static AgentPtr create_agent_helper(Config& cfg) {
+        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        
         if (global_agent != nullptr) {
             LOG_WARN("agent: pinpoint agent is already created");
             return global_agent;
@@ -489,6 +516,8 @@ namespace pinpoint {
     }
 
     AgentPtr GlobalAgent() {
+        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        
         if (global_agent == nullptr) {
             return noopAgent();
         }
