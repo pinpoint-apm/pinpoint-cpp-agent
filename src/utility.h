@@ -61,11 +61,11 @@ namespace pinpoint {
     std::optional<bool> stob_(std::string_view str);
 
     /**
-     * @brief Case-sensitive comparison helper that avoids allocation.
+     * @brief Case-insensitive string comparison helper that avoids allocation.
      *
      * @param str1 First string.
      * @param str2 Second string.
-     * @return `true` if both strings are equal.
+     * @return `true` if both strings are equal (ignoring case).
      */
     bool compare_string(std::string_view str1, std::string_view str2);
 
