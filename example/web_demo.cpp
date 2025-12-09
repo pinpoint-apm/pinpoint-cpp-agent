@@ -7,7 +7,7 @@
 #include <cpptrace/formatting.hpp>
 
 #include "pinpoint/tracer.h"
-#include "3rd_party/httplib.h"
+#include "httplib.h"
 #include "http_trace_context.h"
 
 // Thread local storage for span

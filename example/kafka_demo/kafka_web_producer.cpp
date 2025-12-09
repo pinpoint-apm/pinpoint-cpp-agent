@@ -2,9 +2,10 @@
 #include <string>
 #include <cstdlib>
 #include <librdkafka/rdkafkacpp.h>
+
 #include "pinpoint/tracer.h"
 #include "kafka_trace_context.h"
-#include "3rd_party/httplib.h"
+#include "httplib.h"
 #include "http_trace_context.h"
 
 // Global variables for Kafka producer

@@ -229,6 +229,7 @@ configure_file(version.h.in version.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(include)
 include_directories(src)
+include_directories(3rd_party)
 include(GNUInstallDirs)
 
 set(PROTOS v1/Annotation.proto
@@ -254,7 +255,7 @@ set(SRCS src/agent.cpp
          src/cache.cpp
          src/utility.cpp
          src/sql.cpp
-         src/MurmurHash3.cpp)
+         3rd_party/MurmurHash3.cpp)
 
 if (BUILD_SHARED_LIBS)
   add_library(pinpoint_cpp SHARED ${SRCS} ${PROTOS})

@@ -11,7 +11,7 @@
 #include <mysqlx/xdevapi.h>
 
 // HTTP Server headers
-#include "3rd_party/httplib.h"
+#include "httplib.h"
 #include "http_trace_context.h"
 
 // Pinpoint headers

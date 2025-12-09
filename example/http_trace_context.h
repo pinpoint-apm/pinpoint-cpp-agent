@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <string_view>
-#include "3rd_party/httplib.h"
 
+#include "httplib.h"
 #include "pinpoint/tracer.h"
 
 class HttpTraceContextReader final : public pinpoint::TraceContextReader {

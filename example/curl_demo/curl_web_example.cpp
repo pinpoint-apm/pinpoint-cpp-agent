@@ -2,8 +2,9 @@
 #include <string>
 #include <cstdlib>
 #include <curl/curl.h>
+
 #include "pinpoint/tracer.h"
-#include "3rd_party/httplib.h"
+#include "httplib.h"
 #include "http_trace_context.h"
 
 // Global variables

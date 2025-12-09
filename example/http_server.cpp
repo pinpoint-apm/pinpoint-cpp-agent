@@ -2,7 +2,7 @@
 #include <string>
 
 #include "pinpoint/tracer.h"
-#include "3rd_party/httplib.h"
+#include "httplib.h"
 #include "http_trace_context.h"
 
 pinpoint::SpanPtr make_span(const httplib::Request& req);
