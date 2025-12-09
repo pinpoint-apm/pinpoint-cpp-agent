@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 
 namespace pinpoint {
 
@@ -40,8 +41,9 @@ namespace pinpoint {
         bool allow();
 
     private:
+        std::mutex mutex_;
         uint64_t token_ = 0;
-        std::atomic<uint64_t> base_time_ = {0};
-        std::atomic<uint64_t> bucket_ = {0};
+        uint64_t base_time_ = 0;
+        uint64_t bucket_ = 0;
     };
 }

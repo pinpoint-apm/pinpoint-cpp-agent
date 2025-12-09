@@ -48,19 +48,34 @@ namespace pinpoint {
         setInstance(this);
     }
 
+    // RAII wrapper for FILE*
+    struct FileCloser {
+        FILE* fp;
+        explicit FileCloser(FILE* f) : fp(f) {}
+        ~FileCloser() { if (fp) fclose(fp); }
+        FileCloser(const FileCloser&) = delete;
+        FileCloser& operator=(const FileCloser&) = delete;
+    };
+
     static void get_cpu_time(clock_t *sys_time, clock_t *proc_time) {
         if (sys_time) {
             FILE *fd = fopen("/proc/stat", "r");
-            if (fd != nullptr) {
-                char buf[256];
-                clock_t user = 0, nice = 0, system = 0;
-                memset(buf, 0, sizeof(buf));
+            if (fd == nullptr) {
+                return;
+            }
+            FileCloser closer(fd);  // RAII: Automatically closes on scope exit
+            
+            char buf[256];
+            clock_t user = 0, nice = 0, system = 0;
+            memset(buf, 0, sizeof(buf));
 
-                if (fgets(buf, sizeof(buf) - 1, fd) != nullptr) {
-                    sscanf(buf, "%*s %lu %lu %lu %*u %*u %*u %*u %*u %*u %*u", &user, &nice, &system);
+            if (fgets(buf, sizeof(buf) - 1, fd) != nullptr) {
+                if (sscanf(buf, "%*s %lu %lu %lu", &user, &nice, &system) == 3) {
                     *sys_time = user + system + nice;
+                } else {
+                    LOG_WARN("Failed to parse /proc/stat format");
+                    *sys_time = 0;
                 }
-                fclose(fd);
             }
         }
 
@@ -123,6 +138,7 @@ namespace pinpoint {
         if (fd == nullptr) {
             return;
         }
+        FileCloser closer(fd);  // RAII: Automatically closes on scope exit
 
         char buf[256] = {};
         while (fgets(buf, sizeof(buf), fd) != nullptr) {
@@ -136,8 +152,6 @@ namespace pinpoint {
                 *num_threads = val;
             }
         }
-
-        fclose(fd);
     }
 
     void AgentStats::resetAgentStats() {

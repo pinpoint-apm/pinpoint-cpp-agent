@@ -15,10 +15,13 @@
  */
 
 #include "limiter.h"
+#include <mutex>
 
 namespace pinpoint {
 
     bool RateLimiter::allow() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
         const uint64_t now = std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::steady_clock::now().time_since_epoch()).count();
 
