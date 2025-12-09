@@ -1,0 +1,35 @@
+ApplicationName: "cpp-mysql-demo"
+ApplicationType: 1300
+AgentId: "mysql-demo-agent"
+
+Collector:
+  GrpcHost: "localhost"
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+
+Log:
+  Level: "info"
+  Directory: "/tmp"
+  MaxFileSize: 10
+
+Sampling:
+  Type: "COUNTING"
+  CounterRate: 1
+
+Http:
+  CollectUrlStat: true
+  Server:
+    RecordRequestHeader: ["User-Agent", "Content-Type"]
+    RecordResponseHeader: ["Content-Type"]
+
+Sql:
+  EnableSqlStats: true
+  MaxBindArgsSize: 1024
+
+Stat:
+  CollectActiveLimiting: true
+  BatchInterval: 5000
+
+Enable: true
+

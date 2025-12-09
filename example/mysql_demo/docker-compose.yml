@@ -23,5 +23,26 @@ services:
       interval: 10s
       start_period: 40s
 
+  mysql-demo:
+    build:
+      context: ../../
+      dockerfile: example/mysql_demo/Dockerfile
+    image: pinpoint-cpp-mysql-demo
+    command: /app/build/example/mysql_demo/db_demo
+    ports:
+      - "8089:8089"
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=33060
+      - MYSQL_DATABASE=test
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=pinpoint123
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./pinpoint-config.yaml:/tmp/pinpoint-config.yaml:ro
+
 volumes:
   mysql_data:
