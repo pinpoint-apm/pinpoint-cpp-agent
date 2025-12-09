@@ -144,46 +144,6 @@ endif()
 
 list(APPEND LINK_LIBS spdlog::spdlog)
 
-# Try to find cpptrace on the system first
-find_package(cpptrace CONFIG QUIET)
-
-if(NOT cpptrace_FOUND)
-  message(STATUS "cpptrace not found on system, fetching from source...")
-  
-  # Fetch cpptrace
-  FetchContent_Declare(
-    cpptrace
-    GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
-    GIT_TAG        v1.0.4
-  )
-  FetchContent_MakeAvailable(cpptrace)
-else()
-  message(STATUS "Using system cpptrace")
-endif()
-
-list(APPEND LINK_LIBS cpptrace::cpptrace)
-
-# Fetch GoogleTest (for testing)
-if (BUILD_TESTING)
-  # Try to find GoogleTest on the system first
-  find_package(GTest CONFIG QUIET)
-  
-  if(NOT GTest_FOUND)
-    message(STATUS "GoogleTest not found on system, fetching from source...")
-    
-    FetchContent_Declare(
-      googletest
-      GIT_REPOSITORY https://github.com/google/googletest.git
-      GIT_TAG        v1.15.2
-    )
-    # For Windows: Prevent overriding the parent project's compiler/linker settings
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-  else()
-    message(STATUS "Using system GoogleTest")
-  endif()
-endif()
-
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything \
     -Wno-c++98-compat \

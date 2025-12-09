@@ -10,8 +10,17 @@ target_link_libraries(tutorial ${PINPOINT_CPP_LIBRARY})
 add_executable(http_server http_server.cpp)
 target_link_libraries(http_server ${PINPOINT_CPP_LIBRARY})
 
-add_executable(web_demo web_demo.cpp)
-target_link_libraries(web_demo ${PINPOINT_CPP_LIBRARY})
+# web_demo requires cpptrace - only build if found on system
+find_package(cpptrace CONFIG QUIET)
+
+if(cpptrace_FOUND)
+  message(STATUS "cpptrace found - building web_demo")
+  add_executable(web_demo web_demo.cpp)
+  target_link_libraries(web_demo ${PINPOINT_CPP_LIBRARY} cpptrace::cpptrace)
+else()
+  message(STATUS "cpptrace not found - skipping web_demo build")
+  message(STATUS "To build web_demo, install cpptrace or set cpptrace_DIR")
+endif()
 
 option(BUILD_MYSQL_EXAMPLE "Build MySQL example" ON)
 if (BUILD_MYSQL_EXAMPLE)
