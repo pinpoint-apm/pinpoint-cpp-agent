@@ -1,6 +1,7 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <cstdlib>
 
 #include <cpptrace/utils.hpp>
 #include <cpptrace/cpptrace.hpp>
@@ -9,6 +10,9 @@
 #include "pinpoint/tracer.h"
 #include "httplib.h"
 #include "http_trace_context.h"
+
+// Global default target URL
+std::string g_default_target_url = "http://localhost:9000/bar";
 
 // Thread local storage for span
 thread_local pinpoint::SpanPtr current_span;
@@ -69,9 +73,16 @@ void trace_response(const httplib::Request& req, httplib::Response& res, pinpoin
 httplib::Server::Handler wrap_handler(httplib::Server::Handler handler);
 
 int main() {
+    // Check for TARGET_URL environment variable
+    const char* target_url_env = std::getenv("TARGET_URL");
+    if (target_url_env != nullptr) {
+        g_default_target_url = target_url_env;
+        std::cout << "Using TARGET_URL from environment: " << g_default_target_url << std::endl;
+    }
+
     // Pinpoint configuration
     setenv("PINPOINT_CPP_CONFIG_FILE", "/tmp/pinpoint-config.yaml", 0);
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-demo", 0);
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-cpptrace-demo", 0);
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
 
     auto agent = pinpoint::CreateAgent();
@@ -84,9 +95,10 @@ int main() {
    
     std::cout << "Web demo server starting on http://localhost:8088" << std::endl;
     std::cout << "Try: http://localhost:8088/users/123?name=foo" << std::endl;
-    std::cout << "Try: http://localhost:8088/outgoing" << std::endl;
+    std::cout << "Try: http://localhost:8088/outgoing?target=http://httpbin/get" << std::endl;
+    std::cout << "Default target URL: " << g_default_target_url << std::endl;
     
-    server.listen("localhost", 8088);
+    server.listen("0.0.0.0", 8088);
     agent->Shutdown();
     
     return 0;
@@ -96,7 +108,7 @@ pinpoint::SpanPtr trace_request(const httplib::Request& req) {
     auto agent = pinpoint::GlobalAgent();
 
     HttpTraceContextReader trace_context_reader(req.headers);
-    auto span = agent->NewSpan("C++ Web Demo", req.path, trace_context_reader);
+    auto span = agent->NewSpan("C++ Cpptrace Demo", req.path, trace_context_reader);
 
     span->SetRemoteAddress(req.remote_addr);
     auto end_point = req.get_header_value("Host");
@@ -173,8 +185,39 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 
 void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
     auto span = get_span_context();  // Get span from thread local storage
-    std::string host = "localhost:9000", path = "/bar";
-    std::string url = "http://" + host + path;
+    
+    // Get target URL from query parameter or use default
+    std::string target_url = req.get_param_value("target");
+    if (target_url.empty()) {
+        target_url = g_default_target_url;
+    }
+
+    std::cout << "Making outgoing request to: " << target_url << std::endl;
+
+    // Parse URL to extract host and path
+    std::string host, path;
+    size_t proto_end = target_url.find("://");
+    if (proto_end != std::string::npos) {
+        size_t host_start = proto_end + 3;
+        size_t path_start = target_url.find("/", host_start);
+        if (path_start != std::string::npos) {
+            host = target_url.substr(host_start, path_start - host_start);
+            path = target_url.substr(path_start);
+        } else {
+            host = target_url.substr(host_start);
+            path = "/";
+        }
+    } else {
+        // No protocol, assume http://
+        size_t path_start = target_url.find("/");
+        if (path_start != std::string::npos) {
+            host = target_url.substr(0, path_start);
+            path = target_url.substr(path_start);
+        } else {
+            host = target_url;
+            path = "/";
+        }
+    }
 
     auto se = span->NewSpanEvent("handle_outgoing");
     se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
@@ -182,13 +225,16 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
     se->SetDestination(host);
 
     auto anno = se->GetAnnotations();
-    anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, url);
+    anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, target_url);
 
     // Call external URL with HTTP client
     httplib::Client cli(host);
+    cli.set_connection_timeout(5, 0);  // 5 seconds
+    cli.set_read_timeout(5, 0);        // 5 seconds
+    
     std::stringstream json_response;
     json_response << "{\n";
-    json_response << "  \"target_url\": \"" << url << "\",\n";
+    json_response << "  \"target_url\": \"" << target_url << "\",\n";
 
     // Inject trace context into headers
     httplib::Headers headers;
@@ -208,11 +254,15 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
                   << ", Body=" << external_res->body << std::endl;
         anno->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, external_res->status);
     } else {
+        auto error = external_res.error();
+        std::string error_msg = httplib::to_string(error);
+        
         json_response << "  \"status_code\": 0,\n";
+        json_response << "  \"error\": \"" << error_msg << "\",\n";
         json_response << "  \"response_body\": \"Failed to connect\",\n";
         json_response << "  \"success\": false\n";
         
-        std::string err_msg = "Outgoing call failed: Unable to connect to localhost:9000";
+        std::string err_msg = "Outgoing call failed: " + error_msg + " - Unable to connect to " + host;
         std::cout << err_msg << std::endl;
 
         CppTraceCallStackReader reader;
@@ -226,6 +276,7 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
     res.status = 200;
     
     std::cout << "Request handled: " << req.path 
-              << " -> Called " << url << std::endl;
+              << " -> Called " << target_url << std::endl;
     span->EndSpanEvent();
 }
+

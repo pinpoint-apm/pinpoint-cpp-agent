@@ -1,0 +1,25 @@
+version: '3'
+services:
+  # A simple echo server to test requests against
+  httpbin:
+    image: kennethreitz/httpbin
+    ports:
+      - "80:80"
+    container_name: pinpoint-httpbin
+
+  cpptrace-demo:
+    build:
+      context: ../../
+      dockerfile: example/cpptrace_demo/Dockerfile
+    image: pinpoint-cpp-cpptrace-demo
+    command: /app/build/example/cpptrace_demo/cpptrace_demo
+    ports:
+      - "8088:8088"
+    environment:
+      - TARGET_URL=http://httpbin:80/get
+    depends_on:
+      - httpbin
+    restart: on-failure
+    volumes:
+      - ./pinpoint-config.yaml:/tmp/pinpoint-config.yaml:ro
+

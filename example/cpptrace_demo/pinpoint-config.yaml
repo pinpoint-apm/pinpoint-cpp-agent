@@ -1,0 +1,34 @@
+ApplicationName: "cpp-cpptrace-demo"
+ApplicationType: 1300
+AgentId: "cpptrace-demo-agent"
+
+Collector:
+  GrpcHost: "localhost"
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+
+Log:
+  Level: "info"
+  Directory: "/tmp"
+  MaxFileSize: 10
+
+Sampling:
+  Type: "COUNTING"
+  CounterRate: 1
+
+Http:
+  CollectUrlStat: true
+  Server:
+    RecordRequestHeader: ["User-Agent", "Content-Type"]
+    RecordResponseHeader: ["Content-Type"]
+  Client:
+    RecordRequestHeader: ["User-Agent", "Content-Type"]
+    RecordResponseHeader: ["Content-Type"]
+
+Stat:
+  CollectActiveLimiting: true
+  BatchInterval: 5000
+
+Enable: true
+
