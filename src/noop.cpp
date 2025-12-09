@@ -43,15 +43,16 @@ namespace pinpoint {
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         url_stat_(nullptr), agent_(agent) {
-        add_active_span(span_id_, start_time_);
+        agent_->getAgentStats().addActiveSpan(span_id_, start_time_);
     }
 
     void UnsampledSpan::EndSpan() {
         auto end_time_ = std::chrono::system_clock::now();
         auto elapsed_ = static_cast<int32_t>(to_milli_seconds(end_time_) - start_time_);
 
-        collect_response_time(elapsed_);
-        drop_active_span(span_id_);
+        auto& stats = agent_->getAgentStats();
+        stats.collectResponseTime(elapsed_);
+        stats.dropActiveSpan(span_id_);
 
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;

@@ -27,6 +27,7 @@
    class SpanChunk;
    class SpanData;
    struct UrlStat;
+   class AgentStats;
  
    /**
     * @brief Identifies the type of statistics pushed to the collector.
@@ -157,6 +158,13 @@
        * @param annotation Destination annotation aggregator.
        */
       virtual void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const = 0;
+
+      /**
+       * @brief Returns a reference to the AgentStats instance.
+       *
+       * @return Reference to AgentStats for direct stat collection.
+       */
+      virtual AgentStats& getAgentStats() = 0;
    };
 
  }  // namespace pinpoint

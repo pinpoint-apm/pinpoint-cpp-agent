@@ -48,31 +48,6 @@ namespace pinpoint {
         int32_t    active_requests_[4]{};
     };
 
-    /// @brief Updates the response time histogram.
-    void collect_response_time(int64_t resTime);
-    /// @brief Increments the counter for sampled new traces.
-    void incr_sample_new();
-    /// @brief Increments the counter for unsampled new traces.
-    void incr_unsample_new();
-    /// @brief Increments the counter for sampled continuing traces.
-    void incr_sample_cont();
-    /// @brief Increments the counter for unsampled continuing traces.
-    void incr_unsample_cont();
-    /// @brief Increments the counter for skipped new traces.
-    void incr_skip_new();
-    /// @brief Increments the counter for skipped continuing traces.
-    void incr_skip_cont();
-
-    /// @brief Registers an active span with its start time.
-    void add_active_span(int64_t spanId, int64_t start_time);
-    /// @brief Removes an active span from tracking.
-    void drop_active_span(int64_t spanId);
-
-    /**
-     * @brief Returns the shared buffer of collected agent stats snapshots.
-     */
-    std::vector<AgentStatsSnapshot>& get_agent_stat_snapshots();
-
     /**
      * @brief Worker responsible for periodically sending agent statistics to the collector.
      */
@@ -104,7 +79,6 @@ namespace pinpoint {
 
         // Singleton instance accessor (for global C-style functions)
         static AgentStats* getInstance();
-        static void setInstance(AgentStats* instance);
 
         void initAgentStats();
         void collectAgentStat(AgentStatsSnapshot &stat);
@@ -113,9 +87,21 @@ namespace pinpoint {
     private:
         int64_t getResponseTimeAvg();
         
+        // System metrics structures
+        struct CpuLoad {
+            double sys_load;
+            double proc_load;
+        };
+        
+        struct ProcessStatus {
+            int64_t heap_alloc;
+            int64_t heap_max;
+            int64_t num_threads;
+        };
+        
         // System metrics helpers
-        void getCpuLoad(std::chrono::seconds dur, double* sys_load, double* proc_load);
-        void getProcessStatus(int64_t *heap_alloc, int64_t *heap_max, int64_t *num_threads);
+        CpuLoad getCpuLoad(std::chrono::seconds dur);
+        ProcessStatus getProcessStatus();
 
     private:
         AgentService* agent_{};

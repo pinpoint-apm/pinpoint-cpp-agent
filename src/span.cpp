@@ -248,8 +248,9 @@ namespace pinpoint {
         if (data_->isAsyncSpan()) {
             data_->finishSpanEvent(); //async span event
         } else {
-            drop_active_span(data_->getSpanId());
-            collect_response_time(data_->getElapsed());
+            auto& stats = data_->getAgent()->getAgentStats();
+            stats.dropActiveSpan(data_->getSpanId());
+            stats.collectResponseTime(data_->getElapsed());
             data_->sendExceptions();
             data_->sendUrlStat();
         }
@@ -326,7 +327,7 @@ namespace pinpoint {
             data_->setRemoteAddr(v);
         }
 
-        add_active_span(data_->getSpanId(), data_->getStartTime());
+        data_->getAgent()->getAgentStats().addActiveSpan(data_->getSpanId(), data_->getStartTime());
     }
 
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation) try {

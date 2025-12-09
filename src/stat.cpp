@@ -31,21 +31,9 @@
 
 namespace pinpoint {
 
-    // Global singleton pointer for C-style wrapper functions
-    static AgentStats* g_agent_stats_instance = nullptr;
-
-    AgentStats* AgentStats::getInstance() {
-        return g_agent_stats_instance;
-    }
-
-    void AgentStats::setInstance(AgentStats* instance) {
-        g_agent_stats_instance = instance;
-    }
-
     AgentStats::AgentStats(AgentService* agent) : agent_(agent) {
         sc_clk_tck_ = sysconf(_SC_CLK_TCK);
         sc_nprocessors_onln_ = sysconf(_SC_NPROCESSORS_ONLN);
-        setInstance(this);
     }
 
     // RAII wrapper for FILE*
@@ -57,6 +45,10 @@ namespace pinpoint {
         FileCloser& operator=(const FileCloser&) = delete;
     };
 
+    // Constants for buffer sizes
+    constexpr size_t kProcStatBufferSize = 256;
+    constexpr size_t kProcStatusBufferSize = 256;
+
     static void get_cpu_time(clock_t *sys_time, clock_t *proc_time) {
         if (sys_time) {
             FILE *fd = fopen("/proc/stat", "r");
@@ -65,7 +57,7 @@ namespace pinpoint {
             }
             FileCloser closer(fd);  // RAII: Automatically closes on scope exit
             
-            char buf[256];
+            char buf[kProcStatBufferSize];
             clock_t user = 0, nice = 0, system = 0;
             memset(buf, 0, sizeof(buf));
 
@@ -86,7 +78,7 @@ namespace pinpoint {
         }
     }
 
-    void AgentStats::getCpuLoad(std::chrono::seconds dur, double* sys_load, double* proc_load) {
+    AgentStats::CpuLoad AgentStats::getCpuLoad(std::chrono::seconds dur) {
         clock_t sys_time = 0, proc_time = 0;
         double total_cpu = static_cast<double>(dur.count() * sc_clk_tck_ * sc_nprocessors_onln_);
         
@@ -95,17 +87,19 @@ namespace pinpoint {
         get_cpu_time(&sys_time, &proc_time);
 
         clock_t sys_cpu = sys_time - last_sys_cpu_time_;
-        *sys_load = static_cast<double>(sys_cpu) / total_cpu;
-        if (*sys_load > 1.0) { *sys_load = 1.0; }
-        if (*sys_load < 0.0) { *sys_load = 0.0; }
+        double sys_load = static_cast<double>(sys_cpu) / total_cpu;
+        if (sys_load > 1.0) { sys_load = 1.0; }
+        if (sys_load < 0.0) { sys_load = 0.0; }
 
         clock_t proc_cpu = proc_time - last_proc_cpu_time_;
-        *proc_load = static_cast<double>(proc_cpu) / total_cpu;
-        if (*proc_load > 1.0) { *proc_load = 1.0; }
-        if (*proc_load < 0.0) { *proc_load = 0.0; }
+        double proc_load = static_cast<double>(proc_cpu) / total_cpu;
+        if (proc_load > 1.0) { proc_load = 1.0; }
+        if (proc_load < 0.0) { proc_load = 0.0; }
 
         last_sys_cpu_time_ = sys_time;
         last_proc_cpu_time_ = proc_time;
+        
+        return CpuLoad{sys_load, proc_load};
     }
 
     // Helper to parse integers from buffer
@@ -129,29 +123,29 @@ namespace pinpoint {
         return 0;
     }
 
-    void AgentStats::getProcessStatus(int64_t *heap_alloc, int64_t *heap_max, int64_t *num_threads) {
-        *heap_alloc = 0;
-        *heap_max = 0;
-        *num_threads = 0;
+    AgentStats::ProcessStatus AgentStats::getProcessStatus() {
+        ProcessStatus status{0, 0, 0};
 
         FILE* fd = fopen("/proc/self/status", "r");
         if (fd == nullptr) {
-            return;
+            return status;
         }
         FileCloser closer(fd);  // RAII: Automatically closes on scope exit
 
-        char buf[256] = {};
+        char buf[kProcStatusBufferSize] = {};
         while (fgets(buf, sizeof(buf), fd) != nullptr) {
             int val = -1;
             
             if ((val = parse_int_value(buf, sizeof(buf), "VmSize:")) != -1) {
-                *heap_alloc = val;
+                status.heap_alloc = val;
             } else if ((val = parse_int_value(buf, sizeof(buf), "VmPeak:")) != -1) {
-                *heap_max = val;
+                status.heap_max = val;
             } else if ((val = parse_int_value(buf, sizeof(buf), "Threads:")) != -1) {
-                *num_threads = val;
+                status.num_threads = val;
             }
         }
+        
+        return status;
     }
 
     void AgentStats::resetAgentStats() {
@@ -223,8 +217,15 @@ namespace pinpoint {
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);
-        getCpuLoad(period, &stat.system_cpu_time_, &stat.process_cpu_time_);
-        getProcessStatus(&stat.heap_alloc_size_, &stat.heap_max_size_, &stat.num_threads_);
+        
+        const auto cpu_load = getCpuLoad(period);
+        stat.system_cpu_time_ = cpu_load.sys_load;
+        stat.process_cpu_time_ = cpu_load.proc_load;
+        
+        const auto process_status = getProcessStatus();
+        stat.heap_alloc_size_ = process_status.heap_alloc;
+        stat.heap_max_size_ = process_status.heap_max;
+        stat.num_threads_ = process_status.num_threads;
 
         // Calculate avg response time and snapshot max
         {
@@ -321,39 +322,4 @@ namespace pinpoint {
         std::lock_guard<std::mutex> lock(mutex_);
         cond_var_.notify_one();
     }
-
-    // Global Wrapper Functions
-    void collect_response_time(int64_t resTime) {
-        if (auto* instance = AgentStats::getInstance()) instance->collectResponseTime(resTime);
-    }
-    void incr_sample_new() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrSampleNew();
-    }
-    void incr_unsample_new() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrUnsampleNew();
-    }
-    void incr_sample_cont() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrSampleCont();
-    }
-    void incr_unsample_cont() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrUnsampleCont();
-    }
-    void incr_skip_new() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrSkipNew();
-    }
-    void incr_skip_cont() {
-        if (auto* instance = AgentStats::getInstance()) instance->incrSkipCont();
-    }
-    void add_active_span(int64_t spanId, int64_t start_time) {
-        if (auto* instance = AgentStats::getInstance()) instance->addActiveSpan(spanId, start_time);
-    }
-    void drop_active_span(int64_t spanId) {
-        if (auto* instance = AgentStats::getInstance()) instance->dropActiveSpan(spanId);
-    }
-    std::vector<AgentStatsSnapshot>& get_agent_stat_snapshots() {
-        static std::vector<AgentStatsSnapshot> empty;
-        if (auto* instance = AgentStats::getInstance()) return instance->getSnapshots();
-        return empty;
-    }
-
 }

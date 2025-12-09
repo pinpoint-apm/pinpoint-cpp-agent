@@ -26,6 +26,7 @@
 #include "../src/agent_service.h"
 #include "../src/span.h"
 #include "../src/url_stat.h"
+#include "../src/stat.h"
 #include "../include/pinpoint/tracer.h"
 
 namespace pinpoint {
@@ -118,6 +119,13 @@ public:
         recorded_client_headers_++;
     }
 
+    AgentStats& getAgentStats() override {
+        if (!agent_stats_) {
+            agent_stats_ = std::make_unique<AgentStats>(this);
+        }
+        return *agent_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     int32_t getCachedApiId(const std::string& api_str) const {
@@ -146,6 +154,7 @@ private:
     int64_t start_time_;
     int64_t trace_id_counter_;
     Config config_;
+    mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;

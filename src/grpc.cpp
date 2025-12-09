@@ -1049,7 +1049,7 @@ namespace pinpoint {
 
         msg_ = std::make_unique<v1::PStatMessage>();
         if (stats == AGENT_STATS) {
-            msg_->set_allocated_agentstatbatch(build_agent_stat_batch(get_agent_stat_snapshots()));
+            msg_->set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots()));
         } else {
             auto snapshot = take_url_stat_snapshot();
             msg_->set_allocated_agenturistat(build_url_stat(snapshot.get()));
@@ -1088,9 +1088,7 @@ namespace pinpoint {
             stats_queue_.pop();
         }
 
-        if (auto* stats = AgentStats::getInstance()) {
-            stats->initAgentStats();
-        }
+        agent_->getAgentStats().initAgentStats();
         // Clear URL stat snapshot
         (void)take_url_stat_snapshot();
         force_queue_empty_ = false;

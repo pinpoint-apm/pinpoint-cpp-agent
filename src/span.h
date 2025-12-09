@@ -84,7 +84,7 @@ namespace pinpoint {
 
         /// @brief Returns the number of events contained in the stack.
         size_t size() const { 
-            std::unique_lock<std::mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             return stack_.size(); 
         }
 

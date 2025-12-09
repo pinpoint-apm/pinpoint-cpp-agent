@@ -109,6 +109,13 @@ public:
         // Mock implementation
     }
 
+    AgentStats& getAgentStats() override {
+        if (!agent_stats_) {
+            agent_stats_ = std::make_unique<AgentStats>(this);
+        }
+        return *agent_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     mutable int recorded_spans_ = 0;
@@ -122,6 +129,7 @@ private:
     int64_t start_time_;
     int64_t trace_id_counter_;
     Config config_;
+    mutable std::unique_ptr<AgentStats> agent_stats_;
 };
 
 class StatTest : public ::testing::Test {
@@ -137,8 +145,6 @@ protected:
     }
 
     void TearDown() override {
-        // Reset global instance
-        AgentStats::setInstance(nullptr);
         agent_stats_.reset();
         mock_agent_service_.reset();
     }
@@ -176,10 +182,10 @@ TEST_F(StatTest, CollectAgentStatTest) {
 }
 
 TEST_F(StatTest, CollectResponseTimeTest) {
-    // Test response time collection via global function wrapper
-    collect_response_time(100);
-    collect_response_time(200);
-    collect_response_time(50);
+    // Test response time collection
+    agent_stats_->collectResponseTime(100);
+    agent_stats_->collectResponseTime(200);
+    agent_stats_->collectResponseTime(50);
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
@@ -192,14 +198,14 @@ TEST_F(StatTest, CollectResponseTimeTest) {
 }
 
 TEST_F(StatTest, SamplingCountersTest) {
-    // Test sample counting functions via global function wrappers
-    incr_sample_new();
-    incr_sample_new();
-    incr_unsample_new();
-    incr_sample_cont();
-    incr_unsample_cont();
-    incr_skip_new();
-    incr_skip_cont();
+    // Test sample counting functions
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrUnsampleNew();
+    agent_stats_->incrSampleCont();
+    agent_stats_->incrUnsampleCont();
+    agent_stats_->incrSkipNew();
+    agent_stats_->incrSkipCont();
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
@@ -219,9 +225,9 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     int64_t span_id_2 = 67890;
     int64_t start_time = 1234567890;
     
-    // Add active spans via global function wrappers
-    add_active_span(span_id_1, start_time);
-    add_active_span(span_id_2, start_time + 100);
+    // Add active spans directly via AgentStats
+    agent_stats_->addActiveSpan(span_id_1, start_time);
+    agent_stats_->addActiveSpan(span_id_2, start_time + 100);
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
@@ -234,7 +240,7 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     EXPECT_GT(total_active, 0) << "Should have active spans";
     
     // Drop one span
-    drop_active_span(span_id_1);
+    agent_stats_->dropActiveSpan(span_id_1);
     
     memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
@@ -247,7 +253,7 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
 
 TEST_F(StatTest, GetAgentStatSnapshotsTest) {
     // Test that we can get the snapshots vector
-    std::vector<AgentStatsSnapshot>& snapshots = get_agent_stat_snapshots();
+    std::vector<AgentStatsSnapshot>& snapshots = agent_stats_->getSnapshots();
     
     size_t initial_size = snapshots.size();
     
@@ -342,7 +348,7 @@ TEST_F(StatTest, MultipleResponseTimeCollectionTest) {
     std::vector<int64_t> response_times = {50, 100, 150, 200, 75, 125, 300, 25};
     
     for (int64_t time : response_times) {
-        collect_response_time(time);
+        agent_stats_->collectResponseTime(time);
     }
     
     AgentStatsSnapshot snapshot;
@@ -371,10 +377,10 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     
     // Add spans with different durations using unique IDs
     int64_t base_id = 10000;  // Use higher IDs to avoid conflicts
-    add_active_span(base_id + 1, now_ms - 500);   // 500ms old - should be in bucket 0
-    add_active_span(base_id + 2, now_ms - 1500);  // 1.5s old - should be in bucket 1
-    add_active_span(base_id + 3, now_ms - 3500);  // 3.5s old - should be in bucket 2
-    add_active_span(base_id + 4, now_ms - 6000);  // 6s old - should be in bucket 3
+    agent_stats_->addActiveSpan(base_id + 1, now_ms - 500);   // 500ms old - should be in bucket 0
+    agent_stats_->addActiveSpan(base_id + 2, now_ms - 1500);  // 1.5s old - should be in bucket 1
+    agent_stats_->addActiveSpan(base_id + 3, now_ms - 3500);  // 3.5s old - should be in bucket 2
+    agent_stats_->addActiveSpan(base_id + 4, now_ms - 6000);  // 6s old - should be in bucket 3
     
     AgentStatsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
@@ -396,10 +402,10 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     EXPECT_TRUE(has_distribution) << "Spans should be distributed in time buckets";
     
     // Clean up our test spans
-    drop_active_span(base_id + 1);
-    drop_active_span(base_id + 2);
-    drop_active_span(base_id + 3);
-    drop_active_span(base_id + 4);
+    agent_stats_->dropActiveSpan(base_id + 1);
+    agent_stats_->dropActiveSpan(base_id + 2);
+    agent_stats_->dropActiveSpan(base_id + 3);
+    agent_stats_->dropActiveSpan(base_id + 4);
 }
 
 TEST_F(StatTest, StatSnapshotMemoryLayoutTest) {

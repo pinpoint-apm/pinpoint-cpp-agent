@@ -42,15 +42,15 @@ namespace pinpoint {
     bool BasicTraceSampler::isNewSampled() noexcept {
         const auto sampled = sampler_ ? sampler_->isSampled() : false;
         if (sampled) {
-            incr_sample_new();
+            stats_.incrSampleNew();
         } else {
-            incr_unsample_new();
+            stats_.incrUnsampleNew();
         }
         return sampled;
     }
 
     bool BasicTraceSampler::isContinueSampled() noexcept {
-        incr_sample_cont();
+        stats_.incrSampleCont();
         return true;
     }
 
@@ -60,15 +60,15 @@ namespace pinpoint {
             if (new_limiter_) {
                 sampled = new_limiter_->allow();
                 if (sampled) {
-                    incr_sample_new();
+                    stats_.incrSampleNew();
                 } else {
-                    incr_skip_new();
+                    stats_.incrSkipNew();
                 }
             } else {
-                incr_sample_new();
+                stats_.incrSampleNew();
             }
         } else {
-            incr_unsample_new();
+            stats_.incrUnsampleNew();
         }
 
         return sampled;
@@ -79,12 +79,12 @@ namespace pinpoint {
         if (cont_limiter_) {
             sampled = cont_limiter_->allow();
             if (sampled) {
-                incr_sample_cont();
+                stats_.incrSampleCont();
             } else {
-                incr_skip_cont();
+                stats_.incrSkipCont();
             }
         } else {
-            incr_sample_cont();
+            stats_.incrSampleCont();
         }
 
         return sampled;

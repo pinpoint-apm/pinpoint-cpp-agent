@@ -21,6 +21,8 @@
 
 #include "../src/url_stat.h"
 #include "../src/config.h"
+#include "../src/agent_service.h"
+#include "../src/stat.h"
 
 namespace pinpoint {
 
@@ -114,6 +116,13 @@ public:
         // Mock implementation
     }
 
+    AgentStats& getAgentStats() override {
+        if (!agent_stats_) {
+            agent_stats_ = std::make_unique<AgentStats>(this);
+        }
+        return *agent_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     void setUrlStatEnabled(bool enabled) { config_.http.url_stat.enable = enabled; }
@@ -128,6 +137,7 @@ private:
     int64_t start_time_;
     int64_t trace_id_counter_;
     Config config_;
+    mutable std::unique_ptr<AgentStats> agent_stats_;
 };
 
 class UrlStatTest : public ::testing::Test {
