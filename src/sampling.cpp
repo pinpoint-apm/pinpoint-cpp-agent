@@ -41,34 +41,37 @@ namespace pinpoint {
 
     bool BasicTraceSampler::isNewSampled() noexcept {
         const auto sampled = sampler_ ? sampler_->isSampled() : false;
+        auto& stats = agent_->getAgentStats();
         if (sampled) {
-            stats_.incrSampleNew();
+            stats.incrSampleNew();
         } else {
-            stats_.incrUnsampleNew();
+            stats.incrUnsampleNew();
         }
         return sampled;
     }
 
     bool BasicTraceSampler::isContinueSampled() noexcept {
-        stats_.incrSampleCont();
+        agent_->getAgentStats().incrSampleCont();
         return true;
     }
 
     bool ThroughputLimitTraceSampler::isNewSampled() noexcept {
         auto sampled = sampler_ ? sampler_->isSampled() : false;
+        auto& stats = agent_->getAgentStats();
+        
         if (sampled) {
             if (new_limiter_) {
                 sampled = new_limiter_->allow();
                 if (sampled) {
-                    stats_.incrSampleNew();
+                    stats.incrSampleNew();
                 } else {
-                    stats_.incrSkipNew();
+                    stats.incrSkipNew();
                 }
             } else {
-                stats_.incrSampleNew();
+                stats.incrSampleNew();
             }
         } else {
-            stats_.incrUnsampleNew();
+            stats.incrUnsampleNew();
         }
 
         return sampled;
@@ -76,15 +79,17 @@ namespace pinpoint {
 
     bool ThroughputLimitTraceSampler::isContinueSampled() noexcept {
         auto sampled = true;
+        auto& stats = agent_->getAgentStats();
+        
         if (cont_limiter_) {
             sampled = cont_limiter_->allow();
             if (sampled) {
-                stats_.incrSampleCont();
+                stats.incrSampleCont();
             } else {
-                stats_.incrSkipCont();
+                stats.incrSkipCont();
             }
         } else {
-            stats_.incrSampleCont();
+            stats.incrSampleCont();
         }
 
         return sampled;

@@ -46,8 +46,8 @@ namespace pinpoint {
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
-        // Create AgentStats first as it's needed by TraceSampler
         agent_stats_ = std::make_unique<AgentStats>(this);
+        url_stats_ = std::make_unique<UrlStats>(this);
 
         std::unique_ptr<Sampler> sampler;
         if (compare_string(config_.sampling.type, PERCENT_SAMPLING)) {
@@ -57,11 +57,11 @@ namespace pinpoint {
         }
 
         if (config_.sampling.new_throughput > 0 || config_.sampling.cont_throughput > 0) {
-            sampler_ = std::make_unique<ThroughputLimitTraceSampler>(*agent_stats_, std::move(sampler),
+            sampler_ = std::make_unique<ThroughputLimitTraceSampler>(this, std::move(sampler),
                                                                      config_.sampling.new_throughput,
                                                                      config_.sampling.cont_throughput);
         } else {
-            sampler_ = std::make_unique<BasicTraceSampler>(*agent_stats_, std::move(sampler));
+            sampler_ = std::make_unique<BasicTraceSampler>(this, std::move(sampler));
         }
 
         api_cache_ = std::make_unique<IdCache>(kCacheSize);
@@ -124,7 +124,6 @@ namespace pinpoint {
         grpc_agent_ = std::make_unique<GrpcAgent>(this);
         grpc_span_ = std::make_unique<GrpcSpan>(this);
         grpc_stat_ = std::make_unique<GrpcStats>(this);
-        url_stats_ = std::make_unique<UrlStats>(this);
 
         do {
             if (!grpc_agent_->readyChannel()) {

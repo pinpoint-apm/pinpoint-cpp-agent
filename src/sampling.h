@@ -20,12 +20,10 @@
 #include <memory>
 #include <string>
 
+#include "agent_service.h"
 #include "limiter.h"
 
 namespace pinpoint {
-
-    // Forward declaration
-    class AgentStats;
 
     /// @brief Sampling mode that relies on counter-based periodic selection.
     const std::string COUNTER_SAMPLING = "COUNTER";
@@ -88,7 +86,7 @@ namespace pinpoint {
      */
     class TraceSampler {
     public:
-        explicit TraceSampler(AgentStats& stats) : stats_(stats) {}
+        explicit TraceSampler(AgentService* agent) : agent_(agent) {}
         virtual ~TraceSampler() {
             sampler_ = nullptr;
         }
@@ -103,7 +101,7 @@ namespace pinpoint {
         virtual bool isContinueSampled() noexcept = 0;
 
     protected:
-        AgentStats& stats_;
+        AgentService* agent_;
         std::unique_ptr<Sampler> sampler_{nullptr};
     };
 
@@ -112,8 +110,8 @@ namespace pinpoint {
      */
     class BasicTraceSampler final : public TraceSampler {
     public:
-        BasicTraceSampler(AgentStats& stats, std::unique_ptr<Sampler> sampler)
-            : TraceSampler(stats) {
+        BasicTraceSampler(AgentService* agent, std::unique_ptr<Sampler> sampler)
+            : TraceSampler(agent) {
             sampler_ = std::move(sampler);
         }
 
@@ -126,9 +124,9 @@ namespace pinpoint {
      */
     class ThroughputLimitTraceSampler final : public TraceSampler {
     public:
-        ThroughputLimitTraceSampler(AgentStats& stats, std::unique_ptr<Sampler> sampler, 
+        ThroughputLimitTraceSampler(AgentService* agent, std::unique_ptr<Sampler> sampler, 
                                      const int new_tps, const int continue_tps)
-            : TraceSampler(stats) {
+            : TraceSampler(agent) {
             sampler_ = std::move(sampler);
             if (new_tps > 0) {
                 new_limiter_ = std::make_unique<RateLimiter>(new_tps);
