@@ -25,19 +25,15 @@ namespace pinpoint {
     }
 
     SqlNormalizeResult SqlNormalizer::normalize(std::string_view sql) const {
+        auto result = SqlNormalizeResult();
         if (sql.empty()) {
-            return SqlNormalizeResult("", "");
+            return result;
         }
         
         // Limit SQL length to prevent memory issues
         const size_t sql_length = std::min(sql.length(), max_sql_length_);
-        
-        std::string normalized_sql;
-        normalized_sql.reserve(sql_length);
-        
-        std::string parameters;
-        // Reserve some initial space for parameters to avoid frequent reallocations
-        parameters.reserve(64);
+        result.normalized_sql.reserve(sql_length);
+        result.parameters.reserve(64);
         
         enum class State {
             Normal,
@@ -47,7 +43,6 @@ namespace pinpoint {
         };
         
         State state = State::Normal;
-        int param_index = 0;
         
         for (size_t i = 0; i < sql_length; ++i) {
             char c = sql[i];
@@ -69,119 +64,27 @@ namespace pinpoint {
                     
                     // Handle start of string literals
                     if (isQuoteChar(c)) {
-                        char quote_char = c;
-                        size_t start_idx = i + 1; // Start of content (after opening quote)
-                        size_t current_idx = start_idx;
-                        bool closed = false;
-                        
-                        // Scan for closing quote
-                        while (current_idx < sql_length) {
-                            if (sql[current_idx] == quote_char) {
-                                // Check for escaped quote (e.g. 'don''t')
-                                if (current_idx + 1 < sql_length && sql[current_idx + 1] == quote_char) {
-                                    current_idx += 2; // Skip both quotes
-                                } else {
-                                    closed = true;
-                                    break;
-                                }
-                            } else {
-                                current_idx++;
-                            }
-                        }
-
-                        if (closed) {
-                            // Extract content, handling escaped quotes if necessary
-                            std::string content;
-                            size_t content_len = current_idx - start_idx;
-                            content.reserve(content_len);
-                            
-                            for (size_t k = start_idx; k < current_idx; ++k) {
-                                if (sql[k] == quote_char && k + 1 < current_idx && sql[k + 1] == quote_char) {
-                                    content += quote_char;
-                                    k++; // Skip escaped char
-                                } else {
-                                    content += sql[k];
-                                }
-                            }
-
-                            // Add to parameters
-                            if (param_index > 0) {
-                                parameters += ',';
-                            }
-                            parameters += content;
-
-                            // Add placeholder to SQL
-                            normalized_sql += quote_char;
-                            normalized_sql += std::to_string(param_index);
-                            normalized_sql += '$';
-                            normalized_sql += quote_char;
-                            
-                            param_index++;
-                            i = current_idx; // Move main loop index to closing quote
-                        } else {
-                            // Malformed string - include as is from the opening quote
-                            // We only add the opening quote here, the rest will be processed in next iterations
-                            // But waiting... if we just add 'c', the loop continues. 
-                            // The original logic consumed the whole string.
-                            // Let's consume it all as is.
-                            normalized_sql += quote_char;
-                            for (size_t k = start_idx; k < sql_length; ++k) {
-                                normalized_sql += sql[k];
-                            }
-                            i = sql_length; // End loop
-                        }
-                        
+                        i = handleStringLiteral(sql, sql_length, i + 1, c, result);
                         continue;
                     }
                     
-                    
                     // Handle numeric literals
                     // Check for digit, or minus sign followed by digit
-                    if (std::isdigit(static_cast<unsigned char>(c)) || (c == '-' && next_c != '\0' && std::isdigit(static_cast<unsigned char>(next_c)))) {
-                        std::string number;
-                        
-                        size_t num_start = i;
-                        if (c == '-') {
-                            i++;
-                        }
-                        
-                        // Read the entire number (including decimals)
-                        while (i < sql_length) {
-                            char nc = sql[i];
-                            if (std::isdigit(static_cast<unsigned char>(nc)) || nc == '.') {
-                                i++;
-                            } else {
-                                break;
-                            }
-                        }
-                        
-                        // Extract number string
-                        number.assign(sql.data() + num_start, i - num_start);
-                        
-                        // Add to parameters
-                        if (param_index > 0) {
-                            parameters += ',';
-                        }
-                        parameters += number;
-
-                        // Add placeholder
-                        normalized_sql += std::to_string(param_index);
-                        normalized_sql += '#';
-                        
-                        param_index++;
-                        i--; // Back up one since the loop will increment
+                    if (std::isdigit(static_cast<unsigned char>(c)) 
+                        || (c == '-' && next_c != '\0' && std::isdigit(static_cast<unsigned char>(next_c)))) {
+                        i = handleNumericLiteral(sql, sql_length, i, result);
                         continue;
                     }
                     
                     // Regular character
-                    normalized_sql += c;
+                    result.normalized_sql += c;
                     break;
                 }
                 
                 case State::InLineComment: {
                     if (c == '\n' || c == '\r') {
                         state = State::Normal;
-                        normalized_sql += c;
+                        result.normalized_sql += c;
                     }
                     // Skip all other characters in line comment
                     break;
@@ -198,17 +101,115 @@ namespace pinpoint {
                 case State::InBlockCommentEnd: {
                     state = State::Normal;
                     // Add space to replace the comment
-                    normalized_sql += ' ';
+                    result.normalized_sql += ' ';
                     break;
                 }
             }
         }
         
-        return SqlNormalizeResult(std::move(normalized_sql), std::move(parameters));
+        return result;
     }
 
     bool SqlNormalizer::isQuoteChar(char c) {
         return c == '\'' || c == '"' || c == '`';
+    }
+
+    size_t SqlNormalizer::handleStringLiteral(std::string_view sql, size_t sql_length, size_t start_idx, char quote_char, SqlNormalizeResult& result) {
+        size_t current_idx = start_idx;
+        bool closed = false;
+        
+        // Scan for closing quote
+        while (current_idx < sql_length) {
+            if (sql[current_idx] == quote_char) {
+                // Check for escaped quote (e.g. 'don''t')
+                if (current_idx + 1 < sql_length && sql[current_idx + 1] == quote_char) {
+                    current_idx += 2; // Skip both quotes
+                } else {
+                    closed = true;
+                    break;
+                }
+            } else {
+                current_idx++;
+            }
+        }
+
+        if (closed) {
+            // Extract content, handling escaped quotes if necessary
+            std::string content;
+            size_t content_len = current_idx - start_idx;
+            content.reserve(content_len);
+            
+            for (size_t i = start_idx; i < current_idx; ++i) {
+                if (sql[i] == quote_char && i + 1 < current_idx && sql[i + 1] == quote_char) {
+                    content += quote_char;
+                    i++; // Skip escaped char
+                } else {
+                    content += sql[i];
+                }
+            }
+
+            // Add to parameters
+            if (result.param_index > 0) {
+                result.parameters += ',';
+            }
+            result.parameters += content;
+
+            // Add placeholder to SQL
+            result.normalized_sql += quote_char;
+            result.normalized_sql += std::to_string(result.param_index);
+            result.normalized_sql += '$';
+            result.normalized_sql += quote_char;
+            
+            result.param_index++;
+        } else {
+            // Malformed string - include as is from the opening quote
+            // We only add the opening quote here, the rest will be processed in next iterations
+            // But waiting... if we just add 'quote_char', the loop continues. 
+            // The original logic consumed the whole string.
+            // Let's consume it all as is.
+            result.normalized_sql += quote_char;
+            for (size_t i = start_idx; i < sql_length; ++i) {
+                result.normalized_sql += sql[i];
+            }
+            current_idx = sql_length; // End loop
+        }
+
+        return current_idx;
+    }
+
+    size_t SqlNormalizer::handleNumericLiteral(std::string_view sql, size_t sql_length, size_t start_idx, SqlNormalizeResult& result) {
+        size_t current_idx = start_idx;
+        
+        if (sql[current_idx] == '-') {
+            current_idx++;
+        }
+        
+        // Read the entire number (including decimals)
+        while (current_idx < sql_length) {
+            char nc = sql[current_idx];
+            if (std::isdigit(static_cast<unsigned char>(nc)) || nc == '.') {
+                current_idx++;
+            } else {
+                break;
+            }
+        }
+        
+        // Extract number string
+        std::string number;
+        number.assign(sql.data() + start_idx, current_idx - start_idx);
+        
+        // Add to parameters
+        if (result.param_index > 0) {
+            result.parameters += ',';
+        }
+        result.parameters += number;
+
+        // Add placeholder
+        result.normalized_sql += std::to_string(result.param_index);
+        result.normalized_sql += '#';
+        
+        result.param_index++;
+        return current_idx - 1; // Back up one since the loop will increment
     }
 
 } // namespace pinpoint
