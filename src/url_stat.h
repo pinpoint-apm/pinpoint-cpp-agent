@@ -148,8 +148,9 @@ namespace pinpoint {
          *
          * @param us URL statistic entry.
          * @param config Agent configuration for histogram settings.
+         * @param tick_clock Clock for time bucketing.
          */
-        void add(const UrlStat* us, const Config& config);
+        void add(const UrlStat* us, const Config& config, TickClock& tick_clock);
         /// @brief Returns the const map storing statistics per URL/tick.
         const std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() const { return urlMap_; }
 
@@ -163,7 +164,8 @@ namespace pinpoint {
      */
     class UrlStats {
     public:
-        explicit UrlStats(AgentService* agent) : agent_(agent) {}
+        explicit UrlStats(AgentService* agent);
+        ~UrlStats() = default;
 
         /**
          * @brief Queues a URL statistic for aggregation.
@@ -180,22 +182,30 @@ namespace pinpoint {
         /// @brief Stops the sending worker.
         void stopSendUrlStatsWorker();
 
+        /// @brief Adds a runtime statistic to the current snapshot buffer.
+        void addSnapshot(const UrlStat* us, const Config& config);
+        /// @brief Extracts the latest URL statistic snapshot for transmission.
+        std::unique_ptr<UrlStatSnapshot> takeSnapshot();
+        /// @brief Returns the tick clock for time bucketing.
+        TickClock& getTickClock() { return tick_clock_; }
+
     private:
         AgentService* agent_{};
+        
+        // Queue for incoming URL stats
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
         std::queue<std::unique_ptr<UrlStat>> url_stats_{};
 
+        // Snapshot management
+        TickClock tick_clock_;
+        std::unique_ptr<UrlStatSnapshot> snapshot_;
+        std::mutex snapshot_mutex_{};
+
+        // Send worker synchronization
         std::mutex send_mutex_{};
         std::condition_variable send_cond_var_{};
     };
-
-    /// @brief Initializes the global URL statistics buffers.
-    void init_url_stat();
-    /// @brief Adds a runtime statistic to the current snapshot buffer.
-    void add_url_stat_snapshot(const UrlStat* us, const Config& config);
-    /// @brief Extracts the latest URL statistic snapshot for transmission.
-    std::unique_ptr<UrlStatSnapshot> take_url_stat_snapshot();
     /**
      * @brief Trims a URL path using the configured depth.
      *

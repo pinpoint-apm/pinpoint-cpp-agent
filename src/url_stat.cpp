@@ -38,71 +38,21 @@ namespace pinpoint {
     // HTTP status code threshold
     constexpr int HTTP_STATUS_ERROR_THRESHOLD = 400;
 
-    /**
-     * @brief Singleton class to manage global URL statistics snapshot state.
-     * 
-     * This class encapsulates the global URL statistics snapshot and provides
-     * thread-safe access to it. It replaces the previous global static variables
-     * with a cleaner, RAII-compliant design.
-     */
-    class UrlStatSnapshotManager {
-    public:
-        static UrlStatSnapshotManager& getInstance() {
-            static UrlStatSnapshotManager instance;
-            return instance;
-        }
+    UrlStats::UrlStats(AgentService* agent) 
+        : agent_(agent),
+          tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
+          snapshot_(std::make_unique<UrlStatSnapshot>()) {}
 
-        // Delete copy and move constructors
-        UrlStatSnapshotManager(const UrlStatSnapshotManager&) = delete;
-        UrlStatSnapshotManager& operator=(const UrlStatSnapshotManager&) = delete;
-        UrlStatSnapshotManager(UrlStatSnapshotManager&&) = delete;
-        UrlStatSnapshotManager& operator=(UrlStatSnapshotManager&&) = delete;
-
-        void initialize() {
-            std::unique_lock<std::mutex> lock(mutex_);
-            snapshot_ = std::make_unique<UrlStatSnapshot>();
-        }
-
-        void add(const UrlStat* us, const Config& config) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            if (snapshot_) {
-                snapshot_->add(us, config);
-            }
-        }
-
-        std::unique_ptr<UrlStatSnapshot> takeSnapshot() {
-            std::unique_lock<std::mutex> lock(mutex_);
-            auto old_snapshot = std::move(snapshot_);
-            snapshot_ = std::make_unique<UrlStatSnapshot>();
-            return old_snapshot;
-        }
-
-        TickClock& getTickClock() {
-            return tick_clock_;
-        }
-
-    private:
-        UrlStatSnapshotManager() 
-            : tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
-              snapshot_(nullptr) {}
-
-        ~UrlStatSnapshotManager() = default;
-
-        TickClock tick_clock_;
-        std::unique_ptr<UrlStatSnapshot> snapshot_;
-        std::mutex mutex_;
-    };
-
-    void init_url_stat() {
-        UrlStatSnapshotManager::getInstance().initialize();
+    void UrlStats::addSnapshot(const UrlStat* us, const Config& config) {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        snapshot_->add(us, config, tick_clock_);
     }
 
-    void add_url_stat_snapshot(const UrlStat* us, const Config& config) {
-        UrlStatSnapshotManager::getInstance().add(us, config);
-    }
-
-    std::unique_ptr<UrlStatSnapshot> take_url_stat_snapshot() {
-        return UrlStatSnapshotManager::getInstance().takeSnapshot();
+    std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot() {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        auto old_snapshot = std::move(snapshot_);
+        snapshot_ = std::make_unique<UrlStatSnapshot>();
+        return old_snapshot;
     }
 
     int64_t TickClock::tick(const std::chrono::system_clock::time_point end_time) const {
@@ -135,7 +85,7 @@ namespace pinpoint {
         return status < HTTP_STATUS_ERROR_THRESHOLD ? URL_STATUS_SUCCESS : URL_STATUS_FAIL;
     }
 
-    void UrlStatSnapshot::add(const UrlStat* us, const Config& config) {
+    void UrlStatSnapshot::add(const UrlStat* us, const Config& config, TickClock& tick_clock) {
         std::unique_lock<std::mutex> lock(mutex_);
 
         auto url = trim_url_path(us->url_pattern_, config.http.url_stat.path_depth);
@@ -144,7 +94,6 @@ namespace pinpoint {
             url = absl::StrCat(us->method_, " ", url);
         }
 
-        auto& tick_clock = UrlStatSnapshotManager::getInstance().getTickClock();
         const auto key = UrlKey{url, tick_clock.tick(us->end_time_)};
         LOG_DEBUG("url stats snapshot add : {}, {}", key.url_, key.tick_);
 
@@ -237,7 +186,7 @@ namespace pinpoint {
             auto us = std::move(url_stats_.front());
             url_stats_.pop();
             lock.unlock();
-            add_url_stat_snapshot(us.get(), config);
+            addSnapshot(us.get(), config);
             lock.lock();
         }
         LOG_INFO("add url stats worker end");

@@ -1051,7 +1051,7 @@ namespace pinpoint {
         if (stats == AGENT_STATS) {
             msg_->set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots()));
         } else {
-            auto snapshot = take_url_stat_snapshot();
+            auto snapshot = agent_->getUrlStats().takeSnapshot();
             msg_->set_allocated_agenturistat(build_url_stat(snapshot.get()));
         }
 
@@ -1090,7 +1090,7 @@ namespace pinpoint {
 
         agent_->getAgentStats().initAgentStats();
         // Clear URL stat snapshot
-        (void)take_url_stat_snapshot();
+        (void)agent_->getUrlStats().takeSnapshot();
         force_queue_empty_ = false;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to empty span queue: exception = {}", e.what());

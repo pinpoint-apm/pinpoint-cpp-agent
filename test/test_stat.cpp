@@ -22,6 +22,7 @@
 #include <cstring>
 
 #include "../src/stat.h"
+#include "../src/url_stat.h"
 #include "../src/config.h"
 
 namespace pinpoint {
@@ -116,6 +117,13 @@ public:
         return *agent_stats_;
     }
 
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     mutable int recorded_spans_ = 0;
@@ -130,6 +138,7 @@ private:
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
 };
 
 class StatTest : public ::testing::Test {

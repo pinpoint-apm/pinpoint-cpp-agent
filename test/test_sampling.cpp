@@ -16,6 +16,7 @@
 
 #include "../src/sampling.h"
 #include "../src/stat.h"
+#include "../src/url_stat.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
 #include <gtest/gtest.h>
@@ -64,11 +65,19 @@ public:
         }
         return *agent_stats_;
     }
+
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
     
 private:
     int64_t start_time_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
 };
 
 class SamplingTest : public ::testing::Test {

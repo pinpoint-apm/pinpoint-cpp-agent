@@ -82,7 +82,6 @@ namespace pinpoint {
         // Initialize HTTP header recorders
         init_header_recorders();
 
-        init_url_stat();
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
     }
 

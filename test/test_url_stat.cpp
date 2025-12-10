@@ -123,6 +123,13 @@ public:
         return *agent_stats_;
     }
 
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     void setUrlStatEnabled(bool enabled) { config_.http.url_stat.enable = enabled; }
@@ -138,6 +145,7 @@ private:
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
 };
 
 class UrlStatTest : public ::testing::Test {
@@ -145,7 +153,7 @@ protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
         mock_agent_service_->setExiting(false);  // Ensure clean state
-        init_url_stat();
+        // UrlStats is now initialized in MockAgentService constructor
     }
 
     void TearDown() override {
@@ -315,7 +323,8 @@ TEST_F(UrlStatTest, UrlStatSnapshotAddTest) {
     stat.end_time_ = std::chrono::system_clock::now();
     
     // Add to snapshot
-    snapshot.add(&stat, config);
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    snapshot.add(&stat, config, tick_clock);
     
     auto& stats = snapshot.getEachStats();
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain entries after add";
@@ -403,11 +412,6 @@ TEST_F(UrlStatTest, UrlStatsWithExitingAgentTest) {
 
 // ========== Global Functions Tests ==========
 
-TEST_F(UrlStatTest, InitUrlStatTest) {
-    init_url_stat();
-    SUCCEED() << "init_url_stat should not crash";
-}
-
 TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     Config config;
     UrlStat stat("/api/test", "GET", 200);
@@ -415,10 +419,10 @@ TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     stat.end_time_ = std::chrono::system_clock::now();
     
     // Add to snapshot
-    add_url_stat_snapshot(&stat, config);
+    mock_agent_service_->getUrlStats().addSnapshot(&stat, config);
     
     // Take snapshot
-    auto snapshot = take_url_stat_snapshot();
+    auto snapshot = mock_agent_service_->getUrlStats().takeSnapshot();
     EXPECT_NE(snapshot.get(), nullptr) << "Snapshot should not be null";
     
     auto& stats = snapshot->getEachStats();
@@ -496,7 +500,7 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     add_worker.join();
     
     // Take snapshot and verify
-    auto snapshot = take_url_stat_snapshot();
+    auto snapshot = mock_agent_service_->getUrlStats().takeSnapshot();
     auto& stats = snapshot->getEachStats();
     
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain processed stats";

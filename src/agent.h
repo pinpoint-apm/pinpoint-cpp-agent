@@ -106,6 +106,7 @@ namespace pinpoint {
     	void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
 
     	AgentStats& getAgentStats() override { return *agent_stats_; }
+    	UrlStats& getUrlStats() override { return *url_stats_; }
 
     private:
 

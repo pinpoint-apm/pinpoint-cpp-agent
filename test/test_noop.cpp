@@ -118,6 +118,13 @@ public:
         return *agent_stats_;
     }
 
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
+
     // Test-specific accessors
     mutable int recorded_stats_calls_ = 0;
     mutable StatsType last_stats_type_ = AGENT_STATS;
@@ -142,6 +149,7 @@ private:
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
 };
 
 class MockTraceContextWriter : public TraceContextWriter {

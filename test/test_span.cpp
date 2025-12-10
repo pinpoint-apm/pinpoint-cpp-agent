@@ -129,6 +129,13 @@ public:
         return *agent_stats_;
     }
 
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
+
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
     int32_t getCachedApiId(const std::string& api_str) const {
@@ -158,6 +165,7 @@ private:
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;

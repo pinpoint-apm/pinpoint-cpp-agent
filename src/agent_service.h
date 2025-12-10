@@ -28,6 +28,7 @@
    class SpanData;
    struct UrlStat;
    class AgentStats;
+   class UrlStats;
  
    /**
     * @brief Identifies the type of statistics pushed to the collector.
@@ -165,6 +166,13 @@
        * @return Reference to AgentStats for direct stat collection.
        */
       virtual AgentStats& getAgentStats() = 0;
+
+      /**
+       * @brief Returns a reference to the UrlStats instance.
+       *
+       * @return Reference to UrlStats for URL stat management.
+       */
+      virtual UrlStats& getUrlStats() = 0;
    };
 
  }  // namespace pinpoint

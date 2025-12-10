@@ -26,6 +26,7 @@
 #include "../src/config.h"
 #include "../src/span.h"
 #include "../src/stat.h"
+#include "../src/url_stat.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 
@@ -132,6 +133,13 @@ public:
         return *agent_stats_;
     }
 
+    UrlStats& getUrlStats() override {
+        if (!url_stats_) {
+            url_stats_ = std::make_unique<UrlStats>(this);
+        }
+        return *url_stats_;
+    }
+
     // Test-specific accessors
     mutable int recorded_stats_calls_ = 0;
     mutable StatsType last_stats_type_ = AGENT_STATS;
@@ -153,6 +161,7 @@ private:
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
+    mutable std::unique_ptr<UrlStats> url_stats_;
 };
 
 // Mock Writer Interface for gRPC streams
