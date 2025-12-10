@@ -19,6 +19,7 @@
 #include <regex>
 #include <string>
 
+#include "absl/strings/str_split.h"
 #include "logging.h"
 #include "utility.h"
 #include "http.h"
@@ -151,6 +152,194 @@ namespace pinpoint {
             }
         }
         return false;
+    }
+
+    namespace {
+        /// @brief Extracts and trims the first IP address from a comma-separated list.
+        /// @param value Header value that may contain comma-separated IP addresses.
+        /// @return The first IP address with whitespace trimmed, or empty string if parsing fails.
+        std::string extractFirstIp(const std::string& value) {
+            if (value.empty()) {
+                return "";
+            }
+
+            // Extract first IP from comma-separated list
+            auto comma_pos = value.find(',');
+            std::string_view first_ip = (comma_pos != std::string::npos) 
+                ? std::string_view(value).substr(0, comma_pos)
+                : std::string_view(value);
+
+            // Trim leading/trailing whitespace
+            auto start = first_ip.find_first_not_of(" \t");
+            auto end = first_ip.find_last_not_of(" \t");
+            
+            if (start != std::string::npos && end != std::string::npos) {
+                return std::string(first_ip.substr(start, end - start + 1));
+            }
+
+            return "";
+        }
+    }
+
+    std::string HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
+        // Check X-Forwarded-For header
+        if (auto xff = reader.Get("X-Forwarded-For"); xff.has_value()) {
+            auto ip = extractFirstIp(xff.value());
+            if (!ip.empty()) {
+                return ip;
+            }
+        }
+
+        // Check X-Real-Ip header
+        if (auto xri = reader.Get("X-Real-Ip"); xri.has_value()) {
+            auto ip = extractFirstIp(xri.value());
+            if (!ip.empty()) {
+                return ip;
+            }
+        }
+
+        // No proxy headers, extract IP from RemoteAddr (may include port)
+        std::string addr_str(remote_addr);
+        
+        // Handle IPv6 addresses enclosed in brackets [::]:port
+        if (!addr_str.empty() && addr_str[0] == '[') {
+            auto bracket_end = addr_str.find(']');
+            if (bracket_end != std::string::npos) {
+                // Extract IPv6 address with brackets
+                return addr_str.substr(0, bracket_end + 1);
+            }
+        }
+        
+        // Try to split host:port for IPv4
+        auto colon_pos = addr_str.rfind(':');
+        if (colon_pos != std::string::npos) {
+            // Check if this is IPv6 without brackets (contains multiple colons)
+            auto first_colon = addr_str.find(':');
+            if (first_colon != colon_pos) {
+                // Multiple colons, likely IPv6 without brackets - return as is
+                return addr_str;
+            }
+            // Single colon, extract host part (IPv4:port)
+            return addr_str.substr(0, colon_pos);
+        }
+
+        return addr_str;
+    }
+
+    namespace {
+        /// @brief Parses space-separated key=value pairs from a header string.
+        /// @param value Header value containing key=value pairs separated by spaces.
+        /// @return Map of key-value pairs.
+        std::map<std::string, std::string> parseKeyValuePairs(const std::string& value) {
+            std::map<std::string, std::string> result;
+            
+            // Split by space and parse each key=value pair
+            for (const auto& pair : absl::StrSplit(value, ' ', absl::SkipEmpty())) {
+                std::vector<std::string> kv = absl::StrSplit(pair, absl::MaxSplits('=', 1));
+                if (kv.size() == 2) {
+                    result[kv[0]] = kv[1];
+                }
+            }
+            
+            return result;
+        }
+
+        /// @brief Extracts and parses a value from key-value pairs with optional transformation.
+        /// @tparam T Target type for the output value.
+        /// @tparam ParseFunc Parser function type (e.g., stoi_, stoll_, stod_).
+        /// @tparam TransformFunc Transformation function type.
+        /// @param pairs Map of key-value pairs.
+        /// @param key Key to look up.
+        /// @param parser Parser function that returns std::optional<T>.
+        /// @param transform Transformation function applied to parsed value.
+        /// @param output Reference to store the result.
+        /// @return true if value was found and parsed successfully, false otherwise.
+        template<typename T, typename ParseFunc, typename TransformFunc>
+        bool parseAndSet(const std::map<std::string, std::string>& pairs,
+                        const std::string& key,
+                        ParseFunc parser,
+                        TransformFunc transform,
+                        T& output) {
+            auto it = pairs.find(key);
+            if (it != pairs.end()) {
+                auto parsed = parser(it->second);
+                if (parsed.has_value()) {
+                    output = transform(parsed.value());
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// @brief Overload without transformation (identity function).
+        template<typename T, typename ParseFunc>
+        bool parseAndSet(const std::map<std::string, std::string>& pairs,
+                        const std::string& key,
+                        ParseFunc parser,
+                        T& output) {
+            return parseAndSet(pairs, key, parser, [](const auto& v) { return v; }, output);
+        }
+
+        /// @brief Extracts a string value directly without parsing.
+        bool extractString(const std::map<std::string, std::string>& pairs,
+                          const std::string& key,
+                          std::string& output) {
+            auto it = pairs.find(key);
+            if (it != pairs.end()) {
+                output = it->second;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, const AnnotationPtr& annotation) {
+        int64_t received_time = 0;
+        int duration_time = 0;
+        int idle_percent = 0;
+        int busy_percent = 0;
+        int32_t code = 0;
+        std::string app;
+
+        // Check Pinpoint-ProxyApache header
+        if (auto apache = reader.Get("Pinpoint-ProxyApache"); apache.has_value()) {
+            auto pairs = parseKeyValuePairs(apache.value());
+            
+            parseAndSet(pairs, "t", stoll_, [](int64_t v) { return v / 1000; }, received_time);
+            parseAndSet(pairs, "D", stoi_, duration_time);
+            parseAndSet(pairs, "i", stoi_, idle_percent);
+            parseAndSet(pairs, "b", stoi_, busy_percent);
+            code = 3;
+        }
+        // Check Pinpoint-ProxyNginx header
+        else if (auto nginx = reader.Get("Pinpoint-ProxyNginx"); nginx.has_value()) {
+            auto pairs = parseKeyValuePairs(nginx.value());
+            
+            parseAndSet(pairs, "t", stod_, [](double v) { return static_cast<int64_t>(v * 1000); }, received_time);
+            parseAndSet(pairs, "D", stoi_, duration_time);
+            code = 2;
+        }
+        // Check Pinpoint-ProxyApp header
+        else if (auto proxy_app = reader.Get("Pinpoint-ProxyApp"); proxy_app.has_value()) {
+            auto pairs = parseKeyValuePairs(proxy_app.value());
+            
+            parseAndSet(pairs, "t", stoll_, received_time);
+            extractString(pairs, "app", app);
+            code = 1;
+        }
+
+        // If any proxy header was found, add annotation
+        if (code > 0) {
+            annotation->AppendLongIntIntByteByteString(
+                ANNOTATION_HTTP_PROXY_HEADER,
+                received_time,
+                code,
+                static_cast<int32_t>(duration_time),
+                static_cast<int32_t>(idle_percent),
+                static_cast<int32_t>(busy_percent),
+                app
+            );
+        }
     }
 
 }

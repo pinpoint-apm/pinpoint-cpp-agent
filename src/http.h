@@ -202,4 +202,33 @@ namespace pinpoint {
         std::vector<std::string> cfg_;
     };
 
+    /**
+     * @brief Utility functions for HTTP tracing.
+     */
+    class HttpTracerUtil {
+    public:
+        /**
+         * @brief Extracts the real remote address from HTTP headers.
+         * 
+         * Checks X-Forwarded-For and X-Real-Ip headers for proxy information,
+         * falling back to the direct remote address if not present.
+         *
+         * @param reader Header reader to access HTTP headers.
+         * @param remote_addr Direct remote address (e.g., from socket).
+         * @return The actual remote client address.
+         */
+        static std::string getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
+
+        /**
+         * @brief Records proxy header information to span annotations.
+         * 
+         * Parses Pinpoint proxy headers (Apache, Nginx, or App) and adds
+         * timing and load information to the span.
+         *
+         * @param reader Header reader to access HTTP headers.
+         * @param annotation Annotation destination for proxy metadata.
+         */
+        static void setProxyHeader(const HeaderReader& reader, const AnnotationPtr& annotation);
+    };
+
 }

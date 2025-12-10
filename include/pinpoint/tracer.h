@@ -48,6 +48,7 @@ namespace pinpoint {
 	constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
 	constexpr int32_t ANNOTATION_HTTP_REQUEST_HEADER = 47;
 	constexpr int32_t ANNOTATION_HTTP_RESPONSE_HEADER = 55;
+	constexpr int32_t ANNOTATION_HTTP_PROXY_HEADER = 300;
 
 	constexpr int32_t APP_TYPE_CPP = 1300;
 	constexpr int32_t SERVICE_TYPE_CPP = APP_TYPE_CPP;

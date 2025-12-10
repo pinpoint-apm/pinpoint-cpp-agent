@@ -15,6 +15,7 @@
  */
 
 #include "../src/http.h"
+#include "../src/annotation.h"
 #include "../include/pinpoint/tracer.h"
 #include <gtest/gtest.h>
 #include <vector>
@@ -1002,6 +1003,137 @@ TEST_F(HttpTest, HttpMethodFilterEmptyConfigTest) {
     EXPECT_FALSE(filter.isFiltered("GET")) << "Should not filter with empty config";
     EXPECT_FALSE(filter.isFiltered("POST")) << "Should not filter with empty config";
     EXPECT_FALSE(filter.isFiltered("")) << "Should not filter with empty config";
+}
+
+// ========== HttpTracerUtil Tests ==========
+
+// Test getRemoteAddr with X-Forwarded-For header (single IP)
+TEST_F(HttpTest, GetRemoteAddrXForwardedForSingleTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", "203.0.113.45"}
+    };
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from X-Forwarded-For";
+}
+
+// Test getRemoteAddr with X-Forwarded-For header (multiple IPs)
+TEST_F(HttpTest, GetRemoteAddrXForwardedForMultipleTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", "203.0.113.45, 198.51.100.1, 192.0.2.1"}
+    };
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from comma-separated list";
+}
+
+// Test getRemoteAddr with X-Forwarded-For header (with spaces)
+TEST_F(HttpTest, GetRemoteAddrXForwardedForWithSpacesTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", "  203.0.113.45  , 198.51.100.1"}
+    };
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "Should trim whitespace from IP";
+}
+
+// Test getRemoteAddr with X-Real-Ip header
+TEST_F(HttpTest, GetRemoteAddrXRealIpTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Real-Ip", "203.0.113.45"}
+    };
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "Should extract IP from X-Real-Ip";
+}
+
+// Test getRemoteAddr with both headers (X-Forwarded-For has priority)
+TEST_F(HttpTest, GetRemoteAddrBothHeadersTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", "203.0.113.45"},
+        {"X-Real-Ip", "198.51.100.1"}
+    };
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "X-Forwarded-For should take priority";
+}
+
+// Test getRemoteAddr without proxy headers (with port)
+TEST_F(HttpTest, GetRemoteAddrNoProxyWithPortTest) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "192.168.1.100") << "Should extract host from host:port";
+}
+
+// Test getRemoteAddr without proxy headers (without port)
+TEST_F(HttpTest, GetRemoteAddrNoProxyWithoutPortTest) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100");
+    EXPECT_EQ(addr, "192.168.1.100") << "Should return address as is";
+}
+
+// Test getRemoteAddr with IPv6 address
+TEST_F(HttpTest, GetRemoteAddrIPv6Test) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+    
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "[2001:db8::1]:8080");
+    EXPECT_EQ(addr, "[2001:db8::1]") << "Should handle IPv6 addresses";
+}
+
+// Test setProxyHeader with Pinpoint-ProxyApache
+TEST_F(HttpTest, SetProxyHeaderApacheTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyApache", "t=1234567890000 D=1500 i=10 b=90"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+    
+    // Should not throw and parse successfully
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+}
+
+// Test setProxyHeader with Pinpoint-ProxyNginx
+TEST_F(HttpTest, SetProxyHeaderNginxTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyNginx", "t=1234567.890 D=2000"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+    
+    // Should not throw and parse successfully
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+}
+
+// Test setProxyHeader with Pinpoint-ProxyApp
+TEST_F(HttpTest, SetProxyHeaderAppTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyApp", "t=1234567890 app=MyApp"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+    
+    // Should not throw and parse successfully
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+}
+
+// Test setProxyHeader without proxy headers
+TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+    
+    // Should not throw (just no annotation added)
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
 }
 
 } // namespace pinpoint

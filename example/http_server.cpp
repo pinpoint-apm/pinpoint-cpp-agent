@@ -4,6 +4,7 @@
 #include "pinpoint/tracer.h"
 #include "httplib.h"
 #include "http_trace_context.h"
+#include "../src/http.h"
 
 pinpoint::SpanPtr make_span(const httplib::Request& req);
 void on_foo(const httplib::Request& request, httplib::Response& response);
@@ -30,15 +31,23 @@ pinpoint::SpanPtr make_span(const httplib::Request& req) {
     HttpTraceContextReader trace_context_reader(req.headers);
     auto span = agent->NewSpan("C++ Http Server", req.path, trace_context_reader);
 
-    span->SetRemoteAddress(req.remote_addr);
+    // Use HttpTracerUtil to extract the real remote address
+    // considering X-Forwarded-For and X-Real-Ip headers
+    HttpHeaderReader http_reader(req.headers);
+    std::string remote_addr = pinpoint::HttpTracerUtil::getRemoteAddr(http_reader, req.remote_addr);
+    span->SetRemoteAddress(remote_addr);
+
     auto end_point = req.get_header_value("Host");
     if (end_point.empty()) {
         end_point = req.local_addr + ":" + std::to_string(req.local_port);
     }
     span->SetEndPoint(end_point);
 
-    HttpHeaderReader http_reader(req.headers);
+    // Record request headers
     span->RecordHeader(pinpoint::HTTP_REQUEST, http_reader);
+
+    // Record proxy header information if present
+    pinpoint::HttpTracerUtil::setProxyHeader(http_reader, span->GetAnnotations());
 
     return span;
 }
