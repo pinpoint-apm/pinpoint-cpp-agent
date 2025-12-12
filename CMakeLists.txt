@@ -70,8 +70,15 @@ endif()
 message(STATUS "=============================")
 
 # Try to find gRPC installed on the system first
-find_package(Protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
+if(VCPKG_DETECTED)
+  # vcpkg detected - packages must be available
+  find_package(Protobuf CONFIG REQUIRED)
+  find_package(gRPC CONFIG REQUIRED)
+else()
+  # No vcpkg - try to find, fallback to FetchContent if not found
+  find_package(Protobuf CONFIG QUIET)
+  find_package(gRPC CONFIG QUIET)
+endif()
 
 if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
   message(STATUS "gRPC not found on system, fetching from source...")
@@ -144,7 +151,11 @@ list(APPEND LINK_LIBS
 )
 
 # Try to find yaml-cpp on the system first
-find_package(yaml-cpp CONFIG REQUIRED)
+if(VCPKG_DETECTED)
+  find_package(yaml-cpp CONFIG REQUIRED)
+else()
+  find_package(yaml-cpp CONFIG QUIET)
+endif()
 
 if(NOT yaml-cpp_FOUND)
   message(STATUS "yaml-cpp not found on system, fetching from source...")
@@ -166,7 +177,11 @@ endif()
 list(APPEND LINK_LIBS yaml-cpp::yaml-cpp)
 
 # Try to find fmt on the system first
-find_package(fmt CONFIG REQUIRED)
+if(VCPKG_DETECTED)
+  find_package(fmt CONFIG REQUIRED)
+else()
+  find_package(fmt CONFIG QUIET)
+endif()
 
 if(NOT fmt_FOUND)
   message(STATUS "fmt not found on system, fetching from source...")
@@ -185,7 +200,11 @@ endif()
 list(APPEND LINK_LIBS fmt::fmt)
 
 # Try to find spdlog on the system first
-find_package(spdlog CONFIG REQUIRED)
+if(VCPKG_DETECTED)
+  find_package(spdlog CONFIG REQUIRED)
+else()
+  find_package(spdlog CONFIG QUIET)
+endif()
 
 if(NOT spdlog_FOUND)
   message(STATUS "spdlog not found on system, fetching from source...")
@@ -356,6 +375,12 @@ if (BUILD_STATIC_LIBS)
 endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# C Wrapper Library
+option(BUILD_C_WRAPPER "Build C wrapper library for C applications" ON)
+if(BUILD_C_WRAPPER)
+  add_subdirectory(export)
+endif()
 
 # Testing
 if (BUILD_TESTING)
