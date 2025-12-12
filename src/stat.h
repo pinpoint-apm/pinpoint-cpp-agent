@@ -31,21 +31,21 @@ namespace pinpoint {
      * @brief Snapshot of runtime statistics collected from the agent process.
      */
     struct AgentStatsSnapshot {
-        int64_t    sample_time_{};
-        double     system_cpu_time_{};
-        double     process_cpu_time_{};
-        int64_t    num_threads_{};
-        int64_t    heap_alloc_size_{};
-        int64_t    heap_max_size_{};
-        int64_t    response_time_avg_{};
-        int64_t    response_time_max_{};
-        int64_t    num_sample_new_{};
-        int64_t    num_sample_cont_{};
-        int64_t    num_unsample_new_{};
-        int64_t    num_unsample_cont_{};
-        int64_t    num_skip_new_{};
-        int64_t    num_skip_cont_{};
-        int32_t    active_requests_[4]{};
+        int64_t    sample_time_{0};
+        double     system_cpu_time_{0};
+        double     process_cpu_time_{0};
+        int64_t    num_threads_{0};
+        int64_t    heap_alloc_size_{0};
+        int64_t    heap_max_size_{0};
+        int64_t    response_time_avg_{0};
+        int64_t    response_time_max_{0};
+        int64_t    num_sample_new_{0};
+        int64_t    num_sample_cont_{0};
+        int64_t    num_unsample_new_{0};
+        int64_t    num_unsample_cont_{0};
+        int64_t    num_skip_new_{0};
+        int64_t    num_skip_cont_{0};
+        int32_t    active_requests_[4]{0, 0, 0, 0};
     };
 
     /**

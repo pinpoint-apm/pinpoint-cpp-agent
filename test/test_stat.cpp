@@ -173,9 +173,6 @@ TEST_F(StatTest, InitAgentStatsTest) {
 TEST_F(StatTest, CollectAgentStatTest) {
     AgentStatsSnapshot snapshot;
     
-    // Initialize snapshot with zeros
-    memset(&snapshot, 0, sizeof(snapshot));
-    
     // Test that collectAgentStat() fills the snapshot
     agent_stats_->collectAgentStat(snapshot);
     
@@ -197,7 +194,6 @@ TEST_F(StatTest, CollectResponseTimeTest) {
     agent_stats_->collectResponseTime(50);
     
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // After collecting response times, average and max should be calculated
@@ -217,7 +213,6 @@ TEST_F(StatTest, SamplingCountersTest) {
     agent_stats_->incrSkipCont();
     
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // Verify counters are incremented
@@ -239,7 +234,6 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     agent_stats_->addActiveSpan(span_id_2, start_time + 100);
     
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // Active spans should be reflected in the snapshot
@@ -251,7 +245,6 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     // Drop one span
     agent_stats_->dropActiveSpan(span_id_1);
     
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // Should have fewer active spans now
@@ -268,7 +261,6 @@ TEST_F(StatTest, GetAgentStatSnapshotsTest) {
     
     // Collect some stats
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // The snapshots vector should be accessible
@@ -361,7 +353,6 @@ TEST_F(StatTest, MultipleResponseTimeCollectionTest) {
     }
     
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // Verify that max response time is the maximum we inserted
@@ -375,7 +366,6 @@ TEST_F(StatTest, MultipleResponseTimeCollectionTest) {
 TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     // First, get the current state to see how many spans exist
     AgentStatsSnapshot initial_snapshot;
-    memset(&initial_snapshot, 0, sizeof(initial_snapshot));
     agent_stats_->collectAgentStat(initial_snapshot);
     
     int initial_total = initial_snapshot.active_requests_[0] + initial_snapshot.active_requests_[1] + 
@@ -392,7 +382,6 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     agent_stats_->addActiveSpan(base_id + 4, now_ms - 6000);  // 6s old - should be in bucket 3
     
     AgentStatsSnapshot snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
     agent_stats_->collectAgentStat(snapshot);
     
     // Verify that we have added 4 more spans
