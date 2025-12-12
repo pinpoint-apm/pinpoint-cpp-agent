@@ -2,10 +2,45 @@ cmake_minimum_required(VERSION 3.20)
 
 set(CMAKE_VERBOSE_MAKEFILE on)
 
+# =============================================================================
+# vcpkg Auto-Detection
+# =============================================================================
+# Detect and configure vcpkg if available on the system.
+# Priority order:
+#   1. CMAKE_TOOLCHAIN_FILE already set (user explicitly provided)
+#   2. VCPKG_ROOT environment variable
+#   3. Common vcpkg installation paths
+# If vcpkg is not found, FetchContent will be used as fallback.
+# =============================================================================
+
+# Check VCPKG_ROOT environment variable first
+if(DEFINED ENV{VCPKG_ROOT})
+  set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
+  message(STATUS "Found VCPKG_ROOT environment variable: ${VCPKG_ROOT}")
+endif()
+  
+# If VCPKG_ROOT is found, set the toolchain file
+if(DEFINED VCPKG_ROOT AND EXISTS "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+  set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      CACHE FILEPATH "Vcpkg toolchain file")
+  set(VCPKG_DETECTED TRUE CACHE BOOL "vcpkg was auto-detected")
+  message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+else()
+  set(VCPKG_DETECTED FALSE CACHE BOOL "vcpkg was not found")
+  message(STATUS "vcpkg not found, will use FetchContent for dependencies")
+endif()
+
 include(CMakeDependentOption)
-include(FetchContent)
 
 project(pinpoint-cpp VERSION 1.0.0)
+
+# Option to force FetchContent even when vcpkg is available
+option(FORCE_FETCHCONTENT "Force using FetchContent instead of vcpkg" OFF)
+
+if(FORCE_FETCHCONTENT)
+  set(VCPKG_DETECTED FALSE)
+  message(STATUS "FORCE_FETCHCONTENT is ON, will use FetchContent for dependencies")
+endif()
 
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
@@ -16,9 +51,34 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# =============================================================================
+# Dependency Resolution Strategy
+# =============================================================================
+# If vcpkg is detected and FORCE_FETCHCONTENT is OFF:
+#   - Dependencies will be resolved via vcpkg (find_package should succeed)
+# Otherwise:
+#   - Try find_package first, then fallback to FetchContent
+# =============================================================================
+
+message(STATUS "=== Dependency Resolution ===")
+if(VCPKG_DETECTED)
+  message(STATUS "Strategy: Using vcpkg for package management")
+else()
+  message(STATUS "Strategy: FetchContent fallback (vcpkg not available)")
+  include(FetchContent)
+endif()
+message(STATUS "=============================")
+
 # Try to find gRPC installed on the system first
-find_package(gRPC CONFIG QUIET)
-find_package(Protobuf CONFIG QUIET)
+if(VCPKG_DETECTED)
+  # vcpkg detected - packages must be available
+  find_package(Protobuf CONFIG REQUIRED)
+  find_package(gRPC CONFIG REQUIRED)
+else()
+  # No vcpkg - try to find, fallback to FetchContent if not found
+  find_package(Protobuf CONFIG QUIET)
+  find_package(gRPC CONFIG QUIET)
+endif()
 
 if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
   message(STATUS "gRPC not found on system, fetching from source...")
@@ -63,9 +123,15 @@ else()
 endif()
 
 list(APPEND LINK_LIBS protobuf::libprotobuf)
-list(APPEND LINK_LIBS grpc grpc++ grpc++_reflection)
-list(APPEND LINK_LIBS gpr grpc_unsecure grpc++_unsecure)
-list(APPEND LINK_LIBS grpc++_error_details grpcpp_channelz)
+if(VCPKG_DETECTED)
+  list(APPEND LINK_LIBS gRPC::grpc gRPC::grpc++ gRPC::grpc++_reflection)
+  list(APPEND LINK_LIBS gRPC::gpr gRPC::grpc_unsecure gRPC::grpc++_unsecure)
+  list(APPEND LINK_LIBS gRPC::grpc++_error_details gRPC::grpcpp_channelz)
+else()
+  list(APPEND LINK_LIBS grpc grpc++ grpc++_reflection)
+  list(APPEND LINK_LIBS gpr grpc_unsecure grpc++_unsecure)
+  list(APPEND LINK_LIBS grpc++_error_details grpcpp_channelz)
+endif()
 list(APPEND LINK_LIBS 
   absl::strings 
   absl::strings_internal
@@ -85,7 +151,11 @@ list(APPEND LINK_LIBS
 )
 
 # Try to find yaml-cpp on the system first
-find_package(yaml-cpp CONFIG QUIET)
+if(VCPKG_DETECTED)
+  find_package(yaml-cpp CONFIG REQUIRED)
+else()
+  find_package(yaml-cpp CONFIG QUIET)
+endif()
 
 if(NOT yaml-cpp_FOUND)
   message(STATUS "yaml-cpp not found on system, fetching from source...")
@@ -107,7 +177,11 @@ endif()
 list(APPEND LINK_LIBS yaml-cpp::yaml-cpp)
 
 # Try to find fmt on the system first
-find_package(fmt CONFIG QUIET)
+if(VCPKG_DETECTED)
+  find_package(fmt CONFIG REQUIRED)
+else()
+  find_package(fmt CONFIG QUIET)
+endif()
 
 if(NOT fmt_FOUND)
   message(STATUS "fmt not found on system, fetching from source...")
@@ -126,7 +200,11 @@ endif()
 list(APPEND LINK_LIBS fmt::fmt)
 
 # Try to find spdlog on the system first
-find_package(spdlog CONFIG QUIET)
+if(VCPKG_DETECTED)
+  find_package(spdlog CONFIG REQUIRED)
+else()
+  find_package(spdlog CONFIG QUIET)
+endif()
 
 if(NOT spdlog_FOUND)
   message(STATUS "spdlog not found on system, fetching from source...")
@@ -223,21 +301,35 @@ if (BUILD_SHARED_LIBS)
   set_target_properties(pinpoint_cpp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
   target_link_libraries(pinpoint_cpp PUBLIC ${LINK_LIBS})
   install(TARGETS pinpoint_cpp LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  
-  protobuf_generate(
-    TARGET pinpoint_cpp
-    LANGUAGE cpp
-    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-  )
 
-  protobuf_generate(
-    TARGET pinpoint_cpp
-    LANGUAGE grpc
-    PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-    PLUGIN_OPTIONS generate_mock_code=true
-    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-  )
+  if(VCPKG_DETECTED)
+    protobuf_generate(
+      TARGET pinpoint_cpp
+      LANGUAGE cpp
+    )
+    
+    protobuf_generate(
+      TARGET pinpoint_cpp
+      LANGUAGE grpc
+      PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+    )
+  else()
+    protobuf_generate(
+      TARGET pinpoint_cpp
+      LANGUAGE cpp
+      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
+    )
+
+    protobuf_generate(
+      TARGET pinpoint_cpp
+      LANGUAGE grpc
+      PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+      PLUGIN_OPTIONS generate_mock_code=true
+      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
+    )
+  endif()
 endif()
 
 if (BUILD_STATIC_LIBS)
@@ -251,23 +343,44 @@ if (BUILD_STATIC_LIBS)
   endif()
   install(TARGETS pinpoint_cpp-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
   
-  protobuf_generate(
-    TARGET pinpoint_cpp-static
-    LANGUAGE cpp
-    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-  )
+  if(VCPKG_DETECTED)
+    protobuf_generate(
+      TARGET pinpoint_cpp-static
+      LANGUAGE cpp
+    )
+    
+    protobuf_generate(
+      TARGET pinpoint_cpp-static
+      LANGUAGE grpc
+      PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+      PLUGIN_OPTIONS generate_mock_code=true
+    )
+  else()
+    protobuf_generate(
+      TARGET pinpoint_cpp-static
+      LANGUAGE cpp
+      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
+    )
 
-  protobuf_generate(
-    TARGET pinpoint_cpp-static
-    LANGUAGE grpc
-    PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-    PLUGIN_OPTIONS generate_mock_code=true
-    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-  )
+    protobuf_generate(
+      TARGET pinpoint_cpp-static
+      LANGUAGE grpc
+      PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+      PLUGIN_OPTIONS generate_mock_code=true
+      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
+    )
+  endif()
 endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# C Wrapper Library
+option(BUILD_C_WRAPPER "Build C wrapper library for C applications" ON)
+if(BUILD_C_WRAPPER)
+  add_subdirectory(export)
+endif()
 
 # Testing
 if (BUILD_TESTING)
@@ -278,4 +391,3 @@ endif()
 if (BUILD_EXAMPLES)
   add_subdirectory(example)
 endif()
-
