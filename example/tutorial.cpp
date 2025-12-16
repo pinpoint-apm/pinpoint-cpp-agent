@@ -14,7 +14,7 @@ int main() {
 
     httplib::Server svr;
     svr.Get("/foo", [&](const httplib::Request& req, httplib::Response& resp) {
-        HttpTraceContextReader trace_context_reader(req.headers);
+        HttpHeaderReader trace_context_reader(req.headers);
         auto span = agent->NewSpan("C++ Web Server", "/foo", trace_context_reader);
 
         span->SetRemoteAddress(req.remote_addr);
@@ -34,7 +34,7 @@ int main() {
         se->SetDestination(host);
 
         httplib::Headers headers;
-        HttpTraceContextWriter trace_context_writer(headers);
+        HttpHeaderReaderWriter trace_context_writer(headers);
         span->InjectContext(trace_context_writer);
 
         auto anno = se->GetAnnotations();

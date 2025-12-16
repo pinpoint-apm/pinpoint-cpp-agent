@@ -70,7 +70,7 @@ bool produce_message(const std::string& message_payload, pinpoint::SpanPtr span)
 
 void handle_run_producer(const httplib::Request& req, httplib::Response& res) {
     // Extract trace context from HTTP request
-    HttpTraceContextReader reader(req.headers);
+    HttpHeaderReader reader(req.headers);
     auto span = g_agent->NewSpan("KafkaWebProducer", "/run_producer", reader);
     
     span->SetRemoteAddress(req.remote_addr);

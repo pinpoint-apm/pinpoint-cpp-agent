@@ -406,7 +406,7 @@ httplib::Server::Handler wrap_handler(httplib::Server::Handler handler);
 pinpoint::SpanPtr trace_request(const httplib::Request& req) {
     auto agent = pinpoint::GlobalAgent();
 
-    HttpTraceContextReader trace_context_reader(req.headers);
+    HttpHeaderReader trace_context_reader(req.headers);
     auto span = agent->NewSpan("C++ DB Demo", req.path, trace_context_reader);
 
     span->SetRemoteAddress(req.remote_addr);

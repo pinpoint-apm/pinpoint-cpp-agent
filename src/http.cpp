@@ -342,4 +342,42 @@ namespace pinpoint {
         }
     }
 
-}
+    namespace helper {
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader) {
+            std::string r_addr = HttpTracerUtil::getRemoteAddr(request_reader, remote_addr);
+            span->SetRemoteAddress(r_addr);
+            span->SetEndPoint(endpoint);
+
+            HttpTracerUtil::setProxyHeader(request_reader, span->GetAnnotations());
+            span->RecordHeader(HTTP_REQUEST, request_reader);
+        }
+
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader) {
+            TraceHttpServerRequest(span, remote_addr, endpoint, request_reader);
+            span->RecordHeader(HTTP_COOKIE, cookie_reader);
+        }
+
+        void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader){
+            span->SetStatusCode(status_code);
+            span->SetUrlStat(url_pattern, method, status_code);
+            span->RecordHeader(HTTP_RESPONSE, response_reader);
+        }
+
+        void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader) {
+            span_event->SetEndPoint(host);
+            span_event->SetDestination(host);
+            span_event->GetAnnotations()->AppendString(ANNOTATION_HTTP_URL, url);
+            span_event->RecordHeader(HTTP_REQUEST, request_reader);
+        }
+
+        void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader) {
+            TraceHttpClientRequest(span_event, host, url, request_reader);
+            span_event->RecordHeader(HTTP_COOKIE, cookie_reader);
+        }
+
+        void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader) {
+            span_event->GetAnnotations()->AppendInt(ANNOTATION_HTTP_STATUS_CODE, status_code);
+            span_event->RecordHeader(HTTP_RESPONSE, response_reader);
+        }
+    } // namespace helper
+} // namespace pinpoint

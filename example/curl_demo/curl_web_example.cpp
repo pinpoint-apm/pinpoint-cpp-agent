@@ -87,7 +87,7 @@ bool perform_curl_request(const std::string& url, pinpoint::SpanPtr span, std::s
 
 void handle_run_request(const httplib::Request& req, httplib::Response& res) {
     // Extract trace context from HTTP request headers
-    HttpTraceContextReader reader(req.headers);
+    HttpHeaderReader reader(req.headers);
     auto span = g_agent->NewSpan("CurlWebExample", "/run_request", reader);
     
     span->SetRemoteAddress(req.remote_addr);

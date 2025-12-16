@@ -107,28 +107,21 @@ int main() {
 pinpoint::SpanPtr trace_request(const httplib::Request& req) {
     auto agent = pinpoint::GlobalAgent();
 
-    HttpTraceContextReader trace_context_reader(req.headers);
-    auto span = agent->NewSpan("C++ Cpptrace Demo", req.path, trace_context_reader);
+    HttpHeaderReader request_reader(req.headers);
+    auto span = agent->NewSpan("C++ Cpptrace Demo", req.path, request_reader);
 
-    span->SetRemoteAddress(req.remote_addr);
     auto end_point = req.get_header_value("Host");
     if (end_point.empty()) {
         end_point = req.local_addr + ":" + std::to_string(req.local_port);
     }
-    span->SetEndPoint(end_point);
-
-    HttpHeaderReader http_reader(req.headers);
-    span->RecordHeader(pinpoint::HTTP_REQUEST, http_reader);
+    pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, end_point, request_reader);
 
     return span;
 }
 
 void trace_response(const httplib::Request& req, httplib::Response& res, pinpoint::SpanPtr span) {
-    HttpHeaderReader http_reader(res.headers);
-    span->RecordHeader(pinpoint::HTTP_RESPONSE, http_reader);
-
-    span->SetStatusCode(res.status);
-    span->SetUrlStat(req.matched_route, req.method, res.status);
+    HttpHeaderReader response_reader(res.headers);
+    pinpoint::helper::TraceHttpServerResponse(span, req.matched_route, req.method, res.status, response_reader);
     span->EndSpan();
 }
 
@@ -185,6 +178,7 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 
 void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
     auto span = get_span_context();  // Get span from thread local storage
+    auto se = span->NewSpanEvent("handle_outgoing");
     
     // Get target URL from query parameter or use default
     std::string target_url = req.get_param_value("target");
@@ -219,30 +213,27 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
         }
     }
 
-    auto se = span->NewSpanEvent("handle_outgoing");
-    se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
-    se->SetEndPoint(host);
-    se->SetDestination(host);
-
-    auto anno = se->GetAnnotations();
-    anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, target_url);
+    httplib::Headers headers;
+    headers.emplace("User-Agent", "cpptrace-demo");
+    headers.emplace("Accept", "application/json");
+    headers.emplace("Accept-Language", "en-US,en;q=0.5");
+    headers.emplace("Accept-Encoding", "gzip, deflate, br");
+    headers.emplace("Connection", "keep-alive");
+    
+    // Inject trace context into headers
+    HttpHeaderReaderWriter header_reader_writer(headers);
+    pinpoint::helper::TraceHttpClientRequest(se, host, target_url, header_reader_writer);
+    span->InjectContext(header_reader_writer);
 
     // Call external URL with HTTP client
     httplib::Client cli(host);
     cli.set_connection_timeout(5, 0);  // 5 seconds
     cli.set_read_timeout(5, 0);        // 5 seconds
-    
+    auto external_res = cli.Get(path, headers);
+
     std::stringstream json_response;
     json_response << "{\n";
     json_response << "  \"target_url\": \"" << target_url << "\",\n";
-
-    // Inject trace context into headers
-    httplib::Headers headers;
-    HttpTraceContextWriter trace_context_writer(headers);
-    span->InjectContext(trace_context_writer);
-
-    // Call external URL with HTTP client
-    auto external_res = cli.Get(path, headers);
     
     if (external_res) {
         json_response << "  \"status_code\": " << external_res->status << ",\n";
@@ -252,7 +243,9 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
         std::cout << "Outgoing call successful: " 
                   << "Status=" << external_res->status 
                   << ", Body=" << external_res->body << std::endl;
-        anno->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, external_res->status);
+
+        HttpHeaderReaderWriter response_reader(external_res->headers);
+        pinpoint::helper::TraceHttpClientResponse(se, external_res->status, response_reader);
     } else {
         auto error = external_res.error();
         std::string error_msg = httplib::to_string(error);
@@ -279,4 +272,3 @@ void handle_outgoing(const httplib::Request& req, httplib::Response& res) {
               << " -> Called " << target_url << std::endl;
     span->EndSpanEvent();
 }
-

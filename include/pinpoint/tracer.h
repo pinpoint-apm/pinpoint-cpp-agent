@@ -123,7 +123,7 @@ namespace pinpoint {
 		/**
 		 * @brief Writes a key/value pair into the propagation carrier.
 		 *
-		 * @param key Case-sensitive header name or key.
+		 * @param key Case-insensitive header name or key.
 		 * @param value Value to set (implementation may copy or reference).
 		 */
         virtual void Set(std::string_view key, std::string_view value) = 0;
@@ -139,19 +139,38 @@ namespace pinpoint {
 	/**
 	 * @brief Interface used to iterate through headers without exposing container details.
 	 */
-	class HeaderReader {
+	class HeaderReader : public TraceContextReader {
 	public:
-		virtual ~HeaderReader() = default;
+		virtual ~HeaderReader() override = default;
 		/**
 		 * @brief Looks up a single header value by key.
 		 */
-		virtual std::optional<std::string> Get(std::string_view key) const = 0;
+		virtual std::optional<std::string> Get(std::string_view key) const override = 0;
 		/**
 		 * @brief Iterates through all headers invoking the callback for each entry.
 		 *
 		 * @param callback Return false to stop iteration early.
 		 */
 		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const = 0;
+	};
+
+	class HeaderReaderWriter : public HeaderReader, public TraceContextWriter {
+	public:
+		virtual ~HeaderReaderWriter() override = default;
+		/**
+		 * @brief Looks up a single header value by key.
+		 */
+		virtual std::optional<std::string> Get(std::string_view key) const override = 0;
+		/**
+		 * @brief Iterates through all headers invoking the callback for each entry.
+		 *
+		 * @param callback Return false to stop iteration early.
+		 */
+		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override = 0;
+		/**
+		 * @brief Writes a key/value pair into the propagation carrier.
+		 */
+		virtual void Set(std::string_view key, std::string_view value) override = 0;
 	};
 
 	/**
@@ -337,6 +356,65 @@ namespace pinpoint {
 	AgentPtr CreateAgent(int32_t app_type);
 	/// @brief Returns the singleton global agent instance.
 	AgentPtr GlobalAgent();
+
+	namespace helper {
+		/**
+		 * @brief Traces a HTTP server request.
+		 *
+		 * @param span The span to trace.
+		 * @param remote_addr The remote address.
+		 * @param endpoint The endpoint.
+		 * @param request_reader The request reader.
+		 */
+		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
+		/**
+		 * @brief Traces a HTTP server request.
+		 *
+		 * @param span The span to trace.
+		 * @param remote_addr The remote address.
+		 * @param endpoint The endpoint.
+		 * @param request_reader The request reader.
+		 * @param cookie_reader The cookie reader.
+		 */
+		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
+		/**
+		 * @brief Traces a HTTP server response.
+		 *
+		 * @param span The span to trace.
+		 * @param url_pattern The URL pattern.
+		 * @param method The method.
+		 * @param status_code The status code.
+		 */
+		void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader);
+		/**
+		 * @brief Traces a HTTP client request.
+		 *
+		 * @param span_event The span event to trace.
+		 * @param host The host.
+		 * @param url The URL.
+		 * @param request_reader The request reader.
+		 */
+
+		void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
+		/**
+		 * @brief Traces a HTTP client request.
+		 *
+		 * @param span_event The span event to trace.
+		 * @param host The host.
+		 * @param url The URL.
+		 * @param request_reader The request reader.
+		 * @param cookie_reader The cookie reader.
+		 */
+		void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
+		/**
+		 * @brief Traces a HTTP client response.
+		 *
+		 * @param span_event The span event to trace.
+		 * @param status_code The status code.
+		 * @param response_reader The response reader.
+		 */
+		void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader);
+	};
 
 }  // namespace pinpoint
 
