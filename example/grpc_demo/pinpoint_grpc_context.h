@@ -64,31 +64,6 @@ class GrpcClientTraceContextWriter final : public pinpoint::TraceContextWriter {
   grpc::ClientContext* context_;
 };
 
-// RAII helper to manage span events inside RPC handlers.
-class ScopedSpanEvent {
- public:
-  ScopedSpanEvent(const pinpoint::SpanPtr& span, std::string_view operation) : span_(span) {
-    if (span_) {
-      event_ = span_->NewSpanEvent(operation);
-      if (event_) {
-        event_->SetServiceType(pinpoint::SERVICE_TYPE_CPP_FUNC);
-      }
-    }
-  }
-
-  ~ScopedSpanEvent() {
-    if (span_) {
-      span_->EndSpanEvent();
-    }
-  }
-
-  pinpoint::SpanEventPtr Event() const { return event_; }
-
- private:
-  pinpoint::SpanPtr span_;
-  pinpoint::SpanEventPtr event_;
-};
-
 }  // namespace grpc_demo
 
 

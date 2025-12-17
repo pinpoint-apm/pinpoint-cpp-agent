@@ -367,6 +367,7 @@ namespace pinpoint {
 		 * @param request_reader The request reader.
 		 */
 		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
+
 		/**
 		 * @brief Traces a HTTP server request.
 		 *
@@ -377,6 +378,7 @@ namespace pinpoint {
 		 * @param cookie_reader The cookie reader.
 		 */
 		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
+
 		/**
 		 * @brief Traces a HTTP server response.
 		 *
@@ -386,6 +388,7 @@ namespace pinpoint {
 		 * @param status_code The status code.
 		 */
 		void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader);
+
 		/**
 		 * @brief Traces a HTTP client request.
 		 *
@@ -394,9 +397,9 @@ namespace pinpoint {
 		 * @param url The URL.
 		 * @param request_reader The request reader.
 		 */
+		 void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
 
-		void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
-		/**
+		 /**
 		 * @brief Traces a HTTP client request.
 		 *
 		 * @param span_event The span event to trace.
@@ -405,8 +408,9 @@ namespace pinpoint {
 		 * @param request_reader The request reader.
 		 * @param cookie_reader The cookie reader.
 		 */
-		void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
-		/**
+		 void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
+
+		 /**
 		 * @brief Traces a HTTP client response.
 		 *
 		 * @param span_event The span event to trace.
@@ -414,8 +418,31 @@ namespace pinpoint {
 		 * @param response_reader The response reader.
 		 */
 		void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader);
-	};
 
+		// RAII helper to manage span events.
+		class ScopedSpanEvent {
+		public:
+			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation) : span_(span) {
+				event_ = span_->NewSpanEvent(operation, SERVICE_TYPE_CPP_FUNC);
+			}
+			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation, int32_t service_type) : span_(span) {
+				event_ = span_->NewSpanEvent(operation, service_type);
+			}
+		
+			~ScopedSpanEvent() {
+				span_->EndSpanEvent();
+			}
+		
+			SpanEventPtr operator->() const { return event_; }
+			SpanEventPtr value() const { return event_; }
+		
+		private:
+			SpanPtr span_;
+			SpanEventPtr event_;
+		};
+   
+	};
+	
 }  // namespace pinpoint
 
 #endif //PINPOINT_TRACER_H

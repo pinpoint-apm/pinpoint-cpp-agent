@@ -24,11 +24,9 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     (void)context;
 
     auto span = GetCurrentSpan();
-    ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallUnaryReturn");
-    if (auto event = scoped.Event()) {
-      event->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
+    pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallUnaryReturn");
+    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
                                             "UnaryCallUnaryReturn");
-    }
 
     response->set_msg("Unary response: " + request->msg());
     return grpc::Status::OK;
@@ -40,11 +38,9 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     (void)context;
 
     auto span = GetCurrentSpan();
-    ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallStreamReturn");
-    if (auto event = scoped.Event()) {
-      event->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
+    pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallStreamReturn");
+    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
                                             "UnaryCallStreamReturn");
-    }
 
     for (int i = 0; i < 3; ++i) {
       grpcdemo::Greeting resp;
@@ -60,11 +56,9 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     (void)context;
 
     auto span = GetCurrentSpan();
-    ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallUnaryReturn");
-    if (auto event = scoped.Event()) {
-      event->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
+    pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallUnaryReturn");
+    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
                                             "StreamCallUnaryReturn");
-    }
 
     std::string combined;
     grpcdemo::Greeting msg;
@@ -81,11 +75,9 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     (void)context;
 
     auto span = GetCurrentSpan();
-    ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallStreamReturn");
-    if (auto event = scoped.Event()) {
-      event->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
+    pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallStreamReturn");
+    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
                                             "StreamCallStreamReturn");
-    }
 
     grpcdemo::Greeting request;
     while (stream->Read(&request)) {

@@ -21,6 +21,7 @@
 
 #include "absl/strings/str_split.h"
 #include "logging.h"
+#include "pinpoint/tracer.h"
 #include "utility.h"
 #include "http.h"
 
@@ -364,6 +365,7 @@ namespace pinpoint {
         }
 
         void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader) {
+            span_event->SetServiceType(SERVICE_TYPE_CPP_HTTP_CLIENT);
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
             span_event->GetAnnotations()->AppendString(ANNOTATION_HTTP_URL, url);
