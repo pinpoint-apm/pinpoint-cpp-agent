@@ -8,6 +8,7 @@ This directory contains the C wrapper for the Pinpoint C++ Agent, allowing C app
 - `pinpoint_c.cpp` - C++ implementation of the C wrapper
 - `example.c` - Example usage demonstrating the C API
 - `CMakeLists.txt` - Build configuration
+- `civetweb_example/` - Complete example integrating with CivetWeb HTTP server
 
 ## New Features: HTTP Trace Helper Functions
 
@@ -209,7 +210,9 @@ To use the C wrapper in your C project:
 2. Link against the Pinpoint C library: `-lpinpoint_c`
 3. Ensure the Pinpoint C++ agent library is also linked: `-lpinpoint_cpp_agent`
 
-## Full Example
+## Examples
+
+### Basic Example (`example.c`)
 
 See `example.c` for a complete working example demonstrating:
 - Agent initialization
@@ -218,6 +221,29 @@ See `example.c` for a complete working example demonstrating:
 - HTTP client request/response tracing
 - Span events for database calls
 - Proper cleanup
+
+### CivetWeb Integration (`civetweb_example/`)
+
+A complete, production-ready example showing how to integrate Pinpoint tracing with a real HTTP server:
+
+```bash
+# Build with CivetWeb example
+cd build
+cmake -DBUILD_CIVETWEB_EXAMPLE=ON ..
+make civetweb_example
+
+# Run the server
+./export/civetweb_example/civetweb_example
+```
+
+Features:
+- Full HTTP server using [CivetWeb](https://github.com/civetweb/civetweb)
+- Multiple REST API endpoints with tracing
+- Automatic trace context propagation
+- Request/response header capture
+- Production-ready error handling
+
+See [civetweb_example/README.md](civetweb_example/README.md) for detailed documentation.
 
 ## Thread Safety
 

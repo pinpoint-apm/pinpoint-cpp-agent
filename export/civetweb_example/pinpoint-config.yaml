@@ -1,0 +1,98 @@
+# Pinpoint Configuration for CivetWeb Example
+# ============================================
+
+# Collector Configuration
+collector:
+  # Agent identification
+  agent_id: civetweb-example-001
+  application_name: civetweb-demo
+  application_type: 1300  # SERVICE_TYPE_CPP
+  
+  # Collector server settings
+  grpc:
+    collector_host: localhost
+    collector_port: 9991
+    agent_port: 9992
+    stat_port: 9993
+    span_port: 9994
+    
+  # Connection settings
+  connection:
+    timeout_ms: 10000
+    retry_interval_ms: 5000
+    max_retry_count: 3
+
+# Sampling Configuration
+sampling:
+  # Sampling type: COUNTING or PERCENT
+  type: COUNTING
+  
+  # For COUNTING: sample 1 out of N requests (1 = 100%, 10 = 10%)
+  # For PERCENT: sample N% of requests (100 = 100%, 10 = 10%)
+  rate: 1
+  
+  # New sampling rate (for future use)
+  new_throughput: 0
+  continue_throughput: 0
+
+# Profiling Configuration
+profiler:
+  enable: true
+  
+  # Profile collection interval
+  profile_jvm_collect_interval_ms: 1000
+  
+  # HTTP settings
+  http:
+    # Record HTTP headers
+    header:
+      enable: true
+      record_request: true
+      record_response: true
+      record_cookie: false
+    
+    # Record HTTP parameters
+    param:
+      enable: true
+      max_size: 1024
+    
+    # Record HTTP body
+    body:
+      enable: false
+      max_size: 10240
+  
+  # SQL settings
+  sql:
+    enable: true
+    bind_value: true
+    max_length: 1024
+
+# Logging Configuration
+log:
+  # Log level: TRACE, DEBUG, INFO, WARN, ERROR
+  level: INFO
+  
+  # Log file path (relative to executable or absolute path)
+  file: pinpoint-civetweb.log
+  
+  # Log file rotation
+  max_size_mb: 10
+  max_files: 5
+
+# Advanced Settings
+advanced:
+  # Span buffer size
+  span_buffer_size: 1024
+  
+  # Stat buffer size
+  stat_buffer_size: 512
+  
+  # Worker thread count
+  worker_thread_count: 2
+  
+  # Queue size
+  queue_size: 1024
+  
+  # Enable debug mode
+  debug: false
+

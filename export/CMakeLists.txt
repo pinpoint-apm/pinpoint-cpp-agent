@@ -46,3 +46,8 @@ endif()
 # Install C wrapper header
 install(FILES pinpoint_c.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
+# Add CivetWeb example (optional, only if user wants to build it)
+option(BUILD_CIVETWEB_EXAMPLE "Build CivetWeb integration example" ON)
+if(BUILD_CIVETWEB_EXAMPLE)
+  add_subdirectory(civetweb_example)
+endif()
