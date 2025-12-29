@@ -106,6 +106,69 @@ private:
 };
 
 /* =============================================================================
+ * Header Reader Adapter for C API
+ * 
+ * Design: This adapter allows C applications to provide headers to the helper
+ * functions using a callback-based pattern:
+ * 
+ * 1. C application implements pinpoint_header_iterator_fn
+ * 2. When iteration is needed, we call the function with this pointer as user_data
+ * 3. The C application iterates its headers and calls pinpoint_header_iterator_callback
+ * 4. We forward each header to the C++ callback stored in the class member
+ * 
+ * Implementation uses class member to store callback - thread-safe and clean.
+ * ============================================================================= */
+
+class CHeaderReader : public pinpoint::HeaderReader {
+public:
+    CHeaderReader(pinpoint_header_iterator_fn fn, void* user_data)
+        : iterator_fn_(fn), user_data_(user_data), cpp_callback_(nullptr) {}
+    
+    std::optional<std::string> Get(std::string_view key) const override {
+        // Get is not efficiently supported with the callback-based interface
+        // The HTTP trace helper functions use ForEach exclusively
+        return std::nullopt;
+    }
+    
+    void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override {
+        if (!iterator_fn_) {
+            return;
+        }
+        
+        cpp_callback_ = &callback;
+        iterator_fn_(user_data_, (void*)this);
+    }
+    
+    // Public method to invoke the C++ callback from C code
+    void InvokeCallback(const char* key, const char* value) const {
+        if (cpp_callback_ && key && value) {
+            (*cpp_callback_)(key, value);
+        }
+    }
+    
+private:
+    pinpoint_header_iterator_fn iterator_fn_;
+    void* user_data_;
+    mutable const std::function<bool(std::string_view, std::string_view)>* cpp_callback_;
+};
+
+extern "C" {
+
+// Public callback function that C applications call for each header during iteration
+PINPOINT_C_API void pinpoint_header_iterator_callback(const char* key, const char* value, void* reader_context) {
+    if (!reader_context) {
+        return;
+    }
+    
+    auto* reader = static_cast<CHeaderReader*>(reader_context);
+    if (reader) {
+        reader->InvokeCallback(key, value);
+    }
+}
+
+} // extern "C"
+
+/* =============================================================================
  * Configuration Functions
  * ============================================================================= */
 
@@ -585,6 +648,130 @@ PINPOINT_C_API void pinpoint_annotation_append_int_string_string(
 
 PINPOINT_C_API void pinpoint_annotation_destroy(pinpoint_annotation_handle annotation) {
     delete annotation;
+}
+
+/* =============================================================================
+ * HTTP Trace Helper Functions
+ * ============================================================================= */
+
+PINPOINT_C_API void pinpoint_trace_http_server_request(
+    pinpoint_span_handle span,
+    const char* remote_addr,
+    const char* endpoint,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data) {
+    
+    if (!span || !span->ptr || !remote_addr || !endpoint) {
+        return;
+    }
+    
+    try {
+        CHeaderReader request_reader(request_iterator_fn, request_user_data);
+        pinpoint::helper::TraceHttpServerRequest(span->ptr, remote_addr, endpoint, request_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
+}
+
+PINPOINT_C_API void pinpoint_trace_http_server_request_with_cookies(
+    pinpoint_span_handle span,
+    const char* remote_addr,
+    const char* endpoint,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data,
+    pinpoint_header_iterator_fn cookie_iterator_fn,
+    void* cookie_user_data) {
+    
+    if (!span || !span->ptr || !remote_addr || !endpoint) {
+        return;
+    }
+    
+    try {
+        CHeaderReader request_reader(request_iterator_fn, request_user_data);
+        CHeaderReader cookie_reader(cookie_iterator_fn, cookie_user_data);
+        pinpoint::helper::TraceHttpServerRequest(span->ptr, remote_addr, endpoint, request_reader, cookie_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
+}
+
+PINPOINT_C_API void pinpoint_trace_http_server_response(
+    pinpoint_span_handle span,
+    const char* url_pattern,
+    const char* method,
+    int status_code,
+    pinpoint_header_iterator_fn response_iterator_fn,
+    void* response_user_data) {
+    
+    if (!span || !span->ptr || !url_pattern || !method) {
+        return;
+    }
+    
+    try {
+        CHeaderReader response_reader(response_iterator_fn, response_user_data);
+        pinpoint::helper::TraceHttpServerResponse(span->ptr, url_pattern, method, status_code, response_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
+}
+
+PINPOINT_C_API void pinpoint_trace_http_client_request(
+    pinpoint_span_event_handle span_event,
+    const char* host,
+    const char* url,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data) {
+    
+    if (!span_event || !span_event->ptr || !host || !url) {
+        return;
+    }
+    
+    try {
+        CHeaderReader request_reader(request_iterator_fn, request_user_data);
+        pinpoint::helper::TraceHttpClientRequest(span_event->ptr, host, url, request_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
+}
+
+PINPOINT_C_API void pinpoint_trace_http_client_request_with_cookies(
+    pinpoint_span_event_handle span_event,
+    const char* host,
+    const char* url,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data,
+    pinpoint_header_iterator_fn cookie_iterator_fn,
+    void* cookie_user_data) {
+    
+    if (!span_event || !span_event->ptr || !host || !url) {
+        return;
+    }
+    
+    try {
+        CHeaderReader request_reader(request_iterator_fn, request_user_data);
+        CHeaderReader cookie_reader(cookie_iterator_fn, cookie_user_data);
+        pinpoint::helper::TraceHttpClientRequest(span_event->ptr, host, url, request_reader, cookie_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
+}
+
+PINPOINT_C_API void pinpoint_trace_http_client_response(
+    pinpoint_span_event_handle span_event,
+    int status_code,
+    pinpoint_header_iterator_fn response_iterator_fn,
+    void* response_user_data) {
+    
+    if (!span_event || !span_event->ptr) {
+        return;
+    }
+    
+    try {
+        CHeaderReader response_reader(response_iterator_fn, response_user_data);
+        pinpoint::helper::TraceHttpClientResponse(span_event->ptr, status_code, response_reader);
+    } catch (...) {
+        // Silently handle exceptions
+    }
 }
 
 } // extern "C"

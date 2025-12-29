@@ -146,13 +146,28 @@ typedef void (*pinpoint_context_writer_fn)(const char* key, const char* value,
 
 /**
  * @brief Callback function type for iterating headers.
+ * 
+ * This function will be called by Pinpoint to request header iteration.
+ * The implementation should iterate through all headers and call
+ * pinpoint_header_iterator_callback for each header, passing the reader_context.
+ * 
+ * @param user_data User-provided context pointer (your header collection).
+ * @param reader_context Reader context pointer (pass to pinpoint_header_iterator_callback).
+ * @return Non-zero on success, 0 on failure.
+ */
+typedef int (*pinpoint_header_iterator_fn)(void* user_data, void* reader_context);
+
+/**
+ * @brief Internal callback that should be called by iterator functions for each header.
+ * 
+ * When implementing pinpoint_header_iterator_fn, call this function for each header
+ * during iteration. This function forwards headers to the Pinpoint tracing system.
+ * 
  * @param key Header key.
  * @param value Header value.
- * @param user_data User-provided context pointer.
- * @return Non-zero to continue iteration, 0 to stop.
+ * @param reader_context The reader context pointer received in the iterator function.
  */
-typedef int (*pinpoint_header_iterator_fn)(const char* key, const char* value, 
-                                           void* user_data);
+PINPOINT_C_API void pinpoint_header_iterator_callback(const char* key, const char* value, void* reader_context);
 
 /* =============================================================================
  * Configuration Functions
@@ -589,6 +604,108 @@ PINPOINT_C_API void pinpoint_annotation_destroy(pinpoint_annotation_handle annot
 #define PINPOINT_HEADER_PARENT_APP_NAMESPACE "Pinpoint-pAppNamespace"
 /** @brief HTTP header name for host */
 #define PINPOINT_HEADER_HOST              "Pinpoint-Host"
+
+/* =============================================================================
+ * HTTP Trace Helper Functions
+ * ============================================================================= */
+
+/**
+ * @brief Trace an HTTP server request.
+ * @param span The span handle.
+ * @param remote_addr The remote address.
+ * @param endpoint The endpoint.
+ * @param request_iterator_fn Callback function to iterate request headers.
+ * @param request_user_data User data passed to the request iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_server_request(
+    pinpoint_span_handle span,
+    const char* remote_addr,
+    const char* endpoint,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data);
+
+/**
+ * @brief Trace an HTTP server request with cookies.
+ * @param span The span handle.
+ * @param remote_addr The remote address.
+ * @param endpoint The endpoint.
+ * @param request_iterator_fn Callback function to iterate request headers.
+ * @param request_user_data User data passed to the request iterator callback.
+ * @param cookie_iterator_fn Callback function to iterate cookies.
+ * @param cookie_user_data User data passed to the cookie iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_server_request_with_cookies(
+    pinpoint_span_handle span,
+    const char* remote_addr,
+    const char* endpoint,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data,
+    pinpoint_header_iterator_fn cookie_iterator_fn,
+    void* cookie_user_data);
+
+/**
+ * @brief Trace an HTTP server response.
+ * @param span The span handle.
+ * @param url_pattern The URL pattern.
+ * @param method The HTTP method.
+ * @param status_code The HTTP status code.
+ * @param response_iterator_fn Callback function to iterate response headers.
+ * @param response_user_data User data passed to the response iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_server_response(
+    pinpoint_span_handle span,
+    const char* url_pattern,
+    const char* method,
+    int status_code,
+    pinpoint_header_iterator_fn response_iterator_fn,
+    void* response_user_data);
+
+/**
+ * @brief Trace an HTTP client request.
+ * @param span_event The span event handle.
+ * @param host The host.
+ * @param url The URL.
+ * @param request_iterator_fn Callback function to iterate request headers.
+ * @param request_user_data User data passed to the request iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_client_request(
+    pinpoint_span_event_handle span_event,
+    const char* host,
+    const char* url,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data);
+
+/**
+ * @brief Trace an HTTP client request with cookies.
+ * @param span_event The span event handle.
+ * @param host The host.
+ * @param url The URL.
+ * @param request_iterator_fn Callback function to iterate request headers.
+ * @param request_user_data User data passed to the request iterator callback.
+ * @param cookie_iterator_fn Callback function to iterate cookies.
+ * @param cookie_user_data User data passed to the cookie iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_client_request_with_cookies(
+    pinpoint_span_event_handle span_event,
+    const char* host,
+    const char* url,
+    pinpoint_header_iterator_fn request_iterator_fn,
+    void* request_user_data,
+    pinpoint_header_iterator_fn cookie_iterator_fn,
+    void* cookie_user_data);
+
+/**
+ * @brief Trace an HTTP client response.
+ * @param span_event The span event handle.
+ * @param status_code The HTTP status code.
+ * @param response_iterator_fn Callback function to iterate response headers.
+ * @param response_user_data User data passed to the response iterator callback.
+ */
+PINPOINT_C_API void pinpoint_trace_http_client_response(
+    pinpoint_span_event_handle span_event,
+    int status_code,
+    pinpoint_header_iterator_fn response_iterator_fn,
+    void* response_user_data);
 
 #ifdef __cplusplus
 }
