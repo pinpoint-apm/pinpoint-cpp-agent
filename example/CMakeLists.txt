@@ -45,3 +45,8 @@ if (BUILD_CURL_EXAMPLE)
     add_subdirectory(curl_demo)
 endif()
 
+option(BUILD_TODOLIST_EXAMPLE "Build TodoList RESTful service example" ON)
+if (BUILD_TODOLIST_EXAMPLE)
+    add_subdirectory(todolist)
+endif()
+
