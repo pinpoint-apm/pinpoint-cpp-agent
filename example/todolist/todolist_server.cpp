@@ -23,18 +23,26 @@
 #include <sstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using json = nlohmann::json;
 using namespace pinpoint;
 using namespace mysqlx;
 
+// Thread local storage for span
+thread_local pinpoint::SpanPtr current_span;
+
+// Helper functions for thread local span management
+void set_span_context(pinpoint::SpanPtr span) { current_span = span; }
+pinpoint::SpanPtr get_span_context() { return current_span; }
+
 // MySQL connection configuration
 struct MySQLConfig {
     std::string host = "localhost";
     int port = 33060;  // X Protocol default port
-    std::string user = "todouser";
-    std::string password = "todopass";
+    std::string user = "root";
+    std::string password = "rootpassword";
     std::string database = "todolist";
     
     std::string GetConnectionString() const {
@@ -136,18 +144,52 @@ int execute_update(Session* session, const std::string& query, SpanPtr span = nu
     }
 }
 
+// HTTP tracing helper functions
+pinpoint::SpanPtr trace_request(const httplib::Request& req) {
+    auto agent = g_agent;
+    if (!agent) {
+        return nullptr;
+    }
+
+    HttpHeaderReader http_reader(req.headers);
+    auto span = agent->NewSpan("C++ REST Server", req.path, req.method, http_reader);
+
+    auto end_point = req.get_header_value("Host");
+    if (end_point.empty()) {
+        end_point = req.local_addr + ":" + std::to_string(req.local_port);
+    }
+
+    helper::TraceHttpServerRequest(span, req.remote_addr, end_point, http_reader);
+    return span;
+}
+
+void trace_response(const httplib::Request& req, httplib::Response& res, pinpoint::SpanPtr span) {
+    if (!span) {
+        return;
+    }
+
+    HttpHeaderReader http_reader(res.headers);
+    helper::TraceHttpServerResponse(span, req.matched_route.empty() ? req.path : req.matched_route, 
+                                    req.method, res.status, http_reader);
+    span->EndSpan();
+}
+
+httplib::Server::Handler wrap_handler(httplib::Server::Handler handler) {
+    return [handler](const httplib::Request& req, httplib::Response& res) {
+        auto span = trace_request(req);
+        set_span_context(span);  // Store span in thread local storage
+        
+        handler(req, res);
+
+        trace_response(req, res, span);        
+        set_span_context(nullptr);  // Clear span from thread local storage
+    };
+}
+
 // User API handlers
 void handle_create_user(const httplib::Request& req, httplib::Response& res) {
     try {
-        // Create Pinpoint span
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("POST /api/users", req.path, "POST", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        // Trace HTTP request
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
+        auto span = get_span_context();  // Get span from thread local storage
         
         // Parse JSON body
         json body = json::parse(req.body);
@@ -181,10 +223,6 @@ void handle_create_user(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 201;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "POST", 201, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -194,15 +232,8 @@ void handle_create_user(const httplib::Request& req, httplib::Response& res) {
 
 void handle_get_user(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int user_id = std::stoi(req.matches[1]);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("GET /api/users/:id", req.path, "GET", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -228,10 +259,6 @@ void handle_get_user(const httplib::Request& req, httplib::Response& res) {
             res.status = 404;
         }
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "GET", res.status, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -241,16 +268,9 @@ void handle_get_user(const httplib::Request& req, httplib::Response& res) {
 
 void handle_update_user(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int user_id = std::stoi(req.matches[1]);
         json body = json::parse(req.body);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("PUT /api/users/:id", req.path, "PUT", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -279,10 +299,6 @@ void handle_update_user(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 200;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "PUT", 200, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -292,15 +308,8 @@ void handle_update_user(const httplib::Request& req, httplib::Response& res) {
 
 void handle_delete_user(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int user_id = std::stoi(req.matches[1]);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("DELETE /api/users/:id", req.path, "DELETE", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -312,10 +321,6 @@ void handle_delete_user(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 200;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "DELETE", 200, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -326,13 +331,7 @@ void handle_delete_user(const httplib::Request& req, httplib::Response& res) {
 // Todo API handlers
 void handle_create_todo(const httplib::Request& req, httplib::Response& res) {
     try {
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("POST /api/todos", req.path, "POST", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
+        auto span = get_span_context();  // Get span from thread local storage
         
         json body = json::parse(req.body);
         int user_id = body["user_id"];
@@ -372,10 +371,6 @@ void handle_create_todo(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 201;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "POST", 201, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -385,13 +380,7 @@ void handle_create_todo(const httplib::Request& req, httplib::Response& res) {
 
 void handle_get_todos(const httplib::Request& req, httplib::Response& res) {
     try {
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("GET /api/todos", req.path, "GET", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
+        auto span = get_span_context();  // Get span from thread local storage
         
         MySQLSession session;
         std::stringstream query;
@@ -441,10 +430,6 @@ void handle_get_todos(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 200;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "GET", 200, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -454,15 +439,8 @@ void handle_get_todos(const httplib::Request& req, httplib::Response& res) {
 
 void handle_get_todo(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int todo_id = std::stoi(req.matches[1]);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("GET /api/todos/:id", req.path, "GET", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -491,10 +469,6 @@ void handle_get_todo(const httplib::Request& req, httplib::Response& res) {
             res.status = 404;
         }
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "GET", res.status, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -504,16 +478,9 @@ void handle_get_todo(const httplib::Request& req, httplib::Response& res) {
 
 void handle_update_todo(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int todo_id = std::stoi(req.matches[1]);
         json body = json::parse(req.body);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("PUT /api/todos/:id", req.path, "PUT", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -549,10 +516,6 @@ void handle_update_todo(const httplib::Request& req, httplib::Response& res) {
         res.set_content(response.dump(), "application/json");
         res.status = 200;
         
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "PUT", 200, response_reader);
-        span->EndSpan();
-        
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
         res.set_content(error.dump(), "application/json");
@@ -562,15 +525,8 @@ void handle_update_todo(const httplib::Request& req, httplib::Response& res) {
 
 void handle_delete_todo(const httplib::Request& req, httplib::Response& res) {
     try {
+        auto span = get_span_context();  // Get span from thread local storage
         int todo_id = std::stoi(req.matches[1]);
-        
-        HttpHeaderReader header_reader(req.headers);
-        auto span = g_agent->NewSpan("DELETE /api/todos/:id", req.path, "DELETE", header_reader);
-        span->SetServiceType(SERVICE_TYPE_CPP);
-        span->SetRemoteAddress(req.remote_addr);
-        span->SetEndPoint(req.path);
-        
-        helper::TraceHttpServerRequest(span, req.remote_addr, req.path, header_reader);
         
         MySQLSession session;
         std::stringstream query;
@@ -581,10 +537,6 @@ void handle_delete_todo(const httplib::Request& req, httplib::Response& res) {
         json response = {{"status", "success"}, {"message", "Todo deleted"}};
         res.set_content(response.dump(), "application/json");
         res.status = 200;
-        
-        HttpHeaderReader response_reader(res.headers);
-        helper::TraceHttpServerResponse(span, req.path, "DELETE", 200, response_reader);
-        span->EndSpan();
         
     } catch (const std::exception& e) {
         json error = {{"status", "error"}, {"message", e.what()}};
@@ -600,15 +552,10 @@ int main(int argc, char* argv[]) {
     } else {
         SetConfigFilePath("pinpoint-config.yaml");
     }
-    
-    // Initialize Pinpoint agent
-    g_agent = GlobalAgent();
-    if (!g_agent || !g_agent->Enable()) {
-        std::cerr << "Warning: Failed to initialize Pinpoint agent. "
-                  << "Tracing will be disabled." << std::endl;
-    } else {
-        std::cout << "Pinpoint agent initialized successfully" << std::endl;
-    }
+
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-todolist", 0);
+    setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 0);
+    setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     
     // Test MySQL connection
     try {
@@ -621,6 +568,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Initialize Pinpoint agent
+    g_agent = pinpoint::CreateAgent();
     // Create HTTP server
     httplib::Server svr;
     
@@ -628,28 +577,28 @@ int main(int argc, char* argv[]) {
     svr.set_read_timeout(5, 0);
     svr.set_write_timeout(5, 0);
     
-    // Register handlers
+    // Register handlers with tracing wrapper
     // User APIs
-    svr.Post("/api/users", handle_create_user);
-    svr.Get(R"(/api/users/(\d+))", handle_get_user);
-    svr.Put(R"(/api/users/(\d+))", handle_update_user);
-    svr.Delete(R"(/api/users/(\d+))", handle_delete_user);
+    svr.Post("/api/users", wrap_handler(handle_create_user));
+    svr.Get(R"(/api/users/(\d+))", wrap_handler(handle_get_user));
+    svr.Put(R"(/api/users/(\d+))", wrap_handler(handle_update_user));
+    svr.Delete(R"(/api/users/(\d+))", wrap_handler(handle_delete_user));
     
     // Todo APIs
-    svr.Post("/api/todos", handle_create_todo);
-    svr.Get("/api/todos", handle_get_todos);
-    svr.Get(R"(/api/todos/(\d+))", handle_get_todo);
-    svr.Put(R"(/api/todos/(\d+))", handle_update_todo);
-    svr.Delete(R"(/api/todos/(\d+))", handle_delete_todo);
+    svr.Post("/api/todos", wrap_handler(handle_create_todo));
+    svr.Get("/api/todos", wrap_handler(handle_get_todos));
+    svr.Get(R"(/api/todos/(\d+))", wrap_handler(handle_get_todo));
+    svr.Put(R"(/api/todos/(\d+))", wrap_handler(handle_update_todo));
+    svr.Delete(R"(/api/todos/(\d+))", wrap_handler(handle_delete_todo));
     
     // Health check
-    svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/health", wrap_handler([](const httplib::Request&, httplib::Response& res) {
         json response = {{"status", "healthy"}, {"service", "todolist"}};
         res.set_content(response.dump(), "application/json");
-    });
+    }));
     
     // Root endpoint
-    svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/", wrap_handler([](const httplib::Request&, httplib::Response& res) {
         json response = {
             {"service", "TodoList API"},
             {"version", "1.0.0"},
@@ -670,7 +619,7 @@ int main(int argc, char* argv[]) {
             }}
         };
         res.set_content(response.dump(2), "application/json");
-    });
+    }));
     
     std::cout << "\nTodoList Server Starting..." << std::endl;
     std::cout << "=============================" << std::endl;

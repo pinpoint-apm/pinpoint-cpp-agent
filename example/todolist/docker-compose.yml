@@ -8,8 +8,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: todolist
-      MYSQL_USER: todouser
-      MYSQL_PASSWORD: todopass
+      MYSQL_USER: root
+      MYSQL_PASSWORD: rootpassword
     ports:
       - "3306:3306"
       - "33060:33060"  # MySQL X Protocol port
