@@ -1,0 +1,43 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# TodoList Server using MySQL X DevAPI and nlohmann_json
+cc_binary(
+    name = "todolist_server",
+    srcs = ["todolist_server.cpp"],
+    copts = [
+        "-std=c++14",
+    ],
+    includes = [
+        "../",  # For http_trace_context.h
+    ],
+    tags = [
+        "examples",
+        "manual",  # Requires MySQL Connector C++ and nlohmann_json installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add dependencies to WORKSPACE:
+        # 1. MySQL Connector C++ (see mysql_demo/BUILD.bazel for example)
+        # 2. nlohmann_json:
+        #    - On macOS: brew install nlohmann-json
+        #    - On Linux: apt-get install nlohmann-json3-dev
+        # 
+        # Example WORKSPACE entry for nlohmann_json:
+        # new_local_repository(
+        #     name = "nlohmann_json",
+        #     path = "/usr/local/include",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "json",
+        #     hdrs = glob(["nlohmann/**/*.hpp"]),
+        #     includes = ["."],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+

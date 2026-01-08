@@ -1,0 +1,40 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# Redis Demo
+cc_binary(
+    name = "redis_demo",
+    srcs = ["redis_example.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires redis-plus-plus library installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add redis-plus-plus dependency to WORKSPACE:
+        # redis-plus-plus is a C++ client for Redis
+        # GitHub: https://github.com/sewenew/redis-plus-plus
+        # 
+        # Installation:
+        # - On macOS: brew install redis-plus-plus
+        # - On Linux: Build from source or use package manager
+        # 
+        # Example WORKSPACE entry:
+        # new_local_repository(
+        #     name = "redis_plus_plus",
+        #     path = "/usr/local/include",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "redis++",
+        #     srcs = glob(["lib/libredis++.so"]),
+        #     hdrs = glob(["sw/**/*.h"]),
+        #     includes = ["."],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+

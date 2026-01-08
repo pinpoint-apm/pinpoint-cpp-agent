@@ -1,0 +1,66 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# Common headers for Kafka demo
+cc_library(
+    name = "kafka_demo_common",
+    hdrs = ["kafka_trace_context.h"],
+    deps = [
+        "//:pinpoint-cpp",
+        # Note: Add librdkafka dependency
+    ],
+)
+
+# Kafka Producer Demo
+cc_binary(
+    name = "kafka_producer",
+    srcs = ["kafka_web_producer.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires librdkafka installation
+    ],
+    deps = [
+        ":kafka_demo_common",
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add librdkafka dependency to WORKSPACE:
+        # librdkafka is a C/C++ library for Apache Kafka
+        # GitHub: https://github.com/edenhill/librdkafka
+        # 
+        # Installation:
+        # - On macOS: brew install librdkafka
+        # - On Linux: apt-get install librdkafka-dev
+        # 
+        # Example WORKSPACE entry:
+        # new_local_repository(
+        #     name = "librdkafka",
+        #     path = "/usr/local/include",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "rdkafka",
+        #     srcs = glob(["lib/librdkafka.so", "lib/librdkafka++.so"]),
+        #     hdrs = glob(["librdkafka/*.h"]),
+        #     includes = ["."],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+
+# Kafka Consumer Demo
+cc_binary(
+    name = "kafka_consumer",
+    srcs = ["consumer.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires librdkafka installation
+    ],
+    deps = [
+        ":kafka_demo_common",
+        "//:pinpoint-cpp",
+        # Note: Add librdkafka dependency (see kafka_producer above)
+    ],
+)
+

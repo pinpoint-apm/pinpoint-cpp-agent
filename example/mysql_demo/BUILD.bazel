@@ -1,0 +1,39 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# MySQL Demo using X DevAPI
+cc_binary(
+    name = "db_demo",
+    srcs = ["db_demo.cpp"],
+    copts = [
+        "-std=c++14",
+    ],
+    tags = [
+        "examples",
+        "manual",  # Requires MySQL Connector C++ installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add MySQL Connector C++ dependency to WORKSPACE:
+        # - On macOS: brew install mysql-connector-c++
+        # - On Linux: apt-get install libmysqlcppconn-dev
+        # 
+        # Example WORKSPACE entry:
+        # new_local_repository(
+        #     name = "mysql_connector_cpp",
+        #     path = "/usr/local/include",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "mysqlcppconn",
+        #     srcs = glob(["lib/libmysqlcppconnx.so"]),
+        #     hdrs = glob(["include/mysqlx/**/*.h"]),
+        #     includes = ["include"],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+

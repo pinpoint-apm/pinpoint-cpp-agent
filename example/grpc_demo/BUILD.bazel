@@ -1,0 +1,60 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
+
+# Proto library
+proto_library(
+    name = "testapp_proto",
+    srcs = ["testapp.proto"],
+)
+
+# C++ gRPC library
+cc_grpc_library(
+    name = "testapp_cc_grpc",
+    srcs = [":testapp_proto"],
+    grpc_only = False,
+    deps = [],
+)
+
+# Common headers for gRPC demo
+cc_library(
+    name = "grpc_demo_common",
+    hdrs = [
+        "pinpoint_grpc_context.h",
+        "pinpoint_grpc_interceptors.h",
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "@com_github_grpc_grpc//:grpc++",
+    ],
+)
+
+# gRPC Server
+cc_binary(
+    name = "grpc_server",
+    srcs = ["grpc_server.cpp"],
+    tags = ["examples"],
+    deps = [
+        ":grpc_demo_common",
+        ":testapp_cc_grpc",
+        "//:pinpoint-cpp",
+        "@com_github_grpc_grpc//:grpc++",
+    ],
+)
+
+# gRPC Client
+cc_binary(
+    name = "grpc_client",
+    srcs = ["grpc_client.cpp"],
+    tags = ["examples"],
+    deps = [
+        ":grpc_demo_common",
+        ":testapp_cc_grpc",
+        "//:pinpoint-cpp",
+        "@com_github_grpc_grpc//:grpc++",
+    ],
+)
+

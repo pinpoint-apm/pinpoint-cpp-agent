@@ -1,0 +1,39 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# cURL Demo
+cc_binary(
+    name = "curl_demo",
+    srcs = ["curl_web_example.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires libcurl installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add libcurl dependency to WORKSPACE:
+        # libcurl is widely available on most systems
+        # 
+        # Installation:
+        # - On macOS: brew install curl (usually pre-installed)
+        # - On Linux: apt-get install libcurl4-openssl-dev
+        # 
+        # Example WORKSPACE entry:
+        # new_local_repository(
+        #     name = "curl",
+        #     path = "/usr",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "curl",
+        #     srcs = ["lib/libcurl.so"],
+        #     hdrs = glob(["include/curl/*.h"]),
+        #     includes = ["include"],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+

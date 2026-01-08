@@ -1,0 +1,40 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# MongoDB Demo
+cc_binary(
+    name = "mongodb_demo",
+    srcs = ["mongo_example.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires MongoDB C++ driver installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add MongoDB C++ driver dependency to WORKSPACE:
+        # MongoDB C++ driver requires mongocxx and bsoncxx
+        # GitHub: https://github.com/mongodb/mongo-cxx-driver
+        # 
+        # Installation:
+        # - On macOS: brew install mongo-cxx-driver
+        # - On Linux: Follow official installation guide
+        # 
+        # Example WORKSPACE entry:
+        # new_local_repository(
+        #     name = "mongo_cxx_driver",
+        #     path = "/usr/local/include",
+        #     build_file_content = """
+        # cc_library(
+        #     name = "mongocxx",
+        #     srcs = glob(["lib/libmongocxx.so", "lib/libbsoncxx.so"]),
+        #     hdrs = glob(["mongocxx/**/*.hpp", "bsoncxx/**/*.hpp"]),
+        #     includes = ["."],
+        #     visibility = ["//visibility:public"],
+        # )
+        #     """,
+        # )
+    ],
+)
+

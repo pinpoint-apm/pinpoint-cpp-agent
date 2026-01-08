@@ -1,0 +1,28 @@
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # Apache 2
+
+# CPPTrace Demo
+cc_binary(
+    name = "cpptrace_demo",
+    srcs = ["cpptrace_demo.cpp"],
+    tags = [
+        "examples",
+        "manual",  # Requires cpptrace library installation
+    ],
+    deps = [
+        "//:pinpoint-cpp",
+        "//3rd_party:httplib",
+        # Note: Add cpptrace dependency to WORKSPACE:
+        # cpptrace is a C++ stack trace library
+        # GitHub: https://github.com/jeremy-rifkin/cpptrace
+        # 
+        # Example WORKSPACE entry:
+        # http_archive(
+        #     name = "cpptrace",
+        #     urls = ["https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v0.3.1.tar.gz"],
+        #     strip_prefix = "cpptrace-0.3.1",
+        # )
+    ],
+)
+
