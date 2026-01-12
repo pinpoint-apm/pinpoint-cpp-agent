@@ -48,7 +48,7 @@ public:
         config_.span.queue_size = 1024;
         config_.http.url_stat.enable = true;
         config_.http.url_stat.limit = 1024;
-        config_.http.url_stat.path_depth = 3;
+        config_.http.url_stat.trim_path_depth = 3;
         config_.collector.host = "localhost";
         config_.collector.agent_port = 9991;
         config_.collector.span_port = 9993;
@@ -75,7 +75,7 @@ public:
     void recordSpan(std::unique_ptr<SpanChunk> span) const override {
         recorded_spans_.push_back(std::move(span));
     }
-    void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
+    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
         recorded_url_stats_++;
     }
     void recordException(SpanData* span_data) const override {

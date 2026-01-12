@@ -76,7 +76,8 @@ namespace pinpoint {
         constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
-        constexpr const char* HTTP_URL_STAT_PATH_DEPTH = "PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH";
+        constexpr const char* HTTP_URL_STAT_ENABLE_TRIM_PATH = "PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH";
+        constexpr const char* HTTP_URL_STAT_TRIM_PATH_DEPTH = "PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH";
         constexpr const char* HTTP_URL_STAT_METHOD_PREFIX = "PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX";
         constexpr const char* HTTP_SERVER_STATUS_CODE_ERRORS = "PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS";
         constexpr const char* HTTP_SERVER_EXCLUDE_URL = "PINPOINT_CPP_HTTP_SERVER_EXCLUDE_URL";
@@ -147,7 +148,8 @@ namespace pinpoint {
             struct {
                 bool enable = false;
                 int limit = defaults::HTTP_URL_STAT_LIMIT;
-                int path_depth = 1;
+                bool enable_trim_path = true;
+                int trim_path_depth = 1;
                 bool method_prefix = false;
             } url_stat;
 

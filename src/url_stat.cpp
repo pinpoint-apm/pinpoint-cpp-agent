@@ -43,7 +43,7 @@ namespace pinpoint {
           tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
           snapshot_(std::make_unique<UrlStatSnapshot>()) {}
 
-    void UrlStats::addSnapshot(const UrlStat* us, const Config& config) {
+    void UrlStats::addSnapshot(const UrlStatEntry* us, const Config& config) {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_->add(us, config, tick_clock_);
     }
@@ -85,10 +85,11 @@ namespace pinpoint {
         return status < HTTP_STATUS_ERROR_THRESHOLD ? URL_STATUS_SUCCESS : URL_STATUS_FAIL;
     }
 
-    void UrlStatSnapshot::add(const UrlStat* us, const Config& config, TickClock& tick_clock) {
+    void UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
         std::unique_lock<std::mutex> lock(mutex_);
 
-        auto url = trim_url_path(us->url_pattern_, config.http.url_stat.path_depth);
+        auto url = config.http.url_stat.enable_trim_path ? 
+            trim_url_path(us->url_pattern_, config.http.url_stat.trim_path_depth) : us->url_pattern_;
 
         if (config.http.url_stat.method_prefix) {
             url = absl::StrCat(us->method_, " ", url);
@@ -115,7 +116,7 @@ namespace pinpoint {
         }
     }
 
-    std::string trim_url_path(std::string_view url, int depth) {
+    std::string UrlStatSnapshot::trim_url_path(std::string_view url, int depth) {
         if (url.empty()) {
             return "";
         }
@@ -149,7 +150,7 @@ namespace pinpoint {
         return result;
     }
 
-    void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStat> stats) noexcept try {
+    void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept try {
         const auto& config = agent_->getConfig();
         if (!config.http.url_stat.enable) {
             return;

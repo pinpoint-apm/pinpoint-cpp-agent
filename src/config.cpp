@@ -143,7 +143,8 @@ namespace pinpoint {
         if (auto& http = yaml["Http"]) {
             config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", false);
             config.http.url_stat.limit = get_int(http, "UrlStatLimit", defaults::HTTP_URL_STAT_LIMIT);
-            config.http.url_stat.path_depth = get_int(http, "UrlStatPathDepth", 1);
+            config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", true);
+            config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", 1);
             config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", false);
 
             if (auto& srv = http["Server"]) {
@@ -313,8 +314,11 @@ namespace pinpoint {
         if(const char* env_p = std::getenv(env::HTTP_URL_STAT_LIMIT)) {
             config.http.url_stat.limit = safe_env_stoi(env::HTTP_URL_STAT_LIMIT, env_p, defaults::HTTP_URL_STAT_LIMIT);
         }
-        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_PATH_DEPTH)) {
-            config.http.url_stat.path_depth = safe_env_stoi(env::HTTP_URL_STAT_PATH_DEPTH, env_p, 1);
+        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
+            config.http.url_stat.enable_trim_path = safe_env_stob(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, env_p, true);
+        }
+        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
+            config.http.url_stat.trim_path_depth = safe_env_stoi(env::HTTP_URL_STAT_TRIM_PATH_DEPTH, env_p, 1);
         }
         if(const char* env_p = std::getenv(env::HTTP_URL_STAT_METHOD_PREFIX)) {
             config.http.url_stat.method_prefix = safe_env_stob(env::HTTP_URL_STAT_METHOD_PREFIX, env_p, false);
@@ -565,7 +569,7 @@ namespace pinpoint {
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "Enable" << YAML::Value << config.http.url_stat.enable;
         emitter << YAML::Key << "Limit" << YAML::Value << config.http.url_stat.limit;
-        emitter << YAML::Key << "PathDepth" << YAML::Value << config.http.url_stat.path_depth;
+        emitter << YAML::Key << "PathDepth" << YAML::Value << config.http.url_stat.trim_path_depth;
         emitter << YAML::Key << "MethodPrefix" << YAML::Value << config.http.url_stat.method_prefix;
         emitter << YAML::EndMap;
 

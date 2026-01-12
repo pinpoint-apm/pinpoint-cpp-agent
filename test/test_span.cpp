@@ -62,7 +62,7 @@ public:
         recorded_spans_.push_back(std::move(span));
     }
 
-    void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
+    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
         recorded_url_stats_++;
     }
 

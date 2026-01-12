@@ -142,7 +142,7 @@ namespace pinpoint {
     private:
         int64_t span_id_;
         int64_t start_time_;
-        std::unique_ptr<UrlStat> url_stat_;
+        std::unique_ptr<UrlStatEntry> url_stat_;
         AgentService *agent_;
     };
 

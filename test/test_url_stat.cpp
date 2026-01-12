@@ -33,7 +33,7 @@ public:
         // Configure default config for URL stats
         config_.http.url_stat.enable = true;
         config_.http.url_stat.limit = 1024;
-        config_.http.url_stat.path_depth = 3;
+        config_.http.url_stat.trim_path_depth = 3;
         config_.http.url_stat.method_prefix = false;
         config_.span.queue_size = 100;
     }
@@ -58,7 +58,7 @@ public:
         recorded_spans_++;
     }
 
-    void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
+    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
         recorded_url_stats_++;
     }
 
@@ -296,7 +296,7 @@ TEST_F(UrlStatTest, UrlKeyComparisonTest) {
 // ========== UrlStat Tests ==========
 
 TEST_F(UrlStatTest, UrlStatConstructorTest) {
-    UrlStat stat("/api/users", "GET", 200);
+    UrlStatEntry stat("/api/users", "GET", 200);
     
     EXPECT_EQ(stat.url_pattern_, "/api/users") << "URL pattern should match";
     EXPECT_EQ(stat.method_, "GET") << "Method should match";
@@ -318,7 +318,7 @@ TEST_F(UrlStatTest, UrlStatSnapshotAddTest) {
     Config config;
     
     // Create a test UrlStat
-    UrlStat stat("/api/users", "GET", 200);
+    UrlStatEntry stat("/api/users", "GET", 200);
     stat.elapsed_ = 150;
     stat.end_time_ = std::chrono::system_clock::now();
     
@@ -340,7 +340,7 @@ TEST_F(UrlStatTest, UrlStatsConstructorTest) {
 TEST_F(UrlStatTest, UrlStatsEnqueueTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
-    auto stat = std::make_unique<UrlStat>("/api/test", "POST", 201);
+    auto stat = std::make_unique<UrlStatEntry>("/api/test", "POST", 201);
     url_stats.enqueueUrlStats(std::move(stat));
     
     SUCCEED() << "Enqueue should not crash";
@@ -350,7 +350,7 @@ TEST_F(UrlStatTest, UrlStatsEnqueueWithDisabledConfigTest) {
     mock_agent_service_->setUrlStatEnabled(false);
     UrlStats url_stats(mock_agent_service_.get());
     
-    auto stat = std::make_unique<UrlStat>("/api/test", "POST", 201);
+    auto stat = std::make_unique<UrlStatEntry>("/api/test", "POST", 201);
     url_stats.enqueueUrlStats(std::move(stat));
     
     SUCCEED() << "Enqueue with disabled config should not crash";
@@ -414,7 +414,7 @@ TEST_F(UrlStatTest, UrlStatsWithExitingAgentTest) {
 
 TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     Config config;
-    UrlStat stat("/api/test", "GET", 200);
+    UrlStatEntry stat("/api/test", "GET", 200);
     stat.elapsed_ = 100;
     stat.end_time_ = std::chrono::system_clock::now();
     
@@ -431,23 +431,23 @@ TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
 
 TEST_F(UrlStatTest, TrimUrlPathTest) {
     // Test basic path trimming
-    std::string result1 = trim_url_path("/api/v1/users/123/posts/456", 3);
+    std::string result1 = UrlStatSnapshot::trim_url_path("/api/v1/users/123/posts/456", 3);
     EXPECT_FALSE(result1.empty()) << "Trimmed path should not be empty";
     
     // Test with depth 0 (gets converted to depth 1)
-    std::string result2 = trim_url_path("/api/v1/users", 0);
+    std::string result2 = UrlStatSnapshot::trim_url_path("/api/v1/users", 0);
     EXPECT_FALSE(result2.empty()) << "Trimmed path with depth 0 should not be empty";
     
     // Test with non-empty path that starts without slash
-    std::string result3 = trim_url_path("api/test", 2);
+    std::string result3 = UrlStatSnapshot::trim_url_path("api/test", 2);
     EXPECT_FALSE(result3.empty()) << "Trimmed path should not be empty";
     
     // Test with single level path
-    std::string result4 = trim_url_path("/api", 1);
+    std::string result4 = UrlStatSnapshot::trim_url_path("/api", 1);
     EXPECT_EQ(result4, "/api") << "Single level path should be preserved";
     
     // Test path with query parameters
-    std::string result5 = trim_url_path("/api/users?id=123", 2);
+    std::string result5 = UrlStatSnapshot::trim_url_path("/api/users?id=123", 2);
     EXPECT_FALSE(result5.empty()) << "Path with query params should be trimmed";
     EXPECT_EQ(result5.find('?'), std::string::npos) << "Query params should be removed";
 }
@@ -456,9 +456,9 @@ TEST_F(UrlStatTest, TrimUrlPathDepthTest) {
     // Test different depths
     std::string path = "/api/v1/users/123/posts";
     
-    std::string result1 = trim_url_path(path, 1);
-    std::string result2 = trim_url_path(path, 2);
-    std::string result3 = trim_url_path(path, 3);
+    std::string result1 = UrlStatSnapshot::trim_url_path(path, 1);
+    std::string result2 = UrlStatSnapshot::trim_url_path(path, 2);
+    std::string result3 = UrlStatSnapshot::trim_url_path(path, 3);
     
     // Results should be different for different depths
     EXPECT_FALSE(result1.empty());
@@ -475,11 +475,11 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
     // Create and enqueue multiple stats
-    auto stat1 = std::make_unique<UrlStat>("/api/users", "GET", 200);
+    auto stat1 = std::make_unique<UrlStatEntry>("/api/users", "GET", 200);
     stat1->elapsed_ = 100;
-    auto stat2 = std::make_unique<UrlStat>("/api/posts", "POST", 201);
+    auto stat2 = std::make_unique<UrlStatEntry>("/api/posts", "POST", 201);
     stat2->elapsed_ = 200;
-    auto stat3 = std::make_unique<UrlStat>("/api/users", "GET", 500);
+    auto stat3 = std::make_unique<UrlStatEntry>("/api/users", "GET", 500);
     stat3->elapsed_ = 300;
     
     url_stats.enqueueUrlStats(std::move(stat1));
@@ -520,7 +520,7 @@ TEST_F(UrlStatTest, ConcurrentEnqueueTest) {
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([&url_stats, t]() {
             for (int i = 0; i < stats_per_thread; i++) {
-                auto stat = std::make_unique<UrlStat>("/api/test" + std::to_string(t) + "/" + std::to_string(i), "GET", 200);
+                auto stat = std::make_unique<UrlStatEntry>("/api/test" + std::to_string(t) + "/" + std::to_string(i), "GET", 200);
                 stat->elapsed_ = 100 + i;
                 url_stats.enqueueUrlStats(std::move(stat));
             }

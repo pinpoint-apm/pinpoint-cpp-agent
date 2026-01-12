@@ -52,7 +52,7 @@ public:
         recorded_spans_++;
     }
 
-    void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
+    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
         recorded_url_stats_++;
     }
 

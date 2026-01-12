@@ -90,7 +90,7 @@ namespace pinpoint {
     }
 
     void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
-        url_stat_ = std::make_unique<UrlStat>(url_pattern, method, status_code);
+        url_stat_ = std::make_unique<UrlStatEntry>(url_pattern, method, status_code);
     } catch (const std::exception& e) {
         LOG_ERROR("set url stat exception = {}", e.what());
     }

@@ -330,7 +330,7 @@ namespace pinpoint {
         std::vector<std::shared_ptr<SpanEventImpl>> finished_events;
     	std::mutex span_event_lock_;
 
-        std::unique_ptr<UrlStat> url_stat_;
+        std::unique_ptr<UrlStatEntry> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;
         std::vector<std::unique_ptr<Exception>> exceptions_;
     	AgentService *agent_;

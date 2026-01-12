@@ -65,6 +65,11 @@ private:
         saved_env_vars_[env::SQL_MAX_BIND_ARGS_SIZE] = GetEnvVar(env::SQL_MAX_BIND_ARGS_SIZE);
         saved_env_vars_[env::SQL_ENABLE_SQL_STATS] = GetEnvVar(env::SQL_ENABLE_SQL_STATS);
         saved_env_vars_[env::ENABLE_CALLSTACK_TRACE] = GetEnvVar(env::ENABLE_CALLSTACK_TRACE);
+        saved_env_vars_[env::HTTP_COLLECT_URL_STAT] = GetEnvVar(env::HTTP_COLLECT_URL_STAT);
+        saved_env_vars_[env::HTTP_URL_STAT_LIMIT] = GetEnvVar(env::HTTP_URL_STAT_LIMIT);
+        saved_env_vars_[env::HTTP_URL_STAT_ENABLE_TRIM_PATH] = GetEnvVar(env::HTTP_URL_STAT_ENABLE_TRIM_PATH);
+        saved_env_vars_[env::HTTP_URL_STAT_TRIM_PATH_DEPTH] = GetEnvVar(env::HTTP_URL_STAT_TRIM_PATH_DEPTH);
+        saved_env_vars_[env::HTTP_URL_STAT_METHOD_PREFIX] = GetEnvVar(env::HTTP_URL_STAT_METHOD_PREFIX);
         
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
@@ -132,7 +137,8 @@ Stat:
 Http:
   CollectUrlStat: true
   UrlStatLimit: 2048
-  UrlStatPathDepth: 3
+  UrlStatEnableTrimPath: false
+  UrlStatTrimPathDepth: 3
   UrlStatMethodPrefix: true
   
   Server:
@@ -240,7 +246,8 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     // Test HTTP defaults
     EXPECT_FALSE(config.http.url_stat.enable) << "URL stat should be disabled by default";
     EXPECT_EQ(config.http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
-    EXPECT_EQ(config.http.url_stat.path_depth, 1) << "Default path depth should be 1";
+    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
+    EXPECT_EQ(config.http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
     EXPECT_FALSE(config.http.url_stat.method_prefix) << "Method prefix should be false by default";
     
     // Test HTTP server defaults
@@ -324,7 +331,8 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     // Test HTTP configuration
     EXPECT_TRUE(config.http.url_stat.enable) << "URL stat enable should match YAML";
     EXPECT_EQ(config.http.url_stat.limit, 2048) << "URL stat limit should match YAML";
-    EXPECT_EQ(config.http.url_stat.path_depth, 3) << "URL stat path depth should match YAML";
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
+    EXPECT_EQ(config.http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
     EXPECT_TRUE(config.http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
     
     // Test HTTP server configuration
@@ -422,6 +430,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(env::IS_CONTAINER, "true", 1);
     setenv(env::SQL_MAX_BIND_ARGS_SIZE, "4096", 1);
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
     
     Config config = make_config();
     
@@ -439,6 +448,9 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Test SQL environment variable values
     EXPECT_EQ(config.sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
     EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
+    
+    // Test HTTP environment variable values
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
 }
 
 // Test environment variable override YAML
@@ -1202,6 +1214,137 @@ TEST_F(ConfigTest, CallstackTraceDefaultInStringOutputTest) {
         << "Config string should contain EnableCallstackTrace key";
     EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
         << "Config string should show default value (false)";
+}
+
+// ========== URL Stat Enable Trim Path Tests ==========
+
+// Test URL stat enable trim path via YAML
+TEST_F(ConfigTest, UrlStatEnableTrimPathViaYamlTest) {
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: false
+)");
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via YAML";
+}
+
+// Test URL stat enable trim path via environment variable
+TEST_F(ConfigTest, UrlStatEnableTrimPathViaEnvironmentVariableTest) {
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via environment variable";
+}
+
+// Test environment variable overrides YAML for enable trim path
+TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlTest) {
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: false
+)");
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "true", 1);
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path";
+}
+
+// Test environment variable overrides YAML (opposite case)
+TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlOppositeTest) {
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: true
+)");
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
+    Config config = make_config();
+    
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path (opposite)";
+}
+
+// Test invalid environment variable for enable trim path
+TEST_F(ConfigTest, UrlStatEnableTrimPathInvalidEnvironmentVariableTest) {
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "invalid", 1);
+    Config config = make_config();
+    
+    // Should use default value (true) when invalid
+    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Invalid environment variable should use default value";
+}
+
+// Test enable trim path with other URL stat settings
+TEST_F(ConfigTest, UrlStatEnableTrimPathWithOtherSettingsTest) {
+    set_config_string(R"(
+Http:
+  CollectUrlStat: true
+  UrlStatLimit: 512
+  UrlStatEnableTrimPath: false
+  UrlStatTrimPathDepth: 2
+  UrlStatMethodPrefix: true
+)");
+    Config config = make_config();
+    
+    EXPECT_TRUE(config.http.url_stat.enable) << "URL stat should be enabled";
+    EXPECT_EQ(config.http.url_stat.limit, 512) << "URL stat limit should match YAML";
+    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "Enable trim path should be false";
+    EXPECT_EQ(config.http.url_stat.trim_path_depth, 2) << "Path depth should match YAML";
+    EXPECT_TRUE(config.http.url_stat.method_prefix) << "Method prefix should be true";
+}
+
+// Test enable trim path boolean variations
+TEST_F(ConfigTest, UrlStatEnableTrimPathBooleanVariationsTest) {
+    // Test "yes"
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: yes
+)");
+    Config config1 = make_config();
+    EXPECT_TRUE(config1.http.url_stat.enable_trim_path) << "yes should be parsed as true";
+    
+    // Test "no"
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: no
+)");
+    Config config2 = make_config();
+    EXPECT_FALSE(config2.http.url_stat.enable_trim_path) << "no should be parsed as false";
+    
+    // Test "TRUE"
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: TRUE
+)");
+    Config config3 = make_config();
+    EXPECT_TRUE(config3.http.url_stat.enable_trim_path) << "TRUE should be parsed as true";
+    
+    // Test "FALSE"
+    set_config_string(R"(
+Http:
+  UrlStatEnableTrimPath: FALSE
+)");
+    Config config4 = make_config();
+    EXPECT_FALSE(config4.http.url_stat.enable_trim_path) << "FALSE should be parsed as false";
+}
+
+// Test enable trim path environment variable boolean variations
+TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest) {
+    // Test "1"
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "1", 1);
+    Config config1 = make_config();
+    EXPECT_TRUE(config1.http.url_stat.enable_trim_path) << "1 should be parsed as true";
+    
+    // Test "0"
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "0", 1);
+    Config config2 = make_config();
+    EXPECT_FALSE(config2.http.url_stat.enable_trim_path) << "0 should be parsed as false";
+    
+    // Test "yes"
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "yes", 1);
+    Config config3 = make_config();
+    EXPECT_TRUE(config3.http.url_stat.enable_trim_path) << "yes should be parsed as true";
+    
+    // Test "no"
+    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "no", 1);
+    Config config4 = make_config();
+    EXPECT_FALSE(config4.http.url_stat.enable_trim_path) << "no should be parsed as false";
 }
 
 } // namespace pinpoint

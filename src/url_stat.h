@@ -123,14 +123,14 @@ namespace pinpoint {
     /**
      * @brief Raw runtime information for a single URL invocation.
      */
-    struct UrlStat {
+    struct UrlStatEntry {
         std::string url_pattern_;
         std::string method_;
         int status_code_;
         std::chrono::system_clock::time_point end_time_;
         int32_t elapsed_;
 
-        UrlStat(std::string_view url_pattern, std::string_view method, int status_code)
+        UrlStatEntry(std::string_view url_pattern, std::string_view method, int status_code)
                 : url_pattern_{url_pattern}, method_{method}, status_code_{status_code},
                   end_time_{}, elapsed_{} {}
     };
@@ -150,9 +150,17 @@ namespace pinpoint {
          * @param config Agent configuration for histogram settings.
          * @param tick_clock Clock for time bucketing.
          */
-        void add(const UrlStat* us, const Config& config, TickClock& tick_clock);
+        void add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
         /// @brief Returns the const map storing statistics per URL/tick.
         const std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() const { return urlMap_; }
+
+        /**
+         * @brief Trims a URL path using the configured depth.
+         *
+         * @param url Raw URL path.
+         * @param depth Maximum number of segments to keep.
+         */
+        static std::string trim_url_path(std::string_view url, int depth);
 
     private:
         std::map<UrlKey, std::unique_ptr<EachUrlStat>> urlMap_;
@@ -172,7 +180,7 @@ namespace pinpoint {
          *
          * @param stats URL statistic entry (ownership transferred).
          */
-        void enqueueUrlStats(std::unique_ptr<UrlStat> stats) noexcept;
+        void enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept;
         /// @brief Worker loop that aggregates URL statistics.
         void addUrlStatsWorker();
         /// @brief Stops the aggregation worker.
@@ -183,7 +191,7 @@ namespace pinpoint {
         void stopSendUrlStatsWorker();
 
         /// @brief Adds a runtime statistic to the current snapshot buffer.
-        void addSnapshot(const UrlStat* us, const Config& config);
+        void addSnapshot(const UrlStatEntry* us, const Config& config);
         /// @brief Extracts the latest URL statistic snapshot for transmission.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot();
         /// @brief Returns the tick clock for time bucketing.
@@ -195,7 +203,7 @@ namespace pinpoint {
         // Queue for incoming URL stats
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
-        std::queue<std::unique_ptr<UrlStat>> url_stats_{};
+        std::queue<std::unique_ptr<UrlStatEntry>> url_stats_{};
 
         // Snapshot management
         TickClock tick_clock_;
@@ -206,11 +214,4 @@ namespace pinpoint {
         std::mutex send_mutex_{};
         std::condition_variable send_cond_var_{};
     };
-    /**
-     * @brief Trims a URL path using the configured depth.
-     *
-     * @param url Raw URL path.
-     * @param depth Maximum number of segments to keep.
-     */
-    std::string trim_url_path(std::string_view url, int depth);
 }

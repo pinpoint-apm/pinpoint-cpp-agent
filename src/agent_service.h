@@ -26,7 +26,7 @@
    struct SqlUidMeta;
    class SpanChunk;
    class SpanData;
-   struct UrlStat;
+   struct UrlStatEntry;
    class AgentStats;
    class UrlStats;
  
@@ -84,7 +84,7 @@
        *
        * @param stat URL statistic record to be transferred.
        */
-      virtual void recordUrlStat(std::unique_ptr<UrlStat> stat) const = 0;
+      virtual void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const = 0;
       /**
        * @brief Reports an exception captured during span processing.
        *

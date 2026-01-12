@@ -296,7 +296,7 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::recordUrlStat(std::unique_ptr<UrlStat> stat) const {
+    void AgentImpl::recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const {
         if (enabled_) {
             url_stats_->enqueueUrlStats(std::move(stat));
         }

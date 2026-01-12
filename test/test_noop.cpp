@@ -38,7 +38,7 @@ public:
         config_.span.queue_size = 1024;
         config_.http.url_stat.enable = true; // Enable URL stat for relevant tests
         config_.http.url_stat.limit = 1024;
-        config_.http.url_stat.path_depth = 3;
+        config_.http.url_stat.trim_path_depth = 3;
     }
 
     bool isExiting() const override { return is_exiting_; }
@@ -57,7 +57,7 @@ public:
     void recordSpan(std::unique_ptr<SpanChunk> span) const override {
         recorded_spans_.push_back(std::move(span));
     }
-    void recordUrlStat(std::unique_ptr<UrlStat> stat) const override {
+    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
         recorded_url_stats_++;
         last_url_stat_url_ = stat->url_pattern_;
         last_url_stat_method_ = stat->method_;
