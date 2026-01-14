@@ -27,6 +27,7 @@
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
+#include <google/protobuf/arena.h>
 
 #include "v1/Service.grpc.pb.h"
 
@@ -253,6 +254,7 @@ namespace pinpoint {
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
     public:
         explicit GrpcSpan(AgentService* agent);
+        ~GrpcSpan() override { arena_.Reset(); }        
 
         /**
          * @brief Adds a span chunk to the outbound queue.
@@ -276,7 +278,8 @@ namespace pinpoint {
         
     private:
         std::unique_ptr<v1::Span::StubInterface> span_stub_{};
-        std::unique_ptr<v1::PSpanMessage> msg_{};
+        google::protobuf::Arena arena_;
+        v1::PSpanMessage* msg_{};
         google::protobuf::Empty reply_{};
 
         std::queue<std::unique_ptr<SpanChunk>> span_queue_{};
@@ -297,6 +300,7 @@ namespace pinpoint {
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
         explicit GrpcStats(AgentService* agent);
+        ~GrpcStats() override { arena_.Reset(); }
 
         /**
          * @brief Queues a statistics payload to be sent.
@@ -320,7 +324,8 @@ namespace pinpoint {
 
     private:
         std::unique_ptr<v1::Stat::StubInterface> stats_stub_{};
-        std::unique_ptr<v1::PStatMessage> msg_{};
+        google::protobuf::Arena arena_{};
+        v1::PStatMessage* msg_{};
         google::protobuf::Empty reply_{};
 
         std::queue<StatsType> stats_queue_{};

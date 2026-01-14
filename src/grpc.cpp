@@ -50,24 +50,24 @@ namespace pinpoint {
         }
     }
 
-    void build_agent_info(const Config& config, v1::PAgentInfo &agent_info) {
-        agent_info.set_hostname(get_host_name());
-        agent_info.set_ip(get_host_ip_addr());
-        agent_info.set_servicetype(config.app_type_);
-        agent_info.set_pid(getpid());
-        agent_info.set_agentversion(VERSION_STRING);
-        agent_info.set_container(config.is_container);
+    static void build_agent_info(const Config& config, v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) {
+        agent_info->set_hostname(get_host_name());
+        agent_info->set_ip(get_host_ip_addr());
+        agent_info->set_servicetype(config.app_type_);
+        agent_info->set_pid(getpid());
+        agent_info->set_agentversion(VERSION_STRING);
+        agent_info->set_container(config.is_container);
 
-        const auto meta_data = new v1::PServerMetaData();
+        const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
         meta_data->set_serverinfo("C/C++");
         meta_data->add_vmarg(to_config_string(config));
 
-        agent_info.set_allocated_servermetadata(meta_data);
+        agent_info->set_allocated_servermetadata(meta_data);
     }
 
-    v1::PTransactionId* build_transaction_id(TraceId& tid) {
+    static v1::PTransactionId* build_transaction_id(TraceId& tid, google::protobuf::Arena* arena) {
         auto& [agent_id, start_time, sequence] = tid;
-        const auto ptid = new v1::PTransactionId();
+        auto* ptid = google::protobuf::Arena::Create<v1::PTransactionId>(arena);
 
         ptid->set_agentid(agent_id);
         ptid->set_agentstarttime(start_time);
@@ -76,8 +76,8 @@ namespace pinpoint {
         return ptid;
     }
 
-    v1::PAcceptEvent* build_accept_event(SpanData *span) {
-        const auto accept_event = new v1::PAcceptEvent();
+    static v1::PAcceptEvent* build_accept_event(SpanData *span, google::protobuf::Arena* arena) {
+        auto* accept_event = google::protobuf::Arena::Create<v1::PAcceptEvent>(arena);
 
         accept_event->set_endpoint(span->getEndPoint());
         accept_event->set_rpc(span->getRpcName());
@@ -87,7 +87,7 @@ namespace pinpoint {
         }
 
         if (!span->getParentAppName().empty()) {
-            const auto parent_info = new v1::PParentInfo();
+            auto* parent_info = google::protobuf::Arena::Create<v1::PParentInfo>(arena);
 
             parent_info->set_parentapplicationname(span->getParentAppName());
             parent_info->set_parentapplicationtype(span->getParentAppType());
@@ -98,9 +98,11 @@ namespace pinpoint {
         return accept_event;
     }
 
-    void build_annotation(v1::PAnnotation *annotation, int32_t key, std::shared_ptr<AnnotationData> val) {
+    static void build_annotation(v1::PAnnotation *annotation, int32_t key, 
+                               const std::shared_ptr<AnnotationData>& val,
+                               google::protobuf::Arena* arena) {
         annotation->set_key(key);
-        const auto annotation_value = new v1::PAnnotationValue();
+        auto* annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
 
         if (val->dataType == ANNOTATION_TYPE_INT) {
             annotation_value->set_intvalue(val->data.intValue);
@@ -109,52 +111,52 @@ namespace pinpoint {
         } else if (val->dataType == ANNOTATION_TYPE_STRING) {
             annotation_value->set_stringvalue(val->data.stringValue);
         } else if (val->dataType == ANNOTATION_TYPE_STRING_STRING) {
-            const auto ssv = new v1::PStringStringValue();
-            const auto s1 = new google::protobuf::StringValue();
+            auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
+            auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(val->data.stringStringValue.stringValue1);
             ssv->set_allocated_stringvalue1(s1);
 
-            const auto s2 = new google::protobuf::StringValue();
+            auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(val->data.stringStringValue.stringValue2);
             ssv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_stringstringvalue(ssv);
         } else if (val->dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
-            auto issv = new v1::PIntStringStringValue();
+            auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
             issv->set_intvalue(val->data.intStringStringValue.intValue);
 
-            const auto s1 = new google::protobuf::StringValue();
+            auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(val->data.intStringStringValue.stringValue1);
             issv->set_allocated_stringvalue1(s1);
 
-            const auto s2 = new google::protobuf::StringValue();
+            auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(val->data.intStringStringValue.stringValue2);
             issv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_intstringstringvalue(issv);
         } else if (val->dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
-            auto liibbsv = new v1::PLongIntIntByteByteStringValue();
+            auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
             liibbsv->set_longvalue(val->data.longIntIntByteByteStringValue.longValue);
             liibbsv->set_intvalue1(val->data.longIntIntByteByteStringValue.intValue1);
             liibbsv->set_intvalue2(val->data.longIntIntByteByteStringValue.intValue2);
             liibbsv->set_bytevalue1(val->data.longIntIntByteByteStringValue.byteValue1);
             liibbsv->set_bytevalue2(val->data.longIntIntByteByteStringValue.byteValue2);
 
-            const auto s = new google::protobuf::StringValue();
+            auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(val->data.longIntIntByteByteStringValue.stringValue);
             liibbsv->set_allocated_stringvalue(s);
 
             annotation_value->set_allocated_longintintbytebytestringvalue(liibbsv);
         } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
-            auto bssv = new v1::PBytesStringStringValue();
+            auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
             auto& bv = val->data.bytesStringStringValue.bytesValue;
             bssv->set_bytesvalue(std::string(bv.begin(), bv.end()));
 
-            const auto s1 = new google::protobuf::StringValue();
+            auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(val->data.bytesStringStringValue.stringValue1);
             bssv->set_allocated_stringvalue1(s1);
 
-            const auto s2 = new google::protobuf::StringValue();
+            auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(val->data.bytesStringStringValue.stringValue2);
             bssv->set_allocated_stringvalue2(s2);
 
@@ -163,14 +165,16 @@ namespace pinpoint {
         annotation->set_allocated_value(annotation_value);
     }
 
-    void build_string_annotation(v1::PAnnotation *annotation, int32_t key, std::string& val) {
+    static void build_string_annotation(v1::PAnnotation *annotation, int32_t key, std::string& val, google::protobuf::Arena* arena) {
         annotation->set_key(key);
-        const auto annotation_value = new v1::PAnnotationValue();
+        const auto annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
         annotation_value->set_stringvalue(val);
         annotation->set_allocated_value(annotation_value);
     }
 
-    void build_span_event(v1::PSpanEvent* span_event, std::shared_ptr<SpanEventImpl> se) {
+    static void build_span_event(v1::PSpanEvent* span_event, 
+                               const std::shared_ptr<SpanEventImpl>& se,
+                               google::protobuf::Arena* arena) {
         span_event->set_sequence(se->getSequence());
         span_event->set_depth(se->getDepth());
         span_event->set_startelapsed(se->getStartElapsed());
@@ -179,8 +183,8 @@ namespace pinpoint {
         span_event->set_asyncevent(se->getAsyncId());
 
         if (!se->getDestinationId().empty()) {
-            const auto next_event = new v1::PNextEvent();
-            const auto message_event = new v1::PMessageEvent();
+            auto* next_event = google::protobuf::Arena::Create<v1::PNextEvent>(arena);
+            auto* message_event = google::protobuf::Arena::Create<v1::PMessageEvent>(arena);
 
             message_event->set_nextspanid(se->getNextSpanId());
             message_event->set_destinationid(se->getDestinationId());
@@ -191,31 +195,32 @@ namespace pinpoint {
         if (auto api_id = se->getApiId(); api_id > 0) {
             span_event->set_apiid(api_id);
         } else {
-            build_string_annotation(span_event->add_annotation(), ANNOTATION_API, se->getOperationName());
+            auto operation_name = se->getOperationName();
+            build_string_annotation(span_event->add_annotation(), ANNOTATION_API, operation_name, arena);
         }
 
         auto& annotations = se->getAnnotations()->getAnnotations();
-        for (auto &[key, val] : annotations) {
-            build_annotation(span_event->add_annotation(), key, val);
+        for (const auto& [key, val] : annotations) {  // const auto& for shared_ptr
+            build_annotation(span_event->add_annotation(), key, val, arena);
         }
 
         if (auto err_str = se->getErrorString(); !err_str.empty()) {
-            const auto exceptInfo = new v1::PIntStringValue();
+            auto* exceptInfo = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
             exceptInfo->set_intvalue(se->getErrorFuncId());
 
-            const auto s = new google::protobuf::StringValue();
+            auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(err_str);
             exceptInfo->set_allocated_stringvalue(s);
             span_event->set_allocated_exceptioninfo(exceptInfo);
         }
     }
 
-    v1::PSpan* build_grpc_span(std::unique_ptr<SpanChunk> chunk) {
+    static v1::PSpan* build_grpc_span(std::unique_ptr<SpanChunk> chunk, google::protobuf::Arena* arena) {
         const auto span = chunk->getSpanData().get();
-        const auto grpc_span = new v1::PSpan();
+        auto* grpc_span = google::protobuf::Arena::Create<v1::PSpan>(arena);
 
         grpc_span->set_version(1);
-        const auto tid = build_transaction_id(span->getTraceId());
+        auto* tid = build_transaction_id(span->getTraceId(), arena);
         grpc_span->set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
@@ -225,33 +230,33 @@ namespace pinpoint {
         grpc_span->set_servicetype(span->getServiceType());
         grpc_span->set_applicationservicetype(span->getAppType());
 
-        const auto accept_event = build_accept_event(span);
+        auto* accept_event = build_accept_event(span, arena);
         grpc_span->set_allocated_acceptevent(accept_event);
 
         if (auto api_id = span->getApiId(); api_id > 0) {
             grpc_span->set_apiid(api_id);
         } else {
-            build_string_annotation(grpc_span->add_annotation(), ANNOTATION_API, span->getOperationName());
+            build_string_annotation(grpc_span->add_annotation(), ANNOTATION_API, span->getOperationName(), arena);
         }
         grpc_span->set_loggingtransactioninfo(span->getLoggingFlag());
         grpc_span->set_flag(span->getFlags());
         grpc_span->set_err(span->getErr());
 
         const auto& events = chunk->getSpanEventChunk();
-        for (auto& e : events) {
-            build_span_event(grpc_span->add_spanevent(), e);
+        for (const auto& e : events) {
+            build_span_event(grpc_span->add_spanevent(), e, arena);
         }
 
         const auto& annotations = span->getAnnotations()->getAnnotations();
         for (const auto& [key, val] : annotations) {
-            build_annotation(grpc_span->add_annotation(), key, val);
+            build_annotation(grpc_span->add_annotation(), key, val, arena);
         }
 
         if (auto err_str = span->getErrorString(); !err_str.empty()) {
-            const auto exceptInfo = new v1::PIntStringValue();
+            auto* exceptInfo = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
             exceptInfo->set_intvalue(span->getErrorFuncId());
 
-            const auto s = new google::protobuf::StringValue();
+            auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(err_str);
             exceptInfo->set_allocated_stringvalue(s);
             grpc_span->set_allocated_exceptioninfo(exceptInfo);
@@ -260,12 +265,12 @@ namespace pinpoint {
         return grpc_span;
     }
 
-    v1::PSpanChunk* build_grpc_span_chunk(std::unique_ptr<SpanChunk> chunk) {
+    static v1::PSpanChunk* build_grpc_span_chunk(std::unique_ptr<SpanChunk> chunk, google::protobuf::Arena* arena) {
         const auto span = chunk->getSpanData().get();
-        const auto grpc_span = new v1::PSpanChunk();
+        auto* grpc_span = google::protobuf::Arena::Create<v1::PSpanChunk>(arena);
         grpc_span->set_version(1);
 
-        const auto tid = build_transaction_id(span->getTraceId());
+        auto* tid = build_transaction_id(span->getTraceId(), arena);
         grpc_span->set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
@@ -274,7 +279,7 @@ namespace pinpoint {
         grpc_span->set_applicationservicetype(span->getAppType());
 
         if (span->isAsyncSpan()) {
-            const auto aid = new v1::PLocalAsyncId();
+            auto* aid = google::protobuf::Arena::Create<v1::PLocalAsyncId>(arena);
             aid->set_asyncid(span->getAsyncId());
             aid->set_sequence(span->getAsyncSequence());
             grpc_span->set_allocated_localasyncid(aid);
@@ -282,17 +287,17 @@ namespace pinpoint {
 
         auto& events = chunk->getSpanEventChunk();
         for (const auto& e : events) {
-            build_span_event(grpc_span->add_spanevent(), e);
+            build_span_event(grpc_span->add_spanevent(), e, arena);
         }
 
         return grpc_span;
     }
 
-    void build_agent_stat(v1::PAgentStat *agent_stat, const AgentStatsSnapshot& stat) {
+    static void build_agent_stat(v1::PAgentStat *agent_stat, const AgentStatsSnapshot& stat, google::protobuf::Arena* arena) {
         agent_stat->set_timestamp(stat.sample_time_);
         agent_stat->set_collectinterval(5000);
 
-        const auto memory_stat = new v1::PJvmGc();
+        auto* memory_stat = google::protobuf::Arena::Create<v1::PJvmGc>(arena);
         memory_stat->set_type(v1::JVM_GC_TYPE_UNKNOWN);
         memory_stat->set_jvmmemoryheapused(stat.heap_alloc_size_);
         memory_stat->set_jvmmemoryheapmax(stat.heap_max_size_);
@@ -302,12 +307,12 @@ namespace pinpoint {
         memory_stat->set_jvmgcoldtime(0);
         agent_stat->set_allocated_gc(memory_stat);
 
-        const auto cpu_load = new v1::PCpuLoad();
+        auto* cpu_load = google::protobuf::Arena::Create<v1::PCpuLoad>(arena);
         cpu_load->set_jvmcpuload(stat.process_cpu_time_);
         cpu_load->set_systemcpuload(stat.system_cpu_time_);
         agent_stat->set_allocated_cpuload(cpu_load);
 
-        const auto tran = new v1::PTransaction();
+        auto* tran = google::protobuf::Arena::Create<v1::PTransaction>(arena);
         tran->set_samplednewcount(stat.num_sample_new_);
         tran->set_sampledcontinuationcount(stat.num_sample_cont_);
         tran->set_unsamplednewcount(stat.num_unsample_new_);
@@ -316,8 +321,8 @@ namespace pinpoint {
         tran->set_skippedcontinuationcount(stat.num_skip_cont_);
         agent_stat->set_allocated_transaction(tran);
 
-        const auto active_trace = new v1::PActiveTrace();
-        const auto histogram = new v1::PActiveTraceHistogram();
+        auto* active_trace = google::protobuf::Arena::Create<v1::PActiveTrace>(arena);
+        auto* histogram = google::protobuf::Arena::Create<v1::PActiveTraceHistogram>(arena);
         histogram->set_version(1);
         histogram->set_histogramschematype(2);
         for (int32_t c : stat.active_requests_) {
@@ -326,28 +331,28 @@ namespace pinpoint {
         active_trace->set_allocated_histogram(histogram);
         agent_stat->set_allocated_activetrace(active_trace);
 
-        const auto response_time = new v1::PResponseTime();
+        auto* response_time = google::protobuf::Arena::Create<v1::PResponseTime>(arena);
         response_time->set_avg(stat.response_time_avg_);
         response_time->set_max(stat.response_time_max_);
         agent_stat->set_allocated_responsetime(response_time);
 
-        const auto total_thread = new v1::PTotalThread();
+        auto* total_thread = google::protobuf::Arena::Create<v1::PTotalThread>(arena);
         total_thread->set_totalthreadcount(stat.num_threads_);
         agent_stat->set_allocated_totalthread(total_thread);
     }
 
-    v1::PAgentStatBatch* build_agent_stat_batch(const std::vector<AgentStatsSnapshot>& stats) {
-        const auto grpc_stat = new v1::PAgentStatBatch();
+    static v1::PAgentStatBatch* build_agent_stat_batch(const std::vector<AgentStatsSnapshot>& stats, google::protobuf::Arena* arena) {
+        auto* grpc_stat = google::protobuf::Arena::Create<v1::PAgentStatBatch>(arena);
 
-        for (size_t i = 0; i < stats.size(); i++) {
-            auto agent_stat = grpc_stat->add_agentstat();
-            build_agent_stat(agent_stat, stats.at(i));
+        for (const auto& stat : stats) {
+            auto* agent_stat = grpc_stat->add_agentstat();
+            build_agent_stat(agent_stat, stat, arena);
         }
 
         return grpc_stat;
     }
 
-    void build_url_histogram(v1::PUriHistogram *grpc_histogram, const UrlStatHistogram& url_histogram) {
+    static void build_url_histogram(v1::PUriHistogram *grpc_histogram, const UrlStatHistogram& url_histogram) {
         grpc_histogram->set_total(url_histogram.total());
         grpc_histogram->set_max(url_histogram.max());
         for (auto i = 0; i < URL_STATS_BUCKET_SIZE; i++) {
@@ -355,28 +360,29 @@ namespace pinpoint {
         }
     }
 
-    void build_each_url_stat(v1::PEachUriStat *url_stat, const UrlKey& key, EachUrlStat *each_stats) {
+    static void build_each_url_stat(v1::PEachUriStat *url_stat, const UrlKey& key, EachUrlStat *each_stats, 
+                                    google::protobuf::Arena* arena) {
         url_stat->set_uri(key.url_);
 
-        const auto total = new v1::PUriHistogram();
+        auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
         build_url_histogram(total, each_stats->getTotalHistogram());
         url_stat->set_allocated_totalhistogram(total);
 
-        const auto fail = new v1::PUriHistogram();
+        auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
         build_url_histogram(fail, each_stats->getFailHistogram());
         url_stat->set_allocated_failedhistogram(fail);
 
         url_stat->set_timestamp(each_stats->tick());
     }
 
-    v1::PAgentUriStat* build_url_stat(const UrlStatSnapshot* snapshot) {
-        const auto uri_stat = new v1::PAgentUriStat();
+    static v1::PAgentUriStat* build_url_stat(const UrlStatSnapshot* snapshot, google::protobuf::Arena* arena) {
+        auto* uri_stat = google::protobuf::Arena::Create<v1::PAgentUriStat>(arena);
 
         uri_stat->set_bucketversion(URL_STATS_BUCKET_VERSION);
         const auto& m = snapshot->getEachStats();
         for(const auto& [key, each_stats] : m) {
-            const auto url_stat = uri_stat->add_eachuristat();
-            build_each_url_stat(url_stat, key, each_stats.get());
+            auto* url_stat = uri_stat->add_eachuristat();
+            build_each_url_stat(url_stat, key, each_stats.get(), arena);
         }
         return uri_stat;
     }
@@ -464,20 +470,21 @@ namespace pinpoint {
     }
 
     GrpcRequestStatus GrpcAgent::registerAgent() {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         grpc::ClientContext ctx;
-        v1::PAgentInfo agent_info;
         v1::PResult reply;
 
+        std::unique_lock<std::mutex> lock(channel_mutex_);
         build_grpc_context(&ctx, agent_, 0);
-        build_agent_info(agent_->getConfig(), agent_info);
+
+        google::protobuf::Arena arena;
+        auto* agent_info = google::protobuf::Arena::Create<v1::PAgentInfo>(&arena);
+        build_agent_info(agent_->getConfig(), agent_info, &arena);
 
         set_deadline(ctx, REGISTER_TIMEOUT);
-        const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, agent_info, &reply);
+        const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
 
         if (status.ok()) {
-            LOG_INFO("success to register the agent");
+            LOG_INFO("success to register the agent");  
             return SEND_OK;
         }
 
@@ -487,10 +494,9 @@ namespace pinpoint {
 
     template<typename Request, typename StubMethod>
     GrpcRequestStatus GrpcAgent::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
         v1::PResult reply;
         grpc::ClientContext ctx;
+        std::unique_lock<std::mutex> lock(channel_mutex_);
 
         build_grpc_context(&ctx, agent_, 0);
         set_deadline(ctx, META_TIMEOUT);
@@ -509,6 +515,7 @@ namespace pinpoint {
 
     GrpcRequestStatus GrpcAgent::send_api_meta(ApiMeta& api_meta) {
         v1::PApiMetaData grpc_api_meta;
+
         grpc_api_meta.set_apiid(api_meta.id_);
         grpc_api_meta.set_apiinfo(api_meta.api_str_);
         grpc_api_meta.set_type(api_meta.type_);
@@ -522,6 +529,7 @@ namespace pinpoint {
 
     GrpcRequestStatus GrpcAgent::send_error_meta(StringMeta& error_meta) {
         v1::PStringMetaData grpc_error_meta;
+
         grpc_error_meta.set_stringid(error_meta.id_);
         grpc_error_meta.set_stringvalue(error_meta.str_val_);
 
@@ -534,6 +542,7 @@ namespace pinpoint {
 
     GrpcRequestStatus GrpcAgent::send_sql_meta(StringMeta& sql_meta) {
         v1::PSqlMetaData grpc_sql_meta;
+
         grpc_sql_meta.set_sqlid(sql_meta.id_);
         grpc_sql_meta.set_sql(sql_meta.str_val_);
 
@@ -546,6 +555,7 @@ namespace pinpoint {
 
     GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
         v1::PSqlUidMetaData grpc_sql_uid_meta;
+
         grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
         grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
 
@@ -557,15 +567,17 @@ namespace pinpoint {
     }
 
     GrpcRequestStatus GrpcAgent::send_exception_meta(ExceptionMeta& exception_meta) {
-        v1::PExceptionMetaData grpc_exception_meta;
+        google::protobuf::Arena arena;
+        auto* grpc_exception_meta = google::protobuf::Arena::Create<v1::PExceptionMetaData>(&arena);
 
-        grpc_exception_meta.set_allocated_transactionid(build_transaction_id(exception_meta.txid_));
-        grpc_exception_meta.set_spanid(exception_meta.span_id_);
-        grpc_exception_meta.set_uritemplate(exception_meta.url_template_);
+        grpc_exception_meta->set_allocated_transactionid(build_transaction_id(exception_meta.txid_, &arena));
+        grpc_exception_meta->set_spanid(exception_meta.span_id_);
+        grpc_exception_meta->set_uritemplate(exception_meta.url_template_);
 
         for (const auto& exception : exception_meta.exceptions_) {
-            const auto grpc_exception = grpc_exception_meta.add_exceptions();
+            auto* grpc_exception = grpc_exception_meta->add_exceptions();
             auto callstack = exception->getCallStack();
+
             grpc_exception->set_exceptionid(exception->getId());
             grpc_exception->set_exceptionclassname(callstack->getModuleName());
             grpc_exception->set_exceptionmessage(callstack->getErrorMessage());
@@ -573,7 +585,8 @@ namespace pinpoint {
             grpc_exception->set_exceptiondepth(1);
 
             for (const auto& frame : callstack->getStack()) {
-                const auto grpc_callstack = grpc_exception->add_stacktraceelement();
+                auto* grpc_callstack = grpc_exception->add_stacktraceelement();
+
                 grpc_callstack->set_classname(frame.module);  
                 grpc_callstack->set_filename(frame.file);
                 grpc_callstack->set_linenumber(frame.line);
@@ -585,7 +598,7 @@ namespace pinpoint {
             return meta_stub_->RequestExceptionMetaData(ctx, req, reply);
         };
 
-        return send_meta_helper(stub_method, grpc_exception_meta, "exception");
+        return send_meta_helper(stub_method, *grpc_exception_meta, "exception");
     }
 
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
@@ -795,7 +808,7 @@ namespace pinpoint {
         grpc_status_ = next_write();
 
         if (grpc_status_ == STREAM_WRITE) {
-            StartWrite(msg_.get());
+            StartWrite(msg_);
         } else {
             return grpc_status_;
         }
@@ -825,14 +838,14 @@ namespace pinpoint {
 
     void GrpcSpan::OnWriteDone(bool ok) {
         LOG_DEBUG("span - OnWriteDone: {}", ok);
-        msg_ = nullptr;
+        arena_.Reset(); // reset arena after write completes to free all memory at once
 
         if (ok) {
             std::unique_lock<std::mutex> lock(stream_mutex_);
             grpc_status_ = next_write();
 
             if (grpc_status_ == STREAM_WRITE) {
-                StartWrite(msg_.get());
+                StartWrite(msg_);
             } else {
                 stream_cv_.notify_one();
             }
@@ -868,11 +881,11 @@ namespace pinpoint {
         }
 
         const auto span = span_chunk->getSpanData();
-        msg_ = std::make_unique<v1::PSpanMessage>();
+        msg_ = google::protobuf::Arena::Create<v1::PSpanMessage>(&arena_);
         if (!span_chunk->isFinal() || span->isAsyncSpan()) {
-            msg_->set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk)));
+            msg_->set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &arena_));
         } else {
-            msg_->set_allocated_span(build_grpc_span(std::move(span_chunk)));
+            msg_->set_allocated_span(build_grpc_span(std::move(span_chunk), &arena_));
         }
 
         //msg_->PrintDebugString();
@@ -975,7 +988,7 @@ namespace pinpoint {
         grpc_status_ = next_write();
 
         if (grpc_status_ == STREAM_WRITE) {
-            StartWrite(msg_.get());
+            StartWrite(msg_);
         } else {
             return grpc_status_;
         }
@@ -1005,14 +1018,14 @@ namespace pinpoint {
 
     void GrpcStats::OnWriteDone(bool ok) {
         LOG_DEBUG("stats - OnWriteDone: {}", ok);
-        msg_ = nullptr;
+        arena_.Reset(); // reset arena after write completes to free all memory at once
 
         if (ok) {
             std::unique_lock<std::mutex> lock(stream_mutex_);
             grpc_status_ = next_write();
 
             if (grpc_status_ == STREAM_WRITE) {
-                StartWrite(msg_.get());
+                StartWrite(msg_);
             } else {
                 stream_cv_.notify_one();
             }
@@ -1047,12 +1060,12 @@ namespace pinpoint {
             stats_queue_.pop();
         }
 
-        msg_ = std::make_unique<v1::PStatMessage>();
+        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
-            msg_->set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots()));
+            msg_->set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots(), &arena_));
         } else {
             auto snapshot = agent_->getUrlStats().takeSnapshot();
-            msg_->set_allocated_agenturistat(build_url_stat(snapshot.get()));
+            msg_->set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
         }
 
         return STREAM_WRITE;
