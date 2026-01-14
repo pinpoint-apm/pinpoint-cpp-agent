@@ -922,13 +922,17 @@ namespace pinpoint {
     }
 
     void GrpcSpan::empty_span_queue() noexcept try {
-        std::unique_lock<std::mutex> lock(span_queue_mutex_);
-
-        while (!span_queue_.empty()) {
-            auto p = std::move(span_queue_.front());
-            span_queue_.pop();
+        std::queue<std::unique_ptr<SpanChunk>> temp_queue;
+        
+        {
+            std::unique_lock<std::mutex> lock(span_queue_mutex_);
+            
+            // use swap to minimize lock hold time
+            // swap operation is O(1) and only exchanges internal pointers
+            span_queue_.swap(temp_queue);
+            force_queue_empty_ = false;
+            
         }
-        force_queue_empty_= false;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to empty span queue: exception = {}", e.what());
     }
@@ -1107,15 +1111,18 @@ namespace pinpoint {
     }
 
     void GrpcStats::empty_stats_queue() noexcept try {
-        std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-        while (!stats_queue_.empty()) {
-            stats_queue_.pop();
+        std::queue<StatsType> temp_queue;
+        
+        {
+            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+            
+            stats_queue_.swap(temp_queue);
+            force_queue_empty_ = false;
         }
-
+        
         agent_->getAgentStats().initAgentStats();
-        // Clear URL stat snapshot
+        // clear URL stat snapshot
         (void)agent_->getUrlStats().takeSnapshot();
-        force_queue_empty_ = false;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to empty span queue: exception = {}", e.what());
     }
