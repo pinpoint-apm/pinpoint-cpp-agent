@@ -150,7 +150,13 @@ namespace pinpoint {
         } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
             auto& bv = val->data.bytesStringStringValue.bytesValue;
-            bssv->set_bytesvalue(std::string(bv.begin(), bv.end()));
+            
+            // zero-copy conversion from vector<unsigned char> to string
+            std::string_view bytes_view(
+                reinterpret_cast<const char*>(bv.data()),
+                bv.size()
+            );
+            bssv->set_bytesvalue(std::string(bytes_view));
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(val->data.bytesStringStringValue.stringValue1);
@@ -556,7 +562,12 @@ namespace pinpoint {
     GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
         v1::PSqlUidMetaData grpc_sql_uid_meta;
 
-        grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
+        // zero-copy conversion from vector<unsigned char> to string
+        std::string_view uid_view(
+            reinterpret_cast<const char*>(sql_uid_meta.uid_.data()),
+            sql_uid_meta.uid_.size()
+        );
+        grpc_sql_uid_meta.set_sqluid(std::string(uid_view));
         grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
 
         auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
