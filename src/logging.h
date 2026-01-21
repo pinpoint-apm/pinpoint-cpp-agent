@@ -21,6 +21,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <mutex>
 #include <utility>
 #include <fmt/format.h>
@@ -77,23 +78,23 @@ namespace pinpoint {
         void shutdown();
 
         template <typename... Args>
-        void logDebug(fmt::string_view format, Args&&... args) {
-            log(LogLevel::kDebug, format, std::forward<Args>(args)...);
+        void logDebug(std::string_view file, int line, fmt::string_view format, Args&&... args) {
+            log(LogLevel::kDebug, file, line, format, std::forward<Args>(args)...);
         }
 
         template <typename... Args>
-        void logInfo(fmt::string_view format, Args&&... args) {
-            log(LogLevel::kInfo, format, std::forward<Args>(args)...);
+        void logInfo(std::string_view file, int line, fmt::string_view format, Args&&... args) {
+            log(LogLevel::kInfo, file, line, format, std::forward<Args>(args)...);
         }
 
         template <typename... Args>
-        void logWarn(fmt::string_view format, Args&&... args) {
-            log(LogLevel::kWarn, format, std::forward<Args>(args)...);
+        void logWarn(std::string_view file, int line, fmt::string_view format, Args&&... args) {
+            log(LogLevel::kWarn, file, line, format, std::forward<Args>(args)...);
         }
 
         template <typename... Args>
-        void logError(fmt::string_view format, Args&&... args) {
-            log(LogLevel::kError, format, std::forward<Args>(args)...);
+        void logError(std::string_view file, int line, fmt::string_view format, Args&&... args) {
+            log(LogLevel::kError, file, line, format, std::forward<Args>(args)...);
         }
 
     private:
@@ -105,7 +106,7 @@ namespace pinpoint {
         };
 
         template <typename... Args>
-        void log(LogLevel level, fmt::string_view format, Args&&... args) {
+        void log(LogLevel level, std::string_view file, int line, fmt::string_view format, Args&&... args) {
             if (!shouldLog(level)) {
                 return;
             }
@@ -115,14 +116,14 @@ namespace pinpoint {
             } catch (const std::exception& e) {
                 message = fmt::format("log format error: {}", e.what());
             }
-            write(level, message);
+            write(level, file, line, message);
         }
 
         bool shouldLog(LogLevel level) const {
             return static_cast<int>(level) >= current_level_.load(std::memory_order_relaxed);
         }
 
-        void write(LogLevel level, const std::string& message);
+        void write(LogLevel level, std::string_view file, int line, const std::string& message);
         void rotateFileIfNeededLocked();
 
         std::string file_path_;
@@ -145,12 +146,17 @@ namespace pinpoint {
      */
     void shutdown_logger();
 
+    constexpr static std::string_view kFileName(std::string_view path) {
+        size_t last_slash = path.find_last_of("\\/");
+        return (last_slash == std::string_view::npos) ? path : path.substr(last_slash + 1);
+    }
+
     /// @brief Writes a debug-level log entry using the global logger.
-    #define LOG_DEBUG(...) (Logger::getInstance().logDebug(__VA_ARGS__))
+    #define LOG_DEBUG(...) (Logger::getInstance().logDebug(kFileName(__FILE__), __LINE__, __VA_ARGS__))
     /// @brief Writes an info-level log entry using the global logger.
-    #define LOG_INFO(...) (Logger::getInstance().logInfo(__VA_ARGS__))
+    #define LOG_INFO(...) (Logger::getInstance().logInfo(kFileName(__FILE__), __LINE__, __VA_ARGS__))
     /// @brief Writes a warning-level log entry using the global logger.
-    #define LOG_WARN(...) (Logger::getInstance().logWarn(__VA_ARGS__))
+    #define LOG_WARN(...) (Logger::getInstance().logWarn(kFileName(__FILE__), __LINE__, __VA_ARGS__))
     /// @brief Writes an error-level log entry using the global logger.
-    #define LOG_ERROR(...) (Logger::getInstance().logError(__VA_ARGS__))
+    #define LOG_ERROR(...) (Logger::getInstance().logError(kFileName(__FILE__), __LINE__, __VA_ARGS__))
 }

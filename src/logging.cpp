@@ -83,7 +83,7 @@ namespace pinpoint {
         file_enabled_ = false;
     }
 
-    void Logger::write(LogLevel level, const std::string& message) {
+    void Logger::write(LogLevel level, std::string_view file, int line, const std::string& message) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         const auto now = std::chrono::system_clock::now();
@@ -99,15 +99,16 @@ namespace pinpoint {
         prefix << "[" << (level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
                           level == LogLevel::kInfo ? LOG_LEVEL_INFO :
                           level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR) << "]";
-        prefix << "[pinpoint] ";
+        prefix << "[pinpoint]";
+        prefix << "[" << file << ":" << line << "] ";
 
-        const std::string line = prefix.str() + message + "\n";
+        const std::string msg = prefix.str() + message + "\n";
         if (file_enabled_ && file_stream_) {
-            file_stream_->write(line.data(), static_cast<std::streamsize>(line.size()));
-            current_file_size_ += static_cast<std::uint64_t>(line.size());
+            file_stream_->write(msg.data(), static_cast<std::streamsize>(msg.size()));
+            current_file_size_ += static_cast<std::uint64_t>(msg.size());
             rotateFileIfNeededLocked();
         } else {
-            std::cout << line;
+            std::cout << msg;
         }
     }
 
