@@ -931,7 +931,6 @@ namespace pinpoint {
             // swap operation is O(1) and only exchanges internal pointers
             span_queue_.swap(temp_queue);
             force_queue_empty_ = false;
-            
         }
     } catch (const std::exception &e) {
         LOG_ERROR("failed to empty span queue: exception = {}", e.what());

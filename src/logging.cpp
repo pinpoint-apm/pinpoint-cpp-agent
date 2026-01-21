@@ -14,24 +14,16 @@
  * limitations under the License.
  */
 
-#include "spdlog/sinks/rotating_file_sink.h"
 #include "logging.h"
-#include <vector>
-
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#endif
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 
 namespace pinpoint {
 
     Logger::Logger() {
-        // Default to stdout sink initially
-        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        logger_ = std::make_shared<spdlog::logger>("pinpoint", console_sink);
-        // Default level
-        logger_->set_level(spdlog::level::info);
-        // Register to spdlog global registry for potential access
-        spdlog::register_logger(logger_);
     }
 
     void init_logger() {
@@ -39,38 +31,107 @@ namespace pinpoint {
     }
 
     void shutdown_logger() {
-        spdlog::shutdown();
+        Logger::getInstance().shutdown();
     }
 
     void Logger::setLogLevel(const std::string& log_level) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto level = log_level.c_str();
         if (!strcasecmp(level, LOG_LEVEL_DEBUG)) {
-            logger_->set_level(spdlog::level::debug);
+            current_level_.store(static_cast<int>(LogLevel::kDebug), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_INFO)) {
-            logger_->set_level(spdlog::level::info);
+            current_level_.store(static_cast<int>(LogLevel::kInfo), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_WARN)) {
-            logger_->set_level(spdlog::level::warn);
+            current_level_.store(static_cast<int>(LogLevel::kWarn), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_ERROR)) {
-            logger_->set_level(spdlog::level::err);
+            current_level_.store(static_cast<int>(LogLevel::kError), std::memory_order_relaxed);
         }
     }
 
     void Logger::setFileLogger(const std::string& log_file_path, const int max_size) {
         std::lock_guard<std::mutex> lock(mutex_);
-        
-        // Prepare new sink
-        const auto size = max_size * 1024 * 1024;
-        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_file_path, size, 1);
-        
-        // Swap sinks safely
-        // Note: spdlog::logger::sinks() returns a reference to the vector of sinks.
-        // We replace the existing sinks with the new file sink.
-        auto& sinks = logger_->sinks();
-        sinks.clear();
-        sinks.push_back(file_sink);
-        
-        // Force flush on error? Optional configuration
-        logger_->flush_on(spdlog::level::err);
+        file_path_ = log_file_path;
+        max_file_size_ = static_cast<std::uint64_t>(max_size) * 1024 * 1024;
+        current_file_size_ = 0;
+        file_enabled_ = !file_path_.empty();
+
+        file_stream_.reset();
+        if (!file_enabled_) {
+            return;
+        }
+
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(file_path_, ec);
+        if (!ec) {
+            current_file_size_ = static_cast<std::uint64_t>(size);
+        }
+
+        file_stream_ = std::make_unique<std::ofstream>(file_path_, std::ios::out | std::ios::app);
+        if (!file_stream_->is_open()) {
+            file_enabled_ = false;
+            file_stream_.reset();
+        }
+    }
+
+    void Logger::shutdown() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (file_stream_ && file_stream_->is_open()) {
+            file_stream_->flush();
+            file_stream_->close();
+        }
+        file_stream_.reset();
+        file_enabled_ = false;
+    }
+
+    void Logger::write(LogLevel level, const std::string& message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const auto now = std::chrono::system_clock::now();
+        const auto now_time = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        std::tm tm{};
+        localtime_r(&now_time, &tm);
+
+        std::ostringstream prefix;
+        prefix << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+        prefix << "." << std::setw(3) << std::setfill('0') << ms.count() << "]";
+        prefix << "[" << (level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
+                          level == LogLevel::kInfo ? LOG_LEVEL_INFO :
+                          level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR) << "]";
+        prefix << "[pinpoint] ";
+
+        const std::string line = prefix.str() + message + "\n";
+        if (file_enabled_ && file_stream_) {
+            file_stream_->write(line.data(), static_cast<std::streamsize>(line.size()));
+            current_file_size_ += static_cast<std::uint64_t>(line.size());
+            rotateFileIfNeededLocked();
+        } else {
+            std::cout << line;
+        }
+    }
+
+    void Logger::rotateFileIfNeededLocked() {
+        if (!file_enabled_ || !file_stream_ || max_file_size_ == 0) {
+            return;
+        }
+        if (current_file_size_ < max_file_size_) {
+            return;
+        }
+
+        file_stream_->flush();
+        file_stream_->close();
+
+        std::error_code ec;
+        const auto rotated_path = file_path_ + ".1";
+        std::filesystem::remove(rotated_path, ec);
+        std::filesystem::rename(file_path_, rotated_path, ec);
+
+        file_stream_ = std::make_unique<std::ofstream>(file_path_, std::ios::out | std::ios::app);
+        current_file_size_ = 0;
+        if (!file_stream_->is_open()) {
+            file_enabled_ = false;
+            file_stream_.reset();
+        }
     }
 }

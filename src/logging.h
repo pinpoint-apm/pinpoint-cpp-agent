@@ -16,11 +16,14 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <mutex>
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include <utility>
+#include <fmt/format.h>
 
 namespace pinpoint {
 
@@ -31,7 +34,7 @@ namespace pinpoint {
     constexpr const char* LOG_LEVEL_ERROR = "error";
 
     /**
-     * @brief Thread-safe singleton wrapper around the internal `spdlog` logger.
+     * @brief Thread-safe singleton wrapper around internal logging.
      *
      * `Logger` centralizes log configuration so the rest of the agent can write messages
      * without having to manage logger instances or sinks.
@@ -56,28 +59,79 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Returns the underlying `spdlog` logger instance.
-         *
-         * @return Shared pointer to the configured `spdlog::logger`.
-         */
-        std::shared_ptr<spdlog::logger>& getLogger() { return logger_; }
-        /**
          * @brief Adjusts the log level for runtime diagnostics.
          *
-         * @param log_level One of the level strings accepted by `spdlog`.
+         * @param log_level One of the level strings accepted by the agent.
          */
         void setLogLevel(const std::string& log_level);
         /**
-         * @brief Switches the logger to file output with log rotation support.
+         * @brief Switches the logger to file output with basic log rotation support.
          *
          * @param log_file_path Path to the log file.
          * @param max_size Maximum file size (bytes) before rotation.
          */
         void setFileLogger(const std::string& log_file_path, const int max_size);
+        /**
+         * @brief Flushes pending log messages and releases file resources.
+         */
+        void shutdown();
+
+        template <typename... Args>
+        void logDebug(fmt::string_view format, Args&&... args) {
+            log(LogLevel::kDebug, format, std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        void logInfo(fmt::string_view format, Args&&... args) {
+            log(LogLevel::kInfo, format, std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        void logWarn(fmt::string_view format, Args&&... args) {
+            log(LogLevel::kWarn, format, std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        void logError(fmt::string_view format, Args&&... args) {
+            log(LogLevel::kError, format, std::forward<Args>(args)...);
+        }
 
     private:
-        std::shared_ptr<spdlog::logger>	logger_;
+        enum class LogLevel : int {
+            kDebug = 0,
+            kInfo = 1,
+            kWarn = 2,
+            kError = 3,
+        };
+
+        template <typename... Args>
+        void log(LogLevel level, fmt::string_view format, Args&&... args) {
+            if (!shouldLog(level)) {
+                return;
+            }
+            std::string message;
+            try {
+                message = fmt::vformat(format, fmt::make_format_args(args...));
+            } catch (const std::exception& e) {
+                message = fmt::format("log format error: {}", e.what());
+            }
+            write(level, message);
+        }
+
+        bool shouldLog(LogLevel level) const {
+            return static_cast<int>(level) >= current_level_.load(std::memory_order_relaxed);
+        }
+
+        void write(LogLevel level, const std::string& message);
+        void rotateFileIfNeededLocked();
+
+        std::string file_path_;
+        std::uint64_t max_file_size_{0};
+        std::uint64_t current_file_size_{0};
+        bool file_enabled_{false};
+        std::unique_ptr<std::ofstream> file_stream_;
         mutable std::mutex mutex_;
+        std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};
 
         Logger();
     };
@@ -92,11 +146,11 @@ namespace pinpoint {
     void shutdown_logger();
 
     /// @brief Writes a debug-level log entry using the global logger.
-    #define LOG_DEBUG(...) (Logger::getInstance().getLogger()->debug(__VA_ARGS__))
+    #define LOG_DEBUG(...) (Logger::getInstance().logDebug(__VA_ARGS__))
     /// @brief Writes an info-level log entry using the global logger.
-    #define LOG_INFO(...) (Logger::getInstance().getLogger()->info(__VA_ARGS__))
+    #define LOG_INFO(...) (Logger::getInstance().logInfo(__VA_ARGS__))
     /// @brief Writes a warning-level log entry using the global logger.
-    #define LOG_WARN(...) (Logger::getInstance().getLogger()->warn(__VA_ARGS__))
+    #define LOG_WARN(...) (Logger::getInstance().logWarn(__VA_ARGS__))
     /// @brief Writes an error-level log entry using the global logger.
-    #define LOG_ERROR(...) (Logger::getInstance().getLogger()->error(__VA_ARGS__))
+    #define LOG_ERROR(...) (Logger::getInstance().logError(__VA_ARGS__))
 }
