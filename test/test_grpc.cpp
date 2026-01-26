@@ -42,7 +42,7 @@ namespace pinpoint {
 
 class MockAgentService : public AgentService {
 public:
-    MockAgentService() : is_exiting_(false), start_time_(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()), trace_id_counter_(0) {
+    MockAgentService() : is_exiting_(false), start_time_(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
         config_.span.event_chunk_size = 10;
         config_.span.max_event_depth = 32;
         config_.span.queue_size = 1024;
@@ -68,6 +68,7 @@ public:
     std::string_view getAgentName() const override { return config_.agent_name_; }
     const Config& getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
+    void reloadConfig() override {}
 
     TraceId generateTraceId() override {
         return TraceId{"mock-agent", start_time_, trace_id_counter_++};
@@ -158,6 +159,7 @@ public:
 private:
     bool is_exiting_;
     int64_t start_time_;
+    std::string cached_start_time_str_;
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;

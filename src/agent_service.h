@@ -66,6 +66,8 @@
       virtual const Config& getConfig() const = 0;
       /// @brief Returns the agent's start timestamp (epoch milliseconds).
       virtual int64_t getStartTime() const = 0;
+      /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
+      virtual void reloadConfig() = 0;
  
       /**
        * @brief Generates a new distributed trace identifier.

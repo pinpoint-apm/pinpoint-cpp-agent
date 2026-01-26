@@ -49,38 +49,12 @@ namespace pinpoint {
         agent_stats_ = std::make_unique<AgentStats>(this);
         url_stats_ = std::make_unique<UrlStats>(this);
 
-        std::unique_ptr<Sampler> sampler;
-        if (compare_string(config_.sampling.type, PERCENT_SAMPLING)) {
-            sampler = std::make_unique<PercentSampler>(config_.sampling.percent_rate);
-        } else {
-            sampler = std::make_unique<CounterSampler>(config_.sampling.counter_rate);
-        }
-
-        if (config_.sampling.new_throughput > 0 || config_.sampling.cont_throughput > 0) {
-            sampler_ = std::make_unique<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                     config_.sampling.new_throughput,
-                                                                     config_.sampling.cont_throughput);
-        } else {
-            sampler_ = std::make_unique<BasicTraceSampler>(this, std::move(sampler));
-        }
-
         api_cache_ = std::make_unique<IdCache>(kCacheSize);
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
-
-        if (!config_.http.server.exclude_url.empty()) {
-            http_url_filter_ = std::make_unique<HttpUrlFilter>(config_.http.server.exclude_url);
-        }
-        if (!config_.http.server.exclude_method.empty()) {
-            http_method_filter_ = std::make_unique<HttpMethodFilter>(config_.http.server.exclude_method);
-        }
-        if (!config_.http.server.status_errors.empty()) {
-            http_status_errors_ = std::make_unique<HttpStatusErrors>(config_.http.server.status_errors);
-        }
-
-        // Initialize HTTP header recorders
-        init_header_recorders();
+        
+        reloadConfig();
 
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
     }
@@ -105,19 +79,67 @@ namespace pinpoint {
             {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_.http.client.rec_request_cookie}
         };
 
+        std::shared_ptr<HttpHeaderRecorder> new_srv[3]{};
+        std::shared_ptr<HttpHeaderRecorder> new_cli[3]{};
+
         for (const auto& cfg : server_configs) {
             if (!cfg.config_value.empty()) {
-                http_srv_header_recorder_[cfg.type] =
-                    std::make_unique<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+                new_srv[cfg.type] = std::make_shared<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
             }
         }
 
         for (const auto& cfg : client_configs) {
             if (!cfg.config_value.empty()) {
-                http_cli_header_recorder_[cfg.type] =
-                    std::make_unique<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+                new_cli[cfg.type] = std::make_shared<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
             }
         }
+
+        for (size_t i = 0; i < 3; ++i) {
+            std::atomic_store(&http_srv_header_recorder_[i], new_srv[i]);
+            std::atomic_store(&http_cli_header_recorder_[i], new_cli[i]);
+        }
+    }
+
+    void AgentImpl::reloadConfig() {
+        // Rebuild sampler
+        std::unique_ptr<Sampler> sampler;
+        if (compare_string(config_.sampling.type, PERCENT_SAMPLING)) {
+            sampler = std::make_unique<PercentSampler>(config_.sampling.percent_rate);
+        } else {
+            sampler = std::make_unique<CounterSampler>(config_.sampling.counter_rate);
+        }
+
+        std::shared_ptr<TraceSampler> new_sampler;
+        if (config_.sampling.new_throughput > 0 || config_.sampling.cont_throughput > 0) {
+            new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
+                                                                        config_.sampling.new_throughput,
+                                                                        config_.sampling.cont_throughput);
+        } else {
+            new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
+        }
+        std::atomic_store(&sampler_, new_sampler);
+
+        // Rebuild HTTP filters
+        std::shared_ptr<HttpUrlFilter> new_url_filter;
+        if (!config_.http.server.exclude_url.empty()) {
+            new_url_filter = std::make_shared<HttpUrlFilter>(config_.http.server.exclude_url);
+        }
+        std::atomic_store(&http_url_filter_, new_url_filter);
+
+        std::shared_ptr<HttpMethodFilter> new_method_filter;
+        if (!config_.http.server.exclude_method.empty()) {
+            new_method_filter = std::make_shared<HttpMethodFilter>(config_.http.server.exclude_method);
+        }
+        std::atomic_store(&http_method_filter_, new_method_filter);
+
+        std::shared_ptr<HttpStatusErrors> new_status_errors;
+        if (!config_.http.server.status_errors.empty()) {
+            new_status_errors = std::make_shared<HttpStatusErrors>(config_.http.server.status_errors);
+        }
+        std::atomic_store(&http_status_errors_, new_status_errors);
+
+        // Rebuild header recorders
+        init_header_recorders();
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -228,10 +250,12 @@ namespace pinpoint {
         if (!enabled_) {
             return noopSpan();
         }
-        if (http_url_filter_ && http_url_filter_->isFiltered(rpc_point)) {
+        const auto url_filter = std::atomic_load(&http_url_filter_);
+        if (url_filter && url_filter->isFiltered(rpc_point)) {
             return noopSpan();
         }
-        if (!method.empty() && http_method_filter_ && http_method_filter_->isFiltered(method)) {
+        const auto method_filter = std::atomic_load(&http_method_filter_);
+        if (!method.empty() && method_filter && method_filter->isFiltered(method)) {
             return noopSpan();
         }
 
@@ -239,11 +263,16 @@ namespace pinpoint {
             return std::make_shared<UnsampledSpan>(this);
         }
 
+        auto sampler = std::atomic_load(&sampler_);
+        if (!sampler) {
+            return noopSpan();
+        }
+
         bool my_sampling = false;
         if (const auto tid = reader.Get(HEADER_TRACE_ID); tid.has_value()) {
-            my_sampling = sampler_->isContinueSampled();
+            my_sampling = sampler->isContinueSampled();
         } else {
-            my_sampling = sampler_->isNewSampled();
+            my_sampling = sampler->isNewSampled();
         }
 
         SpanPtr span;
@@ -426,8 +455,9 @@ namespace pinpoint {
     }
 
     bool AgentImpl::isStatusFail(const int status) const {
-        if (enabled_ && http_status_errors_) {
-            return http_status_errors_->isErrorCode(status);
+        const auto status_errors = std::atomic_load(&http_status_errors_);
+        if (enabled_ && status_errors) {
+            return status_errors->isErrorCode(status);
         }
         return false;
     }
@@ -436,8 +466,9 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        if (enabled_ && http_srv_header_recorder_[which]) {
-            http_srv_header_recorder_[which]->recordHeader(reader, annotation);
+        const auto recorder = std::atomic_load(&http_srv_header_recorder_[which]);
+        if (enabled_ && recorder) {
+            recorder->recordHeader(reader, annotation);
         }
     }
 
@@ -445,8 +476,9 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        if (enabled_ && http_cli_header_recorder_[which]) {
-            http_cli_header_recorder_[which]->recordHeader(reader, annotation);
+        const auto recorder = std::atomic_load(&http_cli_header_recorder_[which]);
+        if (enabled_ && recorder) {
+            recorder->recordHeader(reader, annotation);
         }
     }
 

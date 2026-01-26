@@ -34,7 +34,7 @@ namespace pinpoint {
 // Mock implementation of AgentService for Span testing
 class MockAgentService : public AgentService {
 public:
-    MockAgentService() : is_exiting_(false), start_time_(1234567890), trace_id_counter_(0) {
+    MockAgentService() : is_exiting_(false), start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
         config_.span.event_chunk_size = 10;
         config_.span.max_event_depth = 64;
         config_.span.max_event_sequence = 512;
@@ -50,6 +50,7 @@ public:
     std::string_view getAgentName() const override { return "TestAgent"; }
     const Config& getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
+    void reloadConfig() override {}
 
     TraceId generateTraceId() override {
         TraceId trace_id;
@@ -162,6 +163,7 @@ public:
 private:
     bool is_exiting_;
     int64_t start_time_;
+    std::string cached_start_time_str_;
     int64_t trace_id_counter_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;

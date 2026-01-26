@@ -30,7 +30,7 @@ namespace pinpoint {
 // Mock AgentService for testing
 class MockAgentService : public AgentService {
 public:
-    MockAgentService() : start_time_(1234567890) {}
+    MockAgentService() : start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)) {}
     
     bool isExiting() const override { return false; }
     std::string_view getAppName() const override { return "TestApp"; }
@@ -39,6 +39,7 @@ public:
     std::string_view getAgentName() const override { return "Test Agent"; }
     const Config& getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
+    void reloadConfig() override {}
     
     TraceId generateTraceId() override { return TraceId{}; }
     void recordSpan(std::unique_ptr<SpanChunk> span) const override {}
@@ -75,6 +76,7 @@ public:
     
 private:
     int64_t start_time_;
+    std::string cached_start_time_str_;
     Config config_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;

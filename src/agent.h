@@ -85,6 +85,8 @@ namespace pinpoint {
 
     	const Config& getConfig() const override { return config_; }
     	int64_t getStartTime() const override { return start_time_; }
+		/// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
+		void reloadConfig() override;
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
@@ -111,7 +113,7 @@ namespace pinpoint {
     private:
 
         Config config_;
-        std::unique_ptr<TraceSampler> sampler_{};
+        std::shared_ptr<TraceSampler> sampler_{};
     	std::unique_ptr<IdCache> api_cache_{};
     	std::unique_ptr<IdCache> error_cache_{};
     	std::unique_ptr<IdCache> sql_cache_{};
@@ -132,11 +134,11 @@ namespace pinpoint {
     	std::thread url_stat_send_thread_;
     	std::thread agent_stat_thread_;
 
-    	std::unique_ptr<HttpUrlFilter> http_url_filter_{};
-    	std::unique_ptr<HttpMethodFilter> http_method_filter_{};
-    	std::unique_ptr<HttpStatusErrors> http_status_errors_{};
-    	std::unique_ptr<HttpHeaderRecorder> http_srv_header_recorder_[3]{};
-    	std::unique_ptr<HttpHeaderRecorder> http_cli_header_recorder_[3]{};
+    	std::shared_ptr<HttpUrlFilter> http_url_filter_{};
+    	std::shared_ptr<HttpMethodFilter> http_method_filter_{};
+    	std::shared_ptr<HttpStatusErrors> http_status_errors_{};
+    	std::shared_ptr<HttpHeaderRecorder> http_srv_header_recorder_[3]{};
+    	std::shared_ptr<HttpHeaderRecorder> http_cli_header_recorder_[3]{};
 
         int64_t start_time_{};
     	std::atomic<uint64_t> trace_id_sequence_{};
