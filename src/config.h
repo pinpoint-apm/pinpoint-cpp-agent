@@ -173,6 +173,21 @@ namespace pinpoint {
             int max_bind_args_size = defaults::SQL_MAX_BIND_ARGS_SIZE;
             bool enable_sql_stats = false;
         } sql;
+
+        /**
+         * @brief Validates required config fields and constraints.
+         *
+         * @return true when the configuration is valid.
+         */
+        bool check() const;
+
+        /**
+         * @brief Determines whether a config reload is allowed.
+         *
+         * @param old Existing config.
+         * @return true if reload is allowed.
+         */
+        bool isReloadable(const Config& old);
     };
 
     /**

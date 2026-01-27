@@ -31,9 +31,6 @@ namespace pinpoint {
 
     // Constants
     constexpr int kCacheSize = 1024;
-    constexpr int kMaxAppNameLength = 24;
-    constexpr int kMaxAgentIdLength = 24;
-    constexpr int kMaxAgentNameLength = 255;
 
     // Global agent singleton with thread-safe access
     namespace {
@@ -487,28 +484,6 @@ namespace pinpoint {
         if (!cfg.enable) {
             return nullptr;
         }
-
-        if (cfg.collector.host.empty()) {
-            LOG_ERROR("address of collector is required");
-            return nullptr;
-        }
-        if (cfg.app_name_.empty()) {
-            LOG_ERROR("application name is required");
-            return nullptr;
-        }
-        if (cfg.app_name_.size() > kMaxAppNameLength) {
-            LOG_ERROR("application name is too long - max length: {}", kMaxAppNameLength);
-            return nullptr;
-        }
-        if (cfg.agent_id_.size() > kMaxAgentIdLength) {
-            LOG_ERROR("agent id is too long - max length: {}", kMaxAgentIdLength);
-            return nullptr;
-        }
-        if (cfg.agent_name_.size() > kMaxAgentNameLength) {
-            LOG_ERROR("agent name is too long - max length: {}", kMaxAgentNameLength);
-            return nullptr;
-        }
-
         try {
             return std::make_shared<AgentImpl>(cfg);
         } catch (const std::exception& e) {
@@ -528,9 +503,17 @@ namespace pinpoint {
     static AgentPtr create_agent_helper(Config& cfg) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         
+        if (!cfg.check()) {
+            return noopAgent();
+        }
+        
         if (global_agent != nullptr) {
-            global_agent->reloadConfig(cfg);
-            return global_agent;
+            if (cfg.isReloadable(global_agent->getConfig())) {
+                global_agent->reloadConfig(cfg);
+                return global_agent;
+            } else {
+                return noopAgent();
+            }
         }
 
         global_agent = make_agent(cfg);

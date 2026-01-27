@@ -33,6 +33,12 @@
 
 namespace pinpoint {
 
+    namespace {
+        constexpr int kMaxAppNameLength = 24;
+        constexpr int kMaxAgentIdLength = 24;
+        constexpr int kMaxAgentNameLength = 255;
+    }
+
     static std::string& global_agent_config_str() {
         static std::string cfg_str;
         return cfg_str;
@@ -647,5 +653,45 @@ namespace pinpoint {
         emitter << YAML::EndMap;
 
         return emitter.c_str();
+    }
+
+    bool Config::check() const {
+        if (collector.host.empty()) {
+            LOG_ERROR("address of collector is required");
+            return false;
+        }
+        if (app_name_.empty()) {
+            LOG_ERROR("application name is required");
+            return false;
+        }
+        if (app_name_.size() > kMaxAppNameLength) {
+            LOG_ERROR("application name is too long - max length: {}", kMaxAppNameLength);
+            return false;
+        }
+        if (agent_id_.size() > kMaxAgentIdLength) {
+            LOG_ERROR("agent id is too long - max length: {}", kMaxAgentIdLength);
+            return false;
+        }
+        if (agent_name_.size() > kMaxAgentNameLength) {
+            LOG_ERROR("agent name is too long - max length: {}", kMaxAgentNameLength);
+            return false;
+        }
+
+        return true;
+    }
+
+    bool Config::isReloadable(const Config& old) {
+        const bool identity_same =
+            app_name_ == old.app_name_ &&
+            app_type_ == old.app_type_ &&
+            agent_id_ == old.agent_id_ &&
+            agent_name_ == old.agent_name_ &&
+            collector.host == old.collector.host &&
+            collector.agent_port == old.collector.agent_port &&
+            collector.span_port == old.collector.span_port &&
+            collector.stat_port == old.collector.stat_port;
+
+        // When identity/collector settings are the same, do not reload.
+        return !identity_same;
     }
 }
