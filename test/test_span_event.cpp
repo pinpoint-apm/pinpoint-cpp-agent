@@ -47,7 +47,7 @@ public:
     std::string_view getAgentName() const override { return "TestAgent"; }
     const Config& getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig() override {}
+    void reloadConfig(const Config& cfg) override { config_ = cfg; }
 
     TraceId generateTraceId() override {
         TraceId trace_id;

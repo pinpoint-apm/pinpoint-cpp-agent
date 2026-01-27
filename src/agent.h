@@ -86,7 +86,7 @@ namespace pinpoint {
     	const Config& getConfig() const override { return config_; }
     	int64_t getStartTime() const override { return start_time_; }
 		/// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
-		void reloadConfig() override;
+		void reloadConfig(const Config& cfg) override;
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;

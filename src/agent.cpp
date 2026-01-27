@@ -37,12 +37,11 @@ namespace pinpoint {
 
     // Global agent singleton with thread-safe access
     namespace {
-        AgentPtr global_agent{nullptr};
+        std::shared_ptr<AgentImpl> global_agent{nullptr};
         std::mutex global_agent_mutex;
     }
 
-    AgentImpl::AgentImpl(const Config& options) :
-        config_(options),
+    AgentImpl::AgentImpl(const Config& cfg) :
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
@@ -54,7 +53,7 @@ namespace pinpoint {
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
         
-        reloadConfig();
+        reloadConfig(cfg);
 
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
     }
@@ -100,7 +99,9 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::reloadConfig() {
+    void AgentImpl::reloadConfig(const Config& cfg) {
+        config_ = cfg;
+
         // Rebuild sampler
         std::unique_ptr<Sampler> sampler;
         if (compare_string(config_.sampling.type, PERCENT_SAMPLING)) {
@@ -303,7 +304,7 @@ namespace pinpoint {
         
         {
             std::lock_guard<std::mutex> lock(global_agent_mutex);
-            global_agent = noopAgent();
+            global_agent.reset();
         }
         
         close_grpc_workers();
@@ -482,37 +483,37 @@ namespace pinpoint {
         }
     }
 
-    static AgentPtr make_agent(Config& cfg) {
+    static std::shared_ptr<AgentImpl> make_agent(Config& cfg) {
         if (!cfg.enable) {
-            return noopAgent();
+            return nullptr;
         }
 
         if (cfg.collector.host.empty()) {
             LOG_ERROR("address of collector is required");
-            return noopAgent();
+            return nullptr;
         }
         if (cfg.app_name_.empty()) {
             LOG_ERROR("application name is required");
-            return noopAgent();
+            return nullptr;
         }
         if (cfg.app_name_.size() > kMaxAppNameLength) {
             LOG_ERROR("application name is too long - max length: {}", kMaxAppNameLength);
-            return noopAgent();
+            return nullptr;
         }
         if (cfg.agent_id_.size() > kMaxAgentIdLength) {
             LOG_ERROR("agent id is too long - max length: {}", kMaxAgentIdLength);
-            return noopAgent();
+            return nullptr;
         }
         if (cfg.agent_name_.size() > kMaxAgentNameLength) {
             LOG_ERROR("agent name is too long - max length: {}", kMaxAgentNameLength);
-            return noopAgent();
+            return nullptr;
         }
 
         try {
             return std::make_shared<AgentImpl>(cfg);
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
-            return noopAgent();
+            return nullptr;
         }
     }
 
@@ -528,11 +529,14 @@ namespace pinpoint {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         
         if (global_agent != nullptr) {
-            LOG_WARN("agent: pinpoint agent is already created");
+            global_agent->reloadConfig(cfg);
             return global_agent;
         }
 
         global_agent = make_agent(cfg);
+        if (global_agent == nullptr) {
+            return noopAgent();
+        }
         return global_agent;
     }
 
