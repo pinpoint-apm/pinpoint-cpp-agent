@@ -38,7 +38,8 @@ namespace pinpoint {
         std::mutex global_agent_mutex;
     }
 
-    AgentImpl::AgentImpl(const Config& cfg) :
+    AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg) :
+        config_(std::move(cfg)),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
@@ -55,6 +56,30 @@ namespace pinpoint {
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
     }
 
+    std::shared_ptr<const Config> AgentImpl::getConfig() const {
+        return std::atomic_load(&config_);
+    }
+
+    std::string_view AgentImpl::getAppName() const {
+        const auto cfg = std::atomic_load(&config_);
+        return cfg->app_name_;
+    }
+
+    int32_t AgentImpl::getAppType() const {
+        const auto cfg = std::atomic_load(&config_);
+        return cfg->app_type_;
+    }
+
+    std::string_view AgentImpl::getAgentId() const {
+        const auto cfg = std::atomic_load(&config_);
+        return cfg->agent_id_;
+    }
+
+    std::string_view AgentImpl::getAgentName() const {
+        const auto cfg = std::atomic_load(&config_);
+        return cfg->agent_name_;
+    }
+
     void AgentImpl::init_header_recorders() {
         // Server-side header recorders
         struct HeaderRecorderConfig {
@@ -64,29 +89,31 @@ namespace pinpoint {
         };
 
         const HeaderRecorderConfig server_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_.http.server.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.server.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_.http.server.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_->http.server.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_->http.server.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_->http.server.rec_request_cookie}
         };
 
         const HeaderRecorderConfig client_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_.http.client.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_.http.client.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_.http.client.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_->http.client.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_->http.client.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_->http.client.rec_request_cookie}
         };
 
         std::shared_ptr<HttpHeaderRecorder> new_srv[3]{};
         std::shared_ptr<HttpHeaderRecorder> new_cli[3]{};
 
-        for (const auto& cfg : server_configs) {
-            if (!cfg.config_value.empty()) {
-                new_srv[cfg.type] = std::make_shared<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+        for (const auto& recorder_cfg : server_configs) {
+            if (!recorder_cfg.config_value.empty()) {
+                new_srv[recorder_cfg.type] =
+                    std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
             }
         }
 
-        for (const auto& cfg : client_configs) {
-            if (!cfg.config_value.empty()) {
-                new_cli[cfg.type] = std::make_shared<HttpHeaderRecorder>(cfg.annotation_key, cfg.config_value);
+        for (const auto& recorder_cfg : client_configs) {
+            if (!recorder_cfg.config_value.empty()) {
+                new_cli[recorder_cfg.type] =
+                    std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
             }
         }
 
@@ -96,22 +123,22 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::reloadConfig(const Config& cfg) {
-        config_ = cfg;
+    void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
+        std::atomic_store(&config_, std::move(cfg));
 
         // Rebuild sampler
         std::unique_ptr<Sampler> sampler;
-        if (compare_string(config_.sampling.type, PERCENT_SAMPLING)) {
-            sampler = std::make_unique<PercentSampler>(config_.sampling.percent_rate);
+        if (compare_string(config_->sampling.type, PERCENT_SAMPLING)) {
+            sampler = std::make_unique<PercentSampler>(config_->sampling.percent_rate);
         } else {
-            sampler = std::make_unique<CounterSampler>(config_.sampling.counter_rate);
+            sampler = std::make_unique<CounterSampler>(config_->sampling.counter_rate);
         }
 
         std::shared_ptr<TraceSampler> new_sampler;
-        if (config_.sampling.new_throughput > 0 || config_.sampling.cont_throughput > 0) {
+        if (config_->sampling.new_throughput > 0 || config_->sampling.cont_throughput > 0) {
             new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                        config_.sampling.new_throughput,
-                                                                        config_.sampling.cont_throughput);
+                                                                        config_->sampling.new_throughput,
+                                                                        config_->sampling.cont_throughput);
         } else {
             new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
         }
@@ -119,20 +146,20 @@ namespace pinpoint {
 
         // Rebuild HTTP filters
         std::shared_ptr<HttpUrlFilter> new_url_filter;
-        if (!config_.http.server.exclude_url.empty()) {
-            new_url_filter = std::make_shared<HttpUrlFilter>(config_.http.server.exclude_url);
+        if (!config_->http.server.exclude_url.empty()) {
+            new_url_filter = std::make_shared<HttpUrlFilter>(config_->http.server.exclude_url);
         }
         std::atomic_store(&http_url_filter_, new_url_filter);
 
         std::shared_ptr<HttpMethodFilter> new_method_filter;
-        if (!config_.http.server.exclude_method.empty()) {
-            new_method_filter = std::make_shared<HttpMethodFilter>(config_.http.server.exclude_method);
+        if (!config_->http.server.exclude_method.empty()) {
+            new_method_filter = std::make_shared<HttpMethodFilter>(config_->http.server.exclude_method);
         }
         std::atomic_store(&http_method_filter_, new_method_filter);
 
         std::shared_ptr<HttpStatusErrors> new_status_errors;
-        if (!config_.http.server.status_errors.empty()) {
-            new_status_errors = std::make_shared<HttpStatusErrors>(config_.http.server.status_errors);
+        if (!config_->http.server.status_errors.empty()) {
+            new_status_errors = std::make_shared<HttpStatusErrors>(config_->http.server.status_errors);
         }
         std::atomic_store(&http_status_errors_, new_status_errors);
 
@@ -311,7 +338,8 @@ namespace pinpoint {
     TraceId AgentImpl::generateTraceId() {
         TraceId tid;
 
-        tid.AgentId = config_.agent_id_;
+        const auto cfg = getConfig();
+        tid.AgentId = cfg->agent_id_;
         tid.StartTime = start_time_;
         tid.Sequence = trace_id_sequence_.fetch_add(1);
         return tid;
@@ -442,7 +470,8 @@ namespace pinpoint {
     }
 
     void AgentImpl::recordException(SpanData* span_data) const {
-        if (!enabled_ || !config_.enable_callstack_trace) {
+        const auto cfg = getConfig();
+        if (!enabled_ || !cfg->enable_callstack_trace) {
             return;
         }
 
@@ -480,8 +509,8 @@ namespace pinpoint {
         }
     }
 
-    static std::shared_ptr<AgentImpl> make_agent(Config& cfg) {
-        if (!cfg.enable) {
+    static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg) {
+        if (!cfg->enable) {
             return nullptr;
         }
         try {
@@ -500,23 +529,23 @@ namespace pinpoint {
         set_config_string(config_string);
     }
 
-    static AgentPtr create_agent_helper(Config& cfg) {
+    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         
-        if (!cfg.check()) {
+        if (!cfg->check()) {
             return noopAgent();
         }
         
         if (global_agent != nullptr) {
-            if (cfg.isReloadable(global_agent->getConfig())) {
-                global_agent->reloadConfig(cfg);
+            const auto current_cfg = global_agent->getConfig();
+            if (cfg->isReloadable(current_cfg)) {
+                global_agent->reloadConfig(std::move(cfg));
                 return global_agent;
-            } else {
-                return noopAgent();
             }
+            return noopAgent();
         }
 
-        global_agent = make_agent(cfg);
+        global_agent = make_agent(std::move(cfg));
         if (global_agent == nullptr) {
             return noopAgent();
         }
@@ -524,14 +553,20 @@ namespace pinpoint {
     }
 
     AgentPtr CreateAgent() {
-        Config cfg = make_config();
-        return create_agent_helper(cfg);
+        const auto cfg = make_config();
+        if (!cfg) {
+            return noopAgent();
+        }
+        return create_agent_helper(std::move(cfg));
     }
 
     AgentPtr CreateAgent(int32_t app_type) {
-        Config cfg = make_config();
-        cfg.app_type_ = app_type;
-        return create_agent_helper(cfg);
+        auto cfg = make_config();
+        if (!cfg) {
+            return noopAgent();
+        }
+        cfg->app_type_ = app_type;
+        return create_agent_helper(std::move(cfg));
     }
 
     AgentPtr GlobalAgent() {

@@ -151,17 +151,17 @@ namespace pinpoint {
     }
 
     void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept try {
-        const auto& config = agent_->getConfig();
-        if (!config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->http.url_stat.enable) {
             return;
         }
 
         std::unique_lock<std::mutex> lock(add_mutex_);
 
-        if (url_stats_.size() < config.span.queue_size) {
+        if (url_stats_.size() < config->span.queue_size) {
             url_stats_.push(std::move(stats));
         } else {
-            LOG_DEBUG("drop url stats: overflow max queue size {}", config.span.queue_size);
+            LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
         }
 
         add_cond_var_.notify_one();
@@ -170,8 +170,8 @@ namespace pinpoint {
     }
 
     void UrlStats::addUrlStatsWorker() try {
-        auto& config = agent_->getConfig();
-        if (!config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->http.url_stat.enable) {
             return;
         }
 
@@ -187,7 +187,7 @@ namespace pinpoint {
             auto us = std::move(url_stats_.front());
             url_stats_.pop();
             lock.unlock();
-            addSnapshot(us.get(), config);
+            addSnapshot(us.get(), *config);
             lock.lock();
         }
         LOG_INFO("add url stats worker end");
@@ -196,7 +196,8 @@ namespace pinpoint {
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
-        if (auto& config = agent_->getConfig(); !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->http.url_stat.enable) {
             return;
         }
 
@@ -205,7 +206,8 @@ namespace pinpoint {
     }
 
     void UrlStats::sendUrlStatsWorker() try {
-        if (auto& config = agent_->getConfig(); !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->http.url_stat.enable) {
             return;
         }
 
@@ -224,7 +226,8 @@ namespace pinpoint {
     }
 
     void UrlStats::stopSendUrlStatsWorker() {
-        if (auto& config = agent_->getConfig(); !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->http.url_stat.enable) {
             return;
         }
 

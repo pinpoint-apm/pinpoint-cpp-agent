@@ -38,9 +38,13 @@ public:
     int32_t getAppType() const override { return 1300; }
     std::string_view getAgentId() const override { return "test-agent-001"; }
     std::string_view getAgentName() const override { return "TestAgent"; }
-    const Config& getConfig() const override { return config_; }
+    std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(const Config& cfg) override { config_ = cfg; }
+    void reloadConfig(std::shared_ptr<const Config> cfg) override {
+        if (cfg) {
+            *config_ = *cfg;
+        }
+    }
 
     TraceId generateTraceId() override {
         TraceId trace_id;
@@ -138,7 +142,7 @@ private:
     int64_t start_time_;
     std::string cached_start_time_str_;
     int64_t trace_id_counter_;
-    Config config_;
+    std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;
 };

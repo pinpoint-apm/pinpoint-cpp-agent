@@ -189,11 +189,11 @@ namespace pinpoint {
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
 
-        auto& cfg = agent_->getConfig();
+        const auto cfg = agent_->getConfig();
         const auto depth = data_->getEventDepth();
         const auto seq = data_->getEventSequence();
 
-        if (depth >= cfg.span.max_event_depth || seq >= cfg.span.max_event_sequence) {
+        if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
             overflow_++;
             LOG_WARN("span event maximum depth/sequence exceeded. (depth:{}, seq:{})", depth, seq);
             return noopSpanEvent();
@@ -234,7 +234,8 @@ namespace pinpoint {
 
         data_->finishSpanEvent();
 
-        if (data_->getFinishedEventsCount() >= agent_->getConfig().span.event_chunk_size) {
+        const auto cfg = agent_->getConfig();
+        if (data_->getFinishedEventsCount() >= cfg->span.event_chunk_size) {
             record_chunk(false);
         }
     }

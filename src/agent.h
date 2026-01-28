@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <thread>
+#include <memory>
 
 #include "pinpoint/tracer.h"
 #include "config.h"
@@ -45,7 +46,7 @@ namespace pinpoint {
 		 *
 		 * @param options Resolved agent configuration.
 		 */
-		explicit AgentImpl(const Config& options);
+		explicit AgentImpl(std::shared_ptr<const Config> options);
         ~AgentImpl() override;
 
 		/**
@@ -78,15 +79,15 @@ namespace pinpoint {
 		void Shutdown() override;
 
     	bool isExiting() const override { return shutting_down_; }
-    	std::string_view getAppName() const override { return config_.app_name_; }
-    	int32_t getAppType() const override { return config_.app_type_; }
-    	std::string_view getAgentId() const override { return config_.agent_id_; }
-    	std::string_view getAgentName() const override {	return config_.agent_name_; }
+    	std::string_view getAppName() const override;
+    	int32_t getAppType() const override;
+    	std::string_view getAgentId() const override;
+    	std::string_view getAgentName() const override;
 
-    	const Config& getConfig() const override { return config_; }
+    	std::shared_ptr<const Config> getConfig() const override;
     	int64_t getStartTime() const override { return start_time_; }
 		/// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
-		void reloadConfig(const Config& cfg) override;
+    	void reloadConfig(std::shared_ptr<const Config> cfg) override;
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
@@ -112,7 +113,7 @@ namespace pinpoint {
 
     private:
 
-        Config config_;
+        std::shared_ptr<const Config> config_;
         std::shared_ptr<TraceSampler> sampler_{};
     	std::unique_ptr<IdCache> api_cache_{};
     	std::unique_ptr<IdCache> error_cache_{};

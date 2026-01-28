@@ -20,6 +20,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <memory>
 #include <sstream>
 #include <algorithm>
 
@@ -442,8 +443,8 @@ namespace pinpoint {
     constexpr int MAX_SPAN_EVENT_DEPTH = INT32_MAX;
     constexpr int MAX_SPAN_EVENT_SEQUENCE = INT32_MAX;
 
-    Config make_config() {
-        Config config;
+    std::shared_ptr<Config> make_config() {
+        auto config = std::make_shared<Config>();
         bool is_container_set = false;
 
         init_logger();
@@ -463,57 +464,57 @@ namespace pinpoint {
             }
         }
 
-        load_yaml_config(yaml, config, is_container_set);
-        load_env_config(config, is_container_set);
+        load_yaml_config(yaml, *config, is_container_set);
+        load_env_config(*config, is_container_set);
 
-        if (!config.log.file_path.empty()) {
-            Logger::getInstance().setFileLogger(config.log.file_path, config.log.max_file_size);
+        if (!config->log.file_path.empty()) {
+            Logger::getInstance().setFileLogger(config->log.file_path, config->log.max_file_size);
         }
-        Logger::getInstance().setLogLevel(config.log.level);
+        Logger::getInstance().setLogLevel(config->log.level);
 
-        if (config.agent_id_.empty()) {
-            config.agent_id_ = generate_agent_id();
-        }
-
-        if (config.sampling.counter_rate < NONE_SAMPLING_COUNTER_RATE) {
-            config.sampling.counter_rate = NONE_SAMPLING_COUNTER_RATE;
-        }
-        if (config.sampling.percent_rate < NONE_SAMPLING_PERCENT_RATE) {
-            config.sampling.percent_rate = NONE_SAMPLING_PERCENT_RATE;
-        } else if (config.sampling.percent_rate < MIN_SAMPLING_PERCENT_RATE) {
-            config.sampling.percent_rate = MIN_SAMPLING_PERCENT_RATE;
-        } else if (config.sampling.percent_rate > MAX_SAMPLING_PERCENT_RATE) {
-            config.sampling.percent_rate = MAX_SAMPLING_PERCENT_RATE;
-        }
-        if (config.sampling.new_throughput < NONE_SAMPLING_NEW_THROUGHPUT) {
-            config.sampling.new_throughput = NONE_SAMPLING_NEW_THROUGHPUT;
-        }
-        if (config.sampling.cont_throughput < NONE_SAMPLING_CONTINUE_THROUGHPUT) {
-            config.sampling.cont_throughput = NONE_SAMPLING_CONTINUE_THROUGHPUT;
+        if (config->agent_id_.empty()) {
+            config->agent_id_ = generate_agent_id();
         }
 
-        if (config.span.queue_size < MIN_SPAN_QUEUE_SIZE) {
-            config.span.queue_size = defaults::SPAN_QUEUE_SIZE;
+        if (config->sampling.counter_rate < NONE_SAMPLING_COUNTER_RATE) {
+            config->sampling.counter_rate = NONE_SAMPLING_COUNTER_RATE;
         }
-        if (config.span.max_event_depth == UNLIMITED_SIZE) {
-            config.span.max_event_depth = MAX_SPAN_EVENT_DEPTH;
-        } else if (config.span.max_event_depth < MIN_SPAN_EVENT_DEPTH) {
-            config.span.max_event_depth = MIN_SPAN_EVENT_DEPTH;
+        if (config->sampling.percent_rate < NONE_SAMPLING_PERCENT_RATE) {
+            config->sampling.percent_rate = NONE_SAMPLING_PERCENT_RATE;
+        } else if (config->sampling.percent_rate < MIN_SAMPLING_PERCENT_RATE) {
+            config->sampling.percent_rate = MIN_SAMPLING_PERCENT_RATE;
+        } else if (config->sampling.percent_rate > MAX_SAMPLING_PERCENT_RATE) {
+            config->sampling.percent_rate = MAX_SAMPLING_PERCENT_RATE;
         }
-        if (config.span.max_event_sequence == UNLIMITED_SIZE) {
-            config.span.max_event_sequence = MAX_SPAN_EVENT_SEQUENCE;
-        } else if (config.span.max_event_sequence < MIN_SPAN_EVENT_SEQUENCE) {
-            config.span.max_event_sequence = MIN_SPAN_EVENT_SEQUENCE;
+        if (config->sampling.new_throughput < NONE_SAMPLING_NEW_THROUGHPUT) {
+            config->sampling.new_throughput = NONE_SAMPLING_NEW_THROUGHPUT;
         }
-        if (config.span.event_chunk_size < MIN_SPAN_EVENT_CHUNK_SIZE) {
-            config.span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
+        if (config->sampling.cont_throughput < NONE_SAMPLING_CONTINUE_THROUGHPUT) {
+            config->sampling.cont_throughput = NONE_SAMPLING_CONTINUE_THROUGHPUT;
+        }
+
+        if (config->span.queue_size < MIN_SPAN_QUEUE_SIZE) {
+            config->span.queue_size = defaults::SPAN_QUEUE_SIZE;
+        }
+        if (config->span.max_event_depth == UNLIMITED_SIZE) {
+            config->span.max_event_depth = MAX_SPAN_EVENT_DEPTH;
+        } else if (config->span.max_event_depth < MIN_SPAN_EVENT_DEPTH) {
+            config->span.max_event_depth = MIN_SPAN_EVENT_DEPTH;
+        }
+        if (config->span.max_event_sequence == UNLIMITED_SIZE) {
+            config->span.max_event_sequence = MAX_SPAN_EVENT_SEQUENCE;
+        } else if (config->span.max_event_sequence < MIN_SPAN_EVENT_SEQUENCE) {
+            config->span.max_event_sequence = MIN_SPAN_EVENT_SEQUENCE;
+        }
+        if (config->span.event_chunk_size < MIN_SPAN_EVENT_CHUNK_SIZE) {
+            config->span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         }
 
         if (!is_container_set) {
-            config.is_container = is_container_env();
+            config->is_container = is_container_env();
         }
 
-        LOG_INFO("config: {}", "\n" + to_config_string(config));
+        LOG_INFO("config: {}", "\n" + to_config_string(*config));
         return config;
     }
 
@@ -680,18 +681,11 @@ namespace pinpoint {
         return true;
     }
 
-    bool Config::isReloadable(const Config& old) {
-        const bool identity_same =
-            app_name_ == old.app_name_ &&
-            app_type_ == old.app_type_ &&
-            agent_id_ == old.agent_id_ &&
-            agent_name_ == old.agent_name_ &&
-            collector.host == old.collector.host &&
-            collector.agent_port == old.collector.agent_port &&
-            collector.span_port == old.collector.span_port &&
-            collector.stat_port == old.collector.stat_port;
-
-        // When identity/collector settings are the same, do not reload.
-        return !identity_same;
+    bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
+        if (!old) return true;
+        return std::tie(app_name_, app_type_, agent_id_, agent_name_,
+                        collector.host, collector.agent_port, collector.span_port, collector.stat_port) !=
+               std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
+                        old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port);
     }
 }

@@ -205,83 +205,83 @@ Span:
 
 // Test default configuration values
 TEST_F(ConfigTest, DefaultConfigurationTest) {
-    Config config = make_config();
+    auto config = make_config();
     
     // Test basic default values
-    EXPECT_EQ(config.app_name_, "") << "Default app name should be empty";
-    EXPECT_EQ(config.app_type_, 1300) << "Default app type should be 1300"; // defaults::APP_TYPE
-    EXPECT_FALSE(config.agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
-    EXPECT_EQ(config.agent_name_, "") << "Default agent name should be empty";
-    EXPECT_TRUE(config.enable) << "Should be enabled by default";
+    EXPECT_EQ(config->app_name_, "") << "Default app name should be empty";
+    EXPECT_EQ(config->app_type_, 1300) << "Default app type should be 1300"; // defaults::APP_TYPE
+    EXPECT_FALSE(config->agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
+    EXPECT_EQ(config->agent_name_, "") << "Default agent name should be empty";
+    EXPECT_TRUE(config->enable) << "Should be enabled by default";
     
     // Test log defaults
-    EXPECT_EQ(config.log.level, "info") << "Default log level should be info";
-    EXPECT_EQ(config.log.file_path, "") << "Default log file path should be empty";
-    EXPECT_EQ(config.log.max_file_size, 10) << "Default max file size should be 10MB";
+    EXPECT_EQ(config->log.level, "info") << "Default log level should be info";
+    EXPECT_EQ(config->log.file_path, "") << "Default log file path should be empty";
+    EXPECT_EQ(config->log.max_file_size, 10) << "Default max file size should be 10MB";
     
     // Test collector defaults
-    EXPECT_EQ(config.collector.host, "") << "Default collector host should be empty";
-    EXPECT_EQ(config.collector.agent_port, 9991) << "Default agent port should be 9991";
-    EXPECT_EQ(config.collector.span_port, 9993) << "Default span port should be 9993";
-    EXPECT_EQ(config.collector.stat_port, 9992) << "Default stat port should be 9992";
+    EXPECT_EQ(config->collector.host, "") << "Default collector host should be empty";
+    EXPECT_EQ(config->collector.agent_port, 9991) << "Default agent port should be 9991";
+    EXPECT_EQ(config->collector.span_port, 9993) << "Default span port should be 9993";
+    EXPECT_EQ(config->collector.stat_port, 9992) << "Default stat port should be 9992";
     
     // Test sampling defaults
-    EXPECT_EQ(config.sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
-    EXPECT_EQ(config.sampling.counter_rate, 1) << "Default counter rate should be 1";
-    EXPECT_EQ(config.sampling.percent_rate, 100) << "Default percent rate should be 100";
-    EXPECT_EQ(config.sampling.new_throughput, 0) << "Default new throughput should be 0";
-    EXPECT_EQ(config.sampling.cont_throughput, 0) << "Default continue throughput should be 0";
+    EXPECT_EQ(config->sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
+    EXPECT_EQ(config->sampling.counter_rate, 1) << "Default counter rate should be 1";
+    EXPECT_EQ(config->sampling.percent_rate, 100) << "Default percent rate should be 100";
+    EXPECT_EQ(config->sampling.new_throughput, 0) << "Default new throughput should be 0";
+    EXPECT_EQ(config->sampling.cont_throughput, 0) << "Default continue throughput should be 0";
     
     // Test span defaults
-    EXPECT_EQ(config.span.queue_size, 1024) << "Default queue size should be 1024";
-    EXPECT_EQ(config.span.max_event_depth, 64) << "Default max event depth should be 64";
-    EXPECT_EQ(config.span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
-    EXPECT_EQ(config.span.event_chunk_size, 20) << "Default event chunk size should be 20";
+    EXPECT_EQ(config->span.queue_size, 1024) << "Default queue size should be 1024";
+    EXPECT_EQ(config->span.max_event_depth, 64) << "Default max event depth should be 64";
+    EXPECT_EQ(config->span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
+    EXPECT_EQ(config->span.event_chunk_size, 20) << "Default event chunk size should be 20";
     
     // Test stat defaults
-    EXPECT_TRUE(config.stat.enable) << "Stat should be enabled by default";
-    EXPECT_EQ(config.stat.batch_count, 6) << "Default batch count should be 6";
-    EXPECT_EQ(config.stat.collect_interval, 5000) << "Default collect interval should be 5000ms";
+    EXPECT_TRUE(config->stat.enable) << "Stat should be enabled by default";
+    EXPECT_EQ(config->stat.batch_count, 6) << "Default batch count should be 6";
+    EXPECT_EQ(config->stat.collect_interval, 5000) << "Default collect interval should be 5000ms";
     
     // Test HTTP defaults
-    EXPECT_FALSE(config.http.url_stat.enable) << "URL stat should be disabled by default";
-    EXPECT_EQ(config.http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
-    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
-    EXPECT_EQ(config.http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
-    EXPECT_FALSE(config.http.url_stat.method_prefix) << "Method prefix should be false by default";
+    EXPECT_FALSE(config->http.url_stat.enable) << "URL stat should be disabled by default";
+    EXPECT_EQ(config->http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
+    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
+    EXPECT_EQ(config->http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
+    EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
     
     // Test HTTP server defaults
-    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Should have default status error";
-    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "Default status error should be 5xx";
-    EXPECT_TRUE(config.http.server.exclude_url.empty()) << "Exclude URL list should be empty by default";
-    EXPECT_TRUE(config.http.server.exclude_method.empty()) << "Exclude method list should be empty by default";
-    EXPECT_TRUE(config.http.server.rec_request_header.empty()) << "Request header list should be empty by default";
-    EXPECT_TRUE(config.http.server.rec_request_cookie.empty()) << "Request cookie list should be empty by default";
-    EXPECT_TRUE(config.http.server.rec_response_header.empty()) << "Response header list should be empty by default";
+    EXPECT_EQ(config->http.server.status_errors.size(), 1) << "Should have default status error";
+    EXPECT_EQ(config->http.server.status_errors[0], "5xx") << "Default status error should be 5xx";
+    EXPECT_TRUE(config->http.server.exclude_url.empty()) << "Exclude URL list should be empty by default";
+    EXPECT_TRUE(config->http.server.exclude_method.empty()) << "Exclude method list should be empty by default";
+    EXPECT_TRUE(config->http.server.rec_request_header.empty()) << "Request header list should be empty by default";
+    EXPECT_TRUE(config->http.server.rec_request_cookie.empty()) << "Request cookie list should be empty by default";
+    EXPECT_TRUE(config->http.server.rec_response_header.empty()) << "Response header list should be empty by default";
     
     // Test HTTP client defaults
-    EXPECT_TRUE(config.http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
-    EXPECT_TRUE(config.http.client.rec_request_cookie.empty()) << "Client request cookie list should be empty by default";
-    EXPECT_TRUE(config.http.client.rec_response_header.empty()) << "Client response header list should be empty by default";
+    EXPECT_TRUE(config->http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
+    EXPECT_TRUE(config->http.client.rec_request_cookie.empty()) << "Client request cookie list should be empty by default";
+    EXPECT_TRUE(config->http.client.rec_response_header.empty()) << "Client response header list should be empty by default";
     
     // Test SQL defaults
-    EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
-    EXPECT_FALSE(config.sql.enable_sql_stats) << "SQL stats should be disabled by default";
+    EXPECT_EQ(config->sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
+    EXPECT_FALSE(config->sql.enable_sql_stats) << "SQL stats should be disabled by default";
     
     // Test CallStack trace default
-    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled by default";
+    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
 }
 
 // Test generated agent ID
 TEST_F(ConfigTest, GeneratedAgentIdTest) {
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.agent_id_.empty()) << "Agent ID should be generated when not provided";
-    EXPECT_GE(config.agent_id_.length(), 5) << "Generated agent ID should have reasonable length";
+    EXPECT_FALSE(config->agent_id_.empty()) << "Agent ID should be generated when not provided";
+    EXPECT_GE(config->agent_id_.length(), 5) << "Generated agent ID should have reasonable length";
     
     // Test that multiple calls generate different IDs
-    Config config2 = make_config();
-    EXPECT_NE(config.agent_id_, config2.agent_id_) << "Multiple calls should generate different agent IDs";
+    auto config2 = make_config();
+    EXPECT_NE(config->agent_id_, config2->agent_id_) << "Multiple calls should generate different agent IDs";
 }
 
 // ========== YAML Configuration Tests ==========
@@ -289,129 +289,129 @@ TEST_F(ConfigTest, GeneratedAgentIdTest) {
 // Test complete YAML configuration
 TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     set_config_string(complete_config_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
     // Test basic values
-    EXPECT_EQ(config.app_name_, "MyTestApp") << "App name should match YAML";
-    EXPECT_EQ(config.app_type_, 1300) << "App type should match YAML";
-    EXPECT_EQ(config.agent_id_, "test-agent-123") << "Agent ID should match YAML";
-    EXPECT_EQ(config.agent_name_, "TestAgentName") << "Agent name should match YAML";
-    EXPECT_TRUE(config.enable) << "Enable should match YAML";
-    EXPECT_TRUE(config.is_container) << "IsContainer should match YAML";
+    EXPECT_EQ(config->app_name_, "MyTestApp") << "App name should match YAML";
+    EXPECT_EQ(config->app_type_, 1300) << "App type should match YAML";
+    EXPECT_EQ(config->agent_id_, "test-agent-123") << "Agent ID should match YAML";
+    EXPECT_EQ(config->agent_name_, "TestAgentName") << "Agent name should match YAML";
+    EXPECT_TRUE(config->enable) << "Enable should match YAML";
+    EXPECT_TRUE(config->is_container) << "IsContainer should match YAML";
     
     // Test log configuration
-    EXPECT_EQ(config.log.level, "debug") << "Log level should match YAML";
-    EXPECT_EQ(config.log.file_path, "/tmp/pinpoint.log") << "Log file path should match YAML";
-    EXPECT_EQ(config.log.max_file_size, 20) << "Log max file size should match YAML";
+    EXPECT_EQ(config->log.level, "debug") << "Log level should match YAML";
+    EXPECT_EQ(config->log.file_path, "/tmp/pinpoint.log") << "Log file path should match YAML";
+    EXPECT_EQ(config->log.max_file_size, 20) << "Log max file size should match YAML";
     
     // Test collector configuration
-    EXPECT_EQ(config.collector.host, "test.collector.host") << "Collector host should match YAML";
-    EXPECT_EQ(config.collector.agent_port, 9000) << "Agent port should match YAML";
-    EXPECT_EQ(config.collector.span_port, 9001) << "Span port should match YAML";
-    EXPECT_EQ(config.collector.stat_port, 9002) << "Stat port should match YAML";
+    EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should match YAML";
+    EXPECT_EQ(config->collector.agent_port, 9000) << "Agent port should match YAML";
+    EXPECT_EQ(config->collector.span_port, 9001) << "Span port should match YAML";
+    EXPECT_EQ(config->collector.stat_port, 9002) << "Stat port should match YAML";
     
     // Test sampling configuration
-    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match YAML";
-    EXPECT_EQ(config.sampling.counter_rate, 20) << "Counter rate should match YAML";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0.1) << "Percent rate should match YAML";
-    EXPECT_EQ(config.sampling.new_throughput, 50) << "New throughput should match YAML";
-    EXPECT_EQ(config.sampling.cont_throughput, 60) << "Continue throughput should match YAML";
+    EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
+    EXPECT_EQ(config->sampling.counter_rate, 20) << "Counter rate should match YAML";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.1) << "Percent rate should match YAML";
+    EXPECT_EQ(config->sampling.new_throughput, 50) << "New throughput should match YAML";
+    EXPECT_EQ(config->sampling.cont_throughput, 60) << "Continue throughput should match YAML";
     
     // Test span configuration
-    EXPECT_EQ(config.span.queue_size, 512) << "Queue size should match YAML";
-    EXPECT_EQ(config.span.max_event_depth, 32) << "Max event depth should match YAML";
-    EXPECT_EQ(config.span.max_event_sequence, 512) << "Max event sequence should match YAML";
-    EXPECT_EQ(config.span.event_chunk_size, 50) << "Event chunk size should match YAML";
+    EXPECT_EQ(config->span.queue_size, 512) << "Queue size should match YAML";
+    EXPECT_EQ(config->span.max_event_depth, 32) << "Max event depth should match YAML";
+    EXPECT_EQ(config->span.max_event_sequence, 512) << "Max event sequence should match YAML";
+    EXPECT_EQ(config->span.event_chunk_size, 50) << "Event chunk size should match YAML";
     
     // Test stat configuration
-    EXPECT_TRUE(config.stat.enable) << "Stat enable should match YAML";
-    EXPECT_EQ(config.stat.batch_count, 10) << "Batch count should match YAML";
-    EXPECT_EQ(config.stat.collect_interval, 7000) << "Collect interval should match YAML";
+    EXPECT_TRUE(config->stat.enable) << "Stat enable should match YAML";
+    EXPECT_EQ(config->stat.batch_count, 10) << "Batch count should match YAML";
+    EXPECT_EQ(config->stat.collect_interval, 7000) << "Collect interval should match YAML";
     
     // Test HTTP configuration
-    EXPECT_TRUE(config.http.url_stat.enable) << "URL stat enable should match YAML";
-    EXPECT_EQ(config.http.url_stat.limit, 2048) << "URL stat limit should match YAML";
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
-    EXPECT_EQ(config.http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
-    EXPECT_TRUE(config.http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
+    EXPECT_TRUE(config->http.url_stat.enable) << "URL stat enable should match YAML";
+    EXPECT_EQ(config->http.url_stat.limit, 2048) << "URL stat limit should match YAML";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
+    EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
+    EXPECT_TRUE(config->http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
     
     // Test HTTP server configuration
-    EXPECT_EQ(config.http.server.status_errors.size(), 3) << "Should have 3 status errors";
-    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "First status error should be 5xx";
-    EXPECT_EQ(config.http.server.status_errors[1], "401") << "Second status error should be 401";
-    EXPECT_EQ(config.http.server.status_errors[2], "403") << "Third status error should be 403";
+    EXPECT_EQ(config->http.server.status_errors.size(), 3) << "Should have 3 status errors";
+    EXPECT_EQ(config->http.server.status_errors[0], "5xx") << "First status error should be 5xx";
+    EXPECT_EQ(config->http.server.status_errors[1], "401") << "Second status error should be 401";
+    EXPECT_EQ(config->http.server.status_errors[2], "403") << "Third status error should be 403";
     
-    EXPECT_EQ(config.http.server.exclude_url.size(), 2) << "Should have 2 exclude URLs";
-    EXPECT_EQ(config.http.server.exclude_url[0], "/health") << "First exclude URL should be /health";
-    EXPECT_EQ(config.http.server.exclude_url[1], "/metrics") << "Second exclude URL should be /metrics";
+    EXPECT_EQ(config->http.server.exclude_url.size(), 2) << "Should have 2 exclude URLs";
+    EXPECT_EQ(config->http.server.exclude_url[0], "/health") << "First exclude URL should be /health";
+    EXPECT_EQ(config->http.server.exclude_url[1], "/metrics") << "Second exclude URL should be /metrics";
     
-    EXPECT_EQ(config.http.server.exclude_method.size(), 2) << "Should have 2 exclude methods";
-    EXPECT_EQ(config.http.server.exclude_method[0], "PUT") << "First exclude method should be PUT";
-    EXPECT_EQ(config.http.server.exclude_method[1], "DELETE") << "Second exclude method should be DELETE";
+    EXPECT_EQ(config->http.server.exclude_method.size(), 2) << "Should have 2 exclude methods";
+    EXPECT_EQ(config->http.server.exclude_method[0], "PUT") << "First exclude method should be PUT";
+    EXPECT_EQ(config->http.server.exclude_method[1], "DELETE") << "Second exclude method should be DELETE";
     
-    EXPECT_EQ(config.http.server.rec_request_header.size(), 2) << "Should have 2 request headers";
-    EXPECT_EQ(config.http.server.rec_request_header[0], "Authorization") << "First request header should be Authorization";
-    EXPECT_EQ(config.http.server.rec_request_header[1], "Accept") << "Second request header should be Accept";
+    EXPECT_EQ(config->http.server.rec_request_header.size(), 2) << "Should have 2 request headers";
+    EXPECT_EQ(config->http.server.rec_request_header[0], "Authorization") << "First request header should be Authorization";
+    EXPECT_EQ(config->http.server.rec_request_header[1], "Accept") << "Second request header should be Accept";
     
-    EXPECT_EQ(config.http.server.rec_request_cookie.size(), 1) << "Should have 1 request cookie";
-    EXPECT_EQ(config.http.server.rec_request_cookie[0], "session") << "Request cookie should be session";
+    EXPECT_EQ(config->http.server.rec_request_cookie.size(), 1) << "Should have 1 request cookie";
+    EXPECT_EQ(config->http.server.rec_request_cookie[0], "session") << "Request cookie should be session";
     
-    EXPECT_EQ(config.http.server.rec_response_header.size(), 1) << "Should have 1 response header";
-    EXPECT_EQ(config.http.server.rec_response_header[0], "Content-Type") << "Response header should be Content-Type";
+    EXPECT_EQ(config->http.server.rec_response_header.size(), 1) << "Should have 1 response header";
+    EXPECT_EQ(config->http.server.rec_response_header[0], "Content-Type") << "Response header should be Content-Type";
     
     // Test HTTP client configuration
-    EXPECT_EQ(config.http.client.rec_request_header.size(), 1) << "Should have 1 client request header";
-    EXPECT_EQ(config.http.client.rec_request_header[0], "User-Agent") << "Client request header should be User-Agent";
+    EXPECT_EQ(config->http.client.rec_request_header.size(), 1) << "Should have 1 client request header";
+    EXPECT_EQ(config->http.client.rec_request_header[0], "User-Agent") << "Client request header should be User-Agent";
     
-    EXPECT_EQ(config.http.client.rec_request_cookie.size(), 1) << "Should have 1 client request cookie";
-    EXPECT_EQ(config.http.client.rec_request_cookie[0], "tracking") << "Client request cookie should be tracking";
+    EXPECT_EQ(config->http.client.rec_request_cookie.size(), 1) << "Should have 1 client request cookie";
+    EXPECT_EQ(config->http.client.rec_request_cookie[0], "tracking") << "Client request cookie should be tracking";
     
-    EXPECT_EQ(config.http.client.rec_response_header.size(), 1) << "Should have 1 client response header";
-    EXPECT_EQ(config.http.client.rec_response_header[0], "headers-all") << "Client response header should be headers-all";
+    EXPECT_EQ(config->http.client.rec_response_header.size(), 1) << "Should have 1 client response header";
+    EXPECT_EQ(config->http.client.rec_response_header[0], "headers-all") << "Client response header should be headers-all";
     
     // Test SQL configuration
-    EXPECT_EQ(config.sql.max_bind_args_size, 2048) << "Max bind args size should match YAML";
-    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    EXPECT_EQ(config->sql.max_bind_args_size, 2048) << "Max bind args size should match YAML";
+    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
 }
 
 // Test partial YAML configuration
 TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     set_config_string(partial_config_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
     // Test overridden values
-    EXPECT_EQ(config.app_name_, "PartialApp") << "App name should match partial YAML";
-    EXPECT_EQ(config.app_type_, 1301) << "App type should match partial YAML";
-    EXPECT_EQ(config.collector.host, "partial.host") << "Collector host should match partial YAML";
-    EXPECT_EQ(config.collector.agent_port, 8000) << "Agent port should match partial YAML";
-    EXPECT_EQ(config.sampling.type, "COUNTER") << "Sampling type should match partial YAML";
-    EXPECT_EQ(config.sampling.counter_rate, 5) << "Counter rate should match partial YAML";
+    EXPECT_EQ(config->app_name_, "PartialApp") << "App name should match partial YAML";
+    EXPECT_EQ(config->app_type_, 1301) << "App type should match partial YAML";
+    EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should match partial YAML";
+    EXPECT_EQ(config->collector.agent_port, 8000) << "Agent port should match partial YAML";
+    EXPECT_EQ(config->sampling.type, "COUNTER") << "Sampling type should match partial YAML";
+    EXPECT_EQ(config->sampling.counter_rate, 5) << "Counter rate should match partial YAML";
     
-    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Should have 1 status error from partial YAML";
-    EXPECT_EQ(config.http.server.status_errors[0], "4xx") << "Status error should be 4xx from partial YAML";
+    EXPECT_EQ(config->http.server.status_errors.size(), 1) << "Should have 1 status error from partial YAML";
+    EXPECT_EQ(config->http.server.status_errors[0], "4xx") << "Status error should be 4xx from partial YAML";
     
     // Test values that should remain default
-    EXPECT_EQ(config.collector.span_port, 9993) << "Span port should remain default";
-    EXPECT_EQ(config.collector.stat_port, 9992) << "Stat port should remain default";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100) << "Percent rate should remain default";
-    EXPECT_EQ(config.log.level, "info") << "Log level should remain default";
-    EXPECT_EQ(config.span.queue_size, 1024) << "Queue size should remain default";
+    EXPECT_EQ(config->collector.span_port, 9993) << "Span port should remain default";
+    EXPECT_EQ(config->collector.stat_port, 9992) << "Stat port should remain default";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100) << "Percent rate should remain default";
+    EXPECT_EQ(config->log.level, "info") << "Log level should remain default";
+    EXPECT_EQ(config->span.queue_size, 1024) << "Queue size should remain default";
     
     // Test SQL configuration from partial YAML
-    EXPECT_EQ(config.sql.max_bind_args_size, 512) << "Max bind args size should match partial YAML";
-    EXPECT_FALSE(config.sql.enable_sql_stats) << "SQL stats should be disabled as per partial YAML";
+    EXPECT_EQ(config->sql.max_bind_args_size, 512) << "Max bind args size should match partial YAML";
+    EXPECT_FALSE(config->sql.enable_sql_stats) << "SQL stats should be disabled as per partial YAML";
 }
 
 // Test empty YAML configuration
 TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
     set_config_string("");
-    Config config = make_config();
+    auto config = make_config();
     
     // Should have all default values
-    EXPECT_EQ(config.app_name_, "") << "App name should be default (empty)";
-    EXPECT_EQ(config.app_type_, 1300) << "App type should be default";
-    EXPECT_EQ(config.log.level, "info") << "Log level should be default";
-    EXPECT_EQ(config.collector.agent_port, 9991) << "Agent port should be default";
+    EXPECT_EQ(config->app_name_, "") << "App name should be default (empty)";
+    EXPECT_EQ(config->app_type_, 1300) << "App type should be default";
+    EXPECT_EQ(config->log.level, "info") << "Log level should be default";
+    EXPECT_EQ(config->collector.agent_port, 9991) << "Agent port should be default";
 }
 
 // ========== Environment Variable Tests ==========
@@ -432,25 +432,25 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Test environment variable values
-    EXPECT_EQ(config.app_name_, "EnvApp") << "App name should match environment variable";
-    EXPECT_EQ(config.app_type_, 1302) << "App type should match environment variable";
-    EXPECT_EQ(config.agent_id_, "env-agent-456") << "Agent ID should match environment variable";
-    EXPECT_EQ(config.log.level, "error") << "Log level should match environment variable";
-    EXPECT_EQ(config.collector.host, "env.collector.host") << "Collector host should match environment variable";
-    EXPECT_EQ(config.collector.agent_port, 8888) << "Agent port should match environment variable";
-    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match environment variable";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 25.5) << "Percent rate should match environment variable";
-    EXPECT_TRUE(config.is_container) << "IsContainer should match environment variable";
+    EXPECT_EQ(config->app_name_, "EnvApp") << "App name should match environment variable";
+    EXPECT_EQ(config->app_type_, 1302) << "App type should match environment variable";
+    EXPECT_EQ(config->agent_id_, "env-agent-456") << "Agent ID should match environment variable";
+    EXPECT_EQ(config->log.level, "error") << "Log level should match environment variable";
+    EXPECT_EQ(config->collector.host, "env.collector.host") << "Collector host should match environment variable";
+    EXPECT_EQ(config->collector.agent_port, 8888) << "Agent port should match environment variable";
+    EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match environment variable";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 25.5) << "Percent rate should match environment variable";
+    EXPECT_TRUE(config->is_container) << "IsContainer should match environment variable";
     
     // Test SQL environment variable values
-    EXPECT_EQ(config.sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
-    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
+    EXPECT_EQ(config->sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
+    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     
     // Test HTTP environment variable values
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
 }
 
 // Test environment variable override YAML
@@ -464,17 +464,17 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     setenv(env::SQL_MAX_BIND_ARGS_SIZE, "8192", 1);
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Environment variables should override YAML
-    EXPECT_EQ(config.app_name_, "EnvOverrideApp") << "Environment variable should override YAML app name";
-    EXPECT_EQ(config.collector.host, "env.override.host") << "Environment variable should override YAML collector host";
-    EXPECT_EQ(config.sql.max_bind_args_size, 8192) << "Environment variable should override YAML max bind args size";
-    EXPECT_TRUE(config.sql.enable_sql_stats) << "Environment variable should override YAML SQL stats setting";
+    EXPECT_EQ(config->app_name_, "EnvOverrideApp") << "Environment variable should override YAML app name";
+    EXPECT_EQ(config->collector.host, "env.override.host") << "Environment variable should override YAML collector host";
+    EXPECT_EQ(config->sql.max_bind_args_size, 8192) << "Environment variable should override YAML max bind args size";
+    EXPECT_TRUE(config->sql.enable_sql_stats) << "Environment variable should override YAML SQL stats setting";
     
     // YAML values should remain where no environment variable is set
-    EXPECT_EQ(config.app_type_, 1301) << "App type should remain from YAML";
-    EXPECT_EQ(config.collector.agent_port, 8000) << "Agent port should remain from YAML";
+    EXPECT_EQ(config->app_type_, 1301) << "App type should remain from YAML";
+    EXPECT_EQ(config->collector.agent_port, 8000) << "Agent port should remain from YAML";
 }
 
 // ========== File Configuration Tests ==========
@@ -490,12 +490,12 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     // Set environment variable to point to config file
     setenv(env::CONFIG_FILE, config_file.c_str(), 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Values should be loaded from file
-    EXPECT_EQ(config.app_name_, "PartialApp") << "App name should be loaded from file";
-    EXPECT_EQ(config.app_type_, 1301) << "App type should be loaded from file";
-    EXPECT_EQ(config.collector.host, "partial.host") << "Collector host should be loaded from file";
+    EXPECT_EQ(config->app_name_, "PartialApp") << "App name should be loaded from file";
+    EXPECT_EQ(config->app_type_, 1301) << "App type should be loaded from file";
+    EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should be loaded from file";
 }
 
 // Test missing configuration file
@@ -504,11 +504,11 @@ TEST_F(ConfigTest, MissingConfigurationFileTest) {
     std::string missing_file = temp_dir_ + "/missing_config.yaml";
     setenv(env::CONFIG_FILE, missing_file.c_str(), 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Should use default values when file is missing
-    EXPECT_EQ(config.app_name_, "") << "App name should be default when file is missing";
-    EXPECT_EQ(config.app_type_, 1300) << "App type should be default when file is missing";
+    EXPECT_EQ(config->app_name_, "") << "App name should be default when file is missing";
+    EXPECT_EQ(config->app_type_, 1300) << "App type should be default when file is missing";
 }
 
 // ========== Validation Logic Tests ==========
@@ -516,19 +516,19 @@ TEST_F(ConfigTest, MissingConfigurationFileTest) {
 // Test value validation and correction
 TEST_F(ConfigTest, ValueValidationTest) {
     set_config_string(extreme_values_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
     // Test sampling value corrections
-    EXPECT_EQ(config.sampling.counter_rate, 0) << "Negative counter rate should be corrected to 0";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100) << "Percent rate > 100 should be corrected to 100";
-    EXPECT_EQ(config.sampling.new_throughput, 0) << "Negative new throughput should be corrected to 0";
-    EXPECT_EQ(config.sampling.cont_throughput, 0) << "Negative continue throughput should be corrected to 0";
+    EXPECT_EQ(config->sampling.counter_rate, 0) << "Negative counter rate should be corrected to 0";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100) << "Percent rate > 100 should be corrected to 100";
+    EXPECT_EQ(config->sampling.new_throughput, 0) << "Negative new throughput should be corrected to 0";
+    EXPECT_EQ(config->sampling.cont_throughput, 0) << "Negative continue throughput should be corrected to 0";
     
     // Test span value corrections
-    EXPECT_EQ(config.span.queue_size, 1024) << "Queue size < 1 should be corrected to default (1024)";
-    EXPECT_EQ(config.span.max_event_depth, INT32_MAX) << "Max event depth -1 should be corrected to INT32_MAX";
-    EXPECT_EQ(config.span.max_event_sequence, INT32_MAX) << "Max event sequence -1 should be corrected to INT32_MAX";
-    EXPECT_EQ(config.span.event_chunk_size, 20) << "Event chunk size < 1 should be corrected to default (20)";
+    EXPECT_EQ(config->span.queue_size, 1024) << "Queue size < 1 should be corrected to default (1024)";
+    EXPECT_EQ(config->span.max_event_depth, INT32_MAX) << "Max event depth -1 should be corrected to INT32_MAX";
+    EXPECT_EQ(config->span.max_event_sequence, INT32_MAX) << "Max event sequence -1 should be corrected to INT32_MAX";
+    EXPECT_EQ(config->span.event_chunk_size, 20) << "Event chunk size < 1 should be corrected to default (20)";
 }
 
 // Test edge case percent rates
@@ -539,8 +539,8 @@ Sampling:
   PercentRate: 0.005
 )";
     set_config_string(small_percent_yaml);
-    Config config = make_config();
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0.01) << "Very small percent rate should be corrected to minimum (0.01)";
+    auto config = make_config();
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.01) << "Very small percent rate should be corrected to minimum (0.01)";
     
     // Test negative percent rate
     std::string negative_percent_yaml = R"(
@@ -549,7 +549,7 @@ Sampling:
 )";
     set_config_string(negative_percent_yaml);
     config = make_config();
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
 }
 
 // ========== Error Handling Tests ==========
@@ -557,12 +557,12 @@ Sampling:
 // Test invalid YAML handling
 TEST_F(ConfigTest, InvalidYamlHandlingTest) {
     set_config_string(invalid_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
     // Should fallback to default values when YAML is invalid
-    EXPECT_EQ(config.app_name_, "") << "App name should be default when YAML is invalid";
-    EXPECT_EQ(config.app_type_, 1300) << "App type should be default when YAML is invalid";
-    EXPECT_EQ(config.log.level, "info") << "Log level should be default when YAML is invalid";
+    EXPECT_EQ(config->app_name_, "") << "App name should be default when YAML is invalid";
+    EXPECT_EQ(config->app_type_, 1300) << "App type should be default when YAML is invalid";
+    EXPECT_EQ(config->log.level, "info") << "Log level should be default when YAML is invalid";
 }
 
 // ========== Configuration String Generation Tests ==========
@@ -570,9 +570,9 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
 // Test configuration to string conversion
 TEST_F(ConfigTest, ConfigurationToStringTest) {
     set_config_string(complete_config_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Check that generated string contains expected values
     EXPECT_TRUE(config_string.find("ApplicationName: MyTestApp") != std::string::npos) 
@@ -590,30 +590,30 @@ TEST_F(ConfigTest, ConfigurationToStringTest) {
 // Test round-trip configuration (string -> config -> string)
 TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     set_config_string(complete_config_yaml_);
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string generated_config_string = to_config_string(config);
+    std::string generated_config_string = to_config_string(*config);
     
     // Use generated string as new config
     set_config_string(generated_config_string);
-    Config config2 = make_config();
+    auto config2 = make_config();
     
     // Both configs should have same values
-    EXPECT_EQ(config.app_name_, config2.app_name_) << "App name should match after round-trip";
-    EXPECT_EQ(config.app_type_, config2.app_type_) << "App type should match after round-trip";
-    EXPECT_EQ(config.collector.host, config2.collector.host) << "Collector host should match after round-trip";
-    EXPECT_EQ(config.sampling.type, config2.sampling.type) << "Sampling type should match after round-trip";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, config2.sampling.percent_rate) << "Percent rate should match after round-trip";
-    EXPECT_EQ(config.http.server.status_errors.size(), config2.http.server.status_errors.size()) 
+    EXPECT_EQ(config->app_name_, config2->app_name_) << "App name should match after round-trip";
+    EXPECT_EQ(config->app_type_, config2->app_type_) << "App type should match after round-trip";
+    EXPECT_EQ(config->collector.host, config2->collector.host) << "Collector host should match after round-trip";
+    EXPECT_EQ(config->sampling.type, config2->sampling.type) << "Sampling type should match after round-trip";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, config2->sampling.percent_rate) << "Percent rate should match after round-trip";
+    EXPECT_EQ(config->http.server.status_errors.size(), config2->http.server.status_errors.size()) 
         << "Status errors count should match after round-trip";
 }
 
 // Test empty configuration string generation
 TEST_F(ConfigTest, EmptyConfigurationStringTest) {
     set_config_string("");
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Should contain default values
     EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
@@ -639,16 +639,16 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     setenv(env::APPLICATION_NAME, "OverriddenApp", 1); // Should override file
     setenv(env::LOG_LEVEL, "warn", 1); // Should override file
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Environment variables should override file values
-    EXPECT_EQ(config.app_name_, "OverriddenApp") << "Environment variable should override file app name";
-    EXPECT_EQ(config.log.level, "warn") << "Environment variable should override file log level";
+    EXPECT_EQ(config->app_name_, "OverriddenApp") << "Environment variable should override file app name";
+    EXPECT_EQ(config->log.level, "warn") << "Environment variable should override file log level";
     
     // File values should be used where no environment variable exists
-    EXPECT_EQ(config.app_type_, 1300) << "App type should come from file";
-    EXPECT_EQ(config.collector.host, "test.collector.host") << "Collector host should come from file";
-    EXPECT_EQ(config.agent_id_, "test-agent-123") << "Agent ID should come from file";
+    EXPECT_EQ(config->app_type_, 1300) << "App type should come from file";
+    EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should come from file";
+    EXPECT_EQ(config->agent_id_, "test-agent-123") << "Agent ID should come from file";
 }
 
 // ========== Exception Handling Tests ==========
@@ -675,20 +675,20 @@ Http:
     // Capture log output to verify error messages are logged
     testing::internal::CaptureStderr();
     
-    Config config = make_config();
+    auto config = make_config();
     
     std::string captured_output = testing::internal::GetCapturedStderr();
     
     // Valid conversions should work
-    EXPECT_EQ(config.app_name_, "ValidString") << "Valid string should be parsed correctly";
+    EXPECT_EQ(config->app_name_, "ValidString") << "Valid string should be parsed correctly";
     
     // Invalid conversions should use default values
-    EXPECT_EQ(config.app_type_, 1300) << "Invalid int should use default value";
-    EXPECT_TRUE(config.enable) << "Invalid bool should use default value (true)";
-    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid port should use default value";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100.0) << "Invalid double should use default value";
-    EXPECT_EQ(config.http.server.status_errors.size(), 1) << "Invalid array should use default value";
-    EXPECT_EQ(config.http.server.status_errors[0], "5xx") << "Default array should contain '5xx'";
+    EXPECT_EQ(config->app_type_, 1300) << "Invalid int should use default value";
+    EXPECT_TRUE(config->enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config->collector.agent_port, 9991) << "Invalid port should use default value";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100.0) << "Invalid double should use default value";
+    EXPECT_EQ(config->http.server.status_errors.size(), 1) << "Invalid array should use default value";
+    EXPECT_EQ(config->http.server.status_errors[0], "5xx") << "Default array should contain '5xx'";
     
     // Note: We can't easily check stderr output in this test environment without additional setup
     // but the error messages should be logged for invalid conversions
@@ -714,22 +714,22 @@ Span:
 )";
     
     set_config_string(mixed_yaml);
-    Config config = make_config();
+    auto config = make_config();
     
     // Valid values should be parsed correctly
-    EXPECT_EQ(config.app_name_, "ValidApp") << "Valid app name should be parsed";
-    EXPECT_EQ(config.app_type_, 1305) << "Valid app type should be parsed";
-    EXPECT_TRUE(config.enable) << "Valid enable should be parsed";
-    EXPECT_EQ(config.collector.host, "valid.host.com") << "Valid host should be parsed";
-    EXPECT_EQ(config.collector.span_port, 9999) << "Valid span port should be parsed";
-    EXPECT_EQ(config.sampling.type, "PERCENT") << "Valid sampling type should be parsed";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 50.5) << "Valid percent rate should be parsed";
-    EXPECT_EQ(config.span.queue_size, 2048) << "Valid queue size should be parsed";
+    EXPECT_EQ(config->app_name_, "ValidApp") << "Valid app name should be parsed";
+    EXPECT_EQ(config->app_type_, 1305) << "Valid app type should be parsed";
+    EXPECT_TRUE(config->enable) << "Valid enable should be parsed";
+    EXPECT_EQ(config->collector.host, "valid.host.com") << "Valid host should be parsed";
+    EXPECT_EQ(config->collector.span_port, 9999) << "Valid span port should be parsed";
+    EXPECT_EQ(config->sampling.type, "PERCENT") << "Valid sampling type should be parsed";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 50.5) << "Valid percent rate should be parsed";
+    EXPECT_EQ(config->span.queue_size, 2048) << "Valid queue size should be parsed";
     
     // Invalid values should use defaults
-    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid agent port should use default";
-    EXPECT_EQ(config.sampling.counter_rate, 1) << "Invalid counter rate should use default";
-    EXPECT_EQ(config.span.max_event_depth, 64) << "Invalid max event depth should use default";
+    EXPECT_EQ(config->collector.agent_port, 9991) << "Invalid agent port should use default";
+    EXPECT_EQ(config->sampling.counter_rate, 1) << "Invalid counter rate should use default";
+    EXPECT_EQ(config->span.max_event_depth, 64) << "Invalid max event depth should use default";
 }
 
 // ========== Environment Variable Validation Tests ==========
@@ -744,15 +744,15 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     setenv(env::STAT_ENABLE, "maybe", 1);                    // Invalid bool
     setenv(env::SPAN_QUEUE_SIZE, "abc", 1);                  // Invalid int
     
-    Config config = make_config();
+    auto config = make_config();
     
     // All invalid values should use defaults
-    EXPECT_TRUE(config.enable) << "Invalid bool should use default value (true)";
-    EXPECT_EQ(config.app_type_, 1300) << "Invalid int should use default value";
-    EXPECT_EQ(config.collector.agent_port, 9991) << "Invalid port should use default value";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 100.0) << "Invalid double should use default value";
-    EXPECT_TRUE(config.stat.enable) << "Invalid bool should use default value (true)";
-    EXPECT_EQ(config.span.queue_size, 1024) << "Invalid int should use default value";
+    EXPECT_TRUE(config->enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config->app_type_, 1300) << "Invalid int should use default value";
+    EXPECT_EQ(config->collector.agent_port, 9991) << "Invalid port should use default value";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100.0) << "Invalid double should use default value";
+    EXPECT_TRUE(config->stat.enable) << "Invalid bool should use default value (true)";
+    EXPECT_EQ(config->span.queue_size, 1024) << "Invalid int should use default value";
 }
 
 // Test environment variable validation for valid values
@@ -765,15 +765,15 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     setenv(env::STAT_ENABLE, "1", 1);                 // Valid bool
     setenv(env::SPAN_QUEUE_SIZE, "2048", 1);          // Valid int
     
-    Config config = make_config();
+    auto config = make_config();
     
     // All valid values should be parsed correctly
-    EXPECT_FALSE(config.enable) << "Valid bool should be parsed correctly";
-    EXPECT_EQ(config.app_type_, 1500) << "Valid int should be parsed correctly";
-    EXPECT_EQ(config.collector.agent_port, 8080) << "Valid port should be parsed correctly";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 75.5) << "Valid double should be parsed correctly";
-    EXPECT_TRUE(config.stat.enable) << "Valid bool should be parsed correctly";
-    EXPECT_EQ(config.span.queue_size, 2048) << "Valid int should be parsed correctly";
+    EXPECT_FALSE(config->enable) << "Valid bool should be parsed correctly";
+    EXPECT_EQ(config->app_type_, 1500) << "Valid int should be parsed correctly";
+    EXPECT_EQ(config->collector.agent_port, 8080) << "Valid port should be parsed correctly";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 75.5) << "Valid double should be parsed correctly";
+    EXPECT_TRUE(config->stat.enable) << "Valid bool should be parsed correctly";
+    EXPECT_EQ(config->span.queue_size, 2048) << "Valid int should be parsed correctly";
 }
 
 // Test environment variable validation for boolean edge cases
@@ -784,12 +784,12 @@ TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
     setenv(env::IS_CONTAINER, "yes", 1);
     setenv(env::HTTP_COLLECT_URL_STAT, "NO", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.enable) << "TRUE should be parsed as true";
-    EXPECT_FALSE(config.stat.enable) << "False should be parsed as false";
-    EXPECT_TRUE(config.is_container) << "yes should be parsed as true";
-    EXPECT_FALSE(config.http.url_stat.enable) << "NO should be parsed as false";
+    EXPECT_TRUE(config->enable) << "TRUE should be parsed as true";
+    EXPECT_FALSE(config->stat.enable) << "False should be parsed as false";
+    EXPECT_TRUE(config->is_container) << "yes should be parsed as true";
+    EXPECT_FALSE(config->http.url_stat.enable) << "NO should be parsed as false";
 }
 
 // Test environment variable validation for negative values
@@ -798,11 +798,11 @@ TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     setenv(env::SPAN_MAX_EVENT_DEPTH, "-1", 1);       // Valid -1 (should be processed by make_config validation)
     setenv(env::SPAN_MAX_EVENT_SEQUENCE, "-1", 1);    // Valid -1 (should be processed by make_config validation)
     
-    Config config = make_config();
+    auto config = make_config();
     
     // These should be parsed as -1 and then validated by make_config to INT32_MAX
-    EXPECT_EQ(config.span.max_event_depth, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
-    EXPECT_EQ(config.span.max_event_sequence, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
+    EXPECT_EQ(config->span.max_event_depth, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
+    EXPECT_EQ(config->span.max_event_sequence, INT32_MAX) << "-1 should be converted to INT32_MAX by make_config";
 }
 
 // ========== SQL Configuration Specific Tests ==========
@@ -810,8 +810,8 @@ TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
 // Test SQL configuration with various bind args sizes
 TEST_F(ConfigTest, SqlMaxBindArgsSizeValidationTest) {
     // Test default
-    Config config1 = make_config();
-    EXPECT_EQ(config1.sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
+    auto config1 = make_config();
+    EXPECT_EQ(config1->sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
     
     // Test YAML configuration with different values
     set_config_string(R"(
@@ -819,40 +819,40 @@ Sql:
   MaxBindArgsSize: 256
   EnableSqlStats: true
 )");
-    Config config2 = make_config();
-    EXPECT_EQ(config2.sql.max_bind_args_size, 256) << "Max bind args size should match YAML";
-    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    auto config2 = make_config();
+    EXPECT_EQ(config2->sql.max_bind_args_size, 256) << "Max bind args size should match YAML";
+    EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
     // Test environment variable override
     setenv(env::SQL_MAX_BIND_ARGS_SIZE, "16384", 1);
-    Config config3 = make_config();
-    EXPECT_EQ(config3.sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
+    auto config3 = make_config();
+    EXPECT_EQ(config3->sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
 }
 
 // Test SQL stats enable/disable configurations  
 TEST_F(ConfigTest, SqlStatsEnableTest) {
     // Test default (disabled)
-    Config config1 = make_config();
-    EXPECT_FALSE(config1.sql.enable_sql_stats) << "SQL stats should be disabled by default";
+    auto config1 = make_config();
+    EXPECT_FALSE(config1->sql.enable_sql_stats) << "SQL stats should be disabled by default";
     
     // Test enabling via YAML
     set_config_string(R"(
 Sql:
   EnableSqlStats: true
 )");
-    Config config2 = make_config();
-    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    auto config2 = make_config();
+    EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
     // Test enabling via environment variable
     set_config_string("");
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
-    Config config3 = make_config();
-    EXPECT_TRUE(config3.sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
+    auto config3 = make_config();
+    EXPECT_TRUE(config3->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     
     // Test disabling via environment variable  
     setenv(env::SQL_ENABLE_SQL_STATS, "false", 1);
-    Config config4 = make_config();
-    EXPECT_FALSE(config4.sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
+    auto config4 = make_config();
+    EXPECT_FALSE(config4->sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
 }
 
 // Test SQL configuration edge cases
@@ -863,9 +863,9 @@ Sql:
   MaxBindArgsSize: 0
   EnableSqlStats: false
 )");
-    Config config1 = make_config();
-    EXPECT_EQ(config1.sql.max_bind_args_size, 0) << "Zero bind args size should be allowed";
-    EXPECT_FALSE(config1.sql.enable_sql_stats) << "SQL stats should be disabled";
+    auto config1 = make_config();
+    EXPECT_EQ(config1->sql.max_bind_args_size, 0) << "Zero bind args size should be allowed";
+    EXPECT_FALSE(config1->sql.enable_sql_stats) << "SQL stats should be disabled";
     
     // Test very large bind args size
     set_config_string(R"(
@@ -873,9 +873,9 @@ Sql:
   MaxBindArgsSize: 1048576
   EnableSqlStats: true
 )");
-    Config config2 = make_config();
-    EXPECT_EQ(config2.sql.max_bind_args_size, 1048576) << "Large bind args size should be allowed";
-    EXPECT_TRUE(config2.sql.enable_sql_stats) << "SQL stats should be enabled";
+    auto config2 = make_config();
+    EXPECT_EQ(config2->sql.max_bind_args_size, 1048576) << "Large bind args size should be allowed";
+    EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled";
 }
 
 // Test SQL configuration string generation
@@ -885,9 +885,9 @@ Sql:
   MaxBindArgsSize: 2048
   EnableSqlStats: true
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Check that SQL configuration is included in generated string
     EXPECT_TRUE(config_string.find("MaxBindArgsSize: 2048") != std::string::npos) 
@@ -906,18 +906,18 @@ Sql:
 )";
     
     set_config_string(sql_config);
-    Config config1 = make_config();
+    auto config1 = make_config();
     
-    std::string generated_config_string = to_config_string(config1);
+    std::string generated_config_string = to_config_string(*config1);
     
     // Use generated string as new config
     set_config_string(generated_config_string);
-    Config config2 = make_config();
+    auto config2 = make_config();
     
     // SQL configs should match after round-trip
-    EXPECT_EQ(config1.sql.max_bind_args_size, config2.sql.max_bind_args_size) 
+    EXPECT_EQ(config1->sql.max_bind_args_size, config2->sql.max_bind_args_size) 
         << "Max bind args size should match after round-trip";
-    EXPECT_EQ(config1.sql.enable_sql_stats, config2.sql.enable_sql_stats) 
+    EXPECT_EQ(config1->sql.enable_sql_stats, config2->sql.enable_sql_stats) 
         << "SQL stats enable should match after round-trip";
 }
 
@@ -927,21 +927,21 @@ TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
     setenv(env::SQL_MAX_BIND_ARGS_SIZE, "invalid", 1);
     setenv(env::SQL_ENABLE_SQL_STATS, "invalid", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Should fallback to defaults when environment variable is invalid
-    EXPECT_EQ(config.sql.max_bind_args_size, 1024) << "Should use default when env var is invalid";
-    EXPECT_FALSE(config.sql.enable_sql_stats) << "Should use default when env var is invalid";
+    EXPECT_EQ(config->sql.max_bind_args_size, 1024) << "Should use default when env var is invalid";
+    EXPECT_FALSE(config->sql.enable_sql_stats) << "Should use default when env var is invalid";
 }
 
 // ========== CallStack Trace Configuration Tests ==========
 
 // Test default callstack trace configuration
 TEST_F(ConfigTest, CallstackTraceDefaultTest) {
-    Config config = make_config();
+    auto config = make_config();
     
     // Default should be false
-    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled by default";
+    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
 }
 
 // Test enabling callstack trace via YAML
@@ -949,9 +949,9 @@ TEST_F(ConfigTest, CallstackTraceEnableViaYamlTest) {
     set_config_string(R"(
 EnableCallstackTrace: true
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled as per YAML";
+    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled as per YAML";
 }
 
 // Test disabling callstack trace via YAML
@@ -959,27 +959,27 @@ TEST_F(ConfigTest, CallstackTraceDisableViaYamlTest) {
     set_config_string(R"(
 EnableCallstackTrace: false
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled as per YAML";
+    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled as per YAML";
 }
 
 // Test enabling callstack trace via environment variable
 TEST_F(ConfigTest, CallstackTraceEnableViaEnvironmentVariableTest) {
     setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled as per environment variable";
+    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled as per environment variable";
 }
 
 // Test disabling callstack trace via environment variable
 TEST_F(ConfigTest, CallstackTraceDisableViaEnvironmentVariableTest) {
     setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.enable_callstack_trace) << "CallStack trace should be disabled as per environment variable";
+    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled as per environment variable";
 }
 
 // Test environment variable overrides YAML for callstack trace
@@ -992,9 +992,9 @@ EnableCallstackTrace: false
     // Set environment variable to enable (should override YAML)
     setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
+    EXPECT_TRUE(config->enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
 }
 
 // Test environment variable overrides YAML (opposite case)
@@ -1007,9 +1007,9 @@ EnableCallstackTrace: true
     // Set environment variable to disable (should override YAML)
     setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
+    EXPECT_FALSE(config->enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
 }
 
 // Test callstack trace in complete configuration
@@ -1028,11 +1028,11 @@ Collector:
 )";
     
     set_config_string(complete_config);
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_EQ(config.app_name_, "CallstackTestApp") << "App name should match";
-    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled";
-    EXPECT_EQ(config.log.level, "debug") << "Other config values should also be loaded";
+    EXPECT_EQ(config->app_name_, "CallstackTestApp") << "App name should match";
+    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled";
+    EXPECT_EQ(config->log.level, "debug") << "Other config values should also be loaded";
 }
 
 // Test callstack trace configuration string generation
@@ -1040,9 +1040,9 @@ TEST_F(ConfigTest, CallstackTraceConfigurationToStringTest) {
     set_config_string(R"(
 EnableCallstackTrace: true
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Check that callstack trace configuration is included in generated string
     EXPECT_TRUE(config_string.find("EnableCallstackTrace: true") != std::string::npos) 
@@ -1054,9 +1054,9 @@ TEST_F(ConfigTest, CallstackTraceConfigurationToStringDisabledTest) {
     set_config_string(R"(
 EnableCallstackTrace: false
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Check that callstack trace configuration is included in generated string
     EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
@@ -1071,20 +1071,20 @@ EnableCallstackTrace: true
 )";
     
     set_config_string(callstack_config);
-    Config config1 = make_config();
+    auto config1 = make_config();
     
-    EXPECT_TRUE(config1.enable_callstack_trace) << "Initial config should have callstack trace enabled";
+    EXPECT_TRUE(config1->enable_callstack_trace) << "Initial config should have callstack trace enabled";
     
-    std::string generated_config_string = to_config_string(config1);
+    std::string generated_config_string = to_config_string(*config1);
     
     // Use generated string as new config
     set_config_string(generated_config_string);
-    Config config2 = make_config();
+    auto config2 = make_config();
     
     // CallStack trace config should match after round-trip
-    EXPECT_EQ(config1.enable_callstack_trace, config2.enable_callstack_trace) 
+    EXPECT_EQ(config1->enable_callstack_trace, config2->enable_callstack_trace) 
         << "CallStack trace setting should match after round-trip";
-    EXPECT_TRUE(config2.enable_callstack_trace) << "CallStack trace should still be enabled after round-trip";
+    EXPECT_TRUE(config2->enable_callstack_trace) << "CallStack trace should still be enabled after round-trip";
 }
 
 // Test invalid callstack trace environment variable value
@@ -1092,43 +1092,43 @@ TEST_F(ConfigTest, CallstackTraceInvalidEnvironmentVariableTest) {
     // Test invalid boolean value (should fallback to default)
     setenv(env::ENABLE_CALLSTACK_TRACE, "invalid_bool", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Should fallback to default (false) when environment variable is invalid
-    EXPECT_FALSE(config.enable_callstack_trace) << "Should use default (false) when env var is invalid";
+    EXPECT_FALSE(config->enable_callstack_trace) << "Should use default (false) when env var is invalid";
 }
 
 // Test various valid boolean representations for callstack trace
 TEST_F(ConfigTest, CallstackTraceBooleanRepresentationsTest) {
     // Test "1" as true
     setenv(env::ENABLE_CALLSTACK_TRACE, "1", 1);
-    Config config1 = make_config();
-    EXPECT_TRUE(config1.enable_callstack_trace) << "1 should be parsed as true";
+    auto config1 = make_config();
+    EXPECT_TRUE(config1->enable_callstack_trace) << "1 should be parsed as true";
     
     // Test "0" as false
     setenv(env::ENABLE_CALLSTACK_TRACE, "0", 1);
-    Config config2 = make_config();
-    EXPECT_FALSE(config2.enable_callstack_trace) << "0 should be parsed as false";
+    auto config2 = make_config();
+    EXPECT_FALSE(config2->enable_callstack_trace) << "0 should be parsed as false";
     
     // Test "TRUE" as true
     setenv(env::ENABLE_CALLSTACK_TRACE, "TRUE", 1);
-    Config config3 = make_config();
-    EXPECT_TRUE(config3.enable_callstack_trace) << "TRUE should be parsed as true";
+    auto config3 = make_config();
+    EXPECT_TRUE(config3->enable_callstack_trace) << "TRUE should be parsed as true";
     
     // Test "False" as false
     setenv(env::ENABLE_CALLSTACK_TRACE, "False", 1);
-    Config config4 = make_config();
-    EXPECT_FALSE(config4.enable_callstack_trace) << "False should be parsed as false";
+    auto config4 = make_config();
+    EXPECT_FALSE(config4->enable_callstack_trace) << "False should be parsed as false";
     
     // Test "yes" as true
     setenv(env::ENABLE_CALLSTACK_TRACE, "yes", 1);
-    Config config5 = make_config();
-    EXPECT_TRUE(config5.enable_callstack_trace) << "yes should be parsed as true";
+    auto config5 = make_config();
+    EXPECT_TRUE(config5->enable_callstack_trace) << "yes should be parsed as true";
     
     // Test "NO" as false
     setenv(env::ENABLE_CALLSTACK_TRACE, "NO", 1);
-    Config config6 = make_config();
-    EXPECT_FALSE(config6.enable_callstack_trace) << "NO should be parsed as false";
+    auto config6 = make_config();
+    EXPECT_FALSE(config6->enable_callstack_trace) << "NO should be parsed as false";
 }
 
 // Test callstack trace with invalid YAML type
@@ -1139,10 +1139,10 @@ EnableCallstackTrace: "not_a_boolean"
 )";
     
     set_config_string(invalid_type_yaml);
-    Config config = make_config();
+    auto config = make_config();
     
     // Should use default value when YAML type is invalid
-    EXPECT_FALSE(config.enable_callstack_trace) << "Should use default (false) when YAML type is invalid";
+    EXPECT_FALSE(config->enable_callstack_trace) << "Should use default (false) when YAML type is invalid";
 }
 
 // Test callstack trace mixed with other configurations
@@ -1170,20 +1170,20 @@ Sql:
 )";
     
     set_config_string(mixed_config);
-    Config config = make_config();
+    auto config = make_config();
     
     // Verify all config values including callstack trace
-    EXPECT_EQ(config.app_name_, "MixedApp") << "App name should match";
-    EXPECT_EQ(config.app_type_, 1305) << "App type should match";
-    EXPECT_TRUE(config.enable) << "Enable should be true";
-    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled";
-    EXPECT_EQ(config.log.level, "warn") << "Log level should match";
-    EXPECT_EQ(config.log.max_file_size, 50) << "Log max file size should match";
-    EXPECT_EQ(config.collector.host, "mixed.collector.host") << "Collector host should match";
-    EXPECT_EQ(config.sampling.type, "PERCENT") << "Sampling type should match";
-    EXPECT_DOUBLE_EQ(config.sampling.percent_rate, 25.0) << "Percent rate should match";
-    EXPECT_EQ(config.sql.max_bind_args_size, 2048) << "SQL max bind args size should match";
-    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled";
+    EXPECT_EQ(config->app_name_, "MixedApp") << "App name should match";
+    EXPECT_EQ(config->app_type_, 1305) << "App type should match";
+    EXPECT_TRUE(config->enable) << "Enable should be true";
+    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled";
+    EXPECT_EQ(config->log.level, "warn") << "Log level should match";
+    EXPECT_EQ(config->log.max_file_size, 50) << "Log max file size should match";
+    EXPECT_EQ(config->collector.host, "mixed.collector.host") << "Collector host should match";
+    EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match";
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 25.0) << "Percent rate should match";
+    EXPECT_EQ(config->sql.max_bind_args_size, 2048) << "SQL max bind args size should match";
+    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled";
 }
 
 // Test callstack trace environment variable with other environment variables
@@ -1193,21 +1193,21 @@ TEST_F(ConfigTest, CallstackTraceEnvironmentVariableWithOthersTest) {
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     setenv(env::LOG_LEVEL, "error", 1);
     
-    Config config = make_config();
+    auto config = make_config();
     
     // Verify all environment variables are loaded correctly
-    EXPECT_EQ(config.app_name_, "EnvMixedApp") << "App name should match env var";
-    EXPECT_TRUE(config.enable_callstack_trace) << "CallStack trace should be enabled via env var";
-    EXPECT_TRUE(config.sql.enable_sql_stats) << "SQL stats should be enabled via env var";
-    EXPECT_EQ(config.log.level, "error") << "Log level should match env var";
+    EXPECT_EQ(config->app_name_, "EnvMixedApp") << "App name should match env var";
+    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled via env var";
+    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled via env var";
+    EXPECT_EQ(config->log.level, "error") << "Log level should match env var";
 }
 
 // Test callstack trace default value is included in string output
 TEST_F(ConfigTest, CallstackTraceDefaultInStringOutputTest) {
     // Don't set any config, use defaults
-    Config config = make_config();
+    auto config = make_config();
     
-    std::string config_string = to_config_string(config);
+    std::string config_string = to_config_string(*config);
     
     // Check that callstack trace is included in output even with default value
     EXPECT_TRUE(config_string.find("EnableCallstackTrace") != std::string::npos) 
@@ -1224,17 +1224,17 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathViaYamlTest) {
 Http:
   UrlStatEnableTrimPath: false
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via YAML";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via YAML";
 }
 
 // Test URL stat enable trim path via environment variable
 TEST_F(ConfigTest, UrlStatEnableTrimPathViaEnvironmentVariableTest) {
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via environment variable";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via environment variable";
 }
 
 // Test environment variable overrides YAML for enable trim path
@@ -1244,9 +1244,9 @@ Http:
   UrlStatEnableTrimPath: false
 )");
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "true", 1);
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path";
+    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path";
 }
 
 // Test environment variable overrides YAML (opposite case)
@@ -1256,18 +1256,18 @@ Http:
   UrlStatEnableTrimPath: true
 )");
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path (opposite)";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path (opposite)";
 }
 
 // Test invalid environment variable for enable trim path
 TEST_F(ConfigTest, UrlStatEnableTrimPathInvalidEnvironmentVariableTest) {
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "invalid", 1);
-    Config config = make_config();
+    auto config = make_config();
     
     // Should use default value (true) when invalid
-    EXPECT_TRUE(config.http.url_stat.enable_trim_path) << "Invalid environment variable should use default value";
+    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Invalid environment variable should use default value";
 }
 
 // Test enable trim path with other URL stat settings
@@ -1280,13 +1280,13 @@ Http:
   UrlStatTrimPathDepth: 2
   UrlStatMethodPrefix: true
 )");
-    Config config = make_config();
+    auto config = make_config();
     
-    EXPECT_TRUE(config.http.url_stat.enable) << "URL stat should be enabled";
-    EXPECT_EQ(config.http.url_stat.limit, 512) << "URL stat limit should match YAML";
-    EXPECT_FALSE(config.http.url_stat.enable_trim_path) << "Enable trim path should be false";
-    EXPECT_EQ(config.http.url_stat.trim_path_depth, 2) << "Path depth should match YAML";
-    EXPECT_TRUE(config.http.url_stat.method_prefix) << "Method prefix should be true";
+    EXPECT_TRUE(config->http.url_stat.enable) << "URL stat should be enabled";
+    EXPECT_EQ(config->http.url_stat.limit, 512) << "URL stat limit should match YAML";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Enable trim path should be false";
+    EXPECT_EQ(config->http.url_stat.trim_path_depth, 2) << "Path depth should match YAML";
+    EXPECT_TRUE(config->http.url_stat.method_prefix) << "Method prefix should be true";
 }
 
 // Test enable trim path boolean variations
@@ -1296,55 +1296,55 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathBooleanVariationsTest) {
 Http:
   UrlStatEnableTrimPath: yes
 )");
-    Config config1 = make_config();
-    EXPECT_TRUE(config1.http.url_stat.enable_trim_path) << "yes should be parsed as true";
+    auto config1 = make_config();
+    EXPECT_TRUE(config1->http.url_stat.enable_trim_path) << "yes should be parsed as true";
     
     // Test "no"
     set_config_string(R"(
 Http:
   UrlStatEnableTrimPath: no
 )");
-    Config config2 = make_config();
-    EXPECT_FALSE(config2.http.url_stat.enable_trim_path) << "no should be parsed as false";
+    auto config2 = make_config();
+    EXPECT_FALSE(config2->http.url_stat.enable_trim_path) << "no should be parsed as false";
     
     // Test "TRUE"
     set_config_string(R"(
 Http:
   UrlStatEnableTrimPath: TRUE
 )");
-    Config config3 = make_config();
-    EXPECT_TRUE(config3.http.url_stat.enable_trim_path) << "TRUE should be parsed as true";
+    auto config3 = make_config();
+    EXPECT_TRUE(config3->http.url_stat.enable_trim_path) << "TRUE should be parsed as true";
     
     // Test "FALSE"
     set_config_string(R"(
 Http:
   UrlStatEnableTrimPath: FALSE
 )");
-    Config config4 = make_config();
-    EXPECT_FALSE(config4.http.url_stat.enable_trim_path) << "FALSE should be parsed as false";
+    auto config4 = make_config();
+    EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "FALSE should be parsed as false";
 }
 
 // Test enable trim path environment variable boolean variations
 TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest) {
     // Test "1"
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "1", 1);
-    Config config1 = make_config();
-    EXPECT_TRUE(config1.http.url_stat.enable_trim_path) << "1 should be parsed as true";
+    auto config1 = make_config();
+    EXPECT_TRUE(config1->http.url_stat.enable_trim_path) << "1 should be parsed as true";
     
     // Test "0"
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "0", 1);
-    Config config2 = make_config();
-    EXPECT_FALSE(config2.http.url_stat.enable_trim_path) << "0 should be parsed as false";
+    auto config2 = make_config();
+    EXPECT_FALSE(config2->http.url_stat.enable_trim_path) << "0 should be parsed as false";
     
     // Test "yes"
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "yes", 1);
-    Config config3 = make_config();
-    EXPECT_TRUE(config3.http.url_stat.enable_trim_path) << "yes should be parsed as true";
+    auto config3 = make_config();
+    EXPECT_TRUE(config3->http.url_stat.enable_trim_path) << "yes should be parsed as true";
     
     // Test "no"
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "no", 1);
-    Config config4 = make_config();
-    EXPECT_FALSE(config4.http.url_stat.enable_trim_path) << "no should be parsed as false";
+    auto config4 = make_config();
+    EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "no should be parsed as false";
 }
 
 } // namespace pinpoint

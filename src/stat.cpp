@@ -274,8 +274,8 @@ namespace pinpoint {
     }
 
     void AgentStats::agentStatsWorker() try {
-        auto& config = agent_->getConfig();
-        if (!config.stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->stat.enable) {
             return;
         }
 
@@ -284,11 +284,11 @@ namespace pinpoint {
         {
             // Resize vector safely
             std::lock_guard<std::mutex> lock(mutex_);
-            agent_stats_snapshots_.resize(config.stat.batch_count);
+        agent_stats_snapshots_.resize(config->stat.batch_count);
         }
         
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto timeout = std::chrono::milliseconds(config.stat.collect_interval);
+        const auto timeout = std::chrono::milliseconds(config->stat.collect_interval);
 
         while (!agent_->isExiting()) {
             if (!cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
@@ -302,7 +302,7 @@ namespace pinpoint {
                     batch_++;
                 }
 
-                if (batch_ >= config.stat.batch_count) {
+                if (batch_ >= config->stat.batch_count) {
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);

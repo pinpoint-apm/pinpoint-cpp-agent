@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <yaml-cpp/yaml.h>
 #include "pinpoint/tracer.h"
@@ -187,7 +188,7 @@ namespace pinpoint {
          * @param old Existing config.
          * @return true if reload is allowed.
          */
-        bool isReloadable(const Config& old);
+        bool isReloadable(const std::shared_ptr<const Config>& old) const;
     };
 
     /**
@@ -207,7 +208,7 @@ namespace pinpoint {
      *
      * @return Resolved configuration ready to be consumed by the agent.
      */
-    Config make_config();
+    std::shared_ptr<Config> make_config();
     /**
      * @brief Serializes a `Config` object back into its YAML representation.
      *

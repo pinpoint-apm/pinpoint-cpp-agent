@@ -36,31 +36,32 @@ namespace pinpoint {
     }
 
     static void build_grpc_context(grpc::ClientContext* context, const AgentService* agent, int socket_id) {
-        auto& config = agent->getConfig();
+        const auto config = agent->getConfig();
 
-        context->AddMetadata("applicationname", config.app_name_);
-        context->AddMetadata("agentid", config.agent_id_);
+        context->AddMetadata("applicationname", config->app_name_);
+        context->AddMetadata("agentid", config->agent_id_);
         context->AddMetadata("starttime", std::to_string(agent->getStartTime()));
 
-        if (!config.agent_name_.empty()) {
-            context->AddMetadata("agentname", config.agent_name_);
+        if (!config->agent_name_.empty()) {
+            context->AddMetadata("agentname", config->agent_name_);
         }
         if (socket_id > 0) {
             context->AddMetadata("socketid", std::to_string(socket_id));
         }
     }
 
-    static void build_agent_info(const Config& config, v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) {
+    static void build_agent_info(const AgentService* agent, v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) {
+        const auto config = agent->getConfig();
         agent_info->set_hostname(get_host_name());
         agent_info->set_ip(get_host_ip_addr());
-        agent_info->set_servicetype(config.app_type_);
+        agent_info->set_servicetype(config->app_type_);
         agent_info->set_pid(getpid());
         agent_info->set_agentversion(VERSION_STRING);
-        agent_info->set_container(config.is_container);
+        agent_info->set_container(config->is_container);
 
         const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
         meta_data->set_serverinfo("C/C++");
-        meta_data->add_vmarg(to_config_string(config));
+        meta_data->add_vmarg(to_config_string(*config));
 
         agent_info->set_allocated_servermetadata(meta_data);
     }
@@ -394,17 +395,17 @@ namespace pinpoint {
     }
 
     GrpcClient::GrpcClient(AgentService* agent, ClientType client_type) : agent_{agent} {
-        auto& config = agent_->getConfig();
-        auto addr = absl::StrCat(config.collector.host, ":");
+        const auto config = agent_->getConfig();
+        auto addr = absl::StrCat(config->collector.host, ":");
 
         if (client_type == AGENT) {
-            addr = absl::StrCat(addr, config.collector.agent_port);
+            addr = absl::StrCat(addr, config->collector.agent_port);
             client_name_ = "agent";
         } else if (client_type == SPAN) {
-            addr = absl::StrCat(addr, config.collector.span_port);
+            addr = absl::StrCat(addr, config->collector.span_port);
             client_name_ = "span";
         } else {
-            addr = absl::StrCat(addr, config.collector.stat_port);
+            addr = absl::StrCat(addr, config->collector.stat_port);
             client_name_ = "stats";
         }
 
@@ -484,7 +485,7 @@ namespace pinpoint {
 
         google::protobuf::Arena arena;
         auto* agent_info = google::protobuf::Arena::Create<v1::PAgentInfo>(&arena);
-        build_agent_info(agent_->getConfig(), agent_info, &arena);
+        build_agent_info(agent_, agent_info, &arena);
 
         set_deadline(ctx, REGISTER_TIMEOUT);
         const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
@@ -615,10 +616,11 @@ namespace pinpoint {
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        if (auto& config = agent_->getConfig(); meta_queue_.size() < config.span.queue_size) {
+        const auto config = agent_->getConfig();
+        if (meta_queue_.size() < config->span.queue_size) {
             meta_queue_.push(std::move(meta));
         } else {
-            LOG_DEBUG("drop metadata: overflow max queue size {}", config.span.queue_size);
+            LOG_DEBUG("drop metadata: overflow max queue size {}", config->span.queue_size);
         }
 
         meta_queue_cv_.notify_one();
@@ -909,10 +911,11 @@ namespace pinpoint {
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
         std::unique_lock<std::mutex> lock(span_queue_mutex_);
 
-        if (auto& config = agent_->getConfig(); span_queue_.size() < config.span.queue_size) {
+        const auto config = agent_->getConfig();
+        if (span_queue_.size() < config->span.queue_size) {
             span_queue_.push(std::move(span));
         } else {
-            LOG_DEBUG("drop span: overflow max queue size {}", config.span.queue_size);
+            LOG_DEBUG("drop span: overflow max queue size {}", config->span.queue_size);
             force_queue_empty_ = true;
         }
 
@@ -1091,7 +1094,8 @@ namespace pinpoint {
     constexpr size_t MAX_STATS_QUEUE_SIZE = 2;
 
     void GrpcStats::enqueueStats(const StatsType stats) noexcept try {
-        if (auto& config = agent_->getConfig(); !config.stat.enable && !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
 
@@ -1127,7 +1131,8 @@ namespace pinpoint {
     }
 
     void GrpcStats::sendStatsWorker() try {
-        if (auto& config = agent_->getConfig(); !config.stat.enable && !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
 
@@ -1165,7 +1170,8 @@ namespace pinpoint {
     }
 
     void GrpcStats::stopStatsWorker() {
-        if (auto& config = agent_->getConfig(); !config.stat.enable && !config.http.url_stat.enable) {
+        const auto config = agent_->getConfig();
+        if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
 

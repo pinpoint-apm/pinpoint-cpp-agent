@@ -31,11 +31,11 @@ class MockAgentService : public AgentService {
 public:
     MockAgentService() : is_exiting_(false), start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
         // Configure default config for URL stats
-        config_.http.url_stat.enable = true;
-        config_.http.url_stat.limit = 1024;
-        config_.http.url_stat.trim_path_depth = 3;
-        config_.http.url_stat.method_prefix = false;
-        config_.span.queue_size = 100;
+        config_->http.url_stat.enable = true;
+        config_->http.url_stat.limit = 1024;
+        config_->http.url_stat.trim_path_depth = 3;
+        config_->http.url_stat.method_prefix = false;
+        config_->span.queue_size = 100;
     }
 
     // AgentService interface implementation
@@ -44,9 +44,13 @@ public:
     int32_t getAppType() const override { return 1300; }
     std::string_view getAgentId() const override { return "test-agent-001"; }
     std::string_view getAgentName() const override { return "TestAgent"; }
-    const Config& getConfig() const override { return config_; }
+    std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(const Config& cfg) override { config_ = cfg; }
+    void reloadConfig(std::shared_ptr<const Config> cfg) override {
+        if (cfg) {
+            *config_ = *cfg;
+        }
+    }
 
     TraceId generateTraceId() override {
         TraceId trace_id;
@@ -133,7 +137,7 @@ public:
 
     // Test helpers
     void setExiting(bool exiting) { is_exiting_ = exiting; }
-    void setUrlStatEnabled(bool enabled) { config_.http.url_stat.enable = enabled; }
+    void setUrlStatEnabled(bool enabled) { config_->http.url_stat.enable = enabled; }
     mutable int recorded_spans_ = 0;
     mutable int recorded_url_stats_ = 0;
     mutable int recorded_exceptions_ = 0;
@@ -145,7 +149,7 @@ private:
     int64_t start_time_;
     std::string cached_start_time_str_;
     int64_t trace_id_counter_;
-    Config config_;
+    std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;
 };

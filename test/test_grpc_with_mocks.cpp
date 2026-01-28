@@ -43,32 +43,36 @@ namespace pinpoint {
 class MockAgentService : public AgentService {
 public:
     MockAgentService() : is_exiting_(false), start_time_(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
-        config_.span.event_chunk_size = 10;
-        config_.span.max_event_depth = 32;
-        config_.span.queue_size = 1024;
-        config_.http.url_stat.enable = true;
-        config_.http.url_stat.limit = 1024;
-        config_.http.url_stat.trim_path_depth = 3;
-        config_.collector.host = "localhost";
-        config_.collector.agent_port = 9991;
-        config_.collector.span_port = 9993;
-        config_.collector.stat_port = 9992;
-        config_.app_name_ = "test-app";
-        config_.app_type_ = 1300;
-        config_.agent_id_ = "test-agent-id";
-        config_.agent_name_ = "test-agent-name";
+        config_->span.event_chunk_size = 10;
+        config_->span.max_event_depth = 32;
+        config_->span.queue_size = 1024;
+        config_->http.url_stat.enable = true;
+        config_->http.url_stat.limit = 1024;
+        config_->http.url_stat.trim_path_depth = 3;
+        config_->collector.host = "localhost";
+        config_->collector.agent_port = 9991;
+        config_->collector.span_port = 9993;
+        config_->collector.stat_port = 9992;
+        config_->app_name_ = "test-app";
+        config_->app_type_ = 1300;
+        config_->agent_id_ = "test-agent-id";
+        config_->agent_name_ = "test-agent-name";
     }
 
     bool isExiting() const override { return is_exiting_; }
     void setExiting(bool exiting) { is_exiting_ = exiting; }
 
-    std::string_view getAppName() const override { return config_.app_name_; }
-    int32_t getAppType() const override { return config_.app_type_; }
-    std::string_view getAgentId() const override { return config_.agent_id_; }
-    std::string_view getAgentName() const override { return config_.agent_name_; }
-    const Config& getConfig() const override { return config_; }
+    std::string_view getAppName() const override { return config_->app_name_; }
+    int32_t getAppType() const override { return config_->app_type_; }
+    std::string_view getAgentId() const override { return config_->agent_id_; }
+    std::string_view getAgentName() const override { return config_->agent_name_; }
+    std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(const Config& cfg) override { config_ = cfg; }
+    void reloadConfig(std::shared_ptr<const Config> cfg) override {
+        if (cfg) {
+            *config_ = *cfg;
+        }
+    }
 
     TraceId generateTraceId() override {
         return TraceId{"mock-agent", start_time_, trace_id_counter_++};
@@ -161,7 +165,7 @@ private:
     int64_t start_time_;
     std::string cached_start_time_str_;
     int64_t trace_id_counter_;
-    Config config_;
+    std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;
 };

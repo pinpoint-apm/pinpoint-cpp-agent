@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
- #pragma once
+#pragma once
 
- #include "pinpoint/tracer.h"
+#include <memory>
+#include <string>
+#include "pinpoint/tracer.h"
  
  namespace pinpoint {
  
@@ -63,11 +65,11 @@
       /// @brief Returns the human-readable agent name.
       virtual std::string_view getAgentName() const = 0;
       /// @brief Returns the resolved runtime configuration.
-      virtual const Config& getConfig() const = 0;
+      virtual std::shared_ptr<const Config> getConfig() const = 0;
       /// @brief Returns the agent's start timestamp (epoch milliseconds).
       virtual int64_t getStartTime() const = 0;
       /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
-      virtual void reloadConfig(const Config& cfg) = 0;
+      virtual void reloadConfig(std::shared_ptr<const Config> cfg) = 0;
  
       /**
        * @brief Generates a new distributed trace identifier.
