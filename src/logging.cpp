@@ -28,8 +28,8 @@ namespace pinpoint {
     }
 
     void Logger::setLogLevel(const std::string& log_level) {
-        std::lock_guard<std::mutex> lock(mutex_);
         const auto level = log_level.c_str();
+
         if (!strcasecmp(level, LOG_LEVEL_DEBUG)) {
             current_level_.store(static_cast<int>(LogLevel::kDebug), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_INFO)) {
@@ -43,6 +43,7 @@ namespace pinpoint {
 
     void Logger::setFileLogger(const std::string& log_file_path, const int max_size) {
         std::lock_guard<std::mutex> lock(mutex_);
+
         file_path_ = log_file_path;
         max_file_size_ = static_cast<std::uint64_t>(max_size) * 1024 * 1024;
         current_file_size_ = 0;
@@ -68,6 +69,7 @@ namespace pinpoint {
 
     void Logger::shutdown() {
         std::lock_guard<std::mutex> lock(mutex_);
+
         if (file_stream_ && file_stream_->is_open()) {
             file_stream_->flush();
             file_stream_->close();
@@ -77,8 +79,6 @@ namespace pinpoint {
     }
 
     void Logger::write(LogLevel level, std::string_view file, int line, const std::string& message) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
         const auto now = std::chrono::system_clock::now();
         const auto now_time = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
@@ -96,6 +96,8 @@ namespace pinpoint {
         prefix << "[" << file << ":" << line << "] ";
 
         const std::string msg = prefix.str() + message + "\n";
+        std::lock_guard<std::mutex> lock(mutex_);
+
         if (file_enabled_ && file_stream_) {
             file_stream_->write(msg.data(), static_cast<std::streamsize>(msg.size()));
             current_file_size_ += static_cast<std::uint64_t>(msg.size());
