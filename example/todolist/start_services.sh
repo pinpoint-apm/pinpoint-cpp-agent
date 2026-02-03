@@ -80,5 +80,5 @@ echo "Press Ctrl+C to stop"
 echo ""
 
 # Run the server
-../../build/example/todolist/todolist_server pinpoint-config.yaml
+../../build/example/todolist/todolist_server ~/tmp/pinpoint-config.yaml
 

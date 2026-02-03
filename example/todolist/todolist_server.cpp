@@ -23,7 +23,6 @@
 #include <sstream>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 using json = nlohmann::json;
@@ -545,6 +544,36 @@ void handle_delete_todo(const httplib::Request& req, httplib::Response& res) {
     }
 }
 
+void handle_reconfig_sampling(const httplib::Request& req, httplib::Response& res) {
+    if (!g_agent) {
+        json error = {{"status", "error"}, {"message", "Agent not initialized"}};
+        res.set_content(error.dump(), "application/json");
+        res.status = 500;
+        return;
+    }
+
+    if (!req.has_param("sampling_rate")) {
+        json error = {{"status", "error"}, {"message", "Missing sampling_rate parameter"}};
+        res.set_content(error.dump(), "application/json");
+        res.status = 400;
+        return;
+    }
+
+    std::string sampling_rate = req.get_param_value("sampling_rate");
+    setenv("PINPOINT_CPP_SAMPLING_TYPE", "PERCENT", 0);
+    setenv("PINPOINT_CPP_SAMPLING_PERCENT_RATE", sampling_rate.c_str(), 0);
+
+    g_agent = pinpoint::CreateAgent();
+    
+    json response = {
+        {"status", "success"},
+        {"sampling_type", "PERCENT"},
+        {"sampling_rate", sampling_rate}
+    };
+    res.set_content(response.dump(), "application/json");
+    res.status = 200;
+}
+
 int main(int argc, char* argv[]) {
     // Parse command line arguments
     if (argc > 1) {
@@ -556,6 +585,7 @@ int main(int argc, char* argv[]) {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-todolist", 0);
     setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 0);
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
+    setenv("PINPOINT_CPP_LOG_LEVEL", "debug", 0);
     
     // Test MySQL connection
     try {
@@ -590,6 +620,9 @@ int main(int argc, char* argv[]) {
     svr.Get(R"(/api/todos/(\d+))", wrap_handler(handle_get_todo));
     svr.Put(R"(/api/todos/(\d+))", wrap_handler(handle_update_todo));
     svr.Delete(R"(/api/todos/(\d+))", wrap_handler(handle_delete_todo));
+
+    // Reconfigure sampling rate (example)
+    svr.Post("/reconfig", wrap_handler(handle_reconfig_sampling));
     
     // Health check
     svr.Get("/health", wrap_handler([](const httplib::Request&, httplib::Response& res) {
@@ -615,6 +648,9 @@ int main(int argc, char* argv[]) {
                     {"GET /api/todos/:id", "Get todo"},
                     {"PUT /api/todos/:id", "Update todo"},
                     {"DELETE /api/todos/:id", "Delete todo"}
+                }},
+                {"config", {
+                    {"POST /reconfig?sampling_rate=10.0", "Update sampling rate (percent)"}
                 }}
             }}
         };
