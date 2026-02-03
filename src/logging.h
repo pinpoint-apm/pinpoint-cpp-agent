@@ -134,13 +134,9 @@ namespace pinpoint {
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};
 
-        Logger();
+        Logger() {}
     };
 
-    /**
-     * @brief Initializes the global logging sink with default console output.
-     */
-    void init_logger();
     /**
      * @brief Flushes pending log messages and releases logger resources.
      */

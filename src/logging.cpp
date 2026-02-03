@@ -23,13 +23,6 @@
 
 namespace pinpoint {
 
-    Logger::Logger() {
-    }
-
-    void init_logger() {
-        Logger::getInstance().setLogLevel(LOG_LEVEL_INFO);
-    }
-
     void shutdown_logger() {
         Logger::getInstance().shutdown();
     }

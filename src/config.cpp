@@ -456,8 +456,6 @@ namespace pinpoint {
         auto config = std::make_shared<Config>();
         bool is_container_set = false;
 
-        init_logger();
-
         if(const char* env_p = std::getenv(env::CONFIG_FILE); env_p != nullptr) {
             set_config_file_path(env_p);
         }
