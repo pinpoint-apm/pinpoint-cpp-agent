@@ -192,23 +192,26 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Reads configuration from a YAML file on disk.
-     *
-     * @param config_file_path Absolute or relative path to the configuration file.
-     */
-    void read_config_from_file(const char* config_file_path);
-    /**
      * @brief Sets the raw YAML configuration source used by `make_config`.
      *
      * @param cfg_str YAML configuration string.
      */
     void set_config_string(std::string_view cfg_str);
+
+    /**
+     * @brief Sets the configuration file path used by `make_config`.
+     *
+     * @param file_path Configuration file path.
+     */
+    void set_config_file_path(std::string_view file_path);
+
     /**
      * @brief Builds a `Config` object by combining defaults, the cached YAML and environment overrides.
      *
      * @return Resolved configuration ready to be consumed by the agent.
      */
     std::shared_ptr<Config> make_config();
+
     /**
      * @brief Serializes a `Config` object back into its YAML representation.
      *

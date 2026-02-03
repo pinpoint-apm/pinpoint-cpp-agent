@@ -45,6 +45,11 @@ namespace pinpoint {
         return cfg_str;
     }
 
+    static std::string& global_agent_config_file_path() {
+        static std::string file_path;
+        return file_path;
+    }
+
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
         if (yaml[cname]) {
             try {
@@ -429,6 +434,10 @@ namespace pinpoint {
         global_agent_config_str() = cfg_str;
     }
 
+    void set_config_file_path(std::string_view file_path) {
+        global_agent_config_file_path() = file_path;
+    }
+
     constexpr int NONE_SAMPLING_COUNTER_RATE = 0;
     constexpr double NONE_SAMPLING_PERCENT_RATE = 0.0;
     constexpr int NONE_SAMPLING_NEW_THROUGHPUT = 0;
@@ -450,7 +459,10 @@ namespace pinpoint {
         init_logger();
 
         if(const char* env_p = std::getenv(env::CONFIG_FILE); env_p != nullptr) {
-            read_config_from_file(env_p);
+            set_config_file_path(env_p);
+        }
+        if(!global_agent_config_file_path().empty()) {
+            read_config_from_file(global_agent_config_file_path().c_str());
         }
 
         YAML::Node yaml;

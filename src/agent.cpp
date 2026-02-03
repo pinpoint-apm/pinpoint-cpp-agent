@@ -522,7 +522,7 @@ namespace pinpoint {
     }
 
     void SetConfigFilePath(std::string_view config_file_path) {
-        read_config_from_file(config_file_path.data());
+        set_config_file_path(config_file_path);
     }
 
     void SetConfigString(std::string_view config_string) {
