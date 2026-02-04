@@ -84,8 +84,17 @@ namespace pinpoint {
         }
 
         std::thread([] {
+            auto agent = GlobalAgent();
+            if (!agent->Enable()) {
+                return;
+            }
+
             std::filesystem::file_time_type last_write_time{};
             bool has_last = false;
+            auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
+            if (!agent_impl) {
+                return;
+            }
 
             while (true) {
                 const auto path = get_config_file_path_copy();
@@ -108,14 +117,11 @@ namespace pinpoint {
                         last_write_time = current;
                         read_config_from_file(path.c_str());
                         auto new_cfg = make_config();
+
                         if (new_cfg && new_cfg->check()) {
-                            auto agent = GlobalAgent();
-                            auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
-                            if (agent_impl) {
-                                const auto current_cfg = agent_impl->getConfig();
-                                if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
-                                    agent_impl->reloadConfig(new_cfg);
-                                }
+                            const auto current_cfg = agent_impl->getConfig();
+                            if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
+                                agent_impl->reloadConfig(new_cfg);
                             }
                         }
                     }
