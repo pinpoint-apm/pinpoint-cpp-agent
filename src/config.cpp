@@ -20,6 +20,11 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <mutex>
+#include <thread>
 #include <memory>
 #include <sstream>
 #include <algorithm>
@@ -28,6 +33,7 @@
 #include "absl/strings/str_split.h"
 
 #include "logging.h"
+#include "agent.h"
 #include "sampling.h"
 #include "utility.h"
 #include "config.h"
@@ -48,6 +54,78 @@ namespace pinpoint {
     static std::string& global_agent_config_file_path() {
         static std::string file_path;
         return file_path;
+    }
+
+    static std::mutex& config_file_path_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::string get_config_file_path_copy() {
+        std::lock_guard<std::mutex> lock(config_file_path_mutex());
+        return global_agent_config_file_path();
+    }
+
+    static void read_config_from_file(const char* config_file_path) {
+        if (std::ifstream file(config_file_path); file.is_open()) {
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            global_agent_config_str() = buffer.str();
+            file.close();
+        } else {
+            LOG_ERROR("can't open config file = {}", config_file_path);
+        }
+    }
+
+    static void start_config_file_watcher() {
+        static std::atomic<bool> started{false};
+        if (started.exchange(true)) {
+            return;
+        }
+
+        std::thread([] {
+            std::filesystem::file_time_type last_write_time{};
+            bool has_last = false;
+
+            while (true) {
+                const auto path = get_config_file_path_copy();
+                if (path.empty()) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    continue;
+                }
+
+                try {
+                    if (!std::filesystem::exists(path)) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                        continue;
+                    }
+
+                    auto current = std::filesystem::last_write_time(path);
+                    if (!has_last) {
+                        last_write_time = current;
+                        has_last = true;
+                    } else if (current != last_write_time) {
+                        last_write_time = current;
+                        read_config_from_file(path.c_str());
+                        auto new_cfg = make_config();
+                        if (new_cfg && new_cfg->check()) {
+                            auto agent = GlobalAgent();
+                            auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
+                            if (agent_impl) {
+                                const auto current_cfg = agent_impl->getConfig();
+                                if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
+                                    agent_impl->reloadConfig(new_cfg);
+                                }
+                            }
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    LOG_WARN("failed to watch config file: {}", e.what());
+                }
+
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }).detach();
     }
 
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
@@ -419,23 +497,16 @@ namespace pinpoint {
         return absl::StrCat(hostname, "-", randomString());
     }
 
-    void read_config_from_file(const char* config_file_path) {
-        if (std::ifstream file(config_file_path); file.is_open()) {
-            std::stringstream buffer;
-            buffer << file.rdbuf();
-            global_agent_config_str() = buffer.str();
-            file.close();
-        } else {
-            LOG_ERROR("can't open config file = {}", config_file_path);
-        }
-    }
-
     void set_config_string(std::string_view cfg_str) {
         global_agent_config_str() = cfg_str;
     }
 
     void set_config_file_path(std::string_view file_path) {
-        global_agent_config_file_path() = file_path;
+        {
+            std::lock_guard<std::mutex> lock(config_file_path_mutex());
+            global_agent_config_file_path() = file_path;
+        }
+        start_config_file_watcher();
     }
 
     constexpr int NONE_SAMPLING_COUNTER_RATE = 0;
@@ -459,8 +530,9 @@ namespace pinpoint {
         if(const char* env_p = std::getenv(env::CONFIG_FILE); env_p != nullptr) {
             set_config_file_path(env_p);
         }
-        if(!global_agent_config_file_path().empty()) {
-            read_config_from_file(global_agent_config_file_path().c_str());
+        const auto config_path = get_config_file_path_copy();
+        if(!config_path.empty()) {
+            read_config_from_file(config_path.c_str());
         }
 
         YAML::Node yaml;
