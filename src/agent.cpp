@@ -325,6 +325,7 @@ namespace pinpoint {
         LOG_INFO("agent shutdown");
         enabled_ = false;
         shutting_down_ = true;
+        stop_config_file_watcher();
         
         {
             std::lock_guard<std::mutex> lock(global_agent_mutex);

@@ -204,6 +204,10 @@ namespace pinpoint {
      * @param file_path Configuration file path.
      */
     void set_config_file_path(std::string_view file_path);
+    /**
+     * @brief Stops the config file watcher thread if running.
+     */
+    void stop_config_file_watcher();
 
     /**
      * @brief Builds a `Config` object by combining defaults, the cached YAML and environment overrides.

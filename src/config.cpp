@@ -66,6 +66,21 @@ namespace pinpoint {
         return global_agent_config_file_path();
     }
 
+    static std::thread& config_watcher_thread() {
+        static std::thread watcher;
+        return watcher;
+    }
+
+    static std::atomic<bool>& config_watcher_stop() {
+        static std::atomic<bool> stop{false};
+        return stop;
+    }
+
+    static std::mutex& config_watcher_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
     static void read_config_from_file(const char* config_file_path) {
         if (std::ifstream file(config_file_path); file.is_open()) {
             std::stringstream buffer;
@@ -78,25 +93,18 @@ namespace pinpoint {
     }
 
     static void start_config_file_watcher() {
-        static std::atomic<bool> started{false};
-        if (started.exchange(true)) {
+        std::lock_guard<std::mutex> lock(config_watcher_mutex());
+        auto& watcher = config_watcher_thread();
+        if (watcher.joinable()) {
             return;
         }
+        config_watcher_stop().store(false);
 
-        std::thread([] {
-            auto agent = GlobalAgent();
-            if (!agent->Enable()) {
-                return;
-            }
-
+        watcher = std::thread([] {
             std::filesystem::file_time_type last_write_time{};
             bool has_last = false;
-            auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
-            if (!agent_impl) {
-                return;
-            }
 
-            while (true) {
+            while (!config_watcher_stop().load()) {
                 const auto path = get_config_file_path_copy();
                 if (path.empty()) {
                     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -117,8 +125,10 @@ namespace pinpoint {
                         last_write_time = current;
                         read_config_from_file(path.c_str());
                         auto new_cfg = make_config();
+                        auto agent = GlobalAgent();
+                        auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
 
-                        if (new_cfg && new_cfg->check()) {
+                        if (agent_impl && new_cfg && new_cfg->check()) {
                             const auto current_cfg = agent_impl->getConfig();
                             if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
                                 agent_impl->reloadConfig(new_cfg);
@@ -131,7 +141,21 @@ namespace pinpoint {
 
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-        }).detach();
+        });
+    }
+
+    void stop_config_file_watcher() {
+        std::thread watcher_to_join;
+        {
+            std::lock_guard<std::mutex> lock(config_watcher_mutex());
+            auto& watcher = config_watcher_thread();
+            if (!watcher.joinable()) {
+                return;
+            }
+            config_watcher_stop().store(true);
+            watcher_to_join = std::move(watcher);
+        }
+        watcher_to_join.join();
     }
 
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
