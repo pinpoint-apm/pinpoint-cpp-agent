@@ -54,6 +54,7 @@ namespace pinpoint {
         reloadConfig(cfg);
 
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
+        start_config_file_watcher();
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {

@@ -92,36 +92,28 @@ namespace pinpoint {
         }
     }
 
-    static void start_config_file_watcher() {
+    void start_config_file_watcher() {
         std::lock_guard<std::mutex> lock(config_watcher_mutex());
+        const auto path = get_config_file_path_copy();
+        if (path.empty() || !std::filesystem::exists(path)) {
+            return;
+        }
+
         auto& watcher = config_watcher_thread();
         if (watcher.joinable()) {
             return;
         }
         config_watcher_stop().store(false);
 
-        watcher = std::thread([] {
-            std::filesystem::file_time_type last_write_time{};
-            bool has_last = false;
+        watcher = std::thread([path]() {
+            auto last_write_time = std::filesystem::last_write_time(path);
 
             while (!config_watcher_stop().load()) {
-                const auto path = get_config_file_path_copy();
-                if (path.empty()) {
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                    continue;
-                }
-
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                
                 try {
-                    if (!std::filesystem::exists(path)) {
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
-                        continue;
-                    }
-
                     auto current = std::filesystem::last_write_time(path);
-                    if (!has_last) {
-                        last_write_time = current;
-                        has_last = true;
-                    } else if (current != last_write_time) {
+                    if (current != last_write_time) {
                         last_write_time = current;
                         read_config_from_file(path.c_str());
                         auto new_cfg = make_config();
@@ -138,8 +130,6 @@ namespace pinpoint {
                 } catch (const std::exception& e) {
                     LOG_WARN("failed to watch config file: {}", e.what());
                 }
-
-                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         });
     }
@@ -536,7 +526,6 @@ namespace pinpoint {
             std::lock_guard<std::mutex> lock(config_file_path_mutex());
             global_agent_config_file_path() = file_path;
         }
-        start_config_file_watcher();
     }
 
     constexpr int NONE_SAMPLING_COUNTER_RATE = 0;

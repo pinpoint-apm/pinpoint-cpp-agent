@@ -204,6 +204,12 @@ namespace pinpoint {
      * @param file_path Configuration file path.
      */
     void set_config_file_path(std::string_view file_path);
+
+    /**
+     * @brief Starts the config file watcher thread.
+     */
+    void start_config_file_watcher();
+
     /**
      * @brief Stops the config file watcher thread if running.
      */
