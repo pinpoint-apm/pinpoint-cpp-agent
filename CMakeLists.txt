@@ -199,29 +199,6 @@ endif()
 
 list(APPEND LINK_LIBS fmt::fmt)
 
-# Try to find spdlog on the system first
-if(VCPKG_DETECTED)
-  find_package(spdlog CONFIG REQUIRED)
-else()
-  find_package(spdlog CONFIG QUIET)
-endif()
-
-if(NOT spdlog_FOUND)
-  message(STATUS "spdlog not found on system, fetching from source...")
-  
-  # Fetch spdlog
-  FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.14.1
-  )
-  FetchContent_MakeAvailable(spdlog)
-else()
-  message(STATUS "Using system spdlog")
-endif()
-
-list(APPEND LINK_LIBS spdlog::spdlog)
-
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything \
     -Wno-c++98-compat \

@@ -25,7 +25,6 @@ cc_library(
         "//v1:span_grpc_cc",
         "//v1:stat_grpc_cc",
         "//v1:thread_dump_grpc_cc",
-        "@com_github_gabime_spdlog//:spdlog",
         "@com_github_grpc_grpc//:grpc++",
         "@com_github_jbeder_yaml_cpp//:yaml-cpp",
         "@com_google_absl//absl/strings",

@@ -55,13 +55,6 @@ http_archive(
 )
 
 http_archive(
-    name = "com_github_gabime_spdlog",
-    sha256 = "9962648c9b4f1a7bbc76fd8d9172555bad1871fdb14ff4f842ef87949682caa5",
-    strip_prefix = "spdlog-1.15.0",
-    urls = ["https://github.com/gabime/spdlog/archive/v1.15.0.tar.gz"],
-)
-
-http_archive(
     name = "com_google_absl",
     sha256 = "f50e5ac311a81382da7fa75b97310e4b9006474f9560ac46f54a9967f07d4ae3",
     strip_prefix = "abseil-cpp-20240722.0",
