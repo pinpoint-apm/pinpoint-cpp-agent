@@ -3,3 +3,4 @@
 /build_*
 /cmake-build-*
 /.cache
+.DS_Store
