@@ -106,65 +106,68 @@ namespace pinpoint {
         auto* annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
 
         if (val->dataType == ANNOTATION_TYPE_INT) {
-            annotation_value->set_intvalue(val->data.intValue);
+            annotation_value->set_intvalue(std::get<int32_t>(val->data));
         } else if (val->dataType == ANNOTATION_TYPE_LONG) {
-            annotation_value->set_longvalue(val->data.longValue);
+            annotation_value->set_longvalue(std::get<int64_t>(val->data));
         } else if (val->dataType == ANNOTATION_TYPE_STRING) {
-            annotation_value->set_stringvalue(val->data.stringValue);
+            annotation_value->set_stringvalue(std::get<std::string>(val->data));
         } else if (val->dataType == ANNOTATION_TYPE_STRING_STRING) {
+            const auto& v = std::get<StringStringValue>(val->data);
             auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s1->set_value(val->data.stringStringValue.stringValue1);
+            s1->set_value(v.stringValue1);
             ssv->set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s2->set_value(val->data.stringStringValue.stringValue2);
+            s2->set_value(v.stringValue2);
             ssv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_stringstringvalue(ssv);
         } else if (val->dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
+            const auto& v = std::get<IntStringStringValue>(val->data);
             auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
-            issv->set_intvalue(val->data.intStringStringValue.intValue);
+            issv->set_intvalue(v.intValue);
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s1->set_value(val->data.intStringStringValue.stringValue1);
+            s1->set_value(v.stringValue1);
             issv->set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s2->set_value(val->data.intStringStringValue.stringValue2);
+            s2->set_value(v.stringValue2);
             issv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_intstringstringvalue(issv);
         } else if (val->dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
+            const auto& v = std::get<LongIntIntByteByteStringValue>(val->data);
             auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
-            liibbsv->set_longvalue(val->data.longIntIntByteByteStringValue.longValue);
-            liibbsv->set_intvalue1(val->data.longIntIntByteByteStringValue.intValue1);
-            liibbsv->set_intvalue2(val->data.longIntIntByteByteStringValue.intValue2);
-            liibbsv->set_bytevalue1(val->data.longIntIntByteByteStringValue.byteValue1);
-            liibbsv->set_bytevalue2(val->data.longIntIntByteByteStringValue.byteValue2);
+            liibbsv->set_longvalue(v.longValue);
+            liibbsv->set_intvalue1(v.intValue1);
+            liibbsv->set_intvalue2(v.intValue2);
+            liibbsv->set_bytevalue1(v.byteValue1);
+            liibbsv->set_bytevalue2(v.byteValue2);
 
             auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s->set_value(val->data.longIntIntByteByteStringValue.stringValue);
+            s->set_value(v.stringValue);
             liibbsv->set_allocated_stringvalue(s);
 
             annotation_value->set_allocated_longintintbytebytestringvalue(liibbsv);
         } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
+            const auto& v = std::get<BytesStringStringValue>(val->data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
-            auto& bv = val->data.bytesStringStringValue.bytesValue;
-            
+
             // zero-copy conversion from vector<unsigned char> to string
             std::string_view bytes_view(
-                reinterpret_cast<const char*>(bv.data()),
-                bv.size()
+                reinterpret_cast<const char*>(v.bytesValue.data()),
+                v.bytesValue.size()
             );
             bssv->set_bytesvalue(std::string(bytes_view));
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s1->set_value(val->data.bytesStringStringValue.stringValue1);
+            s1->set_value(v.stringValue1);
             bssv->set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s2->set_value(val->data.bytesStringStringValue.stringValue2);
+            s2->set_value(v.stringValue2);
             bssv->set_allocated_stringvalue2(s2);
 
             annotation_value->set_allocated_bytesstringstringvalue(bssv);
