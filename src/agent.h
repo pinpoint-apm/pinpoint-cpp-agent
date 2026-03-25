@@ -147,7 +147,7 @@ namespace pinpoint {
     	std::atomic<bool> shutting_down_{false};
 
     	/// @brief Initializes HTTP header recorders for server and client.
-    	void init_header_recorders();
+    	void init_header_recorders(const std::shared_ptr<const Config>& cfg);
     	/// @brief Starts background threads responsible for gRPC communication.
     	void init_grpc_workers();
     	/// @brief Signals all gRPC workers to stop and joins their threads.

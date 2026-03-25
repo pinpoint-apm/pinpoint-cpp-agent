@@ -81,7 +81,7 @@ namespace pinpoint {
         return cfg->agent_name_;
     }
 
-    void AgentImpl::init_header_recorders() {
+    void AgentImpl::init_header_recorders(const std::shared_ptr<const Config>& cfg) {
         // Server-side header recorders
         struct HeaderRecorderConfig {
             HeaderType type;
@@ -90,15 +90,15 @@ namespace pinpoint {
         };
 
         const HeaderRecorderConfig server_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_->http.server.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_->http.server.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_->http.server.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg->http.server.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg->http.server.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg->http.server.rec_request_cookie}
         };
 
         const HeaderRecorderConfig client_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, config_->http.client.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, config_->http.client.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, config_->http.client.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg->http.client.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg->http.client.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg->http.client.rec_request_cookie}
         };
 
         std::shared_ptr<HttpHeaderRecorder> new_srv[3]{};
@@ -126,20 +126,21 @@ namespace pinpoint {
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
         std::atomic_store(&config_, std::move(cfg));
+        const auto local_cfg = std::atomic_load(&config_);
 
         // Rebuild sampler
         std::unique_ptr<Sampler> sampler;
-        if (compare_string(config_->sampling.type, PERCENT_SAMPLING)) {
-            sampler = std::make_unique<PercentSampler>(config_->sampling.percent_rate);
+        if (compare_string(local_cfg->sampling.type, PERCENT_SAMPLING)) {
+            sampler = std::make_unique<PercentSampler>(local_cfg->sampling.percent_rate);
         } else {
-            sampler = std::make_unique<CounterSampler>(config_->sampling.counter_rate);
+            sampler = std::make_unique<CounterSampler>(local_cfg->sampling.counter_rate);
         }
 
         std::shared_ptr<TraceSampler> new_sampler;
-        if (config_->sampling.new_throughput > 0 || config_->sampling.cont_throughput > 0) {
+        if (local_cfg->sampling.new_throughput > 0 || local_cfg->sampling.cont_throughput > 0) {
             new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                        config_->sampling.new_throughput,
-                                                                        config_->sampling.cont_throughput);
+                                                                        local_cfg->sampling.new_throughput,
+                                                                        local_cfg->sampling.cont_throughput);
         } else {
             new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
         }
@@ -147,25 +148,25 @@ namespace pinpoint {
 
         // Rebuild HTTP filters
         std::shared_ptr<HttpUrlFilter> new_url_filter;
-        if (!config_->http.server.exclude_url.empty()) {
-            new_url_filter = std::make_shared<HttpUrlFilter>(config_->http.server.exclude_url);
+        if (!local_cfg->http.server.exclude_url.empty()) {
+            new_url_filter = std::make_shared<HttpUrlFilter>(local_cfg->http.server.exclude_url);
         }
         std::atomic_store(&http_url_filter_, new_url_filter);
 
         std::shared_ptr<HttpMethodFilter> new_method_filter;
-        if (!config_->http.server.exclude_method.empty()) {
-            new_method_filter = std::make_shared<HttpMethodFilter>(config_->http.server.exclude_method);
+        if (!local_cfg->http.server.exclude_method.empty()) {
+            new_method_filter = std::make_shared<HttpMethodFilter>(local_cfg->http.server.exclude_method);
         }
         std::atomic_store(&http_method_filter_, new_method_filter);
 
         std::shared_ptr<HttpStatusErrors> new_status_errors;
-        if (!config_->http.server.status_errors.empty()) {
-            new_status_errors = std::make_shared<HttpStatusErrors>(config_->http.server.status_errors);
+        if (!local_cfg->http.server.status_errors.empty()) {
+            new_status_errors = std::make_shared<HttpStatusErrors>(local_cfg->http.server.status_errors);
         }
         std::atomic_store(&http_status_errors_, new_status_errors);
 
         // Rebuild header recorders
-        init_header_recorders();
+        init_header_recorders(local_cfg);
     }
 
     void AgentImpl::init_grpc_workers() try {
