@@ -143,8 +143,8 @@ namespace pinpoint {
 
         int64_t start_time_{};
     	std::atomic<uint64_t> trace_id_sequence_{};
-    	bool enabled_{false};
-    	bool shutting_down_{false};
+    	std::atomic<bool> enabled_{false};
+    	std::atomic<bool> shutting_down_{false};
 
     	/// @brief Initializes HTTP header recorders for server and client.
     	void init_header_recorders();
