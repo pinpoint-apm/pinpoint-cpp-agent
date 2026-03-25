@@ -62,10 +62,10 @@ public:
     bool isExiting() const override { return is_exiting_; }
     void setExiting(bool exiting) { is_exiting_ = exiting; }
 
-    std::string_view getAppName() const override { return config_->app_name_; }
+    std::string getAppName() const override { return config_->app_name_; }
     int32_t getAppType() const override { return config_->app_type_; }
-    std::string_view getAgentId() const override { return config_->agent_id_; }
-    std::string_view getAgentName() const override { return config_->agent_name_; }
+    std::string getAgentId() const override { return config_->agent_id_; }
+    std::string getAgentName() const override { return config_->agent_name_; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {

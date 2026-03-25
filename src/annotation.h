@@ -44,7 +44,6 @@ namespace pinpoint {
 
         StringStringValue(std::string_view strVal1, std::string_view strVal2)
             : stringValue1(strVal1), stringValue2(strVal2) {}
-        ~StringStringValue() {}
     } StringStringValue;
 
     /**
@@ -57,7 +56,6 @@ namespace pinpoint {
 
         IntStringStringValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
-        ~IntStringStringValue() {}
     } IntStringStringValue;
 
     /**
@@ -73,7 +71,6 @@ namespace pinpoint {
 
         LongIntIntByteByteStringValue(const int64_t longVal, const int32_t intVal1, const int32_t intVal2, const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : longValue(longVal), intValue1(intVal1), intValue2(intVal2),byteValue1(byteVal1), byteValue2(byteVal2), stringValue(strVal) {}
-        ~LongIntIntByteByteStringValue() {}
     } LongIntIntByteByteStringValue;
 
     /**
@@ -86,7 +83,6 @@ namespace pinpoint {
 
         BytesStringStringValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
             : bytesValue(std::move(bytesVal)), stringValue1(strVal1), stringValue2(strVal2) {}
-        ~BytesStringStringValue() {}
     } BytesStringStringValue;
 
     /**
