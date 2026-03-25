@@ -33,10 +33,10 @@ public:
     MockAgentService() : start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)) {}
     
     bool isExiting() const override { return false; }
-    std::string_view getAppName() const override { return "TestApp"; }
+    std::string getAppName() const override { return "TestApp"; }
     int32_t getAppType() const override { return 1300; }
-    std::string_view getAgentId() const override { return "test-agent"; }
-    std::string_view getAgentName() const override { return "Test Agent"; }
+    std::string getAgentId() const override { return "test-agent"; }
+    std::string getAgentName() const override { return "Test Agent"; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {

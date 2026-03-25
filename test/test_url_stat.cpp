@@ -40,10 +40,10 @@ public:
 
     // AgentService interface implementation
     bool isExiting() const override { return is_exiting_; }
-    std::string_view getAppName() const override { return "TestApp"; }
+    std::string getAppName() const override { return "TestApp"; }
     int32_t getAppType() const override { return 1300; }
-    std::string_view getAgentId() const override { return "test-agent-001"; }
-    std::string_view getAgentName() const override { return "TestAgent"; }
+    std::string getAgentId() const override { return "test-agent-001"; }
+    std::string getAgentName() const override { return "TestAgent"; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {

@@ -21,22 +21,25 @@
 
 namespace pinpoint {
 
-    static Noop noop;
+    static Noop& getNoop() {
+        static Noop noop;
+        return noop;
+    }
 
     AnnotationPtr noopAnnotation() {
-        return noop.annotation();
+        return getNoop().annotation();
     }
 
     SpanEventPtr noopSpanEvent() {
-        return noop.spanEvent();
+        return getNoop().spanEvent();
     }
 
     SpanPtr noopSpan() {
-        return noop.span();
+        return getNoop().span();
     }
 
     AgentPtr noopAgent() {
-        return noop.agent();
+        return getNoop().agent();
     }
 
     UnsampledSpan::UnsampledSpan(AgentService *agent) : NoopSpan(),

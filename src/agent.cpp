@@ -61,7 +61,7 @@ namespace pinpoint {
         return std::atomic_load(&config_);
     }
 
-    std::string_view AgentImpl::getAppName() const {
+    std::string AgentImpl::getAppName() const {
         const auto cfg = std::atomic_load(&config_);
         return cfg->app_name_;
     }
@@ -71,12 +71,12 @@ namespace pinpoint {
         return cfg->app_type_;
     }
 
-    std::string_view AgentImpl::getAgentId() const {
+    std::string AgentImpl::getAgentId() const {
         const auto cfg = std::atomic_load(&config_);
         return cfg->agent_id_;
     }
 
-    std::string_view AgentImpl::getAgentName() const {
+    std::string AgentImpl::getAgentName() const {
         const auto cfg = std::atomic_load(&config_);
         return cfg->agent_name_;
     }
@@ -324,13 +324,12 @@ namespace pinpoint {
 	}
 
     void AgentImpl::Shutdown() {
-        if (shutting_down_) {
+        if (shutting_down_.exchange(true)) {
             return;
         }
 
         LOG_INFO("agent shutdown");
         enabled_ = false;
-        shutting_down_ = true;
         stop_config_file_watcher();
         
         {
