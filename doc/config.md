@@ -1,9 +1,12 @@
 # Pinpoint C++ Agent - Configuration Guide
 
-This document describes the configuration options available for the Pinpoint C++ Agent.
+This document is a consolidated reference for all configuration options available in the Pinpoint C++ Agent (`pinpoint-cpp-agent`).
+
+---
 
 ## Table of Contents
-- [Configuration Methods](#configuration-methods)
+
+- [Configuration Methods & Precedence](#configuration-methods--precedence)
 - [Agent Configuration](#agent-configuration)
 - [Logging Configuration](#logging-configuration)
 - [Collector Configuration](#collector-configuration)
@@ -14,83 +17,24 @@ This document describes the configuration options available for the Pinpoint C++
 - [SQL Configuration](#sql-configuration)
 - [Advanced Configuration](#advanced-configuration)
 - [Configuration Examples](#configuration-examples)
+- [Best Practices](#best-practices)
+- [Troubleshooting](#troubleshooting)
 
-## Configuration Methods
+---
 
-The Pinpoint C++ Agent supports three configuration methods, with the following priority order:
+## Configuration Methods & Precedence
 
-1. **Environment Variables** (Highest priority)
-2. **YAML Configuration File**
-3. **Default Values** (Lowest priority)
+The agent merges configuration from three sources. **Later sources override earlier ones:**
+
+1. **Default Values** (lowest priority) — built-in defaults applied by `init_config`.
+2. **YAML Configuration File** — loaded via `PINPOINT_CPP_CONFIG_FILE` env var, `read_config_from_file()`, or `set_config_string()`.
+3. **Environment Variables** (highest priority) — `PINPOINT_CPP_*` variables applied last by `load_env_config`.
+
+During startup (`make_config`), the agent loads defaults → reads the optional config file → parses YAML → applies environment overrides → normalises values → initialises logging.
 
 ### Method 1: YAML Configuration File
 
-Create a `pinpoint-config.yaml` file:
-
-```yaml
-ApplicationName: "MyApplication"
-ApplicationType: 1300
-AgentId: "my-agent-001"
-AgentName: "MyAgent"
-Enable: true
-
-Log:
-  Level: "info"
-  FilePath: "/var/log/pinpoint/agent.log"
-  MaxFileSize: 10
-
-Collector:
-  GrpcHost: "localhost"
-  GrpcAgentPort: 9991
-  GrpcSpanPort: 9993
-  GrpcStatPort: 9992
-
-Stat:
-  Enable: true
-  BatchCount: 6
-  BatchInterval: 5000
-
-Sampling:
-  Type: "COUNTING"
-  CounterRate: 1
-  PercentRate: 100
-  NewThroughput: 0
-  ContinueThroughput: 0
-
-Span:
-  QueueSize: 1024
-  MaxEventDepth: 64
-  MaxEventSequence: 5000
-  EventChunkSize: 20
-
-Http:
-  CollectUrlStat: true
-  UrlStatLimit: 1024
-  UrlStatPathDepth: 1
-  UrlStatMethodPrefix: false
-  
-  Server:
-    StatusCodeErrors: ["5xx"]
-    ExcludeUrl: []
-    ExcludeMethod: []
-    RecordRequestHeader: ["Content-Type", "User-Agent"]
-    RecordRequestCookie: []
-    RecordResponseHeader: ["Content-Type"]
-  
-  Client:
-    RecordRequestHeader: ["Content-Type"]
-    RecordRequestCookie: []
-    RecordResponseHeader: ["Content-Type"]
-
-Sql:
-  MaxBindArgsSize: 1024
-  EnableSqlStats: false
-
-IsContainer: false
-EnableCallstackTrace: false
-```
-
-Set the configuration file path:
+Create a `pinpoint-config.yaml` file and set its path:
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -102,19 +46,22 @@ int main() {
 }
 ```
 
-### Method 2: Environment Variables
+Or set the path via environment variable:
 
-Configure using environment variables:
+```bash
+export PINPOINT_CPP_CONFIG_FILE="/path/to/pinpoint-config.yaml"
+```
+
+### Method 2: Environment Variables
 
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
 export PINPOINT_CPP_AGENT_ID="my-agent-001"
 export PINPOINT_CPP_GRPC_HOST="localhost"
 export PINPOINT_CPP_LOG_LEVEL="info"
-# ... other variables
 ```
 
-Or set via `setenv()` in your application:
+Or programmatically:
 
 ```cpp
 #include <cstdlib>
@@ -122,15 +69,12 @@ Or set via `setenv()` in your application:
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
     setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 1);
-    
     auto agent = pinpoint::CreateAgent();
     // ...
 }
 ```
 
-### Method 3: Configuration String
-
-Pass configuration directly as a YAML string:
+### Method 3: Configuration String (Inline YAML)
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -144,641 +88,145 @@ int main() {
           Type: "PERCENT"
           PercentRate: 10
     )";
-    
+
     pinpoint::SetConfigString(config);
     auto agent = pinpoint::CreateAgent();
     // ...
 }
 ```
 
+---
+
 ## Agent Configuration
 
-Basic agent settings.
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. |
+| `ApplicationType` | `PINPOINT_CPP_APPLICATION_TYPE` | int | `1300` | Pinpoint service type code. `1300` = C++ App. |
+| `AgentId` | `PINPOINT_CPP_AGENT_ID` | string | auto-generated | Format: `{hostname}-{random}` (e.g., `server01-a3b4c`). Max 24 chars. |
+| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label. |
+| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
 
-### ApplicationName
-
-- **Description**: Name of the application being monitored
-- **Type**: String
-- **Default**: `""` (empty string)
-- **YAML Key**: `ApplicationName`
-- **Environment Variable**: `PINPOINT_CPP_APPLICATION_NAME`
-- **Required**: Yes
-
-**Example:**
-```yaml
-ApplicationName: "OrderService"
-```
-
-```bash
-export PINPOINT_CPP_APPLICATION_NAME="OrderService"
-```
-
-### ApplicationType
-
-- **Description**: Type code for the application (used for service topology)
-- **Type**: Integer
-- **Default**: `1300` (C++ application)
-- **YAML Key**: `ApplicationType`
-- **Environment Variable**: `PINPOINT_CPP_APPLICATION_TYPE`
-
-**Common Types:**
-- `1300`: C++ Application (default)
-- `1400`: Custom type
-
-**Example:**
-```yaml
-ApplicationType: 1300
-```
-
-### AgentId
-
-- **Description**: Unique identifier for the agent instance
-- **Type**: String
-- **Default**: Auto-generated (hostname + random string)
-- **YAML Key**: `AgentId`
-- **Environment Variable**: `PINPOINT_CPP_AGENT_ID`
-
-**Example:**
-```yaml
-AgentId: "order-service-001"
-```
-
-**Auto-generation Format**: `{hostname}-{random}` (e.g., `server01-a3b4c`)
-
-### AgentName
-
-- **Description**: Friendly name for the agent
-- **Type**: String
-- **Default**: `""` (empty string)
-- **YAML Key**: `AgentName`
-- **Environment Variable**: `PINPOINT_CPP_AGENT_NAME`
-
-**Example:**
-```yaml
-AgentName: "Production Order Service Agent"
-```
-
-### Enable
-
-- **Description**: Enable or disable the agent
-- **Type**: Boolean
-- **Default**: `true`
-- **YAML Key**: `Enable`
-- **Environment Variable**: `PINPOINT_CPP_ENABLE`
-
-**Example:**
-```yaml
-Enable: false  # Disable agent
-```
+---
 
 ## Logging Configuration
 
-Control agent logging behavior.
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error` |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. |
+| `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
-### Log.Level
-
-- **Description**: Logging level
-- **Type**: String
-- **Default**: `"info"`
-- **YAML Key**: `Log.Level` or `LogLevel`
-- **Environment Variable**: `PINPOINT_CPP_LOG_LEVEL`
-
-**Valid Values:**
-- `"trace"`: Most verbose
-- `"debug"`: Debug information
-- `"info"`: Informational messages (default)
-- `"warn"`: Warnings only
-- `"error"`: Errors only
-
-**Example:**
-```yaml
-Log:
-  Level: "debug"
-```
-
-```bash
-export PINPOINT_CPP_LOG_LEVEL="debug"
-```
-
-### Log.FilePath
-
-- **Description**: Path to log file (if empty, logs to stdout)
-- **Type**: String
-- **Default**: `""` (stdout)
-- **YAML Key**: `Log.FilePath`
-- **Environment Variable**: `PINPOINT_CPP_LOG_FILE_PATH`
-
-**Example:**
-```yaml
-Log:
-  FilePath: "/var/log/pinpoint/agent.log"
-```
-
-### Log.MaxFileSize
-
-- **Description**: Maximum log file size in MB before rotation
-- **Type**: Integer
-- **Default**: `10` (MB)
-- **YAML Key**: `Log.MaxFileSize`
-- **Environment Variable**: `PINPOINT_CPP_LOG_MAX_FILE_SIZE`
-
-**Example:**
-```yaml
-Log:
-  MaxFileSize: 50  # 50 MB
-```
+---
 
 ## Collector Configuration
 
-Configure connection to Pinpoint Collector.
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Collector.GrpcHost` | `PINPOINT_CPP_GRPC_HOST` | string | `""` | **Required.** Pinpoint Collector hostname or IP. |
+| `Collector.GrpcAgentPort` | `PINPOINT_CPP_GRPC_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. |
+| `Collector.GrpcSpanPort` | `PINPOINT_CPP_GRPC_SPAN_PORT` | int | `9993` | gRPC port for span data. |
+| `Collector.GrpcStatPort` | `PINPOINT_CPP_GRPC_STAT_PORT` | int | `9992` | gRPC port for statistics data. |
 
-### Collector.GrpcHost
-
-- **Description**: Hostname or IP address of the Pinpoint Collector
-- **Type**: String
-- **Default**: `""` (empty string)
-- **YAML Key**: `Collector.GrpcHost`
-- **Environment Variable**: `PINPOINT_CPP_GRPC_HOST`
-- **Required**: Yes
-
-**Example:**
-```yaml
-Collector:
-  GrpcHost: "pinpoint-collector.example.com"
-```
-
-### Collector.GrpcAgentPort
-
-- **Description**: gRPC port for agent metadata
-- **Type**: Integer
-- **Default**: `9991`
-- **YAML Key**: `Collector.GrpcAgentPort`
-- **Environment Variable**: `PINPOINT_CPP_GRPC_AGENT_PORT`
-
-**Example:**
-```yaml
-Collector:
-  GrpcAgentPort: 9991
-```
-
-### Collector.GrpcSpanPort
-
-- **Description**: gRPC port for span data
-- **Type**: Integer
-- **Default**: `9993`
-- **YAML Key**: `Collector.GrpcSpanPort`
-- **Environment Variable**: `PINPOINT_CPP_GRPC_SPAN_PORT`
-
-**Example:**
-```yaml
-Collector:
-  GrpcSpanPort: 9993
-```
-
-### Collector.GrpcStatPort
-
-- **Description**: gRPC port for statistics data
-- **Type**: Integer
-- **Default**: `9992`
-- **YAML Key**: `Collector.GrpcStatPort`
-- **Environment Variable**: `PINPOINT_CPP_GRPC_STAT_PORT`
-
-**Example:**
-```yaml
-Collector:
-  GrpcStatPort: 9992
-```
+---
 
 ## Stat Configuration
 
-Configure statistics collection.
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Stat.Enable` | `PINPOINT_CPP_STAT_ENABLE` | bool | `true` | Enable/disable system statistics collection. |
+| `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. |
+| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. |
 
-### Stat.Enable
-
-- **Description**: Enable statistics collection
-- **Type**: Boolean
-- **Default**: `true`
-- **YAML Key**: `Stat.Enable`
-- **Environment Variable**: `PINPOINT_CPP_STAT_ENABLE`
-
-**Example:**
-```yaml
-Stat:
-  Enable: true
-```
-
-### Stat.BatchCount
-
-- **Description**: Number of stat batches to collect before sending
-- **Type**: Integer
-- **Default**: `6`
-- **YAML Key**: `Stat.BatchCount`
-- **Environment Variable**: `PINPOINT_CPP_STAT_BATCH_COUNT`
-
-**Example:**
-```yaml
-Stat:
-  BatchCount: 10
-```
-
-### Stat.BatchInterval
-
-- **Description**: Interval between stat collections in milliseconds
-- **Type**: Integer
-- **Default**: `5000` (5 seconds)
-- **YAML Key**: `Stat.BatchInterval`
-- **Environment Variable**: `PINPOINT_CPP_STAT_BATCH_INTERVAL`
-
-**Example:**
-```yaml
-Stat:
-  BatchInterval: 10000  # 10 seconds
-```
+---
 
 ## Sampling Configuration
 
-Configure transaction sampling strategies.
+| YAML Key | Environment Variable | Type | Default | Range / Notes |
+|---|---|---|---|---|
+| `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"`, `"PERCENT"`, `"THROUGHPUT"` |
+| `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions. `0` = disable. |
+| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Clamped to `[0.01, 100]`. |
+| `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
+| `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
-### Sampling.Type
+> Out-of-range values are automatically normalised (clamped) by the agent during `make_config()`.
 
-- **Description**: Sampling strategy type
-- **Type**: String
-- **Default**: `"COUNTING"`
-- **YAML Key**: `Sampling.Type`
-- **Environment Variable**: `PINPOINT_CPP_SAMPLING_TYPE`
-
-**Valid Values:**
-- `"COUNTING"`: Sample every Nth transaction
-- `"PERCENT"`: Sample by percentage
-- `"THROUGHPUT"`: Adaptive throughput-based sampling
-
-**Example:**
-```yaml
-Sampling:
-  Type: "PERCENT"
-```
-
-### Sampling.CounterRate
-
-- **Description**: Sample 1 out of every N transactions (for COUNTING type)
-- **Type**: Integer
-- **Default**: `1` (sample all)
-- **YAML Key**: `Sampling.CounterRate`
-- **Environment Variable**: `PINPOINT_CPP_SAMPLING_COUNTER_RATE`
-
-**Example:**
-```yaml
-Sampling:
-  Type: "COUNTING"
-  CounterRate: 10  # Sample 1 out of every 10 transactions
-```
-
-### Sampling.PercentRate
-
-- **Description**: Percentage of transactions to sample (for PERCENT type)
-- **Type**: Double
-- **Default**: `100` (sample all)
-- **Range**: `0.01` to `100`
-- **YAML Key**: `Sampling.PercentRate`
-- **Environment Variable**: `PINPOINT_CPP_SAMPLING_PERCENT_RATE`
-
-**Example:**
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 10.0  # Sample 10% of transactions
-```
-
-### Sampling.NewThroughput
-
-- **Description**: Target throughput for new transactions per second (for THROUGHPUT type)
-- **Type**: Integer
-- **Default**: `0` (disabled)
-- **YAML Key**: `Sampling.NewThroughput`
-- **Environment Variable**: `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT`
-
-**Example:**
-```yaml
-Sampling:
-  Type: "THROUGHPUT"
-  NewThroughput: 100  # Target 100 new transactions/sec
-```
-
-### Sampling.ContinueThroughput
-
-- **Description**: Target throughput for continuing transactions per second
-- **Type**: Integer
-- **Default**: `0` (disabled)
-- **YAML Key**: `Sampling.ContinueThroughput`
-- **Environment Variable**: `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT`
-
-**Example:**
-```yaml
-Sampling:
-  ContinueThroughput: 200  # Target 200 continuing transactions/sec
-```
+---
 
 ## Span Configuration
 
-Configure span collection behavior.
+| YAML Key | Environment Variable | Type | Default | Range / Notes |
+|---|---|---|---|---|
+| `Span.QueueSize` | `PINPOINT_CPP_SPAN_QUEUE_SIZE` | int | `1024` | Min `1`. |
+| `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. |
+| `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
+| `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
 
-### Span.QueueSize
+> Negative or invalid values are coerced to safe defaults during `make_config()`.
 
-- **Description**: Size of the span queue
-- **Type**: Integer
-- **Default**: `1024`
-- **YAML Key**: `Span.QueueSize`
-- **Environment Variable**: `PINPOINT_CPP_SPAN_QUEUE_SIZE`
-- **Minimum**: `1`
-
-**Example:**
-```yaml
-Span:
-  QueueSize: 2048
-```
-
-### Span.MaxEventDepth
-
-- **Description**: Maximum depth of nested span events
-- **Type**: Integer
-- **Default**: `64`
-- **YAML Key**: `Span.MaxEventDepth`
-- **Environment Variable**: `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH`
-- **Special**: `-1` for unlimited
-- **Minimum**: `2`
-
-**Example:**
-```yaml
-Span:
-  MaxEventDepth: 128
-```
-
-### Span.MaxEventSequence
-
-- **Description**: Maximum number of span events per span
-- **Type**: Integer
-- **Default**: `5000`
-- **YAML Key**: `Span.MaxEventSequence`
-- **Environment Variable**: `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE`
-- **Special**: `-1` for unlimited
-- **Minimum**: `4`
-
-**Example:**
-```yaml
-Span:
-  MaxEventSequence: 10000
-```
-
-### Span.EventChunkSize
-
-- **Description**: Number of span events per chunk for transmission
-- **Type**: Integer
-- **Default**: `20`
-- **YAML Key**: `Span.EventChunkSize`
-- **Environment Variable**: `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE`
-- **Minimum**: `1`
-
-**Example:**
-```yaml
-Span:
-  EventChunkSize: 50
-```
+---
 
 ## HTTP Configuration
 
-Configure HTTP request/response tracing.
+### URL Statistics
 
-### Http.CollectUrlStat
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
+| `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URLs to track. |
+| `Http.UrlStatPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). |
+| `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with HTTP method (e.g., `GET:/api/users`). |
 
-- **Description**: Enable URL statistics collection
-- **Type**: Boolean
-- **Default**: `false`
-- **YAML Key**: `Http.CollectUrlStat`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_COLLECT_URL_STAT`
+### Server-side Tracing
 
-**Example:**
-```yaml
-Http:
-  CollectUrlStat: true
-```
+| YAML Key | Environment Variable | Type | Default |
+|---|---|---|---|
+| `Http.Server.StatusCodeErrors` | `PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS` | list&lt;string&gt; | `["5xx"]` |
+| `Http.Server.ExcludeUrl` | `PINPOINT_CPP_HTTP_SERVER_EXCLUDE_URL` | list&lt;string&gt; | `[]` |
+| `Http.Server.ExcludeMethod` | `PINPOINT_CPP_HTTP_SERVER_EXCLUDE_METHOD` | list&lt;string&gt; | `[]` |
+| `Http.Server.RecordRequestHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER` | list&lt;string&gt; | `[]` |
+| `Http.Server.RecordRequestCookie` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
+| `Http.Server.RecordResponseHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 
-### Http.UrlStatLimit
+### Client-side Tracing
 
-- **Description**: Maximum number of unique URLs to track
-- **Type**: Integer
-- **Default**: `1024`
-- **YAML Key**: `Http.UrlStatLimit`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_URL_STAT_LIMIT`
+| YAML Key | Environment Variable | Type | Default |
+|---|---|---|---|
+| `Http.Client.RecordRequestHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_HEADER` | list&lt;string&gt; | `[]` |
+| `Http.Client.RecordRequestCookie` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
+| `Http.Client.RecordResponseHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 
-**Example:**
-```yaml
-Http:
-  UrlStatLimit: 2048
-```
+> Environment variables for list types accept **comma-separated values**:
+> ```bash
+> export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent,X-Request-Id"
+> ```
 
-### Http.UrlStatPathDepth
-
-- **Description**: URL path depth for normalization
-- **Type**: Integer
-- **Default**: `1`
-- **YAML Key**: `Http.UrlStatPathDepth`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH`
-
-**Example:**
-```yaml
-Http:
-  UrlStatPathDepth: 2  # /api/users -> /api/*
-```
-
-### Http.UrlStatMethodPrefix
-
-- **Description**: Include HTTP method in URL stat key
-- **Type**: Boolean
-- **Default**: `false`
-- **YAML Key**: `Http.UrlStatMethodPrefix`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX`
-
-**Example:**
-```yaml
-Http:
-  UrlStatMethodPrefix: true  # GET:/api/users, POST:/api/users
-```
-
-### Http.Server.StatusCodeErrors
-
-- **Description**: HTTP status codes to treat as errors
-- **Type**: String Array
-- **Default**: `["5xx"]`
-- **YAML Key**: `Http.Server.StatusCodeErrors`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    StatusCodeErrors: ["4xx", "5xx"]
-```
-
-```bash
-export PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS="4xx,5xx"
-```
-
-### Http.Server.ExcludeUrl
-
-- **Description**: URL patterns to exclude from tracing
-- **Type**: String Array
-- **Default**: `[]`
-- **YAML Key**: `Http.Server.ExcludeUrl`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_EXCLUDE_URL` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    ExcludeUrl: ["/health", "/metrics", "/actuator/*"]
-```
-
-### Http.Server.ExcludeMethod
-
-- **Description**: HTTP methods to exclude from tracing
-- **Type**: String Array
-- **Default**: `[]`
-- **YAML Key**: `Http.Server.ExcludeMethod`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_EXCLUDE_METHOD` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    ExcludeMethod: ["OPTIONS", "HEAD"]
-```
-
-### Http.Server.RecordRequestHeader
-
-- **Description**: Request headers to record
-- **Type**: String Array
-- **Default**: `[]`
-- **YAML Key**: `Http.Server.RecordRequestHeader`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    RecordRequestHeader: ["Content-Type", "User-Agent", "Referer"]
-```
-
-### Http.Server.RecordRequestCookie
-
-- **Description**: Request cookies to record
-- **Type**: String Array
-- **Default**: `[]`
-- **YAML Key**: `Http.Server.RecordRequestCookie`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    RecordRequestCookie: ["session_id"]
-```
-
-### Http.Server.RecordResponseHeader
-
-- **Description**: Response headers to record
-- **Type**: String Array
-- **Default**: `[]`
-- **YAML Key**: `Http.Server.RecordResponseHeader`
-- **Environment Variable**: `PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER` (comma-separated)
-
-**Example:**
-```yaml
-Http:
-  Server:
-    RecordResponseHeader: ["Content-Type", "Content-Length"]
-```
-
-### Http.Client Configuration
-
-Similar to server configuration but for HTTP client requests:
-
-- `Http.Client.RecordRequestHeader`
-- `Http.Client.RecordRequestCookie`
-- `Http.Client.RecordResponseHeader`
-
-**Example:**
-```yaml
-Http:
-  Client:
-    RecordRequestHeader: ["Content-Type", "Authorization"]
-    RecordResponseHeader: ["Content-Type"]
-```
+---
 
 ## SQL Configuration
 
-Configure SQL query tracing.
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. |
+| `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Aggregate execution counts even for unsampled traces. |
 
-### Sql.MaxBindArgsSize
-
-- **Description**: Maximum size of SQL bind arguments to record (in bytes)
-- **Type**: Integer
-- **Default**: `1024`
-- **YAML Key**: `Sql.MaxBindArgsSize`
-- **Environment Variable**: `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE`
-
-**Example:**
-```yaml
-Sql:
-  MaxBindArgsSize: 2048
-```
-
-### Sql.EnableSqlStats
-
-- **Description**: Enable SQL statistics collection
-- **Type**: Boolean
-- **Default**: `false`
-- **YAML Key**: `Sql.EnableSqlStats`
-- **Environment Variable**: `PINPOINT_CPP_SQL_ENABLE_SQL_STATS`
-
-**Example:**
-```yaml
-Sql:
-  EnableSqlStats: true
-```
+---
 
 ## Advanced Configuration
 
-### IsContainer
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `IsContainer` | `PINPOINT_CPP_IS_CONTAINER` | bool | auto-detected | Checks `/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Set explicitly if auto-detection fails. |
+| `EnableCallstackTrace` | `PINPOINT_CPP_ENABLE_CALLSTACK_TRACE` | bool | `false` | Capture stack trace when recording errors. |
 
-- **Description**: Indicate if running in a container environment
-- **Type**: Boolean
-- **Default**: Auto-detected (checks for `/.dockerenv` or `KUBERNETES_SERVICE_HOST`)
-- **YAML Key**: `IsContainer`
-- **Environment Variable**: `PINPOINT_CPP_IS_CONTAINER`
-
-**Example:**
-```yaml
-IsContainer: true
-```
-
-### EnableCallstackTrace
-
-- **Description**: Enable call stack trace collection on errors
-- **Type**: Boolean
-- **Default**: `false`
-- **YAML Key**: `EnableCallstackTrace`
-- **Environment Variable**: `PINPOINT_CPP_ENABLE_CALLSTACK_TRACE`
-
-**Example:**
-```yaml
-EnableCallstackTrace: true
-```
+---
 
 ## Configuration Examples
 
-### Example 1: Development Configuration
+### Example 1: Development
 
-Full sampling, debug logging, local collector:
+Full sampling, debug logging, local collector.
 
 ```yaml
 ApplicationName: "MyApp-Dev"
@@ -786,7 +234,7 @@ Enable: true
 
 Log:
   Level: "debug"
-  FilePath: ""  # Log to stdout
+  FilePath: ""  # stdout
 
 Collector:
   GrpcHost: "localhost"
@@ -796,12 +244,12 @@ Collector:
 
 Sampling:
   Type: "COUNTING"
-  CounterRate: 1  # Sample all transactions
+  CounterRate: 1  # sample all
 
 Http:
   CollectUrlStat: true
   Server:
-    RecordRequestHeader: ["*"]  # Record all headers
+    RecordRequestHeader: ["*"]
     RecordResponseHeader: ["*"]
 
 Sql:
@@ -810,9 +258,9 @@ Sql:
 EnableCallstackTrace: true
 ```
 
-### Example 2: Production Configuration
+### Example 2: Production
 
-Optimized for production with sampling:
+Percentage sampling, reduced logging, selective header recording.
 
 ```yaml
 ApplicationName: "MyApp-Prod"
@@ -829,12 +277,12 @@ Collector:
 
 Sampling:
   Type: "PERCENT"
-  PercentRate: 10.0  # Sample 10% of transactions
+  PercentRate: 10.0
 
 Stat:
   Enable: true
   BatchCount: 10
-  BatchInterval: 10000  # 10 seconds
+  BatchInterval: 10000
 
 Span:
   QueueSize: 2048
@@ -853,24 +301,24 @@ Http:
 EnableCallstackTrace: false
 ```
 
-### Example 3: High-Traffic Configuration
+### Example 3: High-Traffic
 
-Optimized for high-traffic scenarios:
+Throughput-based sampling, large queues, minimal overhead.
 
 ```yaml
 ApplicationName: "HighTrafficApp"
 Enable: true
 
 Log:
-  Level: "error"  # Minimal logging
+  Level: "error"
 
 Collector:
   GrpcHost: "collector.example.com"
 
 Sampling:
   Type: "THROUGHPUT"
-  NewThroughput: 500  # Limit to 500 new transactions/sec
-  ContinueThroughput: 1000  # Limit to 1000 continuing transactions/sec
+  NewThroughput: 500
+  ContinueThroughput: 1000
 
 Stat:
   Enable: true
@@ -879,17 +327,17 @@ Stat:
 
 Span:
   QueueSize: 4096
-  MaxEventDepth: 16  # Limit depth
-  MaxEventSequence: 500  # Limit events per span
+  MaxEventDepth: 16
+  MaxEventSequence: 500
   EventChunkSize: 100
 
 Http:
-  CollectUrlStat: false  # Disable to reduce overhead
+  CollectUrlStat: false
   Server:
     StatusCodeErrors: ["5xx"]
     ExcludeUrl: ["/health", "/ping"]
     ExcludeMethod: ["OPTIONS", "HEAD"]
-    RecordRequestHeader: []  # Don't record headers
+    RecordRequestHeader: []
     RecordResponseHeader: []
 
 Sql:
@@ -899,18 +347,21 @@ Sql:
 EnableCallstackTrace: false
 ```
 
-### Example 4: Environment Variable Configuration
+### Example 4: Environment Variables Only
 
 ```bash
 #!/bin/bash
 
-# Basic configuration
+# Agent
 export PINPOINT_CPP_APPLICATION_NAME="MyApp"
 export PINPOINT_CPP_AGENT_ID="app-server-01"
 export PINPOINT_CPP_ENABLE="true"
 
 # Collector
 export PINPOINT_CPP_GRPC_HOST="pinpoint-collector"
+export PINPOINT_CPP_GRPC_AGENT_PORT="9991"
+export PINPOINT_CPP_GRPC_SPAN_PORT="9993"
+export PINPOINT_CPP_GRPC_STAT_PORT="9992"
 
 # Logging
 export PINPOINT_CPP_LOG_LEVEL="info"
@@ -928,122 +379,138 @@ export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent"
 # SQL
 export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
 
-# Run application
 ./my_application
 ```
 
-## Configuration Best Practices
+---
 
-### 1. Development Environment
-- Use `CounterRate: 1` to sample all transactions
-- Set `Log.Level: "debug"` for detailed information
-- Enable `EnableCallstackTrace: true` for better debugging
-- Record all headers for troubleshooting
+## Best Practices
 
-### 2. Production Environment
-- Use percentage or throughput-based sampling
-- Set `Log.Level: "warn"` or `"error"`
-- Carefully select which headers to record
-- Exclude health check and monitoring endpoints
-- Monitor queue sizes and adjust if needed
+### Development
+- `CounterRate: 1` — sample every transaction.
+- `Log.Level: "debug"` — verbose output for diagnostics.
+- `EnableCallstackTrace: true` — capture stack on errors.
+- Record all headers (`["*"]`) for troubleshooting (non-production only).
 
-### 3. High-Traffic Scenarios
-- Use throughput-based sampling
-- Increase queue sizes
-- Limit max event depth and sequence
-- Disable URL statistics if not needed
-- Exclude unnecessary HTTP methods
+### Production
+- Use `PERCENT` or `THROUGHPUT` sampling to control overhead.
+- `Log.Level: "warn"` or `"error"`.
+- Exclude health-check / monitoring endpoints via `ExcludeUrl`.
+- Record only the headers you need; avoid sensitive ones (`Authorization`, `Cookie`).
 
-### 4. Container Deployments
-- Set `IsContainer: true` explicitly if auto-detection fails
-- Use environment variables for configuration
-- Ensure unique `AgentId` per container instance
-- Consider using hostname in `AgentId`
+### High-Traffic
+- Prefer `THROUGHPUT` sampling with explicit TPS caps.
+- Increase `Span.QueueSize`; decrease `MaxEventDepth` and `MaxEventSequence`.
+- Disable `CollectUrlStat` and `EnableSqlStats` if not needed.
 
-### 5. Security Considerations
-- Never record sensitive headers (Authorization, Cookie, etc.) unless absolutely necessary
-- Limit SQL bind argument sizes
-- Be cautious with recording cookies
-- Review recorded headers regularly
+### Container Deployments
+- Set `IsContainer: true` explicitly if auto-detection fails.
+- Use environment variables for configuration.
+- Ensure unique `AgentId` per container (e.g., include hostname or pod name).
+
+### Security
+- Never record sensitive headers unless absolutely necessary.
+- Limit `Sql.MaxBindArgsSize` to avoid capturing large payloads.
+- Audit recorded headers and cookies regularly.
+
+---
 
 ## Troubleshooting
 
 ### Agent Not Connecting
-
-Check collector configuration:
-```yaml
-Collector:
-  GrpcHost: "correct-hostname"  # Verify hostname
-  GrpcAgentPort: 9991  # Verify port
-```
-
-Verify with logs:
-```yaml
-Log:
-  Level: "debug"  # Enable debug logging
-```
+1. Verify `Collector.GrpcHost` and port values match the collector cluster.
+2. Set `Log.Level: "debug"` and review startup logs — `make_config()` prints the resolved configuration.
 
 ### High Memory Usage
-
-Reduce queue sizes and limits:
-```yaml
-Span:
-  QueueSize: 512  # Reduce from default 1024
-  MaxEventSequence: 1000  # Reduce from default 5000
-
-Http:
-  UrlStatLimit: 512  # Reduce from default 1024
-```
+- Reduce `Span.QueueSize` (e.g., `512`).
+- Lower `Span.MaxEventSequence` (e.g., `1000`).
+- Reduce `Http.UrlStatLimit` (e.g., `512`).
 
 ### Performance Impact
-
-Reduce sampling rate:
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 5.0  # Sample only 5%
-```
-
-Disable unnecessary features:
-```yaml
-Http:
-  CollectUrlStat: false
-  
-Sql:
-  EnableSqlStats: false
-  
-Stat:
-  Enable: false
-```
+- Lower sampling rate: `PercentRate: 5.0`.
+- Disable `CollectUrlStat`, `EnableSqlStats`, and/or `Stat.Enable`.
 
 ### Missing Transactions
+- Set `Sampling.CounterRate: 1` to sample all.
+- Temporarily clear `Http.Server.ExcludeUrl` and `ExcludeMethod`.
 
-Increase sampling:
+---
+
+## Full YAML Reference
+
+Below is a complete YAML config with all keys and their default values:
+
 ```yaml
+ApplicationName: ""
+ApplicationType: 1300
+AgentId: ""          # auto-generated if empty
+AgentName: ""
+Enable: true
+IsContainer: false   # auto-detected if not set
+
+Log:
+  Level: "info"
+  FilePath: ""       # empty = stdout/stderr
+  MaxFileSize: 10
+
+Collector:
+  GrpcHost: ""
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+
+Stat:
+  Enable: true
+  BatchCount: 6
+  BatchInterval: 5000
+
 Sampling:
-  CounterRate: 1  # Sample all
+  Type: "COUNTER"
+  CounterRate: 1
+  PercentRate: 100
+  NewThroughput: 0
+  ContinueThroughput: 0
+
+Span:
+  QueueSize: 1024
+  MaxEventDepth: 64
+  MaxEventSequence: 5000
+  EventChunkSize: 20
+
+Http:
+  CollectUrlStat: false
+  UrlStatLimit: 1024
+  UrlStatPathDepth: 1
+  UrlStatMethodPrefix: false
+  Server:
+    StatusCodeErrors: ["5xx"]
+    ExcludeUrl: []
+    ExcludeMethod: []
+    RecordRequestHeader: []
+    RecordRequestCookie: []
+    RecordResponseHeader: []
+  Client:
+    RecordRequestHeader: []
+    RecordRequestCookie: []
+    RecordResponseHeader: []
+
+Sql:
+  MaxBindArgsSize: 1024
+  EnableSqlStats: false
+
+EnableCallstackTrace: false
 ```
 
-Check excluded URLs:
-```yaml
-Http:
-  Server:
-    ExcludeUrl: []  # Remove exclusions temporarily
-```
+---
 
 ## Related Documentation
 
 - [Quick Start Guide](quick_start.md)
-- [Instrumentation Guide](instrument.md)
-- [Code Examples](examples.md)
-
-## Support
-
-For configuration issues:
+- [Instrumentation Guide](instrumentation.md)
+- Code examples: see the `example/` directory in the repository
 - GitHub: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues)
-- Documentation: [Pinpoint APM](https://pinpoint-apm.github.io/pinpoint/)
+- Pinpoint APM Docs: [https://pinpoint-apm.github.io/pinpoint/](https://pinpoint-apm.github.io/pinpoint/)
 
-## License
+---
 
-Apache License 2.0 - See [LICENSE](../LICENSE) for details.
-
+*Apache License 2.0 — See [LICENSE](../LICENSE) for details.*
