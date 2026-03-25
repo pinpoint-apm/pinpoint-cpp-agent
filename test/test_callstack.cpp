@@ -267,50 +267,45 @@ TEST_F(CallStackTest, ExceptionGetCallStackTest) {
     auto callstack = std::make_unique<CallStack>("Test exception");
     std::string expected_error = "Test exception";
     callstack->push("module", "function", "file.cpp", 10);
-    
+
     Exception exception(std::move(callstack));
-    auto retrieved_callstack = exception.getCallStack();
-    
-    ASSERT_NE(retrieved_callstack, nullptr) << "Retrieved callstack should not be null";
-    EXPECT_EQ(retrieved_callstack->getErrorMessage(), expected_error) << "Error message should match";
-    EXPECT_EQ(retrieved_callstack->getStack().size(), 1) << "Stack should have 1 frame";
-    EXPECT_EQ(retrieved_callstack->getStack()[0].module, "module") << "Module should match";
+    const auto& retrieved_callstack = exception.getCallStack();
+
+    EXPECT_EQ(retrieved_callstack.getErrorMessage(), expected_error) << "Error message should match";
+    EXPECT_EQ(retrieved_callstack.getStack().size(), 1) << "Stack should have 1 frame";
+    EXPECT_EQ(retrieved_callstack.getStack()[0].module, "module") << "Module should match";
 }
 
-// Test Exception getCallStack moves ownership
-TEST_F(CallStackTest, ExceptionGetCallStackMovesOwnershipTest) {
+// Test Exception getCallStack can be accessed multiple times
+TEST_F(CallStackTest, ExceptionGetCallStackMultipleAccessTest) {
     auto callstack = std::make_unique<CallStack>("Test exception");
     callstack->push("module", "function", "file.cpp", 10);
-    
+
     Exception exception(std::move(callstack));
-    
-    // First call to getCallStack should succeed
-    auto retrieved_callstack = exception.getCallStack();
-    ASSERT_NE(retrieved_callstack, nullptr) << "First retrieval should return valid pointer";
-    
-    // Second call should return nullptr as ownership was moved
-    auto second_retrieval = exception.getCallStack();
-    EXPECT_EQ(second_retrieval, nullptr) << "Second retrieval should return nullptr after move";
+
+    // Both calls should return the same data
+    const auto& first = exception.getCallStack();
+    const auto& second = exception.getCallStack();
+    EXPECT_EQ(first.getErrorMessage(), second.getErrorMessage()) << "Multiple accesses should return same data";
 }
 
 // Test Exception with empty CallStack
 TEST_F(CallStackTest, ExceptionWithEmptyCallStackTest) {
     auto callstack = std::make_unique<CallStack>("");
-    
+
     Exception exception(std::move(callstack));
-    
+
     EXPECT_GT(exception.getId(), 0) << "Exception ID should be valid";
-    
-    auto retrieved_callstack = exception.getCallStack();
-    ASSERT_NE(retrieved_callstack, nullptr) << "Retrieved callstack should not be null";
-    EXPECT_EQ(retrieved_callstack->getErrorMessage(), "") << "Error message should be empty";
-    EXPECT_TRUE(retrieved_callstack->getStack().empty()) << "Stack should be empty";
+
+    const auto& retrieved_callstack = exception.getCallStack();
+    EXPECT_EQ(retrieved_callstack.getErrorMessage(), "") << "Error message should be empty";
+    EXPECT_TRUE(retrieved_callstack.getStack().empty()) << "Stack should be empty";
 }
 
 // Test Exception with complex CallStack
 TEST_F(CallStackTest, ExceptionWithComplexCallStackTest) {
     auto callstack = std::make_unique<CallStack>("ComplexException: Multiple nested calls failed");
-    
+
     // Simulate a complex call stack
     for (int i = 0; i < 10; ++i) {
         callstack->push(
@@ -320,15 +315,14 @@ TEST_F(CallStackTest, ExceptionWithComplexCallStackTest) {
             i * 10
         );
     }
-    
+
     Exception exception(std::move(callstack));
-    
-    auto retrieved_callstack = exception.getCallStack();
-    ASSERT_NE(retrieved_callstack, nullptr) << "Retrieved callstack should not be null";
-    EXPECT_EQ(retrieved_callstack->getStack().size(), 10) << "Stack should have 10 frames";
-    
+
+    const auto& retrieved_callstack = exception.getCallStack();
+    EXPECT_EQ(retrieved_callstack.getStack().size(), 10) << "Stack should have 10 frames";
+
     // Verify first and last frames
-    auto& stack = retrieved_callstack->getStack();
+    const auto& stack = retrieved_callstack.getStack();
     EXPECT_EQ(stack[0].module, "module_0") << "First module should match";
     EXPECT_EQ(stack[9].module, "module_9") << "Last module should match";
     EXPECT_EQ(stack[9].line, 90) << "Last line number should match";
@@ -382,13 +376,12 @@ TEST_F(CallStackTest, CompleteWorkflowTest) {
     int32_t exception_id = exception.getId();
     
     // Retrieve and verify
-    auto retrieved = exception.getCallStack();
-    
-    ASSERT_NE(retrieved, nullptr) << "Retrieved callstack should be valid";
-    EXPECT_EQ(retrieved->getErrorMessage(), "Workflow test exception") << "Error message should be preserved";
-    EXPECT_EQ(retrieved->getErrorTime(), original_time) << "Error time should be preserved";
-    EXPECT_EQ(retrieved->getStack().size(), 3) << "All frames should be preserved";
-    EXPECT_EQ(retrieved->getModuleName(), "main_module") << "Module name should be accessible";
+    const auto& retrieved = exception.getCallStack();
+
+    EXPECT_EQ(retrieved.getErrorMessage(), "Workflow test exception") << "Error message should be preserved";
+    EXPECT_EQ(retrieved.getErrorTime(), original_time) << "Error time should be preserved";
+    EXPECT_EQ(retrieved.getStack().size(), 3) << "All frames should be preserved";
+    EXPECT_EQ(retrieved.getModuleName(), "main_module") << "Module name should be accessible";
     EXPECT_GT(exception_id, 0) << "Exception ID should be valid";
 }
 

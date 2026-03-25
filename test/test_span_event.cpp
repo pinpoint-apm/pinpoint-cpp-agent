@@ -436,11 +436,10 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
     
     // Verify callstack contains all frames
-    auto callstack = exceptions[0]->getCallStack();
-    EXPECT_NE(callstack, nullptr) << "CallStack should not be null";
-    EXPECT_EQ(callstack->getErrorMessage(), "Stack overflow occurred") << "Error message should match";
+    const auto& callstack = exceptions[0]->getCallStack();
+    EXPECT_EQ(callstack.getErrorMessage(), "Stack overflow occurred") << "Error message should match";
     
-    auto& stack_frames = callstack->getStack();
+    const auto& stack_frames = callstack.getStack();
     EXPECT_EQ(stack_frames.size(), 4) << "Should have 4 stack frames";
     
     // Verify frame details
@@ -472,11 +471,10 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     const auto& exceptions = test_span_data_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added even with empty stack";
     
-    auto callstack = exceptions[0]->getCallStack();
-    EXPECT_NE(callstack, nullptr) << "CallStack should not be null";
-    EXPECT_EQ(callstack->getErrorMessage(), "Error with empty stack") << "Error message should match";
+    const auto& callstack = exceptions[0]->getCallStack();
+    EXPECT_EQ(callstack.getErrorMessage(), "Error with empty stack") << "Error message should match";
     
-    auto& stack_frames = callstack->getStack();
+    const auto& stack_frames = callstack.getStack();
     EXPECT_EQ(stack_frames.size(), 0) << "Stack should be empty";
 }
 
@@ -546,10 +544,9 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
     const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
-    auto callstack = exceptions[0]->getCallStack();
-    ASSERT_NE(callstack, nullptr);
+    const auto& callstack = exceptions[0]->getCallStack();
     
-    auto& frames = callstack->getStack();
+    const auto& frames = callstack.getStack();
     ASSERT_EQ(frames.size(), 3);
     
     // Verify first frame with full details
@@ -586,10 +583,9 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
-    auto callstack = exceptions[0]->getCallStack();
-    ASSERT_NE(callstack, nullptr);
+    const auto& callstack = exceptions[0]->getCallStack();
     
-    int64_t error_time = callstack->getErrorTime();
+    int64_t error_time = callstack.getErrorTime();
     EXPECT_GE(error_time, before_time) << "Error time should be after or equal to before time";
     EXPECT_LE(error_time, after_time) << "Error time should be before or equal to after time";
 }
@@ -628,11 +624,10 @@ TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
     const auto& exceptions = test_span_data_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
-    auto callstack = exceptions[0]->getCallStack();
-    ASSERT_NE(callstack, nullptr);
-    EXPECT_EQ(callstack->getErrorMessage(), "Unable to connect to MySQL server: Connection refused");
+    const auto& callstack = exceptions[0]->getCallStack();
+    EXPECT_EQ(callstack.getErrorMessage(), "Unable to connect to MySQL server: Connection refused");
     
-    auto& frames = callstack->getStack();
+    const auto& frames = callstack.getStack();
     EXPECT_EQ(frames.size(), 4);
     EXPECT_EQ(frames[0].function, "mysql_real_connect");
     EXPECT_EQ(frames[1].function, "DatabaseConnection::connect()");
