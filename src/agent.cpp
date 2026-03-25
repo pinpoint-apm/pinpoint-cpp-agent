@@ -213,11 +213,14 @@ namespace pinpoint {
     }
 
     void AgentImpl::wait_grpc_workers() {
-        std::mutex m;
-        std::condition_variable cv;
-        bool finished = false;
+        struct SharedState {
+            std::mutex m;
+            std::condition_variable cv;
+            bool finished{false};
+        };
+        auto state = std::make_shared<SharedState>();
 
-        std::thread t1([this, &m, &cv, &finished] {
+        std::thread t1([this, state] {
             // Join all worker threads
             if (init_thread_.joinable()) init_thread_.join();
             if (url_stat_add_thread_.joinable()) url_stat_add_thread_.join();
@@ -229,16 +232,17 @@ namespace pinpoint {
             if (stat_thread_.joinable()) stat_thread_.join();
 
             {
-                std::unique_lock<std::mutex> l(m);
-                finished = true;
-                cv.notify_one();
+                std::unique_lock<std::mutex> l(state->m);
+                state->finished = true;
+                state->cv.notify_one();
             }
         });
 
         {
-            std::unique_lock<std::mutex> l(m);
-            auto status = cv.wait_for(l, std::chrono::seconds(5), [&finished] { return finished; });
-            
+            std::unique_lock<std::mutex> l(state->m);
+            auto status = state->cv.wait_for(l, std::chrono::seconds(5),
+                [&state] { return state->finished; });
+
             if (!status) {
                 LOG_WARN("wait grpc workers: timeout - some threads may still be running");
                 t1.detach();  // Let it finish in background
