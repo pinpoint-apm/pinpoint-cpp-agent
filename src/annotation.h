@@ -17,6 +17,7 @@
 #pragma once
 
 #include <list>
+#include <variant>
 #include "pinpoint/tracer.h"
 
 namespace pinpoint {
@@ -89,49 +90,41 @@ namespace pinpoint {
     } BytesStringStringValue;
 
     /**
-     * @brief Union wrapper for all supported annotation value variants.
+     * @brief Type-safe variant wrapper for all supported annotation value types.
      */
-    typedef union AnnotationValue {
-        int32_t intValue;
-        int64_t longValue;
-        std::string stringValue;
-        StringStringValue stringStringValue;
-        IntStringStringValue intStringStringValue;
-        LongIntIntByteByteStringValue longIntIntByteByteStringValue;
-        BytesStringStringValue bytesStringStringValue;
-
-        AnnotationValue(const int32_t intVal) : intValue(intVal) {}
-        AnnotationValue(const int64_t longVal) : longValue(longVal) {}
-        AnnotationValue(std::string_view strVal) : stringValue(strVal) {}
-        AnnotationValue(std::string_view strVal1, std::string_view strVal2) : stringStringValue(strVal1, strVal2) {}
-        AnnotationValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
-            : intStringStringValue(intVal, strVal1, strVal2) {}
-        AnnotationValue(const int64_t longVal, const int32_t intVal1, const int32_t intVal2, const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
-            : longIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal) {}
-        AnnotationValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : bytesStringStringValue(std::move(bytesVal), strVal1, strVal2) {}
-        ~AnnotationValue() {}
-    } AnnotationValue;
+    using AnnotationValue = std::variant<
+        int32_t,
+        int64_t,
+        std::string,
+        StringStringValue,
+        IntStringStringValue,
+        LongIntIntByteByteStringValue,
+        BytesStringStringValue
+    >;
 
     /**
      * @brief Annotation payload paired with its declared type.
      */
-    typedef struct AnnotationData {
+    struct AnnotationData {
         AnnotationType dataType;
         AnnotationValue data;
 
-        AnnotationData(const AnnotationType dType, const int32_t intVal) : dataType(dType), data(intVal) {}
-        AnnotationData(const AnnotationType dType, const int64_t longVal) : dataType(dType), data(longVal) {}
-        AnnotationData(const AnnotationType dType, std::string_view strVal) : dataType(dType), data(strVal) {}
-        AnnotationData(const AnnotationType dType, std::string_view strVal1, std::string_view strVal2) : dataType(dType), data(strVal1, strVal2) {}
+        AnnotationData(const AnnotationType dType, const int32_t intVal)
+            : dataType(dType), data(intVal) {}
+        AnnotationData(const AnnotationType dType, const int64_t longVal)
+            : dataType(dType), data(longVal) {}
+        AnnotationData(const AnnotationType dType, std::string_view strVal)
+            : dataType(dType), data(std::string(strVal)) {}
+        AnnotationData(const AnnotationType dType, std::string_view strVal1, std::string_view strVal2)
+            : dataType(dType), data(StringStringValue(strVal1, strVal2)) {}
         AnnotationData(const AnnotationType dType, const int intVal, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(intVal, strVal1, strVal2) {}
+            : dataType(dType), data(IntStringStringValue(intVal, strVal1, strVal2)) {}
         AnnotationData(const AnnotationType dType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
-                       const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal) : dataType(dType),
-            data(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal) {}
+                       const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
+            : dataType(dType), data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
         AnnotationData(const AnnotationType dType, std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(std::move(bytesVal), strVal1, strVal2) {}
-    } AnnotationData;
+            : dataType(dType), data(BytesStringStringValue(std::move(bytesVal), strVal1, strVal2)) {}
+    };
 
     /**
      * @brief Concrete annotation implementation used by the Pinpoint agent.
