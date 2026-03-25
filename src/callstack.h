@@ -63,7 +63,7 @@ namespace pinpoint {
          *
          * @return Mutable reference to the message.
          */
-        std::string& getErrorMessage() {
+        const std::string& getErrorMessage() const {
             return error_message_;
         }
 
@@ -77,14 +77,18 @@ namespace pinpoint {
         /**
          * @brief Returns the collected stack frames.
          */
-        std::vector<StackFrame>& getStack() {
+        const std::vector<StackFrame>& getStack() const {
             return stack_;
         }
 
         /**
          * @brief Convenience accessor for the module name of the top frame.
          */
-        std::string& getModuleName() {
+        const std::string& getModuleName() const {
+            static const std::string empty;
+            if (stack_.empty()) {
+                return empty;
+            }
             return stack_[0].module;
         }
 
@@ -107,9 +111,9 @@ namespace pinpoint {
          */
         int32_t getId() const { return id_; }
         /**
-         * @brief Transfers ownership of the captured call stack.
+         * @brief Returns a reference to the captured call stack.
          */
-        std::unique_ptr<CallStack> getCallStack() { return std::move(callstack_); }
+        const CallStack& getCallStack() const { return *callstack_; }
         
         static std::atomic<int32_t> exception_id_gen;
 

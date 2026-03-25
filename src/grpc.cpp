@@ -591,15 +591,15 @@ namespace pinpoint {
 
         for (const auto& exception : exception_meta.exceptions_) {
             auto* grpc_exception = grpc_exception_meta->add_exceptions();
-            auto callstack = exception->getCallStack();
+            const auto& callstack = exception->getCallStack();
 
             grpc_exception->set_exceptionid(exception->getId());
-            grpc_exception->set_exceptionclassname(callstack->getModuleName());
-            grpc_exception->set_exceptionmessage(callstack->getErrorMessage());
-            grpc_exception->set_starttime(callstack->getErrorTime());
+            grpc_exception->set_exceptionclassname(callstack.getModuleName());
+            grpc_exception->set_exceptionmessage(callstack.getErrorMessage());
+            grpc_exception->set_starttime(callstack.getErrorTime());
             grpc_exception->set_exceptiondepth(1);
 
-            for (const auto& frame : callstack->getStack()) {
+            for (const auto& frame : callstack.getStack()) {
                 auto* grpc_callstack = grpc_exception->add_stacktraceelement();
 
                 grpc_callstack->set_classname(frame.module);  
