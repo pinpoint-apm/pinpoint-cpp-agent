@@ -51,6 +51,11 @@ namespace pinpoint {
         return cfg_str;
     }
 
+    static std::mutex& config_str_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
     static std::string& global_agent_config_file_path() {
         static std::string file_path;
         return file_path;
@@ -85,7 +90,10 @@ namespace pinpoint {
         if (std::ifstream file(config_file_path); file.is_open()) {
             std::stringstream buffer;
             buffer << file.rdbuf();
-            global_agent_config_str() = buffer.str();
+            {
+                std::lock_guard<std::mutex> lock(config_str_mutex());
+                global_agent_config_str() = buffer.str();
+            }
             file.close();
         } else {
             LOG_ERROR("can't open config file = {}", config_file_path);
@@ -518,6 +526,7 @@ namespace pinpoint {
     }
 
     void set_config_string(std::string_view cfg_str) {
+        std::lock_guard<std::mutex> lock(config_str_mutex());
         global_agent_config_str() = cfg_str;
     }
 
@@ -555,7 +564,11 @@ namespace pinpoint {
         }
 
         YAML::Node yaml;
-        const auto& user_config = global_agent_config_str();
+        std::string user_config;
+        {
+            std::lock_guard<std::mutex> lock(config_str_mutex());
+            user_config = global_agent_config_str();
+        }
         if (!user_config.empty()) {
             try {
                 yaml = YAML::Load(user_config);
@@ -785,7 +798,7 @@ namespace pinpoint {
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
         return std::tie(app_name_, app_type_, agent_id_, agent_name_,
-                        collector.host, collector.agent_port, collector.span_port, collector.stat_port) !=
+                        collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
                std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
                         old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port);
     }

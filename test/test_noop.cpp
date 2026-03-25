@@ -44,10 +44,10 @@ public:
     bool isExiting() const override { return is_exiting_; }
     void setExiting(bool exiting) { is_exiting_ = exiting; }
 
-    std::string_view getAppName() const override { return "mock-app"; }
+    std::string getAppName() const override { return "mock-app"; }
     int32_t getAppType() const override { return 1300; }
-    std::string_view getAgentId() const override { return "mock-agent"; }
-    std::string_view getAgentName() const override { return "mock-agent-name"; }
+    std::string getAgentId() const override { return "mock-agent"; }
+    std::string getAgentName() const override { return "mock-agent-name"; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {

@@ -79,10 +79,10 @@ namespace pinpoint {
 		void Shutdown() override;
 
     	bool isExiting() const override { return shutting_down_; }
-    	std::string_view getAppName() const override;
+    	std::string getAppName() const override;
     	int32_t getAppType() const override;
-    	std::string_view getAgentId() const override;
-    	std::string_view getAgentName() const override;
+    	std::string getAgentId() const override;
+    	std::string getAgentName() const override;
 
     	std::shared_ptr<const Config> getConfig() const override;
     	int64_t getStartTime() const override { return start_time_; }
