@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include <list>
 #include <variant>
+#include <vector>
 #include "pinpoint/tracer.h"
 
 namespace pinpoint {
@@ -193,14 +193,14 @@ namespace pinpoint {
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override;
 
         /**
-         * @brief Returns the internal annotation map for serialization.
+         * @brief Returns the internal annotation list for serialization.
          *
          * @return Reference to the stored annotations.
          */
-        std::list<std::pair<int32_t,std::shared_ptr<AnnotationData>>>& getAnnotations() { return annotation_list_; }
+        std::vector<std::pair<int32_t,std::unique_ptr<AnnotationData>>>& getAnnotations() { return annotation_list_; }
 
     private:
-        std::list<std::pair<int32_t,std::shared_ptr<AnnotationData>>> annotation_list_;
+        std::vector<std::pair<int32_t,std::unique_ptr<AnnotationData>>> annotation_list_;
     };
 
 } // namespace pinpoint

@@ -273,12 +273,10 @@ namespace pinpoint {
     	    return event_stack_.top();
     	}
 
-        /// @brief Returns the collection of finished span events.
-        std::vector<std::shared_ptr<SpanEventImpl>>& getFinishedEvents() { return finished_events; }
+        /// @brief Transfers ownership of finished span events to the caller.
+        std::vector<std::shared_ptr<SpanEventImpl>> takeFinishedEvents() { return std::move(finished_events); }
     	/// @brief Returns the number of finished span events.
     	size_t getFinishedEventsCount() const { return finished_events.size(); }
-    	/// @brief Clears the list of finished span events.
-    	void clearFinishedEvents() { finished_events.clear(); }
 
         /// @brief Appends a captured exception call stack.
         void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
