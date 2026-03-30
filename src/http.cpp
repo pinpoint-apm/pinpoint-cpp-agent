@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <regex>
 #include <string>
 
 #include "absl/strings/str_split.h"
@@ -81,67 +80,66 @@ namespace pinpoint {
         }
     }
 
-    HttpUrlFilter::HttpUrlFilter(const std::vector<std::string>& cfg) {
-        pattern_.reserve(cfg.size());
-        for (const auto& pattern_str : cfg) {
-            try {
-                pattern_.emplace_back(convert_to_regex(pattern_str));
-            } catch (const std::regex_error& e) {
-                LOG_WARN("Invalid URL pattern '{}': {}", pattern_str, e.what());
-                // Continue processing other patterns
-            }
-        }
-    }
+    HttpUrlFilter::HttpUrlFilter(const std::vector<std::string>& cfg)
+        : patterns_(cfg) {}
 
     bool HttpUrlFilter::isFiltered(std::string_view url) const {
-        const std::string url_str(url);  // Convert to null-terminated string for regex_match
-        for (const auto& pattern : pattern_) {
-            if (std::regex_match(url_str, pattern)) {
+        for (const auto& pattern : patterns_) {
+            if (ant_match(pattern, url)) {
                 return true;
             }
         }
         return false;
     }
 
-    std::string HttpUrlFilter::convert_to_regex(std::string_view antPath) {
-        std::string result;
-        result.reserve(antPath.size() + 10);  // Pre-allocate to avoid reallocation
-        result += '^';
+    bool HttpUrlFilter::ant_match(std::string_view pattern, std::string_view url) {
+        size_t pi = 0, ui = 0;
+        size_t star_pi = std::string_view::npos;
+        size_t star_ui = 0;
 
-        bool after_start = false;
-        for (char c : antPath) {
-            if (after_start) {
-                if (c == '*') {
-                    result += ".*";
-                } else {
-                    result += "[^/]*";
-                    append_escaped_char(result, c);
+        while (ui < url.size()) {
+            if (pi < pattern.size() && pattern[pi] == '*') {
+                if (pi + 1 < pattern.size() && pattern[pi + 1] == '*') {
+                    // "**" matches across path segments (including '/')
+                    pi += 2;
+                    // skip trailing '/' after "**" if present
+                    if (pi < pattern.size() && pattern[pi] == '/') {
+                        pi++;
+                    }
+                    // try matching the rest of pattern against every suffix of url
+                    for (size_t k = ui; k <= url.size(); k++) {
+                        if (ant_match(pattern.substr(pi), url.substr(k))) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
-                after_start = false;
+                // single "*" matches within a single path segment (not '/')
+                star_pi = pi;
+                star_ui = ui;
+                pi++;
+            } else if (pi < pattern.size() && (pattern[pi] == url[ui] || pattern[pi] == '?')) {
+                pi++;
+                ui++;
+            } else if (star_pi != std::string_view::npos) {
+                // backtrack: the single '*' consumes one more character (but not '/')
+                star_ui++;
+                if (url[star_ui - 1] == '/') {
+                    return false;
+                }
+                ui = star_ui;
+                pi = star_pi + 1;
             } else {
-                if (c == '*') {
-                    after_start = true;
-                } else {
-                    append_escaped_char(result, c);
-                }
+                return false;
             }
         }
-        if (after_start) {
-            result += "[^/]*";
+
+        // consume trailing wildcards in pattern
+        while (pi < pattern.size() && pattern[pi] == '*') {
+            pi++;
         }
 
-        result += '$';
-        return result;
-    }
-
-    void HttpUrlFilter::append_escaped_char(std::string& buf, char c) {
-        // Regex special characters that need escaping
-        constexpr char special_chars[] = ".+^$[]{}()|?\\*";
-        
-        if (std::strchr(special_chars, c) != nullptr) {
-            buf += '\\';
-        }
-        buf += c;
+        return pi == pattern.size();
     }
 
     HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg) : cfg_(cfg) {}
