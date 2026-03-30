@@ -17,7 +17,7 @@
 #pragma once
 
 #include <memory>
-#include <regex>
+#include <string>
 #include <vector>
 
 #include "pinpoint/tracer.h"
@@ -160,6 +160,9 @@ namespace pinpoint {
 
     /**
      * @brief Filters URLs based on Ant-style patterns supplied via configuration.
+     *
+     * Uses direct string matching instead of std::regex for performance.
+     * Supports `*` (matches within a single path segment) and `**` (matches across segments).
      */
     class HttpUrlFilter {
     public:
@@ -175,12 +178,9 @@ namespace pinpoint {
         bool isFiltered(std::string_view url) const;
 
     private:
-        std::vector<std::regex> pattern_;
+        std::vector<std::string> patterns_;
 
-        /// @brief Converts an Ant-style path to a regular expression.
-        static std::string convert_to_regex(std::string_view antPath);
-        /// @brief Appends a single character to the string buffer, escaping when needed.
-        static void append_escaped_char(std::string& buf, char c);
+        static bool ant_match(std::string_view pattern, std::string_view url);
     };
 
     /**
