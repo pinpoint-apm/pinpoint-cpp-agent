@@ -38,7 +38,10 @@ namespace pinpoint {
     constexpr int32_t SPAN_LOGGING_FLAG_ON = 1;
 
     /**
-     * @brief Thread-safe stack wrapper used to manage nested span events.
+     * @brief Stack wrapper used to manage nested span events.
+     *
+     * This class is NOT thread-safe on its own. All access must be
+     * externally synchronized by the caller (SpanData::span_event_lock_).
      */
     class EventStack {
     public:
@@ -48,9 +51,9 @@ namespace pinpoint {
          * @brief Pushes a span event onto the internal stack.
          *
          * @param item Span event to add.
+         * @note Caller must hold span_event_lock_.
          */
         void push(const std::shared_ptr<SpanEventImpl>& item) {
-            std::unique_lock<std::mutex> lock(mutex_);
             stack_.push(item);
         }
 
@@ -59,9 +62,9 @@ namespace pinpoint {
          *
          * @return Span event that was at the top of the stack.
          * @throws std::runtime_error if the stack is empty.
+         * @note Caller must hold span_event_lock_.
          */
         std::shared_ptr<SpanEventImpl> pop() {
-            std::unique_lock<std::mutex> lock(mutex_);
             if (stack_.empty()) {
                 throw std::runtime_error("Cannot pop from empty EventStack");
             }
@@ -73,9 +76,9 @@ namespace pinpoint {
         /**
          * @brief Returns (without removing) the top span event.
          * @throws std::runtime_error if the stack is empty.
+         * @note Caller must hold span_event_lock_.
          */
         std::shared_ptr<SpanEventImpl> top() {
-            std::unique_lock<std::mutex> lock(mutex_);
             if (stack_.empty()) {
                 throw std::runtime_error("Cannot get top from empty EventStack");
             }
@@ -83,13 +86,12 @@ namespace pinpoint {
         }
 
         /// @brief Returns the number of events contained in the stack.
-        size_t size() const { 
-            std::lock_guard<std::mutex> lock(mutex_);
-            return stack_.size(); 
+        /// @note Caller must hold span_event_lock_.
+        size_t size() const {
+            return stack_.size();
         }
 
     private:
-        mutable std::mutex mutex_;
         std::stack<std::shared_ptr<SpanEventImpl>> stack_;
     };
 
@@ -266,7 +268,10 @@ namespace pinpoint {
     	 */
     	void finishSpanEvent();
     	/// @brief Returns the current active span event.
-    	std::shared_ptr<SpanEventImpl> topSpanEvent() { return event_stack_.top(); }
+    	std::shared_ptr<SpanEventImpl> topSpanEvent() {
+    	    std::unique_lock<std::mutex> lock(span_event_lock_);
+    	    return event_stack_.top();
+    	}
 
         /// @brief Returns the collection of finished span events.
         std::vector<std::shared_ptr<SpanEventImpl>>& getFinishedEvents() { return finished_events; }
