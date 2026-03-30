@@ -19,6 +19,7 @@
 #include <atomic>
 #include <list>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -27,7 +28,7 @@ namespace pinpoint {
 
     /**
      * @brief Generic LRU cache result structure.
-     * 
+     *
      * @tparam ValueType Type of the cached value.
      */
     template<typename ValueType>
@@ -38,7 +39,7 @@ namespace pinpoint {
 
     /**
      * @brief Result returned from `IdCache::get`.
-     * 
+     *
      * Type alias for LruCacheResult<int32_t>.
      * Use `.value` to access the ID and `.found` to check if it existed in cache.
      */
@@ -46,7 +47,7 @@ namespace pinpoint {
 
     /**
      * @brief Result returned from `SqlUidCache::get`.
-     * 
+     *
      * Type alias for LruCacheResult<std::vector<unsigned char>>.
      * Use `.value` to access the UID and `.found` to check if it existed in cache.
      */
@@ -54,10 +55,12 @@ namespace pinpoint {
 
     /**
      * @brief Thread-safe LRU cache implementation template.
-     * 
+     *
      * Provides O(1) lookup, insertion, and removal using a combination of
      * std::list (for LRU ordering) and std::unordered_map (for fast lookup).
-     * 
+     * Uses transparent hash/equal to allow lookup by std::string_view without
+     * allocating a std::string on the hot (cache-hit) path.
+     *
      * @tparam ValueType Type of values stored in the cache.
      */
     template<typename ValueType>
@@ -74,13 +77,16 @@ namespace pinpoint {
 
         /**
          * @brief Retrieves or creates a cache entry.
-         * 
-         * @param key The key to look up.
+         *
+         * On cache hit the lookup is performed with string_view (zero allocation).
+         * On cache miss a std::string is constructed for storage.
+         *
+         * @param key The key to look up (string_view — no allocation on hit).
          * @param generator Function to generate a new value if key not found.
          * @return Result containing the value and whether it was found.
          */
         template<typename Generator>
-        LruCacheResult<ValueType> get(const std::string& key, Generator&& generator) {
+        LruCacheResult<ValueType> get(std::string_view key, Generator&& generator) {
             std::unique_lock<std::mutex> lock(mutex_);
 
             const auto it = cache_map_.find(key);
@@ -90,18 +96,18 @@ namespace pinpoint {
                 return LruCacheResult<ValueType>{it->second->second, true};
             }
 
-            // Not found - generate new value and insert
+            // Not found - generate new value and insert (string allocation happens here)
             auto new_value = generator();
-            put(key, std::move(new_value));
+            put(std::string(key), std::move(new_value));
             return LruCacheResult<ValueType>{cache_list_.front().second, false};
         }
 
         /**
          * @brief Removes an entry from the cache.
-         * 
+         *
          * @param key The key to remove.
          */
-        void remove(const std::string& key) {
+        void remove(std::string_view key) {
             std::unique_lock<std::mutex> lock(mutex_);
 
             const auto it = cache_map_.find(key);
@@ -114,19 +120,20 @@ namespace pinpoint {
     private:
         /**
          * @brief Inserts a new key/value pair while preserving LRU ordering.
-         * 
+         *
          * Assumes the lock is already held by the caller.
-         * 
-         * @param key The key to insert.
+         *
+         * @param key The key to insert (moved into storage).
          * @param value The value to insert (moved).
          */
-        void put(const std::string& key, ValueType&& value) {
+        void put(std::string key, ValueType&& value) {
             // Insert new entry at front
-            cache_list_.emplace_front(key, std::move(value));
-            
+            cache_list_.emplace_front(std::move(key), std::move(value));
+
             // Exception-safe: if emplace fails, we won't update the map
+            // Use the key already stored in the list node to avoid a second copy.
             try {
-                cache_map_.emplace(key, cache_list_.begin());
+                cache_map_.emplace(std::string_view(cache_list_.front().first), cache_list_.begin());
             } catch (...) {
                 cache_list_.pop_front();  // Rollback
                 throw;
@@ -142,7 +149,7 @@ namespace pinpoint {
 
         using KeyValuePair = std::pair<std::string, ValueType>;
         std::list<KeyValuePair> cache_list_{};
-        std::unordered_map<std::string, typename std::list<KeyValuePair>::iterator> cache_map_{};
+        std::unordered_map<std::string_view, typename std::list<KeyValuePair>::iterator> cache_map_{};
         const size_t max_size_{};
         mutable std::mutex mutex_{};
     };
@@ -167,17 +174,17 @@ namespace pinpoint {
         /**
          * @brief Looks up or inserts a string identifier.
          *
-         * @param key String to cache.
+         * @param key String to cache (no allocation on cache hit).
          * @return CacheResult containing the identifier and whether the entry already existed.
          */
-        CacheResult get(const std::string& key);
+        CacheResult get(std::string_view key);
 
         /**
          * @brief Evicts a cached string from the cache.
          *
          * @param key Entry to remove.
          */
-        void remove(const std::string& key) {
+        void remove(std::string_view key) {
             cache_.remove(key);
         }
 
@@ -203,17 +210,17 @@ namespace pinpoint {
         /**
          * @brief Looks up or inserts an SQL UID entry.
          *
-         * @param key Normalized SQL string.
+         * @param key Normalized SQL string (no allocation on cache hit).
          * @return Cache result containing UID bytes and whether the entry existed.
          */
-        SqlUidCacheResult get(const std::string& key);
+        SqlUidCacheResult get(std::string_view key);
 
         /**
          * @brief Removes a cached SQL UID entry.
          *
          * @param key Normalized SQL string.
          */
-        void remove(const std::string& key) {
+        void remove(std::string_view key) {
             cache_.remove(key);
         }
 
