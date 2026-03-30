@@ -19,7 +19,6 @@
 #include <cstdio>
 #include <cstring>
 #include "sys/times.h"
-#include <map>
 #include <mutex>
 #include <cctype>
 #include <unistd.h>

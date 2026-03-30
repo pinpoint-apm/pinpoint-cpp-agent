@@ -21,7 +21,7 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
-#include <map>
+#include <unordered_map>
 #include <chrono>
 
 #include "agent_service.h"
@@ -126,7 +126,7 @@ namespace pinpoint {
         std::atomic<int64_t> skip_cont_{0};
         
         std::mutex active_span_mutex_;
-        std::map<int64_t, int64_t> active_span_map_;
+        std::unordered_map<int64_t, int64_t> active_span_map_;
         
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};
