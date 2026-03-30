@@ -374,8 +374,7 @@ namespace pinpoint {
             return 0;
         }
 
-        // Convert string_view to string to ensure null-termination for absl::StrCat
-        const auto key = absl::StrCat(std::string(api_str), "_", api_type);
+        const auto key = absl::StrCat(api_str, "_", api_type);
         const auto [id, found] = api_cache_->get(key);
         if (found) {
             return id;
@@ -402,8 +401,7 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = std::string(error_name);
-        const auto [id, found] = error_cache_->get(key);
+        const auto [id, found] = error_cache_->get(error_name);
         if (found) {
             return id;
         }
@@ -428,8 +426,7 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = std::string(sql_query);
-        const auto [id, found] = sql_cache_->get(key);
+        const auto [id, found] = sql_cache_->get(sql_query);
         if (found) {
             return id;
         }
@@ -454,8 +451,7 @@ namespace pinpoint {
             return {};
         }
         
-        const auto key = std::string(sql);
-        const auto [uid, found] = sql_uid_cache_->get(key);
+        const auto [uid, found] = sql_uid_cache_->get(sql);
         if (found) {
             return uid;
         }
