@@ -99,8 +99,8 @@ namespace pinpoint {
         return accept_event;
     }
 
-    static void build_annotation(v1::PAnnotation *annotation, int32_t key, 
-                               const std::shared_ptr<AnnotationData>& val,
+    static void build_annotation(v1::PAnnotation *annotation, int32_t key,
+                               const std::unique_ptr<AnnotationData>& val,
                                google::protobuf::Arena* arena) {
         annotation->set_key(key);
         auto* annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);

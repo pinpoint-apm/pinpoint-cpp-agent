@@ -300,52 +300,57 @@ TEST_F(SpanTest, EventStackBasicOperationsTest) {
 
 TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     EventStack stack;
+    std::mutex stack_mutex;  // External mutex (mirrors SpanData::span_event_lock_)
     auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
-    
+
     const int num_threads = 4;
     const int events_per_thread = 10;
     std::atomic<int> push_count(0);
     std::atomic<int> pop_count(0);
-    
+
     std::vector<std::thread> threads;
-    
+
     // Push threads
     for (int t = 0; t < num_threads / 2; t++) {
-        threads.emplace_back([&stack, &span_data, &push_count]() {
+        threads.emplace_back([&stack, &stack_mutex, &span_data, &push_count]() {
             for (int i = 0; i < events_per_thread; i++) {
                 auto event = std::make_shared<SpanEventImpl>(span_data.get(), "event" + std::to_string(i));
-                stack.push(event);
+                {
+                    std::lock_guard<std::mutex> lock(stack_mutex);
+                    stack.push(event);
+                }
                 push_count++;
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
             }
         });
     }
-    
+
     // Wait a bit for some pushes to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
+
     // Pop threads
     for (int t = 0; t < num_threads / 2; t++) {
-        threads.emplace_back([&stack, &pop_count]() {
+        threads.emplace_back([&stack, &stack_mutex, &pop_count]() {
             while (pop_count < 10) {  // Try to pop some events
                 try {
+                    std::lock_guard<std::mutex> lock(stack_mutex);
                     if (stack.size() > 0) {
                         stack.pop();
                         pop_count++;
                     }
-                    std::this_thread::sleep_for(std::chrono::microseconds(1));
                 } catch (...) {
                     break; // Stack might be empty
                 }
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
             }
         });
     }
-    
+
     // Wait for all threads to complete
     for (auto& thread : threads) {
         thread.join();
     }
-    
+
     EXPECT_GT(push_count.load(), 0) << "Should have pushed some events";
     EXPECT_GT(pop_count.load(), 0) << "Should have popped some events";
 }
@@ -519,8 +524,9 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     span_data.finishSpanEvent();
     EXPECT_EQ(span_data.getFinishedEventsCount(), 2) << "Should have 2 finished events";
     
-    // Clear finished events
-    span_data.clearFinishedEvents();
+    // Take finished events (moves them out, leaving the vector empty)
+    auto taken = span_data.takeFinishedEvents();
+    EXPECT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
     EXPECT_EQ(span_data.getFinishedEventsCount(), 0) << "Finished events should be cleared";
 }
 

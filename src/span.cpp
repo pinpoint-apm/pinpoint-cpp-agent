@@ -110,12 +110,9 @@ namespace pinpoint {
     }
 
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
-                         span_data_(span_data), event_chunk_{}, final_(final), key_time_(0) {
-        const auto& events = span_data_->getFinishedEvents();
-        for (const auto& ptr : events) {
-            event_chunk_.push_back(ptr);
-        }
-        span_data_->clearFinishedEvents();
+                         span_data_(span_data),
+                         event_chunk_(span_data_->takeFinishedEvents()),
+                         final_(final), key_time_(0) {
     }
 
     void SpanChunk::optimizeSpanEvents() {
