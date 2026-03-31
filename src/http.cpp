@@ -142,15 +142,20 @@ namespace pinpoint {
         return pi == pattern.size();
     }
 
-    HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg) : cfg_(cfg) {}
+    HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg) {
+        for (const auto& m : cfg) {
+            std::string upper(m);
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](unsigned char c) { return std::toupper(c); });
+            methods_.insert(std::move(upper));
+        }
+    }
 
     bool HttpMethodFilter::isFiltered(std::string_view method) const {
-        for (const auto& method_name : cfg_) {
-            if (compare_string(method, method_name)) {
-                return true;
-            }
-        }
-        return false;
+        std::string upper(method);
+        std::transform(upper.begin(), upper.end(), upper.begin(),
+                       [](unsigned char c) { return std::toupper(c); });
+        return methods_.count(upper) > 0;
     }
 
     namespace {
