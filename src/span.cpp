@@ -76,17 +76,24 @@ namespace pinpoint {
     }
 
     void SpanData::parseTraceId(std::string &tid) noexcept {
-        std::stringstream ss(tid);
-        std::string item;
+        std::string_view sv(tid);
 
-        std::getline(ss, item, '^');
-        trace_id_.AgentId = item;
-        std::getline(ss, item, '^');
-        auto start_time_result = stoll_(item);
-        trace_id_.StartTime = start_time_result.value_or(0);
-        std::getline(ss, item, '^');
-        auto sequence_result = stoll_(item);
-        trace_id_.Sequence = sequence_result.value_or(0);
+        // Parse AgentId (first field before '^')
+        const auto pos1 = sv.find('^');
+        if (pos1 == std::string_view::npos) {
+            return;
+        }
+        trace_id_.AgentId = std::string(sv.substr(0, pos1));
+
+        // Parse StartTime (second field)
+        const auto pos2 = sv.find('^', pos1 + 1);
+        if (pos2 == std::string_view::npos) {
+            return;
+        }
+        trace_id_.StartTime = stoll_(sv.substr(pos1 + 1, pos2 - pos1 - 1)).value_or(0);
+
+        // Parse Sequence (third field)
+        trace_id_.Sequence = stoll_(sv.substr(pos2 + 1)).value_or(0);
     }
 
     void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
