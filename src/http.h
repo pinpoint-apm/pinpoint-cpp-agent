@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "pinpoint/tracer.h"
@@ -199,7 +200,7 @@ namespace pinpoint {
          */
         bool isFiltered(std::string_view method) const;
     private:
-        std::vector<std::string> cfg_;
+        std::unordered_set<std::string> methods_;
     };
 
     /**
