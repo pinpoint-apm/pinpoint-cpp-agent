@@ -131,19 +131,17 @@ namespace pinpoint {
             [](const std::shared_ptr<SpanEventImpl>& a, const std::shared_ptr<SpanEventImpl>& b)
                   { return a->getSequence() < b->getSequence(); });
 
-        if (final_) {
-            key_time_ = span_data_->getStartTime();
-        } else {
-            const auto& se = event_chunk_[0];
-            key_time_ =se->getStartTime();
-        }
-
         int64_t prev_start_time = 0;
         int32_t prev_depth = 0;
 
         for (size_t i = 0; i < event_chunk_.size(); i++) {
             const auto& se = event_chunk_[i];
             if (i == 0) {
+                if (final_) {
+                    key_time_ = span_data_->getStartTime();
+                } else {
+                    key_time_ =se->getStartTime();
+                }
                 se->setStartElapsed(static_cast<int32_t>(se->getStartTime() - key_time_));
                 prev_depth = se->getDepth();
             } else {
