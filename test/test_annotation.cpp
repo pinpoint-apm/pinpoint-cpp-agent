@@ -712,4 +712,138 @@ TEST_F(AnnotationTest, EmptyAnnotationListTest) {
     EXPECT_EQ(annotations.size(), 0) << "Size should be 0";
 }
 
+// Test negative key values
+TEST_F(AnnotationTest, NegativeKeyTest) {
+    annotation->AppendInt(-1, 42);
+    annotation->AppendString(-100, "negative key");
+    annotation->AppendLong(INT32_MIN, 999LL);
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 3) << "Should have exactly 3 annotations";
+
+    auto it = annotations.begin();
+    EXPECT_EQ(it->first, -1) << "Negative key -1 should be preserved";
+    EXPECT_EQ(std::get<int32_t>(it->second->data), 42);
+
+    ++it;
+    EXPECT_EQ(it->first, -100) << "Negative key -100 should be preserved";
+    EXPECT_EQ(std::get<std::string>(it->second->data), "negative key");
+
+    ++it;
+    EXPECT_EQ(it->first, INT32_MIN) << "INT32_MIN key should be preserved";
+    EXPECT_EQ(std::get<int64_t>(it->second->data), 999LL);
+}
+
+// Test zero key value
+TEST_F(AnnotationTest, ZeroKeyTest) {
+    annotation->AppendInt(0, 42);
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1);
+    EXPECT_EQ(annotations.front().first, 0) << "Zero key should be preserved";
+    EXPECT_EQ(std::get<int32_t>(annotations.front().second->data), 42);
+}
+
+// Test AppendLong with int32-range value stores as LONG type
+TEST_F(AnnotationTest, AppendLongWithSmallValueTest) {
+    int32_t key = 160;
+    int64_t value = 42LL; // Value fits in int32_t but stored via AppendLong
+
+    annotation->AppendLong(key, value);
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1);
+
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.second->dataType, ANNOTATION_TYPE_LONG) << "Small value via AppendLong should still be LONG type";
+    EXPECT_EQ(std::get<int64_t>(pair.second->data), value);
+}
+
+// Test string_view from temporary string ensures data is copied
+TEST_F(AnnotationTest, StringViewFromTemporaryTest) {
+    int32_t key = 310;
+    {
+        std::string temp = "temporary string data";
+        annotation->AppendString(key, temp);
+        // temp goes out of scope here
+    }
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1);
+    EXPECT_EQ(std::get<std::string>(annotations.front().second->data), "temporary string data")
+        << "Data should persist after source string is destroyed";
+}
+
+// Test StringString with string_view from temporaries
+TEST_F(AnnotationTest, StringStringFromTemporaryTest) {
+    int32_t key = 410;
+    {
+        std::string temp1 = "temp key";
+        std::string temp2 = "temp value";
+        annotation->AppendStringString(key, temp1, temp2);
+    }
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1);
+    auto& ssv = std::get<pinpoint::StringStringValue>(annotations.front().second->data);
+    EXPECT_EQ(ssv.stringValue1, "temp key");
+    EXPECT_EQ(ssv.stringValue2, "temp value");
+}
+
+// Test large number of annotations
+TEST_F(AnnotationTest, LargeAnnotationCountTest) {
+    const int count = 1000;
+    for (int i = 0; i < count; ++i) {
+        annotation->AppendInt(i, i * 10);
+    }
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), static_cast<size_t>(count)) << "Should have 1000 annotations";
+
+    // Verify first, middle, and last
+    auto it = annotations.begin();
+    EXPECT_EQ(it->first, 0);
+    EXPECT_EQ(std::get<int32_t>(it->second->data), 0);
+
+    std::advance(it, 499);
+    EXPECT_EQ(it->first, 499);
+    EXPECT_EQ(std::get<int32_t>(it->second->data), 4990);
+
+    std::advance(it, 500);
+    EXPECT_EQ(it->first, 999);
+    EXPECT_EQ(std::get<int32_t>(it->second->data), 9990);
+}
+
+// Test bytes vector data integrity after move
+TEST_F(AnnotationTest, AppendBytesStringStringMoveIntegrityTest) {
+    int32_t key = 710;
+    std::vector<unsigned char> original = {0x01, 0x02, 0x03, 0x04, 0x05};
+    std::vector<unsigned char> expected = original; // copy before move
+
+    annotation->AppendBytesStringString(key, std::move(original), "s1", "s2");
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 1);
+
+    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(annotations.front().second->data);
+    EXPECT_EQ(bytesData.bytesValue, expected) << "Moved bytes should match original content";
+    EXPECT_EQ(bytesData.stringValue1, "s1");
+    EXPECT_EQ(bytesData.stringValue2, "s2");
+}
+
+// Test AppendIntStringString with extreme int values
+TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
+    annotation->AppendIntStringString(510, INT32_MAX, "max", "value");
+    annotation->AppendIntStringString(511, INT32_MIN, "min", "value");
+
+    auto& annotations = annotation->getAnnotations();
+    EXPECT_EQ(annotations.size(), 2);
+
+    auto it = annotations.begin();
+    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second->data).intValue, INT32_MAX);
+
+    ++it;
+    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second->data).intValue, INT32_MIN);
+}
+
 } // namespace pinpoint
