@@ -537,6 +537,8 @@ namespace pinpoint {
         }
     }
 
+    constexpr int MIN_PORT = 1;
+    constexpr int MAX_PORT = 65535;
     constexpr int NONE_SAMPLING_COUNTER_RATE = 0;
     constexpr double NONE_SAMPLING_PERCENT_RATE = 0.0;
     constexpr int NONE_SAMPLING_NEW_THROUGHPUT = 0;
@@ -544,12 +546,25 @@ namespace pinpoint {
     constexpr double MIN_SAMPLING_PERCENT_RATE = 0.01;
     constexpr double MAX_SAMPLING_PERCENT_RATE = 100.0;
     constexpr int MIN_SPAN_QUEUE_SIZE = 1;
+    constexpr int MAX_SPAN_QUEUE_SIZE = 65536;
     constexpr int UNLIMITED_SIZE = -1;
     constexpr int MIN_SPAN_EVENT_DEPTH = 2;
     constexpr int MIN_SPAN_EVENT_SEQUENCE = 4;
     constexpr int MIN_SPAN_EVENT_CHUNK_SIZE = 1;
     constexpr int MAX_SPAN_EVENT_DEPTH = INT32_MAX;
     constexpr int MAX_SPAN_EVENT_SEQUENCE = INT32_MAX;
+    constexpr int MIN_STAT_BATCH_COUNT = 1;
+    constexpr int MAX_STAT_BATCH_COUNT = 100;
+    constexpr int MIN_STAT_INTERVAL_MS = 1000;
+    constexpr int MAX_STAT_INTERVAL_MS = 60000;
+
+    static int clamp_port(int port, int default_port) {
+        if (port < MIN_PORT || port > MAX_PORT) {
+            LOG_WARN("port {} is out of range ({}-{}), using default: {}", port, MIN_PORT, MAX_PORT, default_port);
+            return default_port;
+        }
+        return port;
+    }
 
     std::shared_ptr<Config> make_config() {
         auto config = std::make_shared<Config>();
@@ -590,37 +605,72 @@ namespace pinpoint {
             config->agent_id_ = generate_agent_id();
         }
 
+        config->collector.agent_port = clamp_port(config->collector.agent_port, defaults::AGENT_PORT);
+        config->collector.span_port = clamp_port(config->collector.span_port, defaults::SPAN_PORT);
+        config->collector.stat_port = clamp_port(config->collector.stat_port, defaults::STAT_PORT);
+
+        if (config->stat.batch_count < MIN_STAT_BATCH_COUNT || config->stat.batch_count > MAX_STAT_BATCH_COUNT) {
+            LOG_WARN("stat batch count {} is out of range ({}-{}), using default: {}",
+                     config->stat.batch_count, MIN_STAT_BATCH_COUNT, MAX_STAT_BATCH_COUNT, defaults::STAT_BATCH_COUNT);
+            config->stat.batch_count = defaults::STAT_BATCH_COUNT;
+        }
+        if (config->stat.collect_interval < MIN_STAT_INTERVAL_MS || config->stat.collect_interval > MAX_STAT_INTERVAL_MS) {
+            LOG_WARN("stat collect interval {}ms is out of range ({}-{}ms), using default: {}ms",
+                     config->stat.collect_interval, MIN_STAT_INTERVAL_MS, MAX_STAT_INTERVAL_MS, defaults::STAT_INTERVAL_MS);
+            config->stat.collect_interval = defaults::STAT_INTERVAL_MS;
+        }
+
         if (config->sampling.counter_rate < NONE_SAMPLING_COUNTER_RATE) {
+            LOG_WARN("sampling counter rate {} is invalid, using default: {}",
+                     config->sampling.counter_rate, NONE_SAMPLING_COUNTER_RATE);
             config->sampling.counter_rate = NONE_SAMPLING_COUNTER_RATE;
         }
         if (config->sampling.percent_rate < NONE_SAMPLING_PERCENT_RATE) {
+            LOG_WARN("sampling percent rate {} is invalid, using default: {}",
+                     config->sampling.percent_rate, NONE_SAMPLING_PERCENT_RATE);
             config->sampling.percent_rate = NONE_SAMPLING_PERCENT_RATE;
         } else if (config->sampling.percent_rate < MIN_SAMPLING_PERCENT_RATE) {
+            LOG_WARN("sampling percent rate {} is below minimum, clamping to: {}",
+                     config->sampling.percent_rate, MIN_SAMPLING_PERCENT_RATE);
             config->sampling.percent_rate = MIN_SAMPLING_PERCENT_RATE;
         } else if (config->sampling.percent_rate > MAX_SAMPLING_PERCENT_RATE) {
+            LOG_WARN("sampling percent rate {} exceeds maximum, clamping to: {}",
+                     config->sampling.percent_rate, MAX_SAMPLING_PERCENT_RATE);
             config->sampling.percent_rate = MAX_SAMPLING_PERCENT_RATE;
         }
         if (config->sampling.new_throughput < NONE_SAMPLING_NEW_THROUGHPUT) {
+            LOG_WARN("sampling new throughput {} is invalid, using default: {}",
+                     config->sampling.new_throughput, NONE_SAMPLING_NEW_THROUGHPUT);
             config->sampling.new_throughput = NONE_SAMPLING_NEW_THROUGHPUT;
         }
         if (config->sampling.cont_throughput < NONE_SAMPLING_CONTINUE_THROUGHPUT) {
+            LOG_WARN("sampling continue throughput {} is invalid, using default: {}",
+                     config->sampling.cont_throughput, NONE_SAMPLING_CONTINUE_THROUGHPUT);
             config->sampling.cont_throughput = NONE_SAMPLING_CONTINUE_THROUGHPUT;
         }
 
-        if (config->span.queue_size < MIN_SPAN_QUEUE_SIZE) {
+        if (config->span.queue_size < MIN_SPAN_QUEUE_SIZE || config->span.queue_size > MAX_SPAN_QUEUE_SIZE) {
+            LOG_WARN("span queue size {} is out of range ({}-{}), using default: {}",
+                     config->span.queue_size, MIN_SPAN_QUEUE_SIZE, MAX_SPAN_QUEUE_SIZE, defaults::SPAN_QUEUE_SIZE);
             config->span.queue_size = defaults::SPAN_QUEUE_SIZE;
         }
         if (config->span.max_event_depth == UNLIMITED_SIZE) {
             config->span.max_event_depth = MAX_SPAN_EVENT_DEPTH;
         } else if (config->span.max_event_depth < MIN_SPAN_EVENT_DEPTH) {
+            LOG_WARN("span max event depth {} is below minimum, clamping to: {}",
+                     config->span.max_event_depth, MIN_SPAN_EVENT_DEPTH);
             config->span.max_event_depth = MIN_SPAN_EVENT_DEPTH;
         }
         if (config->span.max_event_sequence == UNLIMITED_SIZE) {
             config->span.max_event_sequence = MAX_SPAN_EVENT_SEQUENCE;
         } else if (config->span.max_event_sequence < MIN_SPAN_EVENT_SEQUENCE) {
+            LOG_WARN("span max event sequence {} is below minimum, clamping to: {}",
+                     config->span.max_event_sequence, MIN_SPAN_EVENT_SEQUENCE);
             config->span.max_event_sequence = MIN_SPAN_EVENT_SEQUENCE;
         }
         if (config->span.event_chunk_size < MIN_SPAN_EVENT_CHUNK_SIZE) {
+            LOG_WARN("span event chunk size {} is below minimum, clamping to: {}",
+                     config->span.event_chunk_size, defaults::SPAN_EVENT_CHUNK_SIZE);
             config->span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         }
 
