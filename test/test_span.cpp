@@ -299,9 +299,9 @@ TEST_F(SpanTest, EventStackBasicOperationsTest) {
 }
 
 TEST_F(SpanTest, EventStackConcurrentAccessTest) {
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
     EventStack stack;
     std::mutex stack_mutex;  // External mutex (mirrors SpanData::span_event_lock_)
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
 
     const int num_threads = 4;
     const int events_per_thread = 10;
@@ -332,14 +332,12 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     for (int t = 0; t < num_threads / 2; t++) {
         threads.emplace_back([&stack, &stack_mutex, &pop_count]() {
             while (pop_count < 10) {  // Try to pop some events
-                try {
+                {
                     std::lock_guard<std::mutex> lock(stack_mutex);
                     if (stack.size() > 0) {
                         stack.pop();
                         pop_count++;
                     }
-                } catch (...) {
-                    break; // Stack might be empty
                 }
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
             }
@@ -349,6 +347,11 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     // Wait for all threads to complete
     for (auto& thread : threads) {
         thread.join();
+    }
+
+    // Drain remaining events before span_data is destroyed
+    while (stack.size() > 0) {
+        stack.pop();
     }
 
     EXPECT_GT(push_count.load(), 0) << "Should have pushed some events";

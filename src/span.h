@@ -19,7 +19,6 @@
 #include <atomic>
 #include <mutex>
 #include <stack>
-#include <stdexcept>
 #include <vector>
 
 #include "agent_service.h"
@@ -61,13 +60,12 @@ namespace pinpoint {
         /**
          * @brief Removes and returns the most recent span event.
          *
-         * @return Span event that was at the top of the stack.
-         * @throws std::runtime_error if the stack is empty.
+         * @return Span event that was at the top of the stack, or nullptr if the stack is empty.
          * @note Caller must hold span_event_lock_.
          */
         std::shared_ptr<SpanEventImpl> pop() {
             if (stack_.empty()) {
-                throw std::runtime_error("Cannot pop from empty EventStack");
+                return nullptr;
             }
             auto item = stack_.top();
             stack_.pop();
@@ -76,12 +74,12 @@ namespace pinpoint {
 
         /**
          * @brief Returns (without removing) the top span event.
-         * @throws std::runtime_error if the stack is empty.
+         * @return Span event at the top of the stack, or nullptr if the stack is empty.
          * @note Caller must hold span_event_lock_.
          */
         std::shared_ptr<SpanEventImpl> top() {
             if (stack_.empty()) {
-                throw std::runtime_error("Cannot get top from empty EventStack");
+                return nullptr;
             }
             return stack_.top();
         }
@@ -268,7 +266,7 @@ namespace pinpoint {
     	 * @brief Finalizes the top span event and moves it into the finished list.
     	 */
     	void finishSpanEvent();
-    	/// @brief Returns the current active span event.
+    	/// @brief Returns the current active span event, or nullptr if the stack is empty.
     	std::shared_ptr<SpanEventImpl> topSpanEvent() {
     	    std::unique_lock<std::mutex> lock(span_event_lock_);
     	    return event_stack_.top();
