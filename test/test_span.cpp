@@ -299,25 +299,35 @@ TEST_F(SpanTest, EventStackBasicOperationsTest) {
 }
 
 TEST_F(SpanTest, EventStackConcurrentAccessTest) {
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
     EventStack stack;
     std::mutex stack_mutex;  // External mutex (mirrors SpanData::span_event_lock_)
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
 
-    const int num_threads = 4;
-    const int events_per_thread = 10;
+    constexpr int num_push_threads = 2;
+    constexpr int num_pop_threads = 2;
+    constexpr int events_per_thread = 10;
     std::atomic<int> push_count(0);
     std::atomic<int> pop_count(0);
+
+    // Pre-create all events on the main thread to avoid data races on
+    // MockAgentService (cacheApi / cached_apis_ is not thread-safe).
+    std::vector<std::vector<std::shared_ptr<SpanEventImpl>>> pre_created(num_push_threads);
+    for (int t = 0; t < num_push_threads; t++) {
+        for (int i = 0; i < events_per_thread; i++) {
+            pre_created[t].push_back(
+                std::make_shared<SpanEventImpl>(span_data.get(), "event" + std::to_string(t * events_per_thread + i)));
+        }
+    }
 
     std::vector<std::thread> threads;
 
     // Push threads
-    for (int t = 0; t < num_threads / 2; t++) {
-        threads.emplace_back([&stack, &stack_mutex, &span_data, &push_count]() {
+    for (int t = 0; t < num_push_threads; t++) {
+        threads.emplace_back([&stack, &stack_mutex, &push_count, &events = pre_created[t]]() {
             for (int i = 0; i < events_per_thread; i++) {
-                auto event = std::make_shared<SpanEventImpl>(span_data.get(), "event" + std::to_string(i));
                 {
                     std::lock_guard<std::mutex> lock(stack_mutex);
-                    stack.push(event);
+                    stack.push(events[i]);
                 }
                 push_count++;
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
@@ -329,17 +339,16 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     // Pop threads
-    for (int t = 0; t < num_threads / 2; t++) {
+    constexpr int total_to_pop = events_per_thread;  // pop half the total pushed
+    for (int t = 0; t < num_pop_threads; t++) {
         threads.emplace_back([&stack, &stack_mutex, &pop_count]() {
-            while (pop_count < 10) {  // Try to pop some events
-                try {
+            while (pop_count < total_to_pop) {
+                {
                     std::lock_guard<std::mutex> lock(stack_mutex);
                     if (stack.size() > 0) {
                         stack.pop();
                         pop_count++;
                     }
-                } catch (...) {
-                    break; // Stack might be empty
                 }
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
             }
@@ -350,6 +359,12 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     for (auto& thread : threads) {
         thread.join();
     }
+
+    // Drain remaining events so they are destroyed while span_data is alive
+    while (stack.size() > 0) {
+        stack.pop();
+    }
+    pre_created.clear();
 
     EXPECT_GT(push_count.load(), 0) << "Should have pushed some events";
     EXPECT_GT(pop_count.load(), 0) << "Should have popped some events";

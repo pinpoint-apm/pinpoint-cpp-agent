@@ -71,8 +71,12 @@ namespace pinpoint {
     void SpanData::finishSpanEvent() {
         std::unique_lock<std::mutex> lock(span_event_lock_);
         const auto se = event_stack_.pop();
-        se->finish();
-        finished_events.push_back(se);
+        if (se) {
+            se->finish();
+            finished_events.push_back(se);
+        } else {
+            LOG_WARN("finishSpanEvent: abnormal span - has no event");
+        }
     }
 
     void SpanData::parseTraceId(std::string &txid) noexcept {
@@ -234,7 +238,12 @@ namespace pinpoint {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         CHECK_OVERFLOW_WITH_RETURN(noopSpanEvent());
 
-        return data_->topSpanEvent();
+        auto se = data_->topSpanEvent();
+        if (!se) {
+            LOG_WARN("GetSpanEvent: abnormal span - has no event");
+            return noopSpanEvent();
+        }
+        return se;
     }
 
     void SpanImpl::record_chunk(bool final) const try {
@@ -357,6 +366,10 @@ namespace pinpoint {
         CHECK_OVERFLOW_WITH_RETURN(noopSpan());
 
         auto se = data_->topSpanEvent();
+        if (!se) {
+            LOG_WARN("NewAsyncSpan: abnormal span - has no event");
+            return noopSpan();
+        }
         auto async_span = std::make_shared<SpanImpl>(agent_, "", "");
 
         async_span->data_->setTraceId(data_->getTraceId());
