@@ -445,6 +445,141 @@ TEST_F(CacheTest, ManyItemsTest) {
     EXPECT_GT(items_evicted, 0) << "Some early items should have been evicted";
 }
 
+// Test cache at exact capacity - no eviction should occur
+TEST_F(CacheTest, ExactCapacityNoEvictionTest) {
+    const int capacity = 5;
+    IdCache cache(capacity);
+
+    // Fill cache to exact capacity
+    for (int i = 0; i < capacity; ++i) {
+        cache.get("key" + std::to_string(i));
+    }
+
+    // All items should still be in cache
+    for (int i = 0; i < capacity; ++i) {
+        auto result = cache.get("key" + std::to_string(i));
+        EXPECT_EQ(result.value, i + 1) << "Key " << i << " should retain original ID";
+        EXPECT_TRUE(result.found) << "Key " << i << " should be cache hit";
+    }
+}
+
+// Test removing all items and re-adding
+TEST_F(CacheTest, RemoveAllAndReuseTest) {
+    IdCache cache(5);
+
+    // Add 3 items
+    cache.get("key1"); // ID: 1
+    cache.get("key2"); // ID: 2
+    cache.get("key3"); // ID: 3
+
+    // Remove all
+    cache.remove("key1");
+    cache.remove("key2");
+    cache.remove("key3");
+
+    // Cache should be empty but functional
+    auto result1 = cache.get("key1");
+    EXPECT_EQ(result1.value, 4) << "Re-added key should get new ID";
+    EXPECT_FALSE(result1.found) << "Re-added key should be cache miss";
+
+    auto result2 = cache.get("key1");
+    EXPECT_EQ(result2.value, 4) << "Same key should return same ID";
+    EXPECT_TRUE(result2.found) << "Should be cache hit now";
+}
+
+// Test LRU eviction chain - verify correct eviction order
+TEST_F(CacheTest, LRUEvictionChainTest) {
+    IdCache cache(3);
+
+    // Fill: key1(LRU), key2, key3(MRU)
+    cache.get("key1"); // ID: 1
+    cache.get("key2"); // ID: 2
+    cache.get("key3"); // ID: 3
+
+    // Add key4 -> evicts key1 (oldest). Cache: key2, key3, key4
+    auto r4 = cache.get("key4"); // ID: 4
+    EXPECT_FALSE(r4.found);
+
+    // Verify key1 was evicted
+    auto r1 = cache.get("key1"); // miss, re-inserted -> evicts key2. Cache: key3, key4, key1
+    EXPECT_FALSE(r1.found) << "key1 should have been evicted";
+
+    // Verify key2 was evicted (it was the new LRU after key1 eviction)
+    auto r2 = cache.get("key2"); // miss, re-inserted -> evicts key3. Cache: key4, key1, key2
+    EXPECT_FALSE(r2.found) << "key2 should have been evicted";
+
+    // key4, key1, key2 should now be in cache
+    // Verify key1 is still in cache
+    auto r1_check = cache.get("key1");
+    EXPECT_TRUE(r1_check.found) << "key1 should be in cache";
+}
+
+// Test string_view key from temporary string
+TEST_F(CacheTest, StringViewKeyFromTemporaryTest) {
+    IdCache cache(5);
+
+    {
+        std::string temp_key = "temporary_key_data";
+        cache.get(temp_key);
+        // temp_key goes out of scope here
+    }
+
+    // Key should still be found - internal storage must own the string
+    auto result = cache.get("temporary_key_data");
+    EXPECT_EQ(result.value, 1) << "Should find the same entry";
+    EXPECT_TRUE(result.found) << "Should be cache hit even after source string destroyed";
+}
+
+// Test remove and re-add places item at MRU position
+TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
+    IdCache cache(3);
+
+    // Fill: key1, key2, key3
+    cache.get("key1"); // ID: 1
+    cache.get("key2"); // ID: 2
+    cache.get("key3"); // ID: 3
+
+    // Remove key1 and re-add it (now it's MRU)
+    cache.remove("key1");
+    cache.get("key1"); // ID: 4, now MRU
+
+    // Add key4 -> should evict key2 (oldest remaining)
+    cache.get("key4"); // ID: 5
+    auto r2 = cache.get("key2");
+    EXPECT_FALSE(r2.found) << "key2 should be evicted (was LRU)";
+
+    // key1 should still be in cache (was recently re-added)
+    auto r1 = cache.get("key1");
+    EXPECT_EQ(r1.value, 4);
+    EXPECT_TRUE(r1.found) << "key1 should be in cache (was MRU after re-add)";
+}
+
+// Test keys with special characters and Unicode
+TEST_F(CacheTest, SpecialCharacterKeysTest) {
+    IdCache cache(10);
+
+    std::string unicode_key = "키_한글_テスト";
+    std::string special_key = "key!@#$%^&*()";
+    std::string null_key = std::string("key\0with\0nulls", 14);
+
+    auto r1 = cache.get(unicode_key);
+    auto r2 = cache.get(special_key);
+    auto r3 = cache.get(null_key);
+
+    EXPECT_FALSE(r1.found);
+    EXPECT_FALSE(r2.found);
+    EXPECT_FALSE(r3.found);
+
+    // All should be distinct entries
+    EXPECT_NE(r1.value, r2.value);
+    EXPECT_NE(r2.value, r3.value);
+
+    // Verify cache hits
+    EXPECT_TRUE(cache.get(unicode_key).found);
+    EXPECT_TRUE(cache.get(special_key).found);
+    EXPECT_TRUE(cache.get(null_key).found);
+}
+
 // SqlUidCache Test Suite
 class SqlUidCacheTest : public ::testing::Test {
 protected:
@@ -925,6 +1060,91 @@ TEST_F(SqlUidCacheTest, UidConsistencyTest) {
         EXPECT_TRUE(areUidsEqual(uid2, uid3)) << "Same SQL should get same UID across different cache instances";
         EXPECT_TRUE(areUidsEqual(uid1, uid3)) << "Same SQL should get same UID across different cache instances";
     }
+}
+
+// Test cache at exact capacity - no eviction should occur
+TEST_F(SqlUidCacheTest, ExactCapacityNoEvictionTest) {
+    const int capacity = 5;
+    SqlUidCache cache(capacity);
+
+    std::vector<std::vector<unsigned char>> original_uids;
+    for (int i = 0; i < capacity; ++i) {
+        std::string sql = "SELECT * FROM table" + std::to_string(i);
+        auto result = cache.get(sql);
+        original_uids.push_back(result.value);
+        EXPECT_FALSE(result.found);
+    }
+
+    // All items should still be in cache
+    for (int i = 0; i < capacity; ++i) {
+        std::string sql = "SELECT * FROM table" + std::to_string(i);
+        auto result = cache.get(sql);
+        EXPECT_TRUE(areUidsEqual(result.value, original_uids[i])) << "UID should match for key " << i;
+        EXPECT_TRUE(result.found) << "Key " << i << " should be cache hit";
+    }
+}
+
+// Test removing all items and re-adding
+TEST_F(SqlUidCacheTest, RemoveAllAndReuseTest) {
+    SqlUidCache cache(5);
+
+    std::string sql1 = "SELECT 1";
+    std::string sql2 = "SELECT 2";
+
+    auto orig1 = cache.get(sql1);
+    auto orig2 = cache.get(sql2);
+
+    cache.remove(sql1);
+    cache.remove(sql2);
+
+    // Cache should be empty but functional
+    auto result1 = cache.get(sql1);
+    EXPECT_TRUE(areUidsEqual(result1.value, orig1.value)) << "Same SQL should produce same UID";
+    EXPECT_FALSE(result1.found) << "Should be cache miss after remove";
+
+    auto result2 = cache.get(sql1);
+    EXPECT_TRUE(result2.found) << "Should be cache hit now";
+}
+
+// Test string_view key from temporary string
+TEST_F(SqlUidCacheTest, StringViewKeyFromTemporaryTest) {
+    SqlUidCache cache(5);
+
+    std::vector<unsigned char> original_uid;
+    {
+        std::string temp_sql = "SELECT * FROM temporary_table WHERE id = ?";
+        original_uid = cache.get(temp_sql).value;
+    }
+
+    auto result = cache.get("SELECT * FROM temporary_table WHERE id = ?");
+    EXPECT_TRUE(areUidsEqual(result.value, original_uid));
+    EXPECT_TRUE(result.found) << "Should be cache hit even after source string destroyed";
+}
+
+// Test remove and re-add places item at MRU position
+TEST_F(SqlUidCacheTest, RemoveAndReaddLRUPositionTest) {
+    SqlUidCache cache(3);
+
+    std::string sql1 = "SELECT 1";
+    std::string sql2 = "SELECT 2";
+    std::string sql3 = "SELECT 3";
+    std::string sql4 = "SELECT 4";
+
+    cache.get(sql1);
+    cache.get(sql2);
+    cache.get(sql3);
+
+    // Remove sql1 and re-add (now MRU)
+    cache.remove(sql1);
+    cache.get(sql1);
+
+    // Add sql4 -> should evict sql2 (oldest remaining)
+    cache.get(sql4);
+    auto r2 = cache.get(sql2);
+    EXPECT_FALSE(r2.found) << "sql2 should be evicted (was LRU)";
+
+    auto r1 = cache.get(sql1);
+    EXPECT_TRUE(r1.found) << "sql1 should be in cache (was MRU after re-add)";
 }
 
 } // namespace pinpoint
