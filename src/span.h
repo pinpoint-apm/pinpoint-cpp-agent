@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <stack>
 #include <stdexcept>
@@ -437,8 +438,8 @@ namespace pinpoint {
     private:
 		AgentService *agent_;
     	std::shared_ptr<SpanData> data_;
-    	int32_t overflow_;
-    	bool finished_;
+    	std::atomic<int32_t> overflow_;
+    	std::atomic<bool> finished_;
 
     	/**
     	 * @brief Emits a span chunk via the agent service.
