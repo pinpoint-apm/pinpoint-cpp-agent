@@ -75,12 +75,20 @@ namespace pinpoint {
         finished_events.push_back(se);
     }
 
-    void SpanData::parseTraceId(std::string &tid) noexcept {
-        std::string_view sv(tid);
+    void SpanData::parseTraceId(std::string &txid) noexcept {
+        constexpr size_t kMaxAgentIdLength = 24;
+        constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
+
+        std::string_view sv(txid);
 
         // Parse AgentId (first field before '^')
         const auto pos1 = sv.find('^');
         if (pos1 == std::string_view::npos) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            return;
+        }
+        if (pos1 > kMaxAgentIdLength) {
+            LOG_WARN("parsing Txid: AgentId too long (length={}, max={})", pos1, kMaxAgentIdLength);
             return;
         }
         trace_id_.AgentId = std::string(sv.substr(0, pos1));
@@ -88,12 +96,23 @@ namespace pinpoint {
         // Parse StartTime (second field)
         const auto pos2 = sv.find('^', pos1 + 1);
         if (pos2 == std::string_view::npos) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
             return;
         }
-        trace_id_.StartTime = stoll_(sv.substr(pos1 + 1, pos2 - pos1 - 1)).value_or(0);
+        const auto start_time_len = pos2 - pos1 - 1;
+        if (start_time_len > kMaxInt64StringLength) {
+            LOG_WARN("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
+            return;
+        }
+        trace_id_.StartTime = stoll_(sv.substr(pos1 + 1, start_time_len)).value_or(0);
 
         // Parse Sequence (third field)
-        trace_id_.Sequence = stoll_(sv.substr(pos2 + 1)).value_or(0);
+        const auto sequence_str = sv.substr(pos2 + 1);
+        if (sequence_str.length() > kMaxInt64StringLength) {
+            LOG_WARN("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
+            return;
+        }
+        trace_id_.Sequence = stoll_(sequence_str).value_or(0);
     }
 
     void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
