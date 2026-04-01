@@ -506,9 +506,9 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     add_worker.join();
     
     // Take snapshot and verify
-    auto snapshot = mock_agent_service_->getUrlStats().takeSnapshot();
+    auto snapshot = url_stats.takeSnapshot();
     auto& stats = snapshot->getEachStats();
-    
+
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain processed stats";
     
     SUCCEED() << "Full workflow completed successfully";
