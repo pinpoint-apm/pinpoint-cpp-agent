@@ -1136,4 +1136,212 @@ TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
 }
 
+// ========== Edge Case Tests ==========
+
+// Test HttpStatusErrors with empty tokens list
+TEST_F(HttpTest, HttpStatusErrorsEmptyTokensTest) {
+    std::vector<std::string> tokens = {};
+    HttpStatusErrors errors(tokens);
+
+    // Should not match anything
+    EXPECT_FALSE(errors.isErrorCode(200)) << "Empty tokens should not match 200";
+    EXPECT_FALSE(errors.isErrorCode(404)) << "Empty tokens should not match 404";
+    EXPECT_FALSE(errors.isErrorCode(500)) << "Empty tokens should not match 500";
+    EXPECT_FALSE(errors.isErrorCode(0)) << "Empty tokens should not match 0";
+}
+
+// Test HttpStatusErrors with invalid/unrecognized tokens (should be silently ignored)
+TEST_F(HttpTest, HttpStatusErrorsInvalidTokensTest) {
+    std::vector<std::string> tokens = {"abc", "6xx", "xyz", "500"};
+    HttpStatusErrors errors(tokens);
+
+    // Invalid tokens ignored; only "500" is valid
+    EXPECT_TRUE(errors.isErrorCode(500)) << "Valid specific code 500 should still match";
+    EXPECT_FALSE(errors.isErrorCode(501)) << "501 should not match";
+    EXPECT_FALSE(errors.isErrorCode(600)) << "6xx is invalid, should not match 600";
+    EXPECT_FALSE(errors.isErrorCode(0)) << "abc is invalid, should not match 0";
+}
+
+// Test HttpStatusErrors with case-insensitive category tokens
+TEST_F(HttpTest, HttpStatusErrorsCaseInsensitiveTokensTest) {
+    std::vector<std::string> tokens = {"5XX", "4Xx"};
+    HttpStatusErrors errors(tokens);
+
+    EXPECT_TRUE(errors.isErrorCode(500)) << "5XX (uppercase) should match 500";
+    EXPECT_TRUE(errors.isErrorCode(599)) << "5XX should match 599";
+    EXPECT_TRUE(errors.isErrorCode(400)) << "4Xx (mixed case) should match 400";
+    EXPECT_TRUE(errors.isErrorCode(499)) << "4Xx should match 499";
+    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200";
+}
+
+// Test HttpUrlFilter with ? single-character wildcard
+TEST_F(HttpTest, HttpUrlFilterQuestionMarkWildcardTest) {
+    std::vector<std::string> cfg = {"/api/v?/users", "/file?.txt"};
+    HttpUrlFilter filter(cfg);
+
+    // ? matches exactly one character
+    EXPECT_TRUE(filter.isFiltered("/api/v1/users")) << "? should match single char '1'";
+    EXPECT_TRUE(filter.isFiltered("/api/v2/users")) << "? should match single char '2'";
+    EXPECT_TRUE(filter.isFiltered("/api/vX/users")) << "? should match single char 'X'";
+    EXPECT_TRUE(filter.isFiltered("/file1.txt")) << "? should match single char '1'";
+    EXPECT_TRUE(filter.isFiltered("/fileA.txt")) << "? should match single char 'A'";
+
+    // ? should NOT match zero or multiple characters
+    EXPECT_FALSE(filter.isFiltered("/api/v/users")) << "? should not match zero chars";
+    EXPECT_FALSE(filter.isFiltered("/api/v10/users")) << "? should not match two chars";
+    EXPECT_FALSE(filter.isFiltered("/file.txt")) << "? should not match zero chars";
+    EXPECT_FALSE(filter.isFiltered("/file12.txt")) << "? should not match two chars";
+}
+
+// Test HttpUrlFilter ? matches any single character including path separator
+TEST_F(HttpTest, HttpUrlFilterQuestionMarkMatchesAnyCharTest) {
+    std::vector<std::string> cfg = {"/a?b"};
+    HttpUrlFilter filter(cfg);
+
+    EXPECT_TRUE(filter.isFiltered("/aXb")) << "? should match a regular char";
+    EXPECT_TRUE(filter.isFiltered("/a/b")) << "? matches any char including '/'";
+    EXPECT_FALSE(filter.isFiltered("/ab")) << "? requires exactly one char";
+    EXPECT_FALSE(filter.isFiltered("/aXXb")) << "? should not match two chars";
+}
+
+// Test HttpMethodFilter with lowercase config values
+TEST_F(HttpTest, HttpMethodFilterLowercaseConfigTest) {
+    std::vector<std::string> cfg = {"get", "post"};
+    HttpMethodFilter filter(cfg);
+
+    // Constructor uppercases config values; isFiltered also uppercases input
+    EXPECT_TRUE(filter.isFiltered("GET")) << "Should match uppercase GET";
+    EXPECT_TRUE(filter.isFiltered("get")) << "Should match lowercase get";
+    EXPECT_TRUE(filter.isFiltered("Post")) << "Should match mixed case Post";
+    EXPECT_FALSE(filter.isFiltered("PUT")) << "Should not match PUT";
+}
+
+// Test HttpMethodFilter with all standard HTTP methods
+TEST_F(HttpTest, HttpMethodFilterAllStandardMethodsTest) {
+    std::vector<std::string> cfg = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"};
+    HttpMethodFilter filter(cfg);
+
+    EXPECT_TRUE(filter.isFiltered("GET"));
+    EXPECT_TRUE(filter.isFiltered("POST"));
+    EXPECT_TRUE(filter.isFiltered("PUT"));
+    EXPECT_TRUE(filter.isFiltered("DELETE"));
+    EXPECT_TRUE(filter.isFiltered("PATCH"));
+    EXPECT_TRUE(filter.isFiltered("HEAD"));
+    EXPECT_TRUE(filter.isFiltered("OPTIONS"));
+    EXPECT_FALSE(filter.isFiltered("TRACE")) << "TRACE not in config";
+    EXPECT_FALSE(filter.isFiltered("CONNECT")) << "CONNECT not in config";
+}
+
+// Test getRemoteAddr with empty remote address
+TEST_F(HttpTest, GetRemoteAddrEmptyAddressTest) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "");
+    EXPECT_EQ(addr, "") << "Empty remote_addr should return empty string";
+}
+
+// Test getRemoteAddr with IPv6 without brackets (multiple colons)
+TEST_F(HttpTest, GetRemoteAddrIPv6NoBracketsTest) {
+    std::map<std::string, std::string> headers = {};
+    MockHeaderReader reader(headers);
+
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "2001:db8::1");
+    EXPECT_EQ(addr, "2001:db8::1") << "IPv6 without brackets should be returned as-is";
+}
+
+// Test getRemoteAddr with empty X-Forwarded-For falls back to X-Real-Ip
+TEST_F(HttpTest, GetRemoteAddrEmptyXFFWithXRealIpTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", ""},
+        {"X-Real-Ip", "10.0.0.1"}
+    };
+    MockHeaderReader reader(headers);
+
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.1:8080");
+    EXPECT_EQ(addr, "10.0.0.1") << "Empty XFF should fall back to X-Real-Ip";
+}
+
+// Test getRemoteAddr with empty both proxy headers falls back to remote_addr
+TEST_F(HttpTest, GetRemoteAddrEmptyBothProxyHeadersTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", ""},
+        {"X-Real-Ip", ""}
+    };
+    MockHeaderReader reader(headers);
+
+    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "10.1.2.3:9090");
+    EXPECT_EQ(addr, "10.1.2.3") << "Empty proxy headers should fall back to remote_addr";
+}
+
+// Test setProxyHeader priority: Apache takes precedence over Nginx and App
+TEST_F(HttpTest, SetProxyHeaderApachePriorityTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyApache", "t=1000000000 D=100 i=5 b=95"},
+        {"Pinpoint-ProxyNginx", "t=2000000.000 D=200"},
+        {"Pinpoint-ProxyApp", "t=3000000000 app=OtherApp"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<MockAnnotation>();
+
+    HttpTracerUtil::setProxyHeader(reader, annotation);
+
+    // Only Apache header should produce annotation (code=3)
+    const auto& stringValues = annotation->GetStringValues();
+    auto it = stringValues.find(ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(it, stringValues.end()) << "Should have proxy header annotation";
+    EXPECT_EQ(it->second.size(), 1) << "Only one proxy header should be recorded";
+}
+
+// Test setProxyHeader: Nginx takes precedence when Apache is absent
+TEST_F(HttpTest, SetProxyHeaderNginxPriorityTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyNginx", "t=1234567.890 D=500"},
+        {"Pinpoint-ProxyApp", "t=9876543210 app=SomeApp"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<MockAnnotation>();
+
+    HttpTracerUtil::setProxyHeader(reader, annotation);
+
+    const auto& stringValues = annotation->GetStringValues();
+    auto it = stringValues.find(ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(it, stringValues.end()) << "Should have proxy header annotation";
+    EXPECT_EQ(it->second.size(), 1) << "Only one proxy header should be recorded";
+}
+
+// Test HttpHeaderRecorder with case-insensitive headers-all variant
+TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
+    std::vector<std::string> cfg = {"headers-all"};
+    HttpHeaderRecorder recorder(1200, cfg);
+
+    std::map<std::string, std::string> headers;
+    headers["Content-Type"] = "text/html";
+    headers["Accept"] = "*/*";
+    headers["X-Custom"] = "value";
+    MockHeaderReader headerReader(headers);
+
+    auto annotation = std::make_shared<MockAnnotation>();
+    recorder.recordHeader(headerReader, annotation);
+
+    // compare_string is case-insensitive, so "headers-all" should trigger dump_all_headers_
+    EXPECT_EQ(annotation->GetStringStringCount(), 3)
+        << "headers-all (lowercase) should dump all 3 headers";
+}
+
+// Test HttpHeaderRecorder HEADERS-ALL with empty headers
+TEST_F(HttpTest, HttpHeaderRecorderHeadersAllEmptyHeadersTest) {
+    std::vector<std::string> cfg = {"HEADERS-ALL"};
+    HttpHeaderRecorder recorder(1300, cfg);
+
+    std::map<std::string, std::string> headers; // empty
+    MockHeaderReader headerReader(headers);
+
+    auto annotation = std::make_shared<MockAnnotation>();
+    recorder.recordHeader(headerReader, annotation);
+
+    EXPECT_EQ(annotation->GetStringStringCount(), 0)
+        << "HEADERS-ALL with no headers should record nothing";
+}
+
 } // namespace pinpoint
