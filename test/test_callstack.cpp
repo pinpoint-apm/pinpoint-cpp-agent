@@ -358,6 +358,83 @@ TEST_F(CallStackTest, ExceptionConcurrentIdGenerationTest) {
         << "All exception IDs should be unique even with concurrent creation";
 }
 
+// ========== Edge Case Tests ==========
+
+// Test CallStack getModuleName on empty stack returns empty string
+TEST_F(CallStackTest, CallStackGetModuleNameEmptyStackTest) {
+    CallStack callstack("Test error");
+
+    EXPECT_TRUE(callstack.getModuleName().empty()) << "getModuleName on empty stack should return empty string";
+}
+
+// Test CallStack push with temporary string_view sources (lifetime safety)
+TEST_F(CallStackTest, CallStackPushTemporaryStringViewTest) {
+    CallStack callstack("Test error");
+
+    // Push using temporaries that go out of scope immediately
+    {
+        std::string temp_module = "temp_module";
+        std::string temp_function = "temp_function";
+        std::string temp_file = "temp_file.cpp";
+        callstack.push(temp_module, temp_function, temp_file, 42);
+    }
+    // Temporaries are destroyed; verify the stack still holds valid copies
+
+    auto& stack = callstack.getStack();
+    EXPECT_EQ(stack.size(), 1);
+    EXPECT_EQ(stack[0].module, "temp_module");
+    EXPECT_EQ(stack[0].function, "temp_function");
+    EXPECT_EQ(stack[0].file, "temp_file.cpp");
+    EXPECT_EQ(stack[0].line, 42);
+}
+
+// Test Exception takes ownership and nullifies the source unique_ptr
+TEST_F(CallStackTest, ExceptionMovesOwnershipTest) {
+    auto callstack = std::make_unique<CallStack>("Ownership test");
+    callstack->push("mod", "fn", "f.cpp", 1);
+
+    Exception exception(std::move(callstack));
+
+    EXPECT_EQ(callstack, nullptr) << "Source unique_ptr should be null after move";
+    EXPECT_EQ(exception.getCallStack().getErrorMessage(), "Ownership test");
+    EXPECT_EQ(exception.getCallStack().getStack().size(), 1);
+}
+
+// Test CallStack getModuleName returns first frame, not last
+TEST_F(CallStackTest, CallStackGetModuleNameReturnsFirstFrameTest) {
+    CallStack callstack("Test error");
+
+    callstack.push("first_module", "fn1", "f1.cpp", 1);
+    callstack.push("second_module", "fn2", "f2.cpp", 2);
+    callstack.push("third_module", "fn3", "f3.cpp", 3);
+
+    EXPECT_EQ(callstack.getModuleName(), "first_module")
+        << "getModuleName should return the first pushed frame's module";
+}
+
+// Test CallStack push with concatenated/computed string_view arguments
+TEST_F(CallStackTest, CallStackPushComputedStringsTest) {
+    CallStack callstack("Test error");
+
+    for (int i = 0; i < 5; ++i) {
+        callstack.push(
+            "mod" + std::to_string(i),
+            "fn" + std::to_string(i),
+            "file" + std::to_string(i) + ".cpp",
+            i
+        );
+    }
+
+    auto& stack = callstack.getStack();
+    EXPECT_EQ(stack.size(), 5);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(stack[i].module, "mod" + std::to_string(i));
+        EXPECT_EQ(stack[i].function, "fn" + std::to_string(i));
+        EXPECT_EQ(stack[i].file, "file" + std::to_string(i) + ".cpp");
+        EXPECT_EQ(stack[i].line, i);
+    }
+}
+
 // ========== Integration Tests ==========
 
 // Test complete workflow: create CallStack, add frames, wrap in Exception
