@@ -459,4 +459,391 @@ TEST_F(StatTest, StatSnapshotMemoryLayoutTest) {
     }
 }
 
+// ========== Additional Edge Case Tests ==========
+
+// Test resetAgentStats clears all counters
+TEST_F(StatTest, ResetAgentStatsTest) {
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrUnsampleNew();
+    agent_stats_->incrSampleCont();
+    agent_stats_->incrUnsampleCont();
+    agent_stats_->incrSkipNew();
+    agent_stats_->incrSkipCont();
+    agent_stats_->collectResponseTime(500);
+
+    agent_stats_->resetAgentStats();
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.num_sample_new_, 0);
+    EXPECT_EQ(snapshot.num_unsample_new_, 0);
+    EXPECT_EQ(snapshot.num_sample_cont_, 0);
+    EXPECT_EQ(snapshot.num_unsample_cont_, 0);
+    EXPECT_EQ(snapshot.num_skip_new_, 0);
+    EXPECT_EQ(snapshot.num_skip_cont_, 0);
+    EXPECT_EQ(snapshot.response_time_avg_, 0);
+    EXPECT_EQ(snapshot.response_time_max_, 0);
+}
+
+// Test collectAgentStat resets counters between calls
+TEST_F(StatTest, CollectResetsCountersBetweenCallsTest) {
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrSampleNew();
+    agent_stats_->incrSampleNew();
+    agent_stats_->collectResponseTime(100);
+    agent_stats_->collectResponseTime(200);
+
+    AgentStatsSnapshot snapshot1;
+    agent_stats_->collectAgentStat(snapshot1);
+
+    EXPECT_EQ(snapshot1.num_sample_new_, 3);
+    EXPECT_EQ(snapshot1.response_time_max_, 200);
+
+    // Second collect without new data should show zeros
+    AgentStatsSnapshot snapshot2;
+    agent_stats_->collectAgentStat(snapshot2);
+
+    EXPECT_EQ(snapshot2.num_sample_new_, 0);
+    EXPECT_EQ(snapshot2.num_sample_cont_, 0);
+    EXPECT_EQ(snapshot2.num_unsample_new_, 0);
+    EXPECT_EQ(snapshot2.num_unsample_cont_, 0);
+    EXPECT_EQ(snapshot2.num_skip_new_, 0);
+    EXPECT_EQ(snapshot2.num_skip_cont_, 0);
+    EXPECT_EQ(snapshot2.response_time_avg_, 0);
+    EXPECT_EQ(snapshot2.response_time_max_, 0);
+}
+
+// Test single response time
+TEST_F(StatTest, SingleResponseTimeTest) {
+    agent_stats_->collectResponseTime(42);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.response_time_avg_, 42);
+    EXPECT_EQ(snapshot.response_time_max_, 42);
+}
+
+// Test zero response time
+TEST_F(StatTest, ZeroResponseTimeTest) {
+    agent_stats_->collectResponseTime(0);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.response_time_avg_, 0);
+    EXPECT_EQ(snapshot.response_time_max_, 0);
+}
+
+// Test no response times collected (avg should be 0)
+TEST_F(StatTest, NoResponseTimesTest) {
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.response_time_avg_, 0);
+    EXPECT_EQ(snapshot.response_time_max_, 0);
+}
+
+// Test large response time values
+TEST_F(StatTest, LargeResponseTimeTest) {
+    int64_t large_time = 1000000000LL; // 1 billion ms
+    agent_stats_->collectResponseTime(large_time);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.response_time_avg_, large_time);
+    EXPECT_EQ(snapshot.response_time_max_, large_time);
+}
+
+// Test response time average calculation
+TEST_F(StatTest, ResponseTimeAverageCalculationTest) {
+    agent_stats_->collectResponseTime(100);
+    agent_stats_->collectResponseTime(200);
+    agent_stats_->collectResponseTime(300);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    // (100 + 200 + 300) / 3 = 200
+    EXPECT_EQ(snapshot.response_time_avg_, 200);
+    EXPECT_EQ(snapshot.response_time_max_, 300);
+}
+
+// Test dropping a non-existent span ID (should not crash)
+TEST_F(StatTest, DropNonExistentSpanTest) {
+    agent_stats_->dropActiveSpan(99999);
+    SUCCEED();
+}
+
+// Test adding duplicate span ID (insert behavior)
+TEST_F(StatTest, DuplicateSpanIdTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    agent_stats_->addActiveSpan(100, now_ms);
+    agent_stats_->addActiveSpan(100, now_ms - 5000); // Same ID, different start time
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    // std::unordered_map::insert does NOT overwrite existing key,
+    // so only 1 entry should exist
+    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, 1) << "Duplicate spanId insert should keep original entry";
+
+    agent_stats_->dropActiveSpan(100);
+}
+
+// Test active request bucket boundary values
+TEST_F(StatTest, ActiveRequestBucketBoundariesTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // Bucket 0: < 1000ms
+    agent_stats_->addActiveSpan(1001, now_ms - 999);
+    // Bucket 1: >= 1000ms and < 3000ms (exactly at boundary)
+    agent_stats_->addActiveSpan(1002, now_ms - 1000);
+    // Bucket 2: >= 3000ms and < 5000ms (exactly at boundary)
+    agent_stats_->addActiveSpan(1003, now_ms - 3000);
+    // Bucket 3: >= 5000ms (exactly at boundary)
+    agent_stats_->addActiveSpan(1004, now_ms - 5000);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    // Due to time passing between addActiveSpan and collectAgentStat,
+    // boundary spans might shift up a bucket. We verify total count is correct.
+    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, 4) << "All 4 spans should be accounted for";
+
+    // The 999ms span should be in bucket 0 or 1 (timing variance)
+    // The 5000ms span should be in bucket 3
+    EXPECT_GE(snapshot.active_requests_[3], 1) << "5s+ span should be in last bucket";
+
+    agent_stats_->dropActiveSpan(1001);
+    agent_stats_->dropActiveSpan(1002);
+    agent_stats_->dropActiveSpan(1003);
+    agent_stats_->dropActiveSpan(1004);
+}
+
+// Test all active spans in a single bucket
+TEST_F(StatTest, AllSpansInOneBucketTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // All spans are very recent (< 1s)
+    for (int i = 0; i < 5; i++) {
+        agent_stats_->addActiveSpan(2000 + i, now_ms - 10);
+    }
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.active_requests_[0], 5) << "All spans should be in bucket 0";
+    EXPECT_EQ(snapshot.active_requests_[1], 0);
+    EXPECT_EQ(snapshot.active_requests_[2], 0);
+    EXPECT_EQ(snapshot.active_requests_[3], 0);
+
+    for (int i = 0; i < 5; i++) {
+        agent_stats_->dropActiveSpan(2000 + i);
+    }
+}
+
+// Test empty active span map
+TEST_F(StatTest, EmptyActiveSpanMapTest) {
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(snapshot.active_requests_[i], 0);
+    }
+}
+
+// Test add and then drop all spans
+TEST_F(StatTest, AddAndDropAllSpansTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    agent_stats_->addActiveSpan(3001, now_ms);
+    agent_stats_->addActiveSpan(3002, now_ms);
+    agent_stats_->addActiveSpan(3003, now_ms);
+
+    agent_stats_->dropActiveSpan(3001);
+    agent_stats_->dropActiveSpan(3002);
+    agent_stats_->dropActiveSpan(3003);
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, 0) << "All spans dropped, should have 0 active";
+}
+
+// Test concurrent sampling counter increments
+TEST_F(StatTest, ConcurrentSamplingCounterTest) {
+    const int increments_per_thread = 1000;
+    const int num_threads = 4;
+
+    auto increment_fn = [this]() {
+        for (int i = 0; i < increments_per_thread; i++) {
+            agent_stats_->incrSampleNew();
+            agent_stats_->incrUnsampleNew();
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back(increment_fn);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.num_sample_new_, num_threads * increments_per_thread);
+    EXPECT_EQ(snapshot.num_unsample_new_, num_threads * increments_per_thread);
+}
+
+// Test concurrent response time collection
+TEST_F(StatTest, ConcurrentResponseTimeTest) {
+    const int count_per_thread = 100;
+    const int num_threads = 4;
+
+    auto collect_fn = [this]() {
+        for (int i = 0; i < count_per_thread; i++) {
+            agent_stats_->collectResponseTime(10);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back(collect_fn);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    // Total requests = num_threads * count_per_thread, each 10ms
+    EXPECT_EQ(snapshot.response_time_avg_, 10);
+    EXPECT_EQ(snapshot.response_time_max_, 10);
+}
+
+// Test sample_time is set to current time in milliseconds
+TEST_F(StatTest, SampleTimeIsCurrentTest) {
+    auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    auto after = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    EXPECT_GE(snapshot.sample_time_, before);
+    EXPECT_LE(snapshot.sample_time_, after);
+}
+
+// Test AgentStatsSnapshot default initialization
+TEST_F(StatTest, SnapshotDefaultInitTest) {
+    AgentStatsSnapshot snapshot;
+
+    EXPECT_EQ(snapshot.sample_time_, 0);
+    EXPECT_DOUBLE_EQ(snapshot.system_cpu_time_, 0.0);
+    EXPECT_DOUBLE_EQ(snapshot.process_cpu_time_, 0.0);
+    EXPECT_EQ(snapshot.num_threads_, 0);
+    EXPECT_EQ(snapshot.heap_alloc_size_, 0);
+    EXPECT_EQ(snapshot.heap_max_size_, 0);
+    EXPECT_EQ(snapshot.response_time_avg_, 0);
+    EXPECT_EQ(snapshot.response_time_max_, 0);
+    EXPECT_EQ(snapshot.num_sample_new_, 0);
+    EXPECT_EQ(snapshot.num_sample_cont_, 0);
+    EXPECT_EQ(snapshot.num_unsample_new_, 0);
+    EXPECT_EQ(snapshot.num_unsample_cont_, 0);
+    EXPECT_EQ(snapshot.num_skip_new_, 0);
+    EXPECT_EQ(snapshot.num_skip_cont_, 0);
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(snapshot.active_requests_[i], 0);
+    }
+}
+
+// Test initAgentStats resets batch counter
+TEST_F(StatTest, InitAgentStatsResetsBatchTest) {
+    // Collect some stats first
+    agent_stats_->incrSampleNew();
+    agent_stats_->collectResponseTime(100);
+
+    // Re-init should reset everything
+    agent_stats_->initAgentStats();
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    // After re-init, sampling counters should be 0
+    EXPECT_EQ(snapshot.num_sample_new_, 0);
+    EXPECT_EQ(snapshot.response_time_avg_, 0);
+    EXPECT_EQ(snapshot.response_time_max_, 0);
+}
+
+// Test mixed increment patterns across all counters
+TEST_F(StatTest, AllCountersMixedIncrementTest) {
+    for (int i = 0; i < 10; i++) agent_stats_->incrSampleNew();
+    for (int i = 0; i < 20; i++) agent_stats_->incrUnsampleNew();
+    for (int i = 0; i < 30; i++) agent_stats_->incrSampleCont();
+    for (int i = 0; i < 40; i++) agent_stats_->incrUnsampleCont();
+    for (int i = 0; i < 50; i++) agent_stats_->incrSkipNew();
+    for (int i = 0; i < 60; i++) agent_stats_->incrSkipCont();
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    EXPECT_EQ(snapshot.num_sample_new_, 10);
+    EXPECT_EQ(snapshot.num_unsample_new_, 20);
+    EXPECT_EQ(snapshot.num_sample_cont_, 30);
+    EXPECT_EQ(snapshot.num_unsample_cont_, 40);
+    EXPECT_EQ(snapshot.num_skip_new_, 50);
+    EXPECT_EQ(snapshot.num_skip_cont_, 60);
+}
+
+// Test getSnapshots returns modifiable reference
+TEST_F(StatTest, GetSnapshotsModifiableTest) {
+    auto& snapshots = agent_stats_->getSnapshots();
+    size_t original_size = snapshots.size();
+
+    snapshots.resize(original_size + 3);
+    EXPECT_EQ(agent_stats_->getSnapshots().size(), original_size + 3);
+}
+
+// Test many active spans
+TEST_F(StatTest, ManyActiveSpansTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    const int span_count = 100;
+    for (int i = 0; i < span_count; i++) {
+        agent_stats_->addActiveSpan(5000 + i, now_ms - 100);
+    }
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, span_count);
+
+    for (int i = 0; i < span_count; i++) {
+        agent_stats_->dropActiveSpan(5000 + i);
+    }
+}
+
 } // namespace pinpoint
