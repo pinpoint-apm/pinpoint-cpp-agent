@@ -70,7 +70,24 @@ private:
         saved_env_vars_[env::HTTP_URL_STAT_ENABLE_TRIM_PATH] = GetEnvVar(env::HTTP_URL_STAT_ENABLE_TRIM_PATH);
         saved_env_vars_[env::HTTP_URL_STAT_TRIM_PATH_DEPTH] = GetEnvVar(env::HTTP_URL_STAT_TRIM_PATH_DEPTH);
         saved_env_vars_[env::HTTP_URL_STAT_METHOD_PREFIX] = GetEnvVar(env::HTTP_URL_STAT_METHOD_PREFIX);
-        
+        saved_env_vars_[env::HTTP_SERVER_STATUS_CODE_ERRORS] = GetEnvVar(env::HTTP_SERVER_STATUS_CODE_ERRORS);
+        saved_env_vars_[env::HTTP_SERVER_EXCLUDE_URL] = GetEnvVar(env::HTTP_SERVER_EXCLUDE_URL);
+        saved_env_vars_[env::HTTP_SERVER_EXCLUDE_METHOD] = GetEnvVar(env::HTTP_SERVER_EXCLUDE_METHOD);
+        saved_env_vars_[env::HTTP_SERVER_RECORD_REQUEST_HEADER] = GetEnvVar(env::HTTP_SERVER_RECORD_REQUEST_HEADER);
+        saved_env_vars_[env::HTTP_SERVER_RECORD_REQUEST_COOKIE] = GetEnvVar(env::HTTP_SERVER_RECORD_REQUEST_COOKIE);
+        saved_env_vars_[env::HTTP_SERVER_RECORD_RESPONSE_HEADER] = GetEnvVar(env::HTTP_SERVER_RECORD_RESPONSE_HEADER);
+        saved_env_vars_[env::HTTP_CLIENT_RECORD_REQUEST_HEADER] = GetEnvVar(env::HTTP_CLIENT_RECORD_REQUEST_HEADER);
+        saved_env_vars_[env::HTTP_CLIENT_RECORD_REQUEST_COOKIE] = GetEnvVar(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE);
+        saved_env_vars_[env::HTTP_CLIENT_RECORD_RESPONSE_HEADER] = GetEnvVar(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER);
+        saved_env_vars_[env::SPAN_QUEUE_SIZE] = GetEnvVar(env::SPAN_QUEUE_SIZE);
+        saved_env_vars_[env::SPAN_MAX_EVENT_DEPTH] = GetEnvVar(env::SPAN_MAX_EVENT_DEPTH);
+        saved_env_vars_[env::SPAN_MAX_EVENT_SEQUENCE] = GetEnvVar(env::SPAN_MAX_EVENT_SEQUENCE);
+        saved_env_vars_[env::SPAN_EVENT_CHUNK_SIZE] = GetEnvVar(env::SPAN_EVENT_CHUNK_SIZE);
+        saved_env_vars_[env::STAT_ENABLE] = GetEnvVar(env::STAT_ENABLE);
+        saved_env_vars_[env::STAT_BATCH_COUNT] = GetEnvVar(env::STAT_BATCH_COUNT);
+        saved_env_vars_[env::STAT_BATCH_INTERVAL] = GetEnvVar(env::STAT_BATCH_INTERVAL);
+        saved_env_vars_[env::AGENT_NAME] = GetEnvVar(env::AGENT_NAME);
+
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
             unsetenv(pair.first.c_str());
@@ -1345,6 +1362,411 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "no", 1);
     auto config4 = make_config();
     EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "no should be parsed as false";
+}
+
+// ========== Config::check() Validation Tests ==========
+
+// Test check() passes with valid config
+TEST_F(ConfigTest, CheckPassesWithValidConfigTest) {
+    Config config;
+    config.collector.host = "localhost";
+    config.app_name_ = "MyApp";
+    config.agent_id_ = "agent-001";
+    config.agent_name_ = "AgentOne";
+
+    EXPECT_TRUE(config.check()) << "Valid config should pass check";
+}
+
+// Test check() fails when collector host is empty
+TEST_F(ConfigTest, CheckFailsEmptyCollectorHostTest) {
+    Config config;
+    config.collector.host = "";
+    config.app_name_ = "MyApp";
+    config.agent_id_ = "agent-001";
+
+    EXPECT_FALSE(config.check()) << "Empty collector host should fail check";
+}
+
+// Test check() fails when app name is empty
+TEST_F(ConfigTest, CheckFailsEmptyAppNameTest) {
+    Config config;
+    config.collector.host = "localhost";
+    config.app_name_ = "";
+
+    EXPECT_FALSE(config.check()) << "Empty app name should fail check";
+}
+
+// Test check() fails when app name exceeds max length (24)
+TEST_F(ConfigTest, CheckFailsLongAppNameTest) {
+    Config config;
+    config.collector.host = "localhost";
+    config.app_name_ = std::string(25, 'A');
+    config.agent_id_ = "agent-001";
+
+    EXPECT_FALSE(config.check()) << "App name > 24 chars should fail check";
+
+    // Exactly 24 should pass
+    config.app_name_ = std::string(24, 'A');
+    EXPECT_TRUE(config.check()) << "App name == 24 chars should pass check";
+}
+
+// Test check() fails when agent ID exceeds max length (24)
+TEST_F(ConfigTest, CheckFailsLongAgentIdTest) {
+    Config config;
+    config.collector.host = "localhost";
+    config.app_name_ = "MyApp";
+    config.agent_id_ = std::string(25, 'B');
+
+    EXPECT_FALSE(config.check()) << "Agent ID > 24 chars should fail check";
+
+    config.agent_id_ = std::string(24, 'B');
+    EXPECT_TRUE(config.check()) << "Agent ID == 24 chars should pass check";
+}
+
+// Test check() fails when agent name exceeds max length (255)
+TEST_F(ConfigTest, CheckFailsLongAgentNameTest) {
+    Config config;
+    config.collector.host = "localhost";
+    config.app_name_ = "MyApp";
+    config.agent_id_ = "agent-001";
+    config.agent_name_ = std::string(256, 'C');
+
+    EXPECT_FALSE(config.check()) << "Agent name > 255 chars should fail check";
+
+    config.agent_name_ = std::string(255, 'C');
+    EXPECT_TRUE(config.check()) << "Agent name == 255 chars should pass check";
+}
+
+// ========== Config::isReloadable() Tests ==========
+
+// Test isReloadable() returns true when critical fields match
+TEST_F(ConfigTest, IsReloadableReturnsTrueWhenCriticalFieldsMatchTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->app_type_ = 1300;
+    old_config->agent_id_ = "agent-001";
+    old_config->agent_name_ = "Agent";
+    old_config->collector.host = "localhost";
+    old_config->collector.agent_port = 9991;
+    old_config->collector.span_port = 9993;
+    old_config->collector.stat_port = 9992;
+
+    Config new_config = *old_config;
+    // Change non-critical fields
+    new_config.log.level = "debug";
+    new_config.sampling.percent_rate = 50.0;
+    new_config.enable_callstack_trace = true;
+
+    EXPECT_TRUE(new_config.isReloadable(old_config))
+        << "Should be reloadable when only non-critical fields change";
+}
+
+// Test isReloadable() returns false when app name changes
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenAppNameChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "OldApp";
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.app_name_ = "NewApp";
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when app name changes";
+}
+
+// Test isReloadable() returns false when collector host changes
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorHostChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "old.host";
+
+    Config new_config = *old_config;
+    new_config.collector.host = "new.host";
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when collector host changes";
+}
+
+// Test isReloadable() returns false when port changes
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenPortChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+    old_config->collector.agent_port = 9991;
+
+    Config new_config = *old_config;
+    new_config.collector.agent_port = 8888;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when agent port changes";
+}
+
+// Test isReloadable() returns true when old config is null
+TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
+    Config new_config;
+    new_config.app_name_ = "MyApp";
+
+    EXPECT_TRUE(new_config.isReloadable(nullptr))
+        << "Should be reloadable when old config is null";
+}
+
+// ========== Port Clamping Validation Tests ==========
+
+// Test port clamping for out-of-range values
+TEST_F(ConfigTest, PortClampingOutOfRangeTest) {
+    // Port = 0 (below min 1)
+    std::string yaml = R"(
+Collector:
+  GrpcHost: "localhost"
+  GrpcAgentPort: 0
+  GrpcSpanPort: 70000
+  GrpcStatPort: -1
+)";
+    set_config_string(yaml);
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.agent_port, defaults::AGENT_PORT)
+        << "Port 0 should be clamped to default";
+    EXPECT_EQ(config->collector.span_port, defaults::SPAN_PORT)
+        << "Port > 65535 should be clamped to default";
+    EXPECT_EQ(config->collector.stat_port, defaults::STAT_PORT)
+        << "Negative port should be clamped to default";
+}
+
+// Test port boundary values
+TEST_F(ConfigTest, PortBoundaryValuesTest) {
+    std::string yaml = R"(
+Collector:
+  GrpcHost: "localhost"
+  GrpcAgentPort: 1
+  GrpcSpanPort: 65535
+  GrpcStatPort: 80
+)";
+    set_config_string(yaml);
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.agent_port, 1) << "Port 1 (min) should be valid";
+    EXPECT_EQ(config->collector.span_port, 65535) << "Port 65535 (max) should be valid";
+    EXPECT_EQ(config->collector.stat_port, 80) << "Port 80 should be valid";
+}
+
+// ========== Stat Validation Tests ==========
+
+// Test stat batch_count out of range
+TEST_F(ConfigTest, StatBatchCountOutOfRangeTest) {
+    // Below minimum (1)
+    std::string yaml = R"(
+Stat:
+  BatchCount: 0
+  BatchInterval: 5000
+)";
+    set_config_string(yaml);
+    auto config = make_config();
+    EXPECT_EQ(config->stat.batch_count, defaults::STAT_BATCH_COUNT)
+        << "batch_count 0 should be reset to default";
+
+    // Above maximum (100)
+    set_config_string(R"(
+Stat:
+  BatchCount: 101
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.batch_count, defaults::STAT_BATCH_COUNT)
+        << "batch_count 101 should be reset to default";
+
+    // Boundary valid
+    set_config_string(R"(
+Stat:
+  BatchCount: 1
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.batch_count, 1) << "batch_count 1 (min) should be valid";
+
+    set_config_string(R"(
+Stat:
+  BatchCount: 100
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.batch_count, 100) << "batch_count 100 (max) should be valid";
+}
+
+// Test stat collect_interval out of range
+TEST_F(ConfigTest, StatCollectIntervalOutOfRangeTest) {
+    // Below minimum (1000)
+    set_config_string(R"(
+Stat:
+  BatchInterval: 500
+)");
+    auto config = make_config();
+    EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
+        << "Interval 500 should be reset to default";
+
+    // Above maximum (60000)
+    set_config_string(R"(
+Stat:
+  BatchInterval: 70000
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
+        << "Interval 70000 should be reset to default";
+
+    // Boundary valid
+    set_config_string(R"(
+Stat:
+  BatchInterval: 1000
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.collect_interval, 1000) << "Interval 1000 (min) should be valid";
+
+    set_config_string(R"(
+Stat:
+  BatchInterval: 60000
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.collect_interval, 60000) << "Interval 60000 (max) should be valid";
+}
+
+// ========== Span Min Clamping Tests ==========
+
+// Test span max_event_depth minimum clamping (< 2 → 2, not -1)
+TEST_F(ConfigTest, SpanMaxEventDepthMinClampingTest) {
+    set_config_string(R"(
+Span:
+  MaxEventDepth: 0
+)");
+    auto config = make_config();
+    EXPECT_EQ(config->span.max_event_depth, 2)
+        << "max_event_depth 0 should be clamped to minimum 2";
+
+    set_config_string(R"(
+Span:
+  MaxEventDepth: 1
+)");
+    config = make_config();
+    EXPECT_EQ(config->span.max_event_depth, 2)
+        << "max_event_depth 1 should be clamped to minimum 2";
+
+    set_config_string(R"(
+Span:
+  MaxEventDepth: 2
+)");
+    config = make_config();
+    EXPECT_EQ(config->span.max_event_depth, 2)
+        << "max_event_depth 2 (min boundary) should be valid";
+}
+
+// Test span max_event_sequence minimum clamping (< 4 → 4, not -1)
+TEST_F(ConfigTest, SpanMaxEventSequenceMinClampingTest) {
+    set_config_string(R"(
+Span:
+  MaxEventSequence: 0
+)");
+    auto config = make_config();
+    EXPECT_EQ(config->span.max_event_sequence, 4)
+        << "max_event_sequence 0 should be clamped to minimum 4";
+
+    set_config_string(R"(
+Span:
+  MaxEventSequence: 3
+)");
+    config = make_config();
+    EXPECT_EQ(config->span.max_event_sequence, 4)
+        << "max_event_sequence 3 should be clamped to minimum 4";
+
+    set_config_string(R"(
+Span:
+  MaxEventSequence: 4
+)");
+    config = make_config();
+    EXPECT_EQ(config->span.max_event_sequence, 4)
+        << "max_event_sequence 4 (min boundary) should be valid";
+}
+
+// Test span queue size max boundary (65536)
+TEST_F(ConfigTest, SpanQueueSizeMaxBoundaryTest) {
+    set_config_string(R"(
+Span:
+  QueueSize: 65536
+)");
+    auto config = make_config();
+    EXPECT_EQ(config->span.queue_size, 65536)
+        << "queue_size 65536 (max) should be valid";
+
+    set_config_string(R"(
+Span:
+  QueueSize: 65537
+)");
+    config = make_config();
+    EXPECT_EQ(config->span.queue_size, defaults::SPAN_QUEUE_SIZE)
+        << "queue_size > 65536 should be reset to default";
+}
+
+// ========== HTTP Comma-Separated Environment Variable Tests ==========
+
+// Test HTTP server env vars with comma-separated values
+TEST_F(ConfigTest, HttpServerCommaSeperatedEnvVarsTest) {
+    setenv(env::HTTP_SERVER_STATUS_CODE_ERRORS, "5xx,401,403", 1);
+    setenv(env::HTTP_SERVER_EXCLUDE_URL, "/health,/metrics,/ready", 1);
+    setenv(env::HTTP_SERVER_EXCLUDE_METHOD, "PUT,DELETE", 1);
+    setenv(env::HTTP_SERVER_RECORD_REQUEST_HEADER, "Authorization,Accept,Content-Type", 1);
+    setenv(env::HTTP_SERVER_RECORD_REQUEST_COOKIE, "session,tracking", 1);
+    setenv(env::HTTP_SERVER_RECORD_RESPONSE_HEADER, "Content-Type,X-Request-Id", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->http.server.status_errors.size(), 3);
+    EXPECT_EQ(config->http.server.status_errors[0], "5xx");
+    EXPECT_EQ(config->http.server.status_errors[1], "401");
+    EXPECT_EQ(config->http.server.status_errors[2], "403");
+
+    EXPECT_EQ(config->http.server.exclude_url.size(), 3);
+    EXPECT_EQ(config->http.server.exclude_url[0], "/health");
+    EXPECT_EQ(config->http.server.exclude_url[2], "/ready");
+
+    EXPECT_EQ(config->http.server.exclude_method.size(), 2);
+
+    EXPECT_EQ(config->http.server.rec_request_header.size(), 3);
+    EXPECT_EQ(config->http.server.rec_request_cookie.size(), 2);
+    EXPECT_EQ(config->http.server.rec_response_header.size(), 2);
+}
+
+// Test HTTP client env vars with comma-separated values
+TEST_F(ConfigTest, HttpClientCommaSeparatedEnvVarsTest) {
+    setenv(env::HTTP_CLIENT_RECORD_REQUEST_HEADER, "User-Agent,Accept", 1);
+    setenv(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE, "session", 1);
+    setenv(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER, "Content-Type,Set-Cookie,X-Trace-Id", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->http.client.rec_request_header.size(), 2);
+    EXPECT_EQ(config->http.client.rec_request_header[0], "User-Agent");
+    EXPECT_EQ(config->http.client.rec_request_header[1], "Accept");
+
+    EXPECT_EQ(config->http.client.rec_request_cookie.size(), 1);
+    EXPECT_EQ(config->http.client.rec_request_cookie[0], "session");
+
+    EXPECT_EQ(config->http.client.rec_response_header.size(), 3);
+}
+
+// Test HTTP env vars override YAML list values
+TEST_F(ConfigTest, HttpEnvVarsOverrideYamlListTest) {
+    set_config_string(R"(
+Http:
+  Server:
+    StatusCodeErrors: ["5xx"]
+    ExcludeUrl: ["/old-health"]
+)");
+    setenv(env::HTTP_SERVER_STATUS_CODE_ERRORS, "4xx,5xx", 1);
+    setenv(env::HTTP_SERVER_EXCLUDE_URL, "/new-health,/new-metrics", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->http.server.status_errors.size(), 2);
+    EXPECT_EQ(config->http.server.status_errors[0], "4xx");
+    EXPECT_EQ(config->http.server.status_errors[1], "5xx");
+
+    EXPECT_EQ(config->http.server.exclude_url.size(), 2);
+    EXPECT_EQ(config->http.server.exclude_url[0], "/new-health");
 }
 
 } // namespace pinpoint
