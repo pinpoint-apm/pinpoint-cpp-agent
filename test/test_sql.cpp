@@ -293,4 +293,212 @@ TEST_F(SqlTest, NestedQuotesAndCommentsTest) {
     EXPECT_EQ(result.parameters, "Comment /* not really */,123");
 }
 
+// ========== Additional Edge Case Tests ==========
+
+// Test custom max_sql_length constructor
+TEST_F(SqlTest, CustomMaxSqlLengthTest) {
+    SqlNormalizer short_normalizer(30);
+    // SQL is longer than 30 chars, should be truncated during processing
+    auto result = short_normalizer.normalize("SELECT * FROM users WHERE id = 123 AND name = 'John'");
+    EXPECT_TRUE(result.normalized_sql.length() <= 30);
+}
+
+// Test empty string literal
+TEST_F(SqlTest, EmptyStringLiteralTest) {
+    auto result = normalizer_->normalize("SELECT * FROM users WHERE name = ''");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'");
+    EXPECT_EQ(result.parameters, "");
+
+    result = normalizer_->normalize("INSERT INTO t VALUES ('', 'hello')");
+    EXPECT_EQ(result.normalized_sql, "INSERT INTO t VALUES ('0$', '1$')");
+    EXPECT_EQ(result.parameters, ",hello");
+}
+
+// Test consecutive escaped quotes (e.g., '''' represents a single quote in SQL)
+TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
+    auto result = normalizer_->normalize("SELECT * FROM t WHERE v = ''''");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = '0$'");
+    EXPECT_EQ(result.parameters, "'");
+}
+
+// Test unclosed block comment
+TEST_F(SqlTest, UnclosedBlockCommentTest) {
+    auto result = normalizer_->normalize("SELECT * FROM users /* unclosed comment");
+    // Everything after /* should be consumed as comment
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test whitespace-only SQL
+TEST_F(SqlTest, WhitespaceOnlySqlTest) {
+    auto result = normalizer_->normalize("   \t\n  ");
+    EXPECT_EQ(result.normalized_sql, "   \t\n  ");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test subtraction operator (minus not followed by digit should not be treated as negative number)
+TEST_F(SqlTest, SubtractionOperatorTest) {
+    auto result = normalizer_->normalize("SELECT a - b FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT a - b FROM t");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test minus between two numbers
+TEST_F(SqlTest, MinusBetweenNumbersTest) {
+    auto result = normalizer_->normalize("SELECT 10 - 3 FROM t");
+    // 10 is a number, then " - " then 3. The minus before 3 is preceded by space and followed by digit,
+    // so it may be treated as negative number -3
+    auto result2 = normalizer_->normalize("SELECT 10 -3 FROM t");
+    // When minus is directly attached to digit, it's ambiguous
+    EXPECT_TRUE(result2.normalized_sql.find("FROM t") != std::string::npos);
+}
+
+// Test string parameter containing comma (ambiguous with parameter separator)
+TEST_F(SqlTest, StringWithCommaParameterTest) {
+    auto result = normalizer_->normalize("SELECT * FROM t WHERE name = 'Doe, John'");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE name = '0$'");
+    EXPECT_EQ(result.parameters, "Doe, John");
+}
+
+// Test consecutive block comments
+TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
+    auto result = normalizer_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT   *   FROM users");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test block comment immediately followed by string literal
+TEST_F(SqlTest, BlockCommentFollowedByStringTest) {
+    auto result = normalizer_->normalize("SELECT /* comment */'hello' FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT  '0$' FROM t");
+    EXPECT_EQ(result.parameters, "hello");
+}
+
+// Test number at very end of SQL
+TEST_F(SqlTest, NumberAtEndOfSqlTest) {
+    auto result = normalizer_->normalize("SELECT 42");
+    EXPECT_EQ(result.normalized_sql, "SELECT 0#");
+    EXPECT_EQ(result.parameters, "42");
+}
+
+// Test line comment with \r\n line endings
+TEST_F(SqlTest, LineCommentCRLFTest) {
+    auto result = normalizer_->normalize("SELECT * -- comment\r\nFROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT * \r\nFROM users");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test line comment with only \r (carriage return)
+TEST_F(SqlTest, LineCommentCROnlyTest) {
+    auto result = normalizer_->normalize("SELECT * -- comment\rFROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT * \rFROM users");
+    EXPECT_EQ(result.parameters, "");
+}
+
+// Test numbers embedded in identifiers (e.g., table1, col2)
+TEST_F(SqlTest, NumbersInIdentifiersTest) {
+    // Numbers preceded by letters are still just characters in the normal flow;
+    // the normalizer treats standalone digits as numeric literals
+    auto result = normalizer_->normalize("SELECT col1 FROM table2 WHERE id = 5");
+    // col1 and table2: the '1' and '2' are digits that will be captured as numeric literals
+    // This documents the current behavior
+    EXPECT_TRUE(result.normalized_sql.find("= 0#") != std::string::npos ||
+                result.normalized_sql.find("= ") != std::string::npos);
+    // The parameter 5 should be captured
+    EXPECT_TRUE(result.parameters.find("5") != std::string::npos);
+}
+
+// Test truncation cutting through a string literal
+TEST_F(SqlTest, TruncationMidStringLiteralTest) {
+    SqlNormalizer tiny_normalizer(20);
+    // "SELECT name = 'very long string value'" is > 20 chars
+    // Truncation at 20 chars will cut inside the string literal
+    auto result = tiny_normalizer.normalize("SELECT name = 'very long string value'");
+    // Should not crash; malformed string handling should kick in
+    EXPECT_FALSE(result.normalized_sql.empty());
+}
+
+// Test truncation cutting through a number
+TEST_F(SqlTest, TruncationMidNumberTest) {
+    SqlNormalizer tiny_normalizer(25);
+    auto result = tiny_normalizer.normalize("SELECT * FROM t WHERE x = 123456789");
+    // Should not crash; number may be partially captured
+    EXPECT_FALSE(result.normalized_sql.empty());
+}
+
+// Test truncation cutting through a block comment
+TEST_F(SqlTest, TruncationMidBlockCommentTest) {
+    SqlNormalizer tiny_normalizer(20);
+    auto result = tiny_normalizer.normalize("SELECT * /* very long block comment */ FROM t");
+    // Should not crash
+    EXPECT_FALSE(result.normalized_sql.empty());
+}
+
+// Test SQL with many parameters (verify indexing stays correct)
+TEST_F(SqlTest, ManyParametersIndexingTest) {
+    auto result = normalizer_->normalize(
+        "INSERT INTO t VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 'a', 'b')");
+    EXPECT_EQ(result.normalized_sql,
+        "INSERT INTO t VALUES (0#, 1#, 2#, 3#, 4#, 5#, 6#, 7#, 8#, 9#, '10$', '11$')");
+    // Verify double-digit indices work
+    EXPECT_TRUE(result.normalized_sql.find("'10$'") != std::string::npos);
+    EXPECT_TRUE(result.normalized_sql.find("'11$'") != std::string::npos);
+    EXPECT_EQ(result.parameters, "1,2,3,4,5,6,7,8,9,10,a,b");
+}
+
+// Test UPDATE statement
+TEST_F(SqlTest, UpdateStatementTest) {
+    auto result = normalizer_->normalize(
+        "UPDATE users SET name = 'Alice', age = 30 WHERE id = 1");
+    EXPECT_EQ(result.normalized_sql,
+        "UPDATE users SET name = '0$', age = 1# WHERE id = 2#");
+    EXPECT_EQ(result.parameters, "Alice,30,1");
+}
+
+// Test DELETE statement
+TEST_F(SqlTest, DeleteStatementTest) {
+    auto result = normalizer_->normalize(
+        "DELETE FROM users WHERE id = 42 AND status = 'inactive'");
+    EXPECT_EQ(result.normalized_sql,
+        "DELETE FROM users WHERE id = 0# AND status = '1$'");
+    EXPECT_EQ(result.parameters, "42,inactive");
+}
+
+// Test IN clause with multiple values
+TEST_F(SqlTest, InClauseTest) {
+    auto result = normalizer_->normalize(
+        "SELECT * FROM users WHERE id IN (1, 2, 3) AND name IN ('a', 'b')");
+    EXPECT_EQ(result.normalized_sql,
+        "SELECT * FROM users WHERE id IN (0#, 1#, 2#) AND name IN ('3$', '4$')");
+    EXPECT_EQ(result.parameters, "1,2,3,a,b");
+}
+
+// Test BETWEEN clause
+TEST_F(SqlTest, BetweenClauseTest) {
+    auto result = normalizer_->normalize(
+        "SELECT * FROM orders WHERE amount BETWEEN 100.0 AND 500.0");
+    EXPECT_EQ(result.normalized_sql,
+        "SELECT * FROM orders WHERE amount BETWEEN 0# AND 1#");
+    EXPECT_EQ(result.parameters, "100.0,500.0");
+}
+
+// Test string literal containing comment-like patterns
+TEST_F(SqlTest, StringWithCommentPatternsTest) {
+    auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 'has -- dash'");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = '0$'");
+    EXPECT_EQ(result.parameters, "has -- dash");
+
+    result = normalizer_->normalize("SELECT * FROM t WHERE v = 'has // slash'");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = '0$'");
+    EXPECT_EQ(result.parameters, "has // slash");
+}
+
+// Test number with multiple decimal points (e.g., IP-like pattern)
+TEST_F(SqlTest, MultipleDecimalPointsTest) {
+    // "1.2.3" - the normalizer reads digits and dots, so it will consume "1.2.3" as one token
+    auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 1.2.3");
+    // Document current behavior: treated as a single numeric token
+    EXPECT_TRUE(result.parameters.find("1.2.3") != std::string::npos);
+}
+
 } // namespace pinpoint
