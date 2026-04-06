@@ -451,11 +451,28 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     span_event.SetEndPoint("http://api.example.com");
     span_event.SetError("Test error");
     span_event.SetError("TestError", "Test error message");
+    span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", "1");
 
     MockHeaderReader reader;
     span_event.RecordHeader(HTTP_REQUEST, reader);
 
     SUCCEED() << "All NoopSpanEvent methods should execute without throwing exceptions";
+}
+
+class MockCallStackReader : public CallStackReader {
+public:
+    void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const override {
+        callback("test-module", "test_function", "test.cpp", 42);
+    }
+};
+
+TEST_F(NoopTest, NoopSpanEventSetErrorWithCallStackTest) {
+    NoopSpanEvent span_event;
+
+    MockCallStackReader stack_reader;
+    span_event.SetError("TestError", "Test error message", stack_reader);
+
+    SUCCEED() << "SetError with CallStackReader should execute without throwing";
 }
 
 // NoopAnnotation Tests
@@ -465,10 +482,12 @@ TEST_F(NoopTest, NoopAnnotationAllMethodsTest) {
 
     // All these should be no-ops and not throw exceptions
     annotation.AppendInt(1, 42);
+    annotation.AppendLong(1, 123456789LL);
     annotation.AppendString(2, "test-string");
     annotation.AppendStringString(3, "key", "value");
     annotation.AppendIntStringString(4, 100, "key", "value");
-    annotation.AppendLongIntIntByteByteString(5, 123456789L, 10, 20, 30, 40, "test");
+    annotation.AppendBytesStringString(5, {0x01, 0x02, 0x03}, "key", "value");
+    annotation.AppendLongIntIntByteByteString(6, 123456789L, 10, 20, 30, 40, "test");
 
     SUCCEED() << "All NoopAnnotation methods should execute without throwing exceptions";
 }
@@ -522,6 +541,132 @@ TEST_F(NoopTest, NoopAgentBasicBehaviorTest) {
     SUCCEED() << "All NoopAgent methods should execute without throwing exceptions";
 }
 
+// NoopSpan additional tests
+
+TEST_F(NoopTest, NoopSpanSetLoggingAndRecordHeaderTest) {
+    NoopSpan span;
+
+    MockTraceContextWriter writer;
+    span.SetLogging(writer);
+
+    MockHeaderReader header_reader;
+    header_reader.SetHeader("Content-Type", "application/json");
+    span.RecordHeader(HTTP_REQUEST, header_reader);
+
+    SUCCEED() << "SetLogging and RecordHeader should execute without throwing";
+}
+
+TEST_F(NoopTest, NoopSpanNewAsyncSpanReturnsNoopTest) {
+    NoopSpan span;
+
+    auto async_span = span.NewAsyncSpan("async-op");
+    ASSERT_NE(async_span, nullptr);
+    EXPECT_FALSE(async_span->IsSampled()) << "Async span from NoopSpan should not be sampled";
+    EXPECT_EQ(async_span->GetSpanId(), 0) << "Async span from NoopSpan should have span ID 0";
+}
+
+TEST_F(NoopTest, NoopSpanEmptyTraceIdTest) {
+    NoopSpan span;
+
+    auto& trace_id = span.GetTraceId();
+    EXPECT_TRUE(trace_id.AgentId.empty()) << "NoopSpan TraceId AgentId should be empty";
+    EXPECT_EQ(trace_id.StartTime, 0) << "NoopSpan TraceId StartTime should be 0";
+    EXPECT_EQ(trace_id.Sequence, 0) << "NoopSpan TraceId Sequence should be 0";
+}
+
+// NoopAgent additional tests
+
+TEST_F(NoopTest, NoopAgentReturnedSpansAreNoopTest) {
+    NoopAgent agent;
+
+    auto span1 = agent.NewSpan("op", "rpc");
+    ASSERT_NE(span1, nullptr);
+    EXPECT_FALSE(span1->IsSampled());
+    EXPECT_EQ(span1->GetSpanId(), 0);
+
+    MockTraceContextReader reader;
+    auto span2 = agent.NewSpan("op", "rpc", reader);
+    ASSERT_NE(span2, nullptr);
+    EXPECT_FALSE(span2->IsSampled());
+
+    auto span3 = agent.NewSpan("op", "rpc", "GET", reader);
+    ASSERT_NE(span3, nullptr);
+    EXPECT_FALSE(span3->IsSampled());
+}
+
+// Noop holder class tests
+
+TEST_F(NoopTest, NoopHolderReturnsSameInstancesTest) {
+    Noop noop;
+
+    auto agent1 = noop.agent();
+    auto agent2 = noop.agent();
+    EXPECT_EQ(agent1.get(), agent2.get()) << "Noop holder should return same agent instance";
+
+    auto span1 = noop.span();
+    auto span2 = noop.span();
+    EXPECT_EQ(span1.get(), span2.get()) << "Noop holder should return same span instance";
+
+    auto event1 = noop.spanEvent();
+    auto event2 = noop.spanEvent();
+    EXPECT_EQ(event1.get(), event2.get()) << "Noop holder should return same spanEvent instance";
+
+    auto anno1 = noop.annotation();
+    auto anno2 = noop.annotation();
+    EXPECT_EQ(anno1.get(), anno2.get()) << "Noop holder should return same annotation instance";
+}
+
+TEST_F(NoopTest, NoopHolderAllInstancesAreValidTest) {
+    Noop noop;
+
+    EXPECT_NE(noop.agent(), nullptr);
+    EXPECT_NE(noop.span(), nullptr);
+    EXPECT_NE(noop.spanEvent(), nullptr);
+    EXPECT_NE(noop.annotation(), nullptr);
+
+    EXPECT_FALSE(noop.agent()->Enable());
+    EXPECT_FALSE(noop.span()->IsSampled());
+}
+
+// UnsampledSpan additional tests
+
+TEST_F(NoopTest, UnsampledSpanDoubleEndSpanTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+
+    span.SetUrlStat("/api/test", "GET", 200);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+
+    // Second EndSpan should be safe (url_stat_ already moved)
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "Double EndSpan should not record URL stat twice";
+}
+
+TEST_F(NoopTest, UnsampledSpanWithFailStatusUrlStatTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+
+    span.SetUrlStat("/api/error", "POST", 500);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 500);
+}
+
+TEST_F(NoopTest, UnsampledSpanInjectContextDoesNotSetOtherHeadersTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+    MockTraceContextWriter writer;
+
+    span.InjectContext(writer);
+
+    EXPECT_TRUE(writer.Get(HEADER_SAMPLED).has_value()) << "Sampled header should be set";
+    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value()) << "TraceId header should NOT be set for unsampled";
+    EXPECT_FALSE(writer.Get(HEADER_SPAN_ID).has_value()) << "SpanId header should NOT be set for unsampled";
+    EXPECT_FALSE(writer.Get(HEADER_PARENT_SPAN_ID).has_value()) << "ParentSpanId header should NOT be set for unsampled";
+}
+
 // NoopTraceContextReader Tests
 
 TEST_F(NoopTest, NoopTraceContextReaderTest) {
@@ -532,6 +677,17 @@ TEST_F(NoopTest, NoopTraceContextReaderTest) {
 
     auto value2 = reader.Get(HEADER_TRACE_ID);
     EXPECT_FALSE(value2.has_value()) << "NoopTraceContextReader should always return nullopt for any key";
+}
+
+TEST_F(NoopTest, NoopTraceContextReaderAllHeaderKeysTest) {
+    NoopTraceContextReader reader;
+
+    EXPECT_FALSE(reader.Get(HEADER_SAMPLED).has_value());
+    EXPECT_FALSE(reader.Get(HEADER_SPAN_ID).has_value());
+    EXPECT_FALSE(reader.Get(HEADER_PARENT_SPAN_ID).has_value());
+    EXPECT_FALSE(reader.Get(HEADER_PARENT_APP_NAME).has_value());
+    EXPECT_FALSE(reader.Get(HEADER_PARENT_APP_TYPE).has_value());
+    EXPECT_FALSE(reader.Get(HEADER_HOST).has_value());
 }
 
 } // namespace pinpoint
