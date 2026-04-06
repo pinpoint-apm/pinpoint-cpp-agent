@@ -425,6 +425,244 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerWithBlockingSamplerTest) {
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Additional continue call should be blocked by rate limiter";
 }
 
+// Edge Case Tests
+
+// Test CounterSampler with negative rate - should behave like rate 0
+TEST_F(SamplingTest, CounterSamplerNegativeRateTest) {
+    CounterSampler sampler(-1);
+
+    // Negative rate stored as int; modulo with negative is implementation-defined
+    // but should not crash
+    for (int i = 0; i < 10; ++i) {
+        sampler.isSampled(); // Just verify it doesn't crash
+    }
+}
+
+// Test CounterSampler with very large rate
+TEST_F(SamplingTest, CounterSamplerLargeRateTest) {
+    const int rate = 1000000;
+    CounterSampler sampler(rate);
+
+    // First (rate - 1) calls should return false
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_FALSE(sampler.isSampled()) << "Call " << i << " should return false for large rate";
+    }
+}
+
+// Test PercentSampler with negative rate - should never sample
+TEST_F(SamplingTest, PercentSamplerNegativeRateTest) {
+    PercentSampler sampler(-5.0);
+
+    // Negative rate becomes negative int; should not crash
+    for (int i = 0; i < 100; ++i) {
+        sampler.isSampled(); // Just verify no crash
+    }
+}
+
+// Test PercentSampler with rate exceeding 100.0
+TEST_F(SamplingTest, PercentSamplerOverMaxRateTest) {
+    PercentSampler sampler(200.0); // 200% - double the max
+
+    int true_count = 0;
+    const int total_calls = 10000;
+
+    for (int i = 0; i < total_calls; ++i) {
+        if (sampler.isSampled()) {
+            true_count++;
+        }
+    }
+
+    // Even with rate > 100%, should not crash and sampling should work
+    EXPECT_GT(true_count, 0) << "Should still sample some requests with over-max rate";
+}
+
+// Test PercentSampler with very small rate (0.01 = 0.01%)
+TEST_F(SamplingTest, PercentSamplerVerySmallRateTest) {
+    PercentSampler sampler(0.01); // 0.01% sampling
+
+    int true_count = 0;
+    const int total_calls = 1000000;
+
+    for (int i = 0; i < total_calls; ++i) {
+        if (sampler.isSampled()) {
+            true_count++;
+        }
+    }
+
+    // 0.01% of 1M = ~100, allow wide tolerance
+    double actual_rate = static_cast<double>(true_count) / total_calls;
+    EXPECT_NEAR(actual_rate, 0.0001, 0.0005)
+        << "Very small rate should produce very few samples, got " << true_count;
+}
+
+// Test PercentSampler with rate 50.0 (50% sampling)
+TEST_F(SamplingTest, PercentSamplerHalfRateTest) {
+    PercentSampler sampler(50.0);
+
+    int true_count = 0;
+    const int total_calls = 100000;
+
+    for (int i = 0; i < total_calls; ++i) {
+        if (sampler.isSampled()) {
+            true_count++;
+        }
+    }
+
+    double actual_rate = static_cast<double>(true_count) / total_calls;
+    EXPECT_NEAR(actual_rate, 0.50, 0.02) << "50% rate should sample about half, got " << actual_rate;
+}
+
+// AgentStats Counter Verification Tests
+
+// Test that BasicTraceSampler correctly increments sample_new stats
+TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewSampledTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
+    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler));
+    auto& stats = mock_service_->getAgentStats();
+
+    for (int i = 0; i < 5; ++i) {
+        trace_sampler.isNewSampled();
+    }
+
+    // Collect stats snapshot to verify counters
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_sample_new_, 5) << "Should have 5 sampled new traces";
+    EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
+}
+
+// Test that BasicTraceSampler correctly increments unsample_new stats
+TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewUnsampledTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
+    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler));
+    auto& stats = mock_service_->getAgentStats();
+
+    for (int i = 0; i < 5; ++i) {
+        trace_sampler.isNewSampled();
+    }
+
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_sample_new_, 0) << "Should have 0 sampled new traces";
+    EXPECT_EQ(snapshot.num_unsample_new_, 5) << "Should have 5 unsampled new traces";
+}
+
+// Test that BasicTraceSampler correctly increments sample_cont stats
+TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementContTest) {
+    BasicTraceSampler trace_sampler(mock_service_.get(), nullptr);
+    auto& stats = mock_service_->getAgentStats();
+
+    for (int i = 0; i < 7; ++i) {
+        trace_sampler.isContinueSampled();
+    }
+
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_sample_cont_, 7) << "Should have 7 sampled continue traces";
+}
+
+// Test ThroughputLimitTraceSampler skip_new stats when rate limited
+TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipNewTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
+    const int new_tps = 2;
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+    auto& stats = mock_service_->getAgentStats();
+
+    // First 2 pass, next 3 get rate limited (skipped)
+    for (int i = 0; i < 5; ++i) {
+        trace_sampler.isNewSampled();
+    }
+
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_sample_new_, new_tps) << "Should have " << new_tps << " sampled new traces";
+    EXPECT_EQ(snapshot.num_skip_new_, 3) << "Should have 3 skipped new traces";
+    EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
+}
+
+// Test ThroughputLimitTraceSampler skip_cont stats when rate limited
+TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipContTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(1);
+    const int continue_tps = 3;
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
+    auto& stats = mock_service_->getAgentStats();
+
+    // First 3 pass, next 4 get rate limited
+    for (int i = 0; i < 7; ++i) {
+        trace_sampler.isContinueSampled();
+    }
+
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_sample_cont_, continue_tps) << "Should have " << continue_tps << " sampled continue traces";
+    EXPECT_EQ(snapshot.num_skip_cont_, 4) << "Should have 4 skipped continue traces";
+}
+
+// Test ThroughputLimitTraceSampler unsample_new stats when sampler rejects
+TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsUnsampleNewTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
+    auto& stats = mock_service_->getAgentStats();
+
+    for (int i = 0; i < 5; ++i) {
+        trace_sampler.isNewSampled();
+    }
+
+    AgentStatsSnapshot snapshot;
+    stats.collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.num_unsample_new_, 5) << "Should have 5 unsampled (sampler rejected)";
+    EXPECT_EQ(snapshot.num_sample_new_, 0) << "Should have 0 sampled";
+    EXPECT_EQ(snapshot.num_skip_new_, 0) << "Should have 0 skipped (rate limiter never reached)";
+}
+
+// Test ThroughputLimitTraceSampler with null sampler
+TEST_F(SamplingTest, ThroughputLimitTraceSamplerNullSamplerTest) {
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 5, 5);
+
+    // Null sampler should always return false for new samples
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(trace_sampler.isNewSampled()) << "Null sampler should reject new sample " << i;
+    }
+
+    // Continue samples should still be allowed (up to rate limit)
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(trace_sampler.isContinueSampled()) << "Continue call " << i << " should be allowed";
+    }
+    EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Should be blocked after rate limit exhausted";
+}
+
+// Test CounterSampler with rate 2 exact pattern
+TEST_F(SamplingTest, CounterSamplerRate2PatternTest) {
+    CounterSampler sampler(2);
+
+    // Pattern: false, true, false, true, ...
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        EXPECT_FALSE(sampler.isSampled()) << "Cycle " << cycle << " first call should be false";
+        EXPECT_TRUE(sampler.isSampled()) << "Cycle " << cycle << " second call should be true";
+    }
+}
+
+// Test ThroughputLimitTraceSampler with CounterSampler rate 2 + new limiter
+TEST_F(SamplingTest, ThroughputLimitTraceSamplerPartialSamplingWithLimiterTest) {
+    auto counter_sampler = std::make_unique<CounterSampler>(2); // 50% sampling
+    const int new_tps = 2;
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+
+    // Pattern: sampler alternates false/true, rate limiter allows first 2 true results
+    // Call 1: sampler=false -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
+    // Call 2: sampler=true, limiter allows -> true
+    EXPECT_TRUE(trace_sampler.isNewSampled());
+    // Call 3: sampler=false -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
+    // Call 4: sampler=true, limiter allows -> true
+    EXPECT_TRUE(trace_sampler.isNewSampled());
+    // Call 5: sampler=false -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
+    // Call 6: sampler=true, limiter blocks -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
+}
+
 // Test refill behavior after time passes
 TEST_F(SamplingTest, ThroughputLimitTraceSamplerRefillTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
