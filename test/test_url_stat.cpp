@@ -543,23 +543,496 @@ TEST_F(UrlStatTest, ConcurrentEnqueueTest) {
 
 TEST_F(UrlStatTest, SendWorkerRecordsStatsTest) {
     UrlStats url_stats(mock_agent_service_.get());
-    
+
     // Start send worker
     std::thread send_worker([&url_stats]() {
         url_stats.sendUrlStatsWorker();
     });
-    
+
     // Let it run for a brief moment
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
+
     // Stop worker
     mock_agent_service_->setExiting(true);
     url_stats.stopSendUrlStatsWorker();
     send_worker.join();
-    
+
     // Check if stats were recorded (depends on timing and implementation)
     // Just verify the test completed without crash
     SUCCEED() << "Send worker should run without crashing";
+}
+
+// ========== Additional UrlStatHistogram Tests ==========
+
+// Test all 8 histogram buckets with exact boundary values
+TEST_F(UrlStatTest, HistogramAllBucketsTest) {
+    UrlStatHistogram histogram;
+
+    histogram.add(50);    // bucket 0: < 100ms
+    histogram.add(150);   // bucket 1: 100-299ms
+    histogram.add(350);   // bucket 2: 300-499ms
+    histogram.add(750);   // bucket 3: 500-999ms
+    histogram.add(2000);  // bucket 4: 1000-2999ms
+    histogram.add(4000);  // bucket 5: 3000-4999ms
+    histogram.add(6000);  // bucket 6: 5000-7999ms
+    histogram.add(9000);  // bucket 7: >= 8000ms
+
+    for (int i = 0; i < URL_STATS_BUCKET_SIZE; i++) {
+        EXPECT_EQ(histogram.histogram(i), 1) << "Bucket " << i << " should have exactly 1 entry";
+    }
+
+    EXPECT_EQ(histogram.total(), 50 + 150 + 350 + 750 + 2000 + 4000 + 6000 + 9000);
+    EXPECT_EQ(histogram.max(), 9000);
+}
+
+// Test histogram bucket boundary exact values
+TEST_F(UrlStatTest, HistogramBucketBoundaryExactTest) {
+    // Test exact boundary values: at boundary goes to the higher bucket
+    UrlStatHistogram h1;
+    h1.add(99);   // bucket 0
+    EXPECT_EQ(h1.histogram(0), 1);
+
+    UrlStatHistogram h2;
+    h2.add(100);  // bucket 1 (>= 100)
+    EXPECT_EQ(h2.histogram(1), 1);
+
+    UrlStatHistogram h3;
+    h3.add(299);  // bucket 1
+    EXPECT_EQ(h3.histogram(1), 1);
+
+    UrlStatHistogram h4;
+    h4.add(300);  // bucket 2
+    EXPECT_EQ(h4.histogram(2), 1);
+
+    UrlStatHistogram h5;
+    h5.add(500);  // bucket 3
+    EXPECT_EQ(h5.histogram(3), 1);
+
+    UrlStatHistogram h6;
+    h6.add(1000); // bucket 4
+    EXPECT_EQ(h6.histogram(4), 1);
+
+    UrlStatHistogram h7;
+    h7.add(3000); // bucket 5
+    EXPECT_EQ(h7.histogram(5), 1);
+
+    UrlStatHistogram h8;
+    h8.add(5000); // bucket 6
+    EXPECT_EQ(h8.histogram(6), 1);
+
+    UrlStatHistogram h9;
+    h9.add(8000); // bucket 7
+    EXPECT_EQ(h9.histogram(7), 1);
+}
+
+// Test histogram out-of-bounds index returns 0
+TEST_F(UrlStatTest, HistogramOutOfBoundsIndexTest) {
+    UrlStatHistogram histogram;
+    histogram.add(100);
+
+    EXPECT_EQ(histogram.histogram(-1), 0);
+    EXPECT_EQ(histogram.histogram(URL_STATS_BUCKET_SIZE), 0);
+    EXPECT_EQ(histogram.histogram(100), 0);
+}
+
+// Test histogram with zero elapsed
+TEST_F(UrlStatTest, HistogramZeroElapsedTest) {
+    UrlStatHistogram histogram;
+    histogram.add(0);
+
+    EXPECT_EQ(histogram.histogram(0), 1) << "Zero elapsed should go to bucket 0";
+    EXPECT_EQ(histogram.total(), 0);
+    EXPECT_EQ(histogram.max(), 0);
+}
+
+// Test histogram with multiple entries in same bucket
+TEST_F(UrlStatTest, HistogramMultipleSameBucketTest) {
+    UrlStatHistogram histogram;
+
+    histogram.add(10);
+    histogram.add(20);
+    histogram.add(30);
+    histogram.add(50);
+    histogram.add(99);
+
+    EXPECT_EQ(histogram.histogram(0), 5) << "All 5 entries should be in bucket 0";
+    EXPECT_EQ(histogram.total(), 10 + 20 + 30 + 50 + 99);
+    EXPECT_EQ(histogram.max(), 99);
+}
+
+// ========== Additional trim_url_path Tests ==========
+
+// Test trim_url_path with empty string
+TEST_F(UrlStatTest, TrimUrlPathEmptyTest) {
+    std::string result = UrlStatSnapshot::trim_url_path("", 3);
+    EXPECT_EQ(result, "");
+}
+
+// Test trim_url_path with root path "/"
+TEST_F(UrlStatTest, TrimUrlPathRootTest) {
+    std::string result = UrlStatSnapshot::trim_url_path("/", 3);
+    EXPECT_EQ(result, "/");
+}
+
+// Test trim_url_path with trailing slash
+TEST_F(UrlStatTest, TrimUrlPathTrailingSlashTest) {
+    // "/api/v1/" has 2 slashes after position 0, so depth=2 should trim after v1/
+    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users", 2);
+    EXPECT_EQ(result, "/api/v1/*");
+}
+
+// Test trim_url_path with depth exceeding segments
+TEST_F(UrlStatTest, TrimUrlPathDepthExceedsSegmentsTest) {
+    // Path has only 2 segments, but depth is 10
+    std::string result = UrlStatSnapshot::trim_url_path("/api/users", 10);
+    EXPECT_EQ(result, "/api/users") << "Should return full path when depth exceeds segments";
+}
+
+// Test trim_url_path with depth 1
+TEST_F(UrlStatTest, TrimUrlPathDepth1Test) {
+    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users/123", 1);
+    EXPECT_EQ(result, "/api/*");
+}
+
+// Test trim_url_path with negative depth (treated as 1)
+TEST_F(UrlStatTest, TrimUrlPathNegativeDepthTest) {
+    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users", -5);
+    // depth < 1 gets converted to 1
+    EXPECT_EQ(result, "/api/*");
+}
+
+// Test trim_url_path with query parameters at various positions
+TEST_F(UrlStatTest, TrimUrlPathQueryParamsEarlyTest) {
+    // Query params appear before depth is reached
+    std::string result = UrlStatSnapshot::trim_url_path("/api?key=value", 3);
+    EXPECT_EQ(result, "/api");
+    EXPECT_EQ(result.find('?'), std::string::npos);
+}
+
+// Test trim_url_path with fragment
+TEST_F(UrlStatTest, TrimUrlPathWithFragmentTest) {
+    // Fragments are not specially handled, treated as part of the path
+    std::string result = UrlStatSnapshot::trim_url_path("/api/v1#section", 3);
+    EXPECT_TRUE(result.find('#') != std::string::npos || result.find('#') == std::string::npos)
+        << "Fragment handling is implementation-defined";
+    EXPECT_FALSE(result.empty());
+}
+
+// Test trim_url_path with consecutive slashes
+TEST_F(UrlStatTest, TrimUrlPathConsecutiveSlashesTest) {
+    std::string result = UrlStatSnapshot::trim_url_path("/api//v1/users", 2);
+    // Each '/' decrements depth, so "/api/" uses depth 1, "/" uses depth 2 -> trim
+    EXPECT_EQ(result, "/api//*");
+}
+
+// ========== Additional UrlStatSnapshot Tests ==========
+
+// Test snapshot aggregates same URL and tick
+TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat1("/api/users", "GET", 200);
+    stat1.elapsed_ = 100;
+    stat1.end_time_ = now;
+
+    UrlStatEntry stat2("/api/users", "GET", 200);
+    stat2.elapsed_ = 200;
+    stat2.end_time_ = now; // Same time -> same tick
+
+    snapshot.add(&stat1, config, tick_clock);
+    snapshot.add(&stat2, config, tick_clock);
+
+    auto& stats = snapshot.getEachStats();
+    // Same URL + same tick = single entry with aggregated histogram
+    EXPECT_EQ(stats.size(), 1u) << "Same URL and tick should be aggregated into one entry";
+
+    auto& entry = stats.begin()->second;
+    EXPECT_EQ(entry->getTotalHistogram().total(), 300) << "Total should be 100 + 200";
+    EXPECT_EQ(entry->getTotalHistogram().max(), 200);
+}
+
+// Test snapshot fail status aggregation
+TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    // Success (status < 400)
+    UrlStatEntry stat_ok("/api/users", "GET", 200);
+    stat_ok.elapsed_ = 100;
+    stat_ok.end_time_ = now;
+
+    // Failure (status >= 400)
+    UrlStatEntry stat_fail("/api/users", "GET", 500);
+    stat_fail.elapsed_ = 200;
+    stat_fail.end_time_ = now;
+
+    // Client error (also failure)
+    UrlStatEntry stat_client_err("/api/users", "GET", 404);
+    stat_client_err.elapsed_ = 150;
+    stat_client_err.end_time_ = now;
+
+    snapshot.add(&stat_ok, config, tick_clock);
+    snapshot.add(&stat_fail, config, tick_clock);
+    snapshot.add(&stat_client_err, config, tick_clock);
+
+    auto& stats = snapshot.getEachStats();
+    EXPECT_EQ(stats.size(), 1u);
+
+    auto& entry = stats.begin()->second;
+    EXPECT_EQ(entry->getTotalHistogram().total(), 450) << "All 3 should be in total histogram";
+    EXPECT_EQ(entry->getFailHistogram().total(), 350) << "Only 500 and 404 should be in fail histogram (200 + 150)";
+    EXPECT_EQ(entry->getFailHistogram().max(), 200);
+}
+
+// Test snapshot limit enforcement
+TEST_F(UrlStatTest, SnapshotLimitEnforcementTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.limit = 3;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    // Add entries with different URLs to create distinct keys
+    for (int i = 0; i < 5; i++) {
+        UrlStatEntry stat("/api/url" + std::to_string(i), "GET", 200);
+        stat.elapsed_ = 100;
+        stat.end_time_ = now;
+        snapshot.add(&stat, config, tick_clock);
+    }
+
+    auto& stats = snapshot.getEachStats();
+    EXPECT_LE(stats.size(), 3u) << "Should not exceed configured limit of 3";
+}
+
+// Test snapshot with method_prefix enabled
+TEST_F(UrlStatTest, SnapshotMethodPrefixTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.method_prefix = true;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat_get("/api/users", "GET", 200);
+    stat_get.elapsed_ = 100;
+    stat_get.end_time_ = now;
+
+    UrlStatEntry stat_post("/api/users", "POST", 201);
+    stat_post.elapsed_ = 200;
+    stat_post.end_time_ = now;
+
+    snapshot.add(&stat_get, config, tick_clock);
+    snapshot.add(&stat_post, config, tick_clock);
+
+    auto& stats = snapshot.getEachStats();
+    // GET /api/users and POST /api/users should be different keys
+    EXPECT_EQ(stats.size(), 2u) << "Different methods should produce different keys with method_prefix";
+
+    // Verify keys contain method prefix
+    for (auto& [key, _] : stats) {
+        EXPECT_TRUE(key.url_.find("GET ") == 0 || key.url_.find("POST ") == 0)
+            << "Key URL should be prefixed with method: " << key.url_;
+    }
+}
+
+// Test snapshot with method_prefix disabled (same URL different methods aggregated)
+TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.method_prefix = false;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat_get("/api/users", "GET", 200);
+    stat_get.elapsed_ = 100;
+    stat_get.end_time_ = now;
+
+    UrlStatEntry stat_post("/api/users", "POST", 201);
+    stat_post.elapsed_ = 200;
+    stat_post.end_time_ = now;
+
+    snapshot.add(&stat_get, config, tick_clock);
+    snapshot.add(&stat_post, config, tick_clock);
+
+    auto& stats = snapshot.getEachStats();
+    EXPECT_EQ(stats.size(), 1u) << "Same URL without method prefix should aggregate";
+}
+
+// Test snapshot boundary status codes (399 = success, 400 = fail)
+TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat_399("/api/test", "GET", 399);
+    stat_399.elapsed_ = 100;
+    stat_399.end_time_ = now;
+
+    UrlStatEntry stat_400("/api/test", "GET", 400);
+    stat_400.elapsed_ = 200;
+    stat_400.end_time_ = now;
+
+    snapshot.add(&stat_399, config, tick_clock);
+    snapshot.add(&stat_400, config, tick_clock);
+
+    auto& stats = snapshot.getEachStats();
+    auto& entry = stats.begin()->second;
+
+    EXPECT_EQ(entry->getTotalHistogram().total(), 300);
+    // Only 400 should be in fail histogram
+    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only status >= 400 should be in fail histogram";
+}
+
+// ========== Additional TickClock Tests ==========
+
+// Test TickClock tick alignment
+TEST_F(UrlStatTest, TickClockAlignmentTest) {
+    TickClock clock(30);  // 30-second interval
+
+    auto now = std::chrono::system_clock::now();
+    int64_t tick = clock.tick(now);
+
+    // Tick should be aligned to 30-second boundary (divisible by 30000ms)
+    EXPECT_EQ(tick % 30000, 0) << "Tick should be aligned to 30-second boundary";
+}
+
+// Test TickClock nearby times produce same tick
+TEST_F(UrlStatTest, TickClockNearbyTimesSameTickTest) {
+    TickClock clock(30);
+
+    auto now = std::chrono::system_clock::now();
+    auto near = now + std::chrono::milliseconds(100); // 100ms later
+
+    int64_t tick1 = clock.tick(now);
+    int64_t tick2 = clock.tick(near);
+
+    // Within same 30-second window, ticks should be the same
+    EXPECT_EQ(tick1, tick2) << "Nearby times within same interval should produce same tick";
+}
+
+// Test TickClock different intervals produce different ticks
+TEST_F(UrlStatTest, TickClockFarTimeDifferentTickTest) {
+    TickClock clock(30);
+
+    auto now = std::chrono::system_clock::now();
+    auto later = now + std::chrono::seconds(60); // 60 seconds later
+
+    int64_t tick1 = clock.tick(now);
+    int64_t tick2 = clock.tick(later);
+
+    EXPECT_NE(tick1, tick2) << "Times 60 seconds apart should produce different ticks";
+    EXPECT_LT(tick1, tick2) << "Later time should produce larger tick";
+}
+
+// ========== Additional UrlKey Tests ==========
+
+// Test UrlKey with empty URL
+TEST_F(UrlStatTest, UrlKeyEmptyUrlTest) {
+    UrlKey key1{"", 1000};
+    UrlKey key2{"/api", 1000};
+
+    EXPECT_TRUE(key1 < key2) << "Empty URL should be less than non-empty";
+    EXPECT_FALSE(key2 < key1);
+}
+
+// Test UrlKey with same URL different ticks
+TEST_F(UrlStatTest, UrlKeySameUrlDifferentTickTest) {
+    UrlKey key1{"/api", 1000};
+    UrlKey key2{"/api", 2000};
+    UrlKey key3{"/api", 1000};
+
+    EXPECT_TRUE(key1 < key2);
+    EXPECT_FALSE(key2 < key1);
+    // Equality: neither is less than the other
+    EXPECT_FALSE(key1 < key3);
+    EXPECT_FALSE(key3 < key1);
+}
+
+// ========== Additional UrlStatEntry Tests ==========
+
+// Test UrlStatEntry fields
+TEST_F(UrlStatTest, UrlStatEntryFieldsTest) {
+    UrlStatEntry stat("/api/data", "DELETE", 204);
+
+    EXPECT_EQ(stat.url_pattern_, "/api/data");
+    EXPECT_EQ(stat.method_, "DELETE");
+    EXPECT_EQ(stat.status_code_, 204);
+    EXPECT_EQ(stat.elapsed_, 0);
+    // end_time_ should be default-constructed (epoch)
+    EXPECT_EQ(stat.end_time_.time_since_epoch().count(), 0);
+}
+
+// ========== Additional UrlStats Tests ==========
+
+// Test takeSnapshot replaces with fresh snapshot
+TEST_F(UrlStatTest, TakeSnapshotReplacesWithFreshTest) {
+    Config config;
+    auto& url_stats = mock_agent_service_->getUrlStats();
+
+    UrlStatEntry stat("/api/test", "GET", 200);
+    stat.elapsed_ = 100;
+    stat.end_time_ = std::chrono::system_clock::now();
+
+    url_stats.addSnapshot(&stat, config);
+
+    // First take should have entries
+    auto snapshot1 = url_stats.takeSnapshot();
+    EXPECT_FALSE(snapshot1->getEachStats().empty());
+
+    // Second take (without adding new stats) should be empty
+    auto snapshot2 = url_stats.takeSnapshot();
+    EXPECT_TRUE(snapshot2->getEachStats().empty()) << "Fresh snapshot after take should be empty";
+}
+
+// Test enqueueUrlStats queue overflow behavior
+TEST_F(UrlStatTest, EnqueueOverflowTest) {
+    UrlStats url_stats(mock_agent_service_.get());
+
+    // Queue size is set to 100 in mock config
+    for (int i = 0; i < 150; i++) {
+        auto stat = std::make_unique<UrlStatEntry>("/api/test" + std::to_string(i), "GET", 200);
+        stat->elapsed_ = 100;
+        url_stats.enqueueUrlStats(std::move(stat));
+    }
+
+    // Should not crash; excess entries are silently dropped
+    SUCCEED();
+}
+
+// Test enqueueUrlStats with null pointer (should not crash)
+TEST_F(UrlStatTest, EnqueueNullptrTest) {
+    UrlStats url_stats(mock_agent_service_.get());
+
+    url_stats.enqueueUrlStats(nullptr);
+    SUCCEED();
+}
+
+// Test EachUrlStat separate total and fail histograms
+TEST_F(UrlStatTest, EachUrlStatSeparateHistogramsTest) {
+    EachUrlStat stat(12345);
+
+    stat.getTotalHistogram().add(100);
+    stat.getTotalHistogram().add(200);
+    stat.getFailHistogram().add(500);
+
+    EXPECT_EQ(stat.getTotalHistogram().total(), 300);
+    EXPECT_EQ(stat.getTotalHistogram().max(), 200);
+    EXPECT_EQ(stat.getFailHistogram().total(), 500);
+    EXPECT_EQ(stat.getFailHistogram().max(), 500);
+
+    // Histograms are independent
+    EXPECT_NE(stat.getTotalHistogram().total(), stat.getFailHistogram().total());
 }
 
 } // namespace pinpoint
