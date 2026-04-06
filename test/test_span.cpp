@@ -27,6 +27,7 @@
 #include "../src/agent_service.h"
 #include "../src/url_stat.h"
 #include "../src/stat.h"
+#include "../src/callstack.h"
 #include "../include/pinpoint/tracer.h"
 
 namespace pinpoint {
@@ -893,6 +894,474 @@ TEST_F(SpanTest, AsyncSpanTest) {
     parent_span.EndSpan();
     
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Parent span should be recorded";
+}
+
+// ========== EventStack Edge Case Tests ==========
+
+TEST_F(SpanTest, EventStackPopOnEmptyReturnsNullptrTest) {
+    EventStack stack;
+    EXPECT_EQ(stack.pop(), nullptr) << "Pop on empty stack should return nullptr";
+}
+
+TEST_F(SpanTest, EventStackTopOnEmptyReturnsNullptrTest) {
+    EventStack stack;
+    EXPECT_EQ(stack.top(), nullptr) << "Top on empty stack should return nullptr";
+}
+
+// ========== SpanData parseTraceId Edge Case Tests ==========
+
+TEST_F(SpanTest, SpanDataParseTraceIdMissingSeparatorTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    // No '^' at all — should not crash, trace_id fields remain default
+    std::string invalid = "no-separator-here";
+    span_data.parseTraceId(invalid);
+
+    EXPECT_TRUE(span_data.getTraceId().AgentId.empty())
+        << "AgentId should remain empty on invalid input";
+}
+
+TEST_F(SpanTest, SpanDataParseTraceIdOnlyOneSeparatorTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    // Only one '^' — second field parse should fail gracefully
+    std::string partial = "agent^12345";
+    span_data.parseTraceId(partial);
+
+    EXPECT_EQ(span_data.getTraceId().AgentId, "agent");
+    // Sequence should not be set (stays 0)
+    EXPECT_EQ(span_data.getTraceId().Sequence, 0);
+}
+
+TEST_F(SpanTest, SpanDataParseTraceIdAgentIdTooLongTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    // AgentId exceeds kMaxAgentIdLength (24)
+    std::string long_agent = "this-agent-id-is-way-too-long^1234567890^1";
+    span_data.parseTraceId(long_agent);
+
+    EXPECT_TRUE(span_data.getTraceId().AgentId.empty())
+        << "AgentId should remain empty when too long";
+}
+
+TEST_F(SpanTest, SpanDataParseTraceIdEmptyFieldsTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    std::string empty_fields = "^^";
+    span_data.parseTraceId(empty_fields);
+
+    EXPECT_TRUE(span_data.getTraceId().AgentId.empty());
+    EXPECT_EQ(span_data.getTraceId().StartTime, 0);
+    EXPECT_EQ(span_data.getTraceId().Sequence, 0);
+}
+
+// ========== SpanData finishSpanEvent on Empty Stack ==========
+
+TEST_F(SpanTest, SpanDataFinishSpanEventOnEmptyStackTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    // Should not crash — logs a warning, finished_events unchanged
+    span_data.finishSpanEvent();
+    EXPECT_EQ(span_data.getFinishedEventsCount(), 0)
+        << "No event should be finished when stack is empty";
+}
+
+// ========== SpanData Exception Tests ==========
+
+TEST_F(SpanTest, SpanDataSendExceptionsEmptyTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    span_data.sendExceptions();
+    EXPECT_EQ(mock_agent_service_->recorded_exceptions_, 0)
+        << "No exceptions should be recorded when list is empty";
+}
+
+TEST_F(SpanTest, SpanDataSendExceptionsWithDataTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    auto ex = std::make_unique<Exception>(std::make_unique<CallStack>("test error"));
+    span_data.addException(std::move(ex));
+    EXPECT_EQ(span_data.getExceptions().size(), 1);
+
+    span_data.sendExceptions();
+    EXPECT_EQ(mock_agent_service_->recorded_exceptions_, 1)
+        << "Exception should be recorded through agent service";
+}
+
+TEST_F(SpanTest, SpanDataTakeExceptionsTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    span_data.addException(std::make_unique<Exception>(std::make_unique<CallStack>("test error")));
+    span_data.addException(std::make_unique<Exception>(std::make_unique<CallStack>("test error")));
+    EXPECT_EQ(span_data.getExceptions().size(), 2);
+
+    auto taken = span_data.takeExceptions();
+    EXPECT_EQ(taken.size(), 2);
+    EXPECT_EQ(span_data.getExceptions().size(), 0)
+        << "Exceptions should be moved out";
+}
+
+// ========== SpanData URL Stat Edge Cases ==========
+
+TEST_F(SpanTest, SpanDataSendUrlStatWithoutSettingTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    // sendUrlStat without setUrlStat should be a no-op
+    span_data.setEndTime();
+    span_data.sendUrlStat();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0);
+}
+
+TEST_F(SpanTest, SpanDataGetUrlTemplateWithoutStatTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    EXPECT_EQ(span_data.getUrlTemplate(), "NULL")
+        << "URL template should return NULL when no stat is set";
+}
+
+TEST_F(SpanTest, SpanDataGetUrlTemplateWithStatTest) {
+    SpanData span_data(mock_agent_service_.get(), "test-op");
+
+    span_data.setUrlStat("/api/v1/users", "POST", 201);
+    EXPECT_EQ(span_data.getUrlTemplate(), "/api/v1/users");
+}
+
+// ========== SpanImpl Operations After Finished ==========
+
+TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.EndSpan();
+
+    size_t spans_before = mock_agent_service_->getRecordedSpansCount();
+
+    // All these should be no-ops after EndSpan
+    auto se = span.NewSpanEvent("should-not-create");
+    EXPECT_NE(se, nullptr) << "Should return noop span event, not nullptr";
+
+    span.EndSpanEvent();
+    span.EndSpan();
+
+    // No additional spans should be recorded
+    EXPECT_EQ(mock_agent_service_->getRecordedSpansCount(), spans_before)
+        << "No additional spans should be recorded after finish";
+
+    MockTraceContextWriter writer;
+    span.InjectContext(writer);
+    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
+        << "InjectContext should be no-op after finish";
+
+    span.SetServiceType(9999);
+    span.SetRemoteAddress("1.2.3.4");
+    span.SetEndPoint("http://nowhere");
+    span.SetError("should not record");
+    span.SetStatusCode(500);
+}
+
+// ========== SpanImpl Overflow Behavior ==========
+
+TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    // Config max_event_depth is 64. Push events to reach the limit.
+    // Each NewSpanEvent increments depth, starting from 1.
+    std::vector<SpanEventPtr> events;
+    for (int i = 0; i < 63; i++) {
+        auto se = span.NewSpanEvent("event-" + std::to_string(i));
+        events.push_back(se);
+    }
+
+    // Next event should overflow (depth = 64 >= max_event_depth=64)
+    auto overflow_event = span.NewSpanEvent("overflow-event");
+    EXPECT_NE(overflow_event, nullptr) << "Should return noop event on overflow";
+
+    // EndSpanEvent should decrement overflow counter, not pop from stack
+    span.EndSpanEvent();
+
+    // Now ending the real events should work
+    for (int i = 62; i >= 0; i--) {
+        span.EndSpanEvent();
+    }
+
+    span.EndSpan();
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
+    // Set max_event_sequence to a small value for testing
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 64;
+    config->span.max_event_sequence = 5;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    // Create and end events up to the sequence limit
+    for (int i = 0; i < 5; i++) {
+        span.NewSpanEvent("event-" + std::to_string(i));
+        span.EndSpanEvent();
+    }
+
+    // Next one should overflow
+    auto overflow = span.NewSpanEvent("overflow");
+    // The overflow event should be a noop
+    span.EndSpanEvent();  // decrements overflow
+
+    span.EndSpan();
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+// ========== SpanImpl Event Chunking ==========
+
+TEST_F(SpanTest, SpanImplEventChunkingTest) {
+    // Set chunk size to 3 to trigger intermediate flushes
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 64;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 3;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    // Create and end 3 events to trigger a chunk flush
+    for (int i = 0; i < 3; i++) {
+        span.NewSpanEvent("event-" + std::to_string(i));
+        span.EndSpanEvent();
+    }
+
+    size_t chunks_after_3 = mock_agent_service_->getRecordedSpansCount();
+    EXPECT_EQ(chunks_after_3, 1)
+        << "Should flush an intermediate chunk when event_chunk_size is reached";
+
+    // Verify intermediate chunk is not final
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_FALSE(mock_agent_service_->recorded_spans_.back()->isFinal())
+        << "Intermediate chunk should not be final";
+
+    // End span — should produce a final chunk
+    span.EndSpan();
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), chunks_after_3);
+
+    EXPECT_TRUE(mock_agent_service_->recorded_spans_.back()->isFinal())
+        << "Last chunk should be final";
+}
+
+// ========== SpanImpl SetStatusCode ==========
+
+TEST_F(SpanTest, SpanImplSetStatusCodeSuccessTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    span.SetStatusCode(200);
+    span.EndSpan();
+
+    // status 200 < 400, so err should not be set
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& chunk = mock_agent_service_->recorded_spans_.back();
+    EXPECT_EQ(chunk->getSpanData()->getErr(), SPAN_ERR_NONE)
+        << "Success status should not set error";
+}
+
+TEST_F(SpanTest, SpanImplSetStatusCodeFailureTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    span.SetStatusCode(500);
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& chunk = mock_agent_service_->recorded_spans_.back();
+    EXPECT_EQ(chunk->getSpanData()->getErr(), 1)
+        << "Failure status (>=400) should set error";
+}
+
+// ========== SpanImpl ExtractContext ==========
+
+TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    // No HEADER_TRACE_ID set — should generate a new trace ID
+    span.ExtractContext(reader);
+
+    TraceId& tid = span.GetTraceId();
+    EXPECT_EQ(tid.StartTime, mock_agent_service_->getStartTime())
+        << "Generated trace ID should use agent start time";
+}
+
+TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_HOST, "upstream-host:8080");
+
+    span.ExtractContext(reader);
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
+    EXPECT_EQ(data->getAcceptorHost(), "upstream-host:8080");
+    EXPECT_EQ(data->getEndPoint(), "upstream-host:8080");
+    EXPECT_EQ(data->getRemoteAddr(), "upstream-host:8080");
+}
+
+TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_FLAG, "5");
+
+    span.ExtractContext(reader);
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanData()->getFlags(), 5);
+}
+
+// ========== SpanImpl InjectContext Without Active Event ==========
+
+TEST_F(SpanTest, SpanImplInjectContextWithoutEventTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextWriter writer;
+
+    // No NewSpanEvent called — topSpanEvent returns nullptr
+    span.InjectContext(writer);
+
+    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
+        << "Should not inject context when there is no active event";
+}
+
+// ========== SpanImpl GetSpanEvent Without Events ==========
+
+TEST_F(SpanTest, SpanImplGetSpanEventWithoutEventsTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    // No events created — should return noop
+    auto se = span.GetSpanEvent();
+    EXPECT_NE(se, nullptr) << "Should return noop span event, not nullptr";
+}
+
+// ========== SpanImpl SetError Single Arg ==========
+
+TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    span.SetError("something went wrong");
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& last = mock_agent_service_->recorded_spans_.back();
+    EXPECT_EQ(last->getSpanData()->getErr(), 1);
+    EXPECT_EQ(last->getSpanData()->getErrorString(), "something went wrong");
+    // The error name "Error" should have been cached
+    EXPECT_GE(mock_agent_service_->getCachedErrorId("Error"), 0);
+}
+
+// ========== SpanChunk Optimize Multi-Event Test ==========
+
+TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-op");
+
+    // Create events with different depths/sequences to test optimization
+    auto event1 = std::make_shared<SpanEventImpl>(span_data.get(), "e1");
+    auto event2 = std::make_shared<SpanEventImpl>(span_data.get(), "e2");
+    auto event3 = std::make_shared<SpanEventImpl>(span_data.get(), "e3");
+
+    span_data->addSpanEvent(event1);
+    span_data->addSpanEvent(event2);
+    span_data->addSpanEvent(event3);
+
+    // Finish in reverse order (stack LIFO)
+    span_data->finishSpanEvent(); // event3
+    span_data->finishSpanEvent(); // event2
+    span_data->finishSpanEvent(); // event1
+
+    SpanChunk chunk(span_data, true);
+    EXPECT_EQ(chunk.getSpanEventChunk().size(), 3);
+
+    chunk.optimizeSpanEvents();
+
+    // After optimization, events should be sorted by sequence
+    auto& events = chunk.getSpanEventChunk();
+    for (size_t i = 1; i < events.size(); i++) {
+        EXPECT_GE(events[i]->getSequence(), events[i-1]->getSequence())
+            << "Events should be sorted by sequence after optimization";
+    }
+
+    // key_time should be set to span start time for final chunks
+    EXPECT_EQ(chunk.getKeyTime(), span_data->getStartTime());
+}
+
+TEST_F(SpanTest, SpanChunkOptimizeNonFinalKeyTimeTest) {
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-op");
+
+    auto event = std::make_shared<SpanEventImpl>(span_data.get(), "e1");
+    span_data->addSpanEvent(event);
+    span_data->finishSpanEvent();
+
+    SpanChunk chunk(span_data, false);
+    chunk.optimizeSpanEvents();
+
+    // For non-final chunks, key_time should be the first event's start time
+    EXPECT_GE(chunk.getKeyTime(), 0)
+        << "Non-final chunk key time should come from first event";
+}
+
+// ========== SpanImpl Double EndSpan ==========
+
+TEST_F(SpanTest, SpanImplDoubleEndSpanTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.EndSpan();
+
+    size_t count_after_first = mock_agent_service_->getRecordedSpansCount();
+
+    span.EndSpan();  // second call — should be no-op
+
+    EXPECT_EQ(mock_agent_service_->getRecordedSpansCount(), count_after_first)
+        << "Second EndSpan should not record another span";
+}
+
+// ========== SpanImpl SetLogging Verification ==========
+
+TEST_F(SpanTest, SpanImplSetLoggingAfterFinishTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.EndSpan();
+
+    MockTraceContextWriter writer;
+    span.SetLogging(writer);
+
+    EXPECT_FALSE(writer.Get("PtxId").has_value())
+        << "SetLogging should be no-op after EndSpan";
+}
+
+// ========== SpanImpl NewAsyncSpan Overflow ==========
+
+TEST_F(SpanTest, SpanImplNewAsyncSpanOverflowTest) {
+    // Set very small depth limit
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 2;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    // Push one real event
+    span.NewSpanEvent("e1");
+
+    // This should overflow (depth now 3 >= 2)
+    span.NewSpanEvent("e2-overflow");
+
+    // NewAsyncSpan should return noop when overflow > 0
+    auto async = span.NewAsyncSpan("async-op");
+    EXPECT_NE(async, nullptr) << "Should return noop span on overflow";
+
+    // Clean up
+    span.EndSpanEvent(); // overflow--
+    span.EndSpanEvent(); // real event
+    span.EndSpan();
 }
 
 } // namespace pinpoint
