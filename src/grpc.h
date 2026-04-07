@@ -72,7 +72,7 @@ namespace pinpoint {
          *
          * @return `true` if the channel is ready or successfully re-initialized.
          */
-        bool readyChannel();
+        virtual bool readyChannel();
         /// @brief Releases the current channel handle.
         void closeChannel() { channel_.reset(); }
 
@@ -202,7 +202,7 @@ namespace pinpoint {
         /**
          * @brief Registers the agent with the collector and starts ping streaming.
          */
-        GrpcRequestStatus registerAgent();
+        virtual GrpcRequestStatus registerAgent();
         /**
          * @brief Adds metadata to the outbound queue.
          *

@@ -57,7 +57,7 @@ namespace pinpoint {
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
         
-        reloadConfig(cfg);
+        reloadConfig(config_);
 
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
         start_config_file_watcher();
