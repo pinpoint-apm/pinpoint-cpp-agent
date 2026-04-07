@@ -441,6 +441,295 @@ TEST_F(GrpcTest, MultipleClientInstancesTest) {
     SUCCEED() << "Multiple client instances should be manageable";
 }
 
+// SqlUidMeta Tests
+
+TEST_F(GrpcTest, SqlUidMetaTest) {
+    std::vector<unsigned char> uid = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A};
+    SqlUidMeta sql_uid_meta(uid, "SELECT * FROM orders WHERE id = ?");
+
+    EXPECT_EQ(sql_uid_meta.uid_, uid);
+    EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM orders WHERE id = ?");
+}
+
+TEST_F(GrpcTest, SqlUidMetaEmptyUidTest) {
+    std::vector<unsigned char> uid;
+    SqlUidMeta sql_uid_meta(uid, "SELECT 1");
+
+    EXPECT_TRUE(sql_uid_meta.uid_.empty());
+    EXPECT_EQ(sql_uid_meta.sql_, "SELECT 1");
+}
+
+TEST_F(GrpcTest, SqlUidMetaMoveTest) {
+    std::vector<unsigned char> uid = {0xAA, 0xBB, 0xCC};
+    std::vector<unsigned char> uid_copy = uid;
+    SqlUidMeta sql_uid_meta(std::move(uid), "SELECT 1");
+
+    // uid should be moved into sql_uid_meta
+    EXPECT_EQ(sql_uid_meta.uid_, uid_copy);
+}
+
+// ExceptionMeta Tests
+
+TEST_F(GrpcTest, ExceptionMetaTest) {
+    TraceId txid{"test-agent", 12345, 1};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    auto callstack = std::make_unique<CallStack>("test error");
+    callstack->push("module", "func", "file.cpp", 42);
+    exceptions.push_back(std::make_unique<Exception>(std::move(callstack)));
+
+    ExceptionMeta meta(txid, 9999, "/api/test", std::move(exceptions));
+
+    EXPECT_EQ(meta.txid_.AgentId, "test-agent");
+    EXPECT_EQ(meta.txid_.StartTime, 12345);
+    EXPECT_EQ(meta.txid_.Sequence, 1);
+    EXPECT_EQ(meta.span_id_, 9999);
+    EXPECT_EQ(meta.url_template_, "/api/test");
+    EXPECT_EQ(meta.exceptions_.size(), 1u);
+    EXPECT_EQ(meta.exceptions_[0]->getCallStack().getErrorMessage(), "test error");
+}
+
+TEST_F(GrpcTest, ExceptionMetaMoveTest) {
+    TraceId txid{"agent", 100, 0};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    auto callstack = std::make_unique<CallStack>("error1");
+    exceptions.push_back(std::make_unique<Exception>(std::move(callstack)));
+
+    ExceptionMeta meta1(txid, 1, "/url", std::move(exceptions));
+    ExceptionMeta meta2(std::move(meta1));
+
+    EXPECT_EQ(meta2.span_id_, 1);
+    EXPECT_EQ(meta2.url_template_, "/url");
+    EXPECT_EQ(meta2.exceptions_.size(), 1u);
+}
+
+TEST_F(GrpcTest, ExceptionMetaMultipleExceptionsTest) {
+    TraceId txid{"agent", 100, 0};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    for (int i = 0; i < 3; i++) {
+        auto cs = std::make_unique<CallStack>("error" + std::to_string(i));
+        exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
+    }
+
+    ExceptionMeta meta(txid, 1, "/multi", std::move(exceptions));
+    EXPECT_EQ(meta.exceptions_.size(), 3u);
+}
+
+// MetaData with SQL UID and Exception types
+
+TEST_F(GrpcTest, MetaDataSqlUidTest) {
+    std::vector<unsigned char> uid = {1, 2, 3, 4, 5};
+    MetaData meta_data(META_SQL_UID, uid, "SELECT * FROM users");
+
+    EXPECT_EQ(meta_data.meta_type_, META_SQL_UID);
+    const auto& sql_uid_meta = std::get<SqlUidMeta>(meta_data.value_);
+    EXPECT_EQ(sql_uid_meta.uid_, uid);
+    EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM users");
+}
+
+TEST_F(GrpcTest, MetaDataExceptionTest) {
+    TraceId txid{"agent", 100, 5};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    auto cs = std::make_unique<CallStack>("null pointer");
+    cs->push("libcore", "deref", "ptr.cpp", 10);
+    exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
+
+    MetaData meta_data(META_EXCEPTION, txid, 42, "/api/v1/resource", std::move(exceptions));
+
+    EXPECT_EQ(meta_data.meta_type_, META_EXCEPTION);
+    const auto& exc_meta = std::get<ExceptionMeta>(meta_data.value_);
+    EXPECT_EQ(exc_meta.txid_.AgentId, "agent");
+    EXPECT_EQ(exc_meta.span_id_, 42);
+    EXPECT_EQ(exc_meta.url_template_, "/api/v1/resource");
+    EXPECT_EQ(exc_meta.exceptions_.size(), 1u);
+}
+
+// Enum completeness tests
+
+TEST_F(GrpcTest, MetaTypeEnumValuesTest) {
+    EXPECT_EQ(META_API, 0);
+    EXPECT_EQ(META_STRING, 1);
+    EXPECT_EQ(META_SQL_UID, 2);
+    EXPECT_EQ(META_EXCEPTION, 3);
+}
+
+// Queue behavior tests
+
+TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
+    GrpcAgent agent(mock_agent_service_.get());
+
+    // Enqueue multiple different metadata types
+    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api1"));
+    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api2"));
+    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "err1", STRING_META_ERROR));
+    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 4, "sql1", STRING_META_SQL));
+
+    std::vector<unsigned char> uid = {1, 2, 3};
+    agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT 1"));
+
+    TraceId txid{"agent", 100, 0};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    auto cs = std::make_unique<CallStack>("test");
+    exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
+    agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/url", std::move(exceptions)));
+
+    SUCCEED() << "Enqueuing multiple meta types should succeed";
+}
+
+TEST_F(GrpcTest, GrpcSpanMultipleEnqueueTest) {
+    GrpcSpan span_client(mock_agent_service_.get());
+
+    for (int i = 0; i < 5; i++) {
+        auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "op-" + std::to_string(i));
+        auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
+        span_client.enqueueSpan(std::move(span_chunk));
+    }
+
+    SUCCEED() << "Multiple span enqueue operations should succeed";
+}
+
+TEST_F(GrpcTest, GrpcStatsEnqueueAllTypesTest) {
+    GrpcStats stats_client(mock_agent_service_.get());
+
+    stats_client.enqueueStats(AGENT_STATS);
+    stats_client.enqueueStats(URL_STATS);
+    stats_client.enqueueStats(AGENT_STATS);
+
+    SUCCEED() << "Enqueuing all stats types should succeed";
+}
+
+// Channel operation tests
+
+TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
+    GrpcAgent client(mock_agent_service_.get());
+
+    client.closeChannel();
+    client.closeChannel();
+    client.closeChannel();
+
+    SUCCEED() << "Calling closeChannel multiple times should be safe";
+}
+
+// Worker stop idempotency tests
+
+TEST_F(GrpcTest, GrpcAgentStopWorkersIdempotentTest) {
+    GrpcAgent agent(mock_agent_service_.get());
+
+    agent.stopPingWorker();
+    agent.stopPingWorker();
+    agent.stopMetaWorker();
+    agent.stopMetaWorker();
+
+    SUCCEED() << "Stopping workers multiple times should be safe";
+}
+
+TEST_F(GrpcTest, GrpcSpanStopWorkerIdempotentTest) {
+    GrpcSpan span_client(mock_agent_service_.get());
+
+    span_client.stopSpanWorker();
+    span_client.stopSpanWorker();
+
+    SUCCEED() << "Stopping span worker multiple times should be safe";
+}
+
+TEST_F(GrpcTest, GrpcStatsStopWorkerIdempotentTest) {
+    GrpcStats stats_client(mock_agent_service_.get());
+
+    stats_client.stopStatsWorker();
+    stats_client.stopStatsWorker();
+
+    SUCCEED() << "Stopping stats worker multiple times should be safe";
+}
+
+// ApiMeta edge cases
+
+TEST_F(GrpcTest, ApiMetaEmptyStringTest) {
+    ApiMeta api_meta(0, 0, "");
+
+    EXPECT_EQ(api_meta.id_, 0);
+    EXPECT_EQ(api_meta.type_, 0);
+    EXPECT_TRUE(api_meta.api_str_.empty());
+}
+
+TEST_F(GrpcTest, ApiMetaLongStringTest) {
+    std::string long_api(1024, 'x');
+    ApiMeta api_meta(1, 200, long_api);
+
+    EXPECT_EQ(api_meta.api_str_.size(), 1024u);
+    EXPECT_EQ(api_meta.api_str_, long_api);
+}
+
+// StringMeta edge cases
+
+TEST_F(GrpcTest, StringMetaEmptyStringTest) {
+    StringMeta str_meta(0, "", STRING_META_ERROR);
+
+    EXPECT_EQ(str_meta.id_, 0);
+    EXPECT_TRUE(str_meta.str_val_.empty());
+}
+
+TEST_F(GrpcTest, StringMetaLongSqlTest) {
+    std::string long_sql = "SELECT ";
+    for (int i = 0; i < 100; i++) {
+        long_sql += "col" + std::to_string(i) + ", ";
+    }
+    long_sql += "col100 FROM large_table";
+
+    StringMeta sql_meta(1, long_sql, STRING_META_SQL);
+    EXPECT_EQ(sql_meta.str_val_, long_sql);
+    EXPECT_EQ(sql_meta.type_, STRING_META_SQL);
+}
+
+// Enqueue after service exiting
+
+TEST_F(GrpcTest, GrpcAgentEnqueueMetaWhileExitingTest) {
+    GrpcAgent agent(mock_agent_service_.get());
+    mock_agent_service_->setExiting(true);
+
+    // Should not crash even when service is exiting
+    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api-during-exit"));
+
+    SUCCEED() << "Enqueuing meta while exiting should not crash";
+}
+
+TEST_F(GrpcTest, GrpcSpanEnqueueWhileExitingTest) {
+    GrpcSpan span_client(mock_agent_service_.get());
+    mock_agent_service_->setExiting(true);
+
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "exit-op");
+    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
+    span_client.enqueueSpan(std::move(span_chunk));
+
+    SUCCEED() << "Enqueuing span while exiting should not crash";
+}
+
+TEST_F(GrpcTest, GrpcStatsEnqueueWhileExitingTest) {
+    GrpcStats stats_client(mock_agent_service_.get());
+    mock_agent_service_->setExiting(true);
+
+    stats_client.enqueueStats(AGENT_STATS);
+
+    SUCCEED() << "Enqueuing stats while exiting should not crash";
+}
+
+// MetaValue variant correctness
+
+TEST_F(GrpcTest, MetaValueVariantIndexTest) {
+    MetaData api_meta(META_API, 1, 100, "api");
+    EXPECT_EQ(api_meta.value_.index(), 0u);  // ApiMeta
+
+    MetaData str_meta(META_STRING, 2, "str", STRING_META_ERROR);
+    EXPECT_EQ(str_meta.value_.index(), 1u);  // StringMeta
+
+    std::vector<unsigned char> uid = {1};
+    MetaData uid_meta(META_SQL_UID, uid, "sql");
+    EXPECT_EQ(uid_meta.value_.index(), 2u);  // SqlUidMeta
+
+    TraceId txid{"a", 1, 0};
+    std::vector<std::unique_ptr<Exception>> excs;
+    MetaData exc_meta(META_EXCEPTION, txid, 1, "/", std::move(excs));
+    EXPECT_EQ(exc_meta.value_.index(), 3u);  // ExceptionMeta
+}
+
 // Reactor callback tests removed - they cause segmentation faults when called without active gRPC streams
 // The callbacks are tested indirectly through the actual gRPC operations in integration tests
 
