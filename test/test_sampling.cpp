@@ -19,6 +19,7 @@
 #include "../src/url_stat.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
+#include "mock_agent_service.h"
 #include <gtest/gtest.h>
 #include <thread>
 #include <chrono>
@@ -26,65 +27,6 @@
 #include <future>
 
 namespace pinpoint {
-
-// Mock AgentService for testing
-class MockAgentService : public AgentService {
-public:
-    MockAgentService() : start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)) {}
-    
-    bool isExiting() const override { return false; }
-    std::string getAppName() const override { return "TestApp"; }
-    int32_t getAppType() const override { return 1300; }
-    std::string getAgentId() const override { return "test-agent"; }
-    std::string getAgentName() const override { return "Test Agent"; }
-    std::shared_ptr<const Config> getConfig() const override { return config_; }
-    int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(std::shared_ptr<const Config> cfg) override {
-        if (cfg) {
-            *config_ = *cfg;
-        }
-    }
-    
-    TraceId generateTraceId() override { return TraceId{}; }
-    void recordSpan(std::unique_ptr<SpanChunk> span) const override {}
-    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {}
-    void recordException(SpanData* span_data) const override {}
-    void recordStats(StatsType stats) const override {}
-    
-    int32_t cacheApi(std::string_view api_str, int32_t api_type) const override { return 0; }
-    void removeCacheApi(const ApiMeta& api_meta) const override {}
-    int32_t cacheError(std::string_view error_name) const override { return 0; }
-    void removeCacheError(const StringMeta& error_meta) const override {}
-    int32_t cacheSql(std::string_view sql_query) const override { return 0; }
-    void removeCacheSql(const StringMeta& sql_meta) const override {}
-    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override { return {}; }
-    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {}
-    
-    bool isStatusFail(int status) const override { return status >= 400; }
-    void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {}
-    void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {}
-    
-    AgentStats& getAgentStats() override {
-        if (!agent_stats_) {
-            agent_stats_ = std::make_unique<AgentStats>(this);
-        }
-        return *agent_stats_;
-    }
-
-    UrlStats& getUrlStats() override {
-        if (!url_stats_) {
-            url_stats_ = std::make_unique<UrlStats>(this);
-        }
-        return *url_stats_;
-    }
-    
-private:
-    int64_t start_time_;
-    std::string cached_start_time_str_;
-    std::shared_ptr<Config> config_ = std::make_shared<Config>();
-    mutable std::unique_ptr<AgentStats> agent_stats_;
-    mutable std::unique_ptr<UrlStats> url_stats_;
-};
 
 class SamplingTest : public ::testing::Test {
 protected:

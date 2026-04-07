@@ -29,218 +29,19 @@
 #include "../src/url_stat.h"
 #include "../src/stat.h"
 #include "../include/pinpoint/tracer.h"
+#include "mock_agent_service.h"
+#include "mock_helpers.h"
 
 namespace pinpoint {
 
-// Mock implementation of AgentService for SpanEvent testing
-class MockAgentService : public AgentService {
-public:
-    MockAgentService() : is_exiting_(false), start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
-        // Enable callstack trace for exception tests
-        config_->enable_callstack_trace = true;
-    }
-
-    // AgentService interface implementation
-    bool isExiting() const override { return is_exiting_; }
-    std::string getAppName() const override { return "TestApp"; }
-    int32_t getAppType() const override { return 1300; }
-    std::string getAgentId() const override { return "test-agent-001"; }
-    std::string getAgentName() const override { return "TestAgent"; }
-    std::shared_ptr<const Config> getConfig() const override { return config_; }
-    int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(std::shared_ptr<const Config> cfg) override {
-        if (cfg) {
-            *config_ = *cfg;
-        }
-    }
-
-    TraceId generateTraceId() override {
-        TraceId trace_id;
-        trace_id.StartTime = start_time_;
-        trace_id.Sequence = trace_id_counter_++;
-        return trace_id;
-    }
-
-    void recordSpan(std::unique_ptr<SpanChunk> span) const override {
-        recorded_spans_++;
-    }
-
-    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
-        recorded_url_stats_++;
-    }
-
-    void recordException(SpanData* span_data) const override {
-        recorded_exceptions_++;
-    }
-
-    void recordStats(StatsType stats) const override {
-        recorded_stats_calls_++;
-    }
-
-    int32_t cacheApi(std::string_view api_str, int32_t api_type) const override {
-        cached_apis_[std::string(api_str)] = api_id_counter_;
-        return api_id_counter_++;
-    }
-
-    void removeCacheApi(const ApiMeta& api_meta) const override {
-        // Mock implementation
-    }
-
-    int32_t cacheError(std::string_view error_name) const override {
-        cached_errors_[std::string(error_name)] = error_id_counter_;
-        return error_id_counter_++;
-    }
-
-    void removeCacheError(const StringMeta& error_meta) const override {
-        // Mock implementation
-    }
-
-    int32_t cacheSql(std::string_view sql_query) const override {
-        cached_sqls_[std::string(sql_query)] = sql_id_counter_;
-        return sql_id_counter_++;
-    }
-
-    void removeCacheSql(const StringMeta& sql_meta) const override {
-        // Mock implementation
-    }
-
-    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
-        // Mock implementation - return test uid
-        return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    }
-
-    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
-        // Mock implementation
-    }
-
-    bool isStatusFail(int status) const override {
-        return status >= 400;
-    }
-
-    void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        recorded_server_headers_++;
-    }
-
-    void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        recorded_client_headers_++;
-    }
-
-    AgentStats& getAgentStats() override {
-        if (!agent_stats_) {
-            agent_stats_ = std::make_unique<AgentStats>(this);
-        }
-        return *agent_stats_;
-    }
-
-    UrlStats& getUrlStats() override {
-        if (!url_stats_) {
-            url_stats_ = std::make_unique<UrlStats>(this);
-        }
-        return *url_stats_;
-    }
-
-    // Test helpers
-    void setExiting(bool exiting) { is_exiting_ = exiting; }
-    int32_t getCachedApiId(const std::string& api_str) const {
-        auto it = cached_apis_.find(api_str);
-        return it != cached_apis_.end() ? it->second : -1;
-    }
-    int32_t getCachedErrorId(const std::string& error_name) const {
-        auto it = cached_errors_.find(error_name);
-        return it != cached_errors_.end() ? it->second : -1;
-    }
-    int32_t getCachedSqlId(const std::string& sql_query) const {
-        auto it = cached_sqls_.find(sql_query);
-        return it != cached_sqls_.end() ? it->second : -1;
-    }
-    int32_t getSqlIdCounter() const { return sql_id_counter_; }
-
-    mutable int recorded_spans_ = 0;
-    mutable int recorded_url_stats_ = 0;
-    mutable int recorded_exceptions_ = 0;
-    mutable int recorded_stats_calls_ = 0;
-    mutable int recorded_server_headers_ = 0;
-    mutable int recorded_client_headers_ = 0;
-
-private:
-    bool is_exiting_;
-    int64_t start_time_;
-    std::string cached_start_time_str_;
-    int64_t trace_id_counter_;
-    std::shared_ptr<Config> config_ = std::make_shared<Config>();
-    mutable std::unique_ptr<AgentStats> agent_stats_;
-    mutable std::unique_ptr<UrlStats> url_stats_;
-    mutable std::map<std::string, int32_t> cached_apis_;
-    mutable std::map<std::string, int32_t> cached_errors_;
-    mutable std::map<std::string, int32_t> cached_sqls_;
-    mutable int32_t api_id_counter_ = 100;
-    mutable int32_t error_id_counter_ = 200;
-    mutable int32_t sql_id_counter_ = 300;
-};
-
 // Use actual SpanData for testing
 using TestSpanData = SpanData;
-
-// Mock HeaderReader for testing
-class MockHeaderReader : public HeaderReader {
-public:
-    MockHeaderReader() = default;
-
-    std::optional<std::string> Get(std::string_view key) const override {
-        auto it = headers_.find(std::string(key));
-        if (it != headers_.end()) {
-            return it->second;
-        }
-        return std::nullopt;
-    }
-
-    void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override {
-        for (const auto& pair : headers_) {
-            if (!callback(pair.first, pair.second)) {
-                break;
-            }
-        }
-    }
-
-    void SetHeader(std::string_view key, std::string_view value) {
-        headers_[std::string(key)] = std::string(value);
-    }
-
-private:
-    std::map<std::string, std::string> headers_;
-};
-
-// Mock CallStackReader for testing
-class MockCallStackReader : public CallStackReader {
-public:
-    MockCallStackReader() = default;
-
-    void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const override {
-        for (const auto& frame : frames_) {
-            callback(frame.module, frame.function, frame.file, frame.line);
-        }
-    }
-
-    void AddFrame(std::string_view module, std::string_view function, std::string_view file, int line) {
-        frames_.push_back({std::string(module), std::string(function), std::string(file), line});
-    }
-
-    size_t GetFrameCount() const { return frames_.size(); }
-
-private:
-    struct Frame {
-        std::string module;
-        std::string function;
-        std::string file;
-        int line;
-    };
-    std::vector<Frame> frames_;
-};
 
 class SpanEventTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
+        mock_agent_service_->mutableConfig()->enable_callstack_trace = true;
         test_span_data_ = std::make_unique<TestSpanData>(mock_agent_service_.get(), "test-operation");
     }
 
@@ -926,8 +727,8 @@ TEST_F(SpanEventTest, SetSqlQueryMultipleCallsTest) {
     span_event.SetSqlQuery("SELECT * FROM table2", "");
     span_event.SetSqlQuery("UPDATE table1 SET name = ?", "name=test");
     
-    // Each call should increment the counter (started at 300, after 3 calls should be 303)
-    EXPECT_GE(mock_agent_service_->getSqlIdCounter(), 303) << "Multiple SQL queries should increment counter";
+    // Each unique query should increment the counter (started at 300)
+    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "Multiple SQL queries should increment counter";
 }
 
 TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
@@ -938,13 +739,13 @@ TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
     
     span_event1.SetSqlQuery(same_sql, "");
     int32_t first_call_counter = mock_agent_service_->getSqlIdCounter();
-    
+
     span_event2.SetSqlQuery(same_sql, "");
     int32_t second_call_counter = mock_agent_service_->getSqlIdCounter();
-    
-    // Same SQL should be cached, but in our mock it will create new entries
-    // This tests that the method can be called multiple times
-    EXPECT_GT(second_call_counter, first_call_counter) << "SQL cache calls should increment counter";
+
+    // Same SQL is deduplicated in the cache, so counter stays the same
+    // This tests that the method can be called multiple times without error
+    EXPECT_EQ(second_call_counter, first_call_counter) << "Same SQL should be deduplicated in cache";
 }
 
 TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {

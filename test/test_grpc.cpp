@@ -29,6 +29,7 @@
 #include "../src/url_stat.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
+#include "mock_agent_service.h"
 
 using ::testing::_;
 using ::testing::Return;
@@ -40,141 +41,33 @@ using ::testing::SetArgPointee;
 
 namespace pinpoint {
 
-class MockAgentService : public AgentService {
-public:
-    MockAgentService() : is_exiting_(false), start_time_(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
-        config_->span.event_chunk_size = 10;
-        config_->span.max_event_depth = 32;
-        config_->span.queue_size = 1024;
-        config_->http.url_stat.enable = true;
-        config_->http.url_stat.limit = 1024;
-        config_->http.url_stat.trim_path_depth = 3;
-        config_->collector.host = "localhost";
-        config_->collector.agent_port = 9991;
-        config_->collector.span_port = 9993;
-        config_->collector.stat_port = 9992;
-        config_->app_name_ = "test-app";
-        config_->app_type_ = 1300;
-        config_->agent_id_ = "test-agent-id";
-        config_->agent_name_ = "test-agent-name";
-    }
-
-    bool isExiting() const override { return is_exiting_; }
-    void setExiting(bool exiting) { is_exiting_ = exiting; }
-
-    std::string getAppName() const override { return config_->app_name_; }
-    int32_t getAppType() const override { return config_->app_type_; }
-    std::string getAgentId() const override { return config_->agent_id_; }
-    std::string getAgentName() const override { return config_->agent_name_; }
-    std::shared_ptr<const Config> getConfig() const override { return config_; }
-    int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(std::shared_ptr<const Config> cfg) override {
-        if (cfg) {
-            *config_ = *cfg;
-        }
-    }
-
-    TraceId generateTraceId() override {
-        return TraceId{"mock-agent", start_time_, trace_id_counter_++};
-    }
-    void recordSpan(std::unique_ptr<SpanChunk> span) const override {
-        recorded_spans_.push_back(std::move(span));
-    }
-    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
-        recorded_url_stats_++;
-    }
-    void recordException(SpanData* span_data) const override {
-        recorded_exceptions_++;
-    }
-    void recordStats(StatsType stats) const override {
-        recorded_stats_calls_++;
-        last_stats_type_ = stats;
-    }
-
-    int32_t cacheApi(std::string_view api_str, int32_t api_type) const override {
-        if (cached_apis_.find(std::string(api_str)) == cached_apis_.end()) {
-            cached_apis_[std::string(api_str)] = api_id_counter_++;
-        }
-        return cached_apis_[std::string(api_str)];
-    }
-    void removeCacheApi(const ApiMeta& api_meta) const override {}
-    int32_t cacheError(std::string_view error_name) const override {
-        if (cached_errors_.find(std::string(error_name)) == cached_errors_.end()) {
-            cached_errors_[std::string(error_name)] = error_id_counter_++;
-        }
-        return cached_errors_[std::string(error_name)];
-    }
-    void removeCacheError(const StringMeta& error_meta) const override {}
-    
-    int32_t cacheSql(std::string_view sql_query) const override {
-        if (cached_sqls_.find(std::string(sql_query)) == cached_sqls_.end()) {
-            cached_sqls_[std::string(sql_query)] = sql_id_counter_++;
-        }
-        return cached_sqls_[std::string(sql_query)];
-    }
-    void removeCacheSql(const StringMeta& sql_meta) const override {}
-
-    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
-        // Mock implementation - return test uid
-        return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    }
-
-    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
-        // Mock implementation
-    }
-
-    bool isStatusFail(int status) const override { return status >= 400; }
-    void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        recorded_server_headers_++;
-    }
-    void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        recorded_client_headers_++;
-    }
-
-    AgentStats& getAgentStats() override {
-        if (!agent_stats_) {
-            agent_stats_ = std::make_unique<AgentStats>(this);
-        }
-        return *agent_stats_;
-    }
-
-    UrlStats& getUrlStats() override {
-        if (!url_stats_) {
-            url_stats_ = std::make_unique<UrlStats>(this);
-        }
-        return *url_stats_;
-    }
-
-    // Test-specific accessors
-    mutable int recorded_stats_calls_ = 0;
-    mutable StatsType last_stats_type_ = AGENT_STATS;
-    mutable int recorded_url_stats_ = 0;
-    mutable int recorded_exceptions_ = 0;
-    mutable int recorded_server_headers_ = 0;
-    mutable int recorded_client_headers_ = 0;
-    mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;
-    mutable std::map<std::string, int32_t> cached_apis_;
-    mutable std::map<std::string, int32_t> cached_errors_;
-    mutable std::map<std::string, int32_t> cached_sqls_;
-    mutable int32_t api_id_counter_ = 100;
-    mutable int32_t error_id_counter_ = 200;
-    mutable int32_t sql_id_counter_ = 300;
-
-private:
-    bool is_exiting_;
-    int64_t start_time_;
-    std::string cached_start_time_str_;
-    int64_t trace_id_counter_;
-    std::shared_ptr<Config> config_ = std::make_shared<Config>();
-    mutable std::unique_ptr<AgentStats> agent_stats_;
-    mutable std::unique_ptr<UrlStats> url_stats_;
-};
-
 class GrpcTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
         mock_agent_service_->setExiting(false);
+        mock_agent_service_->setStartTime(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        auto& cfg = mock_agent_service_->mutableConfig();
+        cfg->span.event_chunk_size = 10;
+        cfg->span.max_event_depth = 32;
+        cfg->span.queue_size = 1024;
+        cfg->http.url_stat.enable = true;
+        cfg->http.url_stat.limit = 1024;
+        cfg->http.url_stat.trim_path_depth = 3;
+        cfg->collector.host = "localhost";
+        cfg->collector.agent_port = 9991;
+        cfg->collector.span_port = 9993;
+        cfg->collector.stat_port = 9992;
+        cfg->app_name_ = "test-app";
+        cfg->app_type_ = 1300;
+        cfg->agent_id_ = "test-agent-id";
+        cfg->agent_name_ = "test-agent-name";
+        mock_agent_service_->setAppName("test-app");
+        mock_agent_service_->setAppType(1300);
+        mock_agent_service_->setAgentId("test-agent-id");
+        mock_agent_service_->setAgentName("test-agent-name");
     }
 
     void TearDown() override {
