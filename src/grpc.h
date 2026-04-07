@@ -55,23 +55,30 @@ namespace pinpoint {
     class GrpcClient {
     public:
         /**
-         * @brief Constructs a client bound to an `AgentService` and client type.
+         * @brief Constructs a client for the given client type.
          *
-         * @param agent Owning agent service.
          * @param client_type Which collector service this client targets.
          */
-        explicit GrpcClient(AgentService* agent, ClientType client_type);
+        GrpcClient(ClientType client_type, std::shared_ptr<const Config> config);
+        /**
+         * @brief Injects the agent service.
+         *
+         * @param agent Owning agent service.
+         */
+        void setAgentService(AgentService* agent);
+        virtual ~GrpcClient() = default;
         /**
          * @brief Ensures the gRPC channel is connected and ready for use.
          *
          * @return `true` if the channel is ready or successfully re-initialized.
          */
-        bool readyChannel();
+        virtual bool readyChannel();
         /// @brief Releases the current channel handle.
         void closeChannel() { channel_.reset(); }
 
     protected:
         AgentService* agent_{};
+        std::shared_ptr<const Config> config_{};
         std::shared_ptr<grpc::Channel> channel_{};
         std::mutex channel_mutex_{};
         std::string client_name_{};
@@ -87,6 +94,8 @@ namespace pinpoint {
          * @brief Blocks until the channel becomes ready or the deadline is exceeded.
          */
         bool wait_channel_ready() const;
+
+        void build_grpc_context(grpc::ClientContext* context, int socket_id) const;
     };
 
     /**
@@ -188,12 +197,12 @@ namespace pinpoint {
      */
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
-        explicit GrpcAgent(AgentService* agent);
+        explicit GrpcAgent(std::shared_ptr<const Config> config);
 
         /**
          * @brief Registers the agent with the collector and starts ping streaming.
          */
-        GrpcRequestStatus registerAgent();
+        virtual GrpcRequestStatus registerAgent();
         /**
          * @brief Adds metadata to the outbound queue.
          *
@@ -246,6 +255,7 @@ namespace pinpoint {
         GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
         GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
         GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
+        void build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const;
     };
 
     /**
@@ -253,7 +263,7 @@ namespace pinpoint {
      */
     class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
     public:
-        explicit GrpcSpan(AgentService* agent);
+        explicit GrpcSpan(std::shared_ptr<const Config> config);
         ~GrpcSpan() override { arena_.Reset(); }        
 
         /**
@@ -299,7 +309,7 @@ namespace pinpoint {
      */
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
-        explicit GrpcStats(AgentService* agent);
+        explicit GrpcStats(std::shared_ptr<const Config> config);
         ~GrpcStats() override { arena_.Reset(); }
 
         /**

@@ -202,8 +202,8 @@ public:
 // Testable gRPC classes that inject mock stubs
 class TestableGrpcAgent : public GrpcAgent {
 public:
-    explicit TestableGrpcAgent(AgentService* agent) : GrpcAgent(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcAgent(AgentService* agent) : GrpcAgent(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockAgentStub(std::unique_ptr<v1::MockAgentStub> mock_stub) {
@@ -214,60 +214,58 @@ public:
         set_meta_stub(std::move(mock_stub));
     }
 
-    // Override readyChannel to avoid actual gRPC connection
-    bool readyChannel() {
-        return true; // Always ready for testing
+    // Override readyChannel — controllable per-test
+    bool readyChannel() override {
+        return ready_channel_;
     }
 
+    void setReadyChannel(bool ready) { ready_channel_ = ready; }
+
 protected:
-    // Override wait_channel_ready to always return true for testing
-    bool wait_channel_ready() const {
-        return true; // Always ready for testing
-    }
+    bool wait_channel_ready() const { return true; }
+
+private:
+    bool ready_channel_{true};
 };
 
 class TestableGrpcSpan : public GrpcSpan {
 public:
-    explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockSpanStub(std::unique_ptr<v1::MockSpanStub> mock_stub) {
         set_span_stub(std::move(mock_stub));
     }
 
-    // Override readyChannel to avoid actual gRPC connection
-    bool readyChannel() {
-        return true; // Always ready for testing
-    }
+    bool readyChannel() override { return ready_channel_; }
+    void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
 protected:
-    // Override wait_channel_ready to always return true for testing
-    bool wait_channel_ready() const {
-        return true; // Always ready for testing
-    }
+    bool wait_channel_ready() const { return true; }
+
+private:
+    bool ready_channel_{true};
 };
 
 class TestableGrpcStats : public GrpcStats {
 public:
-    explicit TestableGrpcStats(AgentService* agent) : GrpcStats(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcStats(AgentService* agent) : GrpcStats(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockStatsStub(std::unique_ptr<v1::MockStatStub> mock_stub) {
         set_stats_stub(std::move(mock_stub));
     }
 
-    // Override readyChannel to avoid actual gRPC connection
-    bool readyChannel() {
-        return true; // Always ready for testing
-    }
+    bool readyChannel() override { return ready_channel_; }
+    void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
 protected:
-    // Override wait_channel_ready to always return true for testing
-    bool wait_channel_ready() const {
-        return true; // Always ready for testing
-    }
+    bool wait_channel_ready() const { return true; }
+
+private:
+    bool ready_channel_{true};
 };
 
 class GrpcMockTest : public ::testing::Test {
@@ -340,14 +338,16 @@ TEST_F(GrpcMockTest, GrpcAgentMetaDataEnqueueTest) {
 
 TEST_F(GrpcMockTest, GrpcAgentPingWorkerTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
-    
+    // readyChannel=false so the worker exits immediately (async streaming
+    // cannot be tested with simple mock stubs)
+    agent.setReadyChannel(false);
+
     auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-    
-    // Since gRPC channel connection will fail in test environment,
-    // we don't expect the stub to be called
+
+    // readyChannel returns false, so no gRPC call is expected
     EXPECT_CALL(*mock_agent_stub, PingSessionRaw(_))
-        .Times(0); // Expect no calls due to channel connection failure
-    
+        .Times(0);
+
     agent.setMockAgentStub(std::move(mock_agent_stub));
     
     // Test ping worker operations
@@ -434,14 +434,15 @@ TEST_F(GrpcMockTest, GrpcSpanEnqueueSpanTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanWorkerTest) {
     TestableGrpcSpan span_client(mock_agent_service_.get());
-    
+    // readyChannel=false so the worker exits immediately (async streaming
+    // cannot be tested with simple mock stubs)
+    span_client.setReadyChannel(false);
+
     auto mock_span_stub = std::make_unique<NiceMock<v1::MockSpanStub>>();
-    
-    // Since gRPC channel connection will fail in test environment,
-    // we don't expect the stub to be called
+
     EXPECT_CALL(*mock_span_stub, SendSpanRaw(_, _))
-        .Times(0); // Expect no calls due to channel connection failure
-    
+        .Times(0);
+
     span_client.setMockSpanStub(std::move(mock_span_stub));
     
     // Create test span data and enqueue
@@ -488,14 +489,15 @@ TEST_F(GrpcMockTest, GrpcStatsEnqueueStatsTest) {
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
-    
+    // readyChannel=false so the worker exits immediately (async streaming
+    // cannot be tested with simple mock stubs)
+    stats_client.setReadyChannel(false);
+
     auto mock_stats_stub = std::make_unique<NiceMock<v1::MockStatStub>>();
-    
-    // Since gRPC channel connection will fail in test environment,
-    // we don't expect the stub to be called
+
     EXPECT_CALL(*mock_stats_stub, SendAgentStatRaw(_, _))
-        .Times(0); // Expect no calls due to channel connection failure
-    
+        .Times(0);
+
     stats_client.setMockStatsStub(std::move(mock_stats_stub));
     
     // Enqueue some stats
@@ -566,7 +568,12 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
     // Test complete workflow
     GrpcRequestStatus register_status = agent.registerAgent();
     EXPECT_EQ(register_status, SEND_OK);
-    
+
+    // Disable readyChannel for workers (async streaming cannot be tested with mock stubs)
+    agent.setReadyChannel(false);
+    span_client.setReadyChannel(false);
+    stats_client.setReadyChannel(false);
+
     // Start workers
     std::thread ping_worker([&agent]() { agent.sendPingWorker(); });
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
@@ -632,16 +639,21 @@ TEST_F(GrpcMockTest, AllWorkersStartStopTest) {
     agent.setMockMetaStub(std::move(mock_meta_stub));
     span_client.setMockSpanStub(std::move(mock_span_stub));
     stats_client.setMockStatsStub(std::move(mock_stats_stub));
-    
+
+    // Disable readyChannel for workers (async streaming cannot be tested with mock stubs)
+    agent.setReadyChannel(false);
+    span_client.setReadyChannel(false);
+    stats_client.setReadyChannel(false);
+
     // Start all workers
     std::thread ping_worker([&agent]() { agent.sendPingWorker(); });
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
     std::thread span_worker([&span_client]() { span_client.sendSpanWorker(); });
     std::thread stats_worker([&stats_client]() { stats_client.sendStatsWorker(); });
-    
+
     // Let workers run briefly
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
+
     // Set agent to exiting state before stopping workers
     mock_agent_service_->setExiting(true);
     

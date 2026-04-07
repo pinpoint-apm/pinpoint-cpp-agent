@@ -180,6 +180,15 @@ target_link_libraries(test_grpc_with_mocks
 set_target_properties(test_grpc_with_mocks PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_grpc_with_mocks COMMAND test_grpc_with_mocks)
 
+# Add test_agent_with_mocks
+add_executable(test_agent_with_mocks test_agent_with_mocks.cpp)
+target_link_libraries(test_agent_with_mocks
+    ${PINPOINT_CPP_LIBRARY}
+    GTest::gmock_main
+)
+set_target_properties(test_agent_with_mocks PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_agent_with_mocks COMMAND test_agent_with_mocks)
+
 # Utility tests
 add_executable(test_utility test_utility.cpp)
 target_link_libraries(test_utility
