@@ -187,14 +187,14 @@ protected:
 // GrpcClient Tests
 
 TEST_F(GrpcTest, GrpcClientConstructorTest) {
-    GrpcAgent client(mock_agent_service_.get());
+    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
     
     // Basic construction should not throw
     SUCCEED() << "GrpcClient should construct successfully";
 }
 
 TEST_F(GrpcTest, GrpcClientChannelTest) {
-    GrpcAgent client(mock_agent_service_.get());
+    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
     
     // Test closeChannel should not throw (skip readyChannel as it blocks in test environment)
     client.closeChannel();
@@ -205,13 +205,13 @@ TEST_F(GrpcTest, GrpcClientChannelTest) {
 // GrpcAgent Tests
 
 TEST_F(GrpcTest, GrpcAgentConstructorTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
     
     SUCCEED() << "GrpcAgent should construct successfully";
 }
 
 TEST_F(GrpcTest, GrpcAgentRegisterAgentTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
     
     // Skip actual registerAgent call as it blocks without server
     // Just test that the method exists and can be called safely
@@ -219,7 +219,7 @@ TEST_F(GrpcTest, GrpcAgentRegisterAgentTest) {
 }
 
 TEST_F(GrpcTest, GrpcAgentMetaOperationsTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
     
     // Test enqueueMeta with API metadata
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
@@ -233,7 +233,7 @@ TEST_F(GrpcTest, GrpcAgentMetaOperationsTest) {
 }
 
 TEST_F(GrpcTest, GrpcAgentWorkerOperationsTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
     
     // Test worker stop methods (skip start workers as they block without server)
     agent.stopPingWorker();
@@ -245,13 +245,13 @@ TEST_F(GrpcTest, GrpcAgentWorkerOperationsTest) {
 // GrpcSpan Tests
 
 TEST_F(GrpcTest, GrpcSpanConstructorTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     
     SUCCEED() << "GrpcSpan should construct successfully";
 }
 
 TEST_F(GrpcTest, GrpcSpanEnqueueTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     
     // Create a test span chunk
     auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
@@ -264,7 +264,7 @@ TEST_F(GrpcTest, GrpcSpanEnqueueTest) {
 }
 
 TEST_F(GrpcTest, GrpcSpanWorkerOperationsTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     
     // Test worker stop method (skip start worker as it blocks without server)
     span_client.stopSpanWorker();
@@ -275,13 +275,13 @@ TEST_F(GrpcTest, GrpcSpanWorkerOperationsTest) {
 // GrpcStats Tests
 
 TEST_F(GrpcTest, GrpcStatsConstructorTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     SUCCEED() << "GrpcStats should construct successfully";
 }
 
 TEST_F(GrpcTest, GrpcStatsEnqueueTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     // Test enqueueStats
     stats_client.enqueueStats(AGENT_STATS);
@@ -291,7 +291,7 @@ TEST_F(GrpcTest, GrpcStatsEnqueueTest) {
 }
 
 TEST_F(GrpcTest, GrpcStatsWorkerOperationsTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     // Test worker stop method (skip start worker as it blocks without server)
     stats_client.stopStatsWorker();
@@ -358,9 +358,9 @@ TEST_F(GrpcTest, StringMetaSqlTest) {
 // Integration Tests
 
 TEST_F(GrpcTest, GrpcClientTypeTest) {
-    GrpcAgent agent_client(mock_agent_service_.get());
-    GrpcSpan span_client(mock_agent_service_.get());
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcAgent agent_client(mock_agent_service_->getConfig()); agent_client.setAgentService(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     // Test that different client types can be created
     SUCCEED() << "All gRPC client types should be constructible";
@@ -368,9 +368,9 @@ TEST_F(GrpcTest, GrpcClientTypeTest) {
 
 TEST_F(GrpcTest, CompleteWorkflowTest) {
     // Create all client types
-    GrpcAgent agent(mock_agent_service_.get());
-    GrpcSpan span_client(mock_agent_service_.get());
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     // Enqueue some data
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
@@ -413,14 +413,14 @@ TEST_F(GrpcTest, GrpcEnumValuesTest) {
 
 TEST_F(GrpcTest, MultipleClientInstancesTest) {
     // Test that multiple instances can coexist
-    std::unique_ptr<GrpcAgent> agent1 = std::make_unique<GrpcAgent>(mock_agent_service_.get());
-    std::unique_ptr<GrpcAgent> agent2 = std::make_unique<GrpcAgent>(mock_agent_service_.get());
+    std::unique_ptr<GrpcAgent> agent1 = std::make_unique<GrpcAgent>(mock_agent_service_->getConfig());
+    std::unique_ptr<GrpcAgent> agent2 = std::make_unique<GrpcAgent>(mock_agent_service_->getConfig());
     
-    std::unique_ptr<GrpcSpan> span1 = std::make_unique<GrpcSpan>(mock_agent_service_.get());
-    std::unique_ptr<GrpcSpan> span2 = std::make_unique<GrpcSpan>(mock_agent_service_.get());
+    std::unique_ptr<GrpcSpan> span1 = std::make_unique<GrpcSpan>(mock_agent_service_->getConfig());
+    std::unique_ptr<GrpcSpan> span2 = std::make_unique<GrpcSpan>(mock_agent_service_->getConfig());
     
-    std::unique_ptr<GrpcStats> stats1 = std::make_unique<GrpcStats>(mock_agent_service_.get());
-    std::unique_ptr<GrpcStats> stats2 = std::make_unique<GrpcStats>(mock_agent_service_.get());
+    std::unique_ptr<GrpcStats> stats1 = std::make_unique<GrpcStats>(mock_agent_service_->getConfig());
+    std::unique_ptr<GrpcStats> stats2 = std::make_unique<GrpcStats>(mock_agent_service_->getConfig());
     
     // All instances should be valid
     EXPECT_NE(agent1.get(), nullptr);
@@ -555,7 +555,7 @@ TEST_F(GrpcTest, MetaTypeEnumValuesTest) {
 // Queue behavior tests
 
 TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
 
     // Enqueue multiple different metadata types
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api1"));
@@ -576,7 +576,7 @@ TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
 }
 
 TEST_F(GrpcTest, GrpcSpanMultipleEnqueueTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
 
     for (int i = 0; i < 5; i++) {
         auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "op-" + std::to_string(i));
@@ -588,7 +588,7 @@ TEST_F(GrpcTest, GrpcSpanMultipleEnqueueTest) {
 }
 
 TEST_F(GrpcTest, GrpcStatsEnqueueAllTypesTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
 
     stats_client.enqueueStats(AGENT_STATS);
     stats_client.enqueueStats(URL_STATS);
@@ -600,7 +600,7 @@ TEST_F(GrpcTest, GrpcStatsEnqueueAllTypesTest) {
 // Channel operation tests
 
 TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
-    GrpcAgent client(mock_agent_service_.get());
+    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
 
     client.closeChannel();
     client.closeChannel();
@@ -612,7 +612,7 @@ TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
 // Worker stop idempotency tests
 
 TEST_F(GrpcTest, GrpcAgentStopWorkersIdempotentTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
 
     agent.stopPingWorker();
     agent.stopPingWorker();
@@ -623,7 +623,7 @@ TEST_F(GrpcTest, GrpcAgentStopWorkersIdempotentTest) {
 }
 
 TEST_F(GrpcTest, GrpcSpanStopWorkerIdempotentTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
 
     span_client.stopSpanWorker();
     span_client.stopSpanWorker();
@@ -632,7 +632,7 @@ TEST_F(GrpcTest, GrpcSpanStopWorkerIdempotentTest) {
 }
 
 TEST_F(GrpcTest, GrpcStatsStopWorkerIdempotentTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
 
     stats_client.stopStatsWorker();
     stats_client.stopStatsWorker();
@@ -682,7 +682,7 @@ TEST_F(GrpcTest, StringMetaLongSqlTest) {
 // Enqueue after service exiting
 
 TEST_F(GrpcTest, GrpcAgentEnqueueMetaWhileExitingTest) {
-    GrpcAgent agent(mock_agent_service_.get());
+    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
     mock_agent_service_->setExiting(true);
 
     // Should not crash even when service is exiting
@@ -692,7 +692,7 @@ TEST_F(GrpcTest, GrpcAgentEnqueueMetaWhileExitingTest) {
 }
 
 TEST_F(GrpcTest, GrpcSpanEnqueueWhileExitingTest) {
-    GrpcSpan span_client(mock_agent_service_.get());
+    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     mock_agent_service_->setExiting(true);
 
     auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "exit-op");
@@ -703,7 +703,7 @@ TEST_F(GrpcTest, GrpcSpanEnqueueWhileExitingTest) {
 }
 
 TEST_F(GrpcTest, GrpcStatsEnqueueWhileExitingTest) {
-    GrpcStats stats_client(mock_agent_service_.get());
+    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     mock_agent_service_->setExiting(true);
 
     stats_client.enqueueStats(AGENT_STATS);

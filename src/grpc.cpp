@@ -35,37 +35,6 @@ namespace pinpoint {
         constexpr int MAX_MESSAGE_LENGTH = 4 * 1024 * 1024; // 4 MB
     }
 
-    static void build_grpc_context(grpc::ClientContext* context, const AgentService* agent, int socket_id) {
-        const auto config = agent->getConfig();
-
-        context->AddMetadata("applicationname", config->app_name_);
-        context->AddMetadata("agentid", config->agent_id_);
-        context->AddMetadata("starttime", std::to_string(agent->getStartTime()));
-
-        if (!config->agent_name_.empty()) {
-            context->AddMetadata("agentname", config->agent_name_);
-        }
-        if (socket_id > 0) {
-            context->AddMetadata("socketid", std::to_string(socket_id));
-        }
-    }
-
-    static void build_agent_info(const AgentService* agent, v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) {
-        const auto config = agent->getConfig();
-        agent_info->set_hostname(get_host_name());
-        agent_info->set_ip(get_host_ip_addr());
-        agent_info->set_servicetype(config->app_type_);
-        agent_info->set_pid(getpid());
-        agent_info->set_agentversion(VERSION_STRING);
-        agent_info->set_container(config->is_container);
-
-        const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
-        meta_data->set_serverinfo("C/C++");
-        meta_data->add_vmarg(to_config_string(*config));
-
-        agent_info->set_allocated_servermetadata(meta_data);
-    }
-
     static v1::PTransactionId* build_transaction_id(TraceId& tid, google::protobuf::Arena* arena) {
         auto& [agent_id, start_time, sequence] = tid;
         auto* ptid = google::protobuf::Arena::Create<v1::PTransactionId>(arena);
@@ -397,18 +366,18 @@ namespace pinpoint {
         return uri_stat;
     }
 
-    GrpcClient::GrpcClient(AgentService* agent, ClientType client_type) : agent_{agent} {
-        const auto config = agent_->getConfig();
-        auto addr = absl::StrCat(config->collector.host, ":");
+    GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
+        : config_{std::move(config)} {
+        auto addr = absl::StrCat(config_->collector.host, ":");
 
         if (client_type == AGENT) {
-            addr = absl::StrCat(addr, config->collector.agent_port);
+            addr = absl::StrCat(addr, config_->collector.agent_port);
             client_name_ = "agent";
         } else if (client_type == SPAN) {
-            addr = absl::StrCat(addr, config->collector.span_port);
+            addr = absl::StrCat(addr, config_->collector.span_port);
             client_name_ = "span";
         } else {
-            addr = absl::StrCat(addr, config->collector.stat_port);
+            addr = absl::StrCat(addr, config_->collector.stat_port);
             client_name_ = "stats";
         }
 
@@ -419,6 +388,23 @@ namespace pinpoint {
         channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, MAX_MESSAGE_LENGTH);
 
         channel_ = grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), channel_args);
+    }
+
+    void GrpcClient::setAgentService(AgentService* agent) {
+        agent_ = agent;
+    }
+
+    void GrpcClient::build_grpc_context(grpc::ClientContext* context, int socket_id) const {
+        context->AddMetadata("applicationname", config_->app_name_);
+        context->AddMetadata("agentid", config_->agent_id_);
+        context->AddMetadata("starttime", std::to_string(agent_->getStartTime()));
+
+        if (!config_->agent_name_.empty()) {
+            context->AddMetadata("agentname", config_->agent_name_);
+        }
+        if (socket_id > 0) {
+            context->AddMetadata("socketid", std::to_string(socket_id));
+        }
     }
 
     bool GrpcClient::wait_channel_ready() const {
@@ -466,7 +452,7 @@ namespace pinpoint {
 
     //GrpcAgent
 
-    GrpcAgent::GrpcAgent(AgentService* agent) : GrpcClient(agent, AGENT) {
+    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
         set_agent_stub(v1::Agent::NewStub(channel_));
         set_meta_stub(v1::Metadata::NewStub(channel_));
     }
@@ -479,16 +465,31 @@ namespace pinpoint {
         ctx.set_deadline(deadline);
     }
 
+    void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
+        agent_info->set_hostname(get_host_name());
+        agent_info->set_ip(get_host_ip_addr());
+        agent_info->set_servicetype(config_->app_type_);
+        agent_info->set_pid(getpid());
+        agent_info->set_agentversion(VERSION_STRING);
+        agent_info->set_container(config_->is_container);
+
+        const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
+        meta_data->set_serverinfo("C/C++");
+        meta_data->add_vmarg(to_config_string(*config_));
+
+        agent_info->set_allocated_servermetadata(meta_data);
+    }
+
     GrpcRequestStatus GrpcAgent::registerAgent() {
         grpc::ClientContext ctx;
         v1::PResult reply;
 
         std::unique_lock<std::mutex> lock(channel_mutex_);
-        build_grpc_context(&ctx, agent_, 0);
+        build_grpc_context(&ctx, 0);
 
         google::protobuf::Arena arena;
         auto* agent_info = google::protobuf::Arena::Create<v1::PAgentInfo>(&arena);
-        build_agent_info(agent_, agent_info, &arena);
+        build_agent_info(agent_info, &arena);
 
         set_deadline(ctx, REGISTER_TIMEOUT);
         const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
@@ -508,7 +509,7 @@ namespace pinpoint {
         grpc::ClientContext ctx;
         std::unique_lock<std::mutex> lock(channel_mutex_);
 
-        build_grpc_context(&ctx, agent_, 0);
+        build_grpc_context(&ctx, 0);
         set_deadline(ctx, META_TIMEOUT);
         
         const grpc::Status status = stub_method(&ctx, request, &reply);
@@ -619,7 +620,7 @@ namespace pinpoint {
     void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        const auto config = agent_->getConfig();
+        const auto& config = config_;
         if (meta_queue_.size() < config->span.queue_size) {
             meta_queue_.push(std::move(meta));
         } else {
@@ -693,7 +694,7 @@ namespace pinpoint {
         }
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), agent_, ++socket_id_);
+        build_grpc_context(stream_context_.get(), ++socket_id_);
         agent_stub_->async()->PingSession(stream_context_.get(), this);
 
         AddHold();
@@ -798,7 +799,7 @@ namespace pinpoint {
 
     //GrpcSpan
 
-    GrpcSpan::GrpcSpan(AgentService* agent) : GrpcClient(agent, SPAN) {
+    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
         set_span_stub(v1::Span::NewStub(channel_));
     }
 
@@ -809,7 +810,7 @@ namespace pinpoint {
         }
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), agent_, 0);
+        build_grpc_context(stream_context_.get(), 0);
         span_stub_->async()->SendSpan(stream_context_.get(), &reply_, this);
 
         AddHold();
@@ -914,7 +915,7 @@ namespace pinpoint {
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
         std::unique_lock<std::mutex> lock(span_queue_mutex_);
 
-        const auto config = agent_->getConfig();
+        const auto& config = config_;
         if (span_queue_.size() < config->span.queue_size) {
             span_queue_.push(std::move(span));
         } else {
@@ -982,7 +983,7 @@ namespace pinpoint {
 
     //GrpcStat
 
-    GrpcStats::GrpcStats(AgentService* agent): GrpcClient(agent, STATS) {
+    GrpcStats::GrpcStats(std::shared_ptr<const Config> config) : GrpcClient(STATS, std::move(config)) {
         set_stats_stub(v1::Stat::NewStub(channel_));
     }
 
@@ -993,7 +994,7 @@ namespace pinpoint {
         }
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), agent_, 0);
+        build_grpc_context(stream_context_.get(), 0);
         stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
         AddHold();
@@ -1097,7 +1098,7 @@ namespace pinpoint {
     constexpr size_t MAX_STATS_QUEUE_SIZE = 2;
 
     void GrpcStats::enqueueStats(const StatsType stats) noexcept try {
-        const auto config = agent_->getConfig();
+        const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
@@ -1134,7 +1135,7 @@ namespace pinpoint {
     }
 
     void GrpcStats::sendStatsWorker() try {
-        const auto config = agent_->getConfig();
+        const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
@@ -1173,7 +1174,7 @@ namespace pinpoint {
     }
 
     void GrpcStats::stopStatsWorker() {
-        const auto config = agent_->getConfig();
+        const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }

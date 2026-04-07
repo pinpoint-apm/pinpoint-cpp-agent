@@ -38,8 +38,14 @@ namespace pinpoint {
         std::mutex global_agent_mutex;
     }
 
-    AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg) :
+    AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg,
+                         std::unique_ptr<GrpcAgent> grpc_agent,
+                         std::unique_ptr<GrpcSpan> grpc_span,
+                         std::unique_ptr<GrpcStats> grpc_stat) :
         config_(std::move(cfg)),
+        grpc_agent_(std::move(grpc_agent)),
+        grpc_span_(std::move(grpc_span)),
+        grpc_stat_(std::move(grpc_stat)),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
@@ -170,9 +176,9 @@ namespace pinpoint {
     }
 
     void AgentImpl::init_grpc_workers() try {
-        grpc_agent_ = std::make_unique<GrpcAgent>(this);
-        grpc_span_ = std::make_unique<GrpcSpan>(this);
-        grpc_stat_ = std::make_unique<GrpcStats>(this);
+        grpc_agent_->setAgentService(this);
+        grpc_span_->setAgentService(this);
+        grpc_stat_->setAgentService(this);
 
         do {
             if (!grpc_agent_->readyChannel()) {
@@ -516,7 +522,11 @@ namespace pinpoint {
             return nullptr;
         }
         try {
-            return std::make_shared<AgentImpl>(cfg);
+            auto grpc_agent = std::make_unique<GrpcAgent>(cfg);
+            auto grpc_span = std::make_unique<GrpcSpan>(cfg);
+            auto grpc_stat = std::make_unique<GrpcStats>(cfg);
+            return std::make_shared<AgentImpl>(cfg,
+                std::move(grpc_agent), std::move(grpc_span), std::move(grpc_stat));
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;

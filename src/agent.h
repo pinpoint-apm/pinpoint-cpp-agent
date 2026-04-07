@@ -46,7 +46,10 @@ namespace pinpoint {
 		 *
 		 * @param options Resolved agent configuration.
 		 */
-		explicit AgentImpl(std::shared_ptr<const Config> options);
+		AgentImpl(std::shared_ptr<const Config> options,
+				  std::unique_ptr<GrpcAgent> grpc_agent,
+				  std::unique_ptr<GrpcSpan> grpc_span,
+				  std::unique_ptr<GrpcStats> grpc_stat);
         ~AgentImpl() override;
 
 		/**

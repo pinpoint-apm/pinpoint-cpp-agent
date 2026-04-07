@@ -202,8 +202,8 @@ public:
 // Testable gRPC classes that inject mock stubs
 class TestableGrpcAgent : public GrpcAgent {
 public:
-    explicit TestableGrpcAgent(AgentService* agent) : GrpcAgent(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcAgent(AgentService* agent) : GrpcAgent(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockAgentStub(std::unique_ptr<v1::MockAgentStub> mock_stub) {
@@ -228,8 +228,8 @@ protected:
 
 class TestableGrpcSpan : public GrpcSpan {
 public:
-    explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockSpanStub(std::unique_ptr<v1::MockSpanStub> mock_stub) {
@@ -250,8 +250,8 @@ protected:
 
 class TestableGrpcStats : public GrpcStats {
 public:
-    explicit TestableGrpcStats(AgentService* agent) : GrpcStats(agent) {
-        // Don't call parent constructor's stub creation
+    explicit TestableGrpcStats(AgentService* agent) : GrpcStats(agent->getConfig()) {
+        agent_ = agent;
     }
 
     void setMockStatsStub(std::unique_ptr<v1::MockStatStub> mock_stub) {
