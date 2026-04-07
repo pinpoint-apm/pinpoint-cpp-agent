@@ -23,143 +23,22 @@
 #include "../src/config.h"
 #include "../src/agent_service.h"
 #include "../src/stat.h"
+#include "mock_agent_service.h"
 
 namespace pinpoint {
-
-// Mock implementation of AgentService for UrlStats testing
-class MockAgentService : public AgentService {
-public:
-    MockAgentService() : is_exiting_(false), start_time_(1234567890), cached_start_time_str_(std::to_string(start_time_)), trace_id_counter_(0) {
-        // Configure default config for URL stats
-        config_->http.url_stat.enable = true;
-        config_->http.url_stat.limit = 1024;
-        config_->http.url_stat.trim_path_depth = 3;
-        config_->http.url_stat.method_prefix = false;
-        config_->span.queue_size = 100;
-    }
-
-    // AgentService interface implementation
-    bool isExiting() const override { return is_exiting_; }
-    std::string getAppName() const override { return "TestApp"; }
-    int32_t getAppType() const override { return 1300; }
-    std::string getAgentId() const override { return "test-agent-001"; }
-    std::string getAgentName() const override { return "TestAgent"; }
-    std::shared_ptr<const Config> getConfig() const override { return config_; }
-    int64_t getStartTime() const override { return start_time_; }
-    void reloadConfig(std::shared_ptr<const Config> cfg) override {
-        if (cfg) {
-            *config_ = *cfg;
-        }
-    }
-
-    TraceId generateTraceId() override {
-        TraceId trace_id;
-        trace_id.StartTime = start_time_;
-        trace_id.Sequence = trace_id_counter_++;
-        return trace_id;
-    }
-
-    void recordSpan(std::unique_ptr<SpanChunk> span) const override {
-        recorded_spans_++;
-    }
-
-    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
-        recorded_url_stats_++;
-    }
-
-    void recordException(SpanData* span_data) const override {
-        recorded_exceptions_++;
-    }
-
-    void recordStats(StatsType stats) const override {
-        recorded_stats_calls_++;
-        last_stats_type_ = stats;
-    }
-
-    int32_t cacheApi(std::string_view api_str, int32_t api_type) const override {
-        return 42; // Mock return value
-    }
-
-    void removeCacheApi(const ApiMeta& api_meta) const override {
-        // Mock implementation
-    }
-
-    int32_t cacheError(std::string_view error_name) const override {
-        return 100; // Mock return value
-    }
-
-    void removeCacheError(const StringMeta& error_meta) const override {
-        // Mock implementation
-    }
-
-    int32_t cacheSql(std::string_view sql_query) const override {
-        return 300; // Mock return value
-    }
-
-    void removeCacheSql(const StringMeta& sql_meta) const override {
-        // Mock implementation
-    }
-
-    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
-        // Mock implementation - return test uid
-        return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    }
-
-    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
-        // Mock implementation
-    }
-
-    bool isStatusFail(int status) const override {
-        return status >= 400;
-    }
-
-    void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        // Mock implementation
-    }
-
-    void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {
-        // Mock implementation
-    }
-
-    AgentStats& getAgentStats() override {
-        if (!agent_stats_) {
-            agent_stats_ = std::make_unique<AgentStats>(this);
-        }
-        return *agent_stats_;
-    }
-
-    UrlStats& getUrlStats() override {
-        if (!url_stats_) {
-            url_stats_ = std::make_unique<UrlStats>(this);
-        }
-        return *url_stats_;
-    }
-
-    // Test helpers
-    void setExiting(bool exiting) { is_exiting_ = exiting; }
-    void setUrlStatEnabled(bool enabled) { config_->http.url_stat.enable = enabled; }
-    mutable int recorded_spans_ = 0;
-    mutable int recorded_url_stats_ = 0;
-    mutable int recorded_exceptions_ = 0;
-    mutable int recorded_stats_calls_ = 0;
-    mutable StatsType last_stats_type_ = AGENT_STATS;
-
-private:
-    bool is_exiting_;
-    int64_t start_time_;
-    std::string cached_start_time_str_;
-    int64_t trace_id_counter_;
-    std::shared_ptr<Config> config_ = std::make_shared<Config>();
-    mutable std::unique_ptr<AgentStats> agent_stats_;
-    mutable std::unique_ptr<UrlStats> url_stats_;
-};
 
 class UrlStatTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
-        mock_agent_service_->setExiting(false);  // Ensure clean state
-        // UrlStats is now initialized in MockAgentService constructor
+        mock_agent_service_->setExiting(false);
+        // Configure URL stats defaults for testing
+        auto& cfg = mock_agent_service_->mutableConfig();
+        cfg->http.url_stat.enable = true;
+        cfg->http.url_stat.limit = 1024;
+        cfg->http.url_stat.trim_path_depth = 3;
+        cfg->http.url_stat.method_prefix = false;
+        cfg->span.queue_size = 100;
     }
 
     void TearDown() override {
@@ -353,7 +232,7 @@ TEST_F(UrlStatTest, UrlStatsEnqueueTest) {
 }
 
 TEST_F(UrlStatTest, UrlStatsEnqueueWithDisabledConfigTest) {
-    mock_agent_service_->setUrlStatEnabled(false);
+    mock_agent_service_->mutableConfig()->http.url_stat.enable = false;
     UrlStats url_stats(mock_agent_service_.get());
     
     auto stat = std::make_unique<UrlStatEntry>("/api/test", "POST", 201);
