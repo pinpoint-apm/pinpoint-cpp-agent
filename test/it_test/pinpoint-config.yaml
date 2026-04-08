@@ -1,0 +1,85 @@
+# Pinpoint C++ Agent - Full-feature Integration Test Configuration
+# All available options are enabled for comprehensive testing.
+
+Enable: true
+
+ApplicationName: "it-test-server"
+ApplicationType: 1300    # SERVICE_TYPE_CPP
+AgentId: "it-test-001"
+AgentName: "it-test-agent"
+
+IsContainer: true
+EnableCallstackTrace: true
+
+# --- Collector (gRPC) ---
+Collector:
+  GrpcHost: "localhost"
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+
+# --- Logging ---
+Log:
+  Level: "info"          # debug / info / warn / error
+  FilePath: "/tmp"
+  MaxFileSize: 50        # MB
+
+# --- Sampling ---
+# CounterRate=1 means sample every request (100%).
+Sampling:
+  Type: "COUNTING"       # COUNTING or PERCENT
+  CounterRate: 1         # sample every Nth request
+  PercentRate: 100.0     # or sample N% of requests
+  NewThroughput: -1      # unlimited new trace throughput
+  ContinueThroughput: -1 # unlimited continue throughput
+
+# --- Span ---
+Span:
+  QueueSize: 4096        # larger queue for stress tests
+  MaxEventDepth: 64
+  MaxEventSequence: 5000
+  EventChunkSize: 128
+
+# --- HTTP ---
+Http:
+  CollectUrlStat: true
+  UrlStatLimit: 1024
+  UrlStatEnableTrimPath: true
+  UrlStatTrimPathDepth: 4
+  UrlStatMethodPrefix: true
+
+  Server:
+    StatusCodeErrors: ["5xx"]
+    RecordRequestHeader:
+      - "User-Agent"
+      - "Content-Type"
+      - "Accept"
+      - "Host"
+      - "X-Request-ID"
+      - "X-Forwarded-For"
+    RecordRequestCookie:
+      - "session_id"
+      - "token"
+    RecordResponseHeader:
+      - "Content-Type"
+      - "X-Response-Time"
+      - "X-Request-ID"
+
+  Client:
+    RecordRequestHeader:
+      - "User-Agent"
+      - "Content-Type"
+      - "Host"
+    RecordResponseHeader:
+      - "Content-Type"
+
+# --- SQL ---
+Sql:
+  EnableSqlStats: true
+  MaxBindArgsSize: 2048
+
+# --- Stat ---
+Stat:
+  Enable: true
+  BatchCount: 6
+  BatchInterval: 5000    # ms

@@ -208,3 +208,6 @@ target_link_libraries(test_logging
 )
 set_target_properties(test_logging PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_logging COMMAND test_logging)
+
+# Integration test
+add_subdirectory(it_test)
