@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <string>
 #include <queue>
@@ -88,7 +89,7 @@ namespace pinpoint {
         std::condition_variable stream_cv_{};
         grpc::Status stream_status_{};
         GrpcStreamStatus grpc_status_{};
-        bool force_queue_empty_{false};
+        std::atomic<bool> force_queue_empty_{false};
 
         /**
          * @brief Blocks until the channel becomes ready or the deadline is exceeded.

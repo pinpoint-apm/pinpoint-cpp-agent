@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cassert>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -395,6 +396,7 @@ namespace pinpoint {
     }
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, int socket_id) const {
+        assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
         context->AddMetadata("applicationname", config_->app_name_);
         context->AddMetadata("agentid", config_->agent_id_);
         context->AddMetadata("starttime", std::to_string(agent_->getStartTime()));
