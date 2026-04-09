@@ -19,9 +19,6 @@
 #include <utility>
 #include <mutex>
 
-#include <yaml-cpp/yaml.h>
-#include "absl/strings/str_cat.h"
-
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
@@ -380,7 +377,10 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = absl::StrCat(api_str, "_", api_type);
+        std::string key;
+        key.reserve(api_str.size() + 5);
+        key.append(api_str).append("_").append(std::to_string(api_type));
+
         const auto [id, found] = api_cache_->get(key);
         if (found) {
             return id;
@@ -397,7 +397,9 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const {
         if (enabled_) {
-            const auto key = absl::StrCat(api_meta.api_str_, "_", api_meta.type_);
+            std::string key;
+            key.reserve(api_meta.api_str_.size() + 5);
+            key.append(api_meta.api_str_).append("_").append(std::to_string(api_meta.type_));
             api_cache_->remove(key);
         }
     }
