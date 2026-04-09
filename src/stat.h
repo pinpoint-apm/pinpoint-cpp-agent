@@ -32,6 +32,7 @@ namespace pinpoint {
      */
     struct AgentStatsSnapshot {
         int64_t    sample_time_{0};
+        int64_t    interval_{0}; 
         double     system_cpu_time_{0};
         double     process_cpu_time_{0};
         int64_t    num_threads_{0};
@@ -130,6 +131,7 @@ namespace pinpoint {
         
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};
+        int collect_interval_{0};
         
         // Cached system constants
         long sc_clk_tck_{0};

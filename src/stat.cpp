@@ -216,6 +216,7 @@ namespace pinpoint {
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);
+        stat.interval_ = collect_interval_;
         
         const auto cpu_load = getCpuLoad(period);
         stat.system_cpu_time_ = cpu_load.sys_load;
@@ -279,15 +280,16 @@ namespace pinpoint {
         }
 
         initAgentStats();
-        
+
         {
             // Resize vector safely
             std::lock_guard<std::mutex> lock(mutex_);
-        agent_stats_snapshots_.resize(config->stat.batch_count);
+            agent_stats_snapshots_.resize(config->stat.batch_count);
         }
-        
+
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto timeout = std::chrono::milliseconds(config->stat.collect_interval);
+        collect_interval_ = config->stat.collect_interval;
+        const auto timeout = std::chrono::milliseconds(collect_interval_);
 
         while (!agent_->isExiting()) {
             if (!cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {

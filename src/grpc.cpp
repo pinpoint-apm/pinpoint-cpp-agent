@@ -275,7 +275,7 @@ namespace pinpoint {
 
     static void build_agent_stat(v1::PAgentStat *agent_stat, const AgentStatsSnapshot& stat, google::protobuf::Arena* arena) {
         agent_stat->set_timestamp(stat.sample_time_);
-        agent_stat->set_collectinterval(5000);
+        agent_stat->set_collectinterval(stat.interval_);
 
         auto* memory_stat = google::protobuf::Arena::Create<v1::PJvmGc>(arena);
         memory_stat->set_type(v1::JVM_GC_TYPE_UNKNOWN);
