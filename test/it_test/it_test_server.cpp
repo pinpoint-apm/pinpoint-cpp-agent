@@ -19,20 +19,12 @@
 #include "pinpoint_grpc_interceptors.h"
 #include "testapp.grpc.pb.h"
 
-#include <mysqlx/xdevapi.h>
-
 // =============================================================================
 // Global state
 // =============================================================================
 static std::atomic<uint64_t> total_requests{0};
 static std::atomic<uint64_t> active_requests{0};
 static auto start_time = std::chrono::steady_clock::now();
-
-// Thread-local span for DB tracing
-thread_local pinpoint::SpanPtr tls_span;
-
-void set_span_context(pinpoint::SpanPtr span) { tls_span = span; }
-pinpoint::SpanPtr get_span_context() { return tls_span; }
 
 // =============================================================================
 // Common helpers
@@ -223,193 +215,82 @@ void on_error(const httplib::Request& req, httplib::Response& res) {
 }
 
 // =============================================================================
-// MySQL endpoints
-// =============================================================================
-// =============================================================================
-// MySQL endpoints
+// SQL-traced endpoints (no actual DB connection — span events only)
 // =============================================================================
 
-struct DatabaseConfig {
-    std::string host = "localhost";
-    std::string port = "33060";
-    std::string database = "test";
-    std::string username = "root";
-    std::string password = "pinpoint123";
-
-    std::string connectionUri() const {
-        return "mysqlx://" + username + ":" + password +
-               "@" + host + ":" + port + "/" + database;
-    }
-};
-
-static DatabaseConfig g_db_config;
-
-// Helper: create a MySQL session
-static std::unique_ptr<mysqlx::Session> create_session() {
-    return std::make_unique<mysqlx::Session>(g_db_config.connectionUri());
-}
-
-// Helper: trace a SQL query on the current thread-local span
 static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
-                      const std::string& sql, const std::string& params,
-                      const std::function<void()>& work) {
-    auto se = span->NewSpanEvent("SQL_" + operation);
-    if (se) {
-        se->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
-        se->SetEndPoint(g_db_config.host + ":" + g_db_config.port);
-        se->SetDestination(g_db_config.database);
-    }
-
-    bool success = true;
-    std::string error_msg;
-    try {
-        work();
-    } catch (const std::exception& e) {
-        success = false;
-        error_msg = e.what();
-    }
-
+                      const std::string& sql, const std::string& params) {
+    span->NewSpanEvent("SQL_" + operation);
     auto ev = span->GetSpanEvent();
     if (ev) {
+        ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
+        ev->SetEndPoint("localhost:33060");
+        ev->SetDestination("test");
         ev->SetSqlQuery(sql, params);
-        if (!success) {
-            ev->SetError("MySQL_Error", error_msg);
-        }
     }
+
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> sleep_dist(1, 3000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
+
+    static const std::string error_messages[] = {
+        "Connection timed out after 30s",
+        "Deadlock found when trying to get lock; try restarting transaction",
+        "Lost connection to MySQL server during query",
+        "Table 'test." + operation + "_tmp' doesn't exist",
+        "Query execution was interrupted",
+        "Too many connections",
+        "Lock wait timeout exceeded; try restarting transaction",
+        "Duplicate entry for key 'PRIMARY'",
+    };
+    std::uniform_int_distribution<int> error_dist(0, 9);
+    if (ev && error_dist(rng) < 3) {  // ~30% chance of error
+        std::uniform_int_distribution<int> msg_dist(0, 7);
+        ev->SetError("MySQL_Error", error_messages[msg_dist(rng)]);
+    }
+
     span->EndSpanEvent();
 }
 
-// /db-crud: Full CRUD cycle with tracing
+// /db-crud: Full CRUD cycle with SQL tracing (no actual DB)
 void on_db_crud(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
-    set_span_context(span);
 
-    std::ostringstream result;
-    result << "{\"operations\":[";
-    bool first = true;
+    trace_sql(span, "CREATE", "CREATE TABLE IF NOT EXISTS it_test_users "
+              "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
+              "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "");
 
-    auto add_result = [&](const std::string& op, bool ok, const std::string& detail) {
-        if (!first) result << ",";
-        result << "{\"op\":\"" << op << "\",\"ok\":" << (ok ? "true" : "false")
-               << ",\"detail\":\"" << detail << "\"}";
-        first = false;
+    trace_sql(span, "DELETE", "DELETE FROM it_test_users", "");
+
+    std::vector<std::tuple<std::string, std::string, int>> users = {
+        {"Alice", "alice@test.com", 28},
+        {"Bob", "bob@test.com", 35},
+        {"Charlie", "charlie@test.com", 42},
+        {"Diana", "diana@test.com", 31},
+        {"Eve", "eve@test.com", 24},
     };
-
-    try {
-        auto session = create_session();
-
-        // CREATE TABLE
-        trace_sql(span, "CREATE", "CREATE TABLE IF NOT EXISTS it_test_users "
-                  "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
-                  "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "",
-                  [&] { session->sql("CREATE TABLE IF NOT EXISTS it_test_users "
-                        "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
-                        "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-                        .execute(); });
-        add_result("CREATE TABLE", true, "it_test_users");
-
-        // DELETE (clean slate)
-        trace_sql(span, "DELETE", "DELETE FROM it_test_users", "",
-                  [&] { session->sql("DELETE FROM it_test_users").execute(); });
-        add_result("DELETE ALL", true, "cleaned");
-
-        // INSERT multiple rows
-        std::vector<std::tuple<std::string, std::string, int>> users = {
-            {"Alice", "alice@test.com", 28},
-            {"Bob", "bob@test.com", 35},
-            {"Charlie", "charlie@test.com", 42},
-            {"Diana", "diana@test.com", 31},
-            {"Eve", "eve@test.com", 24},
-        };
-        for (auto& u : users) {
-            auto& uname = std::get<0>(u);
-            auto& uemail = std::get<1>(u);
-            auto  uage = std::get<2>(u);
-            std::string sql = "INSERT INTO it_test_users (name, email, age) VALUES (?, ?, ?)";
-            std::string params = uname + ", " + uemail + ", " + std::to_string(uage);
-            trace_sql(span, "INSERT", sql, params, [&] {
-                session->sql(sql).bind(uname).bind(uemail).bind(uage).execute();
-            });
-        }
-        add_result("INSERT", true, std::to_string(users.size()) + " rows");
-
-        // SELECT all
-        trace_sql(span, "SELECT", "SELECT * FROM it_test_users ORDER BY id", "", [&] {
-            auto r = session->sql("SELECT * FROM it_test_users ORDER BY id").execute();
-            int n = 0;
-            while (r.fetchOne()) ++n;
-            add_result("SELECT ALL", true, std::to_string(n) + " rows");
-        });
-
-        // SELECT with WHERE
-        trace_sql(span, "SELECT", "SELECT * FROM it_test_users WHERE age > ?", "30", [&] {
-            auto r = session->sql("SELECT * FROM it_test_users WHERE age > ?")
-                     .bind(30).execute();
-            int n = 0;
-            while (r.fetchOne()) ++n;
-            add_result("SELECT WHERE", true, std::to_string(n) + " rows");
-        });
-
-        // SELECT aggregate
-        trace_sql(span, "SELECT",
-                  "SELECT COUNT(*) as cnt, AVG(age) as avg_age FROM it_test_users", "", [&] {
-            session->sql("SELECT COUNT(*) as cnt, AVG(age) as avg_age FROM it_test_users")
-                   .execute();
-            add_result("SELECT AGG", true, "count+avg");
-        });
-
-        // UPDATE
-        trace_sql(span, "UPDATE",
-                  "UPDATE it_test_users SET age = age + 1 WHERE name = ?", "Alice", [&] {
-            auto r = session->sql("UPDATE it_test_users SET age = age + 1 WHERE name = ?")
-                     .bind("Alice").execute();
-            add_result("UPDATE", true,
-                       std::to_string(r.getAffectedItemsCount()) + " affected");
-        });
-
-        // SELECT with LIKE
-        trace_sql(span, "SELECT",
-                  "SELECT name, email FROM it_test_users WHERE name LIKE ?", "%a%", [&] {
-            auto r = session->sql("SELECT name, email FROM it_test_users WHERE name LIKE ?")
-                     .bind("%a%").execute();
-            int n = 0;
-            while (r.fetchOne()) ++n;
-            add_result("SELECT LIKE", true, std::to_string(n) + " rows");
-        });
-
-        // DELETE specific
-        trace_sql(span, "DELETE",
-                  "DELETE FROM it_test_users WHERE age > ?", "40", [&] {
-            auto r = session->sql("DELETE FROM it_test_users WHERE age > ?")
-                     .bind(40).execute();
-            add_result("DELETE WHERE", true,
-                       std::to_string(r.getAffectedItemsCount()) + " deleted");
-        });
-
-        // Error case: query non-existent table
-        trace_sql(span, "SELECT",
-                  "SELECT * FROM non_existent_table_xyz", "", [&] {
-            session->sql("SELECT * FROM non_existent_table_xyz").execute();
-        });
-        add_result("SELECT ERROR", false, "expected error on bad table");
-
-        session->close();
-    } catch (const std::exception& e) {
-        add_result("EXCEPTION", false, e.what());
+    for (auto& u : users) {
+        std::string params = std::get<0>(u) + ", " + std::get<1>(u) + ", " + std::to_string(std::get<2>(u));
+        trace_sql(span, "INSERT", "INSERT INTO it_test_users (name, email, age) VALUES (?, ?, ?)", params);
     }
 
-    result << "]}";
-    res.set_content(result.str(), "application/json");
-    set_span_context(nullptr);
+    trace_sql(span, "SELECT", "SELECT * FROM it_test_users ORDER BY id", "");
+    trace_sql(span, "SELECT", "SELECT * FROM it_test_users WHERE age > ?", "30");
+    trace_sql(span, "SELECT", "SELECT COUNT(*) as cnt, AVG(age) as avg_age FROM it_test_users", "");
+    trace_sql(span, "UPDATE", "UPDATE it_test_users SET age = age + 1 WHERE name = ?", "Alice");
+    trace_sql(span, "SELECT", "SELECT name, email FROM it_test_users WHERE name LIKE ?", "%a%");
+    trace_sql(span, "DELETE", "DELETE FROM it_test_users WHERE age > ?", "40");
+    trace_sql(span, "SELECT", "SELECT * FROM non_existent_table_xyz", "");
+
+    res.set_content("{\"status\":\"ok\"}", "application/json");
     finish_span(req, res, span);
 }
 
-// /db-batch: Batch insert + select for stress testing
+// /db-batch: Batch insert + select SQL tracing
 void on_db_batch(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
-    set_span_context(span);
 
     int batch_size = 20;
     auto bs_param = req.get_param_value("size");
@@ -417,158 +298,73 @@ void on_db_batch(const httplib::Request& req, httplib::Response& res) {
         batch_size = std::min(std::max(std::stoi(bs_param), 1), 200);
     }
 
-    try {
-        auto session = create_session();
+    trace_sql(span, "CREATE", "CREATE TABLE IF NOT EXISTS it_test_batch "
+              "(id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(100), num INT)", "");
 
-        // Ensure table exists
-        trace_sql(span, "CREATE", "CREATE TABLE IF NOT EXISTS it_test_batch "
-                  "(id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(100), num INT)", "",
-                  [&] { session->sql("CREATE TABLE IF NOT EXISTS it_test_batch "
-                        "(id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(100), num INT)")
-                        .execute(); });
-
-        // Batch insert
-        for (int i = 0; i < batch_size; ++i) {
-            std::string val = "item_" + std::to_string(i);
-            trace_sql(span, "INSERT",
-                      "INSERT INTO it_test_batch (val, num) VALUES (?, ?)",
-                      val + ", " + std::to_string(i),
-                      [&] {
-                session->sql("INSERT INTO it_test_batch (val, num) VALUES (?, ?)")
-                       .bind(val).bind(i).execute();
-            });
-        }
-
-        // Batch select
-        trace_sql(span, "SELECT",
-                  "SELECT * FROM it_test_batch ORDER BY id DESC LIMIT ?",
-                  std::to_string(batch_size), [&] {
-            session->sql("SELECT * FROM it_test_batch ORDER BY id DESC LIMIT ?")
-                   .bind(batch_size).execute();
-        });
-
-        // Clean up
-        trace_sql(span, "DELETE", "DELETE FROM it_test_batch", "", [&] {
-            session->sql("DELETE FROM it_test_batch").execute();
-        });
-
-        session->close();
-
-        std::ostringstream oss;
-        oss << "{\"batch_size\":" << batch_size << ",\"status\":\"ok\"}";
-        res.set_content(oss.str(), "application/json");
-    } catch (const std::exception& e) {
-        res.status = 500;
-        res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
+    for (int i = 0; i < batch_size; ++i) {
+        std::string val = "item_" + std::to_string(i);
+        trace_sql(span, "INSERT", "INSERT INTO it_test_batch (val, num) VALUES (?, ?)",
+                  val + ", " + std::to_string(i));
     }
 
-    set_span_context(nullptr);
+    trace_sql(span, "SELECT", "SELECT * FROM it_test_batch ORDER BY id DESC LIMIT ?",
+              std::to_string(batch_size));
+    trace_sql(span, "DELETE", "DELETE FROM it_test_batch", "");
+
+    std::ostringstream oss;
+    oss << "{\"batch_size\":" << batch_size << ",\"status\":\"ok\"}";
+    res.set_content(oss.str(), "application/json");
     finish_span(req, res, span);
 }
 
-// /db-complex: Complex queries with joins, subqueries, aggregation
+// /db-complex: Complex queries with JOIN, subquery, aggregation (SQL tracing only)
 void on_db_complex(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
-    set_span_context(span);
 
-    try {
-        auto session = create_session();
+    trace_sql(span, "CREATE",
+              "CREATE TABLE IF NOT EXISTS it_test_orders "
+              "(id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, amount DECIMAL(10,2), "
+              "status VARCHAR(20), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "");
 
-        // Ensure tables
-        trace_sql(span, "CREATE",
-                  "CREATE TABLE IF NOT EXISTS it_test_orders "
-                  "(id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, amount DECIMAL(10,2), "
-                  "status VARCHAR(20), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "",
-                  [&] { session->sql("CREATE TABLE IF NOT EXISTS it_test_orders "
-                        "(id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, amount DECIMAL(10,2), "
-                        "status VARCHAR(20), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-                        .execute(); });
+    trace_sql(span, "CREATE",
+              "CREATE TABLE IF NOT EXISTS it_test_users "
+              "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
+              "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "");
 
-        trace_sql(span, "CREATE",
-                  "CREATE TABLE IF NOT EXISTS it_test_users "
-                  "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
-                  "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "",
-                  [&] { session->sql("CREATE TABLE IF NOT EXISTS it_test_users "
-                        "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
-                        "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-                        .execute(); });
+    trace_sql(span, "DELETE", "DELETE FROM it_test_orders", "");
+    trace_sql(span, "DELETE", "DELETE FROM it_test_users", "");
 
-        // Seed data
-        trace_sql(span, "DELETE", "DELETE FROM it_test_orders", "",
-                  [&] { session->sql("DELETE FROM it_test_orders").execute(); });
-        trace_sql(span, "DELETE", "DELETE FROM it_test_users", "",
-                  [&] { session->sql("DELETE FROM it_test_users").execute(); });
+    const char* insert_user = "INSERT INTO it_test_users (name, email, age) VALUES (?, ?, ?)";
+    trace_sql(span, "INSERT", insert_user, "Alice, alice@t.com, 28");
+    trace_sql(span, "INSERT", insert_user, "Bob, bob@t.com, 35");
+    trace_sql(span, "INSERT", insert_user, "Charlie, charlie@t.com, 42");
 
-        // Insert users
-        const char* insert_user = "INSERT INTO it_test_users (name, email, age) VALUES (?, ?, ?)";
-        trace_sql(span, "INSERT", insert_user, "Alice, alice@t.com, 28", [&] {
-            session->sql(insert_user).bind("Alice").bind("alice@t.com").bind(28).execute(); });
-        trace_sql(span, "INSERT", insert_user, "Bob, bob@t.com, 35", [&] {
-            session->sql(insert_user).bind("Bob").bind("bob@t.com").bind(35).execute(); });
-        trace_sql(span, "INSERT", insert_user, "Charlie, charlie@t.com, 42", [&] {
-            session->sql(insert_user).bind("Charlie").bind("charlie@t.com").bind(42).execute(); });
+    const char* insert_order = "INSERT INTO it_test_orders (user_id, amount, status) VALUES (?, ?, ?)";
+    trace_sql(span, "INSERT", insert_order, "1, 99.50, completed");
+    trace_sql(span, "INSERT", insert_order, "1, 150.00, pending");
+    trace_sql(span, "INSERT", insert_order, "2, 200.00, completed");
+    trace_sql(span, "INSERT", insert_order, "3, 75.25, completed");
 
-        // Insert orders
-        const char* insert_order = "INSERT INTO it_test_orders (user_id, amount, status) VALUES (?, ?, ?)";
-        trace_sql(span, "INSERT", insert_order, "1, 99.50, completed", [&] {
-            session->sql(insert_order).bind(1).bind(99.50).bind("completed").execute(); });
-        trace_sql(span, "INSERT", insert_order, "1, 150.00, pending", [&] {
-            session->sql(insert_order).bind(1).bind(150.00).bind("pending").execute(); });
-        trace_sql(span, "INSERT", insert_order, "2, 200.00, completed", [&] {
-            session->sql(insert_order).bind(2).bind(200.00).bind("completed").execute(); });
-        trace_sql(span, "INSERT", insert_order, "3, 75.25, completed", [&] {
-            session->sql(insert_order).bind(3).bind(75.25).bind("completed").execute(); });
+    trace_sql(span, "SELECT",
+              "SELECT u.name, o.amount, o.status FROM it_test_users u "
+              "JOIN it_test_orders o ON u.id = o.user_id ORDER BY o.amount DESC", "");
 
-        // JOIN query
-        trace_sql(span, "SELECT",
-                  "SELECT u.name, o.amount, o.status FROM it_test_users u "
-                  "JOIN it_test_orders o ON u.id = o.user_id ORDER BY o.amount DESC", "", [&] {
-            session->sql("SELECT u.name, o.amount, o.status FROM it_test_users u "
-                         "JOIN it_test_orders o ON u.id = o.user_id ORDER BY o.amount DESC")
-                   .execute();
-        });
+    trace_sql(span, "SELECT",
+              "SELECT u.name, COUNT(o.id) as order_count, SUM(o.amount) as total "
+              "FROM it_test_users u LEFT JOIN it_test_orders o ON u.id = o.user_id "
+              "GROUP BY u.id, u.name ORDER BY total DESC", "");
 
-        // Aggregation with GROUP BY
-        trace_sql(span, "SELECT",
-                  "SELECT u.name, COUNT(o.id) as order_count, SUM(o.amount) as total "
-                  "FROM it_test_users u LEFT JOIN it_test_orders o ON u.id = o.user_id "
-                  "GROUP BY u.id, u.name ORDER BY total DESC", "", [&] {
-            session->sql("SELECT u.name, COUNT(o.id) as order_count, SUM(o.amount) as total "
-                         "FROM it_test_users u LEFT JOIN it_test_orders o ON u.id = o.user_id "
-                         "GROUP BY u.id, u.name ORDER BY total DESC")
-                   .execute();
-        });
+    trace_sql(span, "SELECT",
+              "SELECT name, email FROM it_test_users WHERE id IN "
+              "(SELECT DISTINCT user_id FROM it_test_orders WHERE status = ?)", "completed");
 
-        // Subquery
-        trace_sql(span, "SELECT",
-                  "SELECT name, email FROM it_test_users WHERE id IN "
-                  "(SELECT DISTINCT user_id FROM it_test_orders WHERE status = ?)", "completed",
-                  [&] {
-            session->sql("SELECT name, email FROM it_test_users WHERE id IN "
-                         "(SELECT DISTINCT user_id FROM it_test_orders WHERE status = ?)")
-                   .bind("completed").execute();
-        });
+    trace_sql(span, "SELECT",
+              "SELECT name, age, CASE WHEN age < 30 THEN 'Young' "
+              "WHEN age < 40 THEN 'Middle' ELSE 'Senior' END as age_group "
+              "FROM it_test_users ORDER BY age", "");
 
-        // CASE expression
-        trace_sql(span, "SELECT",
-                  "SELECT name, age, CASE WHEN age < 30 THEN 'Young' "
-                  "WHEN age < 40 THEN 'Middle' ELSE 'Senior' END as age_group "
-                  "FROM it_test_users ORDER BY age", "", [&] {
-            session->sql("SELECT name, age, CASE WHEN age < 30 THEN 'Young' "
-                         "WHEN age < 40 THEN 'Middle' ELSE 'Senior' END as age_group "
-                         "FROM it_test_users ORDER BY age")
-                   .execute();
-        });
-
-        session->close();
-        res.set_content("{\"status\":\"ok\",\"queries\":\"complex\"}", "application/json");
-    } catch (const std::exception& e) {
-        res.status = 500;
-        res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-    }
-
-    set_span_context(nullptr);
+    res.set_content("{\"status\":\"ok\",\"queries\":\"complex\"}", "application/json");
     finish_span(req, res, span);
 }
 
@@ -858,20 +654,10 @@ int main(int argc, char* argv[]) {
     server.Get("/grpc-all", on_grpc_all);
     printf("gRPC client endpoints enabled (target=%s)\n", g_grpc_target.c_str());
 
-    // MySQL endpoints
-    if (getenv("MYSQL_HOST"))     g_db_config.host     = getenv("MYSQL_HOST");
-    if (getenv("MYSQL_PORT"))     g_db_config.port     = getenv("MYSQL_PORT");
-    if (getenv("MYSQL_DATABASE")) g_db_config.database = getenv("MYSQL_DATABASE");
-    if (getenv("MYSQL_USER"))     g_db_config.username = getenv("MYSQL_USER");
-    if (getenv("MYSQL_PASSWORD")) g_db_config.password = getenv("MYSQL_PASSWORD");
-
+    // SQL-traced endpoints (no actual DB connection)
     server.Get("/db-crud", on_db_crud);
     server.Get("/db-batch", on_db_batch);
     server.Get("/db-complex", on_db_complex);
-
-    printf("MySQL endpoints enabled (host=%s port=%s db=%s)\n",
-           g_db_config.host.c_str(), g_db_config.port.c_str(),
-           g_db_config.database.c_str());
 
     printf("\nIntegration test server starting on port %d\n", port);
     printf("Endpoints:\n");
@@ -886,9 +672,9 @@ int main(int argc, char* argv[]) {
     printf("  GET /grpc-stream     - gRPC server-streaming call\n");
     printf("  GET /grpc-bidi?count=N - gRPC bidirectional streaming (default 3, max 20)\n");
     printf("  GET /grpc-all        - all gRPC methods in sequence\n");
-    printf("  GET /db-crud         - full CRUD cycle on MySQL with tracing\n");
-    printf("  GET /db-batch?size=N - batch insert+select (default 20, max 200)\n");
-    printf("  GET /db-complex      - JOIN, subquery, aggregation queries\n");
+    printf("  GET /db-crud         - SQL trace CRUD cycle (no actual DB)\n");
+    printf("  GET /db-batch?size=N - SQL trace batch insert+select (default 20, max 200)\n");
+    printf("  GET /db-complex      - SQL trace JOIN, subquery, aggregation\n");
 
     server.listen("0.0.0.0", port);
     agent->Shutdown();
