@@ -63,7 +63,7 @@ namespace pinpoint {
             parent_info->set_parentapplicationname(span->getParentAppName());
             parent_info->set_parentapplicationtype(span->getParentAppType());
             parent_info->set_acceptorhost(span->getAcceptorHost());
-            accept_event->set_allocated_parentinfo(parent_info);
+            accept_event->unsafe_arena_set_allocated_parentinfo(parent_info);
         }
 
         return accept_event;
@@ -86,13 +86,13 @@ namespace pinpoint {
             auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
-            ssv->set_allocated_stringvalue1(s1);
+            ssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(v.stringValue2);
-            ssv->set_allocated_stringvalue2(s2);
+            ssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-            annotation_value->set_allocated_stringstringvalue(ssv);
+            annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);
         } else if (val->dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
             const auto& v = std::get<IntStringStringValue>(val->data);
             auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
@@ -100,13 +100,13 @@ namespace pinpoint {
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
-            issv->set_allocated_stringvalue1(s1);
+            issv->unsafe_arena_set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(v.stringValue2);
-            issv->set_allocated_stringvalue2(s2);
+            issv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-            annotation_value->set_allocated_intstringstringvalue(issv);
+            annotation_value->unsafe_arena_set_allocated_intstringstringvalue(issv);
         } else if (val->dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
             const auto& v = std::get<LongIntIntByteByteStringValue>(val->data);
             auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
@@ -118,9 +118,9 @@ namespace pinpoint {
 
             auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(v.stringValue);
-            liibbsv->set_allocated_stringvalue(s);
+            liibbsv->unsafe_arena_set_allocated_stringvalue(s);
 
-            annotation_value->set_allocated_longintintbytebytestringvalue(liibbsv);
+            annotation_value->unsafe_arena_set_allocated_longintintbytebytestringvalue(liibbsv);
         } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
             const auto& v = std::get<BytesStringStringValue>(val->data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
@@ -134,22 +134,22 @@ namespace pinpoint {
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
-            bssv->set_allocated_stringvalue1(s1);
+            bssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
             auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s2->set_value(v.stringValue2);
-            bssv->set_allocated_stringvalue2(s2);
+            bssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-            annotation_value->set_allocated_bytesstringstringvalue(bssv);
+            annotation_value->unsafe_arena_set_allocated_bytesstringstringvalue(bssv);
         }
-        annotation->set_allocated_value(annotation_value);
+        annotation->unsafe_arena_set_allocated_value(annotation_value);
     }
 
     static void build_string_annotation(v1::PAnnotation *annotation, int32_t key, std::string& val, google::protobuf::Arena* arena) {
         annotation->set_key(key);
         const auto annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
         annotation_value->set_stringvalue(val);
-        annotation->set_allocated_value(annotation_value);
+        annotation->unsafe_arena_set_allocated_value(annotation_value);
     }
 
     static void build_span_event(v1::PSpanEvent* span_event, 
@@ -168,8 +168,8 @@ namespace pinpoint {
 
             message_event->set_nextspanid(se->getNextSpanId());
             message_event->set_destinationid(se->getDestinationId());
-            next_event->set_allocated_messageevent(message_event);
-            span_event->set_allocated_nextevent(next_event);
+            next_event->unsafe_arena_set_allocated_messageevent(message_event);
+            span_event->unsafe_arena_set_allocated_nextevent(next_event);
         }
 
         if (auto api_id = se->getApiId(); api_id > 0) {
@@ -190,8 +190,8 @@ namespace pinpoint {
 
             auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(err_str);
-            exceptInfo->set_allocated_stringvalue(s);
-            span_event->set_allocated_exceptioninfo(exceptInfo);
+            exceptInfo->unsafe_arena_set_allocated_stringvalue(s);
+            span_event->unsafe_arena_set_allocated_exceptioninfo(exceptInfo);
         }
     }
 
@@ -201,7 +201,7 @@ namespace pinpoint {
 
         grpc_span->set_version(1);
         auto* tid = build_transaction_id(span->getTraceId(), arena);
-        grpc_span->set_allocated_transactionid(tid);
+        grpc_span->unsafe_arena_set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
         grpc_span->set_parentspanid(span->getParentSpanId());
@@ -211,7 +211,7 @@ namespace pinpoint {
         grpc_span->set_applicationservicetype(span->getAppType());
 
         auto* accept_event = build_accept_event(span, arena);
-        grpc_span->set_allocated_acceptevent(accept_event);
+        grpc_span->unsafe_arena_set_allocated_acceptevent(accept_event);
 
         if (auto api_id = span->getApiId(); api_id > 0) {
             grpc_span->set_apiid(api_id);
@@ -238,8 +238,8 @@ namespace pinpoint {
 
             auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s->set_value(err_str);
-            exceptInfo->set_allocated_stringvalue(s);
-            grpc_span->set_allocated_exceptioninfo(exceptInfo);
+            exceptInfo->unsafe_arena_set_allocated_stringvalue(s);
+            grpc_span->unsafe_arena_set_allocated_exceptioninfo(exceptInfo);
         }
 
         return grpc_span;
@@ -251,7 +251,7 @@ namespace pinpoint {
         grpc_span->set_version(1);
 
         auto* tid = build_transaction_id(span->getTraceId(), arena);
-        grpc_span->set_allocated_transactionid(tid);
+        grpc_span->unsafe_arena_set_allocated_transactionid(tid);
 
         grpc_span->set_spanid(span->getSpanId());
         grpc_span->set_keytime(chunk->getKeyTime());
@@ -262,7 +262,7 @@ namespace pinpoint {
             auto* aid = google::protobuf::Arena::Create<v1::PLocalAsyncId>(arena);
             aid->set_asyncid(span->getAsyncId());
             aid->set_sequence(span->getAsyncSequence());
-            grpc_span->set_allocated_localasyncid(aid);
+            grpc_span->unsafe_arena_set_allocated_localasyncid(aid);
         }
 
         auto& events = chunk->getSpanEventChunk();
@@ -285,12 +285,12 @@ namespace pinpoint {
         memory_stat->set_jvmmemorynonheapmax(0);
         memory_stat->set_jvmgcoldcount(0);
         memory_stat->set_jvmgcoldtime(0);
-        agent_stat->set_allocated_gc(memory_stat);
+        agent_stat->unsafe_arena_set_allocated_gc(memory_stat);
 
         auto* cpu_load = google::protobuf::Arena::Create<v1::PCpuLoad>(arena);
         cpu_load->set_jvmcpuload(stat.process_cpu_time_);
         cpu_load->set_systemcpuload(stat.system_cpu_time_);
-        agent_stat->set_allocated_cpuload(cpu_load);
+        agent_stat->unsafe_arena_set_allocated_cpuload(cpu_load);
 
         auto* tran = google::protobuf::Arena::Create<v1::PTransaction>(arena);
         tran->set_samplednewcount(stat.num_sample_new_);
@@ -299,7 +299,7 @@ namespace pinpoint {
         tran->set_unsampledcontinuationcount(stat.num_unsample_cont_);
         tran->set_skippednewcount(stat.num_skip_new_);
         tran->set_skippedcontinuationcount(stat.num_skip_cont_);
-        agent_stat->set_allocated_transaction(tran);
+        agent_stat->unsafe_arena_set_allocated_transaction(tran);
 
         auto* active_trace = google::protobuf::Arena::Create<v1::PActiveTrace>(arena);
         auto* histogram = google::protobuf::Arena::Create<v1::PActiveTraceHistogram>(arena);
@@ -308,17 +308,17 @@ namespace pinpoint {
         for (int32_t c : stat.active_requests_) {
             histogram->add_activetracecount(c);
         }
-        active_trace->set_allocated_histogram(histogram);
-        agent_stat->set_allocated_activetrace(active_trace);
+        active_trace->unsafe_arena_set_allocated_histogram(histogram);
+        agent_stat->unsafe_arena_set_allocated_activetrace(active_trace);
 
         auto* response_time = google::protobuf::Arena::Create<v1::PResponseTime>(arena);
         response_time->set_avg(stat.response_time_avg_);
         response_time->set_max(stat.response_time_max_);
-        agent_stat->set_allocated_responsetime(response_time);
+        agent_stat->unsafe_arena_set_allocated_responsetime(response_time);
 
         auto* total_thread = google::protobuf::Arena::Create<v1::PTotalThread>(arena);
         total_thread->set_totalthreadcount(stat.num_threads_);
-        agent_stat->set_allocated_totalthread(total_thread);
+        agent_stat->unsafe_arena_set_allocated_totalthread(total_thread);
     }
 
     static v1::PAgentStatBatch* build_agent_stat_batch(const std::vector<AgentStatsSnapshot>& stats, google::protobuf::Arena* arena) {
@@ -346,11 +346,11 @@ namespace pinpoint {
 
         auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
         build_url_histogram(total, each_stats->getTotalHistogram());
-        url_stat->set_allocated_totalhistogram(total);
+        url_stat->unsafe_arena_set_allocated_totalhistogram(total);
 
         auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
         build_url_histogram(fail, each_stats->getFailHistogram());
-        url_stat->set_allocated_failedhistogram(fail);
+        url_stat->unsafe_arena_set_allocated_failedhistogram(fail);
 
         url_stat->set_timestamp(each_stats->tick());
     }
@@ -480,7 +480,7 @@ namespace pinpoint {
         meta_data->set_serverinfo("C/C++");
         meta_data->add_vmarg(to_config_string(*config_));
 
-        agent_info->set_allocated_servermetadata(meta_data);
+        agent_info->unsafe_arena_set_allocated_servermetadata(meta_data);
     }
 
     GrpcRequestStatus GrpcAgent::registerAgent() {
@@ -589,7 +589,7 @@ namespace pinpoint {
         google::protobuf::Arena arena;
         auto* grpc_exception_meta = google::protobuf::Arena::Create<v1::PExceptionMetaData>(&arena);
 
-        grpc_exception_meta->set_allocated_transactionid(build_transaction_id(exception_meta.txid_, &arena));
+        grpc_exception_meta->unsafe_arena_set_allocated_transactionid(build_transaction_id(exception_meta.txid_, &arena));
         grpc_exception_meta->set_spanid(exception_meta.span_id_);
         grpc_exception_meta->set_uritemplate(exception_meta.url_template_);
 
@@ -903,9 +903,9 @@ namespace pinpoint {
         const auto span = span_chunk->getSpanData();
         msg_ = google::protobuf::Arena::Create<v1::PSpanMessage>(&arena_);
         if (!span_chunk->isFinal() || span->isAsyncSpan()) {
-            msg_->set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &arena_));
+            msg_->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &arena_));
         } else {
-            msg_->set_allocated_span(build_grpc_span(std::move(span_chunk), &arena_));
+            msg_->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &arena_));
         }
 
         //msg_->PrintDebugString();
@@ -1086,10 +1086,10 @@ namespace pinpoint {
 
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
-            msg_->set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots(), &arena_));
+            msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots(), &arena_));
         } else {
             auto snapshot = agent_->getUrlStats().takeSnapshot();
-            msg_->set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
+            msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
         }
 
         return STREAM_WRITE;
