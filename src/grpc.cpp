@@ -125,7 +125,7 @@ namespace pinpoint {
             const auto& v = std::get<BytesStringStringValue>(val->data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
 
-            // zero-copy conversion from vector<unsigned char> to string
+            // convert vector<unsigned char> to string (copy)
             std::string_view bytes_view(
                 reinterpret_cast<const char*>(v.bytesValue.data()),
                 v.bytesValue.size()
@@ -386,6 +386,7 @@ namespace pinpoint {
 
         channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, KEEPALIVE_TIME_MS);
         channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, KEEPALIVE_TIMEOUT_MS);
+        channel_args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 0);
         channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, MAX_MESSAGE_LENGTH);
 
         channel_ = grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), channel_args);
@@ -569,7 +570,7 @@ namespace pinpoint {
     GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
         v1::PSqlUidMetaData grpc_sql_uid_meta;
 
-        // zero-copy conversion from vector<unsigned char> to string
+        // convert vector<unsigned char> to string (copy)
         std::string_view uid_view(
             reinterpret_cast<const char*>(sql_uid_meta.uid_.data()),
             sql_uid_meta.uid_.size()
