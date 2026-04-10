@@ -18,8 +18,7 @@ Usage: $0 [OPTIONS]
 Integration test for pinpoint-cpp-agent performance and memory leak detection.
 
 Prerequisites:
-  1. Start MySQL:    cd test/it_test && docker-compose up -d
-  2. Start servers:  ./grpc_server &
+  1. Start servers:  ./grpc_server &
                      ./it_test_server &
 
 Options:
@@ -36,15 +35,15 @@ Test Modes:
   annotated   Annotation-heavy spans only
   mixed       Rotate through all HTTP endpoints
   stress      High concurrency (50) mixed workload
-  db-crud     MySQL CRUD operations
-  db-batch    MySQL batch insert/select
-  db-complex  MySQL complex queries (JOIN, subquery, aggregation)
-  db-all      All MySQL endpoints combined
+  db-crud     SQL trace CRUD operations (no actual DB)
+  db-batch    SQL trace batch insert/select (no actual DB)
+  db-complex  SQL trace complex queries (JOIN, subquery, aggregation)
+  db-all      All SQL-traced endpoints combined
   grpc-unary  gRPC unary calls
   grpc-stream gRPC server-streaming calls
   grpc-bidi   gRPC bidirectional streaming calls
   grpc-all    All gRPC methods combined
-  full        All endpoints (HTTP + gRPC + MySQL)
+  full        All endpoints (HTTP + gRPC + SQL trace)
 
 Environment:
   HOST    Server host (default: localhost)
@@ -184,7 +183,7 @@ check_endpoint() {
 echo "Pre-flight checks..."
 check_endpoint "HTTP"  "${BASE_URL}/simple" || { echo "ERROR: HTTP endpoints failed."; exit 1; }
 check_endpoint "gRPC"  "${BASE_URL}/grpc-unary" || echo "WARNING: gRPC endpoints not available. Start grpc_server first."
-check_endpoint "MySQL" "${BASE_URL}/db-crud" || echo "WARNING: MySQL endpoints not available. Start MySQL (docker-compose up -d) first."
+check_endpoint "SQL"   "${BASE_URL}/db-crud" || echo "WARNING: SQL-traced endpoints not available."
 echo ""
 
 mapfile -t URLS < <(build_urls)
