@@ -186,7 +186,10 @@ check_endpoint "gRPC"  "${BASE_URL}/grpc-unary" || echo "WARNING: gRPC endpoints
 check_endpoint "SQL"   "${BASE_URL}/db-crud" || echo "WARNING: SQL-traced endpoints not available."
 echo ""
 
-mapfile -t URLS < <(build_urls)
+URLS=()
+while IFS= read -r line; do
+    URLS+=("$line")
+done < <(build_urls)
 URL_COUNT=${#URLS[@]}
 
 # Worker function: sends requests in a loop
