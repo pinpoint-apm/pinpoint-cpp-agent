@@ -290,6 +290,79 @@
 }
 
 # ---------------------------------------------------------------------------
+# gRPC core — channel filters (idle, client channel, service config)
+# ---------------------------------------------------------------------------
+{
+   grpc_idle_filter_state
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*IdleFilterState*
+}
+
+{
+   grpc_client_channel_filter
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ClientChannelFilter*
+}
+
+{
+   grpc_service_config_parser
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ServiceConfigParser*
+}
+
+{
+   grpc_service_config_impl
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ServiceConfigImpl*
+}
+
+# ---------------------------------------------------------------------------
+# abseil — Status payload (used by gRPC StatusCreate)
+# ---------------------------------------------------------------------------
+{
+   abseil_status_set_payload
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*Status*SetPayload*
+}
+
+{
+   abseil_status_rep
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*status_internal*StatusRep*
+}
+
+# ---------------------------------------------------------------------------
+# abseil — thread-local random pool (process lifetime)
+# ---------------------------------------------------------------------------
+{
+   abseil_random_pool_urbg
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*random_internal*PoolAlignedAlloc*
+}
+
+{
+   abseil_random_pool_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*random_internal*InitPoolURBG*
+}
+
+# ---------------------------------------------------------------------------
 # protobuf — global descriptor pool / message factory
 # ---------------------------------------------------------------------------
 {
