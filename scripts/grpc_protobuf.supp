@@ -480,3 +480,260 @@
    ...
    fun:*_GLOBAL__sub_I*
 }
+
+# ---------------------------------------------------------------------------
+# gRPC core — promise-based filter (ClientCallData, PollContext, Pipe, etc.)
+# ---------------------------------------------------------------------------
+{
+   grpc_promise_based_filter_client_call_data
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*promise_filter_detail*ClientCallData*
+}
+
+{
+   grpc_promise_based_filter_base_call_data
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*promise_filter_detail*BaseCallData*
+}
+
+{
+   grpc_promise_based_filter_call_data
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*promise_filter_detail*CallData*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — Pipe / PipeReceiver / PipeSender
+# ---------------------------------------------------------------------------
+{
+   grpc_pipe_receiver
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*PipeReceiver*
+}
+
+{
+   grpc_pipe_sender
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*PipeSender*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — InterceptorList
+# ---------------------------------------------------------------------------
+{
+   grpc_interceptor_list
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*InterceptorList*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — SubchannelCall
+# ---------------------------------------------------------------------------
+{
+   grpc_subchannel_call
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*SubchannelCall*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — Arena::MakePooled / MakePooledArray
+# ---------------------------------------------------------------------------
+{
+   grpc_arena_make_pooled
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*Arena*MakePooled*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — CallOpGenericRecvMessage
+# ---------------------------------------------------------------------------
+{
+   grpc_call_op_generic_recv_message
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc*CallOpGenericRecvMessage*RecvMessage*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — GenericSerialize / SerializationTraits
+# ---------------------------------------------------------------------------
+{
+   grpc_generic_serialize
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc*GenericSerialize*
+}
+
+{
+   grpc_serialization_traits
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc*SerializationTraits*Serialize*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — TcParser (table-driven parser internals)
+# ---------------------------------------------------------------------------
+{
+   protobuf_tc_parser
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*TcParser*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — EpsCopyInputStream::ReadString
+# ---------------------------------------------------------------------------
+{
+   protobuf_eps_copy_input_stream
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*EpsCopyInputStream*ReadString*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — ParseNoReflection
+# ---------------------------------------------------------------------------
+{
+   protobuf_parse_no_reflection
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*ParseNoReflection*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — DescriptorBuilder
+# ---------------------------------------------------------------------------
+{
+   protobuf_descriptor_builder
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*DescriptorBuilder*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — DescriptorPool::Tables::InternFeatureSet
+# ---------------------------------------------------------------------------
+{
+   protobuf_intern_feature_set
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*DescriptorPool*Tables*InternFeatureSet*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — MessageLite::SerializeAsString / AppendToString
+# ---------------------------------------------------------------------------
+{
+   protobuf_message_lite_serialize
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*MessageLite*Serialize*
+}
+
+{
+   protobuf_message_lite_append
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*MessageLite*Append*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — MessageLite::_InternalParse / New
+# ---------------------------------------------------------------------------
+{
+   protobuf_message_lite_internal_parse
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*MessageLite*_InternalParse*
+}
+
+{
+   protobuf_message_lite_new
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*MessageLite*New*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — RepeatedPtrFieldBase::AddInternal
+# ---------------------------------------------------------------------------
+{
+   protobuf_repeated_ptr_field_add
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*RepeatedPtrFieldBase*AddInternal*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — ExtensionSet::MutableMessage
+# ---------------------------------------------------------------------------
+{
+   protobuf_extension_set_mutable_message
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*ExtensionSet*MutableMessage*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — ReadStringNoArena
+# ---------------------------------------------------------------------------
+{
+   protobuf_read_string_no_arena
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*internal*ReadStringNoArena*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — EventEngine endpoint wrapper
+# ---------------------------------------------------------------------------
+{
+   grpc_event_engine_endpoint_wrapper
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_event_engine*EventEngineEndpointWrapper*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — LegacyChannelIdleFilter
+# ---------------------------------------------------------------------------
+{
+   grpc_legacy_channel_idle_filter
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*LegacyChannelIdleFilter*
+}
