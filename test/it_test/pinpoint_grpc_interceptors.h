@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,7 +37,6 @@ class PinpointServerInterceptor final : public grpc::experimental::Interceptor {
           if (server_context_base != nullptr) {
             span_->SetRemoteAddress(server_context_base->peer());
           }
-          span_->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API, rpc_method);
         }
 
         SetCurrentSpan(span_);
@@ -84,38 +84,25 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
     if (methods->QueryInterceptionHookPoint(
             InterceptionHookPoints::PRE_SEND_INITIAL_METADATA)) {
       parent_span_ = GetCurrentSpan();
-      auto agent = pinpoint::GlobalAgent();
+      assert(parent_span_ && "gRPC client interceptor requires a parent span via SetCurrentSpan()");
+
       const std::string rpc_method = info_->method();
+      const std::string remote = resolveRemote(info_->client_context()->peer());
 
-      if (parent_span_) {
-        span_event_ = parent_span_->NewSpanEvent(rpc_method);
-        if (span_event_) {
-          span_event_->SetServiceType(pinpoint::SERVICE_TYPE_GRPC_CLIENT);
-          if (info_->channel()) {
-            span_event_->SetDestination(info_->client_context()->peer());
-          }
+      span_event_ = parent_span_->NewSpanEvent(rpc_method);
+      if (span_event_) {
+        span_event_->SetServiceType(pinpoint::SERVICE_TYPE_GRPC_CLIENT);
+        span_event_->SetDestination(remote);
+        auto ann = span_event_->GetAnnotations();
+        if (ann) {
+          ann->AppendString(pinpoint::ANNOTATION_HTTP_URL,
+                            "grpc://" + remote + rpc_method);
         }
+      }
 
-        if (auto* context = info_->client_context()) {
-          GrpcClientTraceContextWriter writer(context);
-          parent_span_->InjectContext(writer);
-        }
-        parent_span_->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API, rpc_method);
-      } else {
-        call_span_ = agent->NewSpan("gRPC Client", rpc_method);
-        if (call_span_ && call_span_->IsSampled()) {
-          call_span_->SetServiceType(pinpoint::SERVICE_TYPE_GRPC_CLIENT);
-          if (info_->channel()) {
-            call_span_->SetRemoteAddress(info_->client_context()->peer());
-          }
-          call_span_->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API, rpc_method);
-        }
-
-        if (auto* context = info_->client_context()) {
-          GrpcClientTraceContextWriter writer(context);
-          call_span_->InjectContext(writer);
-        }
-        SetCurrentSpan(call_span_);
+      if (auto* context = info_->client_context()) {
+        GrpcClientTraceContextWriter writer(context);
+        parent_span_->InjectContext(writer);
       }
     }
 
@@ -128,27 +115,27 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
         parent_span_->EndSpanEvent();
         span_event_.reset();
       }
-
-      if (call_span_) {
-        if (auto* status = methods->GetRecvStatus()) {
-          call_span_->SetStatusCode(static_cast<int>(status->error_code()));
-          if (!status->ok()) {
-            call_span_->SetError(status->error_message());
-          }
-        }
-        call_span_->EndSpan();
-        call_span_.reset();
-        ClearCurrentSpan();
-      }
     }
 
     methods->Proceed();
   }
 
  private:
+  /// Resolve the remote address from the gRPC target string.
+  /// See https://github.com/grpc/grpc/blob/master/doc/naming.md
+  static std::string resolveRemote(const std::string& target) {
+    if (target.rfind("unix:", 0) == 0) {
+      return "localhost";
+    }
+    const std::string dns_prefix = "dns:///";
+    if (target.rfind(dns_prefix, 0) == 0) {
+      return target.substr(dns_prefix.size());
+    }
+    return target;
+  }
+
   grpc::experimental::ClientRpcInfo* info_;
   pinpoint::SpanPtr parent_span_;
-  pinpoint::SpanPtr call_span_;
   pinpoint::SpanEventPtr span_event_;
 };
 
