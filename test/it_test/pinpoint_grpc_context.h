@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -8,6 +9,15 @@
 #include <grpcpp/server_context.h>
 
 #include "pinpoint/tracer.h"
+
+namespace grpc_demo_detail {
+inline std::string to_lower(std::string_view sv) {
+    std::string s(sv);
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+}  // namespace grpc_demo_detail
 
 namespace grpc_demo {
 
@@ -32,10 +42,11 @@ class GrpcServerTraceContextReader final : public pinpoint::TraceContextReader {
       return std::nullopt;
     }
 
+    auto lower_key = grpc_demo_detail::to_lower(key);
     const auto& metadata = context_->client_metadata();
     for (const auto& entry : metadata) {
       std::string entry_key(entry.first.data(), entry.first.size());
-      if (entry_key == key) {
+      if (grpc_demo_detail::to_lower(entry_key) == lower_key) {
         return std::string(entry.second.data(), entry.second.size());
       }
     }
@@ -57,7 +68,8 @@ class GrpcClientTraceContextWriter final : public pinpoint::TraceContextWriter {
       return;
     }
 
-    context_->AddMetadata(std::string(key), std::string(value));
+    // gRPC metadata keys must be lowercase ASCII
+    context_->AddMetadata(grpc_demo_detail::to_lower(key), std::string(value));
   }
 
  private:

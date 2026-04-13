@@ -102,10 +102,6 @@ int main(int argc, char** argv) {
   setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "false", 0);
 
   auto agent = pinpoint::CreateAgent();
-  if (!agent->Enable()) {
-    std::cerr << "Failed to enable Pinpoint agent" << std::endl;
-    return 1;
-  }
 
   grpc_demo::HelloServiceImpl service;
 
