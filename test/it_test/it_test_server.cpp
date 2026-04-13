@@ -178,18 +178,35 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
     }
     span->EndSpanEvent();
 
-    // Async span
+    // Async span — fire-and-forget background work in a separate thread
+    span->NewSpanEvent("prepare_async");
     auto async_span = span->NewAsyncSpan("async_task");
-    if (async_span) {
-        async_span->NewSpanEvent("async_work");
-        async_span->EndSpanEvent();
-        async_span->EndSpan();
-    }
 
-    // More sequential events
-    for (int i = 0; i < 5; ++i) {
-        span->NewSpanEvent("post_process_" + std::to_string(i));
-        span->EndSpanEvent();
+    std::thread([async_span]() {
+        static thread_local std::mt19937 rng{std::random_device{}()};
+        std::uniform_int_distribution<int> count_dist(1, 20);
+        std::uniform_int_distribution<int> sleep_dist(1, 50);
+        int count = count_dist(rng);
+        for (int i = 0; i < count; ++i) {
+            async_span->NewSpanEvent("async_work_" + std::to_string(i));
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
+            async_span->EndSpanEvent();
+        }
+        async_span->EndSpan();
+    }).detach();
+    span->EndSpanEvent();
+
+    // More sequential events (random 1~20)
+    {
+        static thread_local std::mt19937 rng{std::random_device{}()};
+        std::uniform_int_distribution<int> count_dist(1, 20);
+        std::uniform_int_distribution<int> sleep_dist(1, 50);
+        int count = count_dist(rng);
+        for (int i = 0; i < count; ++i) {
+            span->NewSpanEvent("post_process_" + std::to_string(i));
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
+            span->EndSpanEvent();
+        }
     }
 
     res.set_content("mixed", "text/plain");
