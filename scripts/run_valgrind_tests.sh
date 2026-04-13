@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SUPP_FILE="$SCRIPT_DIR/grpc_protobuf.supp"
+
 BUILD_DIR="${1:-build}"
 OUTPUT_DIR="${2:-valgrind-reports}"
 
@@ -68,11 +71,15 @@ for test in "${TESTS[@]}"; do
 
     echo -n "[RUN]  $test ... "
 
+    SUPP_OPT=()
+    [[ -f "$SUPP_FILE" ]] && SUPP_OPT=(--suppressions="$SUPP_FILE")
+
     if valgrind \
         --leak-check=full \
         --show-leak-kinds=all \
         --track-origins=yes \
         --error-exitcode=1 \
+        "${SUPP_OPT[@]}" \
         --log-file="$report" \
         "$binary" &>/dev/null; then
         echo "PASS"

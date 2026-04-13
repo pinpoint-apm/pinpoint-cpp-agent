@@ -84,11 +84,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+SUPP_FILE="$SCRIPT_DIR/grpc_protobuf.supp"
+SUPP_OPT=()
+[[ -f "$SUPP_FILE" ]] && SUPP_OPT=(--suppressions="$SUPP_FILE")
+
 VALGRIND_OPTS=(
     --leak-check=full
     --show-leak-kinds=all
     --track-origins=yes
     --trace-children=no
+    "${SUPP_OPT[@]}"
 )
 
 echo "============================================"

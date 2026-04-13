@@ -1,0 +1,409 @@
+# =============================================================================
+# Valgrind suppression file for gRPC, protobuf, and abseil
+#
+# These libraries use intentional patterns (NoDestruct singletons,
+# thread-pool internals, global registries) that valgrind reports as
+# "possibly lost" or "still reachable".  None are actual leaks.
+#
+# Usage:
+#   valgrind --suppressions=scripts/grpc_protobuf.supp ./test/test_grpc
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# gRPC core — global singletons (NoDestruct / static init)
+# ---------------------------------------------------------------------------
+{
+   grpc_global_stats_collector
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*grpc_core*GlobalStatsCollector*
+}
+
+{
+   grpc_no_destruct
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_core*NoDestruct*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — channel creation and channel stack
+# ---------------------------------------------------------------------------
+{
+   grpc_channel_stack_builder
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*gpr_zalloc*
+   ...
+   fun:*ChannelStackBuilderImpl*Build*
+}
+
+{
+   grpc_channel_create
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_channel_create*
+}
+
+{
+   grpc_create_custom_channel
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc*CreateCustomChannel*
+}
+
+{
+   grpc_legacy_channel_create
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*LegacyChannel*Create*
+}
+
+{
+   grpc_legacy_channel_orphaned
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*LegacyChannel*Orphaned*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — channel args / AVL tree
+# ---------------------------------------------------------------------------
+{
+   grpc_channel_args_avl
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*AVL*Node*
+}
+
+{
+   grpc_channel_args_set
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ChannelArgs*Set*
+}
+
+{
+   grpc_channel_args_precondition
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ChannelArgsPrecondition*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — channelz
+# ---------------------------------------------------------------------------
+{
+   grpc_channelz_node
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*channelz*ChannelNode*
+}
+
+{
+   grpc_channelz_trace
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*channelz*ChannelTrace*AddTraceEvent*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — transport layer
+# ---------------------------------------------------------------------------
+{
+   grpc_transport_op
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_make_transport_op*
+}
+
+{
+   grpc_chttp2_transport
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*chttp2*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — thread pool / event engine
+# ---------------------------------------------------------------------------
+{
+   grpc_work_stealing_thread_pool
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*WorkStealingThreadPool*
+}
+
+{
+   grpc_epoll1_poller
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*Epoll1Poller*
+}
+
+{
+   grpc_posix_engine_poller_manager
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*PosixEnginePollerManager*
+}
+
+{
+   grpc_timer_list
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_event_engine*TimerList*
+}
+
+{
+   grpc_self_deleting_closure
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*SelfDeletingClosure*Create*
+}
+
+{
+   grpc_thread
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*Thread*Thread*
+}
+
+{
+   grpc_executor
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*Executor*InitAll*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — resolver / LB / handshaker registries
+# ---------------------------------------------------------------------------
+{
+   grpc_resolver_factory
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_core*ResolverFactory*
+}
+
+{
+   grpc_lb_policy_factory
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_core*LoadBalancingPolicyFactory*
+}
+
+{
+   grpc_handshaker_factory
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_core*HandshakerFactory*
+}
+
+{
+   grpc_channel_init_filter
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*ChannelInit*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — unique type name / ref counted string
+# ---------------------------------------------------------------------------
+{
+   grpc_unique_type_name
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*grpc_core*UniqueTypeName*Factory*
+}
+
+{
+   grpc_ref_counted_string
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*RefCountedString*Make*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — gpr allocators
+# ---------------------------------------------------------------------------
+{
+   gpr_malloc
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:*malloc*
+   fun:*gpr_malloc*
+}
+
+{
+   gpr_zalloc
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:*calloc*
+   fun:*gpr_zalloc*
+}
+
+# ---------------------------------------------------------------------------
+# gRPC core — notification / misc
+# ---------------------------------------------------------------------------
+{
+   grpc_notification
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*grpc_core*Notification*
+}
+
+{
+   grpc_do_basic_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*do_basic_init*
+}
+
+# ---------------------------------------------------------------------------
+# protobuf — global descriptor pool / message factory
+# ---------------------------------------------------------------------------
+{
+   protobuf_generated_pool
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*google*protobuf*DescriptorPool*internal_generated_pool*
+}
+
+{
+   protobuf_new_generated_pool
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*google*protobuf*NewGeneratedPool*
+}
+
+{
+   protobuf_add_descriptors
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*google*protobuf*AddDescriptors*
+}
+
+{
+   protobuf_generated_message_factory
+   Memcheck:Leak
+   match-leak-kinds: reachable,possible
+   ...
+   fun:*google*protobuf*GeneratedMessageFactory*
+}
+
+{
+   protobuf_descriptor_pool
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*google*protobuf*DescriptorPool*DescriptorPool*
+}
+
+{
+   protobuf_wellknown_type
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*google*protobuf*Descriptor*WellKnownType*
+}
+
+# ---------------------------------------------------------------------------
+# abseil — hash tables / containers
+# ---------------------------------------------------------------------------
+{
+   abseil_raw_hash_set_resize
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*container_internal*PrepareInsertNonSoo*
+}
+
+{
+   abseil_hash_set_initialize_slots
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*container_internal*HashSetResizeHelper*InitializeSlots*
+}
+
+{
+   abseil_command_line_flag
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*CommandLineFlag*
+}
+
+# ---------------------------------------------------------------------------
+# abseil — cord
+# ---------------------------------------------------------------------------
+{
+   abseil_cord_rep_flat
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*cord_internal*CordRepFlat*
+}
+
+# ---------------------------------------------------------------------------
+# abseil — AnyInvocable (used internally by gRPC)
+# ---------------------------------------------------------------------------
+{
+   abseil_any_invocable
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:*absl*internal_any_invocable*
+}
+
+# ---------------------------------------------------------------------------
+# static initialization (protobuf .pb.cc files)
+# ---------------------------------------------------------------------------
+{
+   protobuf_static_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*__static_initialization_and_destruction*
+}
+
+{
+   protobuf_global_sub_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*_GLOBAL__sub_I*
+}
