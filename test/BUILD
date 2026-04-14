@@ -6,7 +6,12 @@ licenses(["notice"])  # Apache 2
 cc_library(
     name = "test_common",
     testonly = True,
+    hdrs = [
+        "mock_agent_service.h",
+        "mock_helpers.h",
+    ],
     includes = [
+        ".",
         "../src",
     ],
     deps = [
@@ -20,7 +25,12 @@ cc_library(
 cc_library(
     name = "test_gmock",
     testonly = True,
+    hdrs = [
+        "mock_agent_service.h",
+        "mock_helpers.h",
+    ],
     includes = [
+        ".",
         "../src",
     ],
     deps = [

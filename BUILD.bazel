@@ -28,5 +28,6 @@ cc_library(
         "@com_github_grpc_grpc//:grpc++",
         "@com_github_jbeder_yaml_cpp//:yaml-cpp",
         "@com_google_absl//absl/strings",
+        "@fmt",
     ],
 )

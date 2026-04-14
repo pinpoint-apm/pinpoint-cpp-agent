@@ -6,6 +6,7 @@ licenses(["notice"])  # Apache 2
 cc_library(
     name = "example_common",
     hdrs = ["http_trace_context.h"],
+    includes = ["."],
     deps = [
         "//:pinpoint-cpp",
         "//3rd_party:httplib",
