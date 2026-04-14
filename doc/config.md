@@ -16,6 +16,7 @@ This document is a consolidated reference for all configuration options availabl
 - [HTTP Configuration](#http-configuration)
 - [SQL Configuration](#sql-configuration)
 - [Advanced Configuration](#advanced-configuration)
+- [Configuration Hot Reload](#configuration-hot-reload)
 - [Configuration Examples](#configuration-examples)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -219,6 +220,78 @@ int main() {
 |---|---|---|---|---|
 | `IsContainer` | `PINPOINT_CPP_IS_CONTAINER` | bool | auto-detected | Checks `/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Set explicitly if auto-detection fails. |
 | `EnableCallstackTrace` | `PINPOINT_CPP_ENABLE_CALLSTACK_TRACE` | bool | `false` | Capture stack trace when recording errors. |
+
+---
+
+## Configuration Hot Reload
+
+The agent supports hot-reloading a subset of configuration options from the YAML configuration file **without restarting the application**. When the agent starts with a valid config file path, a background file-watcher thread monitors the file for changes (polling every 1 second). When a modification is detected the agent automatically re-reads the file, validates the new configuration, and applies it.
+
+### How It Works
+
+1. The file-watcher compares the file's last-write timestamp once per second.
+2. When a change is detected, the file is re-read and parsed into a new `Config` object.
+3. The new config passes the same validation (`check()`) as the initial config.
+4. An **identity check** (`isReloadable`) ensures that immutable fields have not been changed (see below).
+5. If validation passes, the agent atomically swaps the internal configuration and rebuilds the affected components.
+
+### Reloadable vs. Non-Reloadable Options
+
+Not all configuration options can be changed at runtime. Options that define the agent's identity or gRPC connection targets are **non-reloadable** — changing them requires an application restart.
+
+| Category | Options | Reloadable? |
+|---|---|---|
+| Agent identity | `ApplicationName`, `ApplicationType`, `AgentId`, `AgentName` | No |
+| Collector connection | `Collector.GrpcHost`, `GrpcAgentPort`, `GrpcSpanPort`, `GrpcStatPort` | No |
+| Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
+| HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
+| HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
+| HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
+
+If the new config file changes any non-reloadable field, the reload is silently skipped and the agent continues with the previous configuration.
+
+### Components Rebuilt on Reload
+
+When a reload is accepted, the following internal components are rebuilt from the new configuration:
+
+- **Sampler** — sampling strategy and rates are updated.
+- **HTTP URL filter** — the URL exclusion list is replaced.
+- **HTTP method filter** — the method exclusion list is replaced.
+- **HTTP status error codes** — the error-code set is replaced.
+- **HTTP header recorders** — server-side and client-side header recording rules are replaced.
+
+All swaps are performed atomically (thread-safe), so in-flight requests are not affected.
+
+### Requirements
+
+- A **YAML configuration file path** must be set (via `SetConfigFilePath()` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
+- The config file must exist at startup; the watcher is not started otherwise.
+
+### Example: Changing Sampling Rate at Runtime
+
+Initial config file:
+
+```yaml
+ApplicationName: "MyApp"
+Collector:
+  GrpcHost: "collector.example.com"
+Sampling:
+  Type: "PERCENT"
+  PercentRate: 100
+```
+
+To reduce sampling to 10% without restart, edit the file in place:
+
+```yaml
+ApplicationName: "MyApp"
+Collector:
+  GrpcHost: "collector.example.com"
+Sampling:
+  Type: "PERCENT"
+  PercentRate: 10
+```
+
+The agent detects the change within ~1 second and applies the new sampling rate. A log message is not emitted on success, but a warning is logged if the file cannot be parsed.
 
 ---
 
