@@ -96,7 +96,7 @@ namespace pinpoint {
          */
         bool wait_channel_ready() const;
 
-        void build_grpc_context(grpc::ClientContext* context, int socket_id) const;
+        void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
     };
 
     /**
@@ -239,7 +239,7 @@ namespace pinpoint {
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
-        int socket_id_{0};
+        unsigned long socket_id_{0};
 
         std::queue<std::unique_ptr<MetaData>> meta_queue_{};
         std::mutex meta_queue_mutex_{};

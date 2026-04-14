@@ -396,17 +396,26 @@ namespace pinpoint {
         agent_ = agent;
     }
 
-    void GrpcClient::build_grpc_context(grpc::ClientContext* context, int socket_id) const {
+    // gRPC metadata key constants
+    const std::string METADATA_APPLICATION_NAME = "applicationname";
+    const std::string METADATA_AGENT_ID = "agentid";
+    const std::string METADATA_START_TIME = "starttime";
+    const std::string METADATA_SERVICE_TYPE = "servicetype";
+    const std::string METADATA_AGENT_NAME = "agentname";
+    const std::string METADATA_SOCKET_ID = "socketid";
+
+    void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
-        context->AddMetadata("applicationname", config_->app_name_);
-        context->AddMetadata("agentid", config_->agent_id_);
-        context->AddMetadata("starttime", std::to_string(agent_->getStartTime()));
+        context->AddMetadata(METADATA_APPLICATION_NAME, config_->app_name_);
+        context->AddMetadata(METADATA_AGENT_ID, config_->agent_id_);
+        context->AddMetadata(METADATA_START_TIME, std::to_string(agent_->getStartTime()));
+        context->AddMetadata(METADATA_SERVICE_TYPE, std::to_string(config_->app_type_));
 
         if (!config_->agent_name_.empty()) {
-            context->AddMetadata("agentname", config_->agent_name_);
+            context->AddMetadata(METADATA_AGENT_NAME, config_->agent_name_);
         }
         if (socket_id > 0) {
-            context->AddMetadata("socketid", std::to_string(socket_id));
+            context->AddMetadata(METADATA_SOCKET_ID, std::to_string(socket_id));
         }
     }
 
