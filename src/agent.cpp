@@ -585,11 +585,21 @@ namespace pinpoint {
 
     AgentPtr GlobalAgent() {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        
+
         if (global_agent == nullptr) {
             return noopAgent();
         }
         return global_agent;
+    }
+
+    void set_global_agent(std::shared_ptr<AgentImpl> agent) {
+        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        global_agent = std::move(agent);
+    }
+
+    void reset_global_agent() {
+        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        global_agent.reset();
     }
 
 }  // namespace pinpoint
