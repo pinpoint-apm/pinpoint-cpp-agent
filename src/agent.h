@@ -159,5 +159,9 @@ namespace pinpoint {
     	void wait_grpc_workers();
     };
 
+    // Test helpers for managing the global agent singleton
+    void set_global_agent(std::shared_ptr<AgentImpl> agent);
+    void reset_global_agent();
+
 }  // namespace pinpoint
 

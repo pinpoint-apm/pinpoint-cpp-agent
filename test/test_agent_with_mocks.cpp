@@ -441,4 +441,289 @@ TEST_F(AgentImplDisabledTest, DisabledConfigReturnsNotEnabled) {
     agent->Shutdown();
 }
 
+// --- CreateAgent tests ---
+
+class CreateAgentTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Ensure clean global state
+        reset_global_agent();
+        set_config_string("");
+    }
+
+    void TearDown() override {
+        // Shutdown any global agent and clean up
+        auto agent = GlobalAgent();
+        auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
+        if (agent_impl) {
+            agent_impl->Shutdown();
+        }
+        reset_global_agent();
+        set_config_string("");
+    }
+
+    // Install a mock-based agent as the global agent with the given config
+    std::shared_ptr<AgentImpl> install_mock_agent(std::shared_ptr<Config> cfg) {
+        auto agent = make_test_agent(cfg);
+        set_global_agent(agent);
+        wait_agent_enabled(agent);
+        return agent;
+    }
+
+    // Create a config that matches make_config() YAML defaults for non-reloadable fields
+    // so that stopXxxWorker() methods work correctly after reloadConfig
+    static std::shared_ptr<Config> make_test_config_for_create_agent() {
+        auto cfg = make_test_config();
+        cfg->http.url_stat.enable = false;
+        return cfg;
+    }
+
+    static void wait_agent_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    static constexpr const char* kBaseConfigYaml = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+};
+
+TEST_F(CreateAgentTest, CreateAgentReloadConfigWhenReloadable) {
+    // 1. Install a mock agent as the global agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+    EXPECT_EQ(original_agent->getConfig()->sampling.counter_rate, 1);
+
+    // 2. Set a new config string with different sampling rate (reloadable field)
+    //    Same core fields (app_name, app_type, agent_id, agent_name, collector)
+    std::string reloadable_config = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 50
+)";
+    set_config_string(reloadable_config);
+
+    // 3. Call CreateAgent() — should reload config on existing agent
+    auto returned_agent = CreateAgent();
+
+    // 4. Verify: returned agent is the same instance (not noop)
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+
+    // 5. Verify: config was reloaded with new sampling rate
+    auto reloaded_cfg = returned_impl->getConfig();
+    EXPECT_EQ(reloaded_cfg->sampling.counter_rate, 50);
+}
+
+TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenNotReloadable) {
+    // 1. Install a mock agent as the global agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    // 2. Set a config with different app_name (non-reloadable field)
+    std::string non_reloadable_config = R"(
+ApplicationName: different-app-name
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+    set_config_string(non_reloadable_config);
+
+    // 3. Call CreateAgent() — should return noop because config is not reloadable
+    auto returned_agent = CreateAgent();
+
+    // 4. Verify: returned agent is noop (not AgentImpl)
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when config is not reloadable";
+
+    // 5. Original agent should still be unchanged
+    EXPECT_EQ(original_agent->getAppName(), "test-app");
+}
+
+TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenCollectorPortChanged) {
+    // 1. Install a mock agent as the global agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    // 2. Set a config with different collector port (non-reloadable field)
+    std::string non_reloadable_config = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 8888
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+    set_config_string(non_reloadable_config);
+
+    auto returned_agent = CreateAgent();
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when collector port changed";
+}
+
+TEST_F(CreateAgentTest, CreateAgentReloadsUrlFilter) {
+    // 1. Install a mock agent as the global agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    // Verify no URL filter initially — /health should produce a real span
+    auto span_before = original_agent->NewSpan("op", "/health");
+    ASSERT_NE(span_before, nullptr);
+
+    // 2. Reload with exclude_url added
+    std::string config_with_filter = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+Http:
+  Server:
+    ExcludeUrl:
+      - /health
+)";
+    set_config_string(config_with_filter);
+
+    auto returned_agent = CreateAgent();
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent (reloadable config)";
+    EXPECT_EQ(returned_impl.get(), original_agent.get());
+
+    // 3. Verify: /health is now filtered
+    auto span_after = returned_impl->NewSpan("op", "/health");
+    // Filtered URL returns noop span — EndSpan should not crash
+    span_after->EndSpan();
+}
+
+TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenConfigInvalid) {
+    // 1. Install a mock agent as the global agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    // 2. Set invalid config (empty app_name fails check())
+    std::string invalid_config = R"(
+ApplicationName: ""
+Collector:
+  GrpcHost: 127.0.0.1
+)";
+    set_config_string(invalid_config);
+
+    auto returned_agent = CreateAgent();
+
+    // Should return noop because config check() fails
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when config is invalid";
+}
+
+TEST_F(CreateAgentTest, CreateAgentReloadsMultipleTimes) {
+    // 1. Install a mock agent
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+    EXPECT_EQ(original_agent->getConfig()->sampling.counter_rate, 1);
+
+    // 2. First reload: change counter rate to 10
+    std::string config_v2 = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 10
+)";
+    set_config_string(config_v2);
+    auto agent_v2 = CreateAgent();
+    auto impl_v2 = std::dynamic_pointer_cast<AgentImpl>(agent_v2);
+    ASSERT_NE(impl_v2, nullptr);
+    EXPECT_EQ(impl_v2->getConfig()->sampling.counter_rate, 10);
+
+    // 3. Second reload: change counter rate to 100
+    std::string config_v3 = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 100
+)";
+    set_config_string(config_v3);
+    auto agent_v3 = CreateAgent();
+    auto impl_v3 = std::dynamic_pointer_cast<AgentImpl>(agent_v3);
+    ASSERT_NE(impl_v3, nullptr);
+    EXPECT_EQ(impl_v3->getConfig()->sampling.counter_rate, 100);
+
+    // All should be the same instance
+    EXPECT_EQ(impl_v2.get(), original_agent.get());
+    EXPECT_EQ(impl_v3.get(), original_agent.get());
+}
+
 }  // namespace pinpoint
