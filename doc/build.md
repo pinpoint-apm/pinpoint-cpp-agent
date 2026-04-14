@@ -23,7 +23,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 | Requirement | Version |
 |---|---|
-| C++ compiler | C++17 support (GCC 7+, Clang 5+, MSVC 2017+) |
+| C++ compiler | C++17 support (GCC 8+, Clang 6+) |
 | Bazel | 7.0+ |
 | CMake | 3.20+ |
 | OS | Linux, macOS, Windows |
