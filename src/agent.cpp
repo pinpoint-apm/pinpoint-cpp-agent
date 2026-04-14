@@ -39,7 +39,7 @@ namespace pinpoint {
                          std::unique_ptr<GrpcAgent> grpc_agent,
                          std::unique_ptr<GrpcSpan> grpc_span,
                          std::unique_ptr<GrpcStats> grpc_stat) :
-        config_(std::move(cfg)),
+        config_(std::shared_ptr<const Config>(std::move(cfg))),
         grpc_agent_(std::move(grpc_agent)),
         grpc_span_(std::move(grpc_span)),
         grpc_stat_(std::move(grpc_stat)),
@@ -54,33 +54,33 @@ namespace pinpoint {
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
         
-        reloadConfig(config_);
+        reloadConfig(config_.load());
 
         init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
         start_config_file_watcher();
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
-        return std::atomic_load(&config_);
+        return config_.load();
     }
 
     std::string AgentImpl::getAppName() const {
-        const auto cfg = std::atomic_load(&config_);
+        const auto cfg = config_.load();
         return cfg->app_name_;
     }
 
     int32_t AgentImpl::getAppType() const {
-        const auto cfg = std::atomic_load(&config_);
+        const auto cfg = config_.load();
         return cfg->app_type_;
     }
 
     std::string AgentImpl::getAgentId() const {
-        const auto cfg = std::atomic_load(&config_);
+        const auto cfg = config_.load();
         return cfg->agent_id_;
     }
 
     std::string AgentImpl::getAgentName() const {
-        const auto cfg = std::atomic_load(&config_);
+        const auto cfg = config_.load();
         return cfg->agent_name_;
     }
 
@@ -122,14 +122,14 @@ namespace pinpoint {
         }
 
         for (size_t i = 0; i < 3; ++i) {
-            std::atomic_store(&http_srv_header_recorder_[i], new_srv[i]);
-            std::atomic_store(&http_cli_header_recorder_[i], new_cli[i]);
+            http_srv_header_recorder_[i].store(new_srv[i]);
+            http_cli_header_recorder_[i].store(new_cli[i]);
         }
     }
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
-        std::atomic_store(&config_, std::move(cfg));
-        const auto local_cfg = std::atomic_load(&config_);
+        config_.store(std::move(cfg));
+        const auto local_cfg = config_.load();
 
         // Rebuild sampler
         std::unique_ptr<Sampler> sampler;
@@ -147,26 +147,26 @@ namespace pinpoint {
         } else {
             new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
         }
-        std::atomic_store(&sampler_, new_sampler);
+        sampler_.store(std::move(new_sampler));
 
         // Rebuild HTTP filters
         std::shared_ptr<HttpUrlFilter> new_url_filter;
         if (!local_cfg->http.server.exclude_url.empty()) {
             new_url_filter = std::make_shared<HttpUrlFilter>(local_cfg->http.server.exclude_url);
         }
-        std::atomic_store(&http_url_filter_, new_url_filter);
+        http_url_filter_.store(std::move(new_url_filter));
 
         std::shared_ptr<HttpMethodFilter> new_method_filter;
         if (!local_cfg->http.server.exclude_method.empty()) {
             new_method_filter = std::make_shared<HttpMethodFilter>(local_cfg->http.server.exclude_method);
         }
-        std::atomic_store(&http_method_filter_, new_method_filter);
+        http_method_filter_.store(std::move(new_method_filter));
 
         std::shared_ptr<HttpStatusErrors> new_status_errors;
         if (!local_cfg->http.server.status_errors.empty()) {
             new_status_errors = std::make_shared<HttpStatusErrors>(local_cfg->http.server.status_errors);
         }
-        std::atomic_store(&http_status_errors_, new_status_errors);
+        http_status_errors_.store(std::move(new_status_errors));
 
         // Rebuild header recorders
         init_header_recorders(local_cfg);
@@ -284,11 +284,11 @@ namespace pinpoint {
         if (!enabled_) {
             return noopSpan();
         }
-        const auto url_filter = std::atomic_load(&http_url_filter_);
+        const auto url_filter = http_url_filter_.load();
         if (url_filter && url_filter->isFiltered(rpc_point)) {
             return noopSpan();
         }
-        const auto method_filter = std::atomic_load(&http_method_filter_);
+        const auto method_filter = http_method_filter_.load();
         if (!method.empty() && method_filter && method_filter->isFiltered(method)) {
             return noopSpan();
         }
@@ -297,7 +297,7 @@ namespace pinpoint {
             return std::make_shared<UnsampledSpan>(this);
         }
 
-        auto sampler = std::atomic_load(&sampler_);
+        auto sampler = sampler_.load();
         if (!sampler) {
             return noopSpan();
         }
@@ -492,7 +492,7 @@ namespace pinpoint {
     }
 
     bool AgentImpl::isStatusFail(const int status) const {
-        const auto status_errors = std::atomic_load(&http_status_errors_);
+        const auto status_errors = http_status_errors_.load();
         if (enabled_ && status_errors) {
             return status_errors->isErrorCode(status);
         }
@@ -503,7 +503,7 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto recorder = std::atomic_load(&http_srv_header_recorder_[which]);
+        const auto recorder = http_srv_header_recorder_[which].load();
         if (enabled_ && recorder) {
             recorder->recordHeader(reader, annotation);
         }
@@ -513,7 +513,7 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto recorder = std::atomic_load(&http_cli_header_recorder_[which]);
+        const auto recorder = http_cli_header_recorder_[which].load();
         if (enabled_ && recorder) {
             recorder->recordHeader(reader, annotation);
         }
