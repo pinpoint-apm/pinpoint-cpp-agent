@@ -101,25 +101,24 @@ namespace pinpoint {
         return CpuLoad{sys_load, proc_load};
     }
 
-    // Helper to parse integers from buffer
-    static int parse_int_value(const char* buf, size_t buf_size, const char* prefix) {
+    // Helper to parse integers from /proc/self/status lines
+    static std::optional<int64_t> parse_int_value(const char* buf, size_t buf_size, const char* prefix) {
         size_t prefix_len = strlen(prefix);
         if (strncmp(buf, prefix, prefix_len) != 0) {
-            return -1; // Not a match
+            return std::nullopt;
         }
-        
+
         const char* p = buf + prefix_len;
         const char* buf_end = buf + buf_size;
-        
+
         // Skip whitespace
         while (p < buf_end && isspace(*p)) p++;
-        
+
         // Find digits
         if (p < buf_end && isdigit(*p)) {
-            auto result = stoi_(p);
-            return result.value_or(0);
+            return stoi_(p);
         }
-        return 0;
+        return std::nullopt;
     }
 
     AgentStats::ProcessStatus AgentStats::getProcessStatus() {
@@ -132,16 +131,19 @@ namespace pinpoint {
         FileCloser closer(fd);  // RAII: Automatically closes on scope exit
 
         char buf[kProcStatusBufferSize] = {};
+        int found = 0;
         while (fgets(buf, sizeof(buf), fd) != nullptr) {
-            int val = -1;
-            
-            if ((val = parse_int_value(buf, sizeof(buf), "VmSize:")) != -1) {
-                status.heap_alloc = val;
-            } else if ((val = parse_int_value(buf, sizeof(buf), "VmPeak:")) != -1) {
-                status.heap_max = val;
-            } else if ((val = parse_int_value(buf, sizeof(buf), "Threads:")) != -1) {
-                status.num_threads = val;
+            if (auto val = parse_int_value(buf, sizeof(buf), "VmRSS:")) {
+                status.heap_alloc = *val;
+                found++;
+            } else if (auto val = parse_int_value(buf, sizeof(buf), "VmPeak:")) {
+                status.heap_max = *val;
+                found++;
+            } else if (auto val = parse_int_value(buf, sizeof(buf), "Threads:")) {
+                status.num_threads = *val;
+                found++;
             }
+            if (found == 3) break;
         }
         
         return status;
