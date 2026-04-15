@@ -114,9 +114,11 @@ namespace pinpoint {
         // Skip whitespace
         while (p < buf_end && isspace(*p)) p++;
 
-        // Find digits
-        if (p < buf_end && isdigit(*p)) {
-            return stoi_(p);
+        // Extract digits only (values may have trailing units like "kB")
+        const char* digit_start = p;
+        while (p < buf_end && isdigit(*p)) p++;
+        if (p > digit_start) {
+            return stoi_(std::string_view(digit_start, p - digit_start));
         }
         return std::nullopt;
     }
@@ -134,10 +136,10 @@ namespace pinpoint {
         int found = 0;
         while (fgets(buf, sizeof(buf), fd) != nullptr) {
             if (auto val = parse_int_value(buf, sizeof(buf), "VmRSS:")) {
-                status.heap_alloc = *val;
+                status.heap_alloc = *val * 1024;  // kB to bytes
                 found++;
             } else if (auto val = parse_int_value(buf, sizeof(buf), "VmPeak:")) {
-                status.heap_max = *val;
+                status.heap_max = *val * 1024;  // kB to bytes
                 found++;
             } else if (auto val = parse_int_value(buf, sizeof(buf), "Threads:")) {
                 status.num_threads = *val;
