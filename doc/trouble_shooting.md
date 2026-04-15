@@ -313,7 +313,7 @@ if (!agent->Enable()) {
 
    ```yaml
    Sampling:
-     Type: "COUNTING"
+     Type: "COUNTER"
      CounterRate: 1  # Sample all transactions
    ```
 

@@ -722,7 +722,7 @@ namespace pinpoint {
         emitter << YAML::Key << "CounterRate" << YAML::Value << config.sampling.counter_rate;
         emitter << YAML::Key << "PercentRate" << YAML::Value << config.sampling.percent_rate;
         emitter << YAML::Key << "NewThroughput" << YAML::Value << config.sampling.new_throughput;
-        emitter << YAML::Key << "ContThroughput" << YAML::Value << config.sampling.cont_throughput;
+        emitter << YAML::Key << "ContinueThroughput" << YAML::Value << config.sampling.cont_throughput;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Span";
@@ -736,13 +736,11 @@ namespace pinpoint {
         emitter << YAML::Key << "Http";
         emitter << YAML::BeginMap;
 
-        emitter << YAML::Key << "UrlStat";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Enable" << YAML::Value << config.http.url_stat.enable;
-        emitter << YAML::Key << "Limit" << YAML::Value << config.http.url_stat.limit;
-        emitter << YAML::Key << "PathDepth" << YAML::Value << config.http.url_stat.trim_path_depth;
-        emitter << YAML::Key << "MethodPrefix" << YAML::Value << config.http.url_stat.method_prefix;
-        emitter << YAML::EndMap;
+        emitter << YAML::Key << "CollectUrlStat" << YAML::Value << config.http.url_stat.enable;
+        emitter << YAML::Key << "UrlStatLimit" << YAML::Value << config.http.url_stat.limit;
+        emitter << YAML::Key << "UrlStatEnableTrimPath" << YAML::Value << config.http.url_stat.enable_trim_path;
+        emitter << YAML::Key << "UrlStatTrimPathDepth" << YAML::Value << config.http.url_stat.trim_path_depth;
+        emitter << YAML::Key << "UrlStatMethodPrefix" << YAML::Value << config.http.url_stat.method_prefix;
 
         emitter << YAML::Key << "Server";
         emitter << YAML::BeginMap;

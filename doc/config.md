@@ -176,7 +176,8 @@ int main() {
 |---|---|---|---|---|
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URLs to track. |
-| `Http.UrlStatPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). |
+| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. |
+| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with HTTP method (e.g., `GET:/api/users`). |
 
 ### Server-side Tracing
@@ -316,7 +317,7 @@ Collector:
   GrpcStatPort: 9992
 
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 1  # sample all
 
 Http:
@@ -553,7 +554,8 @@ Span:
 Http:
   CollectUrlStat: false
   UrlStatLimit: 1024
-  UrlStatPathDepth: 1
+  UrlStatEnableTrimPath: true
+  UrlStatTrimPathDepth: 1
   UrlStatMethodPrefix: false
   Server:
     StatusCodeErrors: ["5xx"]
