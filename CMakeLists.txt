@@ -32,7 +32,7 @@ endif()
 
 include(CMakeDependentOption)
 
-project(pinpoint-cpp VERSION 1.0.0)
+project(pinpoint-cpp VERSION 1.1.0)
 
 # Option to force FetchContent even when vcpkg is available
 option(FORCE_FETCHCONTENT "Force using FetchContent instead of vcpkg" OFF)

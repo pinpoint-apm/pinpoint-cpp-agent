@@ -2,12 +2,41 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])  # Apache 2
 
+genrule(
+    name = "generate_version_h",
+    srcs = [
+        "MODULE.bazel",
+        "build_number.txt",
+    ],
+    outs = ["version.h"],
+    cmd = """
+        VERSION=$$(grep 'version = ' $(location MODULE.bazel) | head -1 | sed 's/.*version = "\\(.*\\)".*/\\1/')
+        MAJOR=$$(echo $$VERSION | cut -d. -f1)
+        MINOR=$$(echo $$VERSION | cut -d. -f2)
+        PATCH=$$(echo $$VERSION | cut -d. -f3)
+        BUILD=$$(cat $(location build_number.txt) | tr -d '[:space:]')
+        cat > $@ <<EOF
+#pragma once
+
+#define VERSION_STRING  "$$VERSION.$$BUILD"
+#define VERSION_MAJOR "$$MAJOR"
+#define VERSION_MINOR "$$MINOR"
+#define VERSION_PATCH "$$PATCH"
+#define BUILD_NUMBER "$$BUILD"
+EOF
+    """,
+)
+
+cc_library(
+    name = "version",
+    hdrs = [":generate_version_h"],
+    include_prefix = "",
+    strip_include_prefix = "",
+)
+
 cc_library(
     name = "pinpoint-cpp",
-    srcs = glob([
-        "src/*.cpp",
-        "src/*.h",
-    ]),
+    srcs = glob(["src/*.cpp", "src/*.h"]),
     hdrs = [
         "include/pinpoint/tracer.h",
     ],
@@ -18,6 +47,7 @@ cc_library(
     strip_include_prefix = "include/",
     visibility = ["//visibility:public"],
     deps = [
+        ":version",
         "//3rd_party:murmur_hash3",
         "//v1:annotation_grpc_cc",
         "//v1:cmd_grpc_cc",
