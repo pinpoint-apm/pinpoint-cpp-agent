@@ -18,9 +18,12 @@
 
 #include <atomic>
 #include <condition_variable>
-#include <string>
+#include <memory>
+#include <mutex>
 #include <queue>
+#include <string>
 #include <variant>
+#include <vector>
 
 #include <grpc/grpc.h>
 #include <grpcpp/alarm.h>

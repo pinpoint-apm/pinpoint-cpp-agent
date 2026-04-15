@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 #include "pinpoint/tracer.h"
 #include "sampling.h"

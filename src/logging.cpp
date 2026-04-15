@@ -16,6 +16,7 @@
 
 #include "logging.h"
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>

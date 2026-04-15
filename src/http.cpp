@@ -15,7 +15,9 @@
  */
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <map>
 #include <string>
 
 #include "absl/strings/str_split.h"

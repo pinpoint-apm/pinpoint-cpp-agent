@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "pinpoint/tracer.h"
 #include "agent_service.h"
 #include "url_stat.h"
