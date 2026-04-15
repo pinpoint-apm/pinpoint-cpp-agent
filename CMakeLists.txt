@@ -87,7 +87,7 @@ if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
   FetchContent_Declare(
     gRPC
     GIT_REPOSITORY https://github.com/grpc/grpc.git
-    GIT_TAG        v1.66.0
+    GIT_TAG        v1.63.1
   )
   set(FETCHCONTENT_QUIET OFF)
   set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -190,7 +190,7 @@ if(NOT fmt_FOUND)
   FetchContent_Declare(
     fmt
     GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-    GIT_TAG        11.0.2
+    GIT_TAG        11.1.4
   )
   FetchContent_MakeAvailable(fmt)
 else()

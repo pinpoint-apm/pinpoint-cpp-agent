@@ -303,10 +303,39 @@ if (span_event) {
 }
 ```
 
+### RAII Helper: `helper::ScopedSpanEvent`
+
+The `helper::ScopedSpanEvent` class automatically calls `EndSpanEvent()` when it goes out of scope, preventing dangling events:
+
+```cpp
+#include "pinpoint/tracer.h"
+
+void processRequest(pinpoint::SpanPtr span) {
+    // Automatically ends when 'guard' goes out of scope
+    pinpoint::helper::ScopedSpanEvent guard(span, "processRequest");
+
+    // Access the underlying SpanEvent via operator-> or value()
+    guard->SetDestination("backend-service");
+    guard->SetEndPoint("localhost:9000");
+
+    // No need to call span->EndSpanEvent() — destructor handles it
+}
+
+// With a custom service type
+void queryDatabase(pinpoint::SpanPtr span) {
+    pinpoint::helper::ScopedSpanEvent guard(span, "SQL_SELECT", pinpoint::SERVICE_TYPE_MYSQL_QUERY);
+    guard->SetEndPoint("mysql-server:3306");
+    guard->SetDestination("user_database");
+
+    // Even if an exception is thrown, EndSpanEvent() is called
+    database->execute("SELECT * FROM users");
+}
+```
+
 ### Recommendations
 
 - Create **one span event per major logical step**.
-- Always pair `NewSpanEvent()` with `EndSpanEvent()` — prefer RAII where possible.
+- Always pair `NewSpanEvent()` with `EndSpanEvent()` — prefer `helper::ScopedSpanEvent` for automatic cleanup.
 - Use appropriate `SERVICE_TYPE_*` constants for downstream services.
 - Call `EndSpanEvent()` in the same scope or via RAII wrappers to avoid dangling events.
 
@@ -605,6 +634,66 @@ span->RecordHeader(pinpoint::HTTP_REQUEST, header_reader);
 span->RecordHeader(pinpoint::HTTP_RESPONSE, response_header_reader);
 ```
 
+### HTTP Tracing Helpers
+
+The `helper` namespace provides convenience functions that bundle common HTTP tracing steps into single calls:
+
+```cpp
+#include "pinpoint/tracer.h"
+
+void handleRequest(const httplib::Request& req, httplib::Response& res) {
+    HttpTraceContextReader trace_reader(req.headers);
+    auto agent = pinpoint::GlobalAgent();
+    auto span = agent->NewSpan("HTTP Server", req.path, req.method, trace_reader);
+
+    // Server request: sets remote address, endpoint, and records request headers in one call
+    HttpHeaderReader request_headers(req.headers);
+    pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, req.get_header_value("Host"), request_headers);
+
+    // With cookie recording
+    // HttpHeaderReader cookie_reader(req.cookies);
+    // pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, endpoint, request_headers, cookie_reader);
+
+    // ... business logic ...
+
+    // Server response: sets status code, records URL stat, and records response headers
+    HttpHeaderReader response_headers(res.headers);
+    pinpoint::helper::TraceHttpServerResponse(span, req.matched_route, req.method, res.status, response_headers);
+
+    span->EndSpan();
+}
+```
+
+For outgoing HTTP client calls:
+
+```cpp
+void callExternalService(pinpoint::SpanPtr span) {
+    auto se = span->NewSpanEvent("HTTP_CLIENT");
+    se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
+
+    HttpHeaderReader request_headers(headers);
+    pinpoint::helper::TraceHttpClientRequest(se, "api.example.com", "/users", request_headers);
+
+    // ... make HTTP request ...
+
+    HttpHeaderReader response_headers(res.headers);
+    pinpoint::helper::TraceHttpClientResponse(se, res.status, response_headers);
+
+    span->EndSpanEvent();
+}
+```
+
+**Available helper functions:**
+
+| Function | Description |
+|---|---|
+| `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader)` | Sets remote address, endpoint, and records request headers |
+| `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader, cookie_reader)` | Same as above, plus records cookies |
+| `TraceHttpServerResponse(span, url_pattern, method, status_code, response_reader)` | Sets status code, URL stat, and records response headers |
+| `TraceHttpClientRequest(span_event, host, url, header_reader)` | Sets endpoint, destination, and records request headers |
+| `TraceHttpClientRequest(span_event, host, url, header_reader, cookie_reader)` | Same as above, plus records cookies |
+| `TraceHttpClientResponse(span_event, status_code, response_reader)` | Records status code and response headers |
+
 ### URL Statistics
 
 Collect URL statistics for monitoring:
@@ -695,7 +784,7 @@ pinpoint::SERVICE_TYPE_CASSANDRA_QUERY  // Cassandra
 - Wrap DB access in helper methods so every query is traced consistently.
 - Use the correct `SERVICE_TYPE_*` constant for the backend.
 - Sanitize SQL text and parameters before recording — never log passwords or secrets.
-- See `example/db_demo.cpp` for a full working example.
+- See `example/tutorial.cpp` for a full working example.
 
 ---
 
@@ -923,7 +1012,7 @@ Samples 1 out of every N transactions using an atomic counter. Simple and predic
 
 ```yaml
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 10  # Sample 1 out of every 10 new transactions
 ```
 
@@ -985,7 +1074,7 @@ In a distributed system, sampling decisions flow from the root service to all do
 
 ```yaml
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 1
 ```
 
@@ -1011,7 +1100,7 @@ Sampling:
 
 ```yaml
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 1  # Sample all, revert after debugging
 ```
 
@@ -1236,7 +1325,7 @@ For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shoot
 - [Configuration Guide](config.md)
 - [Quick Start Guide](quick_start.md)
 - [Troubleshooting Guide](trouble_shooting.md)
-- Complete examples: see the `example/` directory (`http_server.cpp`, `web_demo.cpp`, `db_demo.cpp`)
+- Complete examples: see the `example/` directory (`http_server.cpp`, `tutorial.cpp`)
 - API header: `include/pinpoint/tracer.h`
 - GitHub: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent)
 - Pinpoint APM Docs: [https://pinpoint-apm.github.io/pinpoint/](https://pinpoint-apm.github.io/pinpoint/)

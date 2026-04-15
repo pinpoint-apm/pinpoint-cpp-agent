@@ -24,7 +24,7 @@ Before you begin, ensure you have:
 
 - **Pinpoint Collector**: Version 2.4.0 or higher
 - **C++ Compiler**: Supporting C++17 or higher
-- **Build System**: CMake 3.14+ or Bazel
+- **Build System**: CMake 3.20+ or Bazel
 - **Operating System**: Linux, macOS, or Windows
 
 ---
@@ -91,7 +91,7 @@ Collector:
   GrpcStatPort: 9992         # gRPC stat port
 
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 1             # Sample all requests
 
 Log:
@@ -328,7 +328,7 @@ g++ -std=c++17 -o my_app my_app.cpp -lpinpoint_cpp
 
 This example shows how to instrument an HTTP server to trace incoming requests and outgoing calls. It uses `httplib` and demonstrates context propagation.
 
-See full example: `example/web_demo.cpp`
+See full example: `example/http_server.cpp`
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -380,7 +380,7 @@ int main() {
 
 This example demonstrates tracing database operations (e.g., MySQL). It shows how to create `SpanEvent`s for SQL queries.
 
-See full example: `example/mysql_demo/db_demo.cpp`
+See full example: `example/tutorial.cpp`
 
 ```cpp
 // Helper to trace DB operations
@@ -391,7 +391,7 @@ void trace_db_op(pinpoint::SpanPtr span,
     se->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
     se->SetEndPoint("localhost:33060");
     se->SetDestination("test_db");
-    se->SetSqlQuery(query);  // Record the query string (sanitize in production)
+    se->SetSqlQuery(query, "");  // Record the query string (sanitize in production)
 
     try {
         func();  // Execute actual DB operation
@@ -424,7 +424,7 @@ Now that you have a basic understanding of the Pinpoint C++ Agent, you can:
 
 1. **Learn Advanced Instrumentation**: Read the [Instrumentation Guide](instrument.md) for detailed information on HTTP request/response tracing, database query tracing, distributed tracing with context propagation, error handling and exception tracking, and asynchronous operation tracing.
 
-2. **Explore Examples**: Check the `example/` directory for complete examples including `http_server.cpp` (HTTP server instrumentation), `web_demo.cpp` (web application with outgoing HTTP calls), and `db_demo.cpp` (database query instrumentation).
+2. **Explore Examples**: Check the `example/` directory for complete examples including `http_server.cpp` (HTTP server instrumentation) and `tutorial.cpp` (database query and tracing tutorial).
 
 3. **Configure Advanced Options**: See the [Configuration Guide](config.md) for sampling strategies, URL statistics collection, SQL parameter binding, logging, and stat collection.
 
