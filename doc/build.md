@@ -162,7 +162,6 @@ The following CMake options are available:
 | `BUILD_EXAMPLES` | ON | Build example applications |
 | `BUILD_SHARED_LIBS` | OFF | Build as a shared library (.so / .dylib) |
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
-| `BUILD_C_WRAPPER` | ON | Build C wrapper library |
 | `FORCE_FETCHCONTENT` | OFF | Force FetchContent even when vcpkg is available |
 | `BUILD_COVERAGE` | OFF | Enable code coverage (GCC only) |
 

@@ -353,12 +353,6 @@ endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-# C Wrapper Library
-option(BUILD_C_WRAPPER "Build C wrapper library for C applications" ON)
-if(BUILD_C_WRAPPER)
-  add_subdirectory(export)
-endif()
-
 # Testing
 if (BUILD_TESTING)
   include(CTest)
