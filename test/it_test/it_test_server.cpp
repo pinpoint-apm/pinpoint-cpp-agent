@@ -69,6 +69,7 @@ void on_simple(const httplib::Request& req, httplib::Response& res) {
     span->NewSpanEvent("simple_work");
     span->EndSpanEvent();
 
+    res.status = 200;
     res.set_content("ok", "text/plain");
     finish_span(req, res, span);
 }
@@ -91,6 +92,7 @@ void on_deep(const httplib::Request& req, httplib::Response& res) {
         span->EndSpanEvent();
     }
 
+    res.status = 200;
     res.set_content("depth=" + std::to_string(depth), "text/plain");
     finish_span(req, res, span);
 }
@@ -111,6 +113,7 @@ void on_wide(const httplib::Request& req, httplib::Response& res) {
         span->EndSpanEvent();
     }
 
+    res.status = 200;
     res.set_content("width=" + std::to_string(width), "text/plain");
     finish_span(req, res, span);
 }
@@ -140,6 +143,7 @@ void on_annotated(const httplib::Request& req, httplib::Response& res) {
         span->EndSpanEvent();
     }
 
+    res.status = 200;
     res.set_content("annotated", "text/plain");
     finish_span(req, res, span);
 }
@@ -209,6 +213,7 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
         }
     }
 
+    res.status = 200;
     res.set_content("mixed", "text/plain");
     finish_span(req, res, span);
 }
@@ -300,6 +305,7 @@ void on_db_crud(const httplib::Request& req, httplib::Response& res) {
     trace_sql(span, "DELETE", "DELETE FROM it_test_users WHERE age > ?", "40");
     trace_sql(span, "SELECT", "SELECT * FROM non_existent_table_xyz", "");
 
+    res.status = 200;
     res.set_content("{\"status\":\"ok\"}", "application/json");
     finish_span(req, res, span);
 }
@@ -330,6 +336,7 @@ void on_db_batch(const httplib::Request& req, httplib::Response& res) {
 
     std::ostringstream oss;
     oss << "{\"batch_size\":" << batch_size << ",\"status\":\"ok\"}";
+    res.status = 200;
     res.set_content(oss.str(), "application/json");
     finish_span(req, res, span);
 }
@@ -381,6 +388,7 @@ void on_db_complex(const httplib::Request& req, httplib::Response& res) {
               "WHEN age < 40 THEN 'Middle' ELSE 'Senior' END as age_group "
               "FROM it_test_users ORDER BY age", "");
 
+    res.status = 200;
     res.set_content("{\"status\":\"ok\",\"queries\":\"complex\"}", "application/json");
     finish_span(req, res, span);
 }
@@ -431,6 +439,7 @@ void on_grpc_unary(const httplib::Request& req, httplib::Response& res) {
     span->EndSpanEvent();
 
     if (status.ok()) {
+        res.status = 200;
         res.set_content("{\"method\":\"unary\",\"response\":\"" + response.msg() + "\"}",
                         "application/json");
     } else {
@@ -477,6 +486,7 @@ void on_grpc_stream(const httplib::Request& req, httplib::Response& res) {
     span->EndSpanEvent();
 
     if (status.ok()) {
+        res.status = 200;
         res.set_content("{\"method\":\"server_stream\",\"count\":" + std::to_string(count) +
                         ",\"messages\":" + msgs.str() + "}", "application/json");
     } else {
@@ -531,6 +541,7 @@ void on_grpc_bidi(const httplib::Request& req, httplib::Response& res) {
     span->EndSpanEvent();
 
     if (status.ok()) {
+        res.status = 200;
         res.set_content("{\"method\":\"bidi\",\"count\":" + std::to_string(count) +
                         ",\"messages\":" + msgs.str() + "}", "application/json");
     } else {
@@ -608,6 +619,7 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
     }
 
     result << "]}";
+    res.status = 200;
     res.set_content(result.str(), "application/json");
 
     grpc_demo::ClearCurrentSpan();
