@@ -164,15 +164,8 @@ namespace pinpoint {
     }
 
     int64_t AgentStats::getResponseTimeAvg() {
-        // Access protected by mutex in collectAgentStat call context or we should lock here?
-        // collectAgentStat calls this, and it is the only consumer that matters for averaging logic reset.
-        // However, request_count_ can change.
-        // For thread safety during calculation, we should hold the lock, but resetAgentStats also resets it.
-        // Since collectAgentStat calls resetAgentStats immediately after, we are safe within the single thread of worker,
-        // but other threads are updating request_count_.
-        
-        // Actually, simpler: accumulate in atomic or use lock. 
-        // We already have response_time_mutex_ for updates. Let's use it.
+        // Mutex required: acc_response_time_ and request_count_ must be read atomically
+        // as a pair. Individual atomics cannot guarantee consistency between the two values.
         std::lock_guard<std::mutex> lock(response_time_mutex_);
         if (request_count_ > 0) {
             return acc_response_time_ / request_count_;
