@@ -247,7 +247,7 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
     }
 
     static thread_local std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> sleep_dist(1, 3000);
+    std::uniform_int_distribution<int> sleep_dist(1, 100);
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
 
     static const std::string error_messages[] = {
