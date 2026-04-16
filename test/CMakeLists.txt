@@ -209,5 +209,14 @@ target_link_libraries(test_logging
 set_target_properties(test_logging PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_logging COMMAND test_logging)
 
+# C API tests
+add_executable(test_tracer_c test_tracer_c.cpp)
+target_link_libraries(test_tracer_c
+    ${PINPOINT_CPP_LIBRARY}
+    GTest::gmock_main
+)
+set_target_properties(test_tracer_c PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_tracer_c COMMAND test_tracer_c)
+
 # Integration test
 add_subdirectory(it_test)

@@ -70,9 +70,9 @@ extern "C" {
 #define PT_HEADER_PARENT_SPAN_ID       "Pinpoint-pSpanID"
 #define PT_HEADER_SAMPLED              "Pinpoint-Sampled"
 #define PT_HEADER_FLAG                 "Pinpoint-Flags"
-#define PT_HEADER_PARENT_APT_NAME      "Pinpoint-pAppName"
-#define PT_HEADER_PARENT_APT_TYPE      "Pinpoint-pAppType"
-#define PT_HEADER_PARENT_APT_NAMESPACE "Pinpoint-pAppNamespace"
+#define PT_HEADER_PARENT_APP_NAME      "Pinpoint-pAppName"
+#define PT_HEADER_PARENT_APP_TYPE      "Pinpoint-pAppType"
+#define PT_HEADER_PARENT_APP_NAMESPACE "Pinpoint-pAppNamespace"
 #define PT_HEADER_HOST                 "Pinpoint-Host"
 
 /* ========================================================================== */
@@ -96,8 +96,8 @@ extern "C" {
 
 #define PT_APP_TYPE_CPP                 1300
 #define PT_SERVICE_TYPE_CPP             PT_APP_TYPE_CPP
-#define PT_SERVICE_TYPE_CPT_FUNC        1301
-#define PT_SERVICE_TYPE_CPT_HTTP_CLIENT 9800
+#define PT_SERVICE_TYPE_CPP_FUNC        1301
+#define PT_SERVICE_TYPE_CPP_HTTP_CLIENT 9800
 #define PT_SERVICE_TYPE_ASYNC           100
 
 #define PT_SERVICE_TYPE_MYSQL_QUERY     2101
