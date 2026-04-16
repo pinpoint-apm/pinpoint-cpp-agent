@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <string>
@@ -25,6 +26,9 @@
 static std::atomic<uint64_t> total_requests{0};
 static std::atomic<uint64_t> active_requests{0};
 static auto start_time = std::chrono::steady_clock::now();
+
+static pinpoint::AgentPtr g_agent;
+static std::mutex g_agent_mutex;
 
 // =============================================================================
 // Common helpers
@@ -627,6 +631,34 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
 }
 
 // =============================================================================
+// Agent lifecycle endpoints
+// =============================================================================
+void on_agent_start(const httplib::Request&, httplib::Response& res) {
+    std::lock_guard<std::mutex> lock(g_agent_mutex);
+    if (g_agent) {
+        res.status = 200;
+        res.set_content("{\"status\":\"already_running\"}", "application/json");
+        return;
+    }
+    g_agent = pinpoint::CreateAgent();
+    res.status = 200;
+    res.set_content("{\"status\":\"started\"}", "application/json");
+}
+
+void on_agent_shutdown(const httplib::Request&, httplib::Response& res) {
+    std::lock_guard<std::mutex> lock(g_agent_mutex);
+    if (!g_agent) {
+        res.status = 200;
+        res.set_content("{\"status\":\"not_running\"}", "application/json");
+        return;
+    }
+    g_agent->Shutdown();
+    g_agent.reset();
+    res.status = 200;
+    res.set_content("{\"status\":\"shutdown\"}", "application/json");
+}
+
+// =============================================================================
 // Stats endpoint (no tracing)
 // =============================================================================
 void on_stats(const httplib::Request&, httplib::Response& res) {
@@ -651,8 +683,14 @@ void on_stats(const httplib::Request&, httplib::Response& res) {
 // =============================================================================
 int main(int argc, char* argv[]) {
     int port = 8090;
-    if (argc > 1) {
-        port = std::atoi(argv[1]);
+    bool auto_start = true;
+
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--no-auto-start") == 0) {
+            auto_start = false;
+        } else {
+            port = std::atoi(argv[i]);
+        }
     }
 
     // Config file path: use env or default
@@ -661,9 +699,15 @@ int main(int argc, char* argv[]) {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     setenv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true", 0);
 
-    auto agent = pinpoint::CreateAgent();
+    if (auto_start) {
+        g_agent = pinpoint::CreateAgent();
+    }
 
     httplib::Server server;
+
+    // Agent lifecycle endpoints
+    server.Post("/agent/start", on_agent_start);
+    server.Post("/agent/shutdown", on_agent_shutdown);
 
     // HTTP-only endpoints
     server.Get("/simple", on_simple);
@@ -705,6 +749,17 @@ int main(int argc, char* argv[]) {
     printf("  GET /db-batch?size=N - SQL trace batch insert+select (default 20, max 200)\n");
     printf("  GET /db-complex      - SQL trace JOIN, subquery, aggregation\n");
 
+    printf("  POST /agent/start       - start the Pinpoint agent\n");
+    printf("  POST /agent/shutdown    - shutdown the Pinpoint agent\n");
+    if (!auto_start) {
+        printf("\nAgent auto-start disabled. Call POST /agent/start to begin tracing.\n");
+    }
+
     server.listen("0.0.0.0", port);
-    agent->Shutdown();
+
+    std::lock_guard<std::mutex> lock(g_agent_mutex);
+    if (g_agent) {
+        g_agent->Shutdown();
+        g_agent.reset();
+    }
 }
