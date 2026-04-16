@@ -39,6 +39,7 @@ cc_library(
     srcs = glob(["src/*.cpp", "src/*.h"]),
     hdrs = [
         "include/pinpoint/tracer.h",
+        "include/pinpoint/tracer_c.h",
     ],
     includes = [
         "3rd_party",

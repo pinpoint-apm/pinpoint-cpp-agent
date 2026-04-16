@@ -270,6 +270,7 @@ set(SRCS src/agent.cpp
          src/cache.cpp
          src/utility.cpp
          src/sql.cpp
+         src/tracer_c.cpp
          3rd_party/MurmurHash3.cpp)
 
 if (BUILD_SHARED_LIBS)
