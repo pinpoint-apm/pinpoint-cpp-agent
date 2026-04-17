@@ -37,11 +37,47 @@ cc_binary(
     ],
 )
 
+# Pure-C wrapper around cpp-httplib used by the C-only examples.
+# Built as C++ internally; exposes a pure-C header.
+cc_library(
+    name = "httplib_c",
+    srcs = ["httplib_c.cpp"],
+    hdrs = ["httplib_c.h"],
+    includes = ["."],
+    deps = [
+        "//3rd_party:httplib",
+    ],
+)
+
+# HTTP Server example (C port)
+cc_binary(
+    name = "http_server_c",
+    srcs = ["http_server_c.c"],
+    tags = ["examples"],
+    deps = [
+        ":httplib_c",
+        "//:pinpoint-cpp",
+    ],
+)
+
+# Tutorial example (C port)
+cc_binary(
+    name = "tutorial_c",
+    srcs = ["tutorial_c.c"],
+    tags = ["examples"],
+    deps = [
+        ":httplib_c",
+        "//:pinpoint-cpp",
+    ],
+)
+
 # Example suite (buildable without external dependencies)
 filegroup(
     name = "all_examples",
     srcs = [
         ":http_server",
+        ":http_server_c",
         ":tutorial",
+        ":tutorial_c",
     ],
 )

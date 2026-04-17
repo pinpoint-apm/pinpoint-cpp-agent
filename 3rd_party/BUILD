@@ -13,8 +13,9 @@ cc_library(
 
 cc_library(
     name = "httplib",
-    srcs = [
+    hdrs = [
         "httplib.h",
     ],
+    includes = ["."],
     visibility = ["//visibility:public"],
 )
