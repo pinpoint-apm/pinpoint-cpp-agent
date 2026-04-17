@@ -159,6 +159,14 @@ cc_test(
     deps = [":test_gmock"],
 )
 
+# C API tests
+cc_test(
+    name = "test_tracer_c",
+    size = "small",
+    srcs = ["test_tracer_c.cpp"],
+    deps = [":test_gmock"],
+)
+
 # Test suite for all tests
 test_suite(
     name = "all_tests",
@@ -177,6 +185,7 @@ test_suite(
         ":test_span_event",
         ":test_sql",
         ":test_stat",
+        ":test_tracer_c",
         ":test_url_stat",
     ],
 )
