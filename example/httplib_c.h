@@ -58,6 +58,15 @@ typedef struct hlc_request_s  hlc_request_t;
 /** Opaque view of a single HTTP response.  Valid only during a handler call. */
 typedef struct hlc_response_s hlc_response_t;
 
+/** Opaque HTTP client. */
+typedef struct hlc_client_s*          hlc_client_t;
+
+/** Opaque heap-allocated headers map (used for outbound requests). */
+typedef struct hlc_mutable_headers_s* hlc_mutable_headers_t;
+
+/** Opaque HTTP client result (success or error). */
+typedef struct hlc_result_s*          hlc_result_t;
+
 /* ========================================================================== */
 /* Handler callback                                                             */
 /* ========================================================================== */
@@ -122,6 +131,9 @@ const char* hlc_request_local_addr(const hlc_request_t* req);
 
 /** Returns the local (server-side) port. */
 int hlc_request_local_port(const hlc_request_t* req);
+
+/** Returns the request body (NUL-terminated, may contain embedded NULs). */
+const char* hlc_request_body(const hlc_request_t* req);
 
 /**
  * @brief Looks up a request header by name.
@@ -199,6 +211,88 @@ const char* hlc_headers_get(void* handle, const char* key);
 void hlc_headers_for_each(void*                  handle,
                           hlc_header_foreach_cb  callback,
                           void*                  callback_userdata);
+
+/**
+ * @brief Writes (or inserts) a key/value into a header map.
+ *
+ * Signature matches pt_writer_set_fn so it can be used directly as the .set
+ * field of a pt_context_writer_t.
+ *
+ * @param handle  Must be obtained from hlc_mutable_headers_handle() or
+ *                hlc_response_headers_handle().  Passing a request-headers
+ *                handle is undefined behaviour (those are const).
+ */
+void hlc_headers_set(void* handle, const char* key, const char* value);
+
+/* ========================================================================== */
+/* Mutable headers builder (for outbound HTTP client requests)                 */
+/* ========================================================================== */
+
+/** Creates an empty heap-allocated headers map. */
+hlc_mutable_headers_t hlc_mutable_headers_create(void);
+
+/** Releases a mutable headers map. */
+void hlc_mutable_headers_destroy(hlc_mutable_headers_t headers);
+
+/**
+ * @brief Returns an opaque handle compatible with hlc_headers_get(),
+ *        hlc_headers_for_each(), and hlc_headers_set() — and with the
+ *        userdata fields of pt_header_reader_t / pt_context_writer_t.
+ */
+void* hlc_mutable_headers_handle(hlc_mutable_headers_t headers);
+
+/* ========================================================================== */
+/* HTTP client                                                                  */
+/* ========================================================================== */
+
+/**
+ * @brief Creates an HTTP client targeting @p host (e.g. "localhost:8090").
+ *
+ * Free with hlc_client_destroy().
+ */
+hlc_client_t hlc_client_create(const char* host);
+
+/** Releases a client created by hlc_client_create(). */
+void hlc_client_destroy(hlc_client_t client);
+
+/**
+ * @brief Performs a GET request.
+ *
+ * @param client   Client handle.
+ * @param path     Request path (e.g. "/foo").
+ * @param headers  Optional headers handle from hlc_mutable_headers_handle().
+ *                 Pass NULL to send no extra headers.
+ * @return         Result handle; must be released with hlc_result_destroy().
+ *                 Never NULL — use hlc_result_ok() to distinguish success
+ *                 from transport-level failure.
+ */
+hlc_result_t hlc_client_get(hlc_client_t client,
+                            const char*  path,
+                            void*        headers);
+
+/** Non-zero if a response was received; zero on transport failure. */
+int hlc_result_ok(const hlc_result_t result);
+
+/** HTTP status code; meaningful only when hlc_result_ok() returns non-zero. */
+int hlc_result_status(const hlc_result_t result);
+
+/** Response body (NUL-terminated); empty string on error. */
+const char* hlc_result_body(const hlc_result_t result);
+
+/**
+ * @brief Returns an opaque handle over the response headers map.
+ *        Valid only while @p result is alive.  NULL on transport failure.
+ */
+void* hlc_result_headers_handle(const hlc_result_t result);
+
+/**
+ * @brief Returns a human-readable error message, or empty string on success.
+ *        The returned pointer remains valid while @p result is alive.
+ */
+const char* hlc_result_error_message(const hlc_result_t result);
+
+/** Releases a result handle. */
+void hlc_result_destroy(hlc_result_t result);
 
 #ifdef __cplusplus
 }

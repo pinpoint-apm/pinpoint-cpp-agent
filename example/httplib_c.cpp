@@ -45,6 +45,26 @@ struct hlc_response_s {
     httplib::Response* res;
 };
 
+struct hlc_client_s {
+    httplib::Client cli;
+    explicit hlc_client_s(const std::string& host) : cli(host) {}
+};
+
+struct hlc_mutable_headers_s {
+    httplib::Headers headers;
+};
+
+// Holds either a successful httplib::Result or a plain error message.
+struct hlc_result_s {
+    httplib::Result     result;
+    std::string         error_msg;
+    explicit hlc_result_s(httplib::Result r) : result(std::move(r)) {
+        if (!result) {
+            error_msg = httplib::to_string(result.error());
+        }
+    }
+};
+
 // ============================================================================
 // Server lifecycle
 // ============================================================================
@@ -104,6 +124,10 @@ extern "C" const char* hlc_request_local_addr(const hlc_request_t* req) {
 
 extern "C" int hlc_request_local_port(const hlc_request_t* req) {
     return (req && req->req) ? req->req->local_port : 0;
+}
+
+extern "C" const char* hlc_request_body(const hlc_request_t* req) {
+    return (req && req->req) ? req->req->body.c_str() : "";
 }
 
 extern "C" const char* hlc_request_get_header(const hlc_request_t* req,
@@ -166,4 +190,76 @@ extern "C" void hlc_headers_for_each(void*                 handle,
     for (const auto& kv : *headers) {
         if (callback(kv.first.c_str(), kv.second.c_str(), callback_userdata) != 0) break;
     }
+}
+
+extern "C" void hlc_headers_set(void* handle, const char* key, const char* value) {
+    if (!handle || !key || !value) return;
+    auto* headers = static_cast<httplib::Headers*>(handle);
+    headers->emplace(key, value);
+}
+
+// ============================================================================
+// Mutable headers
+// ============================================================================
+
+extern "C" hlc_mutable_headers_t hlc_mutable_headers_create(void) {
+    return new hlc_mutable_headers_s();
+}
+
+extern "C" void hlc_mutable_headers_destroy(hlc_mutable_headers_t headers) {
+    delete headers;
+}
+
+extern "C" void* hlc_mutable_headers_handle(hlc_mutable_headers_t headers) {
+    return headers ? &headers->headers : nullptr;
+}
+
+// ============================================================================
+// HTTP client
+// ============================================================================
+
+extern "C" hlc_client_t hlc_client_create(const char* host) {
+    if (!host) return nullptr;
+    return new hlc_client_s(host);
+}
+
+extern "C" void hlc_client_destroy(hlc_client_t client) {
+    delete client;
+}
+
+extern "C" hlc_result_t hlc_client_get(hlc_client_t client,
+                                       const char*  path,
+                                       void*        headers) {
+    if (!client || !path) return nullptr;
+    httplib::Result result = headers
+        ? client->cli.Get(path, *static_cast<httplib::Headers*>(headers))
+        : client->cli.Get(path);
+    return new hlc_result_s(std::move(result));
+}
+
+extern "C" int hlc_result_ok(const hlc_result_t result) {
+    return (result && static_cast<bool>(result->result)) ? 1 : 0;
+}
+
+extern "C" int hlc_result_status(const hlc_result_t result) {
+    return (result && result->result) ? result->result->status : 0;
+}
+
+extern "C" const char* hlc_result_body(const hlc_result_t result) {
+    return (result && result->result) ? result->result->body.c_str() : "";
+}
+
+extern "C" void* hlc_result_headers_handle(const hlc_result_t result) {
+    if (!result || !result->result) return nullptr;
+    // Cast away the logical const — the pointer is treated as read-only by
+    // the C header accessors (hlc_headers_get / hlc_headers_for_each).
+    return const_cast<httplib::Headers*>(&result->result->headers);
+}
+
+extern "C" const char* hlc_result_error_message(const hlc_result_t result) {
+    return result ? result->error_msg.c_str() : "";
+}
+
+extern "C" void hlc_result_destroy(hlc_result_t result) {
+    delete result;
 }
