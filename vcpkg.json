@@ -1,5 +1,19 @@
 {
-  "name" : "pinpoint-cpp",
-  "version-string" : "1.0.0",
-  "dependencies" : [ "grpc", "protobuf", "yaml-cpp", "fmt", "abseil", "cpp-httplib", "civetweb", "nlohmann-json" ]
+  "name": "pinpoint-cpp",
+  "version-string": "1.1.0",
+  "builtin-baseline": "b781af668027bbf77f2f827f47b5c6cd8d825c08",
+  "dependencies": [
+    "grpc",
+    "protobuf",
+    "abseil",
+    "yaml-cpp",
+    "fmt",
+    "gtest"
+  ],
+  "overrides": [
+    { "name": "grpc",     "version": "1.76.0", "port-version": 1 },
+    { "name": "yaml-cpp", "version": "0.8.0"  },
+    { "name": "fmt",      "version": "11.2.0" },
+    { "name": "gtest",    "version": "1.17.0" }
+  ]
 }

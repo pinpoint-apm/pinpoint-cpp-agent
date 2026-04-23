@@ -10,8 +10,10 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 - [Project Structure](#project-structure)
 - [Build with Bazel](#build-with-bazel)
 - [Build with CMake](#build-with-cmake)
-  - [CMake + FetchContent](#cmake--fetchcontent)
-  - [CMake + vcpkg](#cmake--vcpkg)
+  - [CMake Presets](#cmake-presets)
+  - [Dependency Versions](#dependency-versions)
+  - [Package Managers](#package-managers)
+  - [Compiler Cache (ccache)](#compiler-cache-ccache)
 - [Build Options](#build-options)
 - [Running Tests](#running-tests)
 - [Integration Test](#integration-test)
@@ -25,7 +27,9 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 |---|---|
 | C++ compiler | C++17 support (GCC 8+, Clang 6+) |
 | Bazel | 7.0+ |
-| CMake | 3.20+ |
+| CMake | 3.21+ |
+| Ninja (recommended) | Used by all CMake presets |
+| ccache (optional) | Auto-detected; speeds up incremental builds |
 | OS | Linux, macOS, Windows |
 
 ---
@@ -36,8 +40,10 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 pinpoint-cpp-agent/
 ├── BUILD.bazel          # Bazel: main library target
 ├── MODULE.bazel         # Bazel: module dependencies (bzlmod)
-├── CMakeLists.txt       # CMake: root build file
-├── vcpkg.json           # vcpkg: dependency manifest
+├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
+├── CMakePresets.json    # CMake: presets (default / vcpkg / conan / fetchcontent / debug)
+├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
+├── conanfile.txt        # Conan 2 requirements (used by the `conan` preset)
 ├── include/             # Public headers
 │   └── pinpoint/
 │       └── tracer.h
@@ -97,58 +103,167 @@ Dependencies are declared in `MODULE.bazel`:
 
 ## Build with CMake
 
-CMake supports two dependency resolution strategies:
+`CMakeLists.txt` is toolchain-agnostic: dependencies are located via `find_package(CONFIG)`, and any package manager that integrates with CMake (vcpkg, Conan, system packages, Nix, Spack, ...) can be plugged in at configure time via `CMAKE_TOOLCHAIN_FILE` or `CMAKE_PREFIX_PATH`. If a package is not found, CMake falls back to building it from source via `FetchContent`.
 
-1. **FetchContent (default)**: Dependencies are downloaded and built from source automatically. No extra setup required.
-2. **vcpkg**: Dependencies are pre-installed via vcpkg package manager.
+Common configurations are packaged as presets in `CMakePresets.json`.
 
-### CMake + FetchContent
+### CMake Presets
 
-This is the simplest approach. CMake will download and build all dependencies from source.
-
-```bash
-mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
-```
-
-On macOS, replace `nproc` with `sysctl -n hw.ncpu`:
+List available presets:
 
 ```bash
-cmake --build . -j$(sysctl -n hw.ncpu)
+cmake --list-presets
 ```
 
-### CMake + vcpkg
+| Preset | Toolchain / source of dependencies |
+|---|---|
+| `default` | `find_package` against system / `CMAKE_PREFIX_PATH`, FetchContent fallback |
+| `vcpkg` | vcpkg toolchain (requires `VCPKG_ROOT` env var) |
+| `conan` | Conan 2 toolchain (requires `conan install` first) |
+| `fetchcontent` | Force all deps to be built from source |
+| `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
 
-If you prefer faster builds by using pre-built packages:
+Configure + build + test using a preset:
 
-1. **Install vcpkg** (if not already installed):
+```bash
+cmake --preset default
+cmake --build --preset default
+ctest --preset default
+```
+
+Each preset writes to its own build directory (`build/<preset-name>/`), so you can keep several configurations side by side.
+
+### Dependency Versions
+
+`vcpkg.json` and `conanfile.txt` pin dependency versions to match the ones used by `FetchContent` as closely as possible. Where an exact match is not in the registry, the closest available version is pinned and called out below.
+
+| Package | FetchContent | vcpkg | Conan Center |
+|---|---|---|---|
+| gRPC      | `v1.76.0` | `1.76.0` | `1.78.1` ¹ |
+| Protobuf  | bundled with gRPC | transitive via grpc | transitive via grpc (`>=5.27 <7`) |
+| Abseil    | bundled with gRPC | transitive via grpc | transitive via grpc |
+| yaml-cpp  | `0.8.0` | `0.8.0` | `0.8.0` |
+| fmt       | `11.2.0` | `11.2.0` | `11.2.0` |
+| GoogleTest | `v1.17.0` | `1.17.0` | `1.17.0` |
+
+¹ Conan Center only publishes `1.54.3`, `1.69.0`, and `1.78.1` for gRPC, so the closest version to the FetchContent/vcpkg target (`1.76.0`) is pinned on the Conan side. The public API is source-compatible with what this project uses.
+
+**Bumping vcpkg baseline:** `vcpkg.json` pins `builtin-baseline` to a specific vcpkg commit. If you want to follow vcpkg master, update it via:
+
+```bash
+cd $VCPKG_ROOT && git rev-parse HEAD
+# paste into "builtin-baseline" in vcpkg.json
+```
+
+### Package Managers
+
+#### System packages / `CMAKE_PREFIX_PATH`
+
+Install the required packages through your package manager and use the `default` preset.
+
+**macOS (Homebrew):**
+
+```bash
+brew install grpc protobuf abseil fmt yaml-cpp ninja
+cmake --preset default
+cmake --build --preset default
+```
+
+**Debian / Ubuntu (apt):**
+
+```bash
+sudo apt update
+sudo apt install -y \
+  cmake ninja-build pkg-config \
+  libgrpc++-dev protobuf-compiler-grpc \
+  libprotobuf-dev protobuf-compiler \
+  libabsl-dev libfmt-dev libyaml-cpp-dev \
+  libgtest-dev libgmock-dev
+cmake --preset default
+cmake --build --preset default
+```
+
+> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` or `fetchcontent` preset instead.
+
+**Fedora / RHEL (dnf):**
+
+```bash
+sudo dnf install -y \
+  cmake ninja-build pkgconf-pkg-config \
+  grpc-devel grpc-plugins \
+  protobuf-devel protobuf-compiler \
+  abseil-cpp-devel fmt-devel yaml-cpp-devel \
+  gtest-devel gmock-devel
+cmake --preset default
+cmake --build --preset default
+```
+
+If the packages live in a non-standard prefix, set `CMAKE_PREFIX_PATH`:
+
+```bash
+cmake --preset default -DCMAKE_PREFIX_PATH=/opt/my-libs
+```
+
+#### vcpkg
+
+Dependencies are declared in `vcpkg.json` (manifest mode). vcpkg installs them automatically during the first configure.
 
 ```bash
 git clone https://github.com/microsoft/vcpkg.git
 ./vcpkg/bootstrap-vcpkg.sh
 export VCPKG_ROOT=$(pwd)/vcpkg
+
+cmake --preset vcpkg
+cmake --build --preset vcpkg
 ```
 
-2. **Install dependencies**:
+The `vcpkg` preset picks `$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake` as its toolchain file. Classic mode (`vcpkg install grpc protobuf ...`) still works if you prefer it — just delete `vcpkg.json` first.
+
+#### Conan 2
+
+Dependencies are declared in `conanfile.txt` (root of the repo).
 
 ```bash
-vcpkg install grpc protobuf yaml-cpp fmt abseil
+pip install "conan>=2.0"
+conan profile detect --force   # first time only
+
+conan install . \
+  --output-folder=build/conan \
+  --build=missing \
+  -s build_type=Release \
+  -c tools.cmake.cmaketoolchain:generator=Ninja
+
+cmake --preset conan
+cmake --build --preset conan
 ```
 
-3. **Build**:
+The `conan` preset expects `build/conan/conan_toolchain.cmake` to exist, which is produced by the `conan install` step above.
+
+#### FetchContent (no package manager)
 
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
+cmake --preset fetchcontent
+cmake --build --preset fetchcontent
 ```
 
-CMake auto-detects vcpkg via the `VCPKG_ROOT` environment variable. To force FetchContent even when vcpkg is available:
+This ignores any installed packages and compiles every dependency from source. Slow, but hermetic.
+
+### Compiler Cache (ccache)
+
+If `ccache` is available on `PATH`, `CMakeLists.txt` wires it up automatically as `CMAKE_C_COMPILER_LAUNCHER` / `CMAKE_CXX_COMPILER_LAUNCHER`. Verify:
 
 ```bash
-cmake .. -DFORCE_FETCHCONTENT=ON
+cmake --preset default    # look for "ccache found: ..." in the output
+ccache -s                 # after a build, check hit/miss counters
 ```
+
+Disable with:
+
+```bash
+cmake --preset default -DUSE_CCACHE=OFF
+```
+
+Install ccache with `brew install ccache` (macOS) or `apt install ccache` (Debian/Ubuntu).
 
 ---
 
@@ -162,13 +277,13 @@ The following CMake options are available:
 | `BUILD_EXAMPLES` | ON | Build example applications |
 | `BUILD_SHARED_LIBS` | OFF | Build as a shared library (.so / .dylib) |
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
-| `FORCE_FETCHCONTENT` | OFF | Force FetchContent even when vcpkg is available |
 | `BUILD_COVERAGE` | OFF | Enable code coverage (GCC only) |
+| `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
 
 Example:
 
 ```bash
-cmake .. -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF
+cmake --preset default -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF
 ```
 
 ---
@@ -191,17 +306,17 @@ bazel test //test/... --test_output=all
 ### CMake
 
 ```bash
-cd build
+# Run all tests (uses the "default" test preset)
+ctest --preset default
 
-# Run all tests
-ctest
-
-# Run with verbose output
-ctest --verbose
+# Verbose output
+ctest --preset default --verbose
 
 # Run a specific test
-ctest -R test_sampling
+ctest --preset default -R test_sampling
 ```
+
+Substitute the preset name (`vcpkg`, `conan`, `fetchcontent`, `debug`) to run against a different build directory.
 
 ### Available unit tests
 
@@ -236,7 +351,7 @@ The integration test (`test/it_test/`) runs a full HTTP + gRPC server stack with
 bazel build //test/it_test/...
 
 # CMake
-cd build && cmake --build . --target grpc_server it_test_server
+cmake --build --preset default --target grpc_server it_test_server
 ```
 
 ### Run
@@ -281,7 +396,16 @@ The first Bazel build downloads and compiles all external dependencies (gRPC, pr
 
 ### CMake: FetchContent is slow
 
-Similar to Bazel, FetchContent downloads and builds dependencies from source on the first run. Using vcpkg with pre-built packages avoids this overhead.
+The `fetchcontent` preset (and the fallback path in the `default` preset when no system packages are found) downloads and builds every dependency from source on the first run. Use a package manager (vcpkg / Conan / Homebrew / apt / ...) for pre-built packages to avoid this overhead. After the first configure, `ccache` will also dramatically speed up subsequent rebuilds.
+
+### Migrating from `FORCE_FETCHCONTENT=ON`
+
+`FORCE_FETCHCONTENT` has been removed. Use the `fetchcontent` preset instead:
+
+```bash
+cmake --preset fetchcontent
+cmake --build --preset fetchcontent
+```
 
 ### macOS linker warnings
 

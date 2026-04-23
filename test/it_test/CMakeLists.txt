@@ -11,43 +11,23 @@ set(IT_TEST_PROTO ${CMAKE_CURRENT_SOURCE_DIR}/testapp.proto)
 
 add_library(it_test_proto STATIC)
 
-if(VCPKG_DETECTED)
-    protobuf_generate(
-        TARGET it_test_proto
-        LANGUAGE cpp
-        IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
-        PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
-        PROTOS ${IT_TEST_PROTO}
-    )
-    protobuf_generate(
-        TARGET it_test_proto
-        LANGUAGE grpc
-        PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
-        GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-        IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
-        PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
-        PROTOS ${IT_TEST_PROTO}
-    )
-    target_link_libraries(it_test_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
-else()
-    protobuf_generate(
-        TARGET it_test_proto
-        LANGUAGE cpp
-        IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
-        PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
-        PROTOS ${IT_TEST_PROTO}
-    )
-    protobuf_generate(
-        TARGET it_test_proto
-        LANGUAGE grpc
-        PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-        GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-        IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
-        PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
-        PROTOS ${IT_TEST_PROTO}
-    )
-    target_link_libraries(it_test_proto PUBLIC grpc++ protobuf::libprotobuf)
-endif()
+protobuf_generate(
+    TARGET it_test_proto
+    LANGUAGE cpp
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+    PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
+    PROTOS ${IT_TEST_PROTO}
+)
+protobuf_generate(
+    TARGET it_test_proto
+    LANGUAGE grpc
+    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+    PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
+    PROTOS ${IT_TEST_PROTO}
+)
+target_link_libraries(it_test_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 
 target_include_directories(it_test_proto PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}

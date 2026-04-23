@@ -1,0 +1,133 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "default",
+            "inherits": "base",
+            "displayName": "System / PATH find_package",
+            "description": "Resolve dependencies via CMAKE_PREFIX_PATH and system find_package; falls back to FetchContent."
+        },
+        {
+            "name": "vcpkg",
+            "inherits": "base",
+            "displayName": "vcpkg toolchain",
+            "description": "Resolve dependencies via vcpkg. Requires VCPKG_ROOT to be set in the environment.",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        },
+        {
+            "name": "conan",
+            "inherits": "base",
+            "displayName": "Conan 2 toolchain",
+            "description": "Resolve dependencies via Conan 2. Run `conan install . -of build/conan --build=missing` first.",
+            "toolchainFile": "${sourceDir}/build/conan/conan_toolchain.cmake"
+        },
+        {
+            "name": "fetchcontent",
+            "inherits": "base",
+            "displayName": "FetchContent from source",
+            "description": "Force all dependencies to be built from source via FetchContent (no system lookup).",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "",
+                "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF",
+                "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF"
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "fetchcontent",
+            "displayName": "Debug build (system)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default"
+        },
+        {
+            "name": "vcpkg",
+            "configurePreset": "vcpkg"
+        },
+        {
+            "name": "conan",
+            "configurePreset": "conan"
+        },
+        {
+            "name": "fetchcontent",
+            "configurePreset": "fetchcontent"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "vcpkg",
+            "configurePreset": "vcpkg",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "conan",
+            "configurePreset": "conan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "fetchcontent",
+            "configurePreset": "fetchcontent",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "stopOnFailure": false
+            }
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "stopOnFailure": false
+            }
+        }
+    ]
+}

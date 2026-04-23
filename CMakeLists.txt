@@ -1,93 +1,63 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
-set(CMAKE_VERBOSE_MAKEFILE on)
+set(CMAKE_VERBOSE_MAKEFILE ON)
 
 # =============================================================================
-# vcpkg Auto-Detection
+# ccache auto-detection
 # =============================================================================
-# Detect and configure vcpkg if available on the system.
-# Priority order:
-#   1. CMAKE_TOOLCHAIN_FILE already set (user explicitly provided)
-#   2. VCPKG_ROOT environment variable
-#   3. Common vcpkg installation paths
-# If vcpkg is not found, FetchContent will be used as fallback.
+# If ccache is available on PATH, wire it up as the compiler launcher.
+# Disable with -DUSE_CCACHE=OFF.
 # =============================================================================
-
-# Check VCPKG_ROOT environment variable first
-if(DEFINED ENV{VCPKG_ROOT})
-  set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
-  message(STATUS "Found VCPKG_ROOT environment variable: ${VCPKG_ROOT}")
+option(USE_CCACHE "Use ccache as compiler launcher if available" ON)
+if(USE_CCACHE)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  else()
+    message(STATUS "ccache not found, continuing without compiler launcher")
+  endif()
 endif()
-  
-# If VCPKG_ROOT is found, set the toolchain file
-if(DEFINED VCPKG_ROOT AND EXISTS "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-  set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      CACHE FILEPATH "Vcpkg toolchain file")
-  set(VCPKG_DETECTED TRUE CACHE BOOL "vcpkg was auto-detected")
-  message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
-else()
-  set(VCPKG_DETECTED FALSE CACHE BOOL "vcpkg was not found")
-  message(STATUS "vcpkg not found, will use FetchContent for dependencies")
-endif()
-
-include(CMakeDependentOption)
 
 project(pinpoint-cpp VERSION 1.1.0)
 
-# Option to force FetchContent even when vcpkg is available
-option(FORCE_FETCHCONTENT "Force using FetchContent instead of vcpkg" OFF)
-
-if(FORCE_FETCHCONTENT)
-  set(VCPKG_DETECTED FALSE)
-  message(STATUS "FORCE_FETCHCONTENT is ON, will use FetchContent for dependencies")
-endif()
-
-option(BUILD_TESTING "Build tests" ON)
-option(BUILD_EXAMPLES "Build examples" ON)
-option(BUILD_SHARED_LIBS "Build as a shared library" OFF)
-option(BUILD_STATIC_LIBS "Build as a static library" ON)
+option(BUILD_TESTING      "Build tests"                ON)
+option(BUILD_EXAMPLES     "Build examples"             ON)
+option(BUILD_SHARED_LIBS  "Build as a shared library"  OFF)
+option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
+option(BUILD_COVERAGE     "Enable coverage (GCC only)" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(FetchContent)
+
 # =============================================================================
-# Dependency Resolution Strategy
+# Dependency resolution
 # =============================================================================
-# If vcpkg is detected and FORCE_FETCHCONTENT is OFF:
-#   - Dependencies will be resolved via vcpkg (find_package should succeed)
-# Otherwise:
-#   - Try find_package first, then fallback to FetchContent
+# Packages are located via find_package(CONFIG). Any package manager that
+# integrates with CMake (vcpkg, Conan, system packages, Nix, Spack, ...) can
+# be plugged in at configure time via CMAKE_TOOLCHAIN_FILE or CMAKE_PREFIX_PATH.
+# If a package cannot be found, FetchContent is used to build it from source.
+#
+# To keep the rest of this file toolchain-agnostic, FetchContent-built targets
+# are aliased to the same namespaced names that find_package(CONFIG) provides
+# (e.g. gRPC::grpc++).
 # =============================================================================
 
-message(STATUS "=== Dependency Resolution ===")
-if(VCPKG_DETECTED)
-  message(STATUS "Strategy: Using vcpkg for package management")
-else()
-  message(STATUS "Strategy: FetchContent fallback (vcpkg not available)")
-  include(FetchContent)
-endif()
-message(STATUS "=============================")
+find_package(Protobuf CONFIG QUIET)
+find_package(gRPC     CONFIG QUIET)
+find_package(absl     CONFIG QUIET)
 
-# Try to find gRPC installed on the system first
-if(VCPKG_DETECTED)
-  # vcpkg detected - packages must be available
-  find_package(Protobuf CONFIG REQUIRED)
-  find_package(gRPC CONFIG REQUIRED)
-else()
-  # No vcpkg - try to find, fallback to FetchContent if not found
-  find_package(Protobuf CONFIG QUIET)
-  find_package(gRPC CONFIG QUIET)
-endif()
+if(NOT (gRPC_FOUND AND Protobuf_FOUND AND absl_FOUND))
+  message(STATUS "gRPC/Protobuf/absl not found via toolchain, fetching from source...")
 
-if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
-  message(STATUS "gRPC not found on system, fetching from source...")
-  
-  # Fetch gRPC (includes Protobuf and Abseil as submodules)
   FetchContent_Declare(
     gRPC
     GIT_REPOSITORY https://github.com/grpc/grpc.git
-    GIT_TAG        v1.63.1
+    GIT_TAG        v1.76.0
   )
   set(FETCHCONTENT_QUIET OFF)
   set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -105,35 +75,63 @@ if(NOT gRPC_FOUND OR NOT Protobuf_FOUND)
   set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(gRPC)
-  
-  # Include protobuf-generate module for protobuf_generate() function
+
+  # Alias raw targets to the namespaced names find_package(CONFIG) would create,
+  # so the rest of this file can use a single target naming convention.
+  foreach(_pp_grpc_target IN ITEMS
+            grpc grpc++ grpc++_reflection gpr
+            grpc_unsecure grpc++_unsecure
+            grpc++_error_details grpcpp_channelz)
+    if(TARGET ${_pp_grpc_target} AND NOT TARGET gRPC::${_pp_grpc_target})
+      add_library(gRPC::${_pp_grpc_target} ALIAS ${_pp_grpc_target})
+    endif()
+  endforeach()
+  if(TARGET grpc_cpp_plugin AND NOT TARGET gRPC::grpc_cpp_plugin)
+    add_executable(gRPC::grpc_cpp_plugin ALIAS grpc_cpp_plugin)
+  endif()
+
   include(${grpc_SOURCE_DIR}/third_party/protobuf/cmake/protobuf-generate.cmake)
 else()
-  message(STATUS "Using system gRPC and Protobuf")
-  
-  # Find absl (required when using system gRPC)
-  find_package(absl CONFIG REQUIRED)
-  
-  # Include protobuf-generate module from system installation
+  message(STATUS "Using toolchain-provided gRPC/Protobuf/absl")
   include(${Protobuf_DIR}/../protobuf-generate.cmake OPTIONAL)
   if(NOT COMMAND protobuf_generate)
-    # Fallback: try to include from CMake modules
     include(FindProtobuf)
   endif()
 endif()
 
-list(APPEND LINK_LIBS protobuf::libprotobuf)
-if(VCPKG_DETECTED)
-  list(APPEND LINK_LIBS gRPC::grpc gRPC::grpc++ gRPC::grpc++_reflection)
-  list(APPEND LINK_LIBS gRPC::gpr gRPC::grpc_unsecure gRPC::grpc++_unsecure)
-  list(APPEND LINK_LIBS gRPC::grpc++_error_details gRPC::grpcpp_channelz)
-else()
-  list(APPEND LINK_LIBS grpc grpc++ grpc++_reflection)
-  list(APPEND LINK_LIBS gpr grpc_unsecure grpc++_unsecure)
-  list(APPEND LINK_LIBS grpc++_error_details grpcpp_channelz)
+find_package(yaml-cpp CONFIG QUIET)
+if(NOT yaml-cpp_FOUND)
+  message(STATUS "yaml-cpp not found via toolchain, fetching from source...")
+  FetchContent_Declare(
+    yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG        0.8.0
+  )
+  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(yaml-cpp)
 endif()
-list(APPEND LINK_LIBS 
-  absl::strings 
+
+find_package(fmt CONFIG QUIET)
+if(NOT fmt_FOUND)
+  message(STATUS "fmt not found via toolchain, fetching from source...")
+  FetchContent_Declare(
+    fmt
+    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+    GIT_TAG        11.2.0
+  )
+  FetchContent_MakeAvailable(fmt)
+endif()
+
+list(APPEND LINK_LIBS
+  protobuf::libprotobuf
+  gRPC::grpc gRPC::grpc++ gRPC::grpc++_reflection
+  gRPC::gpr gRPC::grpc_unsecure gRPC::grpc++_unsecure
+  gRPC::grpc++_error_details gRPC::grpcpp_channelz
+  yaml-cpp::yaml-cpp
+  fmt::fmt
+  absl::strings
   absl::strings_internal
   absl::str_format_internal
   absl::string_view
@@ -150,54 +148,12 @@ list(APPEND LINK_LIBS
   absl::int128
 )
 
-# Try to find yaml-cpp on the system first
-if(VCPKG_DETECTED)
-  find_package(yaml-cpp CONFIG REQUIRED)
-else()
-  find_package(yaml-cpp CONFIG QUIET)
+# Extra protobuf import dirs are only needed when gRPC was fetched from source,
+# since bundled protobuf headers live inside the gRPC source tree.
+set(PP_PROTOBUF_IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR})
+if(DEFINED grpc_SOURCE_DIR)
+  list(APPEND PP_PROTOBUF_IMPORT_DIRS ${grpc_SOURCE_DIR}/third_party/protobuf/src)
 endif()
-
-if(NOT yaml-cpp_FOUND)
-  message(STATUS "yaml-cpp not found on system, fetching from source...")
-  
-  # Fetch yaml-cpp
-  FetchContent_Declare(
-    yaml-cpp
-    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG        0.8.0
-  )
-  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(yaml-cpp)
-else()
-  message(STATUS "Using system yaml-cpp")
-endif()
-
-list(APPEND LINK_LIBS yaml-cpp::yaml-cpp)
-
-# Try to find fmt on the system first
-if(VCPKG_DETECTED)
-  find_package(fmt CONFIG REQUIRED)
-else()
-  find_package(fmt CONFIG QUIET)
-endif()
-
-if(NOT fmt_FOUND)
-  message(STATUS "fmt not found on system, fetching from source...")
-  
-  # Fetch fmt
-  FetchContent_Declare(
-    fmt
-    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-    GIT_TAG        11.1.4
-  )
-  FetchContent_MakeAvailable(fmt)
-else()
-  message(STATUS "Using system fmt")
-endif()
-
-list(APPEND LINK_LIBS fmt::fmt)
 
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything \
@@ -232,11 +188,11 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     -Wno-unused-parameter \
     -std=c++11 -pthread \
     -Wl,--no-as-needed")
-    
+
   if (BUILD_COVERAGE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-arcs -ftest-coverage")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lgcov")
-  endif()  
+  endif()
 endif()
 
 file (STRINGS "build_number.txt" BUILD_NUMBER)
@@ -273,41 +229,29 @@ set(SRCS src/agent.cpp
          src/tracer_c.cpp
          3rd_party/MurmurHash3.cpp)
 
+function(pinpoint_protobuf_generate target)
+  protobuf_generate(
+    TARGET ${target}
+    LANGUAGE cpp
+    IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
+  )
+  protobuf_generate(
+    TARGET ${target}
+    LANGUAGE grpc
+    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+    PLUGIN_OPTIONS generate_mock_code=true
+    IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
+  )
+endfunction()
+
 if (BUILD_SHARED_LIBS)
   add_library(pinpoint_cpp SHARED ${SRCS} ${PROTOS})
   target_include_directories(pinpoint_cpp INTERFACE "$<INSTALL_INTERFACE:include/>")
   set_target_properties(pinpoint_cpp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
   target_link_libraries(pinpoint_cpp PUBLIC ${LINK_LIBS})
   install(TARGETS pinpoint_cpp LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-
-  if(VCPKG_DETECTED)
-    protobuf_generate(
-      TARGET pinpoint_cpp
-      LANGUAGE cpp
-    )
-    
-    protobuf_generate(
-      TARGET pinpoint_cpp
-      LANGUAGE grpc
-      PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
-      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-    )
-  else()
-    protobuf_generate(
-      TARGET pinpoint_cpp
-      LANGUAGE cpp
-      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-    )
-
-    protobuf_generate(
-      TARGET pinpoint_cpp
-      LANGUAGE grpc
-      PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-      PLUGIN_OPTIONS generate_mock_code=true
-      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-    )
-  endif()
+  pinpoint_protobuf_generate(pinpoint_cpp)
 endif()
 
 if (BUILD_STATIC_LIBS)
@@ -315,41 +259,12 @@ if (BUILD_STATIC_LIBS)
   set_target_properties(pinpoint_cpp-static PROPERTIES OUTPUT_NAME pinpoint_cpp)
   target_include_directories(pinpoint_cpp-static INTERFACE "$<INSTALL_INTERFACE:include/>")
   target_link_libraries(pinpoint_cpp-static ${LINK_LIBS})
-  # Force load all symbols from absl::strings to fix undefined reference issues
   if(APPLE)
+    # Force-load absl::strings to avoid undefined-reference issues on macOS.
     target_link_options(pinpoint_cpp-static PUBLIC "-Wl,-force_load,$<TARGET_FILE:absl::strings>")
   endif()
   install(TARGETS pinpoint_cpp-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  
-  if(VCPKG_DETECTED)
-    protobuf_generate(
-      TARGET pinpoint_cpp-static
-      LANGUAGE cpp
-    )
-    
-    protobuf_generate(
-      TARGET pinpoint_cpp-static
-      LANGUAGE grpc
-      PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
-      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-      PLUGIN_OPTIONS generate_mock_code=true
-    )
-  else()
-    protobuf_generate(
-      TARGET pinpoint_cpp-static
-      LANGUAGE cpp
-      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-    )
-
-    protobuf_generate(
-      TARGET pinpoint_cpp-static
-      LANGUAGE grpc
-      PLUGIN protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-      GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-      PLUGIN_OPTIONS generate_mock_code=true
-      IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${grpc_SOURCE_DIR}/third_party/protobuf/src
-    )
-  endif()
+  pinpoint_protobuf_generate(pinpoint_cpp-static)
 endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

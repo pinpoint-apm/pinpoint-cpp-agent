@@ -1,0 +1,17 @@
+[requires]
+grpc/1.78.1
+yaml-cpp/0.8.0
+fmt/11.2.0
+gtest/1.17.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[options]
+grpc/*:shared=False
+protobuf/*:shared=False
+abseil/*:shared=False
+yaml-cpp/*:shared=False
+fmt/*:shared=False
+gtest/*:shared=False
