@@ -135,11 +135,52 @@ list(APPEND LINK_LIBS
 # The pinpoint-grpc-idl submodule lays out protos as proto/v1/*.proto; adding
 # .../proto to the import path keeps generated headers at v1/*.pb.h so existing
 # `#include "v1/..."` sites don't change.
+#
+# Commit pinned here MUST match the submodule SHA (see 3rd_party/pinpoint-grpc-idl).
+# It is only consulted when the submodule directory is empty AND the repo is not
+# a git checkout (e.g. building from a GitHub auto-generated source tarball).
 set(PP_GRPC_IDL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/pinpoint-grpc-idl)
+set(PP_GRPC_IDL_URL "https://github.com/pinpoint-apm/pinpoint-grpc-idl.git")
+set(PP_GRPC_IDL_COMMIT "48978376de3406d356c4db3f32e40125b2050322")
+
 if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
-  message(FATAL_ERROR
-    "pinpoint-grpc-idl submodule is missing. Run:\n"
-    "  git submodule update --init --recursive")
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
+    # In-tree git checkout: initialize the submodule.
+    find_package(Git QUIET)
+    if(NOT Git_FOUND)
+      message(FATAL_ERROR "pinpoint-grpc-idl submodule is missing and git was "
+              "not found. Install git or run:\n"
+              "  git submodule update --init --recursive")
+    endif()
+    message(STATUS "pinpoint-grpc-idl submodule not initialized; running "
+            "`git submodule update --init --recursive`")
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      RESULT_VARIABLE _pp_gm_rc)
+    if(NOT _pp_gm_rc EQUAL 0)
+      message(FATAL_ERROR "`git submodule update --init` failed (rc=${_pp_gm_rc})")
+    endif()
+  else()
+    # No .git (e.g. source tarball): fetch the pinned commit via FetchContent.
+    message(STATUS "No .git directory; fetching pinpoint-grpc-idl "
+            "@${PP_GRPC_IDL_COMMIT} via FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(
+      pinpoint_grpc_idl
+      GIT_REPOSITORY ${PP_GRPC_IDL_URL}
+      GIT_TAG        ${PP_GRPC_IDL_COMMIT}
+      GIT_SHALLOW    FALSE   # commit SHAs are not reachable via shallow fetch
+      SOURCE_DIR     ${PP_GRPC_IDL_DIR}
+    )
+    FetchContent_MakeAvailable(pinpoint_grpc_idl)
+  endif()
+
+  if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
+    message(FATAL_ERROR
+      "pinpoint-grpc-idl protos are still missing at ${PP_GRPC_IDL_DIR}. "
+      "Network required, or populate the directory manually.")
+  endif()
 endif()
 set(PP_PROTOBUF_IMPORT_DIRS ${PP_GRPC_IDL_DIR}/proto)
 # Extra protobuf import dirs are only needed when gRPC was fetched from source,

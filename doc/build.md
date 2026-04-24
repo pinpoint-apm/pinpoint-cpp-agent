@@ -7,7 +7,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 ## Table of Contents
 
 - [Requirements](#requirements)
-- [Cloning the Repository](#cloning-the-repository)
+- [Getting the Source](#getting-the-source)
 - [Project Structure](#project-structure)
 - [Build with Bazel](#build-with-bazel)
 - [Build with CMake](#build-with-cmake)
@@ -35,11 +35,25 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 ---
 
-## Cloning the Repository
+## Getting the Source
 
 The Protobuf/gRPC service definitions live in a git submodule
 ([pinpoint-apm/pinpoint-grpc-idl](https://github.com/pinpoint-apm/pinpoint-grpc-idl))
-under `3rd_party/pinpoint-grpc-idl`. Fetch it when cloning:
+under `3rd_party/pinpoint-grpc-idl`. Depending on how you obtain the source, you
+may need to populate it explicitly.
+
+### Option A — Release tarball (recommended for packaging)
+
+Download `pinpoint-cpp-agent-<version>.tar.gz` from the
+[Releases](https://github.com/pinpoint-apm/pinpoint-cpp-agent/releases) page.
+The IDL is already bundled inside, so the tarball builds offline with no extra
+steps.
+
+> GitHub's auto-generated "Source code (zip/tar.gz)" archives do **not**
+> include submodule contents. Prefer the release asset above; if you must use
+> the auto-generated archive, see Option C.
+
+### Option B — Git clone
 
 ```bash
 git clone --recurse-submodules https://github.com/pinpoint-apm/pinpoint-cpp-agent.git
@@ -50,6 +64,16 @@ Or, if you already cloned without the flag:
 ```bash
 git submodule update --init --recursive
 ```
+
+CMake also auto-runs `git submodule update --init --recursive` on configure if
+the submodule directory is empty, as long as `git` is on `PATH`.
+
+### Option C — GitHub auto-generated source archive
+
+The IDL directory will be empty. CMake detects this and, since there is no
+`.git`, falls back to fetching the pinned IDL commit via
+`FetchContent_Declare(... GIT_REPOSITORY ...)`. This requires **network access
+and `git`** at configure time. For fully offline builds use Option A.
 
 ---
 

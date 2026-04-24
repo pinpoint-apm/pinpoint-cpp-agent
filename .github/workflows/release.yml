@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to package (e.g. v1.1.0). Leave empty to use HEAD.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  source-archive:
+    name: Build source tarball with submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine ref
+        id: ref
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            ref='${{ inputs.tag }}'
+          else
+            ref="${GITHUB_REF_NAME}"
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Verify pinned IDL commit matches submodule
+        run: |
+          submodule_sha=$(git -C 3rd_party/pinpoint-grpc-idl rev-parse HEAD)
+          pinned_sha=$(grep -E '^set\(PP_GRPC_IDL_COMMIT ' CMakeLists.txt \
+                       | sed -E 's/.*"([0-9a-f]+)".*/\1/')
+          if [ "${submodule_sha}" != "${pinned_sha}" ]; then
+            echo "PP_GRPC_IDL_COMMIT in CMakeLists.txt (${pinned_sha})"
+            echo "does not match the submodule SHA (${submodule_sha})."
+            echo "Update the constant so the FetchContent fallback stays in sync."
+            exit 1
+          fi
+
+      - name: Create source tarball
+        id: archive
+        run: |
+          VERSION='${{ steps.ref.outputs.version }}'
+          PREFIX="pinpoint-cpp-agent-${VERSION}"
+          ARCHIVE="${PREFIX}.tar.gz"
+
+          # Bundle everything including populated submodules. Strip VCS
+          # metadata (.git directory + submodule .git pointer files) and
+          # CI/editor noise. Rewrite top-level path to $PREFIX/ so the
+          # tarball extracts into a versioned directory.
+          tar --exclude-vcs \
+              --exclude='./.github' \
+              --exclude='./.claude' \
+              --exclude='./bazel-*' \
+              --exclude='./build' \
+              --exclude='./cmake-build-*' \
+              --transform "s,^\./,${PREFIX}/," \
+              -czf "../${ARCHIVE}" .
+          mv "../${ARCHIVE}" .
+
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test the archive (extract + configure)
+        run: |
+          ARCHIVE='${{ steps.archive.outputs.archive }}'
+          workdir=$(mktemp -d)
+          tar -xzf "${ARCHIVE}" -C "${workdir}"
+          extracted=$(find "${workdir}" -maxdepth 1 -mindepth 1 -type d | head -1)
+          test -f "${extracted}/3rd_party/pinpoint-grpc-idl/proto/v1/Service.proto" \
+            || { echo "submodule contents missing in archive"; exit 1; }
+          test ! -d "${extracted}/.git" || { echo ".git leaked into archive"; exit 1; }
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.archive.outputs.archive }}
+            ${{ steps.archive.outputs.archive }}.sha256
+          fail_on_unmatched_files: true
+
+      - name: Upload as workflow artifact (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.archive }}
+          path: |
+            ${{ steps.archive.outputs.archive }}
+            ${{ steps.archive.outputs.archive }}.sha256
