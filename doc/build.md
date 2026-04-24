@@ -7,6 +7,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 ## Table of Contents
 
 - [Requirements](#requirements)
+- [Cloning the Repository](#cloning-the-repository)
 - [Project Structure](#project-structure)
 - [Build with Bazel](#build-with-bazel)
 - [Build with CMake](#build-with-cmake)
@@ -34,6 +35,24 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 ---
 
+## Cloning the Repository
+
+The Protobuf/gRPC service definitions live in a git submodule
+([pinpoint-apm/pinpoint-grpc-idl](https://github.com/pinpoint-apm/pinpoint-grpc-idl))
+under `3rd_party/pinpoint-grpc-idl`. Fetch it when cloning:
+
+```bash
+git clone --recurse-submodules https://github.com/pinpoint-apm/pinpoint-cpp-agent.git
+```
+
+Or, if you already cloned without the flag:
+
+```bash
+git submodule update --init --recursive
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -48,8 +67,8 @@ pinpoint-cpp-agent/
 │   └── pinpoint/
 │       └── tracer.h
 ├── src/                 # Library source files
-├── v1/                  # Protobuf/gRPC service definitions
 ├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
+│   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
 ├── example/             # Example applications
 ├── test/                # Unit tests
 │   └── it_test/         # Integration test (HTTP + gRPC + SQL tracing)

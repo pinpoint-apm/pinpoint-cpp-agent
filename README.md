@@ -162,11 +162,11 @@ The `example/` directory contains complete working examples:
 pinpoint-cpp-agent/
 ├── include/pinpoint/    # Public headers (tracer.h)
 ├── src/                 # Library source files
-├── v1/                  # Protobuf/gRPC service definitions
 ├── example/             # Example applications
 ├── test/                # Unit and integration tests
 ├── doc/                 # Documentation
 ├── 3rd_party/           # Vendored dependencies (httplib, MurmurHash3)
+│   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
 └── scripts/             # Valgrind helper scripts
 ```
 

@@ -132,9 +132,18 @@ list(APPEND LINK_LIBS
   absl::strings
 )
 
+# The pinpoint-grpc-idl submodule lays out protos as proto/v1/*.proto; adding
+# .../proto to the import path keeps generated headers at v1/*.pb.h so existing
+# `#include "v1/..."` sites don't change.
+set(PP_GRPC_IDL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/pinpoint-grpc-idl)
+if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
+  message(FATAL_ERROR
+    "pinpoint-grpc-idl submodule is missing. Run:\n"
+    "  git submodule update --init --recursive")
+endif()
+set(PP_PROTOBUF_IMPORT_DIRS ${PP_GRPC_IDL_DIR}/proto)
 # Extra protobuf import dirs are only needed when gRPC was fetched from source,
 # since bundled protobuf headers live inside the gRPC source tree.
-set(PP_PROTOBUF_IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR})
 if(DEFINED grpc_SOURCE_DIR)
   list(APPEND PP_PROTOBUF_IMPORT_DIRS ${grpc_SOURCE_DIR}/third_party/protobuf/src)
 endif()
@@ -158,12 +167,12 @@ include_directories(src)
 include_directories(3rd_party)
 include(GNUInstallDirs)
 
-set(PROTOS v1/Annotation.proto
-           v1/Cmd.proto
-           v1/Service.proto
-           v1/Span.proto
-           v1/Stat.proto
-           v1/ThreadDump.proto)
+set(PROTOS ${PP_GRPC_IDL_DIR}/proto/v1/Annotation.proto
+           ${PP_GRPC_IDL_DIR}/proto/v1/Cmd.proto
+           ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto
+           ${PP_GRPC_IDL_DIR}/proto/v1/Span.proto
+           ${PP_GRPC_IDL_DIR}/proto/v1/Stat.proto
+           ${PP_GRPC_IDL_DIR}/proto/v1/ThreadDump.proto)
 
 set(SRCS src/agent.cpp
          src/annotation.cpp

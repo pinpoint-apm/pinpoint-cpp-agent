@@ -925,7 +925,7 @@
     },
     "@@rules_go~//go:extensions.bzl%go_sdk": {
       "os:osx,arch:aarch64": {
-        "bzlTransitiveDigest": "KsZAnUWlOxBl7fIU9n4PKrh5ZmzanEsDHiS+xrWtFRI=",
+        "bzlTransitiveDigest": "E6/Uv2jN2nfFrrzQQqMgL7BxDQFgmbbWCgpe0Dewu1g=",
         "usagesDigest": "JyN8mCCzsBZ3hxbyVXcLffNkdwbqXm0SF2Qz+Ds/MSE=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
