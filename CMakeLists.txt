@@ -24,7 +24,7 @@ project(pinpoint-cpp VERSION 1.1.0)
 
 option(BUILD_TESTING      "Build tests"                ON)
 option(BUILD_EXAMPLES     "Build examples"             ON)
-option(BUILD_SHARED_LIBS  "Build as a shared library"  OFF)
+option(BUILD_SHARED_LIBS  "Build as a shared library"  ON)
 option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
 option(BUILD_COVERAGE     "Enable coverage (GCC only)" OFF)
 
@@ -126,26 +126,10 @@ endif()
 
 list(APPEND LINK_LIBS
   protobuf::libprotobuf
-  gRPC::grpc gRPC::grpc++ gRPC::grpc++_reflection
-  gRPC::gpr gRPC::grpc_unsecure gRPC::grpc++_unsecure
-  gRPC::grpc++_error_details gRPC::grpcpp_channelz
+  gRPC::grpc++
   yaml-cpp::yaml-cpp
   fmt::fmt
   absl::strings
-  absl::strings_internal
-  absl::str_format_internal
-  absl::string_view
-  absl::cord
-  absl::log
-  absl::log_internal_message
-  absl::log_internal_check_op
-  absl::log_internal_conditions
-  absl::log_internal_format
-  absl::log_internal_log_sink_set
-  absl::log_internal_nullguard
-  absl::log_internal_proto
-  absl::log_globals
-  absl::int128
 )
 
 # Extra protobuf import dirs are only needed when gRPC was fetched from source,
@@ -155,41 +139,12 @@ if(DEFINED grpc_SOURCE_DIR)
   list(APPEND PP_PROTOBUF_IMPORT_DIRS ${grpc_SOURCE_DIR}/third_party/protobuf/src)
 endif()
 
-if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything \
-    -Wno-c++98-compat \
-    -Wno-c++98-compat-pedantic \
-    -Wno-c++98-compat-bind-to-temporary-copy \
-    -Wno-weak-vtables \
-    -Wno-exit-time-destructors \
-    -Wno-global-constructors \
-    -Wno-padded \
-    -Wno-float-equal \
-    -Wno-sign-conversion \
-    -Wno-unused-parameter \
-    -Wno-missing-variable-declarations \
-    -Wno-missing-prototypes \
-    -Wno-reserved-id-macro \
-    -Wno-old-style-cast \
-    -Wno-conversion \
-    -Wno-suggest-destructor-override \
-    -Wno-shadow-field \
-    -Wno-unknown-warning-option \
-    -Wno-poison-system-directories \
-    -Wno-vla-extension \
-    -Wno-c++20-compat \
-    -Wno-unreachable-code-return \
-    -Wno-switch-enum \
-    -Wthread-safety")
-    #-stdlib=libc++")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
-elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra \
-    -Wno-unused-parameter \
-    -std=c++11 -pthread \
-    -Wl,--no-as-needed")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Wthread-safety -Wno-unused-parameter")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-unused-parameter -pthread -Wl,--no-as-needed")
 
-  if (BUILD_COVERAGE)
+  if(BUILD_COVERAGE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-arcs -ftest-coverage")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lgcov")
   endif()
@@ -229,32 +184,32 @@ set(SRCS src/agent.cpp
          src/tracer_c.cpp
          3rd_party/MurmurHash3.cpp)
 
-function(pinpoint_protobuf_generate target)
-  protobuf_generate(
-    TARGET ${target}
-    LANGUAGE cpp
-    IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
-  )
-  protobuf_generate(
-    TARGET ${target}
-    LANGUAGE grpc
-    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
-    GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
-    PLUGIN_OPTIONS generate_mock_code=true
-    IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
-  )
-endfunction()
+protobuf_generate(
+  OUT_VAR PP_GENERATED_PROTO_SRCS
+  LANGUAGE cpp
+  IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
+  PROTOS ${PROTOS}
+)
+protobuf_generate(
+  OUT_VAR PP_GENERATED_GRPC_SRCS
+  LANGUAGE grpc
+  PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+  GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
+  PLUGIN_OPTIONS generate_mock_code=true
+  IMPORT_DIRS ${PP_PROTOBUF_IMPORT_DIRS}
+  PROTOS ${PROTOS}
+)
+list(APPEND SRCS ${PP_GENERATED_PROTO_SRCS} ${PP_GENERATED_GRPC_SRCS})
 
-if (BUILD_SHARED_LIBS)
+if(BUILD_SHARED_LIBS)
   add_library(pinpoint_cpp SHARED ${SRCS} ${PROTOS})
   target_include_directories(pinpoint_cpp INTERFACE "$<INSTALL_INTERFACE:include/>")
   set_target_properties(pinpoint_cpp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
   target_link_libraries(pinpoint_cpp PUBLIC ${LINK_LIBS})
   install(TARGETS pinpoint_cpp LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  pinpoint_protobuf_generate(pinpoint_cpp)
 endif()
 
-if (BUILD_STATIC_LIBS)
+if(BUILD_STATIC_LIBS)
   add_library(pinpoint_cpp-static STATIC ${SRCS} ${PROTOS})
   set_target_properties(pinpoint_cpp-static PROPERTIES OUTPUT_NAME pinpoint_cpp)
   target_include_directories(pinpoint_cpp-static INTERFACE "$<INSTALL_INTERFACE:include/>")
@@ -264,7 +219,6 @@ if (BUILD_STATIC_LIBS)
     target_link_options(pinpoint_cpp-static PUBLIC "-Wl,-force_load,$<TARGET_FILE:absl::strings>")
   endif()
   install(TARGETS pinpoint_cpp-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  pinpoint_protobuf_generate(pinpoint_cpp-static)
 endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

@@ -43,7 +43,8 @@ target_include_directories(grpc_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
-target_link_libraries(grpc_server ${PINPOINT_CPP_LIBRARY} it_test_proto)
+
+target_link_libraries(grpc_server ${PINPOINT_CPP_LIBRARY} it_test_proto gRPC::grpc++_reflection)
 set_target_properties(grpc_server PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
 
 # =============================================================================
