@@ -37,22 +37,20 @@
             "toolchainFile": "${sourceDir}/build/conan/conan_toolchain.cmake"
         },
         {
-            "name": "fetchcontent",
-            "inherits": "base",
-            "displayName": "FetchContent from source",
-            "description": "Force all dependencies to be built from source via FetchContent (no system lookup).",
-            "cacheVariables": {
-                "CMAKE_PREFIX_PATH": "",
-                "CMAKE_FIND_USE_PACKAGE_REGISTRY": "OFF",
-                "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY": "OFF"
-            }
-        },
-        {
             "name": "debug",
-            "inherits": "fetchcontent",
+            "inherits": "default",
             "displayName": "Debug build (system)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "debug-cached",
+            "inherits": "debug",
+            "displayName": "Debug build (shared FetchContent cache)",
+            "description": "Debug build that reuses a shared FetchContent download/build cache across presets to avoid re-fetching dependencies.",
+            "cacheVariables": {
+                "FETCHCONTENT_BASE_DIR": "$env{HOME}/.cache/cmake-fetchcontent"
             }
         }
     ],
@@ -70,12 +68,12 @@
             "configurePreset": "conan"
         },
         {
-            "name": "fetchcontent",
-            "configurePreset": "fetchcontent"
-        },
-        {
             "name": "debug",
             "configurePreset": "debug"
+        },
+        {
+            "name": "debug-cached",
+            "configurePreset": "debug-cached"
         }
     ],
     "testPresets": [
@@ -110,8 +108,8 @@
             }
         },
         {
-            "name": "fetchcontent",
-            "configurePreset": "fetchcontent",
+            "name": "debug",
+            "configurePreset": "debug",
             "output": {
                 "outputOnFailure": true
             },
@@ -120,8 +118,8 @@
             }
         },
         {
-            "name": "debug",
-            "configurePreset": "debug",
+            "name": "debug-cached",
+            "configurePreset": "debug-cached",
             "output": {
                 "outputOnFailure": true
             },

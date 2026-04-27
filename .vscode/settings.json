@@ -1,0 +1,5 @@
+{
+    "cmake.configureEnvironment": {
+        "FETCHCONTENT_BASE_DIR": "${userHome}/.cache/cmake-fetchcontent"
+    }
+}
