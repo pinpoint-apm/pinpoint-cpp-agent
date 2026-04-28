@@ -253,7 +253,9 @@ list(APPEND SRCS ${PP_GENERATED_PROTO_SRCS} ${PP_GENERATED_GRPC_SRCS})
 
 if(BUILD_SHARED_LIBS)
   add_library(pinpoint_cpp SHARED ${SRCS} ${PROTOS})
-  target_include_directories(pinpoint_cpp INTERFACE "$<INSTALL_INTERFACE:include/>")
+  target_include_directories(pinpoint_cpp INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include/>")
   set_target_properties(pinpoint_cpp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
   target_link_libraries(pinpoint_cpp PUBLIC ${LINK_LIBS})
   install(TARGETS pinpoint_cpp LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -262,7 +264,9 @@ endif()
 if(BUILD_STATIC_LIBS)
   add_library(pinpoint_cpp-static STATIC ${SRCS} ${PROTOS})
   set_target_properties(pinpoint_cpp-static PROPERTIES OUTPUT_NAME pinpoint_cpp)
-  target_include_directories(pinpoint_cpp-static INTERFACE "$<INSTALL_INTERFACE:include/>")
+  target_include_directories(pinpoint_cpp-static INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include/>")
   target_link_libraries(pinpoint_cpp-static ${LINK_LIBS})
   if(APPLE)
     # Force-load absl::strings to avoid undefined-reference issues on macOS.
