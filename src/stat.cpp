@@ -18,10 +18,18 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include "sys/times.h"
+#include <sys/times.h>
 #include <mutex>
 #include <cctype>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_host.h>
+#include <mach/mach_init.h>
+#include <mach/task.h>
+#include <mach/task_info.h>
+#endif
 
 #include "config.h"
 #include "logging.h"
@@ -44,18 +52,37 @@ namespace pinpoint {
         FileCloser& operator=(const FileCloser&) = delete;
     };
 
-    // Constants for buffer sizes
+    // Constants for buffer sizes (Linux /proc readers only)
+#ifndef __APPLE__
     constexpr size_t kProcStatBufferSize = 256;
     constexpr size_t kProcStatusBufferSize = 256;
+#endif
 
     static void get_cpu_time(clock_t *sys_time, clock_t *proc_time) {
         if (sys_time) {
+#ifdef __APPLE__
+            // System-wide CPU ticks via Mach. Ticks are reported in CLK_TCK units
+            // (matches sysconf(_SC_CLK_TCK)) and aggregated across all CPUs, so the
+            // value is directly comparable to /proc/stat's first line on Linux.
+            host_cpu_load_info_data_t cpu_info{};
+            mach_msg_type_number_t info_count = HOST_CPU_LOAD_INFO_COUNT;
+            if (host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO,
+                                reinterpret_cast<host_info_t>(&cpu_info),
+                                &info_count) == KERN_SUCCESS) {
+                *sys_time = static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_USER]) +
+                            static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_SYSTEM]) +
+                            static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_NICE]);
+            } else {
+                LOG_WARN("host_statistics(HOST_CPU_LOAD_INFO) failed");
+                *sys_time = 0;
+            }
+#else
             FILE *fd = fopen("/proc/stat", "r");
             if (fd == nullptr) {
                 return;
             }
             FileCloser closer(fd);  // RAII: Automatically closes on scope exit
-            
+
             char buf[kProcStatBufferSize];
             clock_t user = 0, nice = 0, system = 0;
             memset(buf, 0, sizeof(buf));
@@ -68,9 +95,12 @@ namespace pinpoint {
                     *sys_time = 0;
                 }
             }
+#endif
         }
 
         if (proc_time) {
+            // times() is POSIX and works on both Linux and macOS; tms_utime/tms_stime
+            // are reported in clock ticks (sysconf(_SC_CLK_TCK)) for the calling process.
             struct tms proc_time_sample{};
             times(&proc_time_sample);
             *proc_time = proc_time_sample.tms_utime + proc_time_sample.tms_stime;
@@ -80,7 +110,7 @@ namespace pinpoint {
     AgentStats::CpuLoad AgentStats::getCpuLoad(std::chrono::seconds dur) {
         clock_t sys_time = 0, proc_time = 0;
         double total_cpu = static_cast<double>(dur.count() * sc_clk_tck_ * sc_nprocessors_onln_);
-        
+
         if (total_cpu <= 0) total_cpu = 1; // Prevent division by zero
 
         get_cpu_time(&sys_time, &proc_time);
@@ -101,6 +131,7 @@ namespace pinpoint {
         return CpuLoad{sys_load, proc_load};
     }
 
+#ifndef __APPLE__
     // Helper to parse integers from /proc/self/status lines
     static std::optional<int64_t> parse_int_value(const char* buf, size_t buf_size, const char* prefix) {
         size_t prefix_len = strlen(prefix);
@@ -122,10 +153,39 @@ namespace pinpoint {
         }
         return std::nullopt;
     }
+#endif
 
     AgentStats::ProcessStatus AgentStats::getProcessStatus() {
         ProcessStatus status{0, 0, 0};
 
+#ifdef __APPLE__
+        // Resident set size (current and peak) via Mach task_info.
+        mach_task_basic_info_data_t info{};
+        mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                      reinterpret_cast<task_info_t>(&info), &info_count) == KERN_SUCCESS) {
+            status.heap_alloc = static_cast<int64_t>(info.resident_size);
+            status.heap_max   = static_cast<int64_t>(info.resident_size_max);
+        } else {
+            LOG_WARN("task_info(MACH_TASK_BASIC_INFO) failed");
+        }
+
+        // Thread count via task_threads. The kernel allocates the array, so we must
+        // release the per-thread send rights and the array itself.
+        thread_array_t threads = nullptr;
+        mach_msg_type_number_t thread_count = 0;
+        if (task_threads(mach_task_self(), &threads, &thread_count) == KERN_SUCCESS) {
+            status.num_threads = static_cast<int64_t>(thread_count);
+            for (mach_msg_type_number_t i = 0; i < thread_count; ++i) {
+                mach_port_deallocate(mach_task_self(), threads[i]);
+            }
+            vm_deallocate(mach_task_self(),
+                          reinterpret_cast<vm_address_t>(threads),
+                          thread_count * sizeof(thread_t));
+        } else {
+            LOG_WARN("task_threads() failed");
+        }
+#else
         FILE* fd = fopen("/proc/self/status", "r");
         if (fd == nullptr) {
             return status;
@@ -147,7 +207,8 @@ namespace pinpoint {
             }
             if (found == 3) break;
         }
-        
+#endif
+
         return status;
     }
 
