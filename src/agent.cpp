@@ -31,8 +31,8 @@ namespace pinpoint {
 
     // Global agent singleton with thread-safe access
     namespace {
-        std::shared_ptr<AgentImpl> global_agent{nullptr};
         std::mutex global_agent_mutex;
+        std::shared_ptr<AgentImpl> global_agent{nullptr};
     }
 
     AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg,
@@ -256,10 +256,25 @@ namespace pinpoint {
         }
     }
 
-    AgentImpl::~AgentImpl() {
-        if (enabled_) {
-            Shutdown();
-        }
+    AgentImpl::~AgentImpl() noexcept {
+        do_shutdown();
+
+        // Belt-and-braces: if do_shutdown() bailed out early for any reason,
+        // a joinable std::thread member would call std::terminate() when its
+        // destructor runs. Detach any stragglers so member destruction stays
+        // benign. Detach (not join) is used because by this point the
+        // process is likely on its way down and we don't want to block.
+        auto safe_detach = [](std::thread& t) noexcept {
+            try { if (t.joinable()) t.detach(); } catch (...) {}
+        };
+        safe_detach(init_thread_);
+        safe_detach(ping_thread_);
+        safe_detach(meta_thread_);
+        safe_detach(span_thread_);
+        safe_detach(stat_thread_);
+        safe_detach(url_stat_add_thread_);
+        safe_detach(url_stat_send_thread_);
+        safe_detach(agent_stat_thread_);
     }
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
@@ -326,22 +341,26 @@ namespace pinpoint {
     	return enabled_;
 	}
 
-    void AgentImpl::Shutdown() {
+    void AgentImpl::Shutdown() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(global_agent_mutex);
+            if (global_agent.get() == this) {
+                global_agent.reset();
+            }
+        } catch (...) {}
+        do_shutdown();
+    }
+
+    void AgentImpl::do_shutdown() noexcept {
         if (shutting_down_.exchange(true)) {
             return;
         }
 
-        LOG_INFO("agent shutdown");
         enabled_ = false;
-        stop_config_file_watcher();
-        
-        {
-            std::lock_guard<std::mutex> lock(global_agent_mutex);
-            global_agent.reset();
-        }
-        
-        close_grpc_workers();
-        shutdown_logger();
+        try { LOG_INFO("agent shutdown"); } catch (...) {}
+        try { stop_config_file_watcher(); } catch (...) {}
+        try { close_grpc_workers(); } catch (...) {}
+        try { shutdown_logger(); } catch (...) {}
     }
 
     TraceId AgentImpl::generateTraceId() {

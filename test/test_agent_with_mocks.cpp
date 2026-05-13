@@ -344,6 +344,52 @@ TEST_F(AgentImplTest, IsExitingReflectsShutdown) {
     EXPECT_TRUE(agent_->isExiting());
 }
 
+// --- Destructor safety tests ---
+//
+// These guard against the SIGABRT-on-exit reported when the host process
+// destroys the agent without first calling Shutdown(): the dtor used to
+// let exceptions escape (terminate()) and re-enter global_agent.reset()
+// while it was itself being destroyed.
+
+TEST_F(AgentImplTest, DtorAfterImplicitShutdownDoesNotThrow) {
+    // The fixture's TearDown calls Shutdown(); take a separately-scoped
+    // agent that is deliberately destroyed without an explicit Shutdown.
+    EXPECT_NO_THROW({
+        auto agent = make_test_agent(make_test_config());
+        wait_agent_enabled(agent);
+        // Deliberately do NOT call Shutdown() — dtor must clean up safely.
+    });
+}
+
+TEST_F(AgentImplTest, DtorAfterExplicitShutdownDoesNotThrow) {
+    EXPECT_NO_THROW({
+        auto agent = make_test_agent(make_test_config());
+        wait_agent_enabled(agent);
+        agent->Shutdown();
+        agent.reset();  // dtor — must not throw
+    });
+}
+
+TEST_F(AgentImplTest, DoubleShutdownIsNoOp) {
+    auto agent = make_test_agent(make_test_config());
+    wait_agent_enabled(agent);
+    EXPECT_NO_THROW({
+        agent->Shutdown();
+        agent->Shutdown();  // must not throw, must not deadlock
+    });
+    EXPECT_FALSE(agent->Enable());
+}
+
+TEST_F(AgentImplTest, DtorBeforeInitCompletesDoesNotThrow) {
+    // Construct and immediately destroy without waiting for init_thread_
+    // to finish — exercises the "enabled_ was never set" cleanup path
+    // that the old dtor's `if (enabled_) Shutdown()` guard skipped.
+    EXPECT_NO_THROW({
+        auto agent = make_test_agent(make_test_config());
+        // No wait_agent_enabled — destroy while init may still be racing.
+    });
+}
+
 // --- URL filter tests ---
 
 TEST_F(AgentImplTest, UrlFilterExcludesMatchingUrl) {

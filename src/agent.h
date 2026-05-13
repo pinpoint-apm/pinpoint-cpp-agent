@@ -51,7 +51,7 @@ namespace pinpoint {
 				  std::unique_ptr<GrpcAgent> grpc_agent,
 				  std::unique_ptr<GrpcSpan> grpc_span,
 				  std::unique_ptr<GrpcStats> grpc_stat);
-        ~AgentImpl() override;
+        ~AgentImpl() noexcept override;
 
 		/**
 		 * @brief Creates a new span for an outbound operation.
@@ -80,7 +80,7 @@ namespace pinpoint {
 		/// @brief Returns whether the agent is enabled for tracing.
 		bool Enable() override;
 		/// @brief Initiates a graceful shutdown of the agent.
-		void Shutdown() override;
+		void Shutdown() noexcept override;
 
     	bool isExiting() const override { return shutting_down_; }
     	std::string getAppName() const override;
@@ -158,6 +158,10 @@ namespace pinpoint {
     	void close_grpc_workers();
     	/// @brief Waits for all gRPC workers to finish execution.
     	void wait_grpc_workers();
+    	/// @brief Performs the actual shutdown work (workers, watcher, logger)
+    	/// without touching the global_agent singleton. Safe to call from the
+    	/// destructor — does not lock global_agent_mutex, never throws.
+    	void do_shutdown() noexcept;
     };
 
     // Test helpers for managing the global agent singleton
