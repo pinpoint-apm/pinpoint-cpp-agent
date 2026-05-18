@@ -424,6 +424,11 @@ namespace pinpoint {
         data_->setEndPoint(endpoint);
     }
 
+    void SpanImpl::SetAcceptorHost(std::string_view host) {
+        CHECK_FINISHED();
+        data_->setAcceptorHost(host);
+    }
+
     void SpanImpl::SetError(std::string_view error_message) {
         CHECK_FINISHED();
         SetError("Error", error_message);

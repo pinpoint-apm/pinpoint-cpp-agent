@@ -376,6 +376,10 @@ void pt_span_set_end_point(pt_span_t span, const char* end_point) {
     if (span && span->ptr && end_point) span->ptr->SetEndPoint(end_point);
 }
 
+void pt_span_set_acceptor_host(pt_span_t span, const char* host) {
+    if (span && span->ptr && host) span->ptr->SetAcceptorHost(host);
+}
+
 void pt_span_set_error(pt_span_t span, const char* error_message) {
     if (span && span->ptr && error_message) span->ptr->SetError(error_message);
 }

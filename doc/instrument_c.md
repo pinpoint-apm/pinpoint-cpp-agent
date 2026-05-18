@@ -253,6 +253,7 @@ pt_span_t span = pt_agent_new_span_with_method(
 ```c
 pt_span_set_remote_address(span, "192.168.1.100");  /* client IP        */
 pt_span_set_end_point(span, "api.example.com:8080"); /* server endpoint  */
+pt_span_set_acceptor_host(span, "api.example.com");  /* accepted Host    */
 pt_span_set_service_type(span, PT_SERVICE_TYPE_CPP); /* service type     */
 pt_span_set_status_code(span, 200);                  /* HTTP status code */
 pt_span_set_start_time_ms(span, start_ms);           /* override start   */

@@ -552,6 +552,9 @@ void pt_span_set_remote_address(pt_span_t span, const char* address);
 /** Mirrors pinpoint::Span::SetEndPoint(). */
 void pt_span_set_end_point(pt_span_t span, const char* end_point);
 
+/** Mirrors pinpoint::Span::SetAcceptorHost(). */
+void pt_span_set_acceptor_host(pt_span_t span, const char* host);
+
 /** Mirrors pinpoint::Span::SetError(error_message). */
 void pt_span_set_error(pt_span_t span, const char* error_message);
 

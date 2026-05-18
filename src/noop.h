@@ -109,6 +109,7 @@ namespace pinpoint {
         void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
         void SetRemoteAddress(std::string_view address) override {}
         void SetEndPoint(std::string_view end_point) override {}
+        void SetAcceptorHost(std::string_view host) override {}
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}
         void SetStatusCode(int status) override {}

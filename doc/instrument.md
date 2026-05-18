@@ -187,6 +187,7 @@ void handleRequest(const httplib::Request& req, httplib::Response& res) {
 ```cpp
 span->SetRemoteAddress("192.168.1.100");                 // client IP
 span->SetEndPoint("localhost:8080");                     // logical endpoint
+span->SetAcceptorHost("api.example.com");                // Host header of the accepted request
 span->SetServiceType(pinpoint::SERVICE_TYPE_CPP);        // service type
 span->SetStatusCode(200);                                // HTTP status code
 

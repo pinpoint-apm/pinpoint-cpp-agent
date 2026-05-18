@@ -422,6 +422,8 @@ namespace pinpoint {
         void SetRemoteAddress(std::string_view address) override;
         /// @brief Records the service endpoint.
         void SetEndPoint(std::string_view end_point) override;
+        /// @brief Records the host of acceptor.
+        void SetAcceptorHost(std::string_view host) override;
     	/// @brief Records an error message and marks the span as failed.
     	void SetError(std::string_view error_message) override;
     	/// @brief Records a named error along with an error message.

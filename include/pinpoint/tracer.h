@@ -290,6 +290,8 @@ namespace pinpoint {
 		virtual void SetRemoteAddress(std::string_view address) = 0;
 		/// @brief Records the endpoint served by the span.
 		virtual void SetEndPoint(std::string_view end_point) = 0;
+		/// @brief Records the host of acceptor.
+		virtual void SetAcceptorHost(std::string_view host) = 0;
 		/// @brief Records an error message at the span level.
 		virtual void SetError(std::string_view error_message) = 0;
 		/// @brief Records a named error message at the span level.
