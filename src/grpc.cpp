@@ -811,128 +811,65 @@ namespace pinpoint {
 
     //GrpcSpan
 
-    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
-        set_span_stub(v1::Span::NewStub(channel_));
+    namespace {
+        constexpr auto SPAN_BATCH_TIMEOUT = std::chrono::seconds(60);
+        constexpr auto SHUTDOWN_AWAIT_TIMEOUT = std::chrono::seconds(3);
+
+        // Heap-resident state for a single async SendSpanBatch call. Lives as
+        // long as the callback's shared_ptr keeps it alive.
+        struct PendingSpanBatch {
+            grpc::ClientContext ctx;
+            google::protobuf::Arena arena;
+            v1::PSpanMessageBatch* request{nullptr};
+            v1::PSpanResultBatch reply;
+        };
     }
 
-    bool GrpcSpan::start_span_stream() {
-        LOG_DEBUG("start_span_stream");
-        if (!readyChannel()) {
+    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
+        set_span_stub(v1::Span::NewStub(channel_));
+        batch_max_permits_ = config_->span.batch.max_concurrent_requests;
+        batch_permits_ = batch_max_permits_;
+    }
+
+    bool GrpcSpan::try_acquire_permit(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
+        if (!batch_permits_cv_.wait_for(lock, timeout, [this]{ return batch_permits_ > 0; })) {
             return false;
         }
-
-        stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), 0);
-        span_stub_->async()->SendSpan(stream_context_.get(), &reply_, this);
-
-        AddHold();
-        StartCall();
+        --batch_permits_;
         return true;
     }
 
-    GrpcStreamStatus GrpcSpan::write_and_await_span_stream() {
-        LOG_DEBUG("write_and_await_span_stream");
-
-        std::unique_lock<std::mutex> lock(stream_mutex_);
-        grpc_status_ = next_write();
-
-        if (grpc_status_ == STREAM_WRITE) {
-            StartWrite(msg_);
-        } else {
-            return grpc_status_;
-        }
-
-        stream_cv_.wait(lock, [this] {
-            return grpc_status_ != STREAM_WRITE;
-        });
-
-        if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
-            LOG_ERROR("failed to send span: {}, {}",
-                     static_cast<int>(stream_status_.error_code()), stream_status_.error_message());
-        }
-
-        return grpc_status_;
-    }
-
-    void GrpcSpan::finish_span_stream() {
-        LOG_DEBUG("finish_span_stream");
-        StartWritesDone();
-        RemoveHold();
-
-        std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_cv_.wait(lock, [this] {
-            return grpc_status_ == STREAM_DONE;
+    bool GrpcSpan::try_acquire_all_permits(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
+        return batch_permits_cv_.wait_for(lock, timeout, [this]{
+            return batch_permits_ >= batch_max_permits_;
         });
     }
 
-    void GrpcSpan::OnWriteDone(bool ok) {
-        LOG_DEBUG("span - OnWriteDone: {}", ok);
-        arena_.Reset(); // reset arena after write completes to free all memory at once
-
-        if (ok) {
-            std::unique_lock<std::mutex> lock(stream_mutex_);
-            grpc_status_ = next_write();
-
-            if (grpc_status_ == STREAM_WRITE) {
-                StartWrite(msg_);
-            } else {
-                stream_cv_.notify_one();
-            }
-        } else {
-            StartWritesDone();
-            RemoveHold();
-        }
-    }
-
-    void GrpcSpan::OnDone(const grpc::Status& status) {
-        LOG_DEBUG("span - OnDone: {}", static_cast<int>(status.error_code()));
-
-        std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_status_ = status;
-        grpc_status_ = STREAM_DONE;
-        stream_cv_.notify_one();
-    }
-
-    GrpcStreamStatus GrpcSpan::next_write() try {
-        LOG_DEBUG("span - next_write");
-        // should be hold stream_mutex_
-
-        std::unique_ptr<SpanChunk> span_chunk;
-        {
-            std::unique_lock<std::mutex> lock(span_queue_mutex_);
-            if (agent_->isExiting() || span_queue_.empty()) {
-                LOG_DEBUG("span - queue empty");
-                return STREAM_CONTINUE;
-            }
-
-            span_chunk = std::move(span_queue_.front());
-            span_queue_.pop();
-        }
-
-        const auto span = span_chunk->getSpanData();
-        msg_ = google::protobuf::Arena::Create<v1::PSpanMessage>(&arena_);
-        if (!span_chunk->isFinal() || span->isAsyncSpan()) {
-            msg_->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &arena_));
-        } else {
-            msg_->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &arena_));
-        }
-
-        //msg_->PrintDebugString();
-        return STREAM_WRITE;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to send span: exception = {}", e.what());
-        return STREAM_EXCEPTION;
+    void GrpcSpan::release_permit() {
+        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
+        ++batch_permits_;
+        batch_permits_cv_.notify_one();
     }
 
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
+        if (agent_ != nullptr && agent_->isExiting()) {
+            return;
+        }
+
         std::unique_lock<std::mutex> lock(span_queue_mutex_);
 
         const auto& config = config_;
         if (span_queue_.size() < config->span.queue_size) {
             span_queue_.push(std::move(span));
+            LOG_DEBUG("enqueueSpan: queue_size={}", span_queue_.size());
         } else {
-            LOG_DEBUG("drop span: overflow max queue size {}", config->span.queue_size);
-            force_queue_empty_ = true;
+            // Head-drop: discard the oldest queued span and enqueue the new one.
+            // Matches Java SpanBatchGrpcDataSender.send().
+            span_queue_.pop();
+            span_queue_.push(std::move(span));
+            LOG_DEBUG("discard oldest span: overflow max queue size {}", config->span.queue_size);
         }
 
         span_queue_cv_.notify_one();
@@ -940,49 +877,156 @@ namespace pinpoint {
         LOG_ERROR("failed to enqueue span: exception = {}", e.what());
     }
 
-    void GrpcSpan::empty_span_queue() noexcept try {
-        std::queue<std::unique_ptr<SpanChunk>> temp_queue;
-        
-        {
-            std::unique_lock<std::mutex> lock(span_queue_mutex_);
-            
-            // use swap to minimize lock hold time
-            // swap operation is O(1) and only exchanges internal pointers
-            span_queue_.swap(temp_queue);
-            force_queue_empty_ = false;
-        }
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to empty span queue: exception = {}", e.what());
-    }
+    void GrpcSpan::collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer) {
+        const auto& batch_cfg = config_->span.batch;
+        const auto flush_timeout = std::chrono::milliseconds(batch_cfg.flush_interval_ms);
+        const auto collect_deadline_ms = std::chrono::milliseconds(batch_cfg.collect_deadline_ms);
+        const auto batch_size = static_cast<size_t>(batch_cfg.size);
 
-    void GrpcSpan::sendSpanWorker() try {
-        if (!start_span_stream()) {
+        std::unique_lock<std::mutex> lock(span_queue_mutex_);
+
+        // Block (with timeout) until the first item arrives or the worker is asked to stop.
+        if (!span_queue_cv_.wait_for(lock, flush_timeout, [this]{
+                return !span_queue_.empty() || agent_->isExiting();
+            })) {
+            return;
+        }
+        if (span_queue_.empty()) {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(span_queue_mutex_);
-        while (true) {
-            span_queue_cv_.wait(lock, [this]{
-                return !span_queue_.empty() || agent_->isExiting();
-            });
-            lock.unlock();
+        buffer.push_back(std::move(span_queue_.front()));
+        span_queue_.pop();
 
-            if (agent_->isExiting()) {
-                finish_span_stream();
+        // Gather more items until either the batch is full or the collect
+        // deadline elapses. Matches Java SpanBatchGrpcDataSender.collectBatch.
+        const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
+        while (buffer.size() < batch_size) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
                 break;
             }
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            if (!span_queue_cv_.wait_for(lock, remaining, [this]{
+                    return !span_queue_.empty() || agent_->isExiting();
+                })) {
+                break;
+            }
+            if (span_queue_.empty()) {
+                break;
+            }
+            buffer.push_back(std::move(span_queue_.front()));
+            span_queue_.pop();
+        }
+        LOG_DEBUG("collect_batch: collected={} batch_size_limit={} remaining_queue={}",
+                  buffer.size(), batch_size, span_queue_.size());
+    }
 
-            if (write_and_await_span_stream() == STREAM_DONE) {
-                if (!start_span_stream()) {
-                    break;
-                }
-                if (force_queue_empty_) {
-                    empty_span_queue();
-                }
+    void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch) try {
+        if (batch.empty()) {
+            return;
+        }
+
+        auto pending = std::make_shared<PendingSpanBatch>();
+        pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
+
+        for (auto& span_chunk : batch) {
+            const auto span = span_chunk->getSpanData();
+            auto* msg = pending->request->add_span();
+            if (!span_chunk->isFinal() || span->isAsyncSpan()) {
+                msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &pending->arena));
+            } else {
+                msg->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &pending->arena));
+            }
+        }
+        batch.clear();
+
+        const auto flush_timeout = std::chrono::milliseconds(config_->span.batch.flush_interval_ms);
+        if (!try_acquire_permit(flush_timeout)) {
+            LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
+                     flush_timeout.count());
+            return;
+        }
+
+        build_grpc_context(&pending->ctx, 0);
+        set_deadline(pending->ctx, SPAN_BATCH_TIMEOUT);
+
+        const int batch_count = pending->request->span_size();
+        LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
+                  batch_count, batch_max_permits_ - batch_permits_, batch_max_permits_);
+
+        try {
+            auto* ctx_ptr = &pending->ctx;
+            auto* request_ptr = pending->request;
+            auto* reply_ptr = &pending->reply;
+            span_stub_->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
+                [this, pending, batch_count](const grpc::Status& status) {
+                    release_permit();
+                    if (!status.ok()) {
+                        LOG_INFO("SendSpanBatch failed: {}, {}",
+                                 static_cast<int>(status.error_code()), status.error_message());
+                        return;
+                    }
+                    LOG_DEBUG("SendSpanBatch success: batchSize={}", batch_count);
+                    if (!pending->reply.has_partial_success()) {
+                        return;
+                    }
+                    const auto& ps = pending->reply.partial_success();
+                    if (ps.rejected_spans() > 0) {
+                        LOG_WARN("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
+                                 ps.rejected_spans(), ps.errorid(), ps.error_message());
+                    } else if (!ps.error_message().empty()) {
+                        LOG_INFO("SendSpanBatch warning: errorId={}, {}",
+                                 ps.errorid(), ps.error_message());
+                    }
+                });
+        } catch (const std::exception& e) {
+            release_permit();
+            LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("failed to build span batch: exception = {}", e.what());
+    }
+
+    void GrpcSpan::await_in_flight_requests() {
+        if (!try_acquire_all_permits(SHUTDOWN_AWAIT_TIMEOUT)) {
+            LOG_WARN("timed out waiting for in-flight span requests to complete");
+        }
+    }
+
+    void GrpcSpan::flush_remaining() {
+        std::vector<std::unique_ptr<SpanChunk>> remaining;
+        {
+            std::unique_lock<std::mutex> lock(span_queue_mutex_);
+            while (!span_queue_.empty()) {
+                remaining.push_back(std::move(span_queue_.front()));
+                span_queue_.pop();
+            }
+        }
+        if (!remaining.empty()) {
+            LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
+            if (readyChannel()) {
+                send_batch_async(remaining);
+            }
+        }
+        await_in_flight_requests();
+    }
+
+    void GrpcSpan::sendSpanWorker() try {
+        while (!agent_->isExiting()) {
+            std::vector<std::unique_ptr<SpanChunk>> batch;
+            batch.reserve(config_->span.batch.size);
+
+            collect_batch(batch);
+            if (batch.empty()) {
+                continue;
             }
 
-            lock.lock();
+            if (readyChannel()) {
+                send_batch_async(batch);
+            }
         }
+        flush_remaining();
         LOG_INFO("grpc span worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc span worker exception = {}", e.what());
@@ -990,7 +1034,7 @@ namespace pinpoint {
 
     void GrpcSpan::stopSpanWorker() {
         std::unique_lock<std::mutex> lock(span_queue_mutex_);
-        span_queue_cv_.notify_one();
+        span_queue_cv_.notify_all();
     }
 
     //GrpcStat

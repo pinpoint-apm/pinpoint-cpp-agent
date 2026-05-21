@@ -294,6 +294,13 @@ namespace pinpoint {
             config.span.max_event_depth = get_int(span, "MaxEventDepth", defaults::SPAN_MAX_EVENT_DEPTH);
             config.span.max_event_sequence = get_int(span, "MaxEventSequence", defaults::SPAN_MAX_EVENT_SEQUENCE);
             config.span.event_chunk_size = get_int(span, "EventChunkSize", defaults::SPAN_EVENT_CHUNK_SIZE);
+
+            if (auto& batch = span["Batch"]) {
+                config.span.batch.size = get_int(batch, "Size", defaults::SPAN_BATCH_SIZE);
+                config.span.batch.flush_interval_ms = get_int(batch, "FlushIntervalMs", defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+                config.span.batch.collect_deadline_ms = get_int(batch, "CollectDeadlineMs", defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+                config.span.batch.max_concurrent_requests = get_int(batch, "MaxConcurrentRequests", defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+            }
         }
 
         if (yaml["IsContainer"]) {
@@ -419,6 +426,18 @@ namespace pinpoint {
         }
         if(const char* env_p = std::getenv(env::SPAN_EVENT_CHUNK_SIZE)) {
             config.span.event_chunk_size = safe_env_stoi(env::SPAN_EVENT_CHUNK_SIZE, env_p, defaults::SPAN_EVENT_CHUNK_SIZE);
+        }
+        if(const char* env_p = std::getenv(env::SPAN_BATCH_SIZE)) {
+            config.span.batch.size = safe_env_stoi(env::SPAN_BATCH_SIZE, env_p, defaults::SPAN_BATCH_SIZE);
+        }
+        if(const char* env_p = std::getenv(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
+            config.span.batch.flush_interval_ms = safe_env_stoi(env::SPAN_BATCH_FLUSH_INTERVAL_MS, env_p, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+        }
+        if(const char* env_p = std::getenv(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
+            config.span.batch.collect_deadline_ms = safe_env_stoi(env::SPAN_BATCH_COLLECT_DEADLINE_MS, env_p, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+        }
+        if(const char* env_p = std::getenv(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
+            config.span.batch.max_concurrent_requests = safe_env_stoi(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, env_p, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
         }
 
         if(const char* env_p = std::getenv(env::IS_CONTAINER)) {
@@ -674,6 +693,27 @@ namespace pinpoint {
             config->span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         }
 
+        if (config->span.batch.size < 1) {
+            LOG_WARN("span batch size {} is invalid, using default: {}",
+                     config->span.batch.size, defaults::SPAN_BATCH_SIZE);
+            config->span.batch.size = defaults::SPAN_BATCH_SIZE;
+        }
+        if (config->span.batch.flush_interval_ms < 1) {
+            LOG_WARN("span batch flush interval {}ms is invalid, using default: {}ms",
+                     config->span.batch.flush_interval_ms, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+            config->span.batch.flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
+        }
+        if (config->span.batch.collect_deadline_ms < 0) {
+            LOG_WARN("span batch collect deadline {}ms is invalid, using default: {}ms",
+                     config->span.batch.collect_deadline_ms, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+            config->span.batch.collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
+        }
+        if (config->span.batch.max_concurrent_requests < 1) {
+            LOG_WARN("span batch max concurrent requests {} is invalid, using default: {}",
+                     config->span.batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+            config->span.batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
+        }
+
         if (!is_container_set) {
             config->is_container = is_container_env();
         }
@@ -731,6 +771,13 @@ namespace pinpoint {
         emitter << YAML::Key << "MaxEventDepth" << YAML::Value << config.span.max_event_depth;
         emitter << YAML::Key << "MaxEventSequence" << YAML::Value << config.span.max_event_sequence;
         emitter << YAML::Key << "EventChunkSize" << YAML::Value << config.span.event_chunk_size;
+        emitter << YAML::Key << "Batch";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "Size" << YAML::Value << config.span.batch.size;
+        emitter << YAML::Key << "FlushIntervalMs" << YAML::Value << config.span.batch.flush_interval_ms;
+        emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.span.batch.collect_deadline_ms;
+        emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.span.batch.max_concurrent_requests;
+        emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Http";

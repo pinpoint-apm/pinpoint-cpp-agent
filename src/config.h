@@ -37,6 +37,10 @@ namespace pinpoint {
         constexpr int SPAN_MAX_EVENT_DEPTH = 64;
         constexpr int SPAN_MAX_EVENT_SEQUENCE = 5000;
         constexpr int SPAN_EVENT_CHUNK_SIZE = 20;
+        constexpr int SPAN_BATCH_SIZE = 20;
+        constexpr int SPAN_BATCH_FLUSH_INTERVAL_MS = 1000;
+        constexpr int SPAN_BATCH_COLLECT_DEADLINE_MS = 500;
+        constexpr int SPAN_BATCH_MAX_CONCURRENT_REQUESTS = 10;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
@@ -75,6 +79,10 @@ namespace pinpoint {
         constexpr const char* SPAN_MAX_EVENT_DEPTH = "PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH";
         constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE";
         constexpr const char* SPAN_EVENT_CHUNK_SIZE = "PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE";
+        constexpr const char* SPAN_BATCH_SIZE = "PINPOINT_CPP_SPAN_BATCH_SIZE";
+        constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS";
+        constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS";
+        constexpr const char* SPAN_BATCH_MAX_CONCURRENT_REQUESTS = "PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS";
         constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
@@ -144,6 +152,13 @@ namespace pinpoint {
             int max_event_depth = defaults::SPAN_MAX_EVENT_DEPTH;
             int max_event_sequence = defaults::SPAN_MAX_EVENT_SEQUENCE;
             size_t event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
+
+            struct {
+                int size = defaults::SPAN_BATCH_SIZE;
+                int flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
+                int collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
+                int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
+            } batch;
         } span;
 
         struct {

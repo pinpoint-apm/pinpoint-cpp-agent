@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -263,49 +264,93 @@ namespace pinpoint {
     };
 
     /**
-     * @brief gRPC client that streams span chunks to the collector.
+     * @brief gRPC client that sends span batches to the collector via the
+     *        unary @c SendSpanBatch RPC.
+     *
+     * Mirrors the policy implemented in the Java agent's
+     * @c SpanBatchGrpcDataSender. Configuration lives under
+     * @c Config::span::batch (size / flush_interval_ms /
+     * collect_deadline_ms / max_concurrent_requests).
+     *
+     * ### Hybrid batch collection (size or time bounded)
+     * - The worker blocks up to @c flush_interval_ms waiting for the first
+     *   queued chunk.
+     * - Once the first chunk arrives, more chunks are gathered until either
+     *   the batch reaches @c size or @c collect_deadline_ms elapses since
+     *   the first chunk — whichever comes first.
+     *
+     * ### Asynchronous unary transmission
+     * - Each batch is sent via @c span_stub_->async()->SendSpanBatch() with
+     *   a completion callback.
+     * - Per-call state (ClientContext, arena, request, reply) is owned by a
+     *   @c shared_ptr captured into the callback, so it lives exactly until
+     *   the callback fires.
+     *
+     * ### Concurrency control (permit-based semaphore)
+     * - At most @c max_concurrent_requests SendSpanBatch RPCs may be
+     *   in flight at the same time.
+     * - If no permit is available within @c flush_interval_ms the batch is
+     *   dropped and the event is logged at INFO.
+     *
+     * ### Queue overflow policy
+     * - When the queue is full, @c enqueueSpan discards the *oldest* chunk
+     *   to make room for the new one (head-drop). This matches Java's
+     *   @c LinkedBlockingQueue.poll() then offer() behavior.
+     *
+     * ### partial_success handling
+     * - Successful responses with @c rejected_spans > 0 are logged at WARN.
+     * - Responses with no rejected spans but a non-empty @c error_message
+     *   are logged at INFO.
+     * - Rejected spans are not retried or re-queued (observability only).
+     *
+     * ### Shutdown
+     * - On exit the worker drains any remaining chunks into one final
+     *   batch (uncapped) and then blocks up to 3 s waiting for all in-flight
+     *   permits to be returned before releasing the channel.
      */
-    class GrpcSpan : public GrpcClient, public grpc::ClientWriteReactor<v1::PSpanMessage> {
+    class GrpcSpan : public GrpcClient {
     public:
         explicit GrpcSpan(std::shared_ptr<const Config> config);
-        ~GrpcSpan() override { arena_.Reset(); }        
+        ~GrpcSpan() override = default;
 
         /**
          * @brief Adds a span chunk to the outbound queue.
          *
+         * On overflow the oldest queued chunk is dropped to make room
+         * (head-drop), matching the Java sender behavior.
+         *
          * @param span Span chunk payload (ownership transferred).
          */
         void enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept;
-        /// @brief Worker loop that streams queued spans.
+        /// @brief Worker loop that drains the queue and sends spans in batches.
         void sendSpanWorker();
-        /// @brief Stops the span worker loop and drains the queue.
+        /// @brief Signals the worker loop to stop; the loop flushes pending spans before exiting.
         void stopSpanWorker();
-
-        //grpc::ClientWriteReactor
-        /// @brief Invoked when a write completes on the stream.
-        void OnWriteDone(bool ok) override;
-        /// @brief Invoked when the stream finishes or errors.
-        void OnDone(const grpc::Status& status) override;
 
     protected:
         void set_span_stub(std::unique_ptr<v1::Span::StubInterface> stub) { span_stub_ = std::move(stub); }
-        
+
     private:
         std::unique_ptr<v1::Span::StubInterface> span_stub_{};
-        google::protobuf::Arena arena_;
-        v1::PSpanMessage* msg_{};
-        google::protobuf::Empty reply_{};
 
         std::queue<std::unique_ptr<SpanChunk>> span_queue_{};
         std::mutex span_queue_mutex_{};
         std::condition_variable span_queue_cv_{};
 
-        bool start_span_stream();
-        GrpcStreamStatus write_and_await_span_stream();
-        void finish_span_stream();
+        // Permit-based semaphore that caps the number of concurrently in-flight
+        // SendSpanBatch RPCs. Mirrors Java's Semaphore(maxConcurrentRequests).
+        int batch_permits_{0};
+        int batch_max_permits_{0};
+        std::mutex batch_permits_mutex_{};
+        std::condition_variable batch_permits_cv_{};
 
-        GrpcStreamStatus next_write();
-        void empty_span_queue() noexcept;
+        void collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer);
+        void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
+        bool try_acquire_permit(std::chrono::milliseconds timeout);
+        bool try_acquire_all_permits(std::chrono::milliseconds timeout);
+        void release_permit();
+        void await_in_flight_requests();
+        void flush_remaining();
     };
 
     /**
