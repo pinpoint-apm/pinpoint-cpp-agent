@@ -85,6 +85,8 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
+        SpanPtr GetParentSpan() const override { return noopSpan(); }
+        void EndEvent() override {}
     };
 
     /**

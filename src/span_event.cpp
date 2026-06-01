@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
+#include <utility>
+
 #include "callstack.h"
 #include "logging.h"
+#include "noop.h"
 #include "span.h"
 #include "span_event.h"
 #include "sql.h"
@@ -25,8 +28,11 @@ namespace pinpoint {
 
     std::atomic<int32_t> Exception::exception_id_gen{1};
 
-    SpanEventImpl::SpanEventImpl(SpanData* span, std::string_view operation) :
+    SpanEventImpl::SpanEventImpl(SpanData* span, std::string_view operation, Span* parent_span,
+                                 std::weak_ptr<Span> parent_span_ref) :
         parent_span_(span),
+        parent_span_handle_(parent_span),
+        parent_span_ref_(std::move(parent_span_ref)),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
         sequence_{span->getEventSequence()},
@@ -46,6 +52,24 @@ namespace pinpoint {
 
         if (!operation_.empty()) {
             api_id_ = parent_span_->getAgent()->cacheApi(operation, API_TYPE_DEFAULT);
+        }
+    }
+
+    SpanPtr SpanEventImpl::GetParentSpan() const {
+        if (auto parent_span = parent_span_ref_.lock()) {
+            return parent_span;
+        }
+        return noopSpan();
+    }
+
+    void SpanEventImpl::EndEvent() {
+        if (auto parent_span = parent_span_ref_.lock()) {
+            parent_span->EndSpanEvent();
+            return;
+        }
+
+        if (parent_span_handle_) {
+            parent_span_handle_->EndSpanEvent();
         }
     }
 

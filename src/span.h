@@ -375,7 +375,7 @@ namespace pinpoint {
      * `SpanImpl` delegates storage to `SpanData` while coordinating span event creation,
      * context propagation and final flushing through the agent service.
      */
-    class SpanImpl final : public Span {
+    class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
         SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point);
         ~SpanImpl() override = default;

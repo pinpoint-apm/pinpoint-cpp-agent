@@ -29,7 +29,8 @@ namespace pinpoint {
      */
     class SpanEventImpl final : public SpanEvent {
     public:
-        SpanEventImpl(SpanData* span, std::string_view operation);
+        SpanEventImpl(SpanData* span, std::string_view operation, Span* parent_span = nullptr,
+                      std::weak_ptr<Span> parent_span_ref = {});
         ~SpanEventImpl() override {}
 
         /// @brief Sets the service type for this event.
@@ -48,6 +49,8 @@ namespace pinpoint {
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
         AnnotationPtr GetAnnotations() const override { return annotations_; }
+        SpanPtr GetParentSpan() const override;
+        void EndEvent() override;
 
         /**
          * @brief Finalizes the span event by computing elapsed metrics.
@@ -114,6 +117,8 @@ namespace pinpoint {
 
     private:
         SpanData *parent_span_;
+        Span *parent_span_handle_;
+        std::weak_ptr<Span> parent_span_ref_;
         int32_t service_type_;
         std::string operation_;
         int32_t sequence_;

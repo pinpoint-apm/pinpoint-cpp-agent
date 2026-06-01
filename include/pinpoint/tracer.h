@@ -213,6 +213,9 @@ namespace pinpoint {
 
 	using AnnotationPtr = std::shared_ptr<Annotation>;
 
+	class Span;
+	using SpanPtr = std::shared_ptr<Span>;
+
 	/**
 	 * @brief Interface describing a span event recorded within a span.
 	 */
@@ -243,12 +246,13 @@ namespace pinpoint {
 
 		/// @brief Returns the mutable annotation container.
         virtual AnnotationPtr GetAnnotations() const = 0;
+		/// @brief Returns the parent span that owns this event.
+		virtual SpanPtr GetParentSpan() const = 0;
+		/// @brief Finalizes this span event through its parent span.
+		virtual void EndEvent() = 0;
     };
 
 	using SpanEventPtr = std::shared_ptr<SpanEvent>;
-
-	class Span;
-	using SpanPtr = std::shared_ptr<Span>;
 
 	/**
 	 * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
@@ -413,7 +417,7 @@ namespace pinpoint {
 		 */
 		 void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
-		 /**
+		/**
 		 * @brief Traces a HTTP client response.
 		 *
 		 * @param span_event The span event to trace.
@@ -421,6 +425,46 @@ namespace pinpoint {
 		 * @param response_reader The response reader.
 		 */
 		void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader);
+
+		/**
+		 * @brief Sets metadata on the active span event and finalizes it.
+		 *
+		 * @param span_event The span event to finalize.
+		 * @param service_type The span event service type.
+		 * @param operation_name The span event operation name.
+		 * @param destination The span event destination identifier.
+		 * @param endpoint The span event endpoint.
+		 */
+		void EndSpanEventWithData(SpanEventPtr span_event, int32_t service_type,
+									  std::string_view operation_name, std::string_view destination,
+									  std::string_view endpoint);
+
+		/**
+		 * @brief Sets metadata on a span and finalizes it.
+		 *
+		 * @param span The span to finalize.
+		 * @param service_type The span service type.
+		 * @param remote_addr The remote address.
+		 * @param endpoint The endpoint.
+		 * @param acceptor_host The acceptor host.
+		 * @param status_code The status code.
+		 * @param url_pattern The URL pattern used for URL statistics.
+		 * @param method The method used for URL statistics.
+		 */
+		void EndSpanWithData(SpanPtr span, int32_t service_type, std::string_view remote_addr,
+								 std::string_view endpoint, std::string_view acceptor_host,
+								 int status_code, std::string_view url_pattern, std::string_view method);
+
+		/**
+		 * @brief Sets URL statistics on a span and finalizes it.
+		 *
+		 * @param span The span to finalize.
+		 * @param url_pattern The URL pattern used for URL statistics.
+		 * @param method The method used for URL statistics.
+		 * @param status_code The status code.
+		 */
+		void EndSpanWithUrlStat(SpanPtr span, std::string_view url_pattern,
+								std::string_view method, int status_code);
 
 		// RAII helper to manage span events.
 		class ScopedSpanEvent {

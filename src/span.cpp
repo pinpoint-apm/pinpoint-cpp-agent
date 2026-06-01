@@ -224,7 +224,12 @@ namespace pinpoint {
             return noopSpanEvent();
         }
 
-        auto se = std::make_shared<SpanEventImpl>(data_.get(), operation);
+        std::weak_ptr<Span> parent_span_ref;
+        if (auto self = weak_from_this().lock()) {
+            parent_span_ref = std::static_pointer_cast<Span>(self);
+        }
+
+        auto se = std::make_shared<SpanEventImpl>(data_.get(), operation, this, parent_span_ref);
         se->SetServiceType(service_type);
         data_->addSpanEvent(se);
 
@@ -387,7 +392,8 @@ namespace pinpoint {
         async_span->data_->setAsyncId(se->getAsyncId());
         async_span->data_->setAsyncSequence(se->getAsyncSeqGen());
 
-        const auto async_se = std::make_shared<SpanEventImpl>(async_span->data_.get(), "");
+        const auto async_se = std::make_shared<SpanEventImpl>(
+            async_span->data_.get(), "", async_span.get(), std::static_pointer_cast<Span>(async_span));
         auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
         async_se->setApiId(async_api_id);
         async_se->SetServiceType(SERVICE_TYPE_ASYNC);
@@ -467,5 +473,46 @@ namespace pinpoint {
         writer.Set(LOG_TRACE_ID_KEY, data_->getTraceId().ToString());
         writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
     }
+
+    namespace helper {
+        void EndSpanEventWithData(SpanEventPtr span_event, int32_t service_type,
+                                      std::string_view operation_name, std::string_view destination,
+                                      std::string_view endpoint) {
+            if (!span_event) {
+                return;
+            }
+
+            span_event->SetServiceType(service_type);
+            span_event->SetOperationName(operation_name);
+            span_event->SetDestination(destination);
+            span_event->SetEndPoint(endpoint);
+            span_event->EndEvent();
+        }
+
+        void EndSpanWithData(SpanPtr span, int32_t service_type, std::string_view remote_addr,
+                                 std::string_view endpoint, std::string_view acceptor_host,
+                                 int status_code, std::string_view url_pattern, std::string_view method) {
+            if (!span) {
+                return;
+            }
+
+            span->SetServiceType(service_type);
+            span->SetRemoteAddress(remote_addr);
+            span->SetEndPoint(endpoint);
+            span->SetAcceptorHost(acceptor_host);
+            EndSpanWithUrlStat(span, url_pattern, method, status_code);
+        }
+
+        void EndSpanWithUrlStat(SpanPtr span, std::string_view url_pattern,
+                                std::string_view method, int status_code) {
+            if (!span) {
+                return;
+            }
+
+            span->SetStatusCode(status_code);
+            span->SetUrlStat(url_pattern, method, status_code);
+            span->EndSpan();
+        }
+    } // namespace helper
 
 }  // namespace pinpoint
