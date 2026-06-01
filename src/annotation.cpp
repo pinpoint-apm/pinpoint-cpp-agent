@@ -21,7 +21,7 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendInt(int32_t key, int32_t i) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_INT, i));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_INT, i));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
@@ -29,14 +29,14 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendLong(int32_t key, int64_t l) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_LONG, l));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_LONG, l));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
     }
     void PinpointAnnotation::AppendString(int32_t key, std::string_view s) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_STRING, s));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_STRING, s));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
@@ -44,7 +44,7 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendStringString(int32_t key, std::string_view s1, std::string_view s2) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_STRING_STRING, s1, s2));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_STRING_STRING, s1, s2));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
@@ -52,7 +52,7 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_INT_STRING_STRING, i, s1, s2));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_INT_STRING_STRING, i, s1, s2));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
@@ -60,7 +60,7 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_BYTES_STRING_STRING, std::move(uid), s1, s2));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_BYTES_STRING_STRING, std::move(uid), s1, s2));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
@@ -69,7 +69,7 @@ namespace pinpoint {
     void PinpointAnnotation::AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1,
                                                         int32_t b2, std::string_view s) {
         try {
-            annotation_list_.emplace_back(key, std::make_unique<AnnotationData>(ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING, l, i1, i2, b1, b2, s));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING, l, i1, i2, b1, b2, s));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }

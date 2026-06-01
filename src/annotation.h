@@ -38,30 +38,30 @@ namespace pinpoint {
     /**
      * @brief Container for annotations composed of two string values.
      */
-    typedef struct StringStringValue {
+    struct StringStringValue {
         std::string stringValue1;
         std::string stringValue2;
 
         StringStringValue(std::string_view strVal1, std::string_view strVal2)
             : stringValue1(strVal1), stringValue2(strVal2) {}
-    } StringStringValue;
+    };
 
     /**
      * @brief Container for annotations carrying an int and two strings.
      */
-    typedef struct IntStringStringValue {
+    struct IntStringStringValue {
         int intValue;
         std::string stringValue1;
         std::string stringValue2;
 
         IntStringStringValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
-    } IntStringStringValue;
+    };
 
     /**
      * @brief Container for complex annotations that track timing and network details.
      */
-    typedef struct LongIntIntByteByteStringValue {
+    struct LongIntIntByteByteStringValue {
         int64_t longValue;
         int32_t intValue1;
         int32_t intValue2;
@@ -71,19 +71,19 @@ namespace pinpoint {
 
         LongIntIntByteByteStringValue(const int64_t longVal, const int32_t intVal1, const int32_t intVal2, const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : longValue(longVal), intValue1(intVal1), intValue2(intVal2),byteValue1(byteVal1), byteValue2(byteVal2), stringValue(strVal) {}
-    } LongIntIntByteByteStringValue;
+    };
 
     /**
      * @brief Container for annotations with binary payloads and additional strings.
      */
-    typedef struct BytesStringStringValue {
+    struct BytesStringStringValue {
         std::vector<unsigned char> bytesValue;
         std::string stringValue1;
         std::string stringValue2;
 
         BytesStringStringValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
             : bytesValue(std::move(bytesVal)), stringValue1(strVal1), stringValue2(strVal2) {}
-    } BytesStringStringValue;
+    };
 
     /**
      * @brief Type-safe variant wrapper for all supported annotation value types.
@@ -197,10 +197,10 @@ namespace pinpoint {
          *
          * @return Reference to the stored annotations.
          */
-        std::vector<std::pair<int32_t,std::unique_ptr<AnnotationData>>>& getAnnotations() { return annotation_list_; }
+        std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() { return annotation_list_; }
 
     private:
-        std::vector<std::pair<int32_t,std::unique_ptr<AnnotationData>>> annotation_list_;
+        std::vector<std::pair<int32_t,AnnotationData>> annotation_list_;
     };
 
 } // namespace pinpoint

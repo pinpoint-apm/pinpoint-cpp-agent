@@ -70,19 +70,19 @@ namespace pinpoint {
     }
 
     static void build_annotation(v1::PAnnotation *annotation, int32_t key,
-                               const std::unique_ptr<AnnotationData>& val,
+                               const AnnotationData& val,
                                google::protobuf::Arena* arena) {
         annotation->set_key(key);
         auto* annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
 
-        if (val->dataType == ANNOTATION_TYPE_INT) {
-            annotation_value->set_intvalue(std::get<int32_t>(val->data));
-        } else if (val->dataType == ANNOTATION_TYPE_LONG) {
-            annotation_value->set_longvalue(std::get<int64_t>(val->data));
-        } else if (val->dataType == ANNOTATION_TYPE_STRING) {
-            annotation_value->set_stringvalue(std::get<std::string>(val->data));
-        } else if (val->dataType == ANNOTATION_TYPE_STRING_STRING) {
-            const auto& v = std::get<StringStringValue>(val->data);
+        if (val.dataType == ANNOTATION_TYPE_INT) {
+            annotation_value->set_intvalue(std::get<int32_t>(val.data));
+        } else if (val.dataType == ANNOTATION_TYPE_LONG) {
+            annotation_value->set_longvalue(std::get<int64_t>(val.data));
+        } else if (val.dataType == ANNOTATION_TYPE_STRING) {
+            annotation_value->set_stringvalue(std::get<std::string>(val.data));
+        } else if (val.dataType == ANNOTATION_TYPE_STRING_STRING) {
+            const auto& v = std::get<StringStringValue>(val.data);
             auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
@@ -93,8 +93,8 @@ namespace pinpoint {
             ssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
             annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);
-        } else if (val->dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
-            const auto& v = std::get<IntStringStringValue>(val->data);
+        } else if (val.dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
+            const auto& v = std::get<IntStringStringValue>(val.data);
             auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
             issv->set_intvalue(v.intValue);
 
@@ -107,8 +107,8 @@ namespace pinpoint {
             issv->unsafe_arena_set_allocated_stringvalue2(s2);
 
             annotation_value->unsafe_arena_set_allocated_intstringstringvalue(issv);
-        } else if (val->dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
-            const auto& v = std::get<LongIntIntByteByteStringValue>(val->data);
+        } else if (val.dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
+            const auto& v = std::get<LongIntIntByteByteStringValue>(val.data);
             auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
             liibbsv->set_longvalue(v.longValue);
             liibbsv->set_intvalue1(v.intValue1);
@@ -121,8 +121,8 @@ namespace pinpoint {
             liibbsv->unsafe_arena_set_allocated_stringvalue(s);
 
             annotation_value->unsafe_arena_set_allocated_longintintbytebytestringvalue(liibbsv);
-        } else if (val->dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
-            const auto& v = std::get<BytesStringStringValue>(val->data);
+        } else if (val.dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
+            const auto& v = std::get<BytesStringStringValue>(val.data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
 
             // convert vector<unsigned char> to string (copy)
@@ -180,7 +180,7 @@ namespace pinpoint {
         }
 
         auto& annotations = se->getAnnotations()->getAnnotations();
-        for (const auto& [key, val] : annotations) {  // const auto& for shared_ptr
+        for (const auto& [key, val] : annotations) {
             build_annotation(span_event->add_annotation(), key, val, arena);
         }
 
