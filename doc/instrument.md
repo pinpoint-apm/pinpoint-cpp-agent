@@ -1017,12 +1017,12 @@ Sampling:
   CounterRate: 10  # Sample 1 out of every 10 new transactions
 ```
 
-#### 2. PercentSampler (Probabilistic)
+#### 2. PercentSampler (Deterministic)
 
-Samples a configured percentage of transactions. Provides a more uniform distribution than counter sampling, especially under varying traffic patterns.
+Samples a configured percentage of transactions using an atomic counter. The sampling decision is deterministic for a given call sequence while maintaining the configured percentage over time.
 
 - `PercentRate: 100` — sample all transactions.
-- `PercentRate: 10.0` — sample approximately 10% of transactions.
+- `PercentRate: 10.0` — deterministically sample approximately 10% of transactions.
 - Range: clamped to `[0.01, 100]`.
 
 ```yaml
