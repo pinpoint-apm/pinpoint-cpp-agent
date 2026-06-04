@@ -634,7 +634,8 @@ TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     EXPECT_EQ(entry->getTotalHistogram().max(), 200);
 }
 
-// Test snapshot fail status aggregation
+// Test snapshot fail aggregation honors the precomputed failed_ flag.
+// With the default config (5xx) a 404 is a success; only a 500 is a failure.
 TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -642,20 +643,27 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
 
     auto now = std::chrono::system_clock::now();
 
-    // Success (status < 400)
+    // Success (2xx)
     UrlStatEntry stat_ok("/api/users", "GET", 200);
     stat_ok.elapsed_ = 100;
+    stat_ok.failed_ = mock_agent_service_->isStatusFail(stat_ok.status_code_);
     stat_ok.end_time_ = now;
 
-    // Failure (status >= 400)
+    // Server error (5xx) -> failure under default config
     UrlStatEntry stat_fail("/api/users", "GET", 500);
     stat_fail.elapsed_ = 200;
+    stat_fail.failed_ = mock_agent_service_->isStatusFail(stat_fail.status_code_);
     stat_fail.end_time_ = now;
 
-    // Client error (also failure)
+    // Client error (4xx) -> NOT a failure under default config (5xx)
     UrlStatEntry stat_client_err("/api/users", "GET", 404);
     stat_client_err.elapsed_ = 150;
+    stat_client_err.failed_ = mock_agent_service_->isStatusFail(stat_client_err.status_code_);
     stat_client_err.end_time_ = now;
+
+    EXPECT_FALSE(stat_ok.failed_) << "200 should not be a failure";
+    EXPECT_TRUE(stat_fail.failed_) << "500 should be a failure under default 5xx config";
+    EXPECT_FALSE(stat_client_err.failed_) << "404 should NOT be a failure under default 5xx config";
 
     snapshot.add(&stat_ok, config, tick_clock);
     snapshot.add(&stat_fail, config, tick_clock);
@@ -666,8 +674,65 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
 
     auto& entry = stats.begin()->second;
     EXPECT_EQ(entry->getTotalHistogram().total(), 450) << "All 3 should be in total histogram";
-    EXPECT_EQ(entry->getFailHistogram().total(), 350) << "Only 500 and 404 should be in fail histogram (200 + 150)";
+    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only the 500 should be in fail histogram";
     EXPECT_EQ(entry->getFailHistogram().max(), 200);
+}
+
+// Test that 404 success/500 failure tracks the configurable status-error rule.
+// Default config is 5xx: a 404 lands only in the total histogram, a 500 in both.
+TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat_404("/api/users", "GET", 404);
+    stat_404.elapsed_ = 150;
+    stat_404.failed_ = mock_agent_service_->isStatusFail(404);
+    stat_404.end_time_ = now;
+
+    UrlStatEntry stat_500("/api/users", "GET", 500);
+    stat_500.elapsed_ = 250;
+    stat_500.failed_ = mock_agent_service_->isStatusFail(500);
+    stat_500.end_time_ = now;
+
+    snapshot.add(&stat_404, config, tick_clock);
+    snapshot.add(&stat_500, config, tick_clock);
+
+    auto& entry = snapshot.getEachStats().begin()->second;
+    EXPECT_EQ(entry->getTotalHistogram().total(), 400) << "Both should be counted in total";
+    EXPECT_EQ(entry->getFailHistogram().total(), 250) << "Only the 500 should be a failure under 5xx";
+}
+
+// Test that configuring http.server.status_errors to include 4xx makes 404 a failure.
+TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
+    // Reconfigure the agent's status-error rule to include 4xx.
+    mock_agent_service_->mutableConfig()->http.server.status_errors = {"4xx", "5xx"};
+
+    UrlStatSnapshot snapshot;
+    Config config;
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    auto now = std::chrono::system_clock::now();
+
+    UrlStatEntry stat_404("/api/users", "GET", 404);
+    stat_404.elapsed_ = 150;
+    stat_404.failed_ = mock_agent_service_->isStatusFail(404);
+    stat_404.end_time_ = now;
+
+    UrlStatEntry stat_200("/api/users", "GET", 200);
+    stat_200.elapsed_ = 100;
+    stat_200.failed_ = mock_agent_service_->isStatusFail(200);
+    stat_200.end_time_ = now;
+
+    EXPECT_TRUE(stat_404.failed_) << "404 should be a failure once 4xx is configured";
+    EXPECT_FALSE(stat_200.failed_) << "200 should still be a success";
+
+    snapshot.add(&stat_404, config, tick_clock);
+    snapshot.add(&stat_200, config, tick_clock);
+
+    auto& entry = snapshot.getEachStats().begin()->second;
+    EXPECT_EQ(entry->getTotalHistogram().total(), 250) << "Both should be counted in total";
+    EXPECT_EQ(entry->getFailHistogram().total(), 150) << "404 should now be a failure";
 }
 
 // Test snapshot limit enforcement
@@ -746,7 +811,7 @@ TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
     EXPECT_EQ(stats.size(), 1u) << "Same URL without method prefix should aggregate";
 }
 
-// Test snapshot boundary status codes (399 = success, 400 = fail)
+// Test snapshot 5xx boundary status codes (499 = success, 500 = fail) under default config.
 TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -754,23 +819,25 @@ TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
 
     auto now = std::chrono::system_clock::now();
 
-    UrlStatEntry stat_399("/api/test", "GET", 399);
-    stat_399.elapsed_ = 100;
-    stat_399.end_time_ = now;
+    UrlStatEntry stat_499("/api/test", "GET", 499);
+    stat_499.elapsed_ = 100;
+    stat_499.failed_ = mock_agent_service_->isStatusFail(499);
+    stat_499.end_time_ = now;
 
-    UrlStatEntry stat_400("/api/test", "GET", 400);
-    stat_400.elapsed_ = 200;
-    stat_400.end_time_ = now;
+    UrlStatEntry stat_500("/api/test", "GET", 500);
+    stat_500.elapsed_ = 200;
+    stat_500.failed_ = mock_agent_service_->isStatusFail(500);
+    stat_500.end_time_ = now;
 
-    snapshot.add(&stat_399, config, tick_clock);
-    snapshot.add(&stat_400, config, tick_clock);
+    snapshot.add(&stat_499, config, tick_clock);
+    snapshot.add(&stat_500, config, tick_clock);
 
     auto& stats = snapshot.getEachStats();
     auto& entry = stats.begin()->second;
 
     EXPECT_EQ(entry->getTotalHistogram().total(), 300);
-    // Only 400 should be in fail histogram
-    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only status >= 400 should be in fail histogram";
+    // Only the 5xx code should be in the fail histogram under the default config.
+    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only 5xx should be in fail histogram";
 }
 
 // ========== Additional TickClock Tests ==========
@@ -848,6 +915,7 @@ TEST_F(UrlStatTest, UrlStatEntryFieldsTest) {
     EXPECT_EQ(stat.method_, "DELETE");
     EXPECT_EQ(stat.status_code_, 204);
     EXPECT_EQ(stat.elapsed_, 0);
+    EXPECT_FALSE(stat.failed_) << "failed_ should default to false";
     // end_time_ should be default-constructed (epoch)
     EXPECT_EQ(stat.end_time_.time_since_epoch().count(), 0);
 }

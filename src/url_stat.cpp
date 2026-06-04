@@ -35,10 +35,7 @@ namespace pinpoint {
     constexpr int32_t BUCKET_THRESHOLD_5S = 5000;
     constexpr int32_t BUCKET_THRESHOLD_8S = 8000;
     
-    // HTTP status code threshold
-    constexpr int HTTP_STATUS_ERROR_THRESHOLD = 400;
-
-    UrlStats::UrlStats(AgentService* agent) 
+    UrlStats::UrlStats(AgentService* agent)
         : agent_(agent),
           tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
           snapshot_(std::make_unique<UrlStatSnapshot>()) {}
@@ -81,10 +78,6 @@ namespace pinpoint {
         histogram_[getBucket(elapsed)]++;
     }
 
-    static constexpr int url_status(int status) noexcept {
-        return status < HTTP_STATUS_ERROR_THRESHOLD ? URL_STATUS_SUCCESS : URL_STATUS_FAIL;
-    }
-
     void UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
         std::unique_lock<std::mutex> lock(mutex_);
 
@@ -111,7 +104,7 @@ namespace pinpoint {
         }
 
         e->getTotalHistogram().add(us->elapsed_);
-        if (url_status(us->status_code_) == URL_STATUS_FAIL) {
+        if (us->failed_) {
             e->getFailHistogram().add(us->elapsed_);
         }
     }
