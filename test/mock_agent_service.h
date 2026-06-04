@@ -24,6 +24,7 @@
 
 #include "../src/agent_service.h"
 #include "../src/config.h"
+#include "../src/http.h"
 #include "../src/span.h"
 #include "../src/stat.h"
 #include "../src/url_stat.h"
@@ -115,7 +116,13 @@ public:
     void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {}
 
     bool isStatusFail(int status) const override {
-        return status >= 400;
+        // Mirror AgentImpl::isStatusFail: use the configurable HttpStatusErrors
+        // (default {"5xx"}) so URL-stat failure tracks the same rule as spans.
+        const auto& tokens = config_->http.server.status_errors;
+        if (tokens.empty()) {
+            return false;
+        }
+        return HttpStatusErrors(tokens).isErrorCode(status);
     }
 
     void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override {

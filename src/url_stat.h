@@ -31,8 +31,6 @@
 namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
-    constexpr int URL_STATUS_SUCCESS         = 1;
-    constexpr int URL_STATUS_FAIL            = 2;
 
     /**
      * @brief Maintains a fixed interval clock used to bucketize URL statistics.
@@ -128,12 +126,13 @@ namespace pinpoint {
         std::string url_pattern_;
         std::string method_;
         int status_code_;
+        bool failed_;
         std::chrono::system_clock::time_point end_time_;
         int32_t elapsed_;
 
         UrlStatEntry(std::string_view url_pattern, std::string_view method, int status_code)
                 : url_pattern_{url_pattern}, method_{method}, status_code_{status_code},
-                  end_time_{}, elapsed_{} {}
+                  failed_{false}, end_time_{}, elapsed_{} {}
     };
 
     /**

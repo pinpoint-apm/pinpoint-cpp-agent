@@ -129,6 +129,7 @@ namespace pinpoint {
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
+            url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
             agent_->recordUrlStat(std::move(url_stat_));
         }
     }
