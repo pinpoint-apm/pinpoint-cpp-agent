@@ -75,7 +75,7 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Returns `true` using probabilistic selection based on the percent rate.
+         * @brief Returns `true` deterministically based on the sampling counter and percent rate.
          */
         bool isSampled() noexcept override;
     };
