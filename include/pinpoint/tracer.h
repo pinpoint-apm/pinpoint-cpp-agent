@@ -426,46 +426,6 @@ namespace pinpoint {
 		 */
 		void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader);
 
-		/**
-		 * @brief Sets metadata on the active span event and finalizes it.
-		 *
-		 * @param span_event The span event to finalize.
-		 * @param service_type The span event service type.
-		 * @param operation_name The span event operation name.
-		 * @param destination The span event destination identifier.
-		 * @param endpoint The span event endpoint.
-		 */
-		void EndSpanEventWithData(SpanEventPtr span_event, int32_t service_type,
-									  std::string_view operation_name, std::string_view destination,
-									  std::string_view endpoint);
-
-		/**
-		 * @brief Sets metadata on a span and finalizes it.
-		 *
-		 * @param span The span to finalize.
-		 * @param service_type The span service type.
-		 * @param remote_addr The remote address.
-		 * @param endpoint The endpoint.
-		 * @param acceptor_host The acceptor host.
-		 * @param status_code The status code.
-		 * @param url_pattern The URL pattern used for URL statistics.
-		 * @param method The method used for URL statistics.
-		 */
-		void EndSpanWithData(SpanPtr span, int32_t service_type, std::string_view remote_addr,
-								 std::string_view endpoint, std::string_view acceptor_host,
-								 int status_code, std::string_view url_pattern, std::string_view method);
-
-		/**
-		 * @brief Sets URL statistics on a span and finalizes it.
-		 *
-		 * @param span The span to finalize.
-		 * @param url_pattern The URL pattern used for URL statistics.
-		 * @param method The method used for URL statistics.
-		 * @param status_code The status code.
-		 */
-		void EndSpanWithUrlStat(SpanPtr span, std::string_view url_pattern,
-								std::string_view method, int status_code);
-
 		// RAII helper to manage span events.
 		class ScopedSpanEvent {
 		public:

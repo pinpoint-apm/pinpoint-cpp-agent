@@ -471,60 +471,6 @@ TEST_F(SpanTest, SpanEventEndEventTest) {
     EXPECT_EQ(events[0]->getOperationName(), "event-ended-by-handle");
 }
 
-TEST_F(SpanTest, HelperEndSpanEventWithDataTest) {
-    SpanPtr span = std::make_shared<SpanImpl>(
-        mock_agent_service_.get(), "test-operation", "test-rpc");
-
-    auto event = span->NewSpanEvent("");
-    helper::EndSpanEventWithData(
-        event, SERVICE_TYPE_GRPC_CLIENT, "grpc-call", "downstream", "downstream:443");
-    span->EndSpan();
-
-    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
-    auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
-    ASSERT_EQ(events.size(), 1u);
-    EXPECT_EQ(events[0]->getServiceType(), SERVICE_TYPE_GRPC_CLIENT);
-    EXPECT_EQ(events[0]->getOperationName(), "grpc-call");
-    EXPECT_EQ(events[0]->getDestinationId(), "downstream");
-    EXPECT_EQ(events[0]->getEndPoint(), "downstream:443");
-}
-
-TEST_F(SpanTest, HelperEndSpanWithDataTest) {
-    SpanPtr span = std::make_shared<SpanImpl>(
-        mock_agent_service_.get(), "test-operation", "test-rpc");
-
-    helper::EndSpanWithData(
-        span, SERVICE_TYPE_GRPC_SERVER, "10.0.0.5", "api.example.com",
-        "acceptor.example.com", 201, "/api/{id}", "POST");
-
-    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
-    auto& span_data = mock_agent_service_->recorded_spans_.back()->getSpanData();
-    EXPECT_EQ(span_data->getServiceType(), SERVICE_TYPE_GRPC_SERVER);
-    EXPECT_EQ(span_data->getRemoteAddr(), "10.0.0.5");
-    EXPECT_EQ(span_data->getEndPoint(), "api.example.com");
-    EXPECT_EQ(span_data->getAcceptorHost(), "acceptor.example.com");
-    EXPECT_EQ(span_data->getErr(), SPAN_ERR_NONE);
-    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
-    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/{id}");
-    EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "POST");
-    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 201);
-}
-
-TEST_F(SpanTest, HelperEndSpanWithUrlStatTest) {
-    SpanPtr span = std::make_shared<SpanImpl>(
-        mock_agent_service_.get(), "test-operation", "test-rpc");
-
-    helper::EndSpanWithUrlStat(span, "/health", "GET", 503);
-
-    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
-    auto& span_data = mock_agent_service_->recorded_spans_.back()->getSpanData();
-    EXPECT_EQ(span_data->getErr(), SPAN_ERR_TRUE);
-    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
-    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/health");
-    EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "GET");
-    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 503);
-}
-
 TEST_F(SpanTest, SpanImplEndSpanTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     

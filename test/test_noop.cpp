@@ -106,7 +106,7 @@ TEST_F(NoopTest, UnsampledSpanEndSpanWithoutUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0) << "No URL stat should be recorded when not set";
 }
 
-TEST_F(NoopTest, UnsampledSpanEndSpanWithUrlStatTest) {
+TEST_F(NoopTest, UnsampledSpanEndSpanRecordsUrlStatTest) {
     UnsampledSpan span(mock_agent_service_.get());
 
     span.SetUrlStat("/api/users", "GET", 200);
@@ -510,4 +510,3 @@ TEST_F(NoopTest, NoopTraceContextReaderAllHeaderKeysTest) {
 }
 
 } // namespace pinpoint
-

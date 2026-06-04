@@ -474,45 +474,4 @@ namespace pinpoint {
         writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
     }
 
-    namespace helper {
-        void EndSpanEventWithData(SpanEventPtr span_event, int32_t service_type,
-                                      std::string_view operation_name, std::string_view destination,
-                                      std::string_view endpoint) {
-            if (!span_event) {
-                return;
-            }
-
-            span_event->SetServiceType(service_type);
-            span_event->SetOperationName(operation_name);
-            span_event->SetDestination(destination);
-            span_event->SetEndPoint(endpoint);
-            span_event->EndEvent();
-        }
-
-        void EndSpanWithData(SpanPtr span, int32_t service_type, std::string_view remote_addr,
-                                 std::string_view endpoint, std::string_view acceptor_host,
-                                 int status_code, std::string_view url_pattern, std::string_view method) {
-            if (!span) {
-                return;
-            }
-
-            span->SetServiceType(service_type);
-            span->SetRemoteAddress(remote_addr);
-            span->SetEndPoint(endpoint);
-            span->SetAcceptorHost(acceptor_host);
-            EndSpanWithUrlStat(span, url_pattern, method, status_code);
-        }
-
-        void EndSpanWithUrlStat(SpanPtr span, std::string_view url_pattern,
-                                std::string_view method, int status_code) {
-            if (!span) {
-                return;
-            }
-
-            span->SetStatusCode(status_code);
-            span->SetUrlStat(url_pattern, method, status_code);
-            span->EndSpan();
-        }
-    } // namespace helper
-
 }  // namespace pinpoint
