@@ -353,11 +353,22 @@ TEST_F(SqlTest, MinusBetweenNumbersTest) {
     EXPECT_TRUE(result2.normalized_sql.find("FROM t") != std::string::npos);
 }
 
-// Test string parameter containing comma (ambiguous with parameter separator)
+// Test string parameter containing comma (ambiguous with parameter separator).
+// Commas inside a string value are escaped as ",," so they are not confused with the
+// ',' separator between parameters (matches Java ParameterBuilder.appendSeparatorCheck).
 TEST_F(SqlTest, StringWithCommaParameterTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE name = 'Doe, John'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE name = '0$'");
-    EXPECT_EQ(result.parameters, "Doe, John");
+    EXPECT_EQ(result.parameters, "Doe,, John");
+}
+
+// Test multiple string parameters where one contains a comma. The embedded comma is
+// escaped (",,") while the separator between the two parameters stays a single ','.
+TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
+    auto result = normalizer_->normalize(
+        "INSERT INTO t (a, b) VALUES ('Doe, John', 'plain')");
+    EXPECT_EQ(result.normalized_sql, "INSERT INTO t (a, b) VALUES ('0$', '1$')");
+    EXPECT_EQ(result.parameters, "Doe,, John,plain");
 }
 
 // Test consecutive block comments
@@ -395,17 +406,26 @@ TEST_F(SqlTest, LineCommentCROnlyTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test numbers embedded in identifiers (e.g., table1, col2)
+// Test numbers embedded in identifiers (e.g., table1, col2). A digit that follows an
+// identifier character is part of the identifier and is NOT treated as a numeric literal
+// (matches Java ParserContext.numberTokenStartEnable).
 TEST_F(SqlTest, NumbersInIdentifiersTest) {
-    // Numbers preceded by letters are still just characters in the normal flow;
-    // the normalizer treats standalone digits as numeric literals
     auto result = normalizer_->normalize("SELECT col1 FROM table2 WHERE id = 5");
-    // col1 and table2: the '1' and '2' are digits that will be captured as numeric literals
-    // This documents the current behavior
-    EXPECT_TRUE(result.normalized_sql.find("= 0#") != std::string::npos ||
-                result.normalized_sql.find("= ") != std::string::npos);
-    // The parameter 5 should be captured
-    EXPECT_TRUE(result.parameters.find("5") != std::string::npos);
+    // col1 and table2 are left intact; only the standalone 5 is a literal.
+    EXPECT_EQ(result.normalized_sql, "SELECT col1 FROM table2 WHERE id = 0#");
+    EXPECT_EQ(result.parameters, "5");
+}
+
+// Test identifiers ending in a digit with no standalone numeric literal present.
+TEST_F(SqlTest, IdentifierEndingInDigitTest) {
+    auto result = normalizer_->normalize("SELECT col1 FROM t1");
+    EXPECT_EQ(result.normalized_sql, "SELECT col1 FROM t1");
+    EXPECT_EQ(result.parameters, "");
+
+    // Multi-digit suffix and a digit-only-after-letter identifier.
+    result = normalizer_->normalize("SELECT a1, b22, c3 FROM t9");
+    EXPECT_EQ(result.normalized_sql, "SELECT a1, b22, c3 FROM t9");
+    EXPECT_EQ(result.parameters, "");
 }
 
 // Test truncation cutting through a string literal

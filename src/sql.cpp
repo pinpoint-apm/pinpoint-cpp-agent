@@ -43,7 +43,11 @@ namespace pinpoint {
         };
         
         State state = State::Normal;
-        
+        // Tracks whether the next digit begins a numeric literal. Mirrors the Java
+        // ParserContext.numberTokenStartEnable flag: a digit that follows an identifier
+        // character (e.g. "col1") is part of the identifier, not a literal.
+        bool number_token_start_enable = true;
+
         for (size_t i = 0; i < sql_length; ++i) {
             char c = sql[i];
             char next_c = (i + 1 < sql_length) ? sql[i + 1] : '\0';
@@ -70,14 +74,26 @@ namespace pinpoint {
                     
                     // Handle numeric literals
                     // Check for digit, or minus sign followed by digit
-                    if (std::isdigit(static_cast<unsigned char>(c)) 
-                        || (c == '-' && next_c != '\0' && std::isdigit(static_cast<unsigned char>(next_c)))) {
+                    const bool is_negative_number = (c == '-' && next_c != '\0'
+                        && std::isdigit(static_cast<unsigned char>(next_c)));
+                    if (std::isdigit(static_cast<unsigned char>(c))) {
+                        if (number_token_start_enable) {
+                            i = handleNumericLiteral(sql, sql_length, i, result);
+                            continue;
+                        }
+                        // Digit is part of an identifier (e.g. the '1' in "col1"); keep it
+                        // as-is and leave the flag unchanged, matching the Java number case.
+                        result.normalized_sql += c;
+                        break;
+                    }
+                    if (is_negative_number) {
                         i = handleNumericLiteral(sql, sql_length, i, result);
                         continue;
                     }
-                    
+
                     // Regular character
                     result.normalized_sql += c;
+                    number_token_start_enable = updateNumberTokenStartEnable(c, next_c, number_token_start_enable);
                     break;
                 }
                 
@@ -148,11 +164,19 @@ namespace pinpoint {
                 }
             }
 
-            // Add to parameters
+            // Add to parameters. The ',' separator delimits parameters on the collector
+            // side, so any comma inside the captured value must be escaped as ",,".
+            // Mirrors Java ParameterBuilder.appendSeparatorCheck.
             if (result.param_index > 0) {
                 result.parameters += ',';
             }
-            result.parameters += content;
+            for (char ch : content) {
+                if (ch == ',') {
+                    result.parameters += ",,";
+                } else {
+                    result.parameters += ch;
+                }
+            }
 
             // Add placeholder to SQL
             result.normalized_sql += quote_char;
@@ -210,6 +234,32 @@ namespace pinpoint {
         
         result.param_index++;
         return current_idx - 1; // Back up one since the loop will increment
+    }
+
+    bool SqlNormalizer::updateNumberTokenStartEnable(char c, char next_c, bool current) {
+        switch (c) {
+            // Whitespace
+            case ' ': case '\t': case '\n': case '\r':
+            // Operators
+            case '*': case '+': case '%': case '=': case '<': case '>':
+            case '&': case '|': case '^': case '~': case '!':
+            // Separators and unary operators ('-' / '/' reach here only when they are
+            // not the start of a comment or a negative numeric literal)
+            case '(': case ')': case ',': case ';': case '-': case '/':
+                return true;
+            case '$':
+                // A digit following a positional placeholder ($1, $2, ...) is not a literal.
+                if (next_c >= '0' && next_c <= '9') {
+                    return false;
+                }
+                return current;
+            case '.': case '_': case '@': case ':':
+                return false;
+            default:
+                // Letters begin an identifier (no number token); any other character may
+                // precede a numeric literal.
+                return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z');
+        }
     }
 
 } // namespace pinpoint

@@ -97,5 +97,18 @@ namespace pinpoint {
         * @return Index of the last character of the numeric literal
         */
         static size_t handleNumericLiteral(std::string_view sql, size_t sql_length, size_t start_idx, SqlNormalizeResult& result);
+
+        /**
+        * Recompute the "number token start enabled" flag after processing a regular
+        * character, mirroring the Java ParserContext.numberTokenStartEnable tracking.
+        * A digit is only treated as a numeric literal when this flag is enabled, so a
+        * digit that follows an identifier character (e.g. the '1' in "col1") is left alone.
+        *
+        * @param c Character just appended to the normalized SQL
+        * @param next_c Following character (used for the '$' positional placeholder case)
+        * @param current Current flag value (returned unchanged for the '$' non-digit case)
+        * @return New flag value
+        */
+        static bool updateNumberTokenStartEnable(char c, char next_c, bool current);
     };
 } // namespace pinpoint
