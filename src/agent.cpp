@@ -309,6 +309,7 @@ namespace pinpoint {
         }
 
         if (const auto parent_sampling = reader.Get(HEADER_SAMPLED); parent_sampling == "s0") {
+            agent_stats_->incrUnsampleCont();
             return std::make_shared<UnsampledSpan>(this);
         }
 
