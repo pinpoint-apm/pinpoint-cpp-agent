@@ -128,6 +128,20 @@ TEST_F(SqlTest, BlockCommentRemovalTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
+// Test // single-line comment removal (matches Java agent behavior)
+TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
+    auto result = normalizer_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t \nWHERE a=0#");
+    EXPECT_EQ(result.parameters, "1");
+}
+
+// Test that a lone '/' (division operator) is preserved as a normal character
+TEST_F(SqlTest, DivisionOperatorPreservedTest) {
+    auto result = normalizer_->normalize("SELECT a/b FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT a/b FROM t");
+    EXPECT_EQ(result.parameters, "");
+}
+
 // Test mixed comments
 TEST_F(SqlTest, MixedCommentsTest) {
     auto result = normalizer_->normalize("SELECT * /* block */ FROM users -- line comment");

@@ -65,7 +65,12 @@ namespace pinpoint {
                         i++; // Skip next '*'
                         continue;
                     }
-                    
+                    if (c == '/' && next_c == '/') {
+                        state = State::InLineComment;
+                        i++; // Skip next '/'
+                        continue;
+                    }
+
                     // Handle start of string literals
                     if (isQuoteChar(c)) {
                         i = handleStringLiteral(sql, sql_length, i + 1, c, result);
