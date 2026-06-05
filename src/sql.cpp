@@ -17,11 +17,61 @@
 #include "sql.h"
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 namespace pinpoint {
 
-    SqlNormalizer::SqlNormalizer(size_t max_sql_length) 
-        : max_sql_length_(max_sql_length) {
+    namespace {
+        constexpr char kNumberReplace = '#';
+        constexpr char kSymbolReplace = '$';
+
+        char lookAhead1(std::string_view sql, size_t index) {
+            ++index;
+            return index < sql.length() ? sql[index] : '\0';
+        }
+
+        bool isDigit(char c) {
+            return std::isdigit(static_cast<unsigned char>(c)) != 0;
+        }
+
+        void appendParameterSeparator(SqlNormalizeResult& result) {
+            if (!result.parameters.empty()) {
+                result.parameters += ',';
+            }
+        }
+
+        void appendParameterChar(SqlNormalizeResult& result, char ch) {
+            if (ch == ',') {
+                result.parameters += ",,";
+            } else {
+                result.parameters += ch;
+            }
+        }
+
+        bool parseIndex(std::string_view text, size_t& index) {
+            if (text.empty()) {
+                return false;
+            }
+
+            size_t value = 0;
+            for (char ch : text) {
+                if (!isDigit(ch)) {
+                    return false;
+                }
+                const size_t digit = static_cast<size_t>(ch - '0');
+                if (value > (std::numeric_limits<size_t>::max() - digit) / 10) {
+                    return false;
+                }
+                value = (value * 10) + digit;
+            }
+
+            index = value;
+            return true;
+        }
+    } // namespace
+
+    SqlNormalizer::SqlNormalizer(size_t max_sql_length, bool remove_comments)
+        : max_sql_length_(max_sql_length), remove_comments_(remove_comments) {
     }
 
     SqlNormalizeResult SqlNormalizer::normalize(std::string_view sql) const {
@@ -30,19 +80,12 @@ namespace pinpoint {
             return result;
         }
         
-        // Limit SQL length to prevent memory issues
-        const size_t sql_length = std::min(sql.length(), max_sql_length_);
+        // Limit SQL length to prevent memory issues.
+        sql = sql.substr(0, std::min(sql.length(), max_sql_length_));
+        const size_t sql_length = sql.length();
         result.normalized_sql.reserve(sql_length);
         result.parameters.reserve(64);
-        
-        enum class State {
-            Normal,
-            InLineComment,
-            InBlockComment,
-            InBlockCommentEnd
-        };
-        
-        State state = State::Normal;
+
         // Tracks whether the next digit begins a numeric literal. Mirrors the Java
         // ParserContext.numberTokenStartEnable flag: a digit that follows an identifier
         // character (e.g. "col1") is part of the identifier, not a literal.
@@ -50,195 +93,274 @@ namespace pinpoint {
 
         for (size_t i = 0; i < sql_length; ++i) {
             char c = sql[i];
-            char next_c = (i + 1 < sql_length) ? sql[i + 1] : '\0';
-            
-            switch (state) {
-                case State::Normal: {
-                    // Handle start of comments
-                    if (c == '-' && next_c == '-') {
-                        state = State::InLineComment;
-                        i++; // Skip next '-'
-                        continue;
-                    }
-                    if (c == '/' && next_c == '*') {
-                        state = State::InBlockComment;
-                        i++; // Skip next '*'
-                        continue;
-                    }
-                    if (c == '/' && next_c == '/') {
-                        state = State::InLineComment;
-                        i++; // Skip next '/'
-                        continue;
-                    }
+            char next_c = lookAhead1(sql, i);
 
-                    // Handle start of string literals
-                    if (isQuoteChar(c)) {
-                        i = handleStringLiteral(sql, sql_length, i + 1, c, result);
-                        continue;
-                    }
-                    
-                    // Handle numeric literals
-                    // Check for digit, or minus sign followed by digit
-                    const bool is_negative_number = (c == '-' && next_c != '\0'
-                        && std::isdigit(static_cast<unsigned char>(next_c)));
-                    if (std::isdigit(static_cast<unsigned char>(c))) {
-                        if (number_token_start_enable) {
-                            i = handleNumericLiteral(sql, sql_length, i, result);
-                            continue;
-                        }
-                        // Digit is part of an identifier (e.g. the '1' in "col1"); keep it
-                        // as-is and leave the flag unchanged, matching the Java number case.
+            switch (c) {
+                case '/':
+                    if (next_c == '*') {
+                        i = readComment(sql, sql_length, i, "/*", "*/",
+                            remove_comments_ ? nullptr : &result.normalized_sql);
+                    } else if (next_c == '/') {
+                        i = readComment(sql, sql_length, i, "//", "\n",
+                            remove_comments_ ? nullptr : &result.normalized_sql);
+                    } else {
+                        number_token_start_enable = true;
                         result.normalized_sql += c;
-                        break;
                     }
-                    if (is_negative_number) {
+                    break;
+
+                case '-':
+                    if (next_c == '-') {
+                        i = readComment(sql, sql_length, i, "--", "\n",
+                            remove_comments_ ? nullptr : &result.normalized_sql);
+                    } else {
+                        number_token_start_enable = true;
+                        result.normalized_sql += c;
+                    }
+                    break;
+
+                case '\'':
+                    i = handleStringLiteral(sql, sql_length, i, c, result);
+                    break;
+
+                case '0': case '1': case '2': case '3': case '4':
+                case '5': case '6': case '7': case '8': case '9':
+                    if (number_token_start_enable) {
                         i = handleNumericLiteral(sql, sql_length, i, result);
-                        continue;
-                    }
-
-                    // Regular character
-                    result.normalized_sql += c;
-                    number_token_start_enable = updateNumberTokenStartEnable(c, next_c, number_token_start_enable);
-                    break;
-                }
-                
-                case State::InLineComment: {
-                    if (c == '\n' || c == '\r') {
-                        state = State::Normal;
+                    } else {
                         result.normalized_sql += c;
                     }
-                    // Skip all other characters in line comment
                     break;
-                }
-                
-                case State::InBlockComment: {
-                    if (c == '*' && next_c == '/') {
-                        state = State::InBlockCommentEnd;
+
+                case ' ': case '\t': case '\n': case '\r':
+                case '*': case '+': case '%': case '=': case '<': case '>':
+                case '&': case '|': case '^': case '~': case '!':
+                case '(': case ')': case ',': case ';':
+                    number_token_start_enable = true;
+                    result.normalized_sql += c;
+                    break;
+
+                case '$':
+                    if (next_c >= '0' && next_c <= '9') {
+                        number_token_start_enable = false;
                     }
-                    // Skip all characters in block comment
+                    result.normalized_sql += c;
                     break;
-                }
-                
-                case State::InBlockCommentEnd: {
-                    state = State::Normal;
-                    // Add space to replace the comment
-                    result.normalized_sql += ' ';
+
+                case '.': case '_': case '@': case ':':
+                    number_token_start_enable = false;
+                    result.normalized_sql += c;
                     break;
-                }
+
+                default:
+                    number_token_start_enable = updateNumberTokenStartEnable(c, next_c, number_token_start_enable);
+                    result.normalized_sql += c;
+                    break;
             }
         }
-        
+
         return result;
     }
 
-    bool SqlNormalizer::isQuoteChar(char c) {
-        return c == '\'' || c == '"' || c == '`';
-    }
+    std::string SqlNormalizer::combineOutputParams(std::string_view sql, const std::vector<std::string>& output_params) const {
+        if (sql.empty()) {
+            return "";
+        }
 
-    size_t SqlNormalizer::handleStringLiteral(std::string_view sql, size_t sql_length, size_t start_idx, char quote_char, SqlNormalizeResult& result) {
-        size_t current_idx = start_idx;
-        bool closed = false;
-        
-        // Scan for closing quote
-        while (current_idx < sql_length) {
-            if (sql[current_idx] == quote_char) {
-                // Check for escaped quote (e.g. 'don''t')
-                if (current_idx + 1 < sql_length && sql[current_idx + 1] == quote_char) {
-                    current_idx += 2; // Skip both quotes
-                } else {
-                    closed = true;
+        const size_t length = sql.length();
+        std::string normalized;
+        normalized.reserve(length + 16);
+
+        for (size_t i = 0; i < length; ++i) {
+            const char ch = sql[i];
+            switch (ch) {
+                case '/':
+                    if (lookAhead1(sql, i) == '*') {
+                        i = readComment(sql, length, i, "/*", "*/", &normalized);
+                    } else if (lookAhead1(sql, i) == '/') {
+                        i = readComment(sql, length, i, "//", "\n", &normalized);
+                    } else {
+                        normalized += ch;
+                    }
+                    break;
+
+                case '-':
+                    if (lookAhead1(sql, i) == '-') {
+                        i = readComment(sql, length, i, "--", "\n", &normalized);
+                    } else {
+                        normalized += ch;
+                    }
+                    break;
+
+                case '0': case '1': case '2': case '3': case '4':
+                case '5': case '6': case '7': case '8': case '9': {
+                    if (lookAhead1(sql, i) == '\0') {
+                        normalized += ch;
+                        break;
+                    }
+
+                    std::string output_index;
+                    output_index += ch;
+                    ++i;
+
+                    bool token_done = false;
+                    for (; i < length; ++i) {
+                        const char state_ch = sql[i];
+                        if (isDigit(state_ch)) {
+                            if (lookAhead1(sql, i) == '\0') {
+                                output_index += state_ch;
+                                normalized += output_index;
+                                token_done = true;
+                                break;
+                            }
+                            output_index += state_ch;
+                            continue;
+                        }
+
+                        if (state_ch == kNumberReplace || state_ch == kSymbolReplace) {
+                            size_t index = 0;
+                            if (parseIndex(output_index, index) && index < output_params.size()) {
+                                normalized += output_params[index];
+                            } else {
+                                normalized += output_index;
+                                normalized += state_ch;
+                            }
+                            token_done = true;
+                            break;
+                        }
+
+                        normalized += output_index;
+                        --i;
+                        token_done = true;
+                        break;
+                    }
+
+                    if (!token_done) {
+                        normalized += output_index;
+                    }
                     break;
                 }
-            } else {
-                current_idx++;
+
+                default:
+                    normalized += ch;
+                    break;
             }
         }
 
-        if (closed) {
-            // Extract content, handling escaped quotes if necessary
-            std::string content;
-            size_t content_len = current_idx - start_idx;
-            content.reserve(content_len);
-            
-            for (size_t i = start_idx; i < current_idx; ++i) {
-                if (sql[i] == quote_char && i + 1 < current_idx && sql[i + 1] == quote_char) {
-                    content += quote_char;
-                    i++; // Skip escaped char
-                } else {
-                    content += sql[i];
+        return normalized;
+    }
+
+    std::string SqlNormalizer::combineBindValues(std::string_view sql, const std::vector<std::string>& bind_values) const {
+        if (sql.empty() || bind_values.empty()) {
+            return std::string(sql);
+        }
+
+        const size_t length = sql.length();
+        std::string result;
+        result.reserve(length + 16);
+
+        bool in_quotes = false;
+        char quote_char = 0;
+        size_t bind_index = 0;
+
+        for (size_t i = 0; i < length; ++i) {
+            const char ch = sql[i];
+            if (in_quotes) {
+                if ((ch == '\'' || ch == '"') && ch == quote_char) {
+                    if (lookAhead1(sql, i) == quote_char) {
+                        result += ch;
+                        ++i;
+                        continue;
+                    }
+                    in_quotes = false;
+                    quote_char = 0;
                 }
+                result += ch;
+                continue;
             }
 
-            // Add to parameters. The ',' separator delimits parameters on the collector
-            // side, so any comma inside the captured value must be escaped as ",,".
-            // Mirrors Java ParameterBuilder.appendSeparatorCheck.
-            if (result.param_index > 0) {
-                result.parameters += ',';
-            }
-            for (char ch : content) {
-                if (ch == ',') {
-                    result.parameters += ",,";
+            if (ch == '/') {
+                if (lookAhead1(sql, i) == '*') {
+                    i = readComment(sql, length, i, "/*", "*/", &result);
+                } else if (lookAhead1(sql, i) == '/') {
+                    i = readComment(sql, length, i, "//", "\n", &result);
                 } else {
-                    result.parameters += ch;
+                    result += ch;
+                }
+            } else if (ch == '-') {
+                if (lookAhead1(sql, i) == '-') {
+                    i = readComment(sql, length, i, "--", "\n", &result);
+                } else {
+                    result += ch;
+                }
+            } else if (ch == '\'' || ch == '"') {
+                in_quotes = true;
+                quote_char = ch;
+                result += ch;
+            } else if (ch == '?') {
+                if (bind_index < bind_values.size()) {
+                    result += '\'';
+                    result += bind_values[bind_index++];
+                    result += '\'';
+                }
+            } else {
+                result += ch;
+            }
+        }
+
+        return result;
+    }
+
+    size_t SqlNormalizer::handleStringLiteral(std::string_view sql, size_t sql_length, size_t start_idx, char quote_char, SqlNormalizeResult& result) {
+        if (start_idx + 1 < sql_length && sql[start_idx + 1] == quote_char) {
+            result.normalized_sql += quote_char;
+            result.normalized_sql += quote_char;
+            return start_idx + 1;
+        }
+
+        result.normalized_sql += quote_char;
+        appendParameterSeparator(result);
+
+        size_t current_idx = start_idx + 1;
+        for (; current_idx < sql_length; ++current_idx) {
+            const char state_ch = sql[current_idx];
+            if (state_ch == quote_char) {
+                if (current_idx + 1 < sql_length && sql[current_idx + 1] == quote_char) {
+                    ++current_idx;
+                    result.parameters += "''";
+                    continue;
+                } else {
+                    result.normalized_sql += std::to_string(result.param_index);
+                    result.normalized_sql += kSymbolReplace;
+                    result.normalized_sql += quote_char;
+                    ++result.param_index;
+                    break;
                 }
             }
-
-            // Add placeholder to SQL
-            result.normalized_sql += quote_char;
-            result.normalized_sql += std::to_string(result.param_index);
-            result.normalized_sql += '$';
-            result.normalized_sql += quote_char;
-            
-            result.param_index++;
-        } else {
-            // Malformed string - include as is from the opening quote
-            // We only add the opening quote here, the rest will be processed in next iterations
-            // But waiting... if we just add 'quote_char', the loop continues. 
-            // The original logic consumed the whole string.
-            // Let's consume it all as is.
-            result.normalized_sql += quote_char;
-            for (size_t i = start_idx; i < sql_length; ++i) {
-                result.normalized_sql += sql[i];
-            }
-            current_idx = sql_length; // End loop
+            appendParameterChar(result, state_ch);
         }
 
         return current_idx;
     }
 
     size_t SqlNormalizer::handleNumericLiteral(std::string_view sql, size_t sql_length, size_t start_idx, SqlNormalizeResult& result) {
-        size_t current_idx = start_idx;
-        
-        if (sql[current_idx] == '-') {
-            current_idx++;
-        }
-        
-        // Read the entire number (including decimals)
+        appendParameterSeparator(result);
+        result.normalized_sql += std::to_string(result.param_index);
+        result.normalized_sql += kNumberReplace;
+        ++result.param_index;
+
+        size_t current_idx = start_idx + 1;
         while (current_idx < sql_length) {
-            char nc = sql[current_idx];
-            if (std::isdigit(static_cast<unsigned char>(nc)) || nc == '.') {
-                current_idx++;
+            const char state_ch = sql[current_idx];
+            if (isDigit(state_ch) || state_ch == '.' || state_ch == 'E' || state_ch == 'e') {
+                ++current_idx;
             } else {
                 break;
             }
         }
-        
-        // Extract number string
-        std::string number;
-        number.assign(sql.data() + start_idx, current_idx - start_idx);
-        
-        // Add to parameters
-        if (result.param_index > 0) {
-            result.parameters += ',';
-        }
-        result.parameters += number;
 
-        // Add placeholder
-        result.normalized_sql += std::to_string(result.param_index);
-        result.normalized_sql += '#';
-        
-        result.param_index++;
-        return current_idx - 1; // Back up one since the loop will increment
+        result.parameters.append(sql.substr(start_idx, current_idx - start_idx));
+        return current_idx - 1;
     }
 
     bool SqlNormalizer::updateNumberTokenStartEnable(char c, char next_c, bool current) {
@@ -265,6 +387,25 @@ namespace pinpoint {
                 // precede a numeric literal.
                 return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z');
         }
+    }
+
+    size_t SqlNormalizer::readComment(std::string_view sql, size_t sql_length, size_t start_idx, std::string_view first_token,
+        std::string_view end_token, std::string* writer) {
+        const size_t search_start = std::min(start_idx + first_token.length(), sql_length);
+        const size_t end_index = sql.find(end_token, search_start);
+
+        size_t return_idx = sql_length;
+        size_t append_end = sql_length;
+        if (end_index != std::string_view::npos && end_index < sql_length) {
+            return_idx = end_index + end_token.length() - 1;
+            append_end = std::min(return_idx + 1, sql_length);
+        }
+
+        if (writer != nullptr && start_idx < append_end) {
+            writer->append(sql.substr(start_idx, append_end - start_idx));
+        }
+
+        return return_idx;
     }
 
 } // namespace pinpoint

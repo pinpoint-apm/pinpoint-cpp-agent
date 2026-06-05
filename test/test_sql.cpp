@@ -17,6 +17,7 @@
 #include "../src/sql.h"
 #include <gtest/gtest.h>
 #include <string>
+#include <vector>
 
 namespace pinpoint {
 
@@ -33,6 +34,56 @@ protected:
 protected:
     std::unique_ptr<SqlNormalizer> normalizer_;
 };
+
+static std::vector<std::string> ParseOutputParameter(std::string_view output_params) {
+    if (output_params.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> result;
+    std::string params;
+    for (size_t index = 0; index < output_params.length(); ++index) {
+        const char ch = output_params[index];
+        if (ch == ',') {
+            const char ahead = (index + 1 < output_params.length()) ? output_params[index + 1] : '\0';
+            if (ahead == ',') {
+                params += ',';
+                ++index;
+            } else {
+                if (ahead == ' ') {
+                    ++index;
+                }
+                result.push_back(params);
+                params.clear();
+            }
+        } else {
+            params += ch;
+        }
+    }
+
+    result.push_back(params);
+    return result;
+}
+
+static void ExpectNormalize(const SqlNormalizer& normalizer, std::string_view sql,
+    std::string_view expected_normalized, std::string_view expected_params = "") {
+    auto result = normalizer.normalize(sql);
+    EXPECT_EQ(result.normalized_sql, expected_normalized);
+    EXPECT_EQ(result.parameters, expected_params);
+}
+
+static void ExpectJavaDefaultNormalize(std::string_view sql, std::string_view expected_normalized,
+    std::string_view expected_params = "") {
+    SqlNormalizer java_default(2048, false);
+    ExpectNormalize(java_default, sql, expected_normalized, expected_params);
+}
+
+static void ExpectJavaCombine(std::string_view original_sql, std::string_view normalized_sql,
+    std::string_view output_params) {
+    SqlNormalizer java_default(2048, false);
+    ExpectNormalize(java_default, original_sql, normalized_sql, output_params);
+    EXPECT_EQ(java_default.combineOutputParams(normalized_sql, ParseOutputParameter(output_params)), original_sql);
+}
 
 // ========== Basic Normalization Tests ==========
 
@@ -66,8 +117,8 @@ TEST_F(SqlTest, NumericParameterReplacementTest) {
 // Test negative numbers
 TEST_F(SqlTest, NegativeNumberParameterTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE balance = -100.50");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE balance = 0#");
-    EXPECT_EQ(result.parameters, "-100.50");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE balance = -0#");
+    EXPECT_EQ(result.parameters, "100.50");
 }
 
 // Test decimal numbers
@@ -113,25 +164,25 @@ TEST_F(SqlTest, LineCommentRemovalTest) {
     EXPECT_EQ(result.parameters, "");
     
     result = normalizer_->normalize("SELECT * FROM users -- Comment\nWHERE id = 1");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users \nWHERE id = 0#");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0#");
     EXPECT_EQ(result.parameters, "1");
 }
 
 // Test block comment removal
 TEST_F(SqlTest, BlockCommentRemovalTest) {
     auto result = normalizer_->normalize("SELECT * /* This is a block comment */ FROM users");
-    EXPECT_EQ(result.normalized_sql, "SELECT *   FROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
     
     result = normalizer_->normalize("SELECT * /* Multi\nline\ncomment */ FROM users");
-    EXPECT_EQ(result.normalized_sql, "SELECT *   FROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test // single-line comment removal (matches Java agent behavior)
 TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
     auto result = normalizer_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t \nWHERE a=0#");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a=0#");
     EXPECT_EQ(result.parameters, "1");
 }
 
@@ -145,14 +196,14 @@ TEST_F(SqlTest, DivisionOperatorPreservedTest) {
 // Test mixed comments
 TEST_F(SqlTest, MixedCommentsTest) {
     auto result = normalizer_->normalize("SELECT * /* block */ FROM users -- line comment");
-    EXPECT_EQ(result.normalized_sql, "SELECT *   FROM users ");
+    EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users ");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test comments with parameters
 TEST_F(SqlTest, CommentsWithParametersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users   WHERE id = 0# ");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users  WHERE id = 0# ");
     EXPECT_EQ(result.parameters, "456");
 }
 
@@ -175,22 +226,18 @@ TEST_F(SqlTest, WhitespacePreservationTest) {
 TEST_F(SqlTest, StringLiteralHandlingTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John''s Company'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'");
-    EXPECT_EQ(result.parameters, "John's Company");
-    
-    result = normalizer_->normalize("SELECT * FROM users WHERE name = \"John's Company\"");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = \"0$\"");
-    EXPECT_EQ(result.parameters, "John's Company");
+    EXPECT_EQ(result.parameters, "John''s Company");
     
     result = normalizer_->normalize("SELECT * FROM users WHERE name = `user_name`");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = `0$`");
-    EXPECT_EQ(result.parameters, "user_name");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = `user_name`");
+    EXPECT_EQ(result.parameters, "");
 }
 
 // Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
-    EXPECT_EQ(result.parameters, "John\\");
+    EXPECT_EQ(result.parameters, "John\\,");
 }
 
 // Test string literals with numbers inside (string literal replaced, numbers in string protected)
@@ -254,7 +301,7 @@ TEST_F(SqlTest, VeryLongSqlTest) {
 // Test SQL with only comments
 TEST_F(SqlTest, OnlyCommentsTest) {
     auto result = normalizer_->normalize("/* This is only a comment */");
-    EXPECT_EQ(result.normalized_sql, " ");
+    EXPECT_EQ(result.normalized_sql, "");
     EXPECT_EQ(result.parameters, "");
 }
 
@@ -320,19 +367,19 @@ TEST_F(SqlTest, CustomMaxSqlLengthTest) {
 // Test empty string literal
 TEST_F(SqlTest, EmptyStringLiteralTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = ''");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = ''");
     EXPECT_EQ(result.parameters, "");
 
     result = normalizer_->normalize("INSERT INTO t VALUES ('', 'hello')");
-    EXPECT_EQ(result.normalized_sql, "INSERT INTO t VALUES ('0$', '1$')");
-    EXPECT_EQ(result.parameters, ",hello");
+    EXPECT_EQ(result.normalized_sql, "INSERT INTO t VALUES ('', '0$')");
+    EXPECT_EQ(result.parameters, "hello");
 }
 
-// Test consecutive escaped quotes (e.g., '''' represents a single quote in SQL)
+// Test consecutive empty string literals (matches Java DefaultSqlNormalizer behavior)
 TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = ''''");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = '0$'");
-    EXPECT_EQ(result.parameters, "'");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = ''''");
+    EXPECT_EQ(result.parameters, "");
 }
 
 // Test unclosed block comment
@@ -360,11 +407,12 @@ TEST_F(SqlTest, SubtractionOperatorTest) {
 // Test minus between two numbers
 TEST_F(SqlTest, MinusBetweenNumbersTest) {
     auto result = normalizer_->normalize("SELECT 10 - 3 FROM t");
-    // 10 is a number, then " - " then 3. The minus before 3 is preceded by space and followed by digit,
-    // so it may be treated as negative number -3
+    EXPECT_EQ(result.normalized_sql, "SELECT 0# - 1# FROM t");
+    EXPECT_EQ(result.parameters, "10,3");
+
     auto result2 = normalizer_->normalize("SELECT 10 -3 FROM t");
-    // When minus is directly attached to digit, it's ambiguous
-    EXPECT_TRUE(result2.normalized_sql.find("FROM t") != std::string::npos);
+    EXPECT_EQ(result2.normalized_sql, "SELECT 0# -1# FROM t");
+    EXPECT_EQ(result2.parameters, "10,3");
 }
 
 // Test string parameter containing comma (ambiguous with parameter separator).
@@ -388,14 +436,14 @@ TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
 // Test consecutive block comments
 TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
     auto result = normalizer_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
-    EXPECT_EQ(result.normalized_sql, "SELECT   *   FROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT  *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test block comment immediately followed by string literal
 TEST_F(SqlTest, BlockCommentFollowedByStringTest) {
     auto result = normalizer_->normalize("SELECT /* comment */'hello' FROM t");
-    EXPECT_EQ(result.normalized_sql, "SELECT  '0$' FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM t");
     EXPECT_EQ(result.parameters, "hello");
 }
 
@@ -409,14 +457,14 @@ TEST_F(SqlTest, NumberAtEndOfSqlTest) {
 // Test line comment with \r\n line endings
 TEST_F(SqlTest, LineCommentCRLFTest) {
     auto result = normalizer_->normalize("SELECT * -- comment\r\nFROM users");
-    EXPECT_EQ(result.normalized_sql, "SELECT * \r\nFROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test line comment with only \r (carriage return)
 TEST_F(SqlTest, LineCommentCROnlyTest) {
     auto result = normalizer_->normalize("SELECT * -- comment\rFROM users");
-    EXPECT_EQ(result.normalized_sql, "SELECT * \rFROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT * ");
     EXPECT_EQ(result.parameters, "");
 }
 
@@ -533,6 +581,229 @@ TEST_F(SqlTest, MultipleDecimalPointsTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 1.2.3");
     // Document current behavior: treated as a single numeric token
     EXPECT_TRUE(result.parameters.find("1.2.3") != std::string::npos);
+}
+
+// ========== Ported Java DefaultSqlNormalizer Tests ==========
+
+TEST_F(SqlTest, JavaDefaultComplexCases) {
+    ExpectJavaCombine("select * from table a = 1 and b=50 and c=? and d='11'",
+        "select * from table a = 0# and b=1# and c=? and d='2$'", "1,50,11");
+    ExpectJavaCombine("select * from table a = -1 and b=-50 and c=? and d='-11'",
+        "select * from table a = -0# and b=-1# and c=? and d='2$'", "1,50,-11");
+    ExpectJavaCombine("select * from table a = +1 and b=+50 and c=? and d='+11'",
+        "select * from table a = +0# and b=+1# and c=? and d='2$'", "1,50,+11");
+    ExpectJavaCombine("select * from table a = 1/*test*/ and b=50/*test*/ and c=? and d='11'",
+        "select * from table a = 0#/*test*/ and b=1#/*test*/ and c=? and d='2$'", "1,50,11");
+    ExpectJavaCombine("select ZIPCODE,CITY from ZIPCODE", "select ZIPCODE,CITY from ZIPCODE", "");
+    ExpectJavaCombine("select a.ZIPCODE,a.CITY from ZIPCODE as a", "select a.ZIPCODE,a.CITY from ZIPCODE as a", "");
+    ExpectJavaCombine("select ZIPCODE,123 from ZIPCODE", "select ZIPCODE,0# from ZIPCODE", "123");
+    ExpectJavaCombine("SELECT * from table a=123 and b='abc' and c=1-3",
+        "SELECT * from table a=0# and b='1$' and c=2#-3#", "123,abc,1,3");
+    ExpectJavaCombine("SYSTEM_RANGE(1, 10)", "SYSTEM_RANGE(0#, 1#)", "1,10");
+}
+
+TEST_F(SqlTest, JavaDefaultObjectAndIdentifierCases) {
+    ExpectJavaDefaultNormalize("test.abc", "test.abc", "");
+    ExpectJavaDefaultNormalize("test.abc123", "test.abc123", "");
+    ExpectJavaDefaultNormalize("test.123", "test.123", "");
+}
+
+TEST_F(SqlTest, JavaDefaultNumberStateCases) {
+    ExpectJavaCombine("123", "0#", "123");
+    ExpectJavaCombine("-123", "-0#", "123");
+    ExpectJavaCombine("+123", "+0#", "123");
+    ExpectJavaCombine("1.23", "0#", "1.23");
+    ExpectJavaCombine("1.23.34", "0#", "1.23.34");
+    ExpectJavaCombine("123 456", "0# 1#", "123,456");
+    ExpectJavaCombine("1.23 4.56", "0# 1#", "1.23,4.56");
+    ExpectJavaCombine("1.23-4.56", "0#-1#", "1.23,4.56");
+
+    ExpectJavaCombine("1<2", "0#<1#", "1,2");
+    ExpectJavaCombine("1< 2", "0#< 1#", "1,2");
+    ExpectJavaCombine("(1< 2)", "(0#< 1#)", "1,2");
+
+    ExpectJavaDefaultNormalize("-- 1.23", "-- 1.23", "");
+    ExpectJavaCombine("- -1.23", "- -0#", "1.23");
+    ExpectJavaDefaultNormalize("--1.23", "--1.23", "");
+    ExpectJavaDefaultNormalize("/* 1.23 */", "/* 1.23 */", "");
+    ExpectJavaDefaultNormalize("/*1.23*/", "/*1.23*/", "");
+    ExpectJavaDefaultNormalize("/* 1.23 \n*/", "/* 1.23 \n*/", "");
+
+    ExpectJavaDefaultNormalize("test123", "test123", "");
+    ExpectJavaDefaultNormalize("test_123", "test_123", "");
+    ExpectJavaCombine("test_ 123", "test_ 0#", "123");
+    ExpectJavaCombine("123tst", "0#tst", "123");
+}
+
+TEST_F(SqlTest, JavaDefaultExponentNumberCases) {
+    ExpectJavaCombine("1.23e", "0#", "1.23e");
+    ExpectJavaCombine("1.23E", "0#", "1.23E");
+    ExpectJavaCombine("1.4e-10", "0#-1#", "1.4e,10");
+    ExpectJavaCombine("123 ", "0# ", "123");
+}
+
+TEST_F(SqlTest, JavaDefaultSingleLineCommentCases) {
+    ExpectJavaDefaultNormalize("--", "--", "");
+    ExpectJavaDefaultNormalize("//", "//", "");
+    ExpectJavaDefaultNormalize("--123", "--123", "");
+    ExpectJavaDefaultNormalize("//123", "//123", "");
+    ExpectJavaDefaultNormalize("--test", "--test", "");
+    ExpectJavaDefaultNormalize("//test", "//test", "");
+    ExpectJavaDefaultNormalize("--test\ntest", "--test\ntest", "");
+    ExpectJavaDefaultNormalize("--test\t\n", "--test\t\n", "");
+    ExpectJavaCombine("--test\n123 test", "--test\n0# test", "123");
+}
+
+TEST_F(SqlTest, JavaDefaultMultiLineCommentCases) {
+    ExpectJavaDefaultNormalize("/**/", "/**/", "");
+    ExpectJavaDefaultNormalize("/* */", "/* */", "");
+    ExpectJavaDefaultNormalize("/* */abc", "/* */abc", "");
+    ExpectJavaDefaultNormalize("/* * */", "/* * */", "");
+    ExpectJavaDefaultNormalize("/* abc", "/* abc", "");
+    ExpectJavaDefaultNormalize("select * from table", "select * from table", "");
+
+    ExpectJavaDefaultNormalize("/*", "/*", "");
+    ExpectJavaDefaultNormalize("/*  ", "/*  ", "");
+    ExpectJavaDefaultNormalize("/*  \n  ", "/*  \n  ", "");
+}
+
+TEST_F(SqlTest, JavaDefaultSymbolStateCases) {
+    ExpectJavaDefaultNormalize("''", "''", "");
+    ExpectJavaCombine("'abc'", "'0$'", "abc");
+    ExpectJavaCombine("'a''bc'", "'0$'", "a''bc");
+    ExpectJavaCombine("'a' 'bc'", "'0$' '1$'", "a,bc");
+    ExpectJavaCombine("'a''bc' 'a''bc'", "'0$' '1$'", "a''bc,a''bc");
+    ExpectJavaCombine("select * from table where a='a'", "select * from table where a='0$'", "a");
+}
+
+TEST_F(SqlTest, JavaDefaultCommentAndSymbolCases) {
+    ExpectJavaDefaultNormalize("/* 'test' */", "/* 'test' */", "");
+    ExpectJavaDefaultNormalize("/* 'test'' */", "/* 'test'' */", "");
+    ExpectJavaDefaultNormalize("/* '' */", "/* '' */", "");
+    ExpectJavaCombine("/*  */ 123 */", "/*  */ 0# */", "123");
+    ExpectJavaCombine("' /* */'", "'0$'", " /* */");
+}
+
+TEST_F(SqlTest, JavaDefaultSeparatorCases) {
+    ExpectJavaCombine("1234 456,7", "0# 1#,2#", "1234,456,7");
+    ExpectJavaCombine("'1234 456,7'", "'0$'", "1234 456,,7");
+    ExpectJavaCombine("'1234''456,7'", "'0$'", "1234''456,,7");
+    ExpectJavaCombine("'1234' '456,7'", "'0$' '1$'", "1234,456,,7");
+}
+
+TEST_F(SqlTest, JavaDefaultEmptyStringCases) {
+    ExpectJavaCombine(
+        "select u.user_no as userNo,ifnull(s.equipment,'') as equipment,ifnull(s.gender, '0') as gender from user u left join supply s on u.user_no = s.user_no where u.user_no = ?",
+        "select u.user_no as userNo,ifnull(s.equipment,'') as equipment,ifnull(s.gender, '0$') as gender from user u left join supply s on u.user_no = s.user_no where u.user_no = ?",
+        "0");
+    ExpectJavaCombine(
+        "select u.user_no as userNo,ifnull(s.equipment,'test_str') as equipment,ifnull(s.gender, '0') as gender from user u left join supply s on u.user_no = s.user_no where u.user_no != ''",
+        "select u.user_no as userNo,ifnull(s.equipment,'0$') as equipment,ifnull(s.gender, '1$') as gender from user u left join supply s on u.user_no = s.user_no where u.user_no != ''",
+        "test_str,0");
+    ExpectJavaCombine(
+        "select concat ('hello,', u.name, ?)as hello, u.user_no as userNo from user u where 1 = 1 and u.user_no = '10010'",
+        "select concat ('0$', u.name, ?)as hello, u.user_no as userNo from user u where 1# = 2# and u.user_no = '3$'",
+        "hello,,,1,1,10010");
+    ExpectJavaDefaultNormalize(
+        "select concat ('hello,', u.name, ' ')as hello, u.user_no as userNo from user u where 1 = 1 and u.user_no != ''",
+        "select concat ('0$', u.name, '1$')as hello, u.user_no as userNo from user u where 2# = 3# and u.user_no != ''",
+        "hello,,, ,1,1");
+    ExpectJavaCombine(
+        "select concat ('hello,', u.name, 'zhangsan')as hello, u.user_no as userNo from user u where 1 = 1 and u.user_no != '' and u.age > 20",
+        "select concat ('0$', u.name, '1$')as hello, u.user_no as userNo from user u where 2# = 3# and u.user_no != '' and u.age > 4#",
+        "hello,,,zhangsan,1,1,20");
+    ExpectJavaCombine(
+        "select concat ('pinpoint,', u.name, (select s.user_no from user s where s.user_no = '8888'))as hello, u.user_no as userNo from user u where 1 = 1 and u.habit != '2768' and u.age > 20",
+        "select concat ('0$', u.name, (select s.user_no from user s where s.user_no = '1$'))as hello, u.user_no as userNo from user u where 2# = 3# and u.habit != '4$' and u.age > 5#",
+        "pinpoint,,,8888,1,1,2768,20");
+    ExpectJavaCombine(
+        "SELECT n.order_logistics_id, MAX(IF(IFNULL(n.id, '') != '', '2', '0')) AS is_ts FROM t_e_shipping_note n WHERE IFNULL(n.delflag, '') <> '1' AND IFNULL(n.document_require, '0') = '2' GROUP BY n.order_logistics_id",
+        "SELECT n.order_logistics_id, MAX(IF(IFNULL(n.id, '') != '', '0$', '1$')) AS is_ts FROM t_e_shipping_note n WHERE IFNULL(n.delflag, '') <> '2$' AND IFNULL(n.document_require, '3$') = '4$' GROUP BY n.order_logistics_id",
+        "2,0,1,0,2");
+}
+
+TEST_F(SqlTest, JavaCombineOutputParamsCases) {
+    SqlNormalizer java_default(2048, false);
+    EXPECT_EQ(java_default.combineOutputParams("0# 1#", ParseOutputParameter("123,345")), "123 345");
+    EXPECT_EQ(java_default.combineOutputParams("0# 1# '2$'", ParseOutputParameter("123,345,test")), "123 345 'test'");
+    EXPECT_EQ(java_default.combineOutputParams("0# 1# 2# 3# 4# 5# 6# 7# 8# 9# 10#",
+        ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 3 4 5 6 7 8 9 10 11");
+}
+
+TEST_F(SqlTest, JavaCombineOutputParamsErrorCases) {
+    SqlNormalizer java_default(2048, false);
+    EXPECT_EQ(java_default.combineOutputParams("0# 10#", ParseOutputParameter("123,345")), "123 10#");
+    EXPECT_EQ(java_default.combineOutputParams("0# 2# 10#", ParseOutputParameter("1,2,3")), "1 3 10#");
+    EXPECT_EQ(java_default.combineOutputParams("0# 2 3", ParseOutputParameter("1,2,3")), "1 2 3");
+    EXPECT_EQ(java_default.combineOutputParams("0# 2 10", ParseOutputParameter("1,2,3")), "1 2 10");
+    EXPECT_EQ(java_default.combineOutputParams("0# 2 201", ParseOutputParameter("1,2,3")), "1 2 201");
+    EXPECT_EQ(java_default.combineOutputParams("0# 2 10#", ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 11");
+}
+
+TEST_F(SqlTest, JavaCombineBindValuesCases) {
+    SqlNormalizer java_default(2048, false);
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table a = 1 and b=50 and c=? and d='11'",
+        ParseOutputParameter("foo")),
+        "select * from table a = 1 and b=50 and c='foo' and d='11'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table a = ? and b=? and c=? and d=?",
+        ParseOutputParameter("1,50,  foo ,11")),
+        "select * from table a = '1' and b='50' and c=' foo ' and d='11'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table a = ? and b=? and c=? and d=?",
+        ParseOutputParameter("1, 50, foo, 11")),
+        "select * from table a = '1' and b='50' and c='foo' and d='11'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table id = \"foo ? bar\" and number=?",
+        ParseOutputParameter("99")),
+        "select * from table id = \"foo ? bar\" and number='99'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table id = 'hi ? name''s foo' and number=?",
+        ParseOutputParameter("99")),
+        "select * from table id = 'hi ? name's foo' and number='99'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "/** comment ? */ select * from table id = ?",
+        ParseOutputParameter("foo,,bar")),
+        "/** comment ? */ select * from table id = 'foo,bar'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select /*! STRAIGHT_JOIN ? */ * from table id = ?",
+        ParseOutputParameter("foo,,bar")),
+        "select /*! STRAIGHT_JOIN ? */ * from table id = 'foo,bar'");
+    EXPECT_EQ(java_default.combineBindValues(
+        "select * from table id = ?; -- This ? comment",
+        ParseOutputParameter("foo")),
+        "select * from table id = 'foo'; -- This ? comment");
+}
+
+TEST_F(SqlTest, JavaRemoveCommentsCases) {
+    SqlNormalizer remove_comments(2048, true);
+    ExpectNormalize(remove_comments, "/** comment ? */ select * from table id = 'foo'",
+        " select * from table id = '0$'", "foo");
+    ExpectNormalize(remove_comments, "//comment\nselect * from table id = ?;",
+        "select * from table id = ?;", "");
+    ExpectNormalize(remove_comments, "--comment\nselect * from table id = ?;",
+        "select * from table id = ?;", "");
+    ExpectNormalize(remove_comments, "select */*comment*/ \nfrom table id = ?;",
+        "select * \nfrom table id = ?;", "");
+    ExpectNormalize(remove_comments, "select * from table id = ?; /* This ? comment*/",
+        "select * from table id = ?; ", "");
+    ExpectNormalize(remove_comments, "select * from table id = ?; // This ? comment",
+        "select * from table id = ?; ", "");
+    ExpectNormalize(remove_comments, "select * from table id = ?; -- This ? comment",
+        "select * from table id = ?; ", "");
+}
+
+TEST_F(SqlTest, JavaPostgresPositionalParameterCases) {
+    ExpectJavaCombine("SELECT * FROM member WHERE user = 'Kim' AND id = $1 AND no = 10",
+        "SELECT * FROM member WHERE user = '0$' AND id = $1 AND no = 1#", "Kim,10");
+    ExpectJavaCombine("SELECT * FROM member WHERE id = $122309 AND no = 122309",
+        "SELECT * FROM member WHERE id = $122309 AND no = 0#", "122309");
+    ExpectJavaCombine("$value, 123", "$value, 0#", "123");
+    ExpectJavaCombine("'$123', 123", "'0$', 1#", "$123,123");
+    ExpectJavaCombine("$; 123", "$; 0#", "123");
+    ExpectJavaCombine("$(123); 123", "$(0#); 1#", "123,123");
+    ExpectJavaCombine("'$''123'", "'0$'", "$''123");
 }
 
 } // namespace pinpoint
