@@ -18,6 +18,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pinpoint {
 
@@ -25,7 +26,7 @@ namespace pinpoint {
     * SQL normalization result
     */
     struct SqlNormalizeResult {
-        // Normalized SQL with numeric placeholders (1#, 2#, 3#...) and string placeholders ('1$', '2$', '3$'...)
+        // Normalized SQL with numeric placeholders (0#, 1#, 2#...) and string placeholders ('0$', '1$', '2$'...)
         std::string normalized_sql;
         // Extracted numeric literals and string literals in order (comma-separated)
         std::string parameters;
@@ -39,17 +40,18 @@ namespace pinpoint {
     * SQL Normalizer class for APM tracing
     * 
     * This class normalizes SQL queries by:
-    * - Removing numeric literals and replacing with indexed placeholders (1#, 2#, 3#...)
-    * - Removing string literals and replacing with indexed placeholders ('1$', '2$', '3$'...)
-    * - Removing comments
+    * - Removing numeric literals and replacing with indexed placeholders (0#, 1#, 2#...)
+    * - Removing string literals and replacing with indexed placeholders ('0$', '1$', '2$'...)
+    * - Optionally removing comments
     * - Extracting numeric literals and string literals in order (comma-separated)
     */
     class SqlNormalizer {
     public:
         /**
-        * Constructor with optional configuration
+        * Constructor with optional maximum SQL length. Comments are removed by
+        * default, matching the Java agent's default JDBC option.
         */
-        explicit SqlNormalizer(size_t max_sql_length = 2048);
+        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = true);
         
         /**
         * Destructor
@@ -64,17 +66,14 @@ namespace pinpoint {
         */
         SqlNormalizeResult normalize(std::string_view sql) const;
 
+        std::string combineOutputParams(std::string_view sql, const std::vector<std::string>& output_params) const;
+
+        std::string combineBindValues(std::string_view sql, const std::vector<std::string>& bind_values) const;
+
     private:
         size_t max_sql_length_;
+        bool remove_comments_;
         
-        /**
-        * Check if character is a quote character
-        * 
-        * @param c Character to check
-        * @return True if quote character
-        */
-        static bool isQuoteChar(char c);
-
         /**
         * Handle string literal
         * 
@@ -110,5 +109,8 @@ namespace pinpoint {
         * @return New flag value
         */
         static bool updateNumberTokenStartEnable(char c, char next_c, bool current);
+
+        static size_t readComment(std::string_view sql, size_t sql_length, size_t start_idx, std::string_view first_token,
+            std::string_view end_token, std::string* writer);
     };
 } // namespace pinpoint
