@@ -70,6 +70,9 @@
       virtual int64_t getStartTime() const = 0;
       /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
       virtual void reloadConfig(std::shared_ptr<const Config> cfg) = 0;
+
+      /// @brief Called after the first successful AgentInfo send enables data recording.
+      virtual void onAgentInfoSent() {}
  
       /**
        * @brief Generates a new distributed trace identifier.

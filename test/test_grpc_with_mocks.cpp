@@ -16,7 +16,9 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 #include <memory>
 #include <string>
@@ -141,6 +143,36 @@ private:
     TestableGrpcMetadata metadata_;
 };
 
+class RetryingAgentInfoGrpcAgent : public GrpcAgent {
+public:
+    explicit RetryingAgentInfoGrpcAgent(std::shared_ptr<const Config> config)
+        : GrpcAgent(std::move(config)) {}
+
+    GrpcRequestStatus registerAgent() override {
+        const auto count = calls_.fetch_add(1) + 1;
+        if (count >= 2) {
+            if (success_promise_ != nullptr && !promise_set_.exchange(true)) {
+                success_promise_->set_value();
+            }
+            return SEND_OK;
+        }
+        return SEND_FAIL;
+    }
+
+    void setSuccessPromise(std::promise<void>* promise) {
+        success_promise_ = promise;
+    }
+
+    int calls() const {
+        return calls_.load();
+    }
+
+private:
+    std::atomic<int> calls_{0};
+    std::atomic<bool> promise_set_{false};
+    std::promise<void>* success_promise_{nullptr};
+};
+
 class TestableGrpcSpan : public GrpcSpan {
 public:
     explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent->getConfig()) {
@@ -253,6 +285,26 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
     GrpcRequestStatus status = agent.registerAgent();
     
     EXPECT_EQ(status, SEND_FAIL) << "Agent registration should fail with mock stub error";
+}
+
+TEST_F(GrpcMockTest, GrpcAgentInfoRetriesUntilSuccess) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->agent_info.send_retry_interval_ms = 10;
+    cfg->agent_info.max_try_per_attempt = 3;
+
+    RetryingAgentInfoGrpcAgent grpc_agent(cfg);
+    std::promise<void> success_promise;
+    auto success = success_promise.get_future();
+    grpc_agent.setSuccessPromise(&success_promise);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    grpc_agent.startAgentInfo();
+
+    EXPECT_EQ(success.wait_for(std::chrono::seconds(1)), std::future_status::ready)
+        << "GrpcAgent should retry AgentInfo after the configured interval";
+    grpc_agent.stopAgentInfo();
+    EXPECT_GE(grpc_agent.calls(), 2);
 }
 
 TEST_F(GrpcMockTest, GrpcAgentMetaDataEnqueueTest) {

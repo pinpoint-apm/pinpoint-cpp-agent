@@ -41,6 +41,9 @@ namespace pinpoint {
         constexpr int SPAN_BATCH_FLUSH_INTERVAL_MS = 1000;
         constexpr int SPAN_BATCH_COLLECT_DEADLINE_MS = 500;
         constexpr int SPAN_BATCH_MAX_CONCURRENT_REQUESTS = 10;
+        constexpr int AGENT_INFO_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+        constexpr int AGENT_INFO_SEND_RETRY_INTERVAL_MS = 3000;
+        constexpr int AGENT_INFO_MAX_TRY_PER_ATTEMPT = 3;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
@@ -83,6 +86,9 @@ namespace pinpoint {
         constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS";
         constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS";
         constexpr const char* SPAN_BATCH_MAX_CONCURRENT_REQUESTS = "PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS";
+        constexpr const char* AGENT_INFO_REFRESH_INTERVAL_MS = "PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS";
+        constexpr const char* AGENT_INFO_SEND_RETRY_INTERVAL_MS = "PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS";
+        constexpr const char* AGENT_INFO_MAX_TRY_PER_ATTEMPT = "PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT";
         constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
@@ -160,6 +166,12 @@ namespace pinpoint {
                 int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
             } batch;
         } span;
+
+        struct {
+            int refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
+            int send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
+            int max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
+        } agent_info;
 
         struct {
             struct {

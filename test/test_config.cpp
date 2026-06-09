@@ -83,6 +83,9 @@ private:
         saved_env_vars_[env::SPAN_MAX_EVENT_DEPTH] = GetEnvVar(env::SPAN_MAX_EVENT_DEPTH);
         saved_env_vars_[env::SPAN_MAX_EVENT_SEQUENCE] = GetEnvVar(env::SPAN_MAX_EVENT_SEQUENCE);
         saved_env_vars_[env::SPAN_EVENT_CHUNK_SIZE] = GetEnvVar(env::SPAN_EVENT_CHUNK_SIZE);
+        saved_env_vars_[env::AGENT_INFO_REFRESH_INTERVAL_MS] = GetEnvVar(env::AGENT_INFO_REFRESH_INTERVAL_MS);
+        saved_env_vars_[env::AGENT_INFO_SEND_RETRY_INTERVAL_MS] = GetEnvVar(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+        saved_env_vars_[env::AGENT_INFO_MAX_TRY_PER_ATTEMPT] = GetEnvVar(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         saved_env_vars_[env::STAT_ENABLE] = GetEnvVar(env::STAT_ENABLE);
         saved_env_vars_[env::STAT_BATCH_COUNT] = GetEnvVar(env::STAT_BATCH_COUNT);
         saved_env_vars_[env::STAT_BATCH_INTERVAL] = GetEnvVar(env::STAT_BATCH_INTERVAL);
@@ -145,6 +148,11 @@ Span:
   MaxEventDepth: 32
   MaxEventSequence: 512
   EventChunkSize: 50
+
+AgentInfo:
+  RefreshIntervalMs: 60000
+  SendRetryIntervalMs: 25
+  MaxTryPerAttempt: 2
 
 Stat:
   Enable: true
@@ -254,6 +262,13 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->span.max_event_depth, 64) << "Default max event depth should be 64";
     EXPECT_EQ(config->span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
     EXPECT_EQ(config->span.event_chunk_size, 20) << "Default event chunk size should be 20";
+
+    EXPECT_EQ(config->agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS)
+        << "Default AgentInfo refresh interval should match Java daily refresh";
+    EXPECT_EQ(config->agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS)
+        << "Default AgentInfo retry interval should be 3000ms";
+    EXPECT_EQ(config->agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT)
+        << "Default AgentInfo max try count should be 3";
     
     // Test stat defaults
     EXPECT_TRUE(config->stat.enable) << "Stat should be enabled by default";
@@ -339,6 +354,10 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->span.max_event_depth, 32) << "Max event depth should match YAML";
     EXPECT_EQ(config->span.max_event_sequence, 512) << "Max event sequence should match YAML";
     EXPECT_EQ(config->span.event_chunk_size, 50) << "Event chunk size should match YAML";
+
+    EXPECT_EQ(config->agent_info.refresh_interval_ms, 60000) << "AgentInfo refresh interval should match YAML";
+    EXPECT_EQ(config->agent_info.send_retry_interval_ms, 25) << "AgentInfo retry interval should match YAML";
+    EXPECT_EQ(config->agent_info.max_try_per_attempt, 2) << "AgentInfo max try count should match YAML";
     
     // Test stat configuration
     EXPECT_TRUE(config->stat.enable) << "Stat enable should match YAML";
@@ -448,6 +467,9 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(env::SQL_MAX_BIND_ARGS_SIZE, "4096", 1);
     setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
     setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
+    setenv(env::AGENT_INFO_REFRESH_INTERVAL_MS, "120000", 1);
+    setenv(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS, "50", 1);
+    setenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, "4", 1);
     
     auto config = make_config();
     
@@ -468,6 +490,10 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     
     // Test HTTP environment variable values
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
+
+    EXPECT_EQ(config->agent_info.refresh_interval_ms, 120000) << "AgentInfo refresh interval should match environment variable";
+    EXPECT_EQ(config->agent_info.send_retry_interval_ms, 50) << "AgentInfo retry interval should match environment variable";
+    EXPECT_EQ(config->agent_info.max_try_per_attempt, 4) << "AgentInfo max try count should match environment variable";
 }
 
 // Test environment variable override YAML

@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -465,12 +466,13 @@ namespace pinpoint {
         return true;
     }
 
-    constexpr auto REGISTER_TIMEOUT = std::chrono::seconds(60);
+    constexpr auto REGISTER_TIMEOUT = std::chrono::milliseconds(defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
     constexpr auto META_TIMEOUT = std::chrono::seconds(5);
     constexpr int METADATA_RETRY_MAX_ATTEMPTS = 3;
     constexpr auto METADATA_RETRY_DELAY = std::chrono::milliseconds(1000);
 
-    static void set_deadline(grpc::ClientContext& ctx, const std::chrono::seconds timeout) {
+    template<typename Rep, typename Period>
+    static void set_deadline(grpc::ClientContext& ctx, const std::chrono::duration<Rep, Period> timeout) {
         auto deadline = std::chrono::system_clock::now() + timeout;
         ctx.set_deadline(deadline);
     }
@@ -489,7 +491,7 @@ namespace pinpoint {
 
         build_grpc_context(&ctx, 0);
         set_deadline(ctx, META_TIMEOUT);
-        
+
         const grpc::Status status = stub_method(&ctx, request, &reply);
 
         if (!status.ok()) {
@@ -739,6 +741,10 @@ namespace pinpoint {
         set_agent_stub(v1::Agent::NewStub(channel_));
     }
 
+    GrpcAgent::~GrpcAgent() {
+        stopAgentInfo();
+    }
+
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
         agent_info->set_hostname(get_host_name());
         agent_info->set_ip(get_host_ip_addr());
@@ -777,6 +783,115 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
+    void GrpcAgent::startAgentInfo() {
+        std::unique_lock<std::mutex> lock(agent_info_mutex_);
+        if (agent_info_running_) {
+            return;
+        }
+        agent_info_stop_requested_ = false;
+        agent_info_refresh_requested_ = false;
+        agent_info_running_ = true;
+        agent_info_thread_ = std::thread{&GrpcAgent::agent_info_worker, this};
+    }
+
+    void GrpcAgent::stopAgentInfo() {
+        {
+            std::unique_lock<std::mutex> lock(agent_info_mutex_);
+            if (!agent_info_running_ && !agent_info_thread_.joinable()) {
+                return;
+            }
+            agent_info_stop_requested_ = true;
+            agent_info_cv_.notify_all();
+        }
+        if (agent_info_thread_.joinable()) {
+            agent_info_thread_.join();
+        }
+        {
+            std::unique_lock<std::mutex> lock(agent_info_mutex_);
+            agent_info_running_ = false;
+            agent_info_refresh_requested_ = false;
+        }
+        LOG_INFO("AgentInfo scheduler stopped");
+    }
+
+    void GrpcAgent::refreshAgentInfo() {
+        std::unique_lock<std::mutex> lock(agent_info_mutex_);
+        if (!agent_info_running_) {
+            return;
+        }
+        agent_info_refresh_requested_ = true;
+        agent_info_cv_.notify_all();
+    }
+
+    bool GrpcAgent::should_stop_agent_info() const {
+        return agent_info_stop_requested_ || agent_->isExiting();
+    }
+
+    bool GrpcAgent::send_agent_info_once() {
+        if (agent_->isExiting()) {
+            return false;
+        }
+        const auto status = registerAgent();
+        if (status == SEND_OK) {
+            LOG_INFO("AgentInfo sent");
+            agent_->onAgentInfoSent();
+            return true;
+        }
+        LOG_WARN("failed to send AgentInfo");
+        return false;
+    }
+
+    bool GrpcAgent::send_agent_info_with_retries(const int max_try_count) {
+        const auto retry_interval = std::chrono::milliseconds(config_->agent_info.send_retry_interval_ms);
+        for (int try_count = 0; try_count < max_try_count; ++try_count) {
+            if (agent_->isExiting()) {
+                return false;
+            }
+            if (send_agent_info_once()) {
+                return true;
+            }
+            if (try_count + 1 < max_try_count && wait_agent_info_retry(retry_interval)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    bool GrpcAgent::wait_agent_info_retry(std::chrono::milliseconds delay) {
+        std::unique_lock<std::mutex> lock(agent_info_mutex_);
+        agent_info_cv_.wait_for(lock, delay, [this] { return should_stop_agent_info() || agent_info_refresh_requested_; });
+        return should_stop_agent_info();
+    }
+
+    bool GrpcAgent::wait_agent_info_until(std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock<std::mutex> lock(agent_info_mutex_);
+        agent_info_cv_.wait_until(lock, deadline, [this] { return should_stop_agent_info() || agent_info_refresh_requested_; });
+        return should_stop_agent_info();
+    }
+
+    void GrpcAgent::agent_info_worker() try {
+        if (!send_agent_info_with_retries(std::numeric_limits<int>::max())) {
+            return;
+        }
+
+        const auto refresh_interval = std::chrono::milliseconds(config_->agent_info.refresh_interval_ms);
+        auto next_refresh = std::chrono::steady_clock::now() + refresh_interval;
+        while (true) {
+            if (wait_agent_info_until(next_refresh)) {
+                return;
+            }
+
+            {
+                std::unique_lock<std::mutex> lock(agent_info_mutex_);
+                agent_info_refresh_requested_ = false;
+            }
+
+            send_agent_info_with_retries(config_->agent_info.max_try_per_attempt);
+            next_refresh = std::chrono::steady_clock::now() + refresh_interval;
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
+    }
     // Ping Stream
 
     bool GrpcAgent::start_ping_stream() {

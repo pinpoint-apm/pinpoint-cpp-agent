@@ -172,6 +172,10 @@ namespace pinpoint {
 
         // Rebuild header recorders
         init_header_recorders(local_cfg);
+
+        if (grpc_agent_) {
+            grpc_agent_->refreshAgentInfo();
+        }
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -180,11 +184,7 @@ namespace pinpoint {
         grpc_span_->setAgentService(this);
         grpc_stat_->setAgentService(this);
 
-        do {
-            if (!grpc_agent_->readyChannel()) {
-                return;
-            }
-        } while (grpc_agent_->registerAgent() != SEND_OK);
+        grpc_agent_->startAgentInfo();
 
         ping_thread_ = std::thread{&GrpcAgent::sendPingWorker, grpc_agent_.get()};
         meta_thread_ = std::thread{&GrpcMetadata::sendMetaWorker, grpc_metadata_.get()};
@@ -193,15 +193,18 @@ namespace pinpoint {
         url_stat_add_thread_ = std::thread{&UrlStats::addUrlStatsWorker, url_stats_.get()};
         url_stat_send_thread_ = std::thread{&UrlStats::sendUrlStatsWorker, url_stats_.get()};
         agent_stat_thread_ = std::thread{&AgentStats::agentStatsWorker, agent_stats_.get()};
-
-        enabled_ = true;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
         enabled_ = false;
         return;
     }
 
+    void AgentImpl::onAgentInfoSent() {
+        enabled_ = true;
+    }
+
     void AgentImpl::close_grpc_workers() {
+        grpc_agent_->stopAgentInfo();
         url_stats_->stopAddUrlStatsWorker();
         url_stats_->stopSendUrlStatsWorker();
         agent_stats_->stopAgentStatsWorker();
