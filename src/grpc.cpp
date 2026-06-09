@@ -15,8 +15,11 @@
  */
 
 #include <cassert>
+#include <fstream>
 #include <limits>
 #include <memory>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <grpcpp/client_context.h>
@@ -29,13 +32,6 @@
 #include "grpc.h"
 
 namespace pinpoint {
-
-    namespace {
-        // gRPC channel configuration constants
-        constexpr int KEEPALIVE_TIME_MS = 30 * 1000;        // 30 seconds
-        constexpr int KEEPALIVE_TIMEOUT_MS = 60 * 1000;     // 60 seconds
-        constexpr int MAX_MESSAGE_LENGTH = 4 * 1024 * 1024; // 4 MB
-    }
 
     static v1::PTransactionId* build_transaction_id(TraceId& tid, google::protobuf::Arena* arena) {
         auto& [agent_id, start_time, sequence] = tid;
@@ -368,32 +364,121 @@ namespace pinpoint {
         return uri_stat;
     }
 
-    GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
-        : config_{std::move(config)} {
-        auto addr = absl::StrCat(config_->collector.host, ":");
-
-        if (client_type == AGENT) {
-            addr = absl::StrCat(addr, config_->collector.agent_port);
-            client_name_ = "agent";
-        } else if (client_type == METADATA) {
-            addr = absl::StrCat(addr, config_->collector.agent_port);
-            client_name_ = "metadata";
-        } else if (client_type == SPAN) {
-            addr = absl::StrCat(addr, config_->collector.span_port);
-            client_name_ = "span";
-        } else {
-            addr = absl::StrCat(addr, config_->collector.stat_port);
-            client_name_ = "stats";
+    namespace {
+        const Config::GrpcChannelOptions& grpc_channel_options(const Config& config, ClientType client_type) {
+            switch (client_type) {
+                case AGENT:
+                    return config.grpc.agent;
+                case METADATA:
+                    return config.grpc.metadata;
+                case SPAN:
+                    return config.grpc.span;
+                case STATS:
+                    return config.grpc.stat;
+            }
+            return config.grpc.agent;
         }
 
-        grpc::ChannelArguments channel_args;
+        int grpc_collector_port(const Config& config, ClientType client_type) {
+            switch (client_type) {
+                case AGENT:
+                case METADATA:
+                    return config.collector.agent_port;
+                case SPAN:
+                    return config.collector.span_port;
+                case STATS:
+                    return config.collector.stat_port;
+            }
+            return config.collector.agent_port;
+        }
 
-        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, KEEPALIVE_TIME_MS);
-        channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, KEEPALIVE_TIMEOUT_MS);
-        channel_args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 0);
-        channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, MAX_MESSAGE_LENGTH);
+        std::string grpc_client_name(ClientType client_type) {
+            switch (client_type) {
+                case AGENT:
+                    return "agent";
+                case METADATA:
+                    return "metadata";
+                case SPAN:
+                    return "span";
+                case STATS:
+                    return "stats";
+            }
+            return "agent";
+        }
 
-        channel_ = grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), channel_args);
+        std::string read_file(std::string_view path) {
+            std::ifstream file(std::string(path), std::ios::binary);
+            if (!file.is_open()) {
+                throw std::runtime_error(absl::StrCat("failed to open gRPC TLS certificate file: ", path));
+            }
+
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+            return buffer.str();
+        }
+
+        std::shared_ptr<grpc::ChannelCredentials> make_channel_credentials(
+                const Config::GrpcSslOptions& ssl,
+                const Config::GrpcChannelOptions& channel_options,
+                std::string_view client_name) {
+            if (!channel_options.ssl_enable) {
+                return grpc::InsecureChannelCredentials();
+            }
+
+            grpc::SslCredentialsOptions ssl_options;
+            const auto& cert_path = !ssl.trust_cert_file_path.empty()
+                ? ssl.trust_cert_file_path
+                : ssl.root_cert_file_path;
+            if (!cert_path.empty()) {
+                ssl_options.pem_root_certs = read_file(cert_path);
+            }
+
+            LOG_INFO("create {} grpc TLS channel credentials: trustCertFilePath='{}', rootCertFilePath='{}'",
+                     client_name, ssl.trust_cert_file_path, ssl.root_cert_file_path);
+            return grpc::SslCredentials(ssl_options);
+        }
+
+        grpc::ChannelArguments make_channel_arguments(const Config::GrpcChannelOptions& options) {
+            grpc::ChannelArguments channel_args;
+
+            channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, options.keepalive_time_ms);
+            channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, options.keepalive_timeout_ms);
+            channel_args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+                                options.keepalive_permit_without_calls ? 1 : 0);
+            channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, options.max_send_message_size);
+            channel_args.SetInt(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH, options.max_receive_message_size);
+
+            return channel_args;
+        }
+
+        std::shared_ptr<grpc::Channel> build_channel(const Config& config, ClientType client_type) {
+            const auto& options = grpc_channel_options(config, client_type);
+            const auto client_name = grpc_client_name(client_type);
+            const auto addr = absl::StrCat(config.collector.host, ":", grpc_collector_port(config, client_type));
+            auto credentials = make_channel_credentials(config.grpc.ssl, options, client_name);
+            auto channel_args = make_channel_arguments(options);
+
+            LOG_INFO("create {} grpc channel: addr={}, ssl={}, keepaliveTimeMs={}, keepaliveTimeoutMs={}, "
+                     "maxSendMessageSize={}, maxReceiveMessageSize={}",
+                     client_name, addr, options.ssl_enable, options.keepalive_time_ms,
+                     options.keepalive_timeout_ms, options.max_send_message_size,
+                     options.max_receive_message_size);
+            return grpc::CreateCustomChannel(addr, credentials, channel_args);
+        }
+
+        static void set_deadline(grpc::ClientContext& ctx, const int timeout_ms) {
+            if (timeout_ms <= 0) {
+                return;
+            }
+            auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout_ms);
+            ctx.set_deadline(deadline);
+        }
+    }
+
+    GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
+        : config_{std::move(config)}, client_type_(client_type) {
+        client_name_ = grpc_client_name(client_type_);
+        channel_ = build_channel(*config_, client_type_);
     }
 
     void GrpcClient::setAgentService(AgentService* agent) {
@@ -466,16 +551,8 @@ namespace pinpoint {
         return true;
     }
 
-    constexpr auto REGISTER_TIMEOUT = std::chrono::milliseconds(defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-    constexpr auto META_TIMEOUT = std::chrono::seconds(5);
     constexpr int METADATA_RETRY_MAX_ATTEMPTS = 3;
     constexpr auto METADATA_RETRY_DELAY = std::chrono::milliseconds(1000);
-
-    template<typename Rep, typename Period>
-    static void set_deadline(grpc::ClientContext& ctx, const std::chrono::duration<Rep, Period> timeout) {
-        auto deadline = std::chrono::system_clock::now() + timeout;
-        ctx.set_deadline(deadline);
-    }
 
     //GrpcMetadata
 
@@ -490,7 +567,7 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(channel_mutex_);
 
         build_grpc_context(&ctx, 0);
-        set_deadline(ctx, META_TIMEOUT);
+        set_deadline(ctx, config_->grpc.metadata.request_timeout_ms);
 
         const grpc::Status status = stub_method(&ctx, request, &reply);
 
@@ -645,11 +722,11 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        const auto& config = config_;
-        if (meta_queue_.size() + retry_queue_.size() < config->span.queue_size) {
+        const auto max_queue_size = static_cast<size_t>(config_->grpc.metadata.sender_queue_size);
+        if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
             meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}, meta_sequence_++});
         } else {
-            LOG_DEBUG("drop metadata: overflow max queue size {}", config->span.queue_size);
+            LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
         }
 
         meta_queue_cv_.notify_one();
@@ -771,7 +848,7 @@ namespace pinpoint {
         auto* agent_info = google::protobuf::Arena::Create<v1::PAgentInfo>(&arena);
         build_agent_info(agent_info, &arena);
 
-        set_deadline(ctx, REGISTER_TIMEOUT);
+        set_deadline(ctx, config_->grpc.agent.request_timeout_ms);
         const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
 
         if (status.ok()) {
@@ -1007,7 +1084,6 @@ namespace pinpoint {
     //GrpcSpan
 
     namespace {
-        constexpr auto SPAN_BATCH_TIMEOUT = std::chrono::seconds(60);
         constexpr auto SHUTDOWN_AWAIT_TIMEOUT = std::chrono::seconds(3);
 
         // Heap-resident state for a single async SendSpanBatch call. Lives as
@@ -1144,7 +1220,7 @@ namespace pinpoint {
         }
 
         build_grpc_context(&pending->ctx, 0);
-        set_deadline(pending->ctx, SPAN_BATCH_TIMEOUT);
+        set_deadline(pending->ctx, config_->grpc.span.request_timeout_ms);
 
         const int batch_count = pending->request->span_size();
         LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
@@ -1246,6 +1322,7 @@ namespace pinpoint {
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
         build_grpc_context(stream_context_.get(), 0);
+        set_deadline(*stream_context_, config_->grpc.stat.request_timeout_ms);
         stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
         AddHold();

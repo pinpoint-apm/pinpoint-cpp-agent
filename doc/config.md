@@ -10,6 +10,7 @@ This document is a consolidated reference for all configuration options availabl
 - [Agent Configuration](#agent-configuration)
 - [Logging Configuration](#logging-configuration)
 - [Collector Configuration](#collector-configuration)
+- [gRPC Transport Configuration](#grpc-transport-configuration)
 - [Stat Configuration](#stat-configuration)
 - [Sampling Configuration](#sampling-configuration)
 - [Span Configuration](#span-configuration)
@@ -128,6 +129,55 @@ int main() {
 | `Collector.GrpcAgentPort` | `PINPOINT_CPP_GRPC_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. |
 | `Collector.GrpcSpanPort` | `PINPOINT_CPP_GRPC_SPAN_PORT` | int | `9993` | gRPC port for span data. |
 | `Collector.GrpcStatPort` | `PINPOINT_CPP_GRPC_STAT_PORT` | int | `9992` | gRPC port for statistics data. |
+
+---
+
+## gRPC Transport Configuration
+
+The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defaults preserve the previous C++ behavior: plaintext channels, 30s/60s keepalive, 4MiB message limits, 60s agent registration/span batch deadline, 5s metadata deadline, and no stat stream deadline.
+
+### TLS
+
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Grpc.Ssl.TrustCertFilePath` | `PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH` | string | `""` | PEM trust certificate path used by TLS credentials. |
+| `Grpc.Ssl.RootCertFilePath` | `PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH` | string | `""` | Alias for gRPC root certificate path. `TrustCertFilePath` takes precedence when both are set. |
+
+### Per-channel Options
+
+Replace `<Channel>` with `Agent`, `Metadata`, `Span`, or `Stat` in YAML, and `CHANNEL` with `AGENT`, `METADATA`, `SPAN`, or `STAT` in env vars.
+
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `Grpc.<Channel>.SslEnable` | `PINPOINT_CPP_GRPC_<CHANNEL>_SSL_ENABLE` | bool | `false` | Enables TLS credentials for that channel. |
+| `Grpc.<Channel>.RequestTimeoutMs` | `PINPOINT_CPP_GRPC_<CHANNEL>_REQUEST_TIMEOUT_MS` | int | channel-specific | `0` disables the deadline. Defaults: Agent `60000`, Metadata `5000`, Span `60000`, Stat `0`. |
+| `Grpc.<Channel>.KeepAliveTimeMs` | `PINPOINT_CPP_GRPC_<CHANNEL>_KEEPALIVE_TIME_MS` | int | `30000` | Maps to `GRPC_ARG_KEEPALIVE_TIME_MS`. |
+| `Grpc.<Channel>.KeepAliveTimeoutMs` | `PINPOINT_CPP_GRPC_<CHANNEL>_KEEPALIVE_TIMEOUT_MS` | int | `60000` | Maps to `GRPC_ARG_KEEPALIVE_TIMEOUT_MS`. |
+| `Grpc.<Channel>.KeepAlivePermitWithoutCalls` | `PINPOINT_CPP_GRPC_<CHANNEL>_KEEPALIVE_PERMIT_WITHOUT_CALLS` | bool | `false` | Maps to `GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS`. |
+| `Grpc.<Channel>.MaxSendMessageSize` | `PINPOINT_CPP_GRPC_<CHANNEL>_MAX_SEND_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_SEND_MESSAGE_LENGTH`. `-1` means unlimited. |
+| `Grpc.<Channel>.MaxReceiveMessageSize` | `PINPOINT_CPP_GRPC_<CHANNEL>_MAX_RECEIVE_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH`. `-1` means unlimited. |
+| `Grpc.<Channel>.SenderQueueSize` | `PINPOINT_CPP_GRPC_<CHANNEL>_SENDER_QUEUE_SIZE` | int | `1000` | Applied to metadata queue. Span still uses `Span.QueueSize`; agent/stat have no separate C++ sender queue. |
+| `Grpc.<Channel>.ChannelExecutorQueueSize` | `PINPOINT_CPP_GRPC_<CHANNEL>_CHANNEL_EXECUTOR_QUEUE_SIZE` | int | `1000` | Parsed for Java config parity. The C++ gRPC API used here does not expose the same Netty executor queue. |
+
+Metadata now owns a separate C++ gRPC channel, so `Grpc.Metadata` SSL, keepalive, message-size, request-timeout, and sender-queue settings are applied independently from `Grpc.Agent`. Java-specific name resolver providers, custom interceptor injection, Netty channel type, channelz reporter wiring, retry/hedging service config, flow-control window, and write-buffer watermarks do not have a direct equivalent in the current C++ agent implementation.
+
+```yaml
+Grpc:
+  Ssl:
+    TrustCertFilePath: "/etc/pinpoint/collector-ca.pem"
+  Agent:
+    SslEnable: true
+    RequestTimeoutMs: 60000
+  Metadata:
+    RequestTimeoutMs: 5000
+    SenderQueueSize: 1000
+  Span:
+    SslEnable: true
+    MaxSendMessageSize: 4194304
+    MaxReceiveMessageSize: 4194304
+  Stat:
+    SslEnable: true
+```
 
 ---
 
