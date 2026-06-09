@@ -19,8 +19,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <deque>
 #include <queue>
 #include <string>
 #include <variant>
@@ -52,7 +54,7 @@ namespace pinpoint {
     /**
      * @brief Identifies the type of gRPC client sharing common facilities.
      */
-    enum ClientType {AGENT, SPAN, STATS};
+    enum ClientType {AGENT, METADATA, SPAN, STATS};
 
     /**
      * @brief Base client that encapsulates channel management shared by all gRPC workers.
@@ -198,7 +200,58 @@ namespace pinpoint {
     };
 
     /**
-     * @brief gRPC client responsible for agent registration, ping and metadata upload.
+     * @brief gRPC client responsible for metadata upload.
+     */
+    class GrpcMetadata : public GrpcClient {
+    public:
+        explicit GrpcMetadata(std::shared_ptr<const Config> config);
+        ~GrpcMetadata() override = default;
+
+        /**
+         * @brief Adds metadata to the outbound queue.
+         *
+         * @param meta Metadata payload (ownership transferred).
+         */
+        void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
+        /// @brief Worker loop that sends metadata payloads.
+        void sendMetaWorker();
+        /// @brief Stops the metadata worker loop.
+        void stopMetaWorker();
+
+    protected:
+        void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
+
+    private:
+        struct PendingMeta {
+            std::unique_ptr<MetaData> meta;
+            int retry_count{0};
+            std::chrono::steady_clock::time_point available_at{};
+            uint64_t sequence{0};
+        };
+
+        std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
+
+        std::deque<PendingMeta> meta_queue_{};
+        std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue_{};
+        std::mutex meta_queue_mutex_{};
+        std::condition_variable meta_queue_cv_{};
+        uint64_t meta_sequence_{0};
+
+        template<typename Request, typename StubMethod>
+        GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);
+        GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
+        GrpcRequestStatus send_error_meta(StringMeta& error_meta);
+        GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
+        GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
+        GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
+        GrpcRequestStatus send_meta(MetaData& meta);
+        void release_failed_cache(const MetaData& meta) const;
+        void schedule_retry(PendingMeta&& pending);
+        bool pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock);
+    };
+
+    /**
+     * @brief gRPC client responsible for agent registration and ping.
      */
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
@@ -208,21 +261,11 @@ namespace pinpoint {
          * @brief Registers the agent with the collector and starts ping streaming.
          */
         virtual GrpcRequestStatus registerAgent();
-        /**
-         * @brief Adds metadata to the outbound queue.
-         *
-         * @param meta Metadata payload (ownership transferred).
-         */
-        void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
 
         /// @brief Worker loop that periodically sends ping requests.
         void sendPingWorker();
         /// @brief Stops the ping worker loop.
         void stopPingWorker();
-        /// @brief Worker loop that streams metadata payloads.
-        void sendMetaWorker();
-        /// @brief Stops the metadata worker loop.
-        void stopMetaWorker();
 
         //grpc::ClientBidiReactor
         /// @brief Notification invoked after each write completes.
@@ -234,32 +277,19 @@ namespace pinpoint {
 
     protected:
         void set_agent_stub(std::unique_ptr<v1::Agent::StubInterface> stub) { agent_stub_ = std::move(stub); }
-        void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
 
     private:
         std::unique_ptr<v1::Agent::StubInterface> agent_stub_{};
-        std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
 
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
         unsigned long socket_id_{0};
 
-        std::queue<std::unique_ptr<MetaData>> meta_queue_{};
-        std::mutex meta_queue_mutex_{};
-        std::condition_variable meta_queue_cv_{};
-
         bool start_ping_stream();
         void finish_ping_stream();
         GrpcStreamStatus write_and_await_ping_stream();
 
-        template<typename Request, typename StubMethod>
-        GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);
-        GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
-        GrpcRequestStatus send_error_meta(StringMeta& error_meta);
-        GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
-        GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
-        GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
         void build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const;
     };
 
