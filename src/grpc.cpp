@@ -375,6 +375,9 @@ namespace pinpoint {
         if (client_type == AGENT) {
             addr = absl::StrCat(addr, config_->collector.agent_port);
             client_name_ = "agent";
+        } else if (client_type == METADATA) {
+            addr = absl::StrCat(addr, config_->collector.agent_port);
+            client_name_ = "metadata";
         } else if (client_type == SPAN) {
             addr = absl::StrCat(addr, config_->collector.span_port);
             client_name_ = "span";
@@ -463,24 +466,283 @@ namespace pinpoint {
         return true;
     }
 
-    //GrpcAgent
-
-    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
-        set_agent_stub(v1::Agent::NewStub(channel_));
-        set_meta_stub(v1::Metadata::NewStub(channel_));
-    }
-
-    GrpcAgent::~GrpcAgent() {
-        stopAgentInfo();
-    }
-
     constexpr auto REGISTER_TIMEOUT = std::chrono::milliseconds(defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
     constexpr auto META_TIMEOUT = std::chrono::seconds(5);
+    constexpr int METADATA_RETRY_MAX_ATTEMPTS = 3;
+    constexpr auto METADATA_RETRY_DELAY = std::chrono::milliseconds(1000);
 
     template<typename Rep, typename Period>
     static void set_deadline(grpc::ClientContext& ctx, const std::chrono::duration<Rep, Period> timeout) {
         auto deadline = std::chrono::system_clock::now() + timeout;
         ctx.set_deadline(deadline);
+    }
+
+    //GrpcMetadata
+
+    GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config) : GrpcClient(METADATA, std::move(config)) {
+        set_meta_stub(v1::Metadata::NewStub(channel_));
+    }
+
+    template<typename Request, typename StubMethod>
+    GrpcRequestStatus GrpcMetadata::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
+        v1::PResult reply;
+        grpc::ClientContext ctx;
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+
+        build_grpc_context(&ctx, 0);
+        set_deadline(ctx, META_TIMEOUT);
+
+        const grpc::Status status = stub_method(&ctx, request, &reply);
+
+        if (!status.ok()) {
+            LOG_ERROR("failed to send {} metadata: {}, {}",
+                      operation_name, static_cast<int>(status.error_code()), status.error_message());
+            return SEND_FAIL;
+        }
+
+        if (!reply.success()) {
+            LOG_INFO("failed to send {} metadata: PResult.success=false", operation_name);
+            return SEND_FAIL;
+        }
+
+        LOG_DEBUG("success to send {} metadata", operation_name);
+        return SEND_OK;
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_api_meta(ApiMeta& api_meta) {
+        v1::PApiMetaData grpc_api_meta;
+
+        grpc_api_meta.set_apiid(api_meta.id_);
+        grpc_api_meta.set_apiinfo(api_meta.api_str_);
+        grpc_api_meta.set_type(api_meta.type_);
+
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PApiMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestApiMetaData(ctx, req, reply);
+        };
+
+        return send_meta_helper(stub_method, grpc_api_meta, "api");
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_error_meta(StringMeta& error_meta) {
+        v1::PStringMetaData grpc_error_meta;
+
+        grpc_error_meta.set_stringid(error_meta.id_);
+        grpc_error_meta.set_stringvalue(error_meta.str_val_);
+
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PStringMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestStringMetaData(ctx, req, reply);
+        };
+
+        return send_meta_helper(stub_method, grpc_error_meta, "error");
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_sql_meta(StringMeta& sql_meta) {
+        v1::PSqlMetaData grpc_sql_meta;
+
+        grpc_sql_meta.set_sqlid(sql_meta.id_);
+        grpc_sql_meta.set_sql(sql_meta.str_val_);
+
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestSqlMetaData(ctx, req, reply);
+        };
+
+        return send_meta_helper(stub_method, grpc_sql_meta, "sql");
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
+        v1::PSqlUidMetaData grpc_sql_uid_meta;
+
+        // convert vector<unsigned char> to string (copy)
+        std::string_view uid_view(
+            reinterpret_cast<const char*>(sql_uid_meta.uid_.data()),
+            sql_uid_meta.uid_.size()
+        );
+        grpc_sql_uid_meta.set_sqluid(std::string(uid_view));
+        grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
+
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestSqlUidMetaData(ctx, req, reply);
+        };
+
+        return send_meta_helper(stub_method, grpc_sql_uid_meta, "sql uid");
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_exception_meta(ExceptionMeta& exception_meta) {
+        google::protobuf::Arena arena;
+        auto* grpc_exception_meta = google::protobuf::Arena::Create<v1::PExceptionMetaData>(&arena);
+
+        grpc_exception_meta->unsafe_arena_set_allocated_transactionid(build_transaction_id(exception_meta.txid_, &arena));
+        grpc_exception_meta->set_spanid(exception_meta.span_id_);
+        grpc_exception_meta->set_uritemplate(exception_meta.url_template_);
+
+        for (const auto& exception : exception_meta.exceptions_) {
+            auto* grpc_exception = grpc_exception_meta->add_exceptions();
+            const auto& callstack = exception->getCallStack();
+
+            grpc_exception->set_exceptionid(exception->getId());
+            grpc_exception->set_exceptionclassname(callstack.getModuleName());
+            grpc_exception->set_exceptionmessage(callstack.getErrorMessage());
+            grpc_exception->set_starttime(callstack.getErrorTime());
+            grpc_exception->set_exceptiondepth(1);
+
+            for (const auto& frame : callstack.getStack()) {
+                auto* grpc_callstack = grpc_exception->add_stacktraceelement();
+
+                grpc_callstack->set_classname(frame.module);
+                grpc_callstack->set_filename(frame.file);
+                grpc_callstack->set_linenumber(frame.line);
+                grpc_callstack->set_methodname(frame.function);
+            }
+        }
+
+        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PExceptionMetaData& req, v1::PResult* reply) {
+            return meta_stub_->RequestExceptionMetaData(ctx, req, reply);
+        };
+
+        return send_meta_helper(stub_method, *grpc_exception_meta, "exception");
+    }
+
+    GrpcRequestStatus GrpcMetadata::send_meta(MetaData& meta) {
+        return std::visit([this](auto&& value) {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, ApiMeta>) {
+                return send_api_meta(value);
+            } else if constexpr (std::is_same_v<T, StringMeta>) {
+                if (value.type_ == STRING_META_ERROR) {
+                    return send_error_meta(value);
+                }
+                return send_sql_meta(value);
+            } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
+                return send_sql_uid_meta(value);
+            } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
+                return send_exception_meta(value);
+            }
+            return SEND_FAIL;
+        }, meta.value_);
+    }
+
+    void GrpcMetadata::release_failed_cache(const MetaData& meta) const {
+        std::visit([this](const auto& value) {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, ApiMeta>) {
+                agent_->removeCacheApi(value);
+            } else if constexpr (std::is_same_v<T, StringMeta>) {
+                if (value.type_ == STRING_META_ERROR) {
+                    agent_->removeCacheError(value);
+                } else if (value.type_ == STRING_META_SQL) {
+                    agent_->removeCacheSql(value);
+                }
+            } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
+                agent_->removeCacheSqlUid(value);
+            }
+        }, meta.value_);
+    }
+
+    void GrpcMetadata::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
+        if (meta == nullptr || (agent_ != nullptr && agent_->isExiting())) {
+            return;
+        }
+
+        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+
+        const auto& config = config_;
+        if (meta_queue_.size() + retry_queue_.size() < config->span.queue_size) {
+            meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}, meta_sequence_++});
+        } else {
+            LOG_DEBUG("drop metadata: overflow max queue size {}", config->span.queue_size);
+        }
+
+        meta_queue_cv_.notify_one();
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
+    }
+
+    void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
+        pending.available_at = std::chrono::steady_clock::now() + METADATA_RETRY_DELAY;
+        pending.sequence = meta_sequence_++;
+        retry_queue_.emplace(pending.available_at, std::move(pending));
+        meta_queue_cv_.notify_one();
+    }
+
+    bool GrpcMetadata::pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock) {
+        while (true) {
+            if (agent_->isExiting()) {
+                return false;
+            }
+
+            if (!meta_queue_.empty()) {
+                pending = std::move(meta_queue_.front());
+                meta_queue_.pop_front();
+                return true;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (!retry_queue_.empty()) {
+                auto retry = retry_queue_.begin();
+                if (retry->first <= now) {
+                    pending = std::move(retry->second);
+                    retry_queue_.erase(retry);
+                    return true;
+                }
+
+                meta_queue_cv_.wait_until(lock, retry->first, [this] {
+                    return !meta_queue_.empty() || agent_->isExiting();
+                });
+            } else {
+                meta_queue_cv_.wait(lock, [this] {
+                    return !meta_queue_.empty() || !retry_queue_.empty() || agent_->isExiting();
+                });
+            }
+        }
+    }
+
+    void GrpcMetadata::sendMetaWorker() try {
+        while (true) {
+            PendingMeta pending;
+            {
+                std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+                if (!pop_next_meta(pending, lock)) {
+                    break;
+                }
+            }
+
+            const auto sent = send_meta(*pending.meta) == SEND_OK;
+            if (sent) {
+                continue;
+            }
+
+            ++pending.retry_count;
+            if (agent_->isExiting()) {
+                break;
+            }
+
+            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+            if (pending.retry_count <= METADATA_RETRY_MAX_ATTEMPTS) {
+                LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, METADATA_RETRY_MAX_ATTEMPTS);
+                schedule_retry(std::move(pending));
+            } else {
+                LOG_INFO("drop metadata after retry exhaustion: retryCount={}", pending.retry_count);
+                release_failed_cache(*pending.meta);
+            }
+        }
+        LOG_INFO("send meta worker end");
+    } catch (const std::exception& e) {
+        LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
+    }
+
+    void GrpcMetadata::stopMetaWorker() {
+        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+        meta_queue_cv_.notify_all();
+    }
+
+    //GrpcAgent
+
+    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
+        set_agent_stub(v1::Agent::NewStub(channel_));
+    }
+
+    GrpcAgent::~GrpcAgent() {
+        stopAgentInfo();
     }
 
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
@@ -630,189 +892,6 @@ namespace pinpoint {
     } catch (const std::exception& e) {
         LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
     }
-
-    template<typename Request, typename StubMethod>
-    GrpcRequestStatus GrpcAgent::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
-        v1::PResult reply;
-        grpc::ClientContext ctx;
-        std::unique_lock<std::mutex> lock(channel_mutex_);
-
-        build_grpc_context(&ctx, 0);
-        set_deadline(ctx, META_TIMEOUT);
-        
-        const grpc::Status status = stub_method(&ctx, request, &reply);
-
-        if (status.ok()) {
-            LOG_DEBUG("success to send {} metadata", operation_name);
-            return SEND_OK;
-        }
-
-        LOG_ERROR("failed to send {} metadata: {}, {}", 
-                  operation_name, static_cast<int>(status.error_code()), status.error_message());
-        return SEND_FAIL;
-    }
-
-    GrpcRequestStatus GrpcAgent::send_api_meta(ApiMeta& api_meta) {
-        v1::PApiMetaData grpc_api_meta;
-
-        grpc_api_meta.set_apiid(api_meta.id_);
-        grpc_api_meta.set_apiinfo(api_meta.api_str_);
-        grpc_api_meta.set_type(api_meta.type_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PApiMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestApiMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_api_meta, "api");
-    }
-
-    GrpcRequestStatus GrpcAgent::send_error_meta(StringMeta& error_meta) {
-        v1::PStringMetaData grpc_error_meta;
-
-        grpc_error_meta.set_stringid(error_meta.id_);
-        grpc_error_meta.set_stringvalue(error_meta.str_val_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PStringMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestStringMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_error_meta, "error");
-    }
-
-    GrpcRequestStatus GrpcAgent::send_sql_meta(StringMeta& sql_meta) {
-        v1::PSqlMetaData grpc_sql_meta;
-
-        grpc_sql_meta.set_sqlid(sql_meta.id_);
-        grpc_sql_meta.set_sql(sql_meta.str_val_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestSqlMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_sql_meta, "sql");
-    }
-
-    GrpcRequestStatus GrpcAgent::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
-        v1::PSqlUidMetaData grpc_sql_uid_meta;
-
-        // convert vector<unsigned char> to string (copy)
-        std::string_view uid_view(
-            reinterpret_cast<const char*>(sql_uid_meta.uid_.data()),
-            sql_uid_meta.uid_.size()
-        );
-        grpc_sql_uid_meta.set_sqluid(std::string(uid_view));
-        grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestSqlUidMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_sql_uid_meta, "sql uid");
-    }
-
-    GrpcRequestStatus GrpcAgent::send_exception_meta(ExceptionMeta& exception_meta) {
-        google::protobuf::Arena arena;
-        auto* grpc_exception_meta = google::protobuf::Arena::Create<v1::PExceptionMetaData>(&arena);
-
-        grpc_exception_meta->unsafe_arena_set_allocated_transactionid(build_transaction_id(exception_meta.txid_, &arena));
-        grpc_exception_meta->set_spanid(exception_meta.span_id_);
-        grpc_exception_meta->set_uritemplate(exception_meta.url_template_);
-
-        for (const auto& exception : exception_meta.exceptions_) {
-            auto* grpc_exception = grpc_exception_meta->add_exceptions();
-            const auto& callstack = exception->getCallStack();
-
-            grpc_exception->set_exceptionid(exception->getId());
-            grpc_exception->set_exceptionclassname(callstack.getModuleName());
-            grpc_exception->set_exceptionmessage(callstack.getErrorMessage());
-            grpc_exception->set_starttime(callstack.getErrorTime());
-            grpc_exception->set_exceptiondepth(1);
-
-            for (const auto& frame : callstack.getStack()) {
-                auto* grpc_callstack = grpc_exception->add_stacktraceelement();
-
-                grpc_callstack->set_classname(frame.module);  
-                grpc_callstack->set_filename(frame.file);
-                grpc_callstack->set_linenumber(frame.line);
-                grpc_callstack->set_methodname(frame.function);
-            }
-        }
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PExceptionMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestExceptionMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, *grpc_exception_meta, "exception");
-    }
-
-    void GrpcAgent::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
-        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-
-        const auto& config = config_;
-        if (meta_queue_.size() < config->span.queue_size) {
-            meta_queue_.push(std::move(meta));
-        } else {
-            LOG_DEBUG("drop metadata: overflow max queue size {}", config->span.queue_size);
-        }
-
-        meta_queue_cv_.notify_one();
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
-    }
-
-    void GrpcAgent::sendMetaWorker() try {
-        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-
-        while (true) {
-            meta_queue_cv_.wait(lock, [this]{
-                return !meta_queue_.empty() || agent_->isExiting();
-            });
-            if (agent_->isExiting()) {
-                break;
-            }
-
-            const auto meta = std::move(meta_queue_.front());
-            meta_queue_.pop();
-            lock.unlock();
-
-            // Use std::visit for type-safe variant handling
-            std::visit([this](auto&& value) {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, ApiMeta>) {
-                    if (send_api_meta(value) != SEND_OK) {
-                        agent_->removeCacheApi(value);
-                    }
-                } else if constexpr (std::is_same_v<T, StringMeta>) {
-                    if (value.type_ == STRING_META_ERROR) {
-                        if (send_error_meta(value) != SEND_OK) {
-                            agent_->removeCacheError(value);
-                        }
-                    } else if (value.type_ == STRING_META_SQL) {
-                        if (send_sql_meta(value) != SEND_OK) {
-                            agent_->removeCacheSql(value);
-                        }
-                    }
-                } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
-                    if (send_sql_uid_meta(value) != SEND_OK) {
-                        agent_->removeCacheSqlUid(value);
-                    }
-                } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
-                    send_exception_meta(value);
-                }
-            }, meta->value_);
-
-            lock.lock();
-        }
-        LOG_INFO("send meta worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
-    }
-
-    void GrpcAgent::stopMetaWorker() {
-        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-        meta_queue_cv_.notify_one();
-    }
-
     // Ping Stream
 
     bool GrpcAgent::start_ping_stream() {

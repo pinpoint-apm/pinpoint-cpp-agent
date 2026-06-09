@@ -35,6 +35,8 @@
 using ::testing::_;
 using ::testing::Return;
 using ::testing::NiceMock;
+using ::testing::SetArgPointee;
+using ::testing::DoAll;
 
 namespace pinpoint {
 
@@ -50,17 +52,6 @@ public:
         EXPECT_CALL(*agent_stub, RequestAgentInfo(_, _, _))
             .WillRepeatedly(Return(grpc::Status::OK));
         set_agent_stub(std::move(agent_stub));
-
-        auto meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-        EXPECT_CALL(*meta_stub, RequestApiMetaData(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        EXPECT_CALL(*meta_stub, RequestStringMetaData(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        EXPECT_CALL(*meta_stub, RequestSqlMetaData(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        EXPECT_CALL(*meta_stub, RequestSqlUidMetaData(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        set_meta_stub(std::move(meta_stub));
     }
 
     // Avoid real gRPC async streaming in worker threads.
@@ -72,6 +63,30 @@ public:
 protected:
     bool wait_channel_ready() const { return true; }
 
+};
+
+class TestableGrpcMetadata : public GrpcMetadata {
+public:
+    explicit TestableGrpcMetadata(std::shared_ptr<const Config> config)
+        : GrpcMetadata(std::move(config)) {}
+
+    void injectMockStubs() {
+        v1::PResult ok;
+        ok.set_success(true);
+
+        auto meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+        EXPECT_CALL(*meta_stub, RequestApiMetaData(_, _, _))
+            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
+        EXPECT_CALL(*meta_stub, RequestStringMetaData(_, _, _))
+            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
+        EXPECT_CALL(*meta_stub, RequestSqlMetaData(_, _, _))
+            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
+        EXPECT_CALL(*meta_stub, RequestSqlUidMetaData(_, _, _))
+            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
+        set_meta_stub(std::move(meta_stub));
+    }
+
+    bool readyChannel() override { return false; }
 };
 
 class TestableGrpcSpan : public GrpcSpan {
@@ -134,16 +149,19 @@ static std::shared_ptr<Config> make_test_config() {
 
 static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg) {
     auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
     auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
     auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
 
     grpc_agent->injectMockStubs();
+    grpc_metadata->injectMockStubs();
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
 
     return std::make_shared<AgentImpl>(
         cfg,
         std::move(grpc_agent),
+        std::move(grpc_metadata),
         std::move(grpc_span),
         std::move(grpc_stat));
 }

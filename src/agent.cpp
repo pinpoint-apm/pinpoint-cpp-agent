@@ -37,10 +37,12 @@ namespace pinpoint {
 
     AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg,
                          std::unique_ptr<GrpcAgent> grpc_agent,
+                         std::unique_ptr<GrpcMetadata> grpc_metadata,
                          std::unique_ptr<GrpcSpan> grpc_span,
                          std::unique_ptr<GrpcStats> grpc_stat) :
         config_(std::shared_ptr<const Config>(std::move(cfg))),
         grpc_agent_(std::move(grpc_agent)),
+        grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
         grpc_stat_(std::move(grpc_stat)),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
@@ -178,13 +180,14 @@ namespace pinpoint {
 
     void AgentImpl::init_grpc_workers() try {
         grpc_agent_->setAgentService(this);
+        grpc_metadata_->setAgentService(this);
         grpc_span_->setAgentService(this);
         grpc_stat_->setAgentService(this);
 
         grpc_agent_->startAgentInfo();
 
         ping_thread_ = std::thread{&GrpcAgent::sendPingWorker, grpc_agent_.get()};
-        meta_thread_ = std::thread{&GrpcAgent::sendMetaWorker, grpc_agent_.get()};
+        meta_thread_ = std::thread{&GrpcMetadata::sendMetaWorker, grpc_metadata_.get()};
         span_thread_ = std::thread{&GrpcSpan::sendSpanWorker, grpc_span_.get()};
         stat_thread_ = std::thread{&GrpcStats::sendStatsWorker, grpc_stat_.get()};
         url_stat_add_thread_ = std::thread{&UrlStats::addUrlStatsWorker, url_stats_.get()};
@@ -206,13 +209,14 @@ namespace pinpoint {
         url_stats_->stopSendUrlStatsWorker();
         agent_stats_->stopAgentStatsWorker();
         grpc_agent_->stopPingWorker();
-        grpc_agent_->stopMetaWorker();
+        grpc_metadata_->stopMetaWorker();
         grpc_span_->stopSpanWorker();
         grpc_stat_->stopStatsWorker();
 
         wait_grpc_workers();
 
         grpc_agent_->closeChannel();
+        grpc_metadata_->closeChannel();
         grpc_stat_->closeChannel();
         grpc_span_->closeChannel();
 
@@ -410,7 +414,7 @@ namespace pinpoint {
         }
 
         auto meta = std::make_unique<MetaData>(META_API, id, api_type, api_str);
-        grpc_agent_->enqueueMeta(std::move(meta));
+        grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
     } catch (const std::exception &e) {
@@ -438,7 +442,7 @@ namespace pinpoint {
         }
 
         auto meta = std::make_unique<MetaData>(META_STRING, id, error_name, STRING_META_ERROR);
-        grpc_agent_->enqueueMeta(std::move(meta));
+        grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
     } catch (const std::exception &e) {
@@ -463,7 +467,7 @@ namespace pinpoint {
         }
 
         auto meta = std::make_unique<MetaData>(META_STRING, id, sql_query, STRING_META_SQL);
-        grpc_agent_->enqueueMeta(std::move(meta));
+        grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
     } catch (const std::exception &e) {
@@ -488,7 +492,7 @@ namespace pinpoint {
         }
         
         auto meta = std::make_unique<MetaData>(META_SQL_UID, uid, sql);
-        grpc_agent_->enqueueMeta(std::move(meta));
+        grpc_metadata_->enqueueMeta(std::move(meta));
         
         return uid;
     } catch (const std::exception &e) {
@@ -511,7 +515,7 @@ namespace pinpoint {
         auto meta = std::make_unique<MetaData>(META_EXCEPTION, span_data->getTraceId(), 
                                                span_data->getSpanId(), span_data->getUrlTemplate(),
                                                span_data->takeExceptions());
-        grpc_agent_->enqueueMeta(std::move(meta));
+        grpc_metadata_->enqueueMeta(std::move(meta));
     }
 
     bool AgentImpl::isStatusFail(const int status) const {
@@ -548,10 +552,11 @@ namespace pinpoint {
         }
         try {
             auto grpc_agent = std::make_unique<GrpcAgent>(cfg);
+            auto grpc_metadata = std::make_unique<GrpcMetadata>(cfg);
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);
             return std::make_shared<AgentImpl>(cfg,
-                std::move(grpc_agent), std::move(grpc_span), std::move(grpc_stat));
+                std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span), std::move(grpc_stat));
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;
