@@ -112,25 +112,26 @@ TEST_F(GrpcTest, GrpcAgentRegisterAgentTest) {
 }
 
 TEST_F(GrpcTest, GrpcAgentMetaOperationsTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
     
     // Test enqueueMeta with API metadata
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
-    agent.enqueueMeta(std::move(api_meta));
+    metadata.enqueueMeta(std::move(api_meta));
     
     // Test enqueueMeta with string metadata
     auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
-    agent.enqueueMeta(std::move(str_meta));
+    metadata.enqueueMeta(std::move(str_meta));
     
     SUCCEED() << "Meta enqueue operations should complete successfully";
 }
 
 TEST_F(GrpcTest, GrpcAgentWorkerOperationsTest) {
     GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
     
     // Test worker stop methods (skip start workers as they block without server)
     agent.stopPingWorker();
-    agent.stopMetaWorker();
+    metadata.stopMetaWorker();
     
     SUCCEED() << "Worker stop operations should complete successfully";
 }
@@ -261,13 +262,13 @@ TEST_F(GrpcTest, GrpcClientTypeTest) {
 
 TEST_F(GrpcTest, CompleteWorkflowTest) {
     // Create all client types
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
     GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
     
     // Enqueue some data
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
-    agent.enqueueMeta(std::move(api_meta));
+    metadata.enqueueMeta(std::move(api_meta));
     
     auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "workflow-test");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
@@ -292,8 +293,9 @@ TEST_F(GrpcTest, GrpcEnumValuesTest) {
     
     // Test ClientType enum
     EXPECT_EQ(AGENT, 0);
-    EXPECT_EQ(SPAN, 1);
-    EXPECT_EQ(STATS, 2);
+    EXPECT_EQ(METADATA, 1);
+    EXPECT_EQ(SPAN, 2);
+    EXPECT_EQ(STATS, 3);
     
     // Test MetaType enum
     EXPECT_EQ(META_API, 0);
@@ -448,22 +450,22 @@ TEST_F(GrpcTest, MetaTypeEnumValuesTest) {
 // Queue behavior tests
 
 TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
 
     // Enqueue multiple different metadata types
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api1"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api2"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "err1", STRING_META_ERROR));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 4, "sql1", STRING_META_SQL));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api1"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api2"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "err1", STRING_META_ERROR));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 4, "sql1", STRING_META_SQL));
 
     std::vector<unsigned char> uid = {1, 2, 3};
-    agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT 1"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT 1"));
 
     TraceId txid{"agent", 100, 0};
     std::vector<std::unique_ptr<Exception>> exceptions;
     auto cs = std::make_unique<CallStack>("test");
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/url", std::move(exceptions)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/url", std::move(exceptions)));
 
     SUCCEED() << "Enqueuing multiple meta types should succeed";
 }
@@ -506,11 +508,12 @@ TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
 
 TEST_F(GrpcTest, GrpcAgentStopWorkersIdempotentTest) {
     GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
 
     agent.stopPingWorker();
     agent.stopPingWorker();
-    agent.stopMetaWorker();
-    agent.stopMetaWorker();
+    metadata.stopMetaWorker();
+    metadata.stopMetaWorker();
 
     SUCCEED() << "Stopping workers multiple times should be safe";
 }
@@ -575,11 +578,11 @@ TEST_F(GrpcTest, StringMetaLongSqlTest) {
 // Enqueue after service exiting
 
 TEST_F(GrpcTest, GrpcAgentEnqueueMetaWhileExitingTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
+    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
     mock_agent_service_->setExiting(true);
 
     // Should not crash even when service is exiting
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api-during-exit"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api-during-exit"));
 
     SUCCEED() << "Enqueuing meta while exiting should not crash";
 }
@@ -627,4 +630,3 @@ TEST_F(GrpcTest, MetaValueVariantIndexTest) {
 // The callbacks are tested indirectly through the actual gRPC operations in integration tests
 
 } // namespace pinpoint
-

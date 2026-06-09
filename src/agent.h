@@ -49,6 +49,7 @@ namespace pinpoint {
 		 */
 		AgentImpl(std::shared_ptr<const Config> options,
 				  std::unique_ptr<GrpcAgent> grpc_agent,
+				  std::unique_ptr<GrpcMetadata> grpc_metadata,
 				  std::unique_ptr<GrpcSpan> grpc_span,
 				  std::unique_ptr<GrpcStats> grpc_stat);
         ~AgentImpl() noexcept override;
@@ -125,6 +126,7 @@ namespace pinpoint {
     	std::unique_ptr<SqlUidCache> sql_uid_cache_{};
 
     	std::unique_ptr<GrpcAgent> grpc_agent_{};
+    	std::unique_ptr<GrpcMetadata> grpc_metadata_{};
     	std::unique_ptr<GrpcSpan> grpc_span_{};
     	std::unique_ptr<GrpcStats> grpc_stat_{};
     	std::unique_ptr<UrlStats> url_stats_{};
@@ -169,4 +171,3 @@ namespace pinpoint {
     void reset_global_agent();
 
 }  // namespace pinpoint
-

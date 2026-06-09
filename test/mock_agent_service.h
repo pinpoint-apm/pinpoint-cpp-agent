@@ -87,7 +87,9 @@ public:
         return cached_apis_[key];
     }
 
-    void removeCacheApi(const ApiMeta& api_meta) const override {}
+    void removeCacheApi(const ApiMeta& api_meta) const override {
+        removed_api_count_++;
+    }
 
     int32_t cacheError(std::string_view error_name) const override {
         auto key = std::string(error_name);
@@ -97,7 +99,9 @@ public:
         return cached_errors_[key];
     }
 
-    void removeCacheError(const StringMeta& error_meta) const override {}
+    void removeCacheError(const StringMeta& error_meta) const override {
+        removed_error_count_++;
+    }
 
     int32_t cacheSql(std::string_view sql_query) const override {
         auto key = std::string(sql_query);
@@ -107,13 +111,17 @@ public:
         return cached_sqls_[key];
     }
 
-    void removeCacheSql(const StringMeta& sql_meta) const override {}
+    void removeCacheSql(const StringMeta& sql_meta) const override {
+        removed_sql_count_++;
+    }
 
     std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
         return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     }
 
-    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {}
+    void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
+        removed_sql_uid_count_++;
+    }
 
     bool isStatusFail(int status) const override {
         // Mirror AgentImpl::isStatusFail: use the configurable HttpStatusErrors
@@ -197,6 +205,10 @@ public:
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
     mutable int32_t sql_id_counter_ = 300;
+    mutable int removed_api_count_ = 0;
+    mutable int removed_error_count_ = 0;
+    mutable int removed_sql_count_ = 0;
+    mutable int removed_sql_uid_count_ = 0;
 
 private:
     bool is_exiting_;
