@@ -23,6 +23,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -203,6 +204,7 @@ namespace pinpoint {
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
         explicit GrpcAgent(std::shared_ptr<const Config> config);
+        ~GrpcAgent() override;
 
         /**
          * @brief Registers the agent with the collector and starts ping streaming.
@@ -223,6 +225,12 @@ namespace pinpoint {
         void sendMetaWorker();
         /// @brief Stops the metadata worker loop.
         void stopMetaWorker();
+        /// @brief Starts the scheduled AgentInfo sender loop.
+        void startAgentInfo();
+        /// @brief Stops the scheduled AgentInfo sender loop.
+        void stopAgentInfo();
+        /// @brief Requests an immediate AgentInfo refresh attempt.
+        void refreshAgentInfo();
 
         //grpc::ClientBidiReactor
         /// @brief Notification invoked after each write completes.
@@ -249,9 +257,23 @@ namespace pinpoint {
         std::mutex meta_queue_mutex_{};
         std::condition_variable meta_queue_cv_{};
 
+        std::thread agent_info_thread_;
+        std::mutex agent_info_mutex_;
+        std::condition_variable agent_info_cv_;
+        bool agent_info_running_{false};
+        bool agent_info_stop_requested_{false};
+        bool agent_info_refresh_requested_{false};
+
         bool start_ping_stream();
         void finish_ping_stream();
         GrpcStreamStatus write_and_await_ping_stream();
+
+        void agent_info_worker();
+        bool send_agent_info_once();
+        bool send_agent_info_with_retries(int max_try_count);
+        bool wait_agent_info_retry(std::chrono::milliseconds delay);
+        bool wait_agent_info_until(std::chrono::steady_clock::time_point deadline);
+        bool should_stop_agent_info() const;
 
         template<typename Request, typename StubMethod>
         GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);

@@ -80,11 +80,8 @@ public:
         set_meta_stub(std::move(meta_stub));
     }
 
-    bool readyChannel() override { return ready_count_++ == 0; }
+    bool readyChannel() override { return false; }
     pinpoint::GrpcRequestStatus registerAgent() override { return pinpoint::SEND_OK; }
-
-private:
-    std::atomic<int> ready_count_{0};
 };
 
 class TestableGrpcSpan : public pinpoint::GrpcSpan {

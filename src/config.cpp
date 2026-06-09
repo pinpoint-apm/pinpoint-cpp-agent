@@ -303,6 +303,12 @@ namespace pinpoint {
             }
         }
 
+        if (auto& agent_info = yaml["AgentInfo"]) {
+            config.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+            config.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+            config.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+        }
+
         if (yaml["IsContainer"]) {
             config.is_container = get_boolean(yaml, "IsContainer", false);
             is_container_set = true;
@@ -438,6 +444,15 @@ namespace pinpoint {
         }
         if(const char* env_p = std::getenv(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
             config.span.batch.max_concurrent_requests = safe_env_stoi(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, env_p, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+        }
+        if(const char* env_p = std::getenv(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
+            config.agent_info.refresh_interval_ms = safe_env_stoi(env::AGENT_INFO_REFRESH_INTERVAL_MS, env_p, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+        }
+        if(const char* env_p = std::getenv(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
+            config.agent_info.send_retry_interval_ms = safe_env_stoi(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS, env_p, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+        }
+        if(const char* env_p = std::getenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
+            config.agent_info.max_try_per_attempt = safe_env_stoi(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, env_p, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         }
 
         if(const char* env_p = std::getenv(env::IS_CONTAINER)) {
@@ -713,6 +728,21 @@ namespace pinpoint {
                      config->span.batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
             config->span.batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
         }
+        if (config->agent_info.refresh_interval_ms < 1) {
+            LOG_WARN("agent info refresh interval {}ms is invalid, using default: {}ms",
+                     config->agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+            config->agent_info.refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
+        }
+        if (config->agent_info.send_retry_interval_ms < 1) {
+            LOG_WARN("agent info send retry interval {}ms is invalid, using default: {}ms",
+                     config->agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+            config->agent_info.send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
+        }
+        if (config->agent_info.max_try_per_attempt < 1) {
+            LOG_WARN("agent info max try per attempt {} is invalid, using default: {}",
+                     config->agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            config->agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
+        }
 
         if (!is_container_set) {
             config->is_container = is_container_env();
@@ -778,6 +808,13 @@ namespace pinpoint {
         emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.span.batch.collect_deadline_ms;
         emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.span.batch.max_concurrent_requests;
         emitter << YAML::EndMap;
+        emitter << YAML::EndMap;
+
+        emitter << YAML::Key << "AgentInfo";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "RefreshIntervalMs" << YAML::Value << config.agent_info.refresh_interval_ms;
+        emitter << YAML::Key << "SendRetryIntervalMs" << YAML::Value << config.agent_info.send_retry_interval_ms;
+        emitter << YAML::Key << "MaxTryPerAttempt" << YAML::Value << config.agent_info.max_try_per_attempt;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Http";

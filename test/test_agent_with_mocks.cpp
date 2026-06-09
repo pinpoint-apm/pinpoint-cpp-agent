@@ -63,9 +63,8 @@ public:
         set_meta_stub(std::move(meta_stub));
     }
 
-    // First call (registration) returns true, subsequent calls (workers) return false
-    // to avoid real gRPC async streaming.
-    bool readyChannel() override { return ready_count_++ == 0; }
+    // Avoid real gRPC async streaming in worker threads.
+    bool readyChannel() override { return false; }
 
     // Override to skip real build_agent_info (which calls slow DNS resolution)
     GrpcRequestStatus registerAgent() override { return SEND_OK; }
@@ -73,8 +72,6 @@ public:
 protected:
     bool wait_channel_ready() const { return true; }
 
-private:
-    std::atomic<int> ready_count_{0};
 };
 
 class TestableGrpcSpan : public GrpcSpan {
@@ -158,7 +155,7 @@ protected:
     void SetUp() override {
         cfg_ = make_test_config();
         agent_ = make_test_agent(cfg_);
-        // Wait for init_grpc_workers thread to finish and set enabled_
+        // Wait for the initial AgentInfo send to succeed and enable the agent.
         wait_until_enabled();
     }
 
@@ -473,8 +470,7 @@ TEST_F(AgentImplDisabledTest, DisabledConfigReturnsNotEnabled) {
     cfg->sampling.counter_rate = 0;
     auto agent = make_test_agent(cfg);
 
-    // Even after init, sampling rate 0 means no spans are sampled,
-    // but the agent itself is still enabled
+    // Even with sampling rate 0, the agent itself is enabled after AgentInfo succeeds.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

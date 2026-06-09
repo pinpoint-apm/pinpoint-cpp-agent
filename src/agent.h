@@ -92,6 +92,7 @@ namespace pinpoint {
     	int64_t getStartTime() const override { return start_time_; }
 		/// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
     	void reloadConfig(std::shared_ptr<const Config> cfg) override;
+    	void onAgentInfoSent() override;
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
@@ -169,4 +170,3 @@ namespace pinpoint {
     void reset_global_agent();
 
 }  // namespace pinpoint
-
