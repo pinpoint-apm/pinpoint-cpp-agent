@@ -28,6 +28,7 @@
 #include <memory>
 #include <sstream>
 #include <algorithm>
+#include <tuple>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
@@ -213,6 +214,39 @@ namespace pinpoint {
         return default_value;
     }
 
+    static void load_grpc_channel_yaml(const YAML::Node& yaml, std::string_view cname,
+                                       Config::GrpcChannelOptions& options) {
+        if (auto& channel = yaml[cname]) {
+            options.ssl_enable = get_boolean(channel, "SslEnable", options.ssl_enable);
+            options.request_timeout_ms = get_int(channel, "RequestTimeoutMs", options.request_timeout_ms);
+            options.keepalive_time_ms = get_int(channel, "KeepAliveTimeMs", options.keepalive_time_ms);
+            options.keepalive_timeout_ms = get_int(channel, "KeepAliveTimeoutMs", options.keepalive_timeout_ms);
+            options.keepalive_permit_without_calls =
+                get_boolean(channel, "KeepAlivePermitWithoutCalls", options.keepalive_permit_without_calls);
+            options.max_send_message_size = get_int(channel, "MaxSendMessageSize", options.max_send_message_size);
+            options.max_receive_message_size = get_int(channel, "MaxReceiveMessageSize", options.max_receive_message_size);
+            options.sender_queue_size = get_int(channel, "SenderQueueSize", options.sender_queue_size);
+            options.channel_executor_queue_size =
+                get_int(channel, "ChannelExecutorQueueSize", options.channel_executor_queue_size);
+        }
+    }
+
+    static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
+        if (auto& grpc = yaml["Grpc"]) {
+            if (auto& ssl = grpc["Ssl"]) {
+                config.grpc.ssl.trust_cert_file_path =
+                    get_string(ssl, "TrustCertFilePath", config.grpc.ssl.trust_cert_file_path);
+                config.grpc.ssl.root_cert_file_path =
+                    get_string(ssl, "RootCertFilePath", config.grpc.ssl.root_cert_file_path);
+            }
+
+            load_grpc_channel_yaml(grpc, "Agent", config.grpc.agent);
+            load_grpc_channel_yaml(grpc, "Metadata", config.grpc.metadata);
+            load_grpc_channel_yaml(grpc, "Span", config.grpc.span);
+            load_grpc_channel_yaml(grpc, "Stat", config.grpc.stat);
+        }
+    }
+
     static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
         if (yaml[cname]) {
             try {
@@ -309,6 +343,8 @@ namespace pinpoint {
             config.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         }
 
+        load_grpc_yaml(yaml, config);
+
         if (yaml["IsContainer"]) {
             config.is_container = get_boolean(yaml, "IsContainer", false);
             is_container_set = true;
@@ -352,6 +388,47 @@ namespace pinpoint {
             LOG_WARN("Invalid double value '{}' for environment variable '{}'. Using default value: {}", 
                      env_value, env_name, default_value);
             return default_value;
+        }
+    }
+
+    static void load_env_grpc_channel(Config::GrpcChannelOptions& options,
+                                      const char* ssl_enable_env,
+                                      const char* request_timeout_env,
+                                      const char* keepalive_time_env,
+                                      const char* keepalive_timeout_env,
+                                      const char* keepalive_permit_env,
+                                      const char* max_send_env,
+                                      const char* max_receive_env,
+                                      const char* sender_queue_env,
+                                      const char* channel_executor_queue_env) {
+        if(const char* env_p = std::getenv(ssl_enable_env)) {
+            options.ssl_enable = safe_env_stob(ssl_enable_env, env_p, options.ssl_enable);
+        }
+        if(const char* env_p = std::getenv(request_timeout_env)) {
+            options.request_timeout_ms = safe_env_stoi(request_timeout_env, env_p, options.request_timeout_ms);
+        }
+        if(const char* env_p = std::getenv(keepalive_time_env)) {
+            options.keepalive_time_ms = safe_env_stoi(keepalive_time_env, env_p, options.keepalive_time_ms);
+        }
+        if(const char* env_p = std::getenv(keepalive_timeout_env)) {
+            options.keepalive_timeout_ms = safe_env_stoi(keepalive_timeout_env, env_p, options.keepalive_timeout_ms);
+        }
+        if(const char* env_p = std::getenv(keepalive_permit_env)) {
+            options.keepalive_permit_without_calls =
+                safe_env_stob(keepalive_permit_env, env_p, options.keepalive_permit_without_calls);
+        }
+        if(const char* env_p = std::getenv(max_send_env)) {
+            options.max_send_message_size = safe_env_stoi(max_send_env, env_p, options.max_send_message_size);
+        }
+        if(const char* env_p = std::getenv(max_receive_env)) {
+            options.max_receive_message_size = safe_env_stoi(max_receive_env, env_p, options.max_receive_message_size);
+        }
+        if(const char* env_p = std::getenv(sender_queue_env)) {
+            options.sender_queue_size = safe_env_stoi(sender_queue_env, env_p, options.sender_queue_size);
+        }
+        if(const char* env_p = std::getenv(channel_executor_queue_env)) {
+            options.channel_executor_queue_size =
+                safe_env_stoi(channel_executor_queue_env, env_p, options.channel_executor_queue_size);
         }
     }
 
@@ -454,6 +531,53 @@ namespace pinpoint {
         if(const char* env_p = std::getenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
             config.agent_info.max_try_per_attempt = safe_env_stoi(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, env_p, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         }
+
+        if(const char* env_p = std::getenv(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
+            config.grpc.ssl.trust_cert_file_path = std::string(env_p);
+        }
+        if(const char* env_p = std::getenv(env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
+            config.grpc.ssl.root_cert_file_path = std::string(env_p);
+        }
+        load_env_grpc_channel(config.grpc.agent,
+                              env::GRPC_AGENT_SSL_ENABLE,
+                              env::GRPC_AGENT_REQUEST_TIMEOUT_MS,
+                              env::GRPC_AGENT_KEEPALIVE_TIME_MS,
+                              env::GRPC_AGENT_KEEPALIVE_TIMEOUT_MS,
+                              env::GRPC_AGENT_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+                              env::GRPC_AGENT_MAX_SEND_MESSAGE_SIZE,
+                              env::GRPC_AGENT_MAX_RECEIVE_MESSAGE_SIZE,
+                              env::GRPC_AGENT_SENDER_QUEUE_SIZE,
+                              env::GRPC_AGENT_CHANNEL_EXECUTOR_QUEUE_SIZE);
+        load_env_grpc_channel(config.grpc.metadata,
+                              env::GRPC_METADATA_SSL_ENABLE,
+                              env::GRPC_METADATA_REQUEST_TIMEOUT_MS,
+                              env::GRPC_METADATA_KEEPALIVE_TIME_MS,
+                              env::GRPC_METADATA_KEEPALIVE_TIMEOUT_MS,
+                              env::GRPC_METADATA_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+                              env::GRPC_METADATA_MAX_SEND_MESSAGE_SIZE,
+                              env::GRPC_METADATA_MAX_RECEIVE_MESSAGE_SIZE,
+                              env::GRPC_METADATA_SENDER_QUEUE_SIZE,
+                              env::GRPC_METADATA_CHANNEL_EXECUTOR_QUEUE_SIZE);
+        load_env_grpc_channel(config.grpc.span,
+                              env::GRPC_SPAN_SSL_ENABLE,
+                              env::GRPC_SPAN_REQUEST_TIMEOUT_MS,
+                              env::GRPC_SPAN_KEEPALIVE_TIME_MS,
+                              env::GRPC_SPAN_KEEPALIVE_TIMEOUT_MS,
+                              env::GRPC_SPAN_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+                              env::GRPC_SPAN_MAX_SEND_MESSAGE_SIZE,
+                              env::GRPC_SPAN_MAX_RECEIVE_MESSAGE_SIZE,
+                              env::GRPC_SPAN_SENDER_QUEUE_SIZE,
+                              env::GRPC_SPAN_CHANNEL_EXECUTOR_QUEUE_SIZE);
+        load_env_grpc_channel(config.grpc.stat,
+                              env::GRPC_STAT_SSL_ENABLE,
+                              env::GRPC_STAT_REQUEST_TIMEOUT_MS,
+                              env::GRPC_STAT_KEEPALIVE_TIME_MS,
+                              env::GRPC_STAT_KEEPALIVE_TIMEOUT_MS,
+                              env::GRPC_STAT_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+                              env::GRPC_STAT_MAX_SEND_MESSAGE_SIZE,
+                              env::GRPC_STAT_MAX_RECEIVE_MESSAGE_SIZE,
+                              env::GRPC_STAT_SENDER_QUEUE_SIZE,
+                              env::GRPC_STAT_CHANNEL_EXECUTOR_QUEUE_SIZE);
 
         if(const char* env_p = std::getenv(env::IS_CONTAINER)) {
             config.is_container = safe_env_stob(env::IS_CONTAINER, env_p, false);
@@ -591,6 +715,8 @@ namespace pinpoint {
     constexpr int MAX_STAT_BATCH_COUNT = 100;
     constexpr int MIN_STAT_INTERVAL_MS = 1000;
     constexpr int MAX_STAT_INTERVAL_MS = 60000;
+    constexpr int MIN_GRPC_QUEUE_SIZE = 1;
+    constexpr int MAX_GRPC_QUEUE_SIZE = 65536;
 
     static int clamp_port(int port, int default_port) {
         if (port < MIN_PORT || port > MAX_PORT) {
@@ -598,6 +724,47 @@ namespace pinpoint {
             return default_port;
         }
         return port;
+    }
+
+    static void validate_grpc_channel(Config::GrpcChannelOptions& options, const char* name,
+                                      const Config::GrpcChannelOptions& defaults) {
+        if (options.request_timeout_ms < 0) {
+            LOG_WARN("{} grpc request timeout {}ms is invalid, using default: {}ms",
+                     name, options.request_timeout_ms, defaults.request_timeout_ms);
+            options.request_timeout_ms = defaults.request_timeout_ms;
+        }
+        if (options.keepalive_time_ms < 0) {
+            LOG_WARN("{} grpc keepalive time {}ms is invalid, using default: {}ms",
+                     name, options.keepalive_time_ms, defaults.keepalive_time_ms);
+            options.keepalive_time_ms = defaults.keepalive_time_ms;
+        }
+        if (options.keepalive_timeout_ms < 0) {
+            LOG_WARN("{} grpc keepalive timeout {}ms is invalid, using default: {}ms",
+                     name, options.keepalive_timeout_ms, defaults.keepalive_timeout_ms);
+            options.keepalive_timeout_ms = defaults.keepalive_timeout_ms;
+        }
+        if (options.max_send_message_size < UNLIMITED_SIZE) {
+            LOG_WARN("{} grpc max send message size {} is invalid, using default: {}",
+                     name, options.max_send_message_size, defaults.max_send_message_size);
+            options.max_send_message_size = defaults.max_send_message_size;
+        }
+        if (options.max_receive_message_size < UNLIMITED_SIZE) {
+            LOG_WARN("{} grpc max receive message size {} is invalid, using default: {}",
+                     name, options.max_receive_message_size, defaults.max_receive_message_size);
+            options.max_receive_message_size = defaults.max_receive_message_size;
+        }
+        if (options.sender_queue_size < MIN_GRPC_QUEUE_SIZE || options.sender_queue_size > MAX_GRPC_QUEUE_SIZE) {
+            LOG_WARN("{} grpc sender queue size {} is out of range ({}-{}), using default: {}",
+                     name, options.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE, defaults.sender_queue_size);
+            options.sender_queue_size = defaults.sender_queue_size;
+        }
+        if (options.channel_executor_queue_size < MIN_GRPC_QUEUE_SIZE ||
+            options.channel_executor_queue_size > MAX_GRPC_QUEUE_SIZE) {
+            LOG_WARN("{} grpc channel executor queue size {} is out of range ({}-{}), using default: {}",
+                     name, options.channel_executor_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE,
+                     defaults.channel_executor_queue_size);
+            options.channel_executor_queue_size = defaults.channel_executor_queue_size;
+        }
     }
 
     std::shared_ptr<Config> make_config() {
@@ -744,6 +911,15 @@ namespace pinpoint {
             config->agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
         }
 
+        validate_grpc_channel(config->grpc.agent, "agent",
+                              Config::GrpcChannelOptions(defaults::GRPC_AGENT_REQUEST_TIMEOUT_MS));
+        validate_grpc_channel(config->grpc.metadata, "metadata",
+                              Config::GrpcChannelOptions(defaults::GRPC_METADATA_REQUEST_TIMEOUT_MS));
+        validate_grpc_channel(config->grpc.span, "span",
+                              Config::GrpcChannelOptions(defaults::GRPC_SPAN_REQUEST_TIMEOUT_MS));
+        validate_grpc_channel(config->grpc.stat, "stat",
+                              Config::GrpcChannelOptions(defaults::GRPC_STAT_REQUEST_TIMEOUT_MS));
+
         if (!is_container_set) {
             config->is_container = is_container_env();
         }
@@ -777,6 +953,34 @@ namespace pinpoint {
         emitter << YAML::Key << "GrpcAgentPort" << YAML::Value << config.collector.agent_port;
         emitter << YAML::Key << "GrpcSpanPort" << YAML::Value << config.collector.span_port;
         emitter << YAML::Key << "GrpcStatPort" << YAML::Value << config.collector.stat_port;
+        emitter << YAML::EndMap;
+
+        auto emit_grpc_channel = [&emitter](const char* key, const Config::GrpcChannelOptions& options) {
+            emitter << YAML::Key << key;
+            emitter << YAML::BeginMap;
+            emitter << YAML::Key << "SslEnable" << YAML::Value << options.ssl_enable;
+            emitter << YAML::Key << "RequestTimeoutMs" << YAML::Value << options.request_timeout_ms;
+            emitter << YAML::Key << "KeepAliveTimeMs" << YAML::Value << options.keepalive_time_ms;
+            emitter << YAML::Key << "KeepAliveTimeoutMs" << YAML::Value << options.keepalive_timeout_ms;
+            emitter << YAML::Key << "KeepAlivePermitWithoutCalls" << YAML::Value << options.keepalive_permit_without_calls;
+            emitter << YAML::Key << "MaxSendMessageSize" << YAML::Value << options.max_send_message_size;
+            emitter << YAML::Key << "MaxReceiveMessageSize" << YAML::Value << options.max_receive_message_size;
+            emitter << YAML::Key << "SenderQueueSize" << YAML::Value << options.sender_queue_size;
+            emitter << YAML::Key << "ChannelExecutorQueueSize" << YAML::Value << options.channel_executor_queue_size;
+            emitter << YAML::EndMap;
+        };
+
+        emitter << YAML::Key << "Grpc";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "Ssl";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.grpc.ssl.trust_cert_file_path;
+        emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.grpc.ssl.root_cert_file_path;
+        emitter << YAML::EndMap;
+        emit_grpc_channel("Agent", config.grpc.agent);
+        emit_grpc_channel("Metadata", config.grpc.metadata);
+        emit_grpc_channel("Span", config.grpc.span);
+        emit_grpc_channel("Stat", config.grpc.stat);
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Stat";
@@ -927,11 +1131,45 @@ namespace pinpoint {
         return true;
     }
 
+    static bool same_grpc_channel(const Config::GrpcChannelOptions& lhs,
+                                  const Config::GrpcChannelOptions& rhs) {
+        return std::tie(lhs.ssl_enable,
+                        lhs.request_timeout_ms,
+                        lhs.keepalive_time_ms,
+                        lhs.keepalive_timeout_ms,
+                        lhs.keepalive_permit_without_calls,
+                        lhs.max_send_message_size,
+                        lhs.max_receive_message_size,
+                        lhs.sender_queue_size,
+                        lhs.channel_executor_queue_size) ==
+               std::tie(rhs.ssl_enable,
+                        rhs.request_timeout_ms,
+                        rhs.keepalive_time_ms,
+                        rhs.keepalive_timeout_ms,
+                        rhs.keepalive_permit_without_calls,
+                        rhs.max_send_message_size,
+                        rhs.max_receive_message_size,
+                        rhs.sender_queue_size,
+                        rhs.channel_executor_queue_size);
+    }
+
+    static bool same_grpc_config(const Config& lhs, const Config& rhs) {
+        return std::tie(lhs.grpc.ssl.trust_cert_file_path,
+                        lhs.grpc.ssl.root_cert_file_path) ==
+               std::tie(rhs.grpc.ssl.trust_cert_file_path,
+                        rhs.grpc.ssl.root_cert_file_path) &&
+               same_grpc_channel(lhs.grpc.agent, rhs.grpc.agent) &&
+               same_grpc_channel(lhs.grpc.metadata, rhs.grpc.metadata) &&
+               same_grpc_channel(lhs.grpc.span, rhs.grpc.span) &&
+               same_grpc_channel(lhs.grpc.stat, rhs.grpc.stat);
+    }
+
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
         return std::tie(app_name_, app_type_, agent_id_, agent_name_,
                         collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
                std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
-                        old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port);
+                        old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
+               same_grpc_config(*this, *old);
     }
 }

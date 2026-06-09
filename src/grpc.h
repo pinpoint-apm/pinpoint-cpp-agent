@@ -90,6 +90,7 @@ namespace pinpoint {
         std::shared_ptr<grpc::Channel> channel_{};
         std::mutex channel_mutex_{};
         std::string client_name_{};
+        ClientType client_type_;
 
         std::unique_ptr<grpc::ClientContext> stream_context_{};
         std::mutex stream_mutex_{};
