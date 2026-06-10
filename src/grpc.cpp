@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -492,6 +493,7 @@ namespace pinpoint {
     const std::string METADATA_SERVICE_TYPE = "servicetype";
     const std::string METADATA_AGENT_NAME = "agentname";
     const std::string METADATA_SOCKET_ID = "socketid";
+    const std::string METADATA_SUPPORT_COMMAND_CODE = "supportcommandcode";
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
@@ -810,6 +812,364 @@ namespace pinpoint {
     void GrpcMetadata::stopMetaWorker() {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
         meta_queue_cv_.notify_all();
+    }
+
+    //GrpcCommand
+
+    namespace {
+        constexpr int ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
+        constexpr auto COMMAND_RECONNECT_DELAY = std::chrono::milliseconds(1000);
+        constexpr auto ACTIVE_THREAD_COUNT_FLUSH_DELAY = std::chrono::milliseconds(1000);
+
+        int32_t command_code(const v1::PCmdRequest& request) {
+            return static_cast<int32_t>(request.command_case());
+        }
+
+        std::string support_command_code_header(const std::vector<int32_t>& command_codes) {
+            std::string value;
+            for (auto code : command_codes) {
+                if (!value.empty()) {
+                    value.append(";");
+                }
+                value.append(std::to_string(code));
+            }
+            return value;
+        }
+    }
+
+    void GrpcCommandDispatcher::registerHandler(int32_t command_code, Handler handler) {
+        handlers_[command_code] = std::move(handler);
+    }
+
+    std::vector<int32_t> GrpcCommandDispatcher::supportedCommandCodes() const {
+        std::vector<int32_t> codes;
+        codes.reserve(handlers_.size());
+        for (const auto& [code, handler] : handlers_) {
+            codes.push_back(code);
+        }
+        std::sort(codes.begin(), codes.end());
+        return codes;
+    }
+
+    bool GrpcCommandDispatcher::handle(
+            const v1::PCmdRequest& request,
+            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) const {
+        const auto code = command_code(request);
+        const auto handler = handlers_.find(code);
+        if (handler == handlers_.end()) {
+            v1::PCmdMessage fail_message;
+            auto* fail = fail_message.mutable_failmessage();
+            fail->set_responseid(request.requestid());
+            fail->mutable_message()->set_value("NOT_SUPPORTED_REQUEST");
+            return stream == nullptr || stream->Write(fail_message);
+        }
+        return handler->second(request, stream);
+    }
+
+    class GrpcCommand::ActiveThreadCountStream {
+    public:
+        ActiveThreadCountStream(GrpcCommand* owner, unsigned long socket_id, int32_t request_id)
+            : owner_(owner), socket_id_(socket_id), request_id_(request_id) {}
+
+        ~ActiveThreadCountStream() {
+            stop();
+        }
+
+        void start() {
+            worker_ = std::thread{&ActiveThreadCountStream::run, this};
+        }
+
+        void stop() {
+            stop_requested_ = true;
+            {
+                std::unique_lock<std::mutex> lock(context_mutex_);
+                if (context_ != nullptr) {
+                    context_->TryCancel();
+                }
+            }
+            cv_.notify_all();
+            if (worker_.joinable()) {
+                worker_.join();
+            }
+        }
+
+        bool done() const {
+            return done_;
+        }
+
+    private:
+        GrpcCommand* owner_;
+        unsigned long socket_id_;
+        int32_t request_id_;
+        std::atomic<bool> stop_requested_{false};
+        std::atomic<bool> done_{false};
+        std::thread worker_;
+        std::mutex context_mutex_;
+        std::unique_ptr<grpc::ClientContext> context_{nullptr};
+        std::mutex cv_mutex_;
+        std::condition_variable cv_;
+
+        void run() try {
+            auto context = std::make_unique<grpc::ClientContext>();
+            owner_->build_command_context(context.get(), socket_id_);
+            {
+                std::unique_lock<std::mutex> lock(context_mutex_);
+                context_ = std::move(context);
+            }
+
+            google::protobuf::Empty reply;
+            auto writer = owner_->command_stub_->CommandStreamActiveThreadCount(context_.get(), &reply);
+            if (writer == nullptr) {
+                LOG_WARN("failed to start active thread count stream: writer is null");
+                {
+                    std::unique_lock<std::mutex> lock(context_mutex_);
+                    context_.reset();
+                }
+                done_ = true;
+                return;
+            }
+
+            int32_t sequence_id = 0;
+            while (!stop_requested_ && !owner_->agent_->isExiting()) {
+                v1::PCmdActiveThreadCountRes response;
+                owner_->build_active_thread_count_response(&response, request_id_, ++sequence_id);
+                if (!writer->Write(response)) {
+                    LOG_INFO("active thread count stream write failed: requestId={}, socketId={}", request_id_, socket_id_);
+                    break;
+                }
+
+                std::unique_lock<std::mutex> lock(cv_mutex_);
+                cv_.wait_for(lock, ACTIVE_THREAD_COUNT_FLUSH_DELAY, [this] {
+                    return stop_requested_.load() || owner_->agent_->isExiting();
+                });
+            }
+
+            writer->WritesDone();
+            const auto status = writer->Finish();
+            if (!status.ok() && !stop_requested_ && !owner_->agent_->isExiting()) {
+                LOG_INFO("active thread count stream closed: {}, {}",
+                         static_cast<int>(status.error_code()), status.error_message());
+            }
+            {
+                std::unique_lock<std::mutex> lock(context_mutex_);
+                context_.reset();
+            }
+            done_ = true;
+        } catch (const std::exception& e) {
+            {
+                std::unique_lock<std::mutex> lock(context_mutex_);
+                context_.reset();
+            }
+            LOG_ERROR("active thread count stream exception = {}", e.what());
+            done_ = true;
+        }
+    };
+
+    GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
+        set_command_stub(v1::ProfilerCommandService::NewStub(channel_));
+        register_default_handlers();
+    }
+
+    GrpcCommand::~GrpcCommand() {
+        stopCommandWorker();
+    }
+
+    void GrpcCommand::register_default_handlers() {
+        dispatcher_.registerHandler(static_cast<int32_t>(v1::ECHO),
+            [this](const v1::PCmdRequest& request,
+                   grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+                return handle_echo(request, stream);
+            });
+        dispatcher_.registerHandler(static_cast<int32_t>(v1::ACTIVE_THREAD_COUNT),
+            [this](const v1::PCmdRequest& request,
+                   grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+                return handle_active_thread_count(request, stream);
+            });
+    }
+
+    void GrpcCommand::build_command_context(grpc::ClientContext* context, unsigned long socket_id) const {
+        build_grpc_context(context, socket_id);
+    }
+
+    bool GrpcCommand::write_fail_message(
+            const v1::PCmdRequest& request,
+            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream,
+            std::string_view message) const {
+        if (stream == nullptr) {
+            return false;
+        }
+
+        v1::PCmdMessage fail_message;
+        auto* fail = fail_message.mutable_failmessage();
+        fail->set_responseid(request.requestid());
+        fail->mutable_message()->set_value(std::string(message));
+        return stream->Write(fail_message);
+    }
+
+    bool GrpcCommand::handle_echo(
+            const v1::PCmdRequest& request,
+            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+        if (!request.has_commandecho()) {
+            return write_fail_message(request, stream, "invalid echo command");
+        }
+
+        grpc::ClientContext ctx;
+        google::protobuf::Empty reply;
+        v1::PCmdEchoResponse response;
+
+        build_command_context(&ctx, 0);
+        set_deadline(ctx, config_->grpc.agent.request_timeout_ms);
+
+        response.mutable_commonresponse()->set_responseid(request.requestid());
+        response.set_message(request.commandecho().message());
+
+        const auto status = command_stub_->CommandEcho(&ctx, response, &reply);
+        if (!status.ok()) {
+            LOG_INFO("command echo response failed: {}, {}",
+                     static_cast<int>(status.error_code()), status.error_message());
+            return write_fail_message(request, stream, status.error_message());
+        }
+        return true;
+    }
+
+    bool GrpcCommand::handle_active_thread_count(
+            const v1::PCmdRequest& request,
+            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+        if (!request.has_commandactivethreadcount()) {
+            return write_fail_message(request, stream, "invalid active thread count command");
+        }
+
+        add_active_thread_count_stream(request.requestid());
+        return true;
+    }
+
+    void GrpcCommand::build_active_thread_count_response(
+            v1::PCmdActiveThreadCountRes* response,
+            int32_t request_id,
+            int32_t sequence_id) const {
+        const auto now = to_milli_seconds(std::chrono::system_clock::now());
+        int32_t active_requests[4]{0, 0, 0, 0};
+        agent_->getAgentStats().collectActiveRequests(active_requests, now);
+
+        auto* header = response->mutable_commonstreamresponse();
+        header->set_responseid(request_id);
+        header->set_sequenceid(sequence_id);
+        response->set_histogramschematype(ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE);
+        response->set_timestamp(now);
+
+        for (const auto count : active_requests) {
+            response->add_activethreadcount(count);
+        }
+    }
+
+    void GrpcCommand::add_active_thread_count_stream(int32_t request_id) {
+        std::unique_lock<std::mutex> lock(active_streams_mutex_);
+        cleanup_active_thread_count_streams();
+
+        auto stream = std::make_unique<ActiveThreadCountStream>(this, ++socket_id_, request_id);
+        stream->start();
+        active_thread_count_streams_.push_back(std::move(stream));
+        LOG_INFO("active thread count stream started: requestId={}", request_id);
+    }
+
+    void GrpcCommand::cleanup_active_thread_count_streams() {
+        active_thread_count_streams_.erase(
+            std::remove_if(active_thread_count_streams_.begin(), active_thread_count_streams_.end(),
+                [](const auto& stream) { return stream->done(); }),
+            active_thread_count_streams_.end());
+    }
+
+    void GrpcCommand::stop_active_thread_count_streams() {
+        std::vector<std::unique_ptr<ActiveThreadCountStream>> streams;
+        {
+            std::unique_lock<std::mutex> lock(active_streams_mutex_);
+            streams.swap(active_thread_count_streams_);
+        }
+        for (auto& stream : streams) {
+            stream->stop();
+        }
+    }
+
+    void GrpcCommand::cancel_command_stream() {
+        std::unique_lock<std::mutex> lock(command_worker_mutex_);
+        if (command_stream_context_ != nullptr) {
+            command_stream_context_->TryCancel();
+        }
+        command_worker_cv_.notify_all();
+    }
+
+    bool GrpcCommand::wait_reconnect_delay(std::chrono::milliseconds delay) {
+        std::unique_lock<std::mutex> lock(command_worker_mutex_);
+        return command_worker_cv_.wait_for(lock, delay, [this] {
+            return agent_->isExiting();
+        });
+    }
+
+    void GrpcCommand::commandWorker() try {
+        while (!agent_->isExiting()) {
+            if (!readyChannel()) {
+                break;
+            }
+
+            grpc::ClientContext context;
+            build_command_context(&context, ++socket_id_);
+            const auto command_codes = dispatcher_.supportedCommandCodes();
+            context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header(command_codes));
+
+            {
+                std::unique_lock<std::mutex> lock(command_worker_mutex_);
+                command_stream_context_ = &context;
+            }
+
+            LOG_INFO("connect to command service stream");
+            auto stream = command_stub_->HandleCommandV2(&context);
+            if (stream == nullptr) {
+                LOG_WARN("failed to connect to command service stream: stream is null");
+            } else {
+                v1::PCmdRequest request;
+                while (!agent_->isExiting() && stream->Read(&request)) {
+                    LOG_DEBUG("received command request: requestId={}, commandCode={}",
+                              request.requestid(), command_code(request));
+                    const auto handled = dispatcher_.handle(request, stream.get());
+                    request.Clear();
+                    if (!handled) {
+                        LOG_INFO("command stream write failed while handling request");
+                        break;
+                    }
+                }
+                stream->WritesDone();
+                const auto status = stream->Finish();
+                if (!status.ok() && !agent_->isExiting()) {
+                    LOG_INFO("command service stream closed: {}, {}",
+                             static_cast<int>(status.error_code()), status.error_message());
+                } else {
+                    LOG_INFO("command service stream completed");
+                }
+            }
+
+            {
+                std::unique_lock<std::mutex> lock(command_worker_mutex_);
+                command_stream_context_ = nullptr;
+            }
+            {
+                std::unique_lock<std::mutex> lock(active_streams_mutex_);
+                cleanup_active_thread_count_streams();
+            }
+
+            if (agent_->isExiting() || wait_reconnect_delay(COMMAND_RECONNECT_DELAY)) {
+                break;
+            }
+        }
+        stop_active_thread_count_streams();
+        LOG_INFO("grpc command worker end");
+    } catch (const std::exception& e) {
+        LOG_ERROR("grpc command worker exception = {}", e.what());
+        stop_active_thread_count_streams();
+    }
+
+    void GrpcCommand::stopCommandWorker() {
+        cancel_command_stream();
+        stop_active_thread_count_streams();
     }
 
     //GrpcAgent

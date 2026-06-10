@@ -535,6 +535,29 @@ TEST_F(StatTest, AllSpansInOneBucketTest) {
     }
 }
 
+TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    agent_stats_->addActiveSpan(3001, now_ms - 100);
+    agent_stats_->addActiveSpan(3002, now_ms - 1200);
+    agent_stats_->addActiveSpan(3003, now_ms - 3200);
+    agent_stats_->addActiveSpan(3004, now_ms - 5200);
+
+    int32_t active_requests[4]{};
+    agent_stats_->collectActiveRequests(active_requests, now_ms);
+
+    EXPECT_EQ(active_requests[0], 1);
+    EXPECT_EQ(active_requests[1], 1);
+    EXPECT_EQ(active_requests[2], 1);
+    EXPECT_EQ(active_requests[3], 1);
+
+    agent_stats_->dropActiveSpan(3001);
+    agent_stats_->dropActiveSpan(3002);
+    agent_stats_->dropActiveSpan(3003);
+    agent_stats_->dropActiveSpan(3004);
+}
+
 // Test empty active span map
 TEST_F(StatTest, EmptyActiveSpanMapTest) {
     AgentStatsSnapshot snapshot;
