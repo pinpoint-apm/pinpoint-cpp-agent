@@ -39,12 +39,14 @@ namespace pinpoint {
                          std::unique_ptr<GrpcAgent> grpc_agent,
                          std::unique_ptr<GrpcMetadata> grpc_metadata,
                          std::unique_ptr<GrpcSpan> grpc_span,
-                         std::unique_ptr<GrpcStats> grpc_stat) :
+                         std::unique_ptr<GrpcStats> grpc_stat,
+                         std::unique_ptr<GrpcCommand> grpc_command) :
         config_(std::shared_ptr<const Config>(std::move(cfg))),
         grpc_agent_(std::move(grpc_agent)),
         grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
         grpc_stat_(std::move(grpc_stat)),
+        grpc_command_(std::move(grpc_command)),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
@@ -183,6 +185,9 @@ namespace pinpoint {
         grpc_metadata_->setAgentService(this);
         grpc_span_->setAgentService(this);
         grpc_stat_->setAgentService(this);
+        if (grpc_command_) {
+            grpc_command_->setAgentService(this);
+        }
 
         grpc_agent_->startAgentInfo();
 
@@ -190,6 +195,9 @@ namespace pinpoint {
         meta_thread_ = std::thread{&GrpcMetadata::sendMetaWorker, grpc_metadata_.get()};
         span_thread_ = std::thread{&GrpcSpan::sendSpanWorker, grpc_span_.get()};
         stat_thread_ = std::thread{&GrpcStats::sendStatsWorker, grpc_stat_.get()};
+        if (grpc_command_) {
+            command_thread_ = std::thread{&GrpcCommand::commandWorker, grpc_command_.get()};
+        }
         url_stat_add_thread_ = std::thread{&UrlStats::addUrlStatsWorker, url_stats_.get()};
         url_stat_send_thread_ = std::thread{&UrlStats::sendUrlStatsWorker, url_stats_.get()};
         agent_stat_thread_ = std::thread{&AgentStats::agentStatsWorker, agent_stats_.get()};
@@ -212,6 +220,9 @@ namespace pinpoint {
         grpc_metadata_->stopMetaWorker();
         grpc_span_->stopSpanWorker();
         grpc_stat_->stopStatsWorker();
+        if (grpc_command_) {
+            grpc_command_->stopCommandWorker();
+        }
 
         wait_grpc_workers();
 
@@ -219,6 +230,9 @@ namespace pinpoint {
         grpc_metadata_->closeChannel();
         grpc_stat_->closeChannel();
         grpc_span_->closeChannel();
+        if (grpc_command_) {
+            grpc_command_->closeChannel();
+        }
 
         LOG_INFO("close grpc workers done");
     }
@@ -241,6 +255,7 @@ namespace pinpoint {
             if (meta_thread_.joinable()) meta_thread_.join();
             if (span_thread_.joinable()) span_thread_.join();
             if (stat_thread_.joinable()) stat_thread_.join();
+            if (command_thread_.joinable()) command_thread_.join();
 
             {
                 std::unique_lock<std::mutex> l(state->m);
@@ -279,6 +294,7 @@ namespace pinpoint {
         safe_detach(meta_thread_);
         safe_detach(span_thread_);
         safe_detach(stat_thread_);
+        safe_detach(command_thread_);
         safe_detach(url_stat_add_thread_);
         safe_detach(url_stat_send_thread_);
         safe_detach(agent_stat_thread_);
@@ -555,8 +571,10 @@ namespace pinpoint {
             auto grpc_metadata = std::make_unique<GrpcMetadata>(cfg);
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);
+            auto grpc_command = std::make_unique<GrpcCommand>(cfg);
             return std::make_shared<AgentImpl>(cfg,
-                std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span), std::move(grpc_stat));
+                std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span),
+                std::move(grpc_stat), std::move(grpc_command));
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;

@@ -51,7 +51,8 @@ namespace pinpoint {
 				  std::unique_ptr<GrpcAgent> grpc_agent,
 				  std::unique_ptr<GrpcMetadata> grpc_metadata,
 				  std::unique_ptr<GrpcSpan> grpc_span,
-				  std::unique_ptr<GrpcStats> grpc_stat);
+				  std::unique_ptr<GrpcStats> grpc_stat,
+				  std::unique_ptr<GrpcCommand> grpc_command = nullptr);
         ~AgentImpl() noexcept override;
 
 		/**
@@ -130,6 +131,7 @@ namespace pinpoint {
     	std::unique_ptr<GrpcMetadata> grpc_metadata_{};
     	std::unique_ptr<GrpcSpan> grpc_span_{};
     	std::unique_ptr<GrpcStats> grpc_stat_{};
+	std::unique_ptr<GrpcCommand> grpc_command_{};
     	std::unique_ptr<UrlStats> url_stats_{};
     	std::unique_ptr<AgentStats> agent_stats_{};
 
@@ -138,6 +140,7 @@ namespace pinpoint {
     	std::thread meta_thread_;
     	std::thread span_thread_;
     	std::thread stat_thread_;
+	std::thread command_thread_;
     	std::thread url_stat_add_thread_;
     	std::thread url_stat_send_thread_;
     	std::thread agent_stat_thread_;

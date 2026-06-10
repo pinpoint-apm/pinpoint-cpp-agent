@@ -83,6 +83,7 @@ namespace pinpoint {
 
         void initAgentStats();
         void collectAgentStat(AgentStatsSnapshot &stat);
+        void collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms);
         void resetAgentStats();
 
     private:

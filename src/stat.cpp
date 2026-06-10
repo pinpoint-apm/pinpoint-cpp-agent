@@ -268,6 +268,27 @@ namespace pinpoint {
         active_span_map_.erase(spanId);
     }
 
+    void AgentStats::collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms) {
+        active_requests[0] = 0;
+        active_requests[1] = 0;
+        active_requests[2] = 0;
+        active_requests[3] = 0;
+
+        std::lock_guard<std::mutex> lock(active_span_mutex_);
+        for (const auto& iter : active_span_map_) {
+            auto active_time = sample_time_ms - iter.second;
+            if (active_time < 1000) {
+                active_requests[0]++;
+            } else if (active_time < 3000) {
+                active_requests[1]++;
+            } else if (active_time < 5000) {
+                active_requests[2]++;
+            } else {
+                active_requests[3]++;
+            }
+        }
+    }
+
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         std::chrono::seconds period = std::chrono::duration_cast<std::chrono::seconds>(now - last_collect_time_);
@@ -309,26 +330,7 @@ namespace pinpoint {
         stat.num_skip_new_ = skip_new_.exchange(0);
         stat.num_skip_cont_ = skip_cont_.exchange(0);
 
-        stat.active_requests_[0] = 0;
-        stat.active_requests_[1] = 0;
-        stat.active_requests_[2] = 0;
-        stat.active_requests_[3] = 0;
-
-        {
-            std::lock_guard<std::mutex> lock(active_span_mutex_);
-            for (const auto& iter : active_span_map_) {
-                auto active_time = stat.sample_time_ - iter.second;
-                if (active_time < 1000) {
-                    stat.active_requests_[0]++;
-                } else if (active_time < 3000) {
-                    stat.active_requests_[1]++;
-                } else if (active_time < 5000) {
-                    stat.active_requests_[2]++;
-                } else {
-                    stat.active_requests_[3]++;
-                }
-            }
-        }
+        collectActiveRequests(stat.active_requests_, stat.sample_time_);
     }
 
     void AgentStats::agentStatsWorker() try {

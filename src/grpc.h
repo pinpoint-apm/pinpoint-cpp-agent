@@ -20,12 +20,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <map>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <deque>
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -250,6 +252,73 @@ namespace pinpoint {
         void release_failed_cache(const MetaData& meta) const;
         void schedule_retry(PendingMeta&& pending);
         bool pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock);
+    };
+
+    /**
+     * @brief Dispatcher for collector-originated profiler commands.
+     */
+    class GrpcCommandDispatcher {
+    public:
+        using Handler = std::function<bool(const v1::PCmdRequest&, grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>*)>;
+
+        void registerHandler(int32_t command_code, Handler handler);
+        bool handle(const v1::PCmdRequest& request,
+                    grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) const;
+        std::vector<int32_t> supportedCommandCodes() const;
+
+    private:
+        std::unordered_map<int32_t, Handler> handlers_{};
+    };
+
+    /**
+     * @brief gRPC client responsible for the profiler command stream.
+     */
+    class GrpcCommand : public GrpcClient {
+    public:
+        explicit GrpcCommand(std::shared_ptr<const Config> config);
+        ~GrpcCommand() override;
+
+        /// @brief Worker loop that receives collector commands and dispatches them.
+        void commandWorker();
+        /// @brief Stops the command stream worker and any active response streams.
+        void stopCommandWorker();
+
+    protected:
+        void set_command_stub(std::unique_ptr<v1::ProfilerCommandService::StubInterface> stub) {
+            command_stub_ = std::move(stub);
+        }
+
+    private:
+        class ActiveThreadCountStream;
+
+        std::unique_ptr<v1::ProfilerCommandService::StubInterface> command_stub_{};
+        GrpcCommandDispatcher dispatcher_{};
+
+        std::mutex command_worker_mutex_{};
+        std::condition_variable command_worker_cv_{};
+        grpc::ClientContext* command_stream_context_{nullptr};
+        unsigned long socket_id_{0};
+
+        std::mutex active_streams_mutex_{};
+        std::vector<std::unique_ptr<ActiveThreadCountStream>> active_thread_count_streams_{};
+
+        void register_default_handlers();
+        bool handle_echo(const v1::PCmdRequest& request,
+                         grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
+        bool handle_active_thread_count(const v1::PCmdRequest& request,
+                                        grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
+        void build_command_context(grpc::ClientContext* context, unsigned long socket_id) const;
+        void build_active_thread_count_response(v1::PCmdActiveThreadCountRes* response,
+                                                int32_t request_id,
+                                                int32_t sequence_id) const;
+        void add_active_thread_count_stream(int32_t request_id);
+        void cleanup_active_thread_count_streams();
+        void stop_active_thread_count_streams();
+        bool write_fail_message(const v1::PCmdRequest& request,
+                                grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream,
+                                std::string_view message) const;
+        void cancel_command_stream();
+        bool wait_reconnect_delay(std::chrono::milliseconds delay);
     };
 
     /**
