@@ -47,10 +47,6 @@ namespace pinpoint {
         constexpr int GRPC_KEEPALIVE_TIME_MS = 30 * 1000;
         constexpr int GRPC_KEEPALIVE_TIMEOUT_MS = 60 * 1000;
         constexpr int GRPC_MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
-        constexpr int GRPC_AGENT_REQUEST_TIMEOUT_MS = 60 * 1000;
-        constexpr int GRPC_METADATA_REQUEST_TIMEOUT_MS = 5 * 1000;
-        constexpr int GRPC_SPAN_REQUEST_TIMEOUT_MS = 60 * 1000;
-        constexpr int GRPC_STAT_REQUEST_TIMEOUT_MS = 0;
         constexpr int GRPC_SENDER_QUEUE_SIZE = 1000;
         constexpr int GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = 1000;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
@@ -100,42 +96,14 @@ namespace pinpoint {
         constexpr const char* AGENT_INFO_MAX_TRY_PER_ATTEMPT = "PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT";
         constexpr const char* GRPC_SSL_TRUST_CERT_FILE_PATH = "PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH";
         constexpr const char* GRPC_SSL_ROOT_CERT_FILE_PATH = "PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH";
-        constexpr const char* GRPC_AGENT_SSL_ENABLE = "PINPOINT_CPP_GRPC_AGENT_SSL_ENABLE";
-        constexpr const char* GRPC_AGENT_REQUEST_TIMEOUT_MS = "PINPOINT_CPP_GRPC_AGENT_REQUEST_TIMEOUT_MS";
-        constexpr const char* GRPC_AGENT_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_AGENT_KEEPALIVE_TIME_MS";
-        constexpr const char* GRPC_AGENT_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_AGENT_KEEPALIVE_TIMEOUT_MS";
-        constexpr const char* GRPC_AGENT_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_AGENT_KEEPALIVE_PERMIT_WITHOUT_CALLS";
-        constexpr const char* GRPC_AGENT_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_AGENT_MAX_SEND_MESSAGE_SIZE";
-        constexpr const char* GRPC_AGENT_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_AGENT_MAX_RECEIVE_MESSAGE_SIZE";
-        constexpr const char* GRPC_AGENT_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_AGENT_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_AGENT_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_AGENT_CHANNEL_EXECUTOR_QUEUE_SIZE";
-        constexpr const char* GRPC_METADATA_SSL_ENABLE = "PINPOINT_CPP_GRPC_METADATA_SSL_ENABLE";
-        constexpr const char* GRPC_METADATA_REQUEST_TIMEOUT_MS = "PINPOINT_CPP_GRPC_METADATA_REQUEST_TIMEOUT_MS";
-        constexpr const char* GRPC_METADATA_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_METADATA_KEEPALIVE_TIME_MS";
-        constexpr const char* GRPC_METADATA_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_METADATA_KEEPALIVE_TIMEOUT_MS";
-        constexpr const char* GRPC_METADATA_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_METADATA_KEEPALIVE_PERMIT_WITHOUT_CALLS";
-        constexpr const char* GRPC_METADATA_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_METADATA_MAX_SEND_MESSAGE_SIZE";
-        constexpr const char* GRPC_METADATA_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_METADATA_MAX_RECEIVE_MESSAGE_SIZE";
-        constexpr const char* GRPC_METADATA_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_METADATA_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_METADATA_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_METADATA_CHANNEL_EXECUTOR_QUEUE_SIZE";
-        constexpr const char* GRPC_SPAN_SSL_ENABLE = "PINPOINT_CPP_GRPC_SPAN_SSL_ENABLE";
-        constexpr const char* GRPC_SPAN_REQUEST_TIMEOUT_MS = "PINPOINT_CPP_GRPC_SPAN_REQUEST_TIMEOUT_MS";
-        constexpr const char* GRPC_SPAN_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_SPAN_KEEPALIVE_TIME_MS";
-        constexpr const char* GRPC_SPAN_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_SPAN_KEEPALIVE_TIMEOUT_MS";
-        constexpr const char* GRPC_SPAN_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_SPAN_KEEPALIVE_PERMIT_WITHOUT_CALLS";
-        constexpr const char* GRPC_SPAN_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_SPAN_MAX_SEND_MESSAGE_SIZE";
-        constexpr const char* GRPC_SPAN_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_SPAN_MAX_RECEIVE_MESSAGE_SIZE";
-        constexpr const char* GRPC_SPAN_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_SPAN_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_SPAN_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_SPAN_CHANNEL_EXECUTOR_QUEUE_SIZE";
-        constexpr const char* GRPC_STAT_SSL_ENABLE = "PINPOINT_CPP_GRPC_STAT_SSL_ENABLE";
-        constexpr const char* GRPC_STAT_REQUEST_TIMEOUT_MS = "PINPOINT_CPP_GRPC_STAT_REQUEST_TIMEOUT_MS";
-        constexpr const char* GRPC_STAT_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_STAT_KEEPALIVE_TIME_MS";
-        constexpr const char* GRPC_STAT_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_STAT_KEEPALIVE_TIMEOUT_MS";
-        constexpr const char* GRPC_STAT_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_STAT_KEEPALIVE_PERMIT_WITHOUT_CALLS";
-        constexpr const char* GRPC_STAT_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_STAT_MAX_SEND_MESSAGE_SIZE";
-        constexpr const char* GRPC_STAT_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_STAT_MAX_RECEIVE_MESSAGE_SIZE";
-        constexpr const char* GRPC_STAT_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_STAT_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_STAT_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_STAT_CHANNEL_EXECUTOR_QUEUE_SIZE";
+        constexpr const char* GRPC_SSL_ENABLE = "PINPOINT_CPP_GRPC_SSL_ENABLE";
+        constexpr const char* GRPC_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_KEEPALIVE_TIME_MS";
+        constexpr const char* GRPC_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_KEEPALIVE_TIMEOUT_MS";
+        constexpr const char* GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS";
+        constexpr const char* GRPC_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_MAX_SEND_MESSAGE_SIZE";
+        constexpr const char* GRPC_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_MAX_RECEIVE_MESSAGE_SIZE";
+        constexpr const char* GRPC_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_SENDER_QUEUE_SIZE";
+        constexpr const char* GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE";
         constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
@@ -220,11 +188,7 @@ namespace pinpoint {
         };
 
         struct GrpcChannelOptions {
-            explicit GrpcChannelOptions(int request_timeout = defaults::GRPC_STAT_REQUEST_TIMEOUT_MS)
-                : request_timeout_ms(request_timeout) {}
-
             bool ssl_enable = false;
-            int request_timeout_ms;
             int keepalive_time_ms = defaults::GRPC_KEEPALIVE_TIME_MS;
             int keepalive_timeout_ms = defaults::GRPC_KEEPALIVE_TIMEOUT_MS;
             bool keepalive_permit_without_calls = false;
@@ -236,10 +200,7 @@ namespace pinpoint {
 
         struct {
             GrpcSslOptions ssl;
-            GrpcChannelOptions agent{defaults::GRPC_AGENT_REQUEST_TIMEOUT_MS};
-            GrpcChannelOptions metadata{defaults::GRPC_METADATA_REQUEST_TIMEOUT_MS};
-            GrpcChannelOptions span{defaults::GRPC_SPAN_REQUEST_TIMEOUT_MS};
-            GrpcChannelOptions stat{defaults::GRPC_STAT_REQUEST_TIMEOUT_MS};
+            GrpcChannelOptions channel;
         } grpc;
 
         struct {

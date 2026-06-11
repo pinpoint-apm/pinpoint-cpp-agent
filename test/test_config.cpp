@@ -61,42 +61,14 @@ private:
         const std::vector<const char*> grpc_env_vars = {
             env::GRPC_SSL_TRUST_CERT_FILE_PATH,
             env::GRPC_SSL_ROOT_CERT_FILE_PATH,
-            env::GRPC_AGENT_SSL_ENABLE,
-            env::GRPC_AGENT_REQUEST_TIMEOUT_MS,
-            env::GRPC_AGENT_KEEPALIVE_TIME_MS,
-            env::GRPC_AGENT_KEEPALIVE_TIMEOUT_MS,
-            env::GRPC_AGENT_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-            env::GRPC_AGENT_MAX_SEND_MESSAGE_SIZE,
-            env::GRPC_AGENT_MAX_RECEIVE_MESSAGE_SIZE,
-            env::GRPC_AGENT_SENDER_QUEUE_SIZE,
-            env::GRPC_AGENT_CHANNEL_EXECUTOR_QUEUE_SIZE,
-            env::GRPC_METADATA_SSL_ENABLE,
-            env::GRPC_METADATA_REQUEST_TIMEOUT_MS,
-            env::GRPC_METADATA_KEEPALIVE_TIME_MS,
-            env::GRPC_METADATA_KEEPALIVE_TIMEOUT_MS,
-            env::GRPC_METADATA_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-            env::GRPC_METADATA_MAX_SEND_MESSAGE_SIZE,
-            env::GRPC_METADATA_MAX_RECEIVE_MESSAGE_SIZE,
-            env::GRPC_METADATA_SENDER_QUEUE_SIZE,
-            env::GRPC_METADATA_CHANNEL_EXECUTOR_QUEUE_SIZE,
-            env::GRPC_SPAN_SSL_ENABLE,
-            env::GRPC_SPAN_REQUEST_TIMEOUT_MS,
-            env::GRPC_SPAN_KEEPALIVE_TIME_MS,
-            env::GRPC_SPAN_KEEPALIVE_TIMEOUT_MS,
-            env::GRPC_SPAN_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-            env::GRPC_SPAN_MAX_SEND_MESSAGE_SIZE,
-            env::GRPC_SPAN_MAX_RECEIVE_MESSAGE_SIZE,
-            env::GRPC_SPAN_SENDER_QUEUE_SIZE,
-            env::GRPC_SPAN_CHANNEL_EXECUTOR_QUEUE_SIZE,
-            env::GRPC_STAT_SSL_ENABLE,
-            env::GRPC_STAT_REQUEST_TIMEOUT_MS,
-            env::GRPC_STAT_KEEPALIVE_TIME_MS,
-            env::GRPC_STAT_KEEPALIVE_TIMEOUT_MS,
-            env::GRPC_STAT_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-            env::GRPC_STAT_MAX_SEND_MESSAGE_SIZE,
-            env::GRPC_STAT_MAX_RECEIVE_MESSAGE_SIZE,
-            env::GRPC_STAT_SENDER_QUEUE_SIZE,
-            env::GRPC_STAT_CHANNEL_EXECUTOR_QUEUE_SIZE,
+            env::GRPC_SSL_ENABLE,
+            env::GRPC_KEEPALIVE_TIME_MS,
+            env::GRPC_KEEPALIVE_TIMEOUT_MS,
+            env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
+            env::GRPC_MAX_SEND_MESSAGE_SIZE,
+            env::GRPC_MAX_RECEIVE_MESSAGE_SIZE,
+            env::GRPC_SENDER_QUEUE_SIZE,
+            env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE,
         };
         for (const char* name : grpc_env_vars) {
             saved_env_vars_[name] = GetEnvVar(name);
@@ -183,28 +155,14 @@ Grpc:
   Ssl:
     TrustCertFilePath: "/tmp/trust.pem"
     RootCertFilePath: "/tmp/root.pem"
-  Agent:
-    SslEnable: true
-    RequestTimeoutMs: 61000
-    KeepAliveTimeMs: 31000
-    KeepAliveTimeoutMs: 62000
-    KeepAlivePermitWithoutCalls: true
-    MaxSendMessageSize: 5242880
-    MaxReceiveMessageSize: 6291456
-    SenderQueueSize: 1100
-    ChannelExecutorQueueSize: 1200
-  Metadata:
-    SslEnable: true
-    RequestTimeoutMs: 7000
-    SenderQueueSize: 1300
-  Span:
-    SslEnable: true
-    RequestTimeoutMs: 62000
-    MaxSendMessageSize: 7340032
-    MaxReceiveMessageSize: 8388608
-  Stat:
-    SslEnable: false
-    RequestTimeoutMs: 0
+  SslEnable: true
+  KeepAliveTimeMs: 31000
+  KeepAliveTimeoutMs: 62000
+  KeepAlivePermitWithoutCalls: true
+  MaxSendMessageSize: 5242880
+  MaxReceiveMessageSize: 6291456
+  SenderQueueSize: 1100
+  ChannelExecutorQueueSize: 1200
 
 Sampling:
   Type: "PERCENT"
@@ -321,18 +279,11 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->collector.stat_port, 9992) << "Default stat port should be 9992";
 
     // Test gRPC channel defaults
-    EXPECT_FALSE(config->grpc.agent.ssl_enable) << "Agent gRPC SSL should be disabled by default";
-    EXPECT_FALSE(config->grpc.metadata.ssl_enable) << "Metadata gRPC SSL should be disabled by default";
-    EXPECT_FALSE(config->grpc.span.ssl_enable) << "Span gRPC SSL should be disabled by default";
-    EXPECT_FALSE(config->grpc.stat.ssl_enable) << "Stat gRPC SSL should be disabled by default";
-    EXPECT_EQ(config->grpc.agent.request_timeout_ms, 60000) << "Agent request timeout should preserve current behavior";
-    EXPECT_EQ(config->grpc.metadata.request_timeout_ms, 5000) << "Metadata request timeout should preserve current behavior";
-    EXPECT_EQ(config->grpc.span.request_timeout_ms, 60000) << "Span request timeout should preserve current behavior";
-    EXPECT_EQ(config->grpc.stat.request_timeout_ms, 0) << "Stat stream should have no deadline by default";
-    EXPECT_EQ(config->grpc.agent.keepalive_time_ms, 30000) << "Default keepalive time should be 30s";
-    EXPECT_EQ(config->grpc.agent.keepalive_timeout_ms, 60000) << "Default keepalive timeout should be 60s";
-    EXPECT_EQ(config->grpc.agent.max_send_message_size, 4 * 1024 * 1024) << "Default max send size should be 4MiB";
-    EXPECT_EQ(config->grpc.agent.max_receive_message_size, 4 * 1024 * 1024) << "Default max receive size should be 4MiB";
+    EXPECT_FALSE(config->grpc.channel.ssl_enable) << "gRPC SSL should be disabled by default";
+    EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 30000) << "Default keepalive time should be 30s";
+    EXPECT_EQ(config->grpc.channel.keepalive_timeout_ms, 60000) << "Default keepalive timeout should be 60s";
+    EXPECT_EQ(config->grpc.channel.max_send_message_size, 4 * 1024 * 1024) << "Default max send size should be 4MiB";
+    EXPECT_EQ(config->grpc.channel.max_receive_message_size, 4 * 1024 * 1024) << "Default max receive size should be 4MiB";
     
     // Test sampling defaults
     EXPECT_EQ(config->sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
@@ -429,24 +380,14 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     // Test gRPC channel configuration
     EXPECT_EQ(config->grpc.ssl.trust_cert_file_path, "/tmp/trust.pem") << "Trust cert path should match YAML";
     EXPECT_EQ(config->grpc.ssl.root_cert_file_path, "/tmp/root.pem") << "Root cert path should match YAML";
-    EXPECT_TRUE(config->grpc.agent.ssl_enable) << "Agent SSL enable should match YAML";
-    EXPECT_EQ(config->grpc.agent.request_timeout_ms, 61000) << "Agent request timeout should match YAML";
-    EXPECT_EQ(config->grpc.agent.keepalive_time_ms, 31000) << "Agent keepalive time should match YAML";
-    EXPECT_EQ(config->grpc.agent.keepalive_timeout_ms, 62000) << "Agent keepalive timeout should match YAML";
-    EXPECT_TRUE(config->grpc.agent.keepalive_permit_without_calls) << "Agent keepalive permit should match YAML";
-    EXPECT_EQ(config->grpc.agent.max_send_message_size, 5242880) << "Agent max send size should match YAML";
-    EXPECT_EQ(config->grpc.agent.max_receive_message_size, 6291456) << "Agent max receive size should match YAML";
-    EXPECT_EQ(config->grpc.agent.sender_queue_size, 1100) << "Agent sender queue size should match YAML";
-    EXPECT_EQ(config->grpc.agent.channel_executor_queue_size, 1200) << "Agent channel queue size should match YAML";
-    EXPECT_TRUE(config->grpc.metadata.ssl_enable) << "Metadata SSL enable should match YAML";
-    EXPECT_EQ(config->grpc.metadata.request_timeout_ms, 7000) << "Metadata request timeout should match YAML";
-    EXPECT_EQ(config->grpc.metadata.sender_queue_size, 1300) << "Metadata sender queue size should match YAML";
-    EXPECT_TRUE(config->grpc.span.ssl_enable) << "Span SSL enable should match YAML";
-    EXPECT_EQ(config->grpc.span.request_timeout_ms, 62000) << "Span request timeout should match YAML";
-    EXPECT_EQ(config->grpc.span.max_send_message_size, 7340032) << "Span max send size should match YAML";
-    EXPECT_EQ(config->grpc.span.max_receive_message_size, 8388608) << "Span max receive size should match YAML";
-    EXPECT_FALSE(config->grpc.stat.ssl_enable) << "Stat SSL enable should match YAML";
-    EXPECT_EQ(config->grpc.stat.request_timeout_ms, 0) << "Stat request timeout should match YAML";
+    EXPECT_TRUE(config->grpc.channel.ssl_enable) << "gRPC SSL enable should match YAML";
+    EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 31000) << "gRPC keepalive time should match YAML";
+    EXPECT_EQ(config->grpc.channel.keepalive_timeout_ms, 62000) << "gRPC keepalive timeout should match YAML";
+    EXPECT_TRUE(config->grpc.channel.keepalive_permit_without_calls) << "gRPC keepalive permit should match YAML";
+    EXPECT_EQ(config->grpc.channel.max_send_message_size, 5242880) << "gRPC max send size should match YAML";
+    EXPECT_EQ(config->grpc.channel.max_receive_message_size, 6291456) << "gRPC max receive size should match YAML";
+    EXPECT_EQ(config->grpc.channel.sender_queue_size, 1100) << "gRPC sender queue size should match YAML";
+    EXPECT_EQ(config->grpc.channel.channel_executor_queue_size, 1200) << "gRPC channel queue size should match YAML";
     
     // Test sampling configuration
     EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
@@ -577,13 +518,11 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS, "50", 1);
     setenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, "4", 1);
     setenv(env::GRPC_SSL_TRUST_CERT_FILE_PATH, "/env/trust.pem", 1);
-    setenv(env::GRPC_AGENT_SSL_ENABLE, "true", 1);
-    setenv(env::GRPC_AGENT_REQUEST_TIMEOUT_MS, "11111", 1);
-    setenv(env::GRPC_AGENT_KEEPALIVE_TIME_MS, "22222", 1);
-    setenv(env::GRPC_AGENT_MAX_SEND_MESSAGE_SIZE, "33333", 1);
-    setenv(env::GRPC_METADATA_SENDER_QUEUE_SIZE, "4444", 1);
-    setenv(env::GRPC_SPAN_MAX_RECEIVE_MESSAGE_SIZE, "55555", 1);
-    setenv(env::GRPC_STAT_REQUEST_TIMEOUT_MS, "66666", 1);
+    setenv(env::GRPC_SSL_ENABLE, "true", 1);
+    setenv(env::GRPC_KEEPALIVE_TIME_MS, "22222", 1);
+    setenv(env::GRPC_MAX_SEND_MESSAGE_SIZE, "33333", 1);
+    setenv(env::GRPC_SENDER_QUEUE_SIZE, "4444", 1);
+    setenv(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE, "55555", 1);
     
     auto config = make_config();
     
@@ -611,13 +550,11 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
 
     // Test gRPC environment variable values
     EXPECT_EQ(config->grpc.ssl.trust_cert_file_path, "/env/trust.pem") << "Trust cert path should match environment variable";
-    EXPECT_TRUE(config->grpc.agent.ssl_enable) << "Agent SSL enable should match environment variable";
-    EXPECT_EQ(config->grpc.agent.request_timeout_ms, 11111) << "Agent request timeout should match environment variable";
-    EXPECT_EQ(config->grpc.agent.keepalive_time_ms, 22222) << "Agent keepalive time should match environment variable";
-    EXPECT_EQ(config->grpc.agent.max_send_message_size, 33333) << "Agent max send size should match environment variable";
-    EXPECT_EQ(config->grpc.metadata.sender_queue_size, 4444) << "Metadata sender queue should match environment variable";
-    EXPECT_EQ(config->grpc.span.max_receive_message_size, 55555) << "Span max receive size should match environment variable";
-    EXPECT_EQ(config->grpc.stat.request_timeout_ms, 66666) << "Stat request timeout should match environment variable";
+    EXPECT_TRUE(config->grpc.channel.ssl_enable) << "gRPC SSL enable should match environment variable";
+    EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 22222) << "gRPC keepalive time should match environment variable";
+    EXPECT_EQ(config->grpc.channel.max_send_message_size, 33333) << "gRPC max send size should match environment variable";
+    EXPECT_EQ(config->grpc.channel.sender_queue_size, 4444) << "gRPC sender queue should match environment variable";
+    EXPECT_EQ(config->grpc.channel.max_receive_message_size, 55555) << "gRPC max receive size should match environment variable";
 }
 
 // Test environment variable override YAML
@@ -1658,7 +1595,7 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenGrpcChannelOptionsChangeTest) {
     old_config->collector.host = "localhost";
 
     Config new_config = *old_config;
-    new_config.grpc.span.ssl_enable = true;
+    new_config.grpc.channel.ssl_enable = true;
 
     EXPECT_FALSE(new_config.isReloadable(old_config))
         << "Should not be reloadable when gRPC channel options change";

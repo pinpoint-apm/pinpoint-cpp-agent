@@ -366,20 +366,6 @@ namespace pinpoint {
     }
 
     namespace {
-        const Config::GrpcChannelOptions& grpc_channel_options(const Config& config, ClientType client_type) {
-            switch (client_type) {
-                case AGENT:
-                    return config.grpc.agent;
-                case METADATA:
-                    return config.grpc.metadata;
-                case SPAN:
-                    return config.grpc.span;
-                case STATS:
-                    return config.grpc.stat;
-            }
-            return config.grpc.agent;
-        }
-
         int grpc_collector_port(const Config& config, ClientType client_type) {
             switch (client_type) {
                 case AGENT:
@@ -453,7 +439,7 @@ namespace pinpoint {
         }
 
         std::shared_ptr<grpc::Channel> build_channel(const Config& config, ClientType client_type) {
-            const auto& options = grpc_channel_options(config, client_type);
+            const auto& options = config.grpc.channel;
             const auto client_name = grpc_client_name(client_type);
             const auto addr = absl::StrCat(config.collector.host, ":", grpc_collector_port(config, client_type));
             auto credentials = make_channel_credentials(config.grpc.ssl, options, client_name);
@@ -467,11 +453,10 @@ namespace pinpoint {
             return grpc::CreateCustomChannel(addr, credentials, channel_args);
         }
 
-        static void set_deadline(grpc::ClientContext& ctx, const int timeout_ms) {
-            if (timeout_ms <= 0) {
-                return;
-            }
-            auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout_ms);
+        constexpr int GRPC_REQUEST_TIMEOUT_MS = 5000;
+
+        static void set_request_deadline(grpc::ClientContext& ctx) {
+            auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(GRPC_REQUEST_TIMEOUT_MS);
             ctx.set_deadline(deadline);
         }
     }
@@ -569,7 +554,7 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(channel_mutex_);
 
         build_grpc_context(&ctx, 0);
-        set_deadline(ctx, config_->grpc.metadata.request_timeout_ms);
+        set_request_deadline(ctx);
 
         const grpc::Status status = stub_method(&ctx, request, &reply);
 
@@ -724,7 +709,7 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        const auto max_queue_size = static_cast<size_t>(config_->grpc.metadata.sender_queue_size);
+        const auto max_queue_size = static_cast<size_t>(config_->grpc.channel.sender_queue_size);
         if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
             meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}, meta_sequence_++});
         } else {
@@ -1018,7 +1003,7 @@ namespace pinpoint {
         v1::PCmdEchoResponse response;
 
         build_command_context(&ctx, 0);
-        set_deadline(ctx, config_->grpc.agent.request_timeout_ms);
+        set_request_deadline(ctx);
 
         response.mutable_commonresponse()->set_responseid(request.requestid());
         response.set_message(request.commandecho().message());
@@ -1208,7 +1193,7 @@ namespace pinpoint {
         auto* agent_info = google::protobuf::Arena::Create<v1::PAgentInfo>(&arena);
         build_agent_info(agent_info, &arena);
 
-        set_deadline(ctx, config_->grpc.agent.request_timeout_ms);
+        set_request_deadline(ctx);
         const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
 
         if (status.ok()) {
@@ -1580,7 +1565,7 @@ namespace pinpoint {
         }
 
         build_grpc_context(&pending->ctx, 0);
-        set_deadline(pending->ctx, config_->grpc.span.request_timeout_ms);
+        set_request_deadline(pending->ctx);
 
         const int batch_count = pending->request->span_size();
         LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
@@ -1682,7 +1667,6 @@ namespace pinpoint {
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
         build_grpc_context(stream_context_.get(), 0);
-        set_deadline(*stream_context_, config_->grpc.stat.request_timeout_ms);
         stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
         AddHold();
