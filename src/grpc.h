@@ -101,7 +101,8 @@ namespace pinpoint {
         std::mutex stream_mutex_{};
         std::condition_variable stream_cv_{};
         grpc::Status stream_status_{};
-        GrpcStreamStatus grpc_status_{};
+        // Idle state: no write in flight and the stream is not finished.
+        GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
         std::atomic<bool> force_queue_empty_{false};
 
         /**
@@ -235,7 +236,6 @@ namespace pinpoint {
             std::unique_ptr<MetaData> meta;
             int retry_count{0};
             std::chrono::steady_clock::time_point available_at{};
-            uint64_t sequence{0};
         };
 
         std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
@@ -245,7 +245,6 @@ namespace pinpoint {
         std::mutex meta_queue_mutex_{};
         std::condition_variable meta_queue_cv_{};
         bool meta_stop_requested_{false};
-        uint64_t meta_sequence_{0};
 
         template<typename Request, typename StubMethod>
         GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);

@@ -123,12 +123,7 @@ namespace pinpoint {
             const auto& v = std::get<BytesStringStringValue>(val.data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
 
-            // convert vector<unsigned char> to string (copy)
-            std::string_view bytes_view(
-                reinterpret_cast<const char*>(v.bytesValue.data()),
-                v.bytesValue.size()
-            );
-            bssv->set_bytesvalue(std::string(bytes_view));
+            bssv->set_bytesvalue(std::string(v.bytesValue.begin(), v.bytesValue.end()));
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
@@ -620,12 +615,7 @@ namespace pinpoint {
     GrpcRequestStatus GrpcMetadata::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
         v1::PSqlUidMetaData grpc_sql_uid_meta;
 
-        // convert vector<unsigned char> to string (copy)
-        std::string_view uid_view(
-            reinterpret_cast<const char*>(sql_uid_meta.uid_.data()),
-            sql_uid_meta.uid_.size()
-        );
-        grpc_sql_uid_meta.set_sqluid(std::string(uid_view));
+        grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
         grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
 
         auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
@@ -715,7 +705,7 @@ namespace pinpoint {
 
         const auto max_queue_size = static_cast<size_t>(config_->grpc.channel.sender_queue_size);
         if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
-            meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}, meta_sequence_++});
+            meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}});
         } else {
             LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
         }
@@ -731,7 +721,6 @@ namespace pinpoint {
 
     void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
         pending.available_at = std::chrono::steady_clock::now() + meta_retry_delay();
-        pending.sequence = meta_sequence_++;
         retry_queue_.emplace(pending.available_at, std::move(pending));
         meta_queue_cv_.notify_one();
     }
@@ -1760,6 +1749,14 @@ namespace pinpoint {
 
         stream_context_ = std::make_unique<grpc::ClientContext>();
         build_grpc_context(stream_context_.get(), 0);
+
+        {
+            // Clear a stale STREAM_DONE left by the previous session so
+            // finish_stats_stream() waits for this stream's own OnDone.
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            grpc_status_ = STREAM_CONTINUE;
+        }
+
         stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
         AddHold();
@@ -1933,9 +1930,12 @@ namespace pinpoint {
                 if (!start_stats_stream()) {
                     break;
                 }
-                if (force_queue_empty_) {
-                    empty_stats_queue();
-                }
+            }
+            // The staleness flag is also set by a queue overflow while the
+            // stream stays up; consume it every cycle so it cannot linger
+            // and purge fresh stats at an unrelated reconnect much later.
+            if (force_queue_empty_) {
+                empty_stats_queue();
             }
 
             lock.lock();
