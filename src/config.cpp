@@ -162,29 +162,32 @@ namespace pinpoint {
         watcher_to_join.join();
     }
 
+    // Each getter guards the whole lookup, not just the conversion: yaml-cpp
+    // throws from the subscript itself (BadSubscript on scalar nodes) and from
+    // element-level conversions (TypedBadConversion<Element> inside vector
+    // decoding), all of which derive from YAML::Exception. A malformed config
+    // must degrade to defaults, never throw into the embedding application.
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
-        if (yaml[cname]) {
-            try {
+        try {
+            if (yaml[cname]) {
                 return yaml[cname].as<bool>();
-            } catch (const YAML::TypedBadConversion<bool>& e) {
-                LOG_WARN("Failed to convert '{}' to boolean: {}. Using default value: {}", 
-                         std::string(cname), e.what(), default_value);
-                return default_value;
             }
+        } catch (const YAML::Exception& e) {
+            LOG_WARN("Failed to read '{}' as boolean: {}. Using default value: {}",
+                     std::string(cname), e.what(), default_value);
         }
 
         return default_value;
     }
 
     static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
-        if (yaml[cname]) {
-            try {
+        try {
+            if (yaml[cname]) {
                 return yaml[cname].as<std::string>();
-            } catch (const YAML::TypedBadConversion<std::string>& e) {
-                LOG_WARN("Failed to convert '{}' to string: {}. Using default value: '{}'", 
-                         std::string(cname), e.what(), default_value);
-                return default_value;
             }
+        } catch (const YAML::Exception& e) {
+            LOG_WARN("Failed to read '{}' as string: {}. Using default value: '{}'",
+                     std::string(cname), e.what(), default_value);
         }
 
         return default_value;
@@ -192,28 +195,26 @@ namespace pinpoint {
 
     static std::vector<std::string> get_string_vector(const YAML::Node& yaml, std::string_view cname,
                                                       std::vector<std::string> default_value) {
-        if (yaml[cname]) {
-            try {
+        try {
+            if (yaml[cname]) {
                 return yaml[cname].as<std::vector<std::string>>();
-            } catch (const YAML::TypedBadConversion<std::vector<std::string>>& e) {
-                LOG_WARN("Failed to convert '{}' to string vector: {}. Using default value", 
-                         std::string(cname), e.what());
-                return default_value;
             }
+        } catch (const YAML::Exception& e) {
+            LOG_WARN("Failed to read '{}' as string vector: {}. Using default value",
+                     std::string(cname), e.what());
         }
 
         return default_value;
     }
 
     static int get_int(const YAML::Node& yaml, std::string_view cname, int default_value) {
-        if (yaml[cname]) {
-            try {
+        try {
+            if (yaml[cname]) {
                 return yaml[cname].as<int>();
-            } catch (const YAML::TypedBadConversion<int>& e) {
-                LOG_WARN("Failed to convert '{}' to int: {}. Using default value: {}", 
-                         std::string(cname), e.what(), default_value);
-                return default_value;
             }
+        } catch (const YAML::Exception& e) {
+            LOG_WARN("Failed to read '{}' as int: {}. Using default value: {}",
+                     std::string(cname), e.what(), default_value);
         }
 
         return default_value;
@@ -246,14 +247,13 @@ namespace pinpoint {
     }
 
     static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
-        if (yaml[cname]) {
-            try {
+        try {
+            if (yaml[cname]) {
                 return yaml[cname].as<double>();
-            } catch (const YAML::TypedBadConversion<double>& e) {
-                LOG_WARN("Failed to convert '{}' to double: {}. Using default value: {}", 
-                         std::string(cname), e.what(), default_value);
-                return default_value;
             }
+        } catch (const YAML::Exception& e) {
+            LOG_WARN("Failed to read '{}' as double: {}. Using default value: {}",
+                     std::string(cname), e.what(), default_value);
         }
 
         return default_value;
@@ -725,7 +725,11 @@ namespace pinpoint {
         }
     }
 
-    std::shared_ptr<Config> make_config() {
+    // make_config() is reached from the public CreateAgent() entry points, so
+    // it must never let a parsing problem escape into the host application:
+    // yaml errors degrade to defaults, and the function-level handler below is
+    // the last-resort backstop.
+    std::shared_ptr<Config> make_config() try {
         auto config = std::make_shared<Config>();
         bool is_container_set = false;
 
@@ -746,13 +750,20 @@ namespace pinpoint {
         if (!user_config.empty()) {
             try {
                 yaml = YAML::Load(user_config);
-            } catch (const YAML::ParserException& e) {
+            } catch (const YAML::Exception& e) {
                 LOG_ERROR("yaml parsing exception = {}", e.what());
                 return config;
             }
         }
 
-        load_yaml_config(yaml, *config, is_container_set);
+        try {
+            load_yaml_config(yaml, *config, is_container_set);
+        } catch (const std::exception& e) {
+            // E.g. a section node of the wrong shape (BadSubscript) that the
+            // per-key getters cannot intercept. Keep whatever was parsed so
+            // far and continue with defaults plus environment overrides.
+            LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
+        }
         load_env_config(*config, is_container_set);
 
         if (!config->log.file_path.empty()) {
@@ -877,6 +888,12 @@ namespace pinpoint {
 
         LOG_INFO("config: {}", "\n" + to_config_string(*config));
         return config;
+    } catch (const std::exception& e) {
+        try { LOG_ERROR("make config exception = {}", e.what()); } catch (...) {}
+        return nullptr;
+    } catch (...) {
+        try { LOG_ERROR("make config unknown exception"); } catch (...) {}
+        return nullptr;
     }
 
     std::string to_config_string(const Config& config) {

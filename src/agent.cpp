@@ -394,6 +394,9 @@ namespace pinpoint {
     } catch (const std::exception& e) {
         LOG_ERROR("new span exception = {}", e.what());
         return noopSpan();
+    } catch (...) {
+        LOG_ERROR("new span unknown exception");
+        return noopSpan();
     }
 
 	bool AgentImpl::Enable() {
@@ -477,6 +480,9 @@ namespace pinpoint {
     } catch (const std::exception &e) {
         LOG_ERROR("failed to cache api meta: exception = {}", e.what());
         return 0;
+    } catch (...) {
+        LOG_ERROR("failed to cache api meta: unknown exception");
+        return 0;
     }
 
     void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const {
@@ -505,6 +511,9 @@ namespace pinpoint {
     } catch (const std::exception &e) {
         LOG_ERROR("failed to cache error meta: exception = {}", e.what());
         return 0;
+    } catch (...) {
+        LOG_ERROR("failed to cache error meta: unknown exception");
+        return 0;
     }
 
     void AgentImpl::removeCacheError(const StringMeta& error_meta) const {
@@ -530,6 +539,9 @@ namespace pinpoint {
     } catch (const std::exception &e) {
         LOG_ERROR("failed to cache sql meta: exception = {}", e.what());
         return 0;
+    } catch (...) {
+        LOG_ERROR("failed to cache sql meta: unknown exception");
+        return 0;
     }
 
     void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const {
@@ -554,6 +566,9 @@ namespace pinpoint {
         return uid;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to cache sql uid meta: exception = {}", e.what());
+        return {};
+    } catch (...) {
+        LOG_ERROR("failed to cache sql uid meta: unknown exception");
         return {};
     }
 
@@ -619,6 +634,9 @@ namespace pinpoint {
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;
+        } catch (...) {
+            LOG_ERROR("make agent unknown exception");
+            return nullptr;
         }
     }
 
@@ -654,21 +672,27 @@ namespace pinpoint {
         return agent;
     }
 
-    AgentPtr CreateAgent() {
+    // Public entry points: a failure to configure or construct the agent must
+    // surface as a noop agent, never as an exception in the host application.
+    AgentPtr CreateAgent() try {
         const auto cfg = make_config();
         if (!cfg) {
             return noopAgent();
         }
         return create_agent_helper(std::move(cfg));
+    } catch (...) {
+        return noopAgent();
     }
 
-    AgentPtr CreateAgent(int32_t app_type) {
+    AgentPtr CreateAgent(int32_t app_type) try {
         auto cfg = make_config();
         if (!cfg) {
             return noopAgent();
         }
         cfg->app_type_ = app_type;
         return create_agent_helper(std::move(cfg));
+    } catch (...) {
+        return noopAgent();
     }
 
     AgentPtr GlobalAgent() {
