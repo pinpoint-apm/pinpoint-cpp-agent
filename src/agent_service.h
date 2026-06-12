@@ -55,6 +55,18 @@
        * @return `true` when the shutdown sequence is in progress.
        */
       virtual bool isExiting() const = 0;
+
+      /**
+       * @brief Returns a shared handle that keeps the agent alive.
+       *
+       * Spans capture this handle so that user code holding a span (or span
+       * handle in the C API) past the release of the last agent reference can
+       * never dereference a destroyed agent.
+       *
+       * @return Shared pointer to this service, or nullptr when the instance
+       *         is not owned by a shared_ptr (e.g. test fixtures).
+       */
+      virtual std::shared_ptr<AgentService> selfRef() noexcept { return nullptr; }
  
       /// @brief Returns the configured application name.
       virtual std::string getAppName() const = 0;

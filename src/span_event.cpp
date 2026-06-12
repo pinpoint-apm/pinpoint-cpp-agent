@@ -28,10 +28,9 @@ namespace pinpoint {
 
     std::atomic<int32_t> Exception::exception_id_gen{1};
 
-    SpanEventImpl::SpanEventImpl(SpanData* span, std::string_view operation, Span* parent_span,
+    SpanEventImpl::SpanEventImpl(const std::shared_ptr<SpanData>& span, std::string_view operation,
                                  std::weak_ptr<Span> parent_span_ref) :
         parent_span_(span),
-        parent_span_handle_(parent_span),
         parent_span_ref_(std::move(parent_span_ref)),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
@@ -51,7 +50,7 @@ namespace pinpoint {
         annotations_{std::make_shared<PinpointAnnotation>()} {
 
         if (!operation_.empty()) {
-            api_id_ = parent_span_->getAgent()->cacheApi(operation, API_TYPE_DEFAULT);
+            api_id_ = span->getAgent()->cacheApi(operation, API_TYPE_DEFAULT);
         }
     }
 
@@ -67,14 +66,15 @@ namespace pinpoint {
             parent_span->EndSpanEvent();
             return;
         }
-
-        if (parent_span_handle_) {
-            parent_span_handle_->EndSpanEvent();
-        }
+        // The owning span is already gone (or was never shared_ptr-owned);
+        // there is no safe object left to finish this event against.
+        LOG_WARN("EndEvent: parent span no longer alive - event discarded");
     }
 
     void SpanEventImpl::finish() {
-        parent_span_->decrEventDepth();
+        if (const auto span = parent_span_.lock()) {
+            span->decrEventDepth();
+        }
         elapsed_ = to_milli_seconds(std::chrono::system_clock::now()) - start_time_;
     }
 
@@ -88,14 +88,22 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
-        error_func_id_ = parent_span_->getAgent()->cacheError(error_name);
+        const auto span = parent_span_.lock();
+        if (!span) {
+            return;
+        }
+        error_func_id_ = span->getAgent()->cacheError(error_name);
         error_string_ = error_message;
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
+        const auto span = parent_span_.lock();
+        if (!span) {
+            return;
+        }
         SetError(error_name, error_message);
 
-        const auto cfg = parent_span_->getAgent()->getConfig();
+        const auto cfg = span->getAgent()->getConfig();
         if (!cfg->enable_callstack_trace) {
             return;
         }
@@ -109,25 +117,30 @@ namespace pinpoint {
 
             auto exception = std::make_unique<Exception>(std::move(callstack));
             annotations_->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
-            parent_span_->addException(std::move(exception));
+            span->addException(std::move(exception));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
     }
 
     void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
+        const auto span = parent_span_.lock();
+        if (!span) {
+            return;
+        }
+
         // Use a thread-local or static instance since SqlNormalizer is now stateless/thread-safe for normalize()
-        static const SqlNormalizer normalizer(64*1024); 
+        static const SqlNormalizer normalizer(64*1024);
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
-        const auto config = parent_span_->getAgent()->getConfig();
+        const auto config = span->getAgent()->getConfig();
         if (config->sql.enable_sql_stats) {
-            auto sql_uid = parent_span_->getAgent()->cacheSqlUid(result.normalized_sql);
+            auto sql_uid = span->getAgent()->cacheSqlUid(result.normalized_sql);
             if (!sql_uid.empty()) {
                 annotations_->AppendBytesStringString(ANNOTATION_SQL_UID, sql_uid, result.parameters, args);
             }
         } else {
-            auto sql_id = parent_span_->getAgent()->cacheSql(result.normalized_sql);
+            auto sql_id = span->getAgent()->cacheSql(result.normalized_sql);
             if (sql_id) {
                 annotations_->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
             }
@@ -135,7 +148,11 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
-        parent_span_->getAgent()->recordClientHeader(which, reader, annotations_);
+        const auto span = parent_span_.lock();
+        if (!span) {
+            return;
+        }
+        span->getAgent()->recordClientHeader(which, reader, annotations_);
     }
 
 } // namespace pinpoint

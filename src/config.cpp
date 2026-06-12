@@ -73,8 +73,13 @@ namespace pinpoint {
     }
 
     static std::thread& config_watcher_thread() {
-        static std::thread watcher;
-        return watcher;
+        // Intentionally heap-allocated and never destroyed. This function-local
+        // static is first used after the global agent registers its destructor,
+        // so a plain `static std::thread` would be destroyed first at process
+        // exit — while still joinable when the host never calls Shutdown() —
+        // and a joinable std::thread destructor calls std::terminate().
+        static auto* watcher = new std::thread();
+        return *watcher;
     }
 
     static std::atomic<bool>& config_watcher_stop() {

@@ -16,8 +16,10 @@
 
 #include <string>
 #include <exception>
+#include <iterator>
 #include <utility>
 #include <mutex>
+#include <vector>
 
 #include "logging.h"
 #include "noop.h"
@@ -32,7 +34,17 @@ namespace pinpoint {
     // Global agent singleton with thread-safe access
     namespace {
         std::mutex global_agent_mutex;
-        std::shared_ptr<AgentImpl> global_agent{nullptr};
+
+        // The holder is intentionally heap-allocated and never destroyed so
+        // that ~AgentImpl can never run from a static destructor. Tearing the
+        // agent down during __cxa_atexit (thread joins, gRPC channel teardown,
+        // logging through possibly-destroyed singletons) is unsafe for a
+        // library embedded in a host application; teardown must only happen
+        // through an explicit Shutdown() or a user-released reference.
+        std::shared_ptr<AgentImpl>& global_agent() {
+            static auto* holder = new std::shared_ptr<AgentImpl>();
+            return *holder;
+        }
     }
 
     AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg,
@@ -208,7 +220,11 @@ namespace pinpoint {
     }
 
     void AgentImpl::onAgentInfoSent() {
-        enabled_ = true;
+        // An in-flight registerAgent may complete just after shutdown began;
+        // it must not re-enable span recording into workers being torn down.
+        if (!shutting_down_) {
+            enabled_ = true;
+        }
     }
 
     void AgentImpl::close_grpc_workers() {
@@ -238,43 +254,62 @@ namespace pinpoint {
     }
 
     void AgentImpl::wait_grpc_workers() {
-        struct SharedState {
+        // The worker thread handles are moved out of the agent into a
+        // heap-allocated state block owned (via shared_ptr) by the joiner
+        // thread. If the timed wait below expires the joiner is detached, and
+        // because it only touches the state block — never `this` — it cannot
+        // race the agent's destruction. The moved-from members are left
+        // non-joinable, so ~AgentImpl's member destruction stays benign.
+        struct JoinState {
             std::mutex m;
             std::condition_variable cv;
             bool finished{false};
+            std::vector<std::thread> threads;
         };
-        auto state = std::make_shared<SharedState>();
+        auto state = std::make_shared<JoinState>();
 
-        std::thread t1([this, state] {
-            // Join all worker threads
-            if (init_thread_.joinable()) init_thread_.join();
-            if (url_stat_add_thread_.joinable()) url_stat_add_thread_.join();
-            if (url_stat_send_thread_.joinable()) url_stat_send_thread_.join();
-            if (agent_stat_thread_.joinable()) agent_stat_thread_.join();
-            if (ping_thread_.joinable()) ping_thread_.join();
-            if (meta_thread_.joinable()) meta_thread_.join();
-            if (span_thread_.joinable()) span_thread_.join();
-            if (stat_thread_.joinable()) stat_thread_.join();
-            if (command_thread_.joinable()) command_thread_.join();
+        // init_grpc_workers assigns the other thread members; join it first so
+        // moving them below cannot race those assignments. The init thread only
+        // spawns workers and returns, so this join is quick.
+        if (init_thread_.joinable()) {
+            init_thread_.join();
+        }
 
-            {
-                std::unique_lock<std::mutex> l(state->m);
-                state->finished = true;
-                state->cv.notify_one();
+        std::thread* workers[] = {
+            &url_stat_add_thread_, &url_stat_send_thread_,
+            &agent_stat_thread_, &ping_thread_, &meta_thread_,
+            &span_thread_, &stat_thread_, &command_thread_,
+        };
+        state->threads.reserve(std::size(workers));
+        for (auto* worker : workers) {
+            if (worker->joinable()) {
+                state->threads.push_back(std::move(*worker));
             }
+        }
+
+        std::thread joiner([state] {
+            for (auto& worker : state->threads) {
+                worker.join();
+            }
+            {
+                std::lock_guard<std::mutex> l(state->m);
+                state->finished = true;
+            }
+            state->cv.notify_one();
         });
 
+        bool finished;
         {
             std::unique_lock<std::mutex> l(state->m);
-            auto status = state->cv.wait_for(l, std::chrono::seconds(5),
+            finished = state->cv.wait_for(l, std::chrono::seconds(5),
                 [&state] { return state->finished; });
+        }
 
-            if (!status) {
-                LOG_WARN("wait grpc workers: timeout - some threads may still be running");
-                t1.detach();  // Let it finish in background
-            } else {
-                t1.join();  // Clean join if completed in time
-            }
+        if (finished) {
+            joiner.join();
+        } else {
+            LOG_WARN("wait grpc workers: timeout - some threads may still be running");
+            joiner.detach();  // Touches only the heap state block, never `this`.
         }
     }
 
@@ -366,10 +401,16 @@ namespace pinpoint {
 	}
 
     void AgentImpl::Shutdown() noexcept {
+        // Keep *this alive across do_shutdown(): if the global handle holds the
+        // last reference, resetting it would destroy the agent mid-call when
+        // Shutdown() was reached through a raw pointer or reference.
+        std::shared_ptr<AgentImpl> self;
         try {
             std::lock_guard<std::mutex> lock(global_agent_mutex);
-            if (global_agent.get() == this) {
-                global_agent.reset();
+            auto& agent = global_agent();
+            if (agent.get() == this) {
+                self = std::move(agent);
+                agent.reset();
             }
         } catch (...) {}
         do_shutdown();
@@ -591,25 +632,26 @@ namespace pinpoint {
 
     static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        
+        auto& agent = global_agent();
+
         if (!cfg->check()) {
             return noopAgent();
         }
-        
-        if (global_agent != nullptr) {
-            const auto current_cfg = global_agent->getConfig();
+
+        if (agent != nullptr) {
+            const auto current_cfg = agent->getConfig();
             if (cfg->isReloadable(current_cfg)) {
-                global_agent->reloadConfig(std::move(cfg));
-                return global_agent;
+                agent->reloadConfig(std::move(cfg));
+                return agent;
             }
             return noopAgent();
         }
 
-        global_agent = make_agent(std::move(cfg));
-        if (global_agent == nullptr) {
+        agent = make_agent(std::move(cfg));
+        if (agent == nullptr) {
             return noopAgent();
         }
-        return global_agent;
+        return agent;
     }
 
     AgentPtr CreateAgent() {
@@ -632,20 +674,20 @@ namespace pinpoint {
     AgentPtr GlobalAgent() {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
 
-        if (global_agent == nullptr) {
+        if (global_agent() == nullptr) {
             return noopAgent();
         }
-        return global_agent;
+        return global_agent();
     }
 
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        global_agent = std::move(agent);
+        global_agent() = std::move(agent);
     }
 
     void reset_global_agent() {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        global_agent.reset();
+        global_agent().reset();
     }
 
 }  // namespace pinpoint

@@ -148,6 +148,8 @@ namespace pinpoint {
         int64_t span_id_;
         int64_t start_time_;
         std::unique_ptr<UrlStatEntry> url_stat_;
+        // Keeps the agent alive while user code still holds this span.
+        std::shared_ptr<AgentService> agent_ref_;
         AgentService *agent_;
     };
 

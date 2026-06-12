@@ -57,6 +57,7 @@ namespace pinpoint {
         span_event_lock_{},
         url_stat_{},
         annotations_{std::make_shared<PinpointAnnotation>()},
+        agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {
         api_id_ = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
     }
@@ -230,7 +231,7 @@ namespace pinpoint {
             parent_span_ref = std::static_pointer_cast<Span>(self);
         }
 
-        auto se = std::make_shared<SpanEventImpl>(data_.get(), operation, this, parent_span_ref);
+        auto se = std::make_shared<SpanEventImpl>(data_, operation, parent_span_ref);
         se->SetServiceType(service_type);
         data_->addSpanEvent(se);
 
@@ -394,7 +395,7 @@ namespace pinpoint {
         async_span->data_->setAsyncSequence(se->getAsyncSeqGen());
 
         const auto async_se = std::make_shared<SpanEventImpl>(
-            async_span->data_.get(), "", async_span.get(), std::static_pointer_cast<Span>(async_span));
+            async_span->data_, "", std::static_pointer_cast<Span>(async_span));
         auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
         async_se->setApiId(async_api_id);
         async_se->SetServiceType(SERVICE_TYPE_ASYNC);

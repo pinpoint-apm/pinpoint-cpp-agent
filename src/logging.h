@@ -55,8 +55,14 @@ namespace pinpoint {
          * @return Reference to the global `Logger`.
          */
         static Logger& getInstance() {
-            static Logger instance;
-            return instance;
+            // Intentionally heap-allocated and never destroyed. Background
+            // threads (gRPC workers, config watcher, async RPC callbacks) may
+            // log during process exit; a function-local static Logger would be
+            // destroyed by then, turning those calls into use-after-destruction
+            // of the mutex and file stream. Graceful flush still happens via
+            // shutdown_logger() on the explicit Shutdown() path.
+            static auto* instance = new Logger();
+            return *instance;
         }
 
         /**

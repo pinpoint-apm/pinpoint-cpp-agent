@@ -29,7 +29,7 @@ namespace pinpoint {
      */
     class SpanEventImpl final : public SpanEvent {
     public:
-        SpanEventImpl(SpanData* span, std::string_view operation, Span* parent_span = nullptr,
+        SpanEventImpl(const std::shared_ptr<SpanData>& span, std::string_view operation,
                       std::weak_ptr<Span> parent_span_ref = {});
         ~SpanEventImpl() override {}
 
@@ -57,8 +57,9 @@ namespace pinpoint {
          */
         void finish();
 
-        /// @brief Returns the parent span that owns this event.
-        SpanData* getParentSpan() const { return parent_span_; }
+        /// @brief Returns the parent span data that owns this event, or nullptr
+        /// when the span has already been destroyed.
+        std::shared_ptr<SpanData> getParentSpan() const { return parent_span_.lock(); }
         /// @brief Returns the service type identifier.
         int32_t getServiceType() const { return service_type_; }
         /// @brief Returns the recorded operation name.
@@ -116,8 +117,11 @@ namespace pinpoint {
         int32_t getApiId() const { return api_id_; }
 
     private:
-        SpanData *parent_span_;
-        Span *parent_span_handle_;
+        // Weak on purpose: events can outlive their span (the C API documents
+        // that destroying a span while holding event handles is safe), and a
+        // shared_ptr here would form an ownership cycle with the span's own
+        // event containers. Every use locks and degrades to a no-op if expired.
+        std::weak_ptr<SpanData> parent_span_;
         std::weak_ptr<Span> parent_span_ref_;
         int32_t service_type_;
         std::string operation_;

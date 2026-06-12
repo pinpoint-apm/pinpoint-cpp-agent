@@ -40,7 +40,8 @@ namespace pinpoint {
      * `AgentImpl` orchestrates span creation, metadata caching, gRPC workers and statistics collection.
      * It implements both `Agent` (SDK surface) and `AgentService` (internal service boundary).
      */
-    class AgentImpl final : public Agent, public AgentService {
+    class AgentImpl final : public Agent, public AgentService,
+                            public std::enable_shared_from_this<AgentImpl> {
     public:
 		/**
 		 * @brief Constructs an agent using the provided configuration.
@@ -85,6 +86,11 @@ namespace pinpoint {
 		void Shutdown() noexcept override;
 
     	bool isExiting() const override { return shutting_down_; }
+    	/// @brief Shared self-handle for span keep-alive; empty when the agent
+    	/// is not shared_ptr-owned (stack-constructed test instances).
+    	std::shared_ptr<AgentService> selfRef() noexcept override {
+    		return weak_from_this().lock();
+    	}
     	std::string getAppName() const override;
     	int32_t getAppType() const override;
     	std::string getAgentId() const override;

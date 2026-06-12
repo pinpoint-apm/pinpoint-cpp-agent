@@ -337,6 +337,9 @@ namespace pinpoint {
         std::unique_ptr<UrlStatEntry> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;
         std::vector<std::unique_ptr<Exception>> exceptions_;
+    	// Keeps the agent alive while this span (or any chunk/event referencing
+    	// it) is still held by user code; agent_ below stays valid through it.
+    	std::shared_ptr<AgentService> agent_ref_;
     	AgentService *agent_;
     };
 

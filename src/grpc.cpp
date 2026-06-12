@@ -1247,6 +1247,12 @@ namespace pinpoint {
         if (agent_info_running_) {
             return;
         }
+        // Stop is sticky once shutdown began: the async init thread may reach
+        // here after close_grpc_workers() already ran stopAgentInfo(), and it
+        // must not clear the stop request and spawn a worker nobody will join.
+        if (agent_ != nullptr && agent_->isExiting()) {
+            return;
+        }
         agent_info_stop_requested_ = false;
         agent_info_refresh_requested_ = false;
         agent_info_running_ = true;
@@ -1359,14 +1365,16 @@ namespace pinpoint {
             return false;
         }
 
-        stream_context_ = std::make_unique<grpc::ClientContext>();
+        {
+            // Publish the new context under stream_mutex_ so stopPingWorker()
+            // never observes a context mid-replacement when it cancels it.
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            stream_context_ = std::make_unique<grpc::ClientContext>();
+            grpc_status_ = STREAM_CONTINUE;
+        }
         build_grpc_context(stream_context_.get(), ++socket_id_);
         agent_stub_->async()->PingSession(stream_context_.get(), this);
 
-        {
-            std::unique_lock<std::mutex> lock(stream_mutex_);
-            grpc_status_ = STREAM_CONTINUE;
-        }
         ping_stream_closing_ = false;
 
         AddHold();
@@ -1377,6 +1385,16 @@ namespace pinpoint {
     }
 
     void GrpcAgent::close_ping_stream() {
+        // stream_mutex_ makes the closing-flag check + StartWrite in
+        // write_and_await_ping_stream() mutually exclusive with the
+        // set-flag + StartWritesDone here; without it a reactor-thread close
+        // can interleave with the worker's StartWrite, violating the gRPC
+        // callback-API ordering contract (StartWrite after StartWritesDone).
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        close_ping_stream_locked();
+    }
+
+    void GrpcAgent::close_ping_stream_locked() {
         if (!ping_stream_closing_.exchange(true)) {
             StartWritesDone();
             RemoveHold();
@@ -1385,9 +1403,9 @@ namespace pinpoint {
 
     void GrpcAgent::finish_ping_stream() {
         LOG_DEBUG("finish_ping_stream");
-        close_ping_stream();
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
+        close_ping_stream_locked();
         if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
                                  [this] { return grpc_status_ == STREAM_DONE; })) {
             LOG_INFO("ping stream did not finish in time, cancelling");
@@ -1489,9 +1507,19 @@ namespace pinpoint {
     }
 
     void GrpcAgent::stopPingWorker() {
-        std::unique_lock<std::mutex> lock(ping_worker_mutex_);
-        ping_stop_requested_ = true;
-        ping_cv_.notify_one();
+        {
+            std::unique_lock<std::mutex> lock(ping_worker_mutex_);
+            ping_stop_requested_ = true;
+            ping_cv_.notify_one();
+        }
+        // The worker may be blocked in write_and_await_ping_stream() waiting
+        // for a server pong that never arrives; only stream activity can wake
+        // that wait. Cancelling the active stream forces OnDone, which sets
+        // STREAM_DONE and releases the worker so the stop is deterministic.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (stream_context_ != nullptr && grpc_status_ != STREAM_DONE) {
+            stream_context_->TryCancel();
+        }
     }
 
 
@@ -1499,43 +1527,67 @@ namespace pinpoint {
 
     namespace {
         constexpr auto SHUTDOWN_AWAIT_TIMEOUT = std::chrono::seconds(3);
-
-        // Heap-resident state for a single async SendSpanBatch call. Lives as
-        // long as the callback's shared_ptr keeps it alive.
-        struct PendingSpanBatch {
-            grpc::ClientContext ctx;
-            google::protobuf::Arena arena;
-            v1::PSpanMessageBatch* request{nullptr};
-            v1::PSpanResultBatch reply;
-        };
     }
+
+    // Heap-resident state for a single async SendSpanBatch call. Lives as
+    // long as the callback's shared_ptr keeps it alive.
+    struct PendingSpanBatch {
+        grpc::ClientContext ctx;
+        google::protobuf::Arena arena;
+        v1::PSpanMessageBatch* request{nullptr};
+        v1::PSpanResultBatch reply;
+    };
+
+    // Permit accounting and in-flight call registry shared between GrpcSpan
+    // and its async completion callbacks. The callbacks capture this state by
+    // shared_ptr — never GrpcSpan's `this` — so a callback delivered after the
+    // client (or the whole agent) is destroyed only touches live heap memory.
+    struct SpanBatchInflight {
+        std::mutex mutex;
+        std::condition_variable cv;
+        int permits{0};
+        int max_permits{0};
+        std::vector<std::shared_ptr<PendingSpanBatch>> pending;
+
+        void completeCall(const std::shared_ptr<PendingSpanBatch>& call) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending.erase(std::remove(pending.begin(), pending.end(), call), pending.end());
+                ++permits;
+            }
+            cv.notify_one();
+        }
+    };
 
     GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
         set_span_stub(v1::Span::NewStub(channel_));
-        batch_max_permits_ = config_->span.batch.max_concurrent_requests;
-        batch_permits_ = batch_max_permits_;
+        inflight_ = std::make_shared<SpanBatchInflight>();
+        inflight_->max_permits = config_->span.batch.max_concurrent_requests;
+        inflight_->permits = inflight_->max_permits;
     }
 
     bool GrpcSpan::try_acquire_permit(std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
-        if (!batch_permits_cv_.wait_for(lock, timeout, [this]{ return batch_permits_ > 0; })) {
+        std::unique_lock<std::mutex> lock(inflight_->mutex);
+        if (!inflight_->cv.wait_for(lock, timeout, [this]{ return inflight_->permits > 0; })) {
             return false;
         }
-        --batch_permits_;
+        --inflight_->permits;
         return true;
     }
 
     bool GrpcSpan::try_acquire_all_permits(std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
-        return batch_permits_cv_.wait_for(lock, timeout, [this]{
-            return batch_permits_ >= batch_max_permits_;
+        std::unique_lock<std::mutex> lock(inflight_->mutex);
+        return inflight_->cv.wait_for(lock, timeout, [this]{
+            return inflight_->permits >= inflight_->max_permits;
         });
     }
 
     void GrpcSpan::release_permit() {
-        std::unique_lock<std::mutex> lock(batch_permits_mutex_);
-        ++batch_permits_;
-        batch_permits_cv_.notify_one();
+        {
+            std::lock_guard<std::mutex> lock(inflight_->mutex);
+            ++inflight_->permits;
+        }
+        inflight_->cv.notify_one();
     }
 
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
@@ -1627,8 +1679,9 @@ namespace pinpoint {
         // The permit is now held. Every path from here until the async call is
         // launched must release it; once launched, the completion callback owns
         // the release.
+        std::shared_ptr<PendingSpanBatch> pending;
         try {
-            auto pending = std::make_shared<PendingSpanBatch>();
+            pending = std::make_shared<PendingSpanBatch>();
             pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
 
             for (auto& span_chunk : batch) {
@@ -1646,15 +1699,22 @@ namespace pinpoint {
             set_request_deadline(pending->ctx);
 
             const int batch_count = pending->request->span_size();
-            LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
-                      batch_count, batch_max_permits_ - batch_permits_, batch_max_permits_);
+            {
+                std::lock_guard<std::mutex> lock(inflight_->mutex);
+                inflight_->pending.push_back(pending);
+                LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
+                          batch_count, inflight_->max_permits - inflight_->permits, inflight_->max_permits);
+            }
 
             auto* ctx_ptr = &pending->ctx;
             auto* request_ptr = pending->request;
             auto* reply_ptr = &pending->reply;
+            // Captures the shared in-flight state, never `this`: the callback
+            // may fire after this GrpcSpan (or the whole agent) is destroyed.
+            auto state = inflight_;
             span_stub_->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
-                [this, pending, batch_count](const grpc::Status& status) {
-                    release_permit();
+                [state, pending, batch_count](const grpc::Status& status) {
+                    state->completeCall(pending);
                     if (!status.ok()) {
                         LOG_INFO("SendSpanBatch failed: {}, {}",
                                  static_cast<int>(status.error_code()), status.error_message());
@@ -1674,17 +1734,49 @@ namespace pinpoint {
                     }
                 });
         } catch (const std::exception& e) {
-            release_permit();
             batch.clear();
             LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
+            // The call was never launched: drop it from the registry (it may or
+            // may not have been registered yet) and hand the permit back.
+            {
+                std::lock_guard<std::mutex> lock(inflight_->mutex);
+                if (pending) {
+                    auto& pending_calls = inflight_->pending;
+                    pending_calls.erase(
+                        std::remove(pending_calls.begin(), pending_calls.end(), pending),
+                        pending_calls.end());
+                }
+                ++inflight_->permits;
+            }
+            inflight_->cv.notify_one();
         }
     } catch (const std::exception& e) {
         LOG_ERROR("failed to build span batch: exception = {}", e.what());
     }
 
     void GrpcSpan::await_in_flight_requests() {
+        if (try_acquire_all_permits(SHUTDOWN_AWAIT_TIMEOUT)) {
+            return;
+        }
+
+        // Slow collector: cancel whatever is still in flight so the completion
+        // callbacks (which return the permits) fire promptly instead of running
+        // out their full request deadline after this object is gone.
+        std::vector<std::shared_ptr<PendingSpanBatch>> stragglers;
+        {
+            std::lock_guard<std::mutex> lock(inflight_->mutex);
+            stragglers = inflight_->pending;
+        }
+        LOG_WARN("timed out waiting for in-flight span requests; cancelling {} request(s)",
+                 stragglers.size());
+        for (const auto& call : stragglers) {
+            call->ctx.TryCancel();
+        }
+
         if (!try_acquire_all_permits(SHUTDOWN_AWAIT_TIMEOUT)) {
-            LOG_WARN("timed out waiting for in-flight span requests to complete");
+            // Even now the callbacks stay memory-safe: they reference only the
+            // shared in-flight state, never this client or the agent.
+            LOG_WARN("in-flight span requests still pending after cancellation");
         }
     }
 

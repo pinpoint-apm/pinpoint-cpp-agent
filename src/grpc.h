@@ -383,6 +383,7 @@ namespace pinpoint {
 
         bool start_ping_stream();
         void close_ping_stream();
+        void close_ping_stream_locked();
         void finish_ping_stream();
         GrpcStreamStatus write_and_await_ping_stream();
 
@@ -439,9 +440,16 @@ namespace pinpoint {
      * ### Shutdown
      * - On exit the worker drains any remaining chunks and, if the channel
      *   is already connected, sends them in batches of at most @c size, then
-     *   blocks up to 3 s waiting for all in-flight permits to be returned
-     *   before releasing the channel.
+     *   blocks up to 3 s waiting for all in-flight permits to be returned.
+     *   If permits are still missing, every in-flight ClientContext is
+     *   cancelled (TryCancel) and the wait is repeated, so completion
+     *   callbacks fire promptly before the channel is released.
+     * - Completion callbacks share state with the client only through a
+     *   @c shared_ptr (no raw @c this capture), so a callback that fires
+     *   after the GrpcSpan instance is destroyed remains memory-safe.
      */
+    struct SpanBatchInflight;
+
     class GrpcSpan : public GrpcClient {
     public:
         explicit GrpcSpan(std::shared_ptr<const Config> config);
@@ -472,11 +480,10 @@ namespace pinpoint {
         std::condition_variable span_queue_cv_{};
 
         // Permit-based semaphore that caps the number of concurrently in-flight
-        // SendSpanBatch RPCs. Mirrors Java's Semaphore(maxConcurrentRequests).
-        int batch_permits_{0};
-        int batch_max_permits_{0};
-        std::mutex batch_permits_mutex_{};
-        std::condition_variable batch_permits_cv_{};
+        // SendSpanBatch RPCs, plus a registry of the in-flight call contexts so
+        // shutdown can cancel them. Heap-resident and shared with the async
+        // completion callbacks so a late callback never touches this object.
+        std::shared_ptr<SpanBatchInflight> inflight_{};
 
         void collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer);
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);

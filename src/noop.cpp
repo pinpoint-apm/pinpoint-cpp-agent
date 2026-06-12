@@ -45,7 +45,9 @@ namespace pinpoint {
     UnsampledSpan::UnsampledSpan(AgentService *agent) : NoopSpan(),
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
-        url_stat_(nullptr), agent_(agent) {
+        url_stat_(nullptr),
+        agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
+        agent_(agent) {
         agent_->getAgentStats().addActiveSpan(span_id_, start_time_);
     }
 
