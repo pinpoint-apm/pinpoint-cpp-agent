@@ -17,11 +17,11 @@
 #ifndef PINPOINT_TRACER_H
 #define PINPOINT_TRACER_H
 
+#include <charconv>
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -93,10 +93,21 @@ namespace pinpoint {
 		 * @brief Serializes the trace identifier to the wire format (`agentId^startTime^sequence`).
 		 */
 		std::string ToString() const {
-			std::ostringstream out;
-			out << AgentId << "^" << StartTime << "^" << Sequence;
-			return out.str();
-
+			// Built with to_chars + a single reserved string instead of an
+			// ostringstream: this runs on every InjectContext()/SetLogging()
+			// (i.e. every outbound call on a traced request), and ostringstream
+			// pays for locale, a virtual streambuf and multiple allocations.
+			char num[20];  // widest int64_t is 20 chars incl. sign
+			std::string out;
+			out.reserve(AgentId.size() + 2 + 2 * sizeof(num));
+			out.append(AgentId);
+			out.push_back('^');
+			auto st = std::to_chars(num, num + sizeof(num), StartTime);
+			out.append(num, st.ptr);
+			out.push_back('^');
+			auto sq = std::to_chars(num, num + sizeof(num), Sequence);
+			out.append(num, sq.ptr);
+			return out;
 		}
 	};
 

@@ -1595,20 +1595,26 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(span_queue_mutex_);
+        {
+            std::unique_lock<std::mutex> lock(span_queue_mutex_);
 
-        const auto& config = config_;
-        if (span_queue_.size() < config->span.queue_size) {
-            span_queue_.push(std::move(span));
-            LOG_DEBUG("enqueueSpan: queue_size={}", span_queue_.size());
-        } else {
-            // Head-drop: discard the oldest queued span and enqueue the new one.
-            // Matches Java SpanBatchGrpcDataSender.send().
-            span_queue_.pop();
-            span_queue_.push(std::move(span));
-            LOG_DEBUG("discard oldest span: overflow max queue size {}", config->span.queue_size);
+            const auto& config = config_;
+            if (span_queue_.size() < config->span.queue_size) {
+                span_queue_.push(std::move(span));
+                LOG_DEBUG("enqueueSpan: queue_size={}", span_queue_.size());
+            } else {
+                // Head-drop: discard the oldest queued span and enqueue the new one.
+                // Matches Java SpanBatchGrpcDataSender.send().
+                span_queue_.pop();
+                span_queue_.push(std::move(span));
+                LOG_DEBUG("discard oldest span: overflow max queue size {}", config->span.queue_size);
+            }
         }
 
+        // Notify after releasing the lock: every span completion on every
+        // application thread passes through here, and notifying while still
+        // holding span_queue_mutex_ makes the woken worker immediately block on
+        // the same mutex ("hurry up and wait").
         span_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue span: exception = {}", e.what());

@@ -103,6 +103,13 @@ namespace pinpoint {
             log(LogLevel::kError, file, line, format, std::forward<Args>(args)...);
         }
 
+        /// @brief Level predicates used by the LOG_* macros to skip argument
+        /// evaluation entirely when the level is disabled.
+        bool debugEnabled() const { return shouldLog(LogLevel::kDebug); }
+        bool infoEnabled() const { return shouldLog(LogLevel::kInfo); }
+        bool warnEnabled() const { return shouldLog(LogLevel::kWarn); }
+        bool errorEnabled() const { return shouldLog(LogLevel::kError); }
+
     private:
         enum class LogLevel : int {
             kDebug = 0,
@@ -153,12 +160,41 @@ namespace pinpoint {
         return (last_slash == std::string_view::npos) ? path : path.substr(last_slash + 1);
     }
 
+    // The level is checked before the variadic arguments are evaluated, so
+    // formatting work (and the cost of the argument expressions themselves) is
+    // skipped entirely for disabled levels — notably LOG_DEBUG, which is off
+    // by default yet appears on hot paths. Arguments must therefore be free of
+    // side effects, which holds across the codebase.
     /// @brief Writes a debug-level log entry using the global logger.
-    #define LOG_DEBUG(...) (Logger::getInstance().logDebug(kFileName(__FILE__), __LINE__, __VA_ARGS__))
+    #define LOG_DEBUG(...) \
+        do { \
+            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
+            if (_pp_logger.debugEnabled()) { \
+                _pp_logger.logDebug(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
     /// @brief Writes an info-level log entry using the global logger.
-    #define LOG_INFO(...) (Logger::getInstance().logInfo(kFileName(__FILE__), __LINE__, __VA_ARGS__))
+    #define LOG_INFO(...) \
+        do { \
+            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
+            if (_pp_logger.infoEnabled()) { \
+                _pp_logger.logInfo(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
     /// @brief Writes a warning-level log entry using the global logger.
-    #define LOG_WARN(...) (Logger::getInstance().logWarn(kFileName(__FILE__), __LINE__, __VA_ARGS__))
+    #define LOG_WARN(...) \
+        do { \
+            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
+            if (_pp_logger.warnEnabled()) { \
+                _pp_logger.logWarn(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
     /// @brief Writes an error-level log entry using the global logger.
-    #define LOG_ERROR(...) (Logger::getInstance().logError(kFileName(__FILE__), __LINE__, __VA_ARGS__))
+    #define LOG_ERROR(...) \
+        do { \
+            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
+            if (_pp_logger.errorEnabled()) { \
+                _pp_logger.logError(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
 }
