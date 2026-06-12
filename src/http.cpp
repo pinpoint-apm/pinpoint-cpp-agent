@@ -19,6 +19,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "absl/strings/str_split.h"
 #include "logging.h"
@@ -95,53 +96,79 @@ namespace pinpoint {
     }
 
     bool HttpUrlFilter::ant_match(std::string_view pattern, std::string_view url) {
-        size_t pi = 0, ui = 0;
-        size_t star_pi = std::string_view::npos;
-        size_t star_ui = 0;
+        const size_t P = pattern.size();
+        const size_t U = url.size();
 
-        while (ui < url.size()) {
-            if (pi < pattern.size() && pattern[pi] == '*') {
-                if (pi + 1 < pattern.size() && pattern[pi + 1] == '*') {
-                    // "**" matches across path segments (including '/')
-                    pi += 2;
-                    // skip trailing '/' after "**" if present
-                    if (pi < pattern.size() && pattern[pi] == '/') {
-                        pi++;
-                    }
-                    // try matching the rest of pattern against every suffix of url
-                    for (size_t k = ui; k <= url.size(); k++) {
-                        if (ant_match(pattern.substr(pi), url.substr(k))) {
-                            return true;
-                        }
-                    }
-                    return false;
+        // Bottom-up dynamic programming over (pattern index, url index). This
+        // replaces the previous recursive '**' handling, which retried every
+        // url suffix and cost O(n^k) for a pattern with k '**' wildcards on a
+        // non-matching url — a remote CPU amplifier since the url is supplied
+        // by the caller on every traced request. Each (pi, ui) state is now
+        // visited once, so matching is O(pattern_len * url_len): linear in the
+        // attacker-controlled url length for a fixed configured pattern.
+        //
+        // dp[pi][ui] == "pattern[pi:] matches url[ui:]". Semantics preserved
+        // from the original matcher:
+        //   '*'  matches zero or more characters within a single path segment
+        //        (never crosses '/').
+        //   '**' matches zero or more characters across segments (may cross
+        //        '/'), and absorbs one immediately following '/' in the
+        //        pattern — except when the url is already exhausted, where a
+        //        trailing '/' after '**' must still match literally and so fails.
+        //   '?'  matches exactly one character (including '/').
+        //   any other character matches itself literally.
+        std::vector<char> dp((P + 1) * (U + 1), 0);
+        const auto at = [U](size_t pi, size_t ui) { return pi * (U + 1) + ui; };
+
+        // Base row: an empty remaining pattern matches only an empty remaining url.
+        for (size_t ui = 0; ui <= U; ++ui) {
+            dp[at(P, ui)] = (ui == U) ? 1 : 0;
+        }
+
+        for (size_t pi = P; pi-- > 0;) {
+            const char c = pattern[pi];
+
+            // ui == U (url exhausted): only a run of trailing '*' still matches.
+            // A trailing '/' after '**' is intentionally not absorbed here.
+            dp[at(pi, U)] = (c == '*' && dp[at(pi + 1, U)]) ? 1 : 0;
+
+            if (c == '*' && pi + 1 < P && pattern[pi + 1] == '*') {
+                // '**': skip the two stars and one optional following '/'.
+                size_t npi = pi + 2;
+                if (npi < P && pattern[npi] == '/') {
+                    ++npi;
                 }
-                // single "*" matches within a single path segment (not '/')
-                star_pi = pi;
-                star_ui = ui;
-                pi++;
-            } else if (pi < pattern.size() && (pattern[pi] == url[ui] || pattern[pi] == '?')) {
-                pi++;
-                ui++;
-            } else if (star_pi != std::string_view::npos) {
-                // backtrack: the single '*' consumes one more character (but not '/')
-                star_ui++;
-                if (url[star_ui - 1] == '/') {
-                    return false;
+                // dp[pi][ui] = OR over k in [ui, U] of dp[npi][k]. The running
+                // OR seeds from dp[npi][U] (not dp[pi][U], which holds the
+                // distinct url-exhausted value computed above).
+                char running = dp[at(npi, U)];
+                for (size_t ui = U; ui-- > 0;) {
+                    running = (running || dp[at(npi, ui)]) ? 1 : 0;
+                    dp[at(pi, ui)] = running;
                 }
-                ui = star_ui;
-                pi = star_pi + 1;
+            } else if (c == '*') {
+                // single '*': extend within a segment, never crossing '/'.
+                for (size_t ui = U; ui-- > 0;) {
+                    char v = dp[at(pi + 1, ui)];
+                    if (!v && url[ui] != '/') {
+                        v = dp[at(pi, ui + 1)];
+                    }
+                    dp[at(pi, ui)] = v;
+                }
+            } else if (c == '?') {
+                // '?': match exactly one character (including '/').
+                for (size_t ui = U; ui-- > 0;) {
+                    dp[at(pi, ui)] = dp[at(pi + 1, ui + 1)];
+                }
             } else {
-                return false;
+                // literal character.
+                for (size_t ui = U; ui-- > 0;) {
+                    dp[at(pi, ui)] = (url[ui] == c) ? dp[at(pi + 1, ui + 1)] : 0;
+                }
             }
         }
 
-        // consume trailing wildcards in pattern
-        while (pi < pattern.size() && pattern[pi] == '*') {
-            pi++;
-        }
-
-        return pi == pattern.size();
+        return dp[at(0, 0)] != 0;
     }
 
     HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg) {
