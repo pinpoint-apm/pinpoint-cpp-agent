@@ -74,6 +74,8 @@ namespace pinpoint {
         /// @brief Returns the elapsed duration of the event.
         int32_t getEndElapsed() const { return elapsed_; }
 
+        /// @brief Assigns the sequence number (set under the parent's lock by addSpanEvent).
+        void setSequence(int32_t sequence) { sequence_ = sequence; }
         /// @brief Returns the sequence number assigned to this event.
         int32_t getSequence() const { return sequence_; }
         /// @brief Sets the depth of this event in the call hierarchy.

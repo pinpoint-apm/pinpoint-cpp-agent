@@ -66,7 +66,12 @@ namespace pinpoint {
             // value is directly comparable to /proc/stat's first line on Linux.
             host_cpu_load_info_data_t cpu_info{};
             mach_msg_type_number_t info_count = HOST_CPU_LOAD_INFO_COUNT;
-            if (host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO,
+            // mach_host_self() returns a send right that must be released, and
+            // this runs every collection interval for the life of the process.
+            // The host port is process-global and stable, so acquire it once
+            // and reuse it instead of leaking a port reference on every call.
+            static const host_t host_port = mach_host_self();
+            if (host_statistics(host_port, HOST_CPU_LOAD_INFO,
                                 reinterpret_cast<host_info_t>(&cpu_info),
                                 &info_count) == KERN_SUCCESS) {
                 *sys_time = static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_USER]) +

@@ -187,17 +187,17 @@ namespace pinpoint {
         int getFlags() const { return flags_; }
 
         /// @brief Sets the event sequence counter.
-        void setEventSequence(int32_t event_sequence) { event_sequence_ = event_sequence; }
+        void setEventSequence(int32_t event_sequence) { event_sequence_.store(event_sequence); }
         /// @brief Returns the event sequence counter.
-        int32_t getEventSequence() const { return event_sequence_; }
+        int32_t getEventSequence() const { return event_sequence_.load(); }
 
         /// @brief Sets the current event depth.
-        void setEventDepth(int32_t event_depth) { event_depth_ = event_depth; }
+        void setEventDepth(int32_t event_depth) { event_depth_.store(event_depth); }
         /// @brief Returns the current event depth.
-        int32_t getEventDepth() const { return event_depth_; }
+        int32_t getEventDepth() const { return event_depth_.load(); }
 
         /// @brief Decrements the event depth counter.
-        void decrEventDepth() { event_depth_--; }
+        void decrEventDepth() { event_depth_.fetch_sub(1); }
 
         /// @brief Sets the error code associated with the span.
         void setErr(int err) { err_ = err; }
@@ -275,9 +275,18 @@ namespace pinpoint {
     	}
 
         /// @brief Transfers ownership of finished span events to the caller.
-        std::vector<std::shared_ptr<SpanEventImpl>> takeFinishedEvents() { return std::move(finished_events); }
+        /// @note Locks span_event_lock_: finished_events is written under it by
+        ///       finishSpanEvent(), so the move must be serialized against
+        ///       concurrent pushes (e.g. EndSpanEvent racing EndSpan).
+        std::vector<std::shared_ptr<SpanEventImpl>> takeFinishedEvents() {
+            std::unique_lock<std::mutex> lock(span_event_lock_);
+            return std::move(finished_events);
+        }
     	/// @brief Returns the number of finished span events.
-    	size_t getFinishedEventsCount() const { return finished_events.size(); }
+    	size_t getFinishedEventsCount() const {
+    	    std::unique_lock<std::mutex> lock(span_event_lock_);
+    	    return finished_events.size();
+    	}
 
         /// @brief Appends a captured exception call stack.
         void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
@@ -314,8 +323,11 @@ namespace pinpoint {
     	std::string remote_addr_;
     	std::string acceptor_host_;
 
-    	int32_t event_sequence_;
-    	int32_t event_depth_;
+    	// Atomic so the unlocked reads (SpanEventImpl ctor snapshot, NewSpanEvent
+    	// overflow check) never race the increments addSpanEvent performs while
+    	// holding span_event_lock_.
+    	std::atomic<int32_t> event_sequence_;
+    	std::atomic<int32_t> event_depth_;
 
     	int32_t logging_flag_;
     	int flags_;
@@ -332,7 +344,8 @@ namespace pinpoint {
 
     	EventStack event_stack_;
         std::vector<std::shared_ptr<SpanEventImpl>> finished_events;
-    	std::mutex span_event_lock_;
+    	// mutable so const accessors (getFinishedEventsCount) can lock it.
+    	mutable std::mutex span_event_lock_;
 
         std::unique_ptr<UrlStatEntry> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;

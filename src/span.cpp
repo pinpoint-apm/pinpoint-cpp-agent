@@ -64,9 +64,16 @@ namespace pinpoint {
 
     void SpanData::addSpanEvent(const std::shared_ptr<SpanEventImpl>& se) {
         std::unique_lock<std::mutex> lock(span_event_lock_);
+        // Assign the event's sequence/depth here, under the lock, rather than
+        // letting the SpanEventImpl ctor snapshot them: two concurrent
+        // NewSpanEvent calls would otherwise read the same pre-increment values
+        // and emit duplicate sequence numbers, corrupting the server-side call
+        // tree. The event takes the current counter value, then we advance it.
+        se->setSequence(event_sequence_.load());
+        se->setDepth(event_depth_.load());
         event_stack_.push(se);
-        event_sequence_++;
-        event_depth_++;
+        event_sequence_.fetch_add(1);
+        event_depth_.fetch_add(1);
     }
 
     void SpanData::finishSpanEvent() {
@@ -264,9 +271,15 @@ namespace pinpoint {
     void SpanImpl::EndSpanEvent() {
         CHECK_FINISHED();
 
-        if (overflow_ > 0) {
-            overflow_--;
-            return;
+        // Consume one overflow placeholder if any, using a CAS loop so two
+        // concurrent EndSpanEvent calls cannot both decrement the same value
+        // and drive overflow_ negative (which would later pop real events that
+        // were never overflowed and desync the event stack).
+        int32_t pending = overflow_.load();
+        while (pending > 0) {
+            if (overflow_.compare_exchange_weak(pending, pending - 1)) {
+                return;
+            }
         }
 
         data_->finishSpanEvent();
@@ -278,9 +291,14 @@ namespace pinpoint {
     }
 
     void SpanImpl::EndSpan() {
-        CHECK_FINISHED();
+        // Atomic exchange so only the first caller proceeds: a check-then-set
+        // would let two concurrent EndSpan calls both pass the guard and run
+        // record_chunk / dropActiveSpan / collectResponseTime twice.
+        if (finished_.exchange(true)) {
+            LOG_WARN("span is already finished");
+            return;
+        }
 
-        finished_ = true;
         data_->setEndTime();
 
         if (data_->isAsyncSpan()) {
