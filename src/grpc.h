@@ -84,7 +84,10 @@ namespace pinpoint {
          */
         virtual bool readyChannel();
         /// @brief Releases the current channel handle.
-        void closeChannel() { channel_.reset(); }
+        void closeChannel() {
+            std::unique_lock<std::mutex> lock(channel_mutex_);
+            channel_.reset();
+        }
 
     protected:
         AgentService* agent_{};
@@ -241,6 +244,7 @@ namespace pinpoint {
         std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue_{};
         std::mutex meta_queue_mutex_{};
         std::condition_variable meta_queue_cv_{};
+        bool meta_stop_requested_{false};
         uint64_t meta_sequence_{0};
 
         template<typename Request, typename StubMethod>
@@ -313,7 +317,7 @@ namespace pinpoint {
         void build_active_thread_count_response(v1::PCmdActiveThreadCountRes* response,
                                                 int32_t request_id,
                                                 int32_t sequence_id) const;
-        void add_active_thread_count_stream(int32_t request_id);
+        bool add_active_thread_count_stream(int32_t request_id);
         void cleanup_active_thread_count_streams();
         void stop_active_thread_count_streams();
         bool write_fail_message(const v1::PCmdRequest& request,
@@ -364,6 +368,7 @@ namespace pinpoint {
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
+        bool ping_stop_requested_{false};
         unsigned long socket_id_{0};
         // Set once per ping stream session when the stream starts shutting
         // down, so StartWritesDone()/RemoveHold() run exactly once no matter
@@ -520,6 +525,7 @@ namespace pinpoint {
         std::queue<StatsType> stats_queue_{};
         std::mutex stats_queue_mutex_{};
         std::condition_variable stats_queue_cv_{};
+        bool stats_stop_requested_{false};
 
         bool start_stats_stream();
         GrpcStreamStatus write_and_await_stats_stream();

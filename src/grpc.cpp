@@ -455,6 +455,10 @@ namespace pinpoint {
 
         constexpr int GRPC_REQUEST_TIMEOUT_MS = 5000;
 
+        // Bounded wait for a stream to deliver OnDone at shutdown before
+        // escalating to TryCancel.
+        constexpr auto STREAM_FINISH_TIMEOUT = std::chrono::seconds(3);
+
         static void set_request_deadline(grpc::ClientContext& ctx) {
             auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(GRPC_REQUEST_TIMEOUT_MS);
             ctx.set_deadline(deadline);
@@ -734,7 +738,7 @@ namespace pinpoint {
 
     bool GrpcMetadata::pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock) {
         while (true) {
-            if (agent_->isExiting()) {
+            if (meta_stop_requested_ || agent_->isExiting()) {
                 return false;
             }
 
@@ -754,11 +758,11 @@ namespace pinpoint {
                 }
 
                 meta_queue_cv_.wait_until(lock, retry->first, [this] {
-                    return !meta_queue_.empty() || agent_->isExiting();
+                    return !meta_queue_.empty() || meta_stop_requested_ || agent_->isExiting();
                 });
             } else {
                 meta_queue_cv_.wait(lock, [this] {
-                    return !meta_queue_.empty() || !retry_queue_.empty() || agent_->isExiting();
+                    return !meta_queue_.empty() || !retry_queue_.empty() || meta_stop_requested_ || agent_->isExiting();
                 });
             }
         }
@@ -800,6 +804,7 @@ namespace pinpoint {
 
     void GrpcMetadata::stopMetaWorker() {
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+        meta_stop_requested_ = true;
         meta_queue_cv_.notify_all();
     }
 
@@ -809,6 +814,9 @@ namespace pinpoint {
         constexpr int ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
         constexpr auto COMMAND_RECONNECT_DELAY = std::chrono::milliseconds(1000);
         constexpr auto ACTIVE_THREAD_COUNT_FLUSH_DELAY = std::chrono::milliseconds(1000);
+        // Each stream owns a dedicated thread, so cap how many the collector
+        // can open at once.
+        constexpr size_t MAX_ACTIVE_THREAD_COUNT_STREAMS = 10;
 
         int32_t command_code(const v1::PCmdRequest& request) {
             return static_cast<int32_t>(request.command_case());
@@ -869,7 +877,12 @@ namespace pinpoint {
         }
 
         void stop() {
-            stop_requested_ = true;
+            {
+                // Setting the flag under cv_mutex_ prevents a lost wakeup when
+                // run() is between checking the predicate and blocking.
+                std::unique_lock<std::mutex> lock(cv_mutex_);
+                stop_requested_ = true;
+            }
             {
                 std::unique_lock<std::mutex> lock(context_mutex_);
                 if (context_ != nullptr) {
@@ -884,6 +897,10 @@ namespace pinpoint {
 
         bool done() const {
             return done_;
+        }
+
+        int32_t request_id() const {
+            return request_id_;
         }
 
     private:
@@ -1028,7 +1045,9 @@ namespace pinpoint {
             return write_fail_message(request, stream, "invalid active thread count command");
         }
 
-        add_active_thread_count_stream(request.requestid());
+        if (!add_active_thread_count_stream(request.requestid())) {
+            return write_fail_message(request, stream, "too many active thread count streams");
+        }
         return true;
     }
 
@@ -1051,14 +1070,30 @@ namespace pinpoint {
         }
     }
 
-    void GrpcCommand::add_active_thread_count_stream(int32_t request_id) {
+    bool GrpcCommand::add_active_thread_count_stream(int32_t request_id) {
         std::unique_lock<std::mutex> lock(active_streams_mutex_);
+
+        // The collector may re-issue the command for a request id it already
+        // owns (e.g. after a command-stream reconnect); stop the old stream
+        // so it is swept by the cleanup below.
+        for (auto& stream : active_thread_count_streams_) {
+            if (stream->request_id() == request_id) {
+                stream->stop();
+            }
+        }
         cleanup_active_thread_count_streams();
+
+        if (active_thread_count_streams_.size() >= MAX_ACTIVE_THREAD_COUNT_STREAMS) {
+            LOG_WARN("reject active thread count stream: requestId={}, activeStreams={}",
+                     request_id, active_thread_count_streams_.size());
+            return false;
+        }
 
         auto stream = std::make_unique<ActiveThreadCountStream>(this, ++socket_id_, request_id);
         stream->start();
         active_thread_count_streams_.push_back(std::move(stream));
         LOG_INFO("active thread count stream started: requestId={}", request_id);
+        return true;
     }
 
     void GrpcCommand::cleanup_active_thread_count_streams() {
@@ -1364,9 +1399,16 @@ namespace pinpoint {
         close_ping_stream();
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_cv_.wait(lock, [this] {
-            return grpc_status_ == STREAM_DONE;
-        });
+        if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
+                                 [this] { return grpc_status_ == STREAM_DONE; })) {
+            LOG_INFO("ping stream did not finish in time, cancelling");
+            if (stream_context_ != nullptr) {
+                stream_context_->TryCancel();
+            }
+            // OnDone is guaranteed after cancellation; the reactor must not
+            // be abandoned before it arrives.
+            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        }
     }
 
     GrpcStreamStatus GrpcAgent::write_and_await_ping_stream() {
@@ -1446,7 +1488,7 @@ namespace pinpoint {
             }
 
             lock.lock();
-            if (ping_cv_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
+            if (ping_cv_.wait_for(lock, timeout, [this]{ return ping_stop_requested_ || agent_->isExiting(); })) {
                 lock.unlock();
                 finish_ping_stream();
                 break;
@@ -1459,6 +1501,7 @@ namespace pinpoint {
 
     void GrpcAgent::stopPingWorker() {
         std::unique_lock<std::mutex> lock(ping_worker_mutex_);
+        ping_stop_requested_ = true;
         ping_cv_.notify_one();
     }
 
@@ -1754,9 +1797,16 @@ namespace pinpoint {
         RemoveHold();
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_cv_.wait(lock, [this] {
-            return grpc_status_ == STREAM_DONE;
-        });
+        if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
+                                 [this] { return grpc_status_ == STREAM_DONE; })) {
+            LOG_INFO("stats stream did not finish in time, cancelling");
+            if (stream_context_ != nullptr) {
+                stream_context_->TryCancel();
+            }
+            // OnDone is guaranteed after cancellation; the reactor must not
+            // be abandoned before it arrives.
+            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        }
     }
 
     void GrpcStats::OnWriteDone(bool ok) {
@@ -1794,7 +1844,7 @@ namespace pinpoint {
         StatsType stats;
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            if (agent_->isExiting() || stats_queue_.empty()) {
+            if (stats_stop_requested_ || agent_->isExiting() || stats_queue_.empty()) {
                 LOG_DEBUG("stats - queue empty");
                 return STREAM_CONTINUE;
             }
@@ -1869,11 +1919,12 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(stats_queue_mutex_);
         while (true) {
             stats_queue_cv_.wait(lock, [this]{
-                return !stats_queue_.empty() || agent_->isExiting();
+                return !stats_queue_.empty() || stats_stop_requested_ || agent_->isExiting();
             });
+            const bool stopping = stats_stop_requested_ || agent_->isExiting();
             lock.unlock();
 
-            if (agent_->isExiting()) {
+            if (stopping) {
                 finish_stats_stream();
                 break;
             }
@@ -1902,6 +1953,7 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+        stats_stop_requested_ = true;
         stats_queue_cv_.notify_one();
     }
 }
