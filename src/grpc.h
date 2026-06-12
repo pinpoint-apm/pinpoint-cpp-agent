@@ -363,6 +363,10 @@ namespace pinpoint {
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
         unsigned long socket_id_{0};
+        // Set once per ping stream session when the stream starts shutting
+        // down, so StartWritesDone()/RemoveHold() run exactly once no matter
+        // which of the read-failure / write-failure / finish paths fires first.
+        std::atomic<bool> ping_stream_closing_{false};
 
         std::thread agent_info_thread_;
         std::mutex agent_info_mutex_;
@@ -372,6 +376,7 @@ namespace pinpoint {
         bool agent_info_refresh_requested_{false};
 
         bool start_ping_stream();
+        void close_ping_stream();
         void finish_ping_stream();
         GrpcStreamStatus write_and_await_ping_stream();
 
@@ -426,9 +431,10 @@ namespace pinpoint {
      * - Rejected spans are not retried or re-queued (observability only).
      *
      * ### Shutdown
-     * - On exit the worker drains any remaining chunks into one final
-     *   batch (uncapped) and then blocks up to 3 s waiting for all in-flight
-     *   permits to be returned before releasing the channel.
+     * - On exit the worker drains any remaining chunks and, if the channel
+     *   is already connected, sends them in batches of at most @c size, then
+     *   blocks up to 3 s waiting for all in-flight permits to be returned
+     *   before releasing the channel.
      */
     class GrpcSpan : public GrpcClient {
     public:

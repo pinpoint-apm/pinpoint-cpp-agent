@@ -1091,6 +1091,22 @@ namespace pinpoint {
     }
 
     void GrpcCommand::commandWorker() try {
+        // Clears command_stream_context_ before the stack-allocated context it
+        // points to is destroyed — including when the loop unwinds via an
+        // exception — so cancel_command_stream() never calls TryCancel() on a
+        // dangling pointer.
+        struct StreamContextGuard {
+            StreamContextGuard(GrpcCommand* self, grpc::ClientContext* context) : self_(self) {
+                std::unique_lock<std::mutex> lock(self_->command_worker_mutex_);
+                self_->command_stream_context_ = context;
+            }
+            ~StreamContextGuard() {
+                std::unique_lock<std::mutex> lock(self_->command_worker_mutex_);
+                self_->command_stream_context_ = nullptr;
+            }
+            GrpcCommand* self_;
+        };
+
         while (!agent_->isExiting()) {
             if (!readyChannel()) {
                 break;
@@ -1101,10 +1117,7 @@ namespace pinpoint {
             const auto command_codes = dispatcher_.supportedCommandCodes();
             context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header(command_codes));
 
-            {
-                std::unique_lock<std::mutex> lock(command_worker_mutex_);
-                command_stream_context_ = &context;
-            }
+            const StreamContextGuard context_guard(this, &context);
 
             LOG_INFO("connect to command service stream");
             auto stream = command_stub_->HandleCommandV2(&context);
@@ -1132,10 +1145,6 @@ namespace pinpoint {
                 }
             }
 
-            {
-                std::unique_lock<std::mutex> lock(command_worker_mutex_);
-                command_stream_context_ = nullptr;
-            }
             {
                 std::unique_lock<std::mutex> lock(active_streams_mutex_);
                 cleanup_active_thread_count_streams();
@@ -1326,6 +1335,12 @@ namespace pinpoint {
         build_grpc_context(stream_context_.get(), ++socket_id_);
         agent_stub_->async()->PingSession(stream_context_.get(), this);
 
+        {
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            grpc_status_ = STREAM_CONTINUE;
+        }
+        ping_stream_closing_ = false;
+
         AddHold();
         StartRead(&pong_);
         StartCall();
@@ -1333,10 +1348,16 @@ namespace pinpoint {
         return true;
     }
 
+    void GrpcAgent::close_ping_stream() {
+        if (!ping_stream_closing_.exchange(true)) {
+            StartWritesDone();
+            RemoveHold();
+        }
+    }
+
     void GrpcAgent::finish_ping_stream() {
         LOG_DEBUG("finish_ping_stream");
-        StartWritesDone();
-        RemoveHold();
+        close_ping_stream();
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
         stream_cv_.wait(lock, [this] {
@@ -1347,6 +1368,14 @@ namespace pinpoint {
     GrpcStreamStatus GrpcAgent::write_and_await_ping_stream() {
         LOG_DEBUG("write_and_await_ping_stream");
         std::unique_lock<std::mutex> lock(stream_mutex_);
+
+        if (ping_stream_closing_) {
+            // The stream broke while idle. StartWrite() is not allowed after
+            // StartWritesDone(), so just wait for OnDone; the old call must
+            // also fully finish before the caller replaces stream_context_.
+            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            return STREAM_DONE;
+        }
 
         grpc_status_ = STREAM_WRITE;
         StartWrite(&ping_);
@@ -1366,8 +1395,7 @@ namespace pinpoint {
         LOG_DEBUG("ping - OnWriteDone : {}", ok);
 
         if (!ok) {
-            StartWritesDone();
-            RemoveHold();
+            close_ping_stream();
         }
     }
 
@@ -1380,6 +1408,11 @@ namespace pinpoint {
             std::unique_lock<std::mutex> lock(stream_mutex_);
             grpc_status_ = STREAM_CONTINUE;
             stream_cv_.notify_one();
+        } else {
+            // A failed read means the stream is broken. Release the hold so
+            // OnDone can be delivered; otherwise the ping worker waits on
+            // stream_cv_ forever and shutdown hangs on join.
+            close_ping_stream();
         }
     }
 
@@ -1620,9 +1653,22 @@ namespace pinpoint {
             }
         }
         if (!remaining.empty()) {
-            LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
-            if (readyChannel()) {
-                send_batch_async(remaining);
+            // readyChannel() refuses to wait once the agent is exiting, so probe
+            // the channel state directly and send only over a live connection.
+            if (channel_->GetState(false) == GRPC_CHANNEL_READY) {
+                LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
+                const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->span.batch.size));
+                std::vector<std::unique_ptr<SpanChunk>> batch;
+                batch.reserve(std::min(batch_size, remaining.size()));
+                for (auto& chunk : remaining) {
+                    batch.push_back(std::move(chunk));
+                    if (batch.size() >= batch_size) {
+                        send_batch_async(batch);
+                    }
+                }
+                send_batch_async(batch);
+            } else {
+                LOG_INFO("drop {} remaining spans on shutdown: channel not ready", remaining.size());
             }
         }
         await_in_flight_requests();
