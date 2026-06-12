@@ -1612,35 +1612,43 @@ namespace pinpoint {
             return;
         }
 
-        auto pending = std::make_shared<PendingSpanBatch>();
-        pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
-
-        for (auto& span_chunk : batch) {
-            const auto span = span_chunk->getSpanData();
-            auto* msg = pending->request->add_span();
-            if (!span_chunk->isFinal() || span->isAsyncSpan()) {
-                msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &pending->arena));
-            } else {
-                msg->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &pending->arena));
-            }
-        }
-        batch.clear();
-
+        // Reserve an in-flight slot before serializing anything. When the
+        // pipeline is saturated the batch is dropped without paying the
+        // (potentially large) protobuf build cost, and backpressure engages
+        // one batch sooner.
         const auto flush_timeout = std::chrono::milliseconds(config_->span.batch.flush_interval_ms);
         if (!try_acquire_permit(flush_timeout)) {
             LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
                      flush_timeout.count());
+            batch.clear();
             return;
         }
 
-        build_grpc_context(&pending->ctx, 0);
-        set_request_deadline(pending->ctx);
-
-        const int batch_count = pending->request->span_size();
-        LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
-                  batch_count, batch_max_permits_ - batch_permits_, batch_max_permits_);
-
+        // The permit is now held. Every path from here until the async call is
+        // launched must release it; once launched, the completion callback owns
+        // the release.
         try {
+            auto pending = std::make_shared<PendingSpanBatch>();
+            pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
+
+            for (auto& span_chunk : batch) {
+                const auto span = span_chunk->getSpanData();
+                auto* msg = pending->request->add_span();
+                if (!span_chunk->isFinal() || span->isAsyncSpan()) {
+                    msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &pending->arena));
+                } else {
+                    msg->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &pending->arena));
+                }
+            }
+            batch.clear();
+
+            build_grpc_context(&pending->ctx, 0);
+            set_request_deadline(pending->ctx);
+
+            const int batch_count = pending->request->span_size();
+            LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
+                      batch_count, batch_max_permits_ - batch_permits_, batch_max_permits_);
+
             auto* ctx_ptr = &pending->ctx;
             auto* request_ptr = pending->request;
             auto* reply_ptr = &pending->reply;
@@ -1667,6 +1675,7 @@ namespace pinpoint {
                 });
         } catch (const std::exception& e) {
             release_permit();
+            batch.clear();
             LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
         }
     } catch (const std::exception& e) {
