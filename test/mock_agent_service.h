@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -205,10 +206,11 @@ public:
     mutable int32_t api_id_counter_ = 100;
     mutable int32_t error_id_counter_ = 200;
     mutable int32_t sql_id_counter_ = 300;
-    mutable int removed_api_count_ = 0;
-    mutable int removed_error_count_ = 0;
-    mutable int removed_sql_count_ = 0;
-    mutable int removed_sql_uid_count_ = 0;
+    // Atomic so tests can poll these from another thread while a worker runs
+    mutable std::atomic<int> removed_api_count_{0};
+    mutable std::atomic<int> removed_error_count_{0};
+    mutable std::atomic<int> removed_sql_count_{0};
+    mutable std::atomic<int> removed_sql_uid_count_{0};
 
 private:
     bool is_exiting_;

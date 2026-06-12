@@ -721,8 +721,12 @@ namespace pinpoint {
         LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
     }
 
+    std::chrono::milliseconds GrpcMetadata::meta_retry_delay() const {
+        return METADATA_RETRY_DELAY;
+    }
+
     void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
-        pending.available_at = std::chrono::steady_clock::now() + METADATA_RETRY_DELAY;
+        pending.available_at = std::chrono::steady_clock::now() + meta_retry_delay();
         pending.sequence = meta_sequence_++;
         retry_queue_.emplace(pending.available_at, std::move(pending));
         meta_queue_cv_.notify_one();

@@ -58,7 +58,7 @@ namespace pinpoint {
         return {host_name.data()};
     }
 
-    std::string get_host_ip_addr() {
+    static std::string resolve_host_ip_addr() {
         std::array<char, kHostNameMaxLength> host_name{};
 
         if (gethostname(host_name.data(), host_name.size()) != 0) {
@@ -81,7 +81,7 @@ namespace pinpoint {
         // Thread-safe conversion using inet_ntop instead of inet_ntoa
         std::array<char, INET_ADDRSTRLEN> ip_str{};
         auto* sockaddr_ipv4 = reinterpret_cast<struct sockaddr_in*>(result->ai_addr);
-        
+
         if (inet_ntop(AF_INET, &(sockaddr_ipv4->sin_addr), ip_str.data(), ip_str.size()) == nullptr) {
             freeaddrinfo(result);
             return "0.0.0.0";
@@ -90,6 +90,14 @@ namespace pinpoint {
         std::string ip_address{ip_str.data()};
         freeaddrinfo(result);
         return ip_address;
+    }
+
+    std::string get_host_ip_addr() {
+        // getaddrinfo can block for seconds when the hostname is not
+        // resolvable (e.g. no DNS); the address is stable for the process
+        // lifetime, so resolve once and reuse.
+        static const std::string cached_ip_addr = resolve_host_ip_addr();
+        return cached_ip_addr;
     }
 
     namespace {

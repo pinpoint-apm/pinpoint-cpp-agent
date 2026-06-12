@@ -224,6 +224,8 @@ namespace pinpoint {
 
     protected:
         void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
+        /// @brief Delay before a failed metadata send is retried; overridable for tests.
+        virtual std::chrono::milliseconds meta_retry_delay() const;
 
     private:
         struct PendingMeta {
