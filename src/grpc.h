@@ -25,6 +25,7 @@
 #include <mutex>
 #include <deque>
 #include <queue>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -58,6 +59,29 @@ namespace pinpoint {
      * @brief Identifies the type of gRPC client sharing common facilities.
      */
     enum ClientType {AGENT, METADATA, SPAN, STATS};
+
+    /**
+     * @brief Exponential backoff with jitter for reconnect attempts.
+     */
+    class ExponentialBackoff {
+    public:
+        ExponentialBackoff();
+        ExponentialBackoff(std::chrono::milliseconds initial_interval,
+                           double multiplier,
+                           double randomization_factor,
+                           std::chrono::milliseconds max_interval);
+
+        std::chrono::milliseconds next_delay();
+        void reset();
+
+    private:
+        std::chrono::milliseconds initial_interval_;
+        double multiplier_;
+        double randomization_factor_;
+        std::chrono::milliseconds max_interval_;
+        int attempt_{0};
+        std::mt19937_64 rng_;
+    };
 
     /**
      * @brief Base client that encapsulates channel management shared by all gRPC workers.
@@ -104,11 +128,12 @@ namespace pinpoint {
         // Idle state: no write in flight and the stream is not finished.
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
         std::atomic<bool> force_queue_empty_{false};
+        ExponentialBackoff channel_ready_backoff_{};
 
         /**
-         * @brief Blocks until the channel becomes ready or the deadline is exceeded.
+         * @brief Blocks until the channel becomes ready or the delay is exceeded.
          */
-        bool wait_channel_ready() const;
+        bool wait_channel_ready(std::chrono::milliseconds delay) const;
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
     };

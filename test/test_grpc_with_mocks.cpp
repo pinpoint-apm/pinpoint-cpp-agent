@@ -1000,6 +1000,26 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
 }
 
+TEST_F(GrpcMockTest, GrpcMetadataSkipsRpcWhenChannelNotReady) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setReadyChannel(false);
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto mock_meta_stub = std::make_unique<StrictMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _)).Times(0);
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.not.ready"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+
+    if (meta_worker.joinable()) meta_worker.join();
+}
+
 TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));

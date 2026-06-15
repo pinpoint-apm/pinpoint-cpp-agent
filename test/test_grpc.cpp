@@ -77,6 +77,37 @@ protected:
     std::unique_ptr<MockAgentService> mock_agent_service_;
 };
 
+TEST(ExponentialBackoffTest, DelayIncreasesAndCapsWithoutJitter) {
+    ExponentialBackoff backoff(std::chrono::milliseconds(1000), 2.0, 0.0, std::chrono::milliseconds(3000));
+
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(1000));
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(2000));
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3000));
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3000));
+}
+
+TEST(ExponentialBackoffTest, ResetStartsFromInitialDelay) {
+    ExponentialBackoff backoff(std::chrono::milliseconds(3000), 1.2, 0.0, std::chrono::milliseconds(30000));
+
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3000));
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3600));
+
+    backoff.reset();
+
+    EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3000));
+}
+
+TEST(ExponentialBackoffTest, JitterStaysWithinRandomizationRange) {
+    ExponentialBackoff backoff(std::chrono::milliseconds(3000), 1.2, 0.3, std::chrono::milliseconds(30000));
+
+    for (int i = 0; i < 100; ++i) {
+        backoff.reset();
+        const auto delay = backoff.next_delay();
+        EXPECT_GE(delay, std::chrono::milliseconds(2100));
+        EXPECT_LE(delay, std::chrono::milliseconds(3900));
+    }
+}
+
 // GrpcClient Tests
 
 TEST_F(GrpcTest, GrpcClientConstructorTest) {

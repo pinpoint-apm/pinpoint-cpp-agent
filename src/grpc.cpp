@@ -16,12 +16,15 @@
 
 #include <cassert>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <grpcpp/client_context.h>
 
@@ -449,6 +452,11 @@ namespace pinpoint {
         }
 
         constexpr int GRPC_REQUEST_TIMEOUT_MS = 5000;
+        constexpr auto RECONNECT_INITIAL_INTERVAL = std::chrono::milliseconds(3000);
+        constexpr double RECONNECT_MULTIPLIER = 1.2;
+        constexpr double RECONNECT_RANDOMIZATION_FACTOR = 0.3;
+        constexpr auto RECONNECT_MAX_INTERVAL = std::chrono::milliseconds(30000);
+        constexpr auto BACKOFF_SLEEP_SLICE = std::chrono::milliseconds(1000);
 
         // Bounded wait for a stream to deliver OnDone at shutdown before
         // escalating to TryCancel.
@@ -458,6 +466,47 @@ namespace pinpoint {
             auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(GRPC_REQUEST_TIMEOUT_MS);
             ctx.set_deadline(deadline);
         }
+    }
+
+    ExponentialBackoff::ExponentialBackoff()
+        : ExponentialBackoff(RECONNECT_INITIAL_INTERVAL,
+                             RECONNECT_MULTIPLIER,
+                             RECONNECT_RANDOMIZATION_FACTOR,
+                             RECONNECT_MAX_INTERVAL) {}
+
+    ExponentialBackoff::ExponentialBackoff(std::chrono::milliseconds initial_interval,
+                                           double multiplier,
+                                           double randomization_factor,
+                                           std::chrono::milliseconds max_interval)
+        : initial_interval_(initial_interval),
+          multiplier_(multiplier),
+          randomization_factor_(randomization_factor),
+          max_interval_(max_interval),
+          rng_(std::random_device{}()) {}
+
+    std::chrono::milliseconds ExponentialBackoff::next_delay() {
+        const auto attempt = attempt_++;
+        double delay_ms = static_cast<double>(initial_interval_.count()) * std::pow(multiplier_, attempt);
+        const auto max_ms = static_cast<double>(max_interval_.count());
+        if (!std::isfinite(delay_ms) || delay_ms > max_ms) {
+            delay_ms = max_ms;
+        }
+
+        const auto jitter = std::max(0.0, randomization_factor_);
+        if (jitter > 0.0) {
+            std::uniform_real_distribution<double> distribution(1.0 - jitter, 1.0 + jitter);
+            delay_ms *= distribution(rng_);
+        }
+
+        if (!std::isfinite(delay_ms) || delay_ms <= 0.0) {
+            return initial_interval_;
+        }
+        return std::chrono::milliseconds(
+            static_cast<std::chrono::milliseconds::rep>(std::llround(delay_ms)));
+    }
+
+    void ExponentialBackoff::reset() {
+        attempt_ = 0;
     }
 
     GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
@@ -494,7 +543,7 @@ namespace pinpoint {
         }
     }
 
-    bool GrpcClient::wait_channel_ready() const {
+    bool GrpcClient::wait_channel_ready(std::chrono::milliseconds delay) const {
         auto state = channel_->GetState(true);
         if (state == GRPC_CHANNEL_READY) {
             return true;
@@ -502,11 +551,20 @@ namespace pinpoint {
 
         LOG_INFO("wait {} grpc channel ready: state = {}", client_name_, static_cast<int>(state));
 
-        for (int retry = 0; state != GRPC_CHANNEL_READY && retry < 12; retry++) {
+        const auto deadline = std::chrono::system_clock::now() + delay;
+        while (state != GRPC_CHANNEL_READY) {
             if (agent_->isExiting()) {
                 return false;
             }
-            channel_->WaitForStateChange(state, std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+            const auto now = std::chrono::system_clock::now();
+            if (now >= deadline) {
+                break;
+            }
+
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            const auto wait_for = std::min(remaining, BACKOFF_SLEEP_SLICE);
+            channel_->WaitForStateChange(state, now + wait_for);
             state = channel_->GetState(false);
         }
 
@@ -525,10 +583,15 @@ namespace pinpoint {
                 if (agent_->isExiting()) {
                     return false;
                 }
-                if (wait_channel_ready()) {
+                const auto delay = channel_ready_backoff_.next_delay();
+                LOG_INFO("{} grpc channel is not ready; retry for {}ms", client_name_, delay.count());
+                if (wait_channel_ready(delay)) {
+                    channel_ready_backoff_.reset();
                     break;
                 }
             }
+        } else {
+            channel_ready_backoff_.reset();
         }
 
         if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - now).count() >= 5) {
@@ -548,6 +611,10 @@ namespace pinpoint {
 
     template<typename Request, typename StubMethod>
     GrpcRequestStatus GrpcMetadata::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
+        if (!readyChannel()) {
+            return SEND_FAIL;
+        }
+
         v1::PResult reply;
         grpc::ClientContext ctx;
         std::unique_lock<std::mutex> lock(channel_mutex_);
