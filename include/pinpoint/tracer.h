@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pinpoint {
@@ -370,8 +371,17 @@ namespace pinpoint {
 
 	/// @brief Creates an agent using the global configuration.
 	AgentPtr CreateAgent();
+	/// @brief Creates an agent and sends server metadata with AgentInfo. Args and libs are optional.
+	AgentPtr CreateAgent(std::string_view server_info,
+	                     const std::vector<std::string>& args = {},
+	                     const std::vector<std::string>& libs = {});
 	/// @brief Creates an agent overriding the default application type.
 	AgentPtr CreateAgent(int32_t app_type);
+	/// @brief Creates an agent overriding the application type and AgentInfo server metadata. Args and libs are optional.
+	AgentPtr CreateAgent(int32_t app_type,
+	                     std::string_view server_info,
+	                     const std::vector<std::string>& args = {},
+	                     const std::vector<std::string>& libs = {});
 	/// @brief Returns the singleton global agent instance.
 	AgentPtr GlobalAgent();
 

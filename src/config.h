@@ -293,4 +293,12 @@ namespace pinpoint {
      * @return YAML string.
      */
     std::string to_config_string(const Config& config);
+
+    /**
+     * @brief Returns only config entries whose values differ from defaults.
+     *
+     * @param config Configuration instance to compare with defaults.
+     * @return List of config entries formatted as `Key=Value`.
+     */
+    std::vector<std::string> to_non_default_config_strings(const Config& config);
 }  // namespace pinpoint

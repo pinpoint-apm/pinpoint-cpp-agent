@@ -601,6 +601,67 @@ Sampling:
     EXPECT_EQ(reloaded_cfg->sampling.counter_rate, 50);
 }
 
+TEST_F(CreateAgentTest, CreateAgentWithServerMetaDataReloadsExistingAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    set_config_string(kBaseConfigYaml);
+
+    auto returned_agent = CreateAgent("test-server",
+                                      std::vector<std::string>{"--port=8080"},
+                                      std::vector<std::string>{"libfoo.so"});
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+}
+
+TEST_F(CreateAgentTest, CreateAgentWithServerInfoOnlyReloadsExistingAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    set_config_string(kBaseConfigYaml);
+
+    auto returned_agent = CreateAgent("test-server");
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+}
+
+TEST_F(CreateAgentTest, CreateAgentWithTypeAndServerMetaDataReloadsExistingAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    set_config_string(kBaseConfigYaml);
+
+    auto returned_agent = CreateAgent(APP_TYPE_CPP,
+                                      "test-server",
+                                      std::vector<std::string>{"--worker=4"},
+                                      std::vector<std::string>{"libbar.so"});
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+}
+
+TEST_F(CreateAgentTest, CreateAgentWithTypeAndServerInfoOnlyReloadsExistingAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    set_config_string(kBaseConfigYaml);
+
+    auto returned_agent = CreateAgent(APP_TYPE_CPP, "test-server");
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+}
+
 TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenNotReloadable) {
     // 1. Install a mock agent as the global agent
     auto cfg = make_test_config_for_create_agent();

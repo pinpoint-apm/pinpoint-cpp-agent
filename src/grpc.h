@@ -27,6 +27,7 @@
 #include <queue>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <variant>
@@ -374,6 +375,10 @@ namespace pinpoint {
         void stopAgentInfo();
         /// @brief Requests an immediate AgentInfo refresh attempt.
         void refreshAgentInfo();
+        /// @brief Sets server metadata included in AgentInfo.
+        void setServerMetaData(std::string_view server_info,
+                               const std::vector<std::string>& args,
+                               const std::vector<std::string>& libs);
 
         //grpc::ClientBidiReactor
         /// @brief Notification invoked after each write completes.
@@ -387,6 +392,12 @@ namespace pinpoint {
         void set_agent_stub(std::unique_ptr<v1::Agent::StubInterface> stub) { agent_stub_ = std::move(stub); }
 
     private:
+        struct ServerMetaData {
+            std::string server_info;
+            std::vector<std::string> vm_args;
+            std::vector<std::string> service_libs;
+        };
+
         std::unique_ptr<v1::Agent::StubInterface> agent_stub_{};
 
         v1::PPing ping_{}, pong_{};
@@ -405,6 +416,8 @@ namespace pinpoint {
         bool agent_info_running_{false};
         bool agent_info_stop_requested_{false};
         bool agent_info_refresh_requested_{false};
+        bool server_meta_data_set_{false};
+        ServerMetaData server_meta_data_;
 
         bool start_ping_stream();
         void close_ping_stream();

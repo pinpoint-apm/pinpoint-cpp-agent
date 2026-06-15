@@ -472,6 +472,83 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSuccessTest) {
     EXPECT_EQ(status, SEND_OK) << "Agent registration should succeed with mock stub";
 }
 
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    v1::PAgentInfo captured_agent_info;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info), Return(grpc::Status::OK)));
+
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    ASSERT_TRUE(captured_agent_info.has_servermetadata());
+    const auto& server_metadata = captured_agent_info.servermetadata();
+    EXPECT_EQ(server_metadata.serverinfo(), "C/C++ Application");
+    EXPECT_EQ(server_metadata.vmarg_size(), 0);
+    ASSERT_EQ(server_metadata.serviceinfo_size(), 1);
+
+    const auto& service_info = server_metadata.serviceinfo(0);
+    EXPECT_EQ(service_info.servicename(), "Pinpoint Agent");
+
+    auto has_service_lib = [&service_info](const std::string& expected) {
+        for (const auto& service_lib : service_info.servicelib()) {
+            if (service_lib == expected) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    EXPECT_TRUE(has_service_lib("Span.MaxEventDepth=32"));
+    EXPECT_TRUE(has_service_lib("Span.EventChunkSize=10"));
+    EXPECT_TRUE(has_service_lib("Http.CollectUrlStat=true"));
+    EXPECT_TRUE(has_service_lib("Http.UrlStatTrimPathDepth=3"));
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    v1::PAgentInfo captured_agent_info;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info), Return(grpc::Status::OK)));
+
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+    agent.setServerMetaData("test-server", {"--port=8080", "--worker=4"}, {"libfoo.so", "libbar.so"});
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    ASSERT_TRUE(captured_agent_info.has_servermetadata());
+    const auto& server_metadata = captured_agent_info.servermetadata();
+    EXPECT_EQ(server_metadata.serverinfo(), "test-server");
+    ASSERT_EQ(server_metadata.vmarg_size(), 2);
+    EXPECT_EQ(server_metadata.vmarg(0), "--port=8080");
+    EXPECT_EQ(server_metadata.vmarg(1), "--worker=4");
+
+    ASSERT_EQ(server_metadata.serviceinfo_size(), 2);
+    const auto& service_info = server_metadata.serviceinfo(0);
+    EXPECT_EQ(service_info.servicename(), "test-server");
+    ASSERT_EQ(service_info.servicelib_size(), 2);
+    EXPECT_EQ(service_info.servicelib(0), "libfoo.so");
+    EXPECT_EQ(service_info.servicelib(1), "libbar.so");
+
+    const auto& config_service_info = server_metadata.serviceinfo(1);
+    EXPECT_EQ(config_service_info.servicename(), "Pinpoint Agent");
+    auto has_config_service_lib = [&config_service_info](const std::string& expected) {
+        for (const auto& service_lib : config_service_info.servicelib()) {
+            if (service_lib == expected) {
+                return true;
+            }
+        }
+        return false;
+    };
+    EXPECT_TRUE(has_config_service_lib("Span.MaxEventDepth=32"));
+    EXPECT_TRUE(has_config_service_lib("Http.CollectUrlStat=true"));
+}
+
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 

@@ -896,6 +896,138 @@ namespace pinpoint {
         return nullptr;
     }
 
+    namespace {
+        template <typename T>
+        std::string config_value_to_string(const T& value) {
+            YAML::Emitter emitter;
+            emitter << value;
+            return emitter.c_str();
+        }
+
+        std::string config_value_to_string(const std::vector<std::string>& values) {
+            YAML::Emitter emitter;
+            emitter << YAML::Flow << YAML::BeginSeq;
+            for (const auto& value : values) {
+                emitter << value;
+            }
+            emitter << YAML::EndSeq;
+            return emitter.c_str();
+        }
+
+        template <typename T>
+        void add_non_default_config(std::vector<std::string>& config_strings,
+                                    const char* key,
+                                    const T& value,
+                                    const T& default_value) {
+            if (value != default_value) {
+                config_strings.push_back(absl::StrCat(key, "=", config_value_to_string(value)));
+            }
+        }
+    }
+
+    std::vector<std::string> to_non_default_config_strings(const Config& config) {
+        const Config default_config;
+        std::vector<std::string> config_strings;
+        config_strings.reserve(64);
+
+        add_non_default_config(config_strings, "Log.Level", config.log.level, default_config.log.level);
+        add_non_default_config(config_strings, "Log.FilePath", config.log.file_path, default_config.log.file_path);
+        add_non_default_config(config_strings, "Log.MaxFileSize", config.log.max_file_size, default_config.log.max_file_size);
+        add_non_default_config(config_strings, "Grpc.Ssl.TrustCertFilePath", config.grpc.ssl.trust_cert_file_path,
+                               default_config.grpc.ssl.trust_cert_file_path);
+        add_non_default_config(config_strings, "Grpc.Ssl.RootCertFilePath", config.grpc.ssl.root_cert_file_path,
+                               default_config.grpc.ssl.root_cert_file_path);
+        add_non_default_config(config_strings, "Grpc.SslEnable", config.grpc.channel.ssl_enable,
+                               default_config.grpc.channel.ssl_enable);
+        add_non_default_config(config_strings, "Grpc.KeepAliveTimeMs", config.grpc.channel.keepalive_time_ms,
+                               default_config.grpc.channel.keepalive_time_ms);
+        add_non_default_config(config_strings, "Grpc.KeepAliveTimeoutMs", config.grpc.channel.keepalive_timeout_ms,
+                               default_config.grpc.channel.keepalive_timeout_ms);
+        add_non_default_config(config_strings, "Grpc.KeepAlivePermitWithoutCalls",
+                               config.grpc.channel.keepalive_permit_without_calls,
+                               default_config.grpc.channel.keepalive_permit_without_calls);
+        add_non_default_config(config_strings, "Grpc.MaxSendMessageSize", config.grpc.channel.max_send_message_size,
+                               default_config.grpc.channel.max_send_message_size);
+        add_non_default_config(config_strings, "Grpc.MaxReceiveMessageSize", config.grpc.channel.max_receive_message_size,
+                               default_config.grpc.channel.max_receive_message_size);
+        add_non_default_config(config_strings, "Grpc.SenderQueueSize", config.grpc.channel.sender_queue_size,
+                               default_config.grpc.channel.sender_queue_size);
+        add_non_default_config(config_strings, "Grpc.ChannelExecutorQueueSize",
+                               config.grpc.channel.channel_executor_queue_size,
+                               default_config.grpc.channel.channel_executor_queue_size);
+        add_non_default_config(config_strings, "Stat.Enable", config.stat.enable, default_config.stat.enable);
+        add_non_default_config(config_strings, "Stat.BatchCount", config.stat.batch_count, default_config.stat.batch_count);
+        add_non_default_config(config_strings, "Stat.BatchInterval", config.stat.collect_interval,
+                               default_config.stat.collect_interval);
+        add_non_default_config(config_strings, "Sampling.Type", config.sampling.type, default_config.sampling.type);
+        add_non_default_config(config_strings, "Sampling.CounterRate", config.sampling.counter_rate,
+                               default_config.sampling.counter_rate);
+        add_non_default_config(config_strings, "Sampling.PercentRate", config.sampling.percent_rate,
+                               default_config.sampling.percent_rate);
+        add_non_default_config(config_strings, "Sampling.NewThroughput", config.sampling.new_throughput,
+                               default_config.sampling.new_throughput);
+        add_non_default_config(config_strings, "Sampling.ContinueThroughput", config.sampling.cont_throughput,
+                               default_config.sampling.cont_throughput);
+        add_non_default_config(config_strings, "Span.QueueSize", config.span.queue_size, default_config.span.queue_size);
+        add_non_default_config(config_strings, "Span.MaxEventDepth", config.span.max_event_depth,
+                               default_config.span.max_event_depth);
+        add_non_default_config(config_strings, "Span.MaxEventSequence", config.span.max_event_sequence,
+                               default_config.span.max_event_sequence);
+        add_non_default_config(config_strings, "Span.EventChunkSize", config.span.event_chunk_size,
+                               default_config.span.event_chunk_size);
+        add_non_default_config(config_strings, "Span.Batch.Size", config.span.batch.size,
+                               default_config.span.batch.size);
+        add_non_default_config(config_strings, "Span.Batch.FlushIntervalMs", config.span.batch.flush_interval_ms,
+                               default_config.span.batch.flush_interval_ms);
+        add_non_default_config(config_strings, "Span.Batch.CollectDeadlineMs", config.span.batch.collect_deadline_ms,
+                               default_config.span.batch.collect_deadline_ms);
+        add_non_default_config(config_strings, "Span.Batch.MaxConcurrentRequests",
+                               config.span.batch.max_concurrent_requests,
+                               default_config.span.batch.max_concurrent_requests);
+        add_non_default_config(config_strings, "AgentInfo.RefreshIntervalMs", config.agent_info.refresh_interval_ms,
+                               default_config.agent_info.refresh_interval_ms);
+        add_non_default_config(config_strings, "AgentInfo.SendRetryIntervalMs", config.agent_info.send_retry_interval_ms,
+                               default_config.agent_info.send_retry_interval_ms);
+        add_non_default_config(config_strings, "AgentInfo.MaxTryPerAttempt", config.agent_info.max_try_per_attempt,
+                               default_config.agent_info.max_try_per_attempt);
+        add_non_default_config(config_strings, "Http.CollectUrlStat", config.http.url_stat.enable,
+                               default_config.http.url_stat.enable);
+        add_non_default_config(config_strings, "Http.UrlStatLimit", config.http.url_stat.limit,
+                               default_config.http.url_stat.limit);
+        add_non_default_config(config_strings, "Http.UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path,
+                               default_config.http.url_stat.enable_trim_path);
+        add_non_default_config(config_strings, "Http.UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth,
+                               default_config.http.url_stat.trim_path_depth);
+        add_non_default_config(config_strings, "Http.UrlStatMethodPrefix", config.http.url_stat.method_prefix,
+                               default_config.http.url_stat.method_prefix);
+        add_non_default_config(config_strings, "Http.Server.StatusCodeErrors", config.http.server.status_errors,
+                               default_config.http.server.status_errors);
+        add_non_default_config(config_strings, "Http.Server.ExcludeUrl", config.http.server.exclude_url,
+                               default_config.http.server.exclude_url);
+        add_non_default_config(config_strings, "Http.Server.ExcludeMethod", config.http.server.exclude_method,
+                               default_config.http.server.exclude_method);
+        add_non_default_config(config_strings, "Http.Server.RecordRequestHeader", config.http.server.rec_request_header,
+                               default_config.http.server.rec_request_header);
+        add_non_default_config(config_strings, "Http.Server.RecordRequestCookie", config.http.server.rec_request_cookie,
+                               default_config.http.server.rec_request_cookie);
+        add_non_default_config(config_strings, "Http.Server.RecordResponseHeader", config.http.server.rec_response_header,
+                               default_config.http.server.rec_response_header);
+        add_non_default_config(config_strings, "Http.Client.RecordRequestHeader", config.http.client.rec_request_header,
+                               default_config.http.client.rec_request_header);
+        add_non_default_config(config_strings, "Http.Client.RecordRequestCookie", config.http.client.rec_request_cookie,
+                               default_config.http.client.rec_request_cookie);
+        add_non_default_config(config_strings, "Http.Client.RecordResponseHeader", config.http.client.rec_response_header,
+                               default_config.http.client.rec_response_header);
+        add_non_default_config(config_strings, "Sql.MaxBindArgsSize", config.sql.max_bind_args_size,
+                               default_config.sql.max_bind_args_size);
+        add_non_default_config(config_strings, "Sql.EnableSqlStats", config.sql.enable_sql_stats,
+                               default_config.sql.enable_sql_stats);
+        add_non_default_config(config_strings, "EnableCallstackTrace", config.enable_callstack_trace,
+                               default_config.enable_callstack_trace);
+
+        return config_strings;
+    }
+
     std::string to_config_string(const Config& config) {
         YAML::Emitter emitter;
 

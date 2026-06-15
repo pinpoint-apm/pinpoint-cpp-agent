@@ -19,6 +19,7 @@
 #include <iterator>
 #include <utility>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "logging.h"
@@ -618,12 +619,24 @@ namespace pinpoint {
         }
     }
 
-    static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg) {
+    struct ServerMetaData {
+        std::string server_info;
+        std::vector<std::string> args;
+        std::vector<std::string> libs;
+    };
+
+    static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg,
+                                                 const std::optional<ServerMetaData>& server_meta_data) {
         if (!cfg->enable) {
             return nullptr;
         }
         try {
             auto grpc_agent = std::make_unique<GrpcAgent>(cfg);
+            if (server_meta_data.has_value()) {
+                grpc_agent->setServerMetaData(server_meta_data->server_info,
+                                              server_meta_data->args,
+                                              server_meta_data->libs);
+            }
             auto grpc_metadata = std::make_unique<GrpcMetadata>(cfg);
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);
@@ -648,7 +661,8 @@ namespace pinpoint {
         set_config_string(config_string);
     }
 
-    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg) {
+    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg,
+                                        const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto& agent = global_agent();
 
@@ -665,11 +679,15 @@ namespace pinpoint {
             return noopAgent();
         }
 
-        agent = make_agent(std::move(cfg));
+        agent = make_agent(std::move(cfg), server_meta_data);
         if (agent == nullptr) {
             return noopAgent();
         }
         return agent;
+    }
+
+    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg) {
+        return create_agent_helper(std::move(cfg), std::nullopt);
     }
 
     // Public entry points: a failure to configure or construct the agent must
@@ -684,6 +702,19 @@ namespace pinpoint {
         return noopAgent();
     }
 
+    AgentPtr CreateAgent(std::string_view server_info,
+                         const std::vector<std::string>& args,
+                         const std::vector<std::string>& libs) try {
+        const auto cfg = make_config();
+        if (!cfg) {
+            return noopAgent();
+        }
+        return create_agent_helper(std::move(cfg),
+                                   ServerMetaData{std::string(server_info), args, libs});
+    } catch (...) {
+        return noopAgent();
+    }
+
     AgentPtr CreateAgent(int32_t app_type) try {
         auto cfg = make_config();
         if (!cfg) {
@@ -691,6 +722,21 @@ namespace pinpoint {
         }
         cfg->app_type_ = app_type;
         return create_agent_helper(std::move(cfg));
+    } catch (...) {
+        return noopAgent();
+    }
+
+    AgentPtr CreateAgent(int32_t app_type,
+                         std::string_view server_info,
+                         const std::vector<std::string>& args,
+                         const std::vector<std::string>& libs) try {
+        auto cfg = make_config();
+        if (!cfg) {
+            return noopAgent();
+        }
+        cfg->app_type_ = app_type;
+        return create_agent_helper(std::move(cfg),
+                                   ServerMetaData{std::string(server_info), args, libs});
     } catch (...) {
         return noopAgent();
     }

@@ -1271,6 +1271,15 @@ namespace pinpoint {
         stopAgentInfo();
     }
 
+    void GrpcAgent::setServerMetaData(std::string_view server_info,
+                                      const std::vector<std::string>& args,
+                                      const std::vector<std::string>& libs) {
+        server_meta_data_.server_info = std::string(server_info);
+        server_meta_data_.vm_args = args;
+        server_meta_data_.service_libs = libs;
+        server_meta_data_set_ = true;
+    }
+
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
         agent_info->set_hostname(get_host_name());
         agent_info->set_ip(get_host_ip_addr());
@@ -1280,8 +1289,27 @@ namespace pinpoint {
         agent_info->set_container(config_->is_container);
 
         const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
-        meta_data->set_serverinfo("C/C++");
-        meta_data->add_vmarg(to_config_string(*config_));
+        if (server_meta_data_set_) {
+            meta_data->set_serverinfo(server_meta_data_.server_info);
+            for (const auto& arg : server_meta_data_.vm_args) {
+                meta_data->add_vmarg(arg);
+            }
+            if (!server_meta_data_.service_libs.empty()) {
+                auto* service_info = meta_data->add_serviceinfo();
+                service_info->set_servicename(server_meta_data_.server_info);
+                for (const auto& lib : server_meta_data_.service_libs) {
+                    service_info->add_servicelib(lib);
+                }
+            }
+        } else {
+            meta_data->set_serverinfo("C/C++ Application");
+        }
+
+        auto* config_service_info = meta_data->add_serviceinfo();
+        config_service_info->set_servicename("Pinpoint Agent");
+        for (const auto& config_string : to_non_default_config_strings(*config_)) {
+            config_service_info->add_servicelib(config_string);
+        }
 
         agent_info->unsafe_arena_set_allocated_servermetadata(meta_data);
     }
