@@ -32,6 +32,7 @@ namespace pinpoint {
         parent_app_name_{},
         parent_app_type_{1},
         parent_app_namespace_{},
+        parent_service_name_{},
         app_type_{agent->getAppType()},
 		service_type_{defaults::SPAN_SERVICE_TYPE},
         operation_{operation},
@@ -328,6 +329,13 @@ namespace pinpoint {
             writer.Set(HEADER_FLAG, std::to_string(data_->getFlags()));
             writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
             writer.Set(HEADER_PARENT_APP_TYPE, std::to_string(agent_->getAppType()));
+            // The agent's own service name is sent only when present, which (per
+            // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
+            // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
+            // which writes Pinpoint-pServiceName only when serviceName != null.
+            if (const auto service_name = agent_->getServiceName(); !service_name.empty()) {
+                writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
+            }
             writer.Set(HEADER_PARENT_APP_NAMESPACE, "");
             writer.Set(HEADER_HOST, se->getDestinationId());
         }
@@ -367,6 +375,14 @@ namespace pinpoint {
             if (result.has_value()) {
                 data_->setParentAppType(result.value());
             }
+        }
+
+        if (const auto parent_app_namespace = reader.Get(HEADER_PARENT_APP_NAMESPACE); parent_app_namespace.has_value()) {
+            data_->setParentAppNamespace(parent_app_namespace.value());
+        }
+
+        if (const auto parent_service_name = reader.Get(HEADER_PARENT_SERVICE_NAME); parent_service_name.has_value()) {
+            data_->setParentServiceName(parent_service_name.value());
         }
 
         if (const auto flag = reader.Get(HEADER_FLAG); flag.has_value()) {

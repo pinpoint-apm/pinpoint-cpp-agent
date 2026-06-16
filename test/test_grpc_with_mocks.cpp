@@ -1741,6 +1741,40 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSpanVsSpanChunkTest) {
     EXPECT_TRUE(request.span(1).has_spanchunk()) << "Non-final chunk should be encoded as PSpanChunk";
 }
 
+TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->span.batch.size = 1;
+    cfg->span.batch.flush_interval_ms = 50;
+    cfg->span.batch.collect_deadline_ms = 100;
+    cfg->span.batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "parent-service-op");
+    // parentinfo is only emitted when the parent application name is present.
+    span_data->setParentAppName("ParentApp");
+    span_data->setParentServiceName("parent-service");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    ASSERT_TRUE(request.span(0).has_span());
+    const auto& parent_info = request.span(0).span().acceptevent().parentinfo();
+    EXPECT_EQ(parent_info.parentservicename(), "parent-service")
+        << "Built gRPC span should carry parentServiceName (PParentInfo field 4)";
+}
+
 TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->span.batch.size = 2;

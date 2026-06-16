@@ -151,6 +151,11 @@ namespace pinpoint {
         /// @brief Returns the parent application namespace.
         std::string& getParentAppNamespace() { return parent_app_namespace_; }
 
+        /// @brief Sets the parent service name.
+        void setParentServiceName(std::string_view parent_service_name) { parent_service_name_ = parent_service_name; }
+        /// @brief Returns the parent service name.
+        std::string& getParentServiceName() { return parent_service_name_; }
+
         /// @brief Sets the service type associated with this span.
         void setServiceType(int service_type) { service_type_ = service_type; }
         /// @brief Returns the service type associated with this span.
@@ -312,6 +317,7 @@ namespace pinpoint {
     	std::string parent_app_name_;
     	int32_t parent_app_type_;
     	std::string parent_app_namespace_;
+    	std::string parent_service_name_;
 
     	int32_t app_type_;
     	int32_t service_type_;

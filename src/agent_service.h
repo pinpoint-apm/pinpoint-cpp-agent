@@ -76,6 +76,9 @@
       virtual std::string getAgentId() const = 0;
       /// @brief Returns the human-readable agent name.
       virtual std::string getAgentName() const = 0;
+      /// @brief Returns the agent's own service name. Only populated for uid
+      ///        version v4; empty for v1/v3 (mirrors Java ObjectName.getServiceName).
+      virtual std::string getServiceName() const = 0;
       /// @brief Returns the resolved runtime configuration.
       virtual std::shared_ptr<const Config> getConfig() const = 0;
       /// @brief Returns the agent's start timestamp (epoch milliseconds).

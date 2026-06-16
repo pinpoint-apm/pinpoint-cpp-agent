@@ -39,6 +39,7 @@ namespace pinpoint {
 	const std::string HEADER_PARENT_APP_NAME = "Pinpoint-pAppName";
 	const std::string HEADER_PARENT_APP_TYPE = "Pinpoint-pAppType";
 	const std::string HEADER_PARENT_APP_NAMESPACE = "Pinpoint-pAppNamespace";
+	const std::string HEADER_PARENT_SERVICE_NAME = "Pinpoint-pServiceName";
 	const std::string HEADER_HOST = "Pinpoint-Host";
 
 	constexpr int32_t ANNOTATION_API = 12;

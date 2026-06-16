@@ -46,6 +46,7 @@ public:
     int32_t getAppType() const override { return app_type_; }
     std::string getAgentId() const override { return agent_id_; }
     std::string getAgentName() const override { return agent_name_; }
+    std::string getServiceName() const override { return service_name_; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {
@@ -162,6 +163,7 @@ public:
     void setAppType(int32_t type) { app_type_ = type; }
     void setAgentId(const std::string& id) { agent_id_ = id; }
     void setAgentName(const std::string& name) { agent_name_ = name; }
+    void setServiceName(const std::string& name) { service_name_ = name; }
     void setStartTime(int64_t time) {
         start_time_ = time;
         cached_start_time_str_ = std::to_string(time);
@@ -221,6 +223,7 @@ private:
     int32_t app_type_ = 1300;
     std::string agent_id_ = "test-agent-001";
     std::string agent_name_ = "TestAgent";
+    std::string service_name_ = "";
     std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;

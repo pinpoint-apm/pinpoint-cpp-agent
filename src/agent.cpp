@@ -101,6 +101,11 @@ namespace pinpoint {
         return cfg->agent_name_;
     }
 
+    std::string AgentImpl::getServiceName() const {
+        const auto cfg = config_.load();
+        return cfg->service_name_;
+    }
+
     void AgentImpl::init_header_recorders(const std::shared_ptr<const Config>& cfg) {
         // Server-side header recorders
         struct HeaderRecorderConfig {

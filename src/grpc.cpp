@@ -64,6 +64,7 @@ namespace pinpoint {
             parent_info->set_parentapplicationname(span->getParentAppName());
             parent_info->set_parentapplicationtype(span->getParentAppType());
             parent_info->set_acceptorhost(span->getAcceptorHost());
+            parent_info->set_parentservicename(span->getParentServiceName());
             accept_event->unsafe_arena_set_allocated_parentinfo(parent_info);
         }
 

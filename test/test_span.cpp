@@ -207,6 +207,10 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     
     span_data.setParentAppNamespace("ParentNamespace");
     EXPECT_EQ(span_data.getParentAppNamespace(), "ParentNamespace");
+
+    EXPECT_EQ(span_data.getParentServiceName(), "") << "parent service name should default to empty";
+    span_data.setParentServiceName("ParentService");
+    EXPECT_EQ(span_data.getParentServiceName(), "ParentService");
     
     // Test service type
     span_data.setServiceType(5678);
@@ -554,6 +558,37 @@ TEST_F(SpanTest, SpanImplInjectContextTest) {
     
     auto parent_span_id = writer.Get(HEADER_PARENT_SPAN_ID);
     EXPECT_TRUE(parent_span_id.has_value()) << "Parent span ID should be injected";
+}
+
+// uid.version=v4: the agent has its own service name, so InjectContext must
+// propagate it via the Pinpoint-pServiceName header (Java DefaultRequestTraceWriter).
+TEST_F(SpanTest, SpanImplInjectContextWritesParentServiceNameForV4Test) {
+    mock_agent_service_->setServiceName("my-service");
+
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    MockTraceContextWriter writer;
+    span.NewSpanEvent("test-event");
+
+    span.InjectContext(writer);
+
+    auto service_name = writer.Get(HEADER_PARENT_SERVICE_NAME);
+    ASSERT_TRUE(service_name.has_value()) << "Pinpoint-pServiceName should be injected for v4";
+    EXPECT_EQ(service_name.value(), "my-service");
+}
+
+// uid.version=v1/v3: the agent has no service name (empty), so InjectContext must
+// omit the Pinpoint-pServiceName header (Java writes it only when serviceName != null).
+TEST_F(SpanTest, SpanImplInjectContextOmitsParentServiceNameWhenEmptyTest) {
+    mock_agent_service_->setServiceName(""); // default for v1/v3
+
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    MockTraceContextWriter writer;
+    span.NewSpanEvent("test-event");
+
+    span.InjectContext(writer);
+
+    EXPECT_FALSE(writer.Get(HEADER_PARENT_SERVICE_NAME).has_value())
+        << "Pinpoint-pServiceName must be omitted when the agent has no service name (v1/v3)";
 }
 
 TEST_F(SpanTest, SpanImplExtractContextTest) {
@@ -1032,6 +1067,27 @@ TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanData()->getFlags(), 5);
+}
+
+TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
+    reader.SetContext(HEADER_PARENT_APP_NAMESPACE, "ParentNamespace");
+    reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
+
+    span.ExtractContext(reader);
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
+    EXPECT_EQ(data->getParentServiceName(), "parent-service")
+        << "Pinpoint-pServiceName header should populate the span's parentServiceName";
+    EXPECT_EQ(data->getParentAppNamespace(), "ParentNamespace")
+        << "Pinpoint-pAppNamespace header should populate the span's parentAppNamespace";
 }
 
 // ========== SpanImpl InjectContext Without Active Event ==========
