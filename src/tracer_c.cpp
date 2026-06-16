@@ -34,6 +34,7 @@
 #include "logging.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -202,6 +203,20 @@ static inline void fill_trace_id(pt_trace_id_t* out, pinpoint::TraceId& tid) {
     out->sequence   = tid.Sequence;
 }
 
+static std::vector<std::string> to_string_vector(const char* const* values, int count) {
+    std::vector<std::string> out;
+    if (!values || count <= 0) {
+        return out;
+    }
+    out.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        if (values[i]) {
+            out.emplace_back(values[i]);
+        }
+    }
+    return out;
+}
+
 // ============================================================================
 // Global configuration
 // ============================================================================
@@ -228,8 +243,38 @@ pt_agent_t pt_create_agent(void) try {
     return new pt_agent_s{std::move(ptr)};
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
+pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
+                                                const char* const* args,
+                                                int args_count,
+                                                const char* const* libs,
+                                                int libs_count) try {
+    auto ptr = server_info
+        ? pinpoint::CreateAgent(server_info,
+                                to_string_vector(args, args_count),
+                                to_string_vector(libs, libs_count))
+        : pinpoint::CreateAgent();
+    if (!ptr) return nullptr;
+    return new pt_agent_s{std::move(ptr)};
+} catch (...) { pt_handle_exception(__func__); return nullptr; }
+
 pt_agent_t pt_create_agent_with_type(int32_t app_type) try {
     auto ptr = pinpoint::CreateAgent(app_type);
+    if (!ptr) return nullptr;
+    return new pt_agent_s{std::move(ptr)};
+} catch (...) { pt_handle_exception(__func__); return nullptr; }
+
+pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
+                                                         const char* server_info,
+                                                         const char* const* args,
+                                                         int args_count,
+                                                         const char* const* libs,
+                                                         int libs_count) try {
+    auto ptr = server_info
+        ? pinpoint::CreateAgent(app_type,
+                                server_info,
+                                to_string_vector(args, args_count),
+                                to_string_vector(libs, libs_count))
+        : pinpoint::CreateAgent(app_type);
     if (!ptr) return nullptr;
     return new pt_agent_s{std::move(ptr)};
 } catch (...) { pt_handle_exception(__func__); return nullptr; }

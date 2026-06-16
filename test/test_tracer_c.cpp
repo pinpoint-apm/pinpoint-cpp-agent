@@ -145,6 +145,22 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
     return cfg;
 }
 
+static constexpr const char* kCreateAgentConfigYaml = R"(
+ApplicationName: c-api-test
+ApplicationType: 1300
+AgentId: c-api-agent
+AgentName: c-api-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+
 static std::shared_ptr<pinpoint::AgentImpl> make_test_agent(
         std::shared_ptr<pinpoint::Config> cfg) {
     auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
@@ -311,6 +327,53 @@ TEST_F(TracerCApiTest, AgentShutdownDisablesAgent) {
     EXPECT_NE(pt_agent_is_enabled(agent_), 0);
     pt_agent_shutdown(agent_);
     EXPECT_EQ(pt_agent_is_enabled(agent_), 0);
+}
+
+TEST_F(TracerCApiTest, CreateAgentWithServerMetadata) {
+    pt_set_config_string(kCreateAgentConfigYaml);
+
+    const char* args[] = {"--port=8080", "--worker=4"};
+    const char* libs[] = {"libfoo.so", "libbar.so"};
+    pt_agent_t agent = pt_create_agent_with_server_metadata("c-api-server",
+                                                            args,
+                                                            2,
+                                                            libs,
+                                                            2);
+
+    ASSERT_NE(agent, nullptr);
+    EXPECT_NE(pt_agent_is_enabled(agent), 0);
+    pt_agent_destroy(agent);
+}
+
+TEST_F(TracerCApiTest, CreateAgentWithServerMetadataAllowsMissingArgsAndLibs) {
+    pt_set_config_string(kCreateAgentConfigYaml);
+
+    pt_agent_t agent = pt_create_agent_with_server_metadata("c-api-server",
+                                                            nullptr,
+                                                            0,
+                                                            nullptr,
+                                                            0);
+
+    ASSERT_NE(agent, nullptr);
+    EXPECT_NE(pt_agent_is_enabled(agent), 0);
+    pt_agent_destroy(agent);
+}
+
+TEST_F(TracerCApiTest, CreateAgentWithTypeAndServerMetadata) {
+    pt_set_config_string(kCreateAgentConfigYaml);
+
+    const char* args[] = {"--worker=4"};
+    const char* libs[] = {"libbar.so"};
+    pt_agent_t agent = pt_create_agent_with_type_and_server_metadata(PT_APP_TYPE_CPP,
+                                                                     "c-api-server",
+                                                                     args,
+                                                                     1,
+                                                                     libs,
+                                                                     1);
+
+    ASSERT_NE(agent, nullptr);
+    EXPECT_NE(pt_agent_is_enabled(agent), 0);
+    pt_agent_destroy(agent);
 }
 
 // ============================================================================
