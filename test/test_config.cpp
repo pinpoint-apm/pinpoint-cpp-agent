@@ -1511,45 +1511,84 @@ TEST_F(ConfigTest, CheckFailsEmptyAppNameTest) {
     EXPECT_FALSE(config.check()) << "Empty app name should fail check";
 }
 
-// Test check() fails when app name exceeds max length (24)
-TEST_F(ConfigTest, CheckFailsLongAppNameTest) {
-    Config config;
-    config.collector.host = "localhost";
-    config.app_name_ = std::string(25, 'A');
-    config.agent_id_ = "agent-001";
-
-    EXPECT_FALSE(config.check()) << "App name > 24 chars should fail check";
-
-    // Exactly 24 should pass
-    config.app_name_ = std::string(24, 'A');
-    EXPECT_TRUE(config.check()) << "App name == 24 chars should pass check";
-}
-
-// Test check() fails when agent ID exceeds max length (24)
-TEST_F(ConfigTest, CheckFailsLongAgentIdTest) {
-    Config config;
-    config.collector.host = "localhost";
-    config.app_name_ = "MyApp";
-    config.agent_id_ = std::string(25, 'B');
-
-    EXPECT_FALSE(config.check()) << "Agent ID > 24 chars should fail check";
-
-    config.agent_id_ = std::string(24, 'B');
-    EXPECT_TRUE(config.check()) << "Agent ID == 24 chars should pass check";
-}
-
-// Test check() fails when agent name exceeds max length (255)
-TEST_F(ConfigTest, CheckFailsLongAgentNameTest) {
+// Test check() fails when agent identity resolution failed.
+// Per-version identity length/charset validation now lives in
+// resolve_object_name() (version-aware: e.g. applicationName <=24 for v1 vs
+// <=254 for v3); make_config() records the outcome in identity_resolved_.
+// See test_object_name.cpp for the boundary-value coverage.
+TEST_F(ConfigTest, CheckFailsWhenIdentityUnresolvedTest) {
     Config config;
     config.collector.host = "localhost";
     config.app_name_ = "MyApp";
     config.agent_id_ = "agent-001";
-    config.agent_name_ = std::string(256, 'C');
+    config.identity_resolved_ = false;
 
-    EXPECT_FALSE(config.check()) << "Agent name > 255 chars should fail check";
+    EXPECT_FALSE(config.check()) << "Unresolved identity should fail check";
 
-    config.agent_name_ = std::string(255, 'C');
-    EXPECT_TRUE(config.check()) << "Agent name == 255 chars should pass check";
+    config.identity_resolved_ = true;
+    EXPECT_TRUE(config.check()) << "Resolved identity should pass check";
+}
+
+// Test make_config() flags an over-length v1 application name as unresolved so
+// that check() (and therefore agent startup) fails.
+TEST_F(ConfigTest, MakeConfigV1RejectsLongApplicationNameTest) {
+    const std::string yaml =
+        "ApplicationName: " + std::string(25, 'A') + "\n"
+        "UidVersion: v1\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n";
+    set_config_string(yaml);
+
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_FALSE(config->identity_resolved_)
+        << "v1 application name > 24 chars should not resolve";
+    EXPECT_FALSE(config->check());
+}
+
+// Test make_config() accepts a long application name under the v3 default (<=254).
+TEST_F(ConfigTest, MakeConfigV3AllowsLongApplicationNameTest) {
+    const std::string yaml =
+        "ApplicationName: " + std::string(100, 'A') + "\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n";
+    set_config_string(yaml);
+
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_TRUE(config->identity_resolved_)
+        << "v3 (default) application name <=254 chars should resolve";
+    EXPECT_EQ(config->object_name_version_, 1);
+    EXPECT_TRUE(config->check());
+}
+
+// Test make_config() resolves a full v4 identity and rejects missing requirements.
+TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
+    const std::string base =
+        "ApplicationName: my-app\n"
+        "UidVersion: v4\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n";
+
+    // Missing serviceName and apiKey -> unresolved.
+    set_config_string(base);
+    auto missing = make_config();
+    ASSERT_NE(missing, nullptr);
+    EXPECT_EQ(missing->object_name_version_, 4);
+    EXPECT_FALSE(missing->identity_resolved_);
+    EXPECT_FALSE(missing->check());
+
+    // Full v4 identity -> resolved, agent id is a 22-char base64 UUID.
+    set_config_string(base + "ServiceName: my-service\nApiKey: secret\n");
+    auto full = make_config();
+    ASSERT_NE(full, nullptr);
+    EXPECT_TRUE(full->identity_resolved_);
+    EXPECT_EQ(full->object_name_version_, 4);
+    EXPECT_EQ(full->protocol_version(), 400);
+    EXPECT_TRUE(full->is_v4());
+    EXPECT_EQ(full->service_name_, "my-service");
+    EXPECT_EQ(full->agent_id_.size(), 22u);
+    EXPECT_TRUE(full->check());
 }
 
 // ========== Config::isReloadable() Tests ==========

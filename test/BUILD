@@ -95,6 +95,14 @@ cc_test(
     deps = [":test_common"],
 )
 
+# ObjectName (agent identity version) tests
+cc_test(
+    name = "test_object_name",
+    size = "small",
+    srcs = ["test_object_name.cpp"],
+    deps = [":test_common"],
+)
+
 # SQL tests
 cc_test(
     name = "test_sql",

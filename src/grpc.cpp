@@ -527,19 +527,38 @@ namespace pinpoint {
     const std::string METADATA_AGENT_NAME = "agentname";
     const std::string METADATA_SOCKET_ID = "socketid";
     const std::string METADATA_SUPPORT_COMMAND_CODE = "supportcommandcode";
+    const std::string METADATA_PROTOCOL_VERSION = "protocol.version";
+    const std::string METADATA_SERVICE_NAME = "servicename";
+    const std::string METADATA_API_KEY = "apikey";
+
+    std::vector<std::pair<std::string, std::string>>
+    build_grpc_metadata(const Config& config, int64_t start_time, unsigned long socket_id) {
+        std::vector<std::pair<std::string, std::string>> headers;
+        headers.emplace_back(METADATA_APPLICATION_NAME, config.app_name_);
+        headers.emplace_back(METADATA_AGENT_ID, config.agent_id_);
+        headers.emplace_back(METADATA_START_TIME, std::to_string(start_time));
+        headers.emplace_back(METADATA_SERVICE_TYPE, std::to_string(config.app_type_));
+        headers.emplace_back(METADATA_PROTOCOL_VERSION, std::to_string(config.protocol_version()));
+
+        if (config.is_v4()) {
+            // v4 (ClientHeaderFactoryV4): agentname always sent, plus servicename + apikey.
+            headers.emplace_back(METADATA_AGENT_NAME, config.agent_name_);
+            headers.emplace_back(METADATA_SERVICE_NAME, config.service_name_);
+            headers.emplace_back(METADATA_API_KEY, config.api_key_);
+        } else if (!config.agent_name_.empty()) {
+            // v1/v3 (ClientHeaderFactoryV1): agentname only when present.
+            headers.emplace_back(METADATA_AGENT_NAME, config.agent_name_);
+        }
+        if (socket_id > 0) {
+            headers.emplace_back(METADATA_SOCKET_ID, std::to_string(socket_id));
+        }
+        return headers;
+    }
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
-        context->AddMetadata(METADATA_APPLICATION_NAME, config_->app_name_);
-        context->AddMetadata(METADATA_AGENT_ID, config_->agent_id_);
-        context->AddMetadata(METADATA_START_TIME, std::to_string(agent_->getStartTime()));
-        context->AddMetadata(METADATA_SERVICE_TYPE, std::to_string(config_->app_type_));
-
-        if (!config_->agent_name_.empty()) {
-            context->AddMetadata(METADATA_AGENT_NAME, config_->agent_name_);
-        }
-        if (socket_id > 0) {
-            context->AddMetadata(METADATA_SOCKET_ID, std::to_string(socket_id));
+        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getStartTime(), socket_id)) {
+            context->AddMetadata(key, value);
         }
     }
 

@@ -62,6 +62,17 @@ namespace pinpoint {
     enum ClientType {AGENT, METADATA, SPAN, STATS};
 
     /**
+     * @brief Build the ordered gRPC metadata header set for a request.
+     *
+     * Mirrors Java's ClientHeaderFactoryV1 / ClientHeaderFactoryV4: v1/v3 send
+     * protocol.version=100 (agentname only when present), v4 sends
+     * protocol.version=400 plus agentname (always), servicename and apikey.
+     * Extracted as a pure function so the per-version header set is unit-testable.
+     */
+    std::vector<std::pair<std::string, std::string>>
+    build_grpc_metadata(const Config& config, int64_t start_time, unsigned long socket_id);
+
+    /**
      * @brief Exponential backoff with jitter for reconnect attempts.
      */
     class ExponentialBackoff {

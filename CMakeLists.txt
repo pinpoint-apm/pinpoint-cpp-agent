@@ -130,6 +130,7 @@ list(APPEND LINK_LIBS
   yaml-cpp::yaml-cpp
   fmt::fmt
   absl::strings
+  absl::random_random
 )
 
 # The pinpoint-grpc-idl submodule lays out protos as proto/v1/*.proto; adding
@@ -218,6 +219,7 @@ set(PROTOS ${PP_GRPC_IDL_DIR}/proto/v1/Annotation.proto
 set(SRCS src/agent.cpp
          src/annotation.cpp
          src/config.cpp
+         src/object_name.cpp
          src/grpc.cpp
          src/limiter.cpp
          src/logging.cpp

@@ -103,11 +103,30 @@ int main() {
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. |
+| `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
 | `ApplicationType` | `PINPOINT_CPP_APPLICATION_TYPE` | int | `1300` | Pinpoint service type code. `1300` = C++ App. |
-| `AgentId` | `PINPOINT_CPP_AGENT_ID` | string | auto-generated | Format: `{hostname}-{random}` (e.g., `server01-a3b4c`). Max 24 chars. |
-| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label. |
+| `AgentId` | `PINPOINT_CPP_AGENT_ID` | string | auto-generated | Allowed chars `[a-zA-Z0-9._-]`, max 24 chars. Auto-generated as a 22-char URL-safe Base64 UUIDv7 when empty/invalid. **Ignored for `UidVersion: v4`** (a fresh UUIDv7 is always generated). |
+| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to `AgentId` when omitted. |
+| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
+| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars). Unused for v1/v3. |
+| `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
+
+### Identity Versions
+
+`UidVersion` selects how the agent identifies itself to the Collector (mirrors the Java agent's `pinpoint.modules.uid.version`):
+
+| | v1 | v3 (default) | v4 |
+|---|---|---|---|
+| `ApplicationName` max length | 24 | 254 | 254 |
+| `AgentId` | user value, else auto Base64(UUIDv7) | same as v1 | always auto Base64(UUIDv7); input ignored |
+| `ServiceName` / `ApiKey` | not used | not used | **required** |
+| gRPC `protocol.version` header | 100 | 100 | 400 |
+| gRPC `servicename` / `apikey` headers | not sent | not sent | sent |
+
+v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid required value (e.g. `ApplicationName`, or `ServiceName`/`ApiKey` for v4) aborts agent startup (the agent degrades to a no-op).
+
+> **Note (v4):** because v4 generates a new `AgentId` on every startup, the agent's id changes across restarts — matching the Java agent's behavior.
 
 ---
 
@@ -281,7 +300,7 @@ Not all configuration options can be changed at runtime. Options that define the
 
 | Category | Options | Reloadable? |
 |---|---|---|
-| Agent identity | `ApplicationName`, `ApplicationType`, `AgentId`, `AgentName` | No |
+| Agent identity | `ApplicationName`, `ApplicationType`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector connection | `Collector.GrpcHost`, `GrpcAgentPort`, `GrpcSpanPort`, `GrpcStatPort` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |

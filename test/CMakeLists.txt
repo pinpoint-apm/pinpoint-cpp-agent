@@ -209,6 +209,17 @@ target_link_libraries(test_logging
 set_target_properties(test_logging PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_logging COMMAND test_logging)
 
+# ObjectName (agent identity version) tests
+add_executable(test_object_name test_object_name.cpp)
+target_include_directories(test_object_name PRIVATE ../src)
+target_link_libraries(test_object_name
+    ${PINPOINT_CPP_LIBRARY}
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_object_name PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_object_name COMMAND test_object_name)
+
 # C API tests
 add_executable(test_tracer_c test_tracer_c.cpp)
 target_link_libraries(test_tracer_c

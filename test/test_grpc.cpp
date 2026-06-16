@@ -660,4 +660,80 @@ TEST_F(GrpcTest, MetaValueVariantIndexTest) {
 // Reactor callback tests removed - they cause segmentation faults when called without active gRPC streams
 // The callbacks are tested indirectly through the actual gRPC operations in integration tests
 
+// ========== gRPC metadata header set (per uid version) ==========
+
+namespace {
+
+std::map<std::string, std::string> metadata_map(const Config& config,
+                                                int64_t start_time,
+                                                unsigned long socket_id) {
+    std::map<std::string, std::string> m;
+    for (const auto& [k, v] : build_grpc_metadata(config, start_time, socket_id)) {
+        m[k] = v;
+    }
+    return m;
+}
+
+} // namespace
+
+TEST(GrpcMetadataTest, V1V3CommonHeaders) {
+    Config config;
+    config.app_name_ = "my-app";
+    config.agent_id_ = "agent-1";
+    config.agent_name_ = "agent-name";
+    config.app_type_ = 1300;
+    config.object_name_version_ = 1; // v1/v3
+
+    const auto m = metadata_map(config, 12345, 0);
+    EXPECT_EQ(m.at("applicationname"), "my-app");
+    EXPECT_EQ(m.at("agentid"), "agent-1");
+    EXPECT_EQ(m.at("agentname"), "agent-name");
+    EXPECT_EQ(m.at("starttime"), "12345");
+    EXPECT_EQ(m.at("servicetype"), "1300");
+    EXPECT_EQ(m.at("protocol.version"), "100");
+    // v4-only headers must not be present for v1/v3.
+    EXPECT_EQ(m.count("servicename"), 0u);
+    EXPECT_EQ(m.count("apikey"), 0u);
+}
+
+TEST(GrpcMetadataTest, V1V3AgentNameOmittedWhenEmpty) {
+    Config config;
+    config.app_name_ = "my-app";
+    config.agent_id_ = "agent-1";
+    config.object_name_version_ = 1;
+    // agent_name_ left empty
+
+    const auto m = metadata_map(config, 1, 0);
+    EXPECT_EQ(m.count("agentname"), 0u);
+    EXPECT_EQ(m.at("protocol.version"), "100");
+}
+
+TEST(GrpcMetadataTest, V4Headers) {
+    Config config;
+    config.app_name_ = "my-app";
+    config.agent_id_ = "AZLxoH6LfD2fLhorPE1ebw";
+    config.agent_name_ = "agent-name";
+    config.service_name_ = "my-service";
+    config.api_key_ = "secret-key";
+    config.app_type_ = 1300;
+    config.object_name_version_ = 4;
+
+    const auto m = metadata_map(config, 999, 0);
+    EXPECT_EQ(m.at("protocol.version"), "400");
+    EXPECT_EQ(m.at("agentname"), "agent-name"); // always sent for v4
+    EXPECT_EQ(m.at("servicename"), "my-service");
+    EXPECT_EQ(m.at("apikey"), "secret-key");
+    EXPECT_EQ(m.at("agentid"), "AZLxoH6LfD2fLhorPE1ebw");
+}
+
+TEST(GrpcMetadataTest, SocketIdIncludedWhenPositive) {
+    Config config;
+    config.app_name_ = "my-app";
+    config.agent_id_ = "agent-1";
+    config.object_name_version_ = 1;
+
+    EXPECT_EQ(metadata_map(config, 1, 0).count("socketid"), 0u);
+    EXPECT_EQ(metadata_map(config, 1, 7).at("socketid"), "7");
+}
+
 } // namespace pinpoint

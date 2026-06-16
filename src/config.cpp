@@ -38,14 +38,9 @@
 #include "sampling.h"
 #include "utility.h"
 #include "config.h"
+#include "object_name.h"
 
 namespace pinpoint {
-
-    namespace {
-        constexpr int kMaxAppNameLength = 24;
-        constexpr int kMaxAgentIdLength = 24;
-        constexpr int kMaxAgentNameLength = 255;
-    }
 
     static std::string& global_agent_config_str() {
         static std::string cfg_str;
@@ -270,6 +265,9 @@ namespace pinpoint {
         config.app_type_ = get_int(yaml, "ApplicationType", defaults::APP_TYPE);
         config.agent_id_ = get_string(yaml, "AgentId", "");
         config.agent_name_ = get_string(yaml, "AgentName", "");
+        config.uid_version_ = get_string(yaml, "UidVersion", "");
+        config.service_name_ = get_string(yaml, "ServiceName", "");
+        config.api_key_ = get_string(yaml, "ApiKey", "");
 
         if (auto& log = yaml["Log"]) {
             config.log.level = get_string(log, "Level", defaults::LOG_LEVEL);
@@ -441,6 +439,15 @@ namespace pinpoint {
         }
         if(const char* env_p = std::getenv(env::AGENT_NAME)) {
             config.agent_name_ = std::string(env_p);
+        }
+        if(const char* env_p = std::getenv(env::UID_VERSION)) {
+            config.uid_version_ = std::string(env_p);
+        }
+        if(const char* env_p = std::getenv(env::SERVICE_NAME)) {
+            config.service_name_ = std::string(env_p);
+        }
+        if(const char* env_p = std::getenv(env::API_KEY)) {
+            config.api_key_ = std::string(env_p);
         }
 
         if(const char* env_p = std::getenv(env::LOG_LEVEL)) {
@@ -618,34 +625,6 @@ namespace pinpoint {
         return false;
     }
 
-    static const int kAgentIdPrefixLength = 18;
-    static const int kAgentIdRandomLength = 5;
-
-    static std::string randomString()
-    {
-        const std::string chars = "0123456789abcdefghijklmnopqrstuvwxyz";
-
-        std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<> dist(0, (int)chars.size() - 1);
-
-        auto rand_char = [chars, &gen, &dist]() { return chars[dist(gen)]; };
-
-        std::string random_string(kAgentIdRandomLength,0);
-        std::generate_n(random_string.begin(), kAgentIdRandomLength, rand_char);
-
-        return random_string;
-    }
-
-    static std::string generate_agent_id() {
-        auto hostname = get_host_name();
-
-        if (hostname.length() > kAgentIdPrefixLength) {
-            hostname = hostname.substr(0, kAgentIdPrefixLength);
-        }
-
-        return absl::StrCat(hostname, "-", randomString());
-    }
-
     void set_config_string(std::string_view cfg_str) {
         std::lock_guard<std::mutex> lock(config_str_mutex());
         global_agent_config_str() = cfg_str;
@@ -771,8 +750,42 @@ namespace pinpoint {
         }
         Logger::getInstance().setLogLevel(config->log.level);
 
-        if (config->agent_id_.empty()) {
-            config->agent_id_ = generate_agent_id();
+        // Resolve agent self-identity (ObjectName) according to the configured
+        // uid version. Mirrors Java ObjectNameResolver{V1,V4}. The resolver owns
+        // version-aware validation (e.g. applicationName <=24 for v1 vs <=254 for
+        // v3, which check() cannot distinguish since both map to version 1).
+        {
+            const auto name_version = parse_name_version(config->uid_version_);
+            config->object_name_version_ =
+                (name_version == NameVersion::kV4) ? object_name::VERSION_V4
+                                                   : object_name::VERSION_V1;
+
+            ObjectNameInput in;
+            in.agent_id = config->agent_id_;
+            in.agent_name = config->agent_name_;
+            in.application_name = config->app_name_;
+            in.service_name = config->service_name_;
+            in.api_key = config->api_key_;
+
+            if (auto object_name = resolve_object_name(name_version, in)) {
+                config->agent_id_ = object_name->agent_id;
+                config->agent_name_ = object_name->agent_name;
+                config->app_name_ = object_name->application_name;
+                config->service_name_ = object_name->service_name;
+                config->api_key_ = object_name->api_key;
+                config->identity_resolved_ = true;
+            } else {
+                // A required identity value is missing/invalid. Keep returning a
+                // populated config (callers may inspect it); Config::check() fails
+                // and CreateAgent() degrades to a noop agent. Ensure agent_id is
+                // populated for diagnostic logging.
+                LOG_ERROR("failed to resolve agent identity (uid.version='{}')",
+                          config->uid_version_.empty() ? "v3" : config->uid_version_);
+                if (config->agent_id_.empty()) {
+                    config->agent_id_ = base64_encode_uuid(generate_uuid_v7());
+                }
+                config->identity_resolved_ = false;
+            }
         }
 
         config->collector.agent_port = clamp_port(config->collector.agent_port, defaults::AGENT_PORT);
@@ -1036,6 +1049,11 @@ namespace pinpoint {
         emitter << YAML::Key << "ApplicationType" << YAML::Value << config.app_type_;
         emitter << YAML::Key << "AgentId" << YAML::Value << config.agent_id_;
         emitter << YAML::Key << "AgentName" << YAML::Value << config.agent_name_;
+        if (config.is_v4()) {
+            emitter << YAML::Key << "ServiceName" << YAML::Value << config.service_name_;
+            // ApiKey is intentionally masked and never serialized in plaintext.
+            emitter << YAML::Key << "ApiKey" << YAML::Value << (config.api_key_.empty() ? "" : "****");
+        }
 
         emitter << YAML::Key << "Enable" << YAML::Value << config.enable;
         emitter << YAML::Key << "IsContainer" << YAML::Value << config.is_container;
@@ -1208,16 +1226,13 @@ namespace pinpoint {
             LOG_ERROR("application name is required");
             return false;
         }
-        if (app_name_.size() > kMaxAppNameLength) {
-            LOG_ERROR("application name is too long - max length: {}", kMaxAppNameLength);
-            return false;
-        }
-        if (agent_id_.size() > kMaxAgentIdLength) {
-            LOG_ERROR("agent id is too long - max length: {}", kMaxAgentIdLength);
-            return false;
-        }
-        if (agent_name_.size() > kMaxAgentNameLength) {
-            LOG_ERROR("agent name is too long - max length: {}", kMaxAgentNameLength);
+        // Identity fields (agent_id_/agent_name_/app_name_ and, for v4,
+        // service_name_/api_key_) are validated and length-checked per uid version
+        // by make_config()'s resolve_object_name() — version-aware (e.g. the v1 vs
+        // v3 applicationName limit) in a way check() cannot reproduce here. A failed
+        // resolution sets identity_resolved_ = false and aborts startup.
+        if (!identity_resolved_) {
+            LOG_ERROR("agent identity resolution failed");
             return false;
         }
 
@@ -1255,8 +1270,10 @@ namespace pinpoint {
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
         return std::tie(app_name_, app_type_, agent_id_, agent_name_,
+                        service_name_, api_key_, object_name_version_,
                         collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
                std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
+                        old->service_name_, old->api_key_, old->object_name_version_,
                         old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
                same_grpc_config(*this, *old);
     }

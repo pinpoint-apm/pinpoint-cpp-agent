@@ -68,6 +68,9 @@ namespace pinpoint {
         constexpr const char* APPLICATION_TYPE = "PINPOINT_CPP_APPLICATION_TYPE";
         constexpr const char* AGENT_ID = "PINPOINT_CPP_AGENT_ID";
         constexpr const char* AGENT_NAME = "PINPOINT_CPP_AGENT_NAME";
+        constexpr const char* UID_VERSION = "PINPOINT_CPP_UID_VERSION";
+        constexpr const char* SERVICE_NAME = "PINPOINT_CPP_SERVICE_NAME";
+        constexpr const char* API_KEY = "PINPOINT_CPP_API_KEY";
         constexpr const char* LOG_LEVEL = "PINPOINT_CPP_LOG_LEVEL";
         constexpr const char* LOG_FILE_PATH = "PINPOINT_CPP_LOG_FILE_PATH";
         constexpr const char* LOG_MAX_FILE_SIZE = "PINPOINT_CPP_LOG_MAX_FILE_SIZE";
@@ -136,6 +139,25 @@ namespace pinpoint {
         int32_t app_type_ = defaults::APP_TYPE;
         std::string agent_id_;
         std::string agent_name_;
+
+        // Agent self-identity (ObjectName) version handling. uid_version_ holds the
+        // raw configured value of "pinpoint.modules.uid.version" (v1/v3/v4, empty ->
+        // v3). object_name_version_ is the resolved ObjectName version (1 for v1/v3,
+        // 4 for v4) and drives the gRPC protocol.version header. service_name_ and
+        // api_key_ are only used by v4.
+        std::string uid_version_;
+        std::string service_name_;
+        std::string api_key_;
+        int object_name_version_ = 1;
+        // Set by make_config() from resolve_object_name(): false when a required
+        // identity value is missing/invalid for the configured uid version. Gated
+        // by check() so startup degrades to a noop agent (Java aborts here).
+        // Defaults to true so directly-constructed Config values stay valid.
+        bool identity_resolved_ = true;
+
+        // gRPC protocol.version header wire value (Java ProtocolVersion: V1=100, V4=400).
+        int protocol_version() const { return object_name_version_ == 4 ? 400 : 100; }
+        bool is_v4() const { return object_name_version_ == 4; }
 
         bool enable = true;
         bool is_container = false;
