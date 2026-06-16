@@ -1296,7 +1296,7 @@ namespace pinpoint {
             }
             if (!server_meta_data_.service_libs.empty()) {
                 auto* service_info = meta_data->add_serviceinfo();
-                service_info->set_servicename(server_meta_data_.server_info);
+                service_info->set_servicename("Libraries");
                 for (const auto& lib : server_meta_data_.service_libs) {
                     service_info->add_servicelib(lib);
                 }

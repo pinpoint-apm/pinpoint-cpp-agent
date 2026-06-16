@@ -530,7 +530,7 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
 
     ASSERT_EQ(server_metadata.serviceinfo_size(), 2);
     const auto& service_info = server_metadata.serviceinfo(0);
-    EXPECT_EQ(service_info.servicename(), "test-server");
+    EXPECT_EQ(service_info.servicename(), "Libraries");
     ASSERT_EQ(service_info.servicelib_size(), 2);
     EXPECT_EQ(service_info.servicelib(0), "libfoo.so");
     EXPECT_EQ(service_info.servicelib(1), "libbar.so");
