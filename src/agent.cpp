@@ -679,9 +679,11 @@ namespace pinpoint {
             const auto current_cfg = agent->getConfig();
             if (cfg->isReloadable(current_cfg)) {
                 agent->reloadConfig(std::move(cfg));
-                return agent;
+                LOG_INFO("agent config reloaded");
+            } else {
+                LOG_ERROR("failed to reload agent config: config is not reloadable");
             }
-            return noopAgent();
+            return agent;
         }
 
         agent = make_agent(std::move(cfg), server_meta_data);

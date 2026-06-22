@@ -133,6 +133,9 @@ namespace pinpoint {
                             const auto current_cfg = agent_impl->getConfig();
                             if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
                                 agent_impl->reloadConfig(new_cfg);
+                                LOG_INFO("agent config reloaded");
+                            } else {
+                                LOG_ERROR("failed to reload agent config: config is not reloadable");
                             }
                         }
                     }

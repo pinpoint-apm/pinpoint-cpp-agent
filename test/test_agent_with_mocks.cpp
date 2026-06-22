@@ -17,6 +17,9 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <thread>
 #include <memory>
 #include <string>
@@ -29,6 +32,7 @@
 #include "../src/span.h"
 #include "../src/stat.h"
 #include "../src/url_stat.h"
+#include "../src/logging.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 
@@ -509,6 +513,11 @@ protected:
         // Ensure clean global state
         reset_global_agent();
         set_config_string("");
+        const auto* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
+        log_file_ = std::filesystem::temp_directory_path() /
+                    (std::string("test_pinpoint_") + test_info->test_suite_name() +
+                     "_" + test_info->name() + ".log");
+        cleanup_log_file();
     }
 
     void TearDown() override {
@@ -520,6 +529,9 @@ protected:
         }
         reset_global_agent();
         set_config_string("");
+        Logger::getInstance().shutdown();
+        Logger::getInstance().setLogLevel("info");
+        cleanup_log_file();
     }
 
     // Install a mock-based agent as the global agent with the given config
@@ -544,6 +556,27 @@ protected:
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+
+    void start_log_capture() {
+        Logger::getInstance().shutdown();
+        cleanup_log_file();
+        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    }
+
+    std::string read_captured_log() {
+        Logger::getInstance().shutdown();
+        std::ifstream ifs(log_file_);
+        return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
+    }
+
+    void cleanup_log_file() {
+        std::error_code ec;
+        std::filesystem::remove(log_file_, ec);
+        std::filesystem::remove(log_file_.string() + ".1", ec);
+    }
+
+    std::filesystem::path log_file_;
 
     static constexpr const char* kBaseConfigYaml = R"(
 ApplicationName: test-app
@@ -599,6 +632,40 @@ Sampling:
     // 5. Verify: config was reloaded with new sampling rate
     auto reloaded_cfg = returned_impl->getConfig();
     EXPECT_EQ(reloaded_cfg->sampling.counter_rate, 50);
+}
+
+TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsInfoWhenReloadable) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    std::string reloadable_config = R"(
+ApplicationName: test-app
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 50
+)";
+    set_config_string(reloadable_config);
+
+    start_log_capture();
+    auto returned_agent = CreateAgent();
+    const auto log = read_captured_log();
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr);
+    EXPECT_EQ(returned_impl.get(), original_agent.get());
+    EXPECT_NE(log.find("[info]"), std::string::npos);
+    EXPECT_NE(log.find("agent config reloaded"), std::string::npos);
+    EXPECT_EQ(log.find("failed to reload agent config"), std::string::npos);
 }
 
 TEST_F(CreateAgentTest, CreateAgentWithServerMetaDataReloadsExistingAgent) {
@@ -662,7 +729,7 @@ TEST_F(CreateAgentTest, CreateAgentWithTypeAndServerInfoOnlyReloadsExistingAgent
     EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
 }
 
-TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenNotReloadable) {
+TEST_F(CreateAgentTest, CreateAgentReturnsExistingAgentWhenNotReloadable) {
     // 1. Install a mock agent as the global agent
     auto cfg = make_test_config_for_create_agent();
     auto original_agent = install_mock_agent(cfg);
@@ -686,18 +753,56 @@ Sampling:
 )";
     set_config_string(non_reloadable_config);
 
-    // 3. Call CreateAgent() — should return noop because config is not reloadable
+    // 3. Call CreateAgent() — should keep the existing agent because config is not reloadable
     auto returned_agent = CreateAgent();
 
-    // 4. Verify: returned agent is noop (not AgentImpl)
+    // 4. Verify: returned agent is the existing instance
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
-    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when config is not reloadable";
+    ASSERT_NE(returned_impl, nullptr) << "Should return existing agent when config is not reloadable";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
 
     // 5. Original agent should still be unchanged
     EXPECT_EQ(original_agent->getAppName(), "test-app");
+    EXPECT_EQ(returned_impl->getAppName(), "test-app");
 }
 
-TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenCollectorPortChanged) {
+TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsErrorWhenNotReloadable) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    std::string non_reloadable_config = R"(
+ApplicationName: different-app-name
+ApplicationType: 1300
+AgentId: test-agent-id
+AgentName: test-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+    set_config_string(non_reloadable_config);
+
+    start_log_capture();
+    auto returned_agent = CreateAgent();
+    const auto log = read_captured_log();
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr);
+    EXPECT_EQ(returned_impl.get(), original_agent.get());
+    EXPECT_NE(log.find("[error]"), std::string::npos);
+    EXPECT_NE(log.find("failed to reload agent config: config is not reloadable"), std::string::npos);
+    EXPECT_EQ(log.find("agent config reloaded"), std::string::npos);
+    EXPECT_EQ(original_agent->getAppName(), "test-app");
+    EXPECT_EQ(returned_impl->getAppName(), "test-app");
+}
+
+TEST_F(CreateAgentTest, CreateAgentReturnsExistingAgentWhenCollectorPortChanged) {
     // 1. Install a mock agent as the global agent
     auto cfg = make_test_config_for_create_agent();
     auto original_agent = install_mock_agent(cfg);
@@ -724,7 +829,9 @@ Sampling:
     auto returned_agent = CreateAgent();
 
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
-    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when collector port changed";
+    ASSERT_NE(returned_impl, nullptr) << "Should return existing agent when collector port changed";
+    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
+    EXPECT_EQ(returned_impl->getConfig()->collector.agent_port, 9991);
 }
 
 TEST_F(CreateAgentTest, CreateAgentReloadsUrlFilter) {
