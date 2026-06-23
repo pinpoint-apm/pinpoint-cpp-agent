@@ -202,9 +202,9 @@ worker() {
     while [[ $(date +%s) -lt $end_time ]]; do
         local url="${URLS[$((RANDOM % URL_COUNT))]}"
         if curl -sf --max-time 30 "$url" > /dev/null 2>&1; then
-            ((count++))
+            count=$((count + 1))
         else
-            ((errors++))
+            errors=$((errors + 1))
         fi
     done
 
