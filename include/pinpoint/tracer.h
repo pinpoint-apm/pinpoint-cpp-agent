@@ -36,16 +36,16 @@ namespace pinpoint {
 	/**
 	 * @brief HTTP header names used to propagate Pinpoint trace context.
 	 */
-	const std::string HEADER_TRACE_ID = "Pinpoint-TraceID";
-	const std::string HEADER_SPAN_ID = "Pinpoint-SpanID";
-	const std::string HEADER_PARENT_SPAN_ID = "Pinpoint-pSpanID";
-	const std::string HEADER_SAMPLED = "Pinpoint-Sampled";
-	const std::string HEADER_FLAG = "Pinpoint-Flags";
-	const std::string HEADER_PARENT_APP_NAME = "Pinpoint-pAppName";
-	const std::string HEADER_PARENT_APP_TYPE = "Pinpoint-pAppType";
-	const std::string HEADER_PARENT_APP_NAMESPACE = "Pinpoint-pAppNamespace";
-	const std::string HEADER_PARENT_SERVICE_NAME = "Pinpoint-pServiceName";
-	const std::string HEADER_HOST = "Pinpoint-Host";
+	inline constexpr std::string_view HEADER_TRACE_ID = "Pinpoint-TraceID";
+	inline constexpr std::string_view HEADER_SPAN_ID = "Pinpoint-SpanID";
+	inline constexpr std::string_view HEADER_PARENT_SPAN_ID = "Pinpoint-pSpanID";
+	inline constexpr std::string_view HEADER_SAMPLED = "Pinpoint-Sampled";
+	inline constexpr std::string_view HEADER_FLAG = "Pinpoint-Flags";
+	inline constexpr std::string_view HEADER_PARENT_APP_NAME = "Pinpoint-pAppName";
+	inline constexpr std::string_view HEADER_PARENT_APP_TYPE = "Pinpoint-pAppType";
+	inline constexpr std::string_view HEADER_PARENT_APP_NAMESPACE = "Pinpoint-pAppNamespace";
+	inline constexpr std::string_view HEADER_PARENT_SERVICE_NAME = "Pinpoint-pServiceName";
+	inline constexpr std::string_view HEADER_HOST = "Pinpoint-Host";
 
 	constexpr int32_t ANNOTATION_API = 12;
 	constexpr int32_t ANNOTATION_SQL_ID = 20;
