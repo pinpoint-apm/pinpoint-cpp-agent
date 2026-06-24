@@ -896,6 +896,15 @@ namespace pinpoint {
             config->agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
         }
 
+        // A negative limit would cast to a huge size_t at the use site
+        // (UrlStatSnapshot::add), disabling the cap and letting the URL map grow
+        // unbounded with cardinality. Reject it.
+        if (config->http.url_stat.limit < 0) {
+            LOG_WARN("http url stat limit {} is invalid, using default: {}",
+                     config->http.url_stat.limit, defaults::HTTP_URL_STAT_LIMIT);
+            config->http.url_stat.limit = defaults::HTTP_URL_STAT_LIMIT;
+        }
+
         validate_grpc_channel(config->grpc.channel, "grpc", Config::GrpcChannelOptions());
 
         if (!is_container_set) {
