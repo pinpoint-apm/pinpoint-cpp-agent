@@ -556,26 +556,27 @@ namespace pinpoint {
         }
     }
 
-    std::vector<unsigned char> AgentImpl::cacheSqlUid(std::string_view sql) const try {
+    std::optional<SqlUid> AgentImpl::cacheSqlUid(std::string_view sql) const try {
         if (!enabled_) {
-            return {};
+            return std::nullopt;
         }
-        
+
         const auto [uid, found] = sql_uid_cache_->get(sql);
         if (found) {
             return uid;
         }
-        
+
+        // Cold path (first time this SQL is seen): enqueue the UID for the collector.
         auto meta = std::make_unique<MetaData>(META_SQL_UID, uid, sql);
         grpc_metadata_->enqueueMeta(std::move(meta));
-        
+
         return uid;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to cache sql uid meta: exception = {}", e.what());
-        return {};
+        return std::nullopt;
     } catch (...) {
         LOG_ERROR("failed to cache sql uid meta: unknown exception");
-        return {};
+        return std::nullopt;
     }
 
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const {

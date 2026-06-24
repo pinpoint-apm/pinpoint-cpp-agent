@@ -22,6 +22,8 @@
 #include <vector>
 #include <string_view>
 
+#include "pinpoint/tracer.h"  // pinpoint::SqlUid
+
 namespace pinpoint {
 
     /**
@@ -42,9 +44,9 @@ namespace pinpoint {
      * @brief Produces a deterministic UID for a normalized SQL string.
      *
      * @param sql Normalized SQL string.
-     * @return Byte vector uniquely identifying the SQL.
+     * @return 16-byte UID uniquely identifying the SQL.
      */
-    std::vector<unsigned char> generate_sql_uid(std::string_view sql);
+    SqlUid generate_sql_uid(std::string_view sql);
 
     /// @brief Returns the host name of the running process.
     std::string get_host_name();

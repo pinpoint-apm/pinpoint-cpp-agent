@@ -410,16 +410,16 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringExtremeTest) {
     EXPECT_EQ(complexData.stringValue, stringValue) << "Empty string should match";
 }
 
-// ========== AppendBytesStringString Tests ==========
+// ========== AppendSqlUidStringString Tests ==========
 
-// Test AppendBytesStringString with normal values
-TEST_F(AnnotationTest, AppendBytesStringStringNormalTest) {
+// Test AppendSqlUidStringString with normal values
+TEST_F(AnnotationTest, AppendSqlUidStringStringNormalTest) {
     int32_t key = 700;
-    std::vector<unsigned char> bytesValue = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; // "Hello" in hex
+    SqlUid bytesValue = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; // "Hello" in the leading bytes
     std::string string1 = "SQL Query";
     std::string string2 = "SELECT * FROM users WHERE id = ?";
     
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -434,36 +434,36 @@ TEST_F(AnnotationTest, AppendBytesStringStringNormalTest) {
     EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
 }
 
-// Test AppendBytesStringString with empty bytes
-TEST_F(AnnotationTest, AppendBytesStringStringEmptyBytesTest) {
+// Test AppendSqlUidStringString with a zero-filled UID
+TEST_F(AnnotationTest, AppendSqlUidStringStringZeroBytesTest) {
     int32_t key = 701;
-    std::vector<unsigned char> bytesValue; // Empty bytes
-    std::string string1 = "Empty Bytes";
-    std::string string2 = "Test with no binary data";
-    
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
-    
+    SqlUid bytesValue{}; // All-zero UID
+    std::string string1 = "Zero Bytes";
+    std::string string2 = "Test with a zero-filled UID";
+
+    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
+
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
+
     auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_TRUE(bytesData.bytesValue.empty()) << "Bytes value should be empty";
+    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should be the zero-filled UID";
     EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
     EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
 }
 
-// Test AppendBytesStringString with empty strings
-TEST_F(AnnotationTest, AppendBytesStringStringEmptyStringsTest) {
+// Test AppendSqlUidStringString with empty strings
+TEST_F(AnnotationTest, AppendSqlUidStringStringEmptyStringsTest) {
     int32_t key = 702;
-    std::vector<unsigned char> bytesValue = {0xAB, 0xCD, 0xEF};
+    SqlUid bytesValue = {0xAB, 0xCD, 0xEF};
     std::string string1 = "";
     std::string string2 = "";
     
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -478,41 +478,41 @@ TEST_F(AnnotationTest, AppendBytesStringStringEmptyStringsTest) {
     EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should be empty";
 }
 
-// Test AppendBytesStringString with binary data
-TEST_F(AnnotationTest, AppendBytesStringStringBinaryDataTest) {
+// Test AppendSqlUidStringString with binary data spanning the full UID
+TEST_F(AnnotationTest, AppendSqlUidStringStringBinaryDataTest) {
     int32_t key = 703;
-    // Binary data with all possible byte values
-    std::vector<unsigned char> bytesValue;
-    for (int i = 0; i < 256; ++i) {
-        bytesValue.push_back(static_cast<unsigned char>(i));
+    // Fill all 16 bytes with distinct values spread across 0x00..0xFF
+    SqlUid bytesValue{};
+    for (size_t i = 0; i < bytesValue.size(); ++i) {
+        bytesValue[i] = static_cast<unsigned char>(i * 17);
     }
     std::string string1 = "Binary Data Test";
-    std::string string2 = "Contains all byte values from 0x00 to 0xFF";
-    
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
-    
+    std::string string2 = "Contains binary byte values";
+
+    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
+
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
+
     auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue.size(), 256) << "Should contain 256 bytes";
+    EXPECT_EQ(bytesData.bytesValue.size(), 16u) << "UID is always 16 bytes";
     EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Binary data should match exactly";
     EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
     EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
 }
 
-// Test AppendBytesStringString with special characters in strings
-TEST_F(AnnotationTest, AppendBytesStringStringSpecialCharsTest) {
+// Test AppendSqlUidStringString with special characters in strings
+TEST_F(AnnotationTest, AppendSqlUidStringStringSpecialCharsTest) {
     int32_t key = 704;
-    std::vector<unsigned char> bytesValue = {0x01, 0x02, 0x03, 0x04, 0x05};
+    SqlUid bytesValue = {0x01, 0x02, 0x03, 0x04, 0x05};
     std::string string1 = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
     std::string string2 = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
     
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
+    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -527,33 +527,6 @@ TEST_F(AnnotationTest, AppendBytesStringStringSpecialCharsTest) {
     EXPECT_EQ(bytesData.stringValue2, string2) << "Unicode string should match";
 }
 
-// Test AppendBytesStringString with large bytes array
-TEST_F(AnnotationTest, AppendBytesStringStringLargeBytesTest) {
-    int32_t key = 705;
-    // Create a large bytes array (10KB)
-    std::vector<unsigned char> bytesValue(10240);
-    for (size_t i = 0; i < bytesValue.size(); ++i) {
-        bytesValue[i] = static_cast<unsigned char>(i % 256);
-    }
-    std::string string1 = "Large Data";
-    std::string string2 = "10KB of binary data for testing";
-    
-    annotation->AppendBytesStringString(key, bytesValue, string1, string2);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue.size(), 10240) << "Should contain 10240 bytes";
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Large bytes array should match exactly";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
-}
-
 // ========== Multiple Annotations Tests ==========
 
 // Test adding multiple annotations of different types
@@ -563,8 +536,8 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     annotation->AppendStringString(3, "Key", "Value");
     annotation->AppendIntStringString(4, 100, "Method", "POST");
     annotation->AppendLongIntIntByteByteString(5, 123456789LL, 1, 2, 3, 4, "Complex");
-    std::vector<unsigned char> bytesValue = {0xDE, 0xAD, 0xBE, 0xEF};
-    annotation->AppendBytesStringString(6, bytesValue, "Binary", "Data");
+    SqlUid bytesValue = {0xDE, 0xAD, 0xBE, 0xEF};
+    annotation->AppendSqlUidStringString(6, bytesValue, "Binary", "Data");
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 6) << "Should have exactly 6 annotations";
@@ -614,7 +587,7 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(it->first, 6) << "Sixth annotation key should match";
     EXPECT_EQ(it->second.dataType, ANNOTATION_TYPE_BYTES_STRING_STRING) << "Sixth annotation should be bytes-string-string type";
     auto& bytesData = std::get<pinpoint::BytesStringStringValue>(it->second.data);
-    std::vector<unsigned char> expectedBytes = {0xDE, 0xAD, 0xBE, 0xEF};
+    SqlUid expectedBytes = {0xDE, 0xAD, 0xBE, 0xEF};
     EXPECT_EQ(bytesData.bytesValue, expectedBytes) << "Sixth annotation bytes should match";
     EXPECT_EQ(bytesData.stringValue1, "Binary") << "Sixth annotation first string should match";
     EXPECT_EQ(bytesData.stringValue2, "Data") << "Sixth annotation second string should match";
@@ -814,13 +787,13 @@ TEST_F(AnnotationTest, LargeAnnotationCountTest) {
     EXPECT_EQ(std::get<int32_t>(it->second.data), 9990);
 }
 
-// Test bytes vector data integrity after move
-TEST_F(AnnotationTest, AppendBytesStringStringMoveIntegrityTest) {
+// Test UID data integrity when passed by value
+TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
     int32_t key = 710;
-    std::vector<unsigned char> original = {0x01, 0x02, 0x03, 0x04, 0x05};
-    std::vector<unsigned char> expected = original; // copy before move
+    SqlUid original = {0x01, 0x02, 0x03, 0x04, 0x05};
+    SqlUid expected = original; // copy before the call
 
-    annotation->AppendBytesStringString(key, std::move(original), "s1", "s2");
+    annotation->AppendSqlUidStringString(key, std::move(original), "s1", "s2");
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1);

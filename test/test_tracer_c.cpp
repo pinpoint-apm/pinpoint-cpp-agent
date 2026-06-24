@@ -436,7 +436,7 @@ TEST(TracerCNullSafetyTest, NullAnnotationCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(nullptr, PT_ANNOTATION_API, "s"));
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string_string(nullptr, PT_ANNOTATION_API, "a", "b"));
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_int_string_string(nullptr, PT_ANNOTATION_API, 1, "a", "b"));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_bytes_string_string(nullptr, PT_ANNOTATION_API, nullptr, 0, "a", "b"));
+    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_sql_uid_string_string(nullptr, PT_ANNOTATION_API, nullptr, 0, "a", "b"));
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_long_int_int_byte_byte_string(nullptr, PT_ANNOTATION_API, 0, 0, 0, 0, 0, "s"));
 }
 
@@ -728,10 +728,11 @@ TEST_F(TracerCApiTest, SpanAnnotationsAllTypes) {
     // int+string+string
     pt_annotation_append_int_string_string(anno, PT_ANNOTATION_HTTP_PROXY_HEADER,
                                            1, "proxy", "addr");
-    // bytes+string+string
-    unsigned char uid[] = {0xDE, 0xAD, 0xBE, 0xEF};
-    pt_annotation_append_bytes_string_string(anno, PT_ANNOTATION_SQL_UID,
-                                             uid, 4,
+    // bytes+string+string (SQL UID must be exactly 16 bytes)
+    unsigned char uid[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03,
+                           0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
+    pt_annotation_append_sql_uid_string_string(anno, PT_ANNOTATION_SQL_UID,
+                                             uid, 16,
                                              "SELECT 1", "");
     // long+int+int+byte+byte+string
     pt_annotation_append_long_int_int_byte_byte_string(

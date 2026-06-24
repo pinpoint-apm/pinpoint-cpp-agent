@@ -117,8 +117,8 @@ public:
         removed_sql_count_++;
     }
 
-    std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override {
-        return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::optional<SqlUid> cacheSqlUid(std::string_view sql) const override {
+        return SqlUid{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     }
 
     void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {

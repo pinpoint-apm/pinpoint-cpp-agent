@@ -17,8 +17,10 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include "pinpoint/tracer.h"
+#include "utility.h"
  
  namespace pinpoint {
  
@@ -152,9 +154,10 @@
        * @brief Stores the normalized SQL UID and returns its cached byte sequence.
        *
        * @param sql Normalized SQL query to cache.
-       * @return UID byte sequence identifying the query.
+       * @return 16-byte UID identifying the query, or std::nullopt when the agent
+       *         is disabled or UID generation fails.
        */
-      virtual std::vector<unsigned char> cacheSqlUid(std::string_view sql) const = 0;
+      virtual std::optional<SqlUid> cacheSqlUid(std::string_view sql) const = 0;
       /// @brief Removes a previously cached SQL UID entry.
       virtual void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const = 0;
  

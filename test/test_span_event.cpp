@@ -927,7 +927,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsEnabledTest) {
 
     // With sql stats enabled, cacheSqlUid should be called instead of cacheSql
     // cacheSql counter should not increment (stays at 300)
-    // In our mock, cacheSqlUid returns {1,2,3,...,10}
+    // In our mock, cacheSqlUid returns a 16-byte UID {1,2,...,10,0,0,0,0,0,0}
     EXPECT_EQ(mock_agent_service_->getSqlIdCounter(), 300)
         << "cacheSql should NOT be called when sql stats is enabled";
 

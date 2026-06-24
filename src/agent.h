@@ -115,7 +115,7 @@ namespace pinpoint {
     	void removeCacheError(const StringMeta& error_meta) const override;
     	int32_t cacheSql(std::string_view sql_query) const override;
     	void removeCacheSql(const StringMeta& sql_meta) const override;
-    	std::vector<unsigned char> cacheSqlUid(std::string_view sql) const override;
+    	std::optional<SqlUid> cacheSqlUid(std::string_view sql) const override;
     	void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override;
 
     	bool isStatusFail(int status) const override;

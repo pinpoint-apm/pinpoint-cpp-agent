@@ -186,11 +186,11 @@ namespace pinpoint {
      * @brief Metadata describing a cached SQL UID.
      */
     struct SqlUidMeta {
-        std::vector<unsigned char> uid_;
+        SqlUid uid_;
         std::string sql_;
-        
-        SqlUidMeta(std::vector<unsigned char> uid, std::string_view sql) 
-            : uid_(std::move(uid)), sql_(sql) {}
+
+        SqlUidMeta(SqlUid uid, std::string_view sql)
+            : uid_(uid), sql_(sql) {}
     };
 
     /**
@@ -237,8 +237,8 @@ namespace pinpoint {
         MetaData(MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
             : meta_type_(meta_type), value_(StringMeta(id, str_val, str_type)) {}
         
-        MetaData(MetaType meta_type, std::vector<unsigned char> uid, std::string_view sql)
-            : meta_type_(meta_type), value_(SqlUidMeta(std::move(uid), sql)) {}
+        MetaData(MetaType meta_type, SqlUid uid, std::string_view sql)
+            : meta_type_(meta_type), value_(SqlUidMeta(uid, sql)) {}
         
         MetaData(MetaType meta_type, TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
             : meta_type_(meta_type), value_(ExceptionMeta(txid, span_id, url_template, std::move(exceptions))) {}

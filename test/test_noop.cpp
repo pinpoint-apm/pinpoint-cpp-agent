@@ -305,7 +305,7 @@ TEST_F(NoopTest, NoopAnnotationAllMethodsTest) {
     annotation.AppendString(2, "test-string");
     annotation.AppendStringString(3, "key", "value");
     annotation.AppendIntStringString(4, 100, "key", "value");
-    annotation.AppendBytesStringString(5, {0x01, 0x02, 0x03}, "key", "value");
+    annotation.AppendSqlUidStringString(5, {0x01, 0x02, 0x03}, "key", "value");
     annotation.AppendLongIntIntByteByteString(6, 123456789L, 10, 20, 30, 40, "test");
 
     SUCCEED() << "All NoopAnnotation methods should execute without throwing exceptions";

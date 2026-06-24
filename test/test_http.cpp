@@ -77,7 +77,7 @@ public:
         string_values_[key].push_back(std::string(s1) + ":" + std::string(s2));
     }
 
-    void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override {
+    void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) override {
         // Store as string for simplification - convert bytes to hex string
         std::string hex_uid;
         for (auto byte : uid) {

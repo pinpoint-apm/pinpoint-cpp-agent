@@ -591,15 +591,15 @@ protected:
         // Called after each test
     }
     
-    bool areUidsEqual(const std::vector<unsigned char>& uid1, const std::vector<unsigned char>& uid2) {
+    bool areUidsEqual(const SqlUid& uid1, const SqlUid& uid2) {
         return uid1 == uid2;
     }
-    
-    bool areUidsDifferent(const std::vector<unsigned char>& uid1, const std::vector<unsigned char>& uid2) {
+
+    bool areUidsDifferent(const SqlUid& uid1, const SqlUid& uid2) {
         return uid1 != uid2;
     }
-    
-    std::string uidToString(const std::vector<unsigned char>& uid) {
+
+    std::string uidToString(const SqlUid& uid) {
         std::string result;
         for (auto byte : uid) {
             char buf[3];
@@ -876,12 +876,12 @@ TEST_F(SqlUidCacheTest, ConcurrentGetTest) {
     const int num_threads = 10;
     const int operations_per_thread = 50;
     
-    std::vector<std::future<std::vector<std::vector<unsigned char>>>> futures;
-    
+    std::vector<std::future<std::vector<SqlUid>>> futures;
+
     // Launch multiple threads performing get operations
     for (int i = 0; i < num_threads; ++i) {
         futures.push_back(std::async(std::launch::async, [&cache, i]() {
-            std::vector<std::vector<unsigned char>> uids;
+            std::vector<SqlUid> uids;
             for (int j = 0; j < operations_per_thread; ++j) {
                 std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE col" + std::to_string(j) + " = ?";
                 auto result = cache.get(sql);
@@ -892,7 +892,7 @@ TEST_F(SqlUidCacheTest, ConcurrentGetTest) {
     }
     
     // Collect all UIDs
-    std::set<std::vector<unsigned char>> all_uids;
+    std::set<SqlUid> all_uids;
     for (auto& future : futures) {
         auto uids = future.get();
         for (const auto& uid : uids) {
@@ -928,7 +928,7 @@ TEST_F(SqlUidCacheTest, ConcurrentSameSqlTest) {
     }
     
     // All should have the same UID
-    std::vector<unsigned char> first_uid = results[0].value;
+    SqlUid first_uid = results[0].value;
     for (const auto& result : results) {
         EXPECT_EQ(result.value.size(), 16) << "All UIDs should be 16 bytes";
         EXPECT_TRUE(areUidsEqual(result.value, first_uid)) << "All accesses to same SQL should return same UID";
@@ -996,7 +996,7 @@ TEST_F(SqlUidCacheTest, ManySqlStatementsTest) {
     SqlUidCache cache(cache_size);
     
     // Add many SQL statements
-    std::vector<std::vector<unsigned char>> original_uids;
+    std::vector<SqlUid> original_uids;
     for (int i = 0; i < total_sqls; ++i) {
         std::string sql = "SELECT * FROM table" + std::to_string(i) + " WHERE id = ?";
         auto result = cache.get(sql);
@@ -1067,7 +1067,7 @@ TEST_F(SqlUidCacheTest, ExactCapacityNoEvictionTest) {
     const int capacity = 5;
     SqlUidCache cache(capacity);
 
-    std::vector<std::vector<unsigned char>> original_uids;
+    std::vector<SqlUid> original_uids;
     for (int i = 0; i < capacity; ++i) {
         std::string sql = "SELECT * FROM table" + std::to_string(i);
         auto result = cache.get(sql);
@@ -1110,7 +1110,7 @@ TEST_F(SqlUidCacheTest, RemoveAllAndReuseTest) {
 TEST_F(SqlUidCacheTest, StringViewKeyFromTemporaryTest) {
     SqlUidCache cache(5);
 
-    std::vector<unsigned char> original_uid;
+    SqlUid original_uid;
     {
         std::string temp_sql = "SELECT * FROM temporary_table WHERE id = ?";
         original_uid = cache.get(temp_sql).value;

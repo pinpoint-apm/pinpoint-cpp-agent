@@ -58,9 +58,9 @@ namespace pinpoint {
         }
     }
 
-    void PinpointAnnotation::AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) {
+    void PinpointAnnotation::AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) {
         try {
-            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_BYTES_STRING_STRING, std::move(uid), s1, s2));
+            annotation_list_.emplace_back(key, AnnotationData(ANNOTATION_TYPE_BYTES_STRING_STRING, uid, s1, s2));
         } catch (const std::exception& e) {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }

@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+#include "utility.h"
+
 namespace pinpoint {
 
     /**
@@ -49,10 +51,11 @@ namespace pinpoint {
     /**
      * @brief Result returned from `SqlUidCache::get`.
      *
-     * Type alias for LruCacheResult<std::vector<unsigned char>>.
+     * Type alias for LruCacheResult<SqlUid>. SqlUid is a fixed 16-byte array, so
+     * copying a result out of the cache on a hit is allocation-free.
      * Use `.value` to access the UID and `.found` to check if it existed in cache.
      */
-    using SqlUidCacheResult = LruCacheResult<std::vector<unsigned char>>;
+    using SqlUidCacheResult = LruCacheResult<SqlUid>;
 
     /**
      * @brief Thread-safe LRU cache implementation template.
@@ -67,7 +70,12 @@ namespace pinpoint {
     template<typename ValueType>
     class LruCacheImpl {
     public:
-        explicit LruCacheImpl(size_t max_size) : max_size_(max_size) {}
+        explicit LruCacheImpl(size_t max_size) : max_size_(max_size) {
+            // Reserve buckets up front so the map never rehashes while warming
+            // up to capacity. +1 covers the transient over-capacity entry that
+            // exists between insertion and eviction inside insert_or_promote().
+            cache_map_.reserve(max_size_ + 1);
+        }
         ~LruCacheImpl() = default;
 
         // Delete copy and move operations (mutex is not movable)
@@ -79,8 +87,11 @@ namespace pinpoint {
         /**
          * @brief Retrieves or creates a cache entry.
          *
-         * On cache hit the lookup is performed with string_view (zero allocation).
-         * On cache miss a std::string is constructed for storage.
+         * On cache hit the lookup is performed with string_view (zero allocation)
+         * and the key is hashed exactly once. On a miss the generator runs
+         * OUTSIDE the lock, so an expensive generator does not serialize other
+         * threads' lookups; the key string is also allocated off the critical
+         * section.
          *
          * @param key The key to look up (string_view — no allocation on hit).
          * @param generator Function to generate a new value if key not found.
@@ -88,19 +99,23 @@ namespace pinpoint {
          */
         template<typename Generator>
         LruCacheResult<ValueType> get(std::string_view key, Generator&& generator) {
-            std::unique_lock<std::mutex> lock(mutex_);
-
-            const auto it = cache_map_.find(key);
-            if (it != cache_map_.end()) {
-                // Move accessed item to front (most recently used)
-                cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-                return LruCacheResult<ValueType>{it->second->second, true};
+            {
+                // Fast path: on a hit we only hash the key once and bump LRU order.
+                std::unique_lock<std::mutex> lock(mutex_);
+                const auto it = cache_map_.find(key);
+                if (it != cache_map_.end()) {
+                    cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
+                    return LruCacheResult<ValueType>{it->second->second, true};
+                }
             }
 
-            // Not found - generate new value and insert (string allocation happens here)
+            // Cache miss: run the (potentially expensive) generator WITHOUT holding
+            // the lock. For SqlUidCache this is a MurmurHash over the full SQL text,
+            // which would otherwise serialize every concurrent lookup.
             auto new_value = generator();
-            put(std::string(key), std::move(new_value));
-            return LruCacheResult<ValueType>{cache_list_.front().second, false};
+
+            std::unique_lock<std::mutex> lock(mutex_);
+            return insert_or_promote(key, std::move(new_value));
         }
 
         /**
@@ -120,37 +135,53 @@ namespace pinpoint {
 
     private:
         /**
-         * @brief Inserts a new key/value pair while preserving LRU ordering.
+         * @brief Inserts a freshly generated entry, or promotes an existing one.
          *
-         * Assumes the lock is already held by the caller.
+         * Because the generator runs outside the lock (see get()), another thread
+         * may have inserted the same key in the meantime. We detect that race via
+         * try_emplace and, if so, discard our value and return the existing entry
+         * (found = true). Assumes the lock is already held by the caller.
          *
-         * @param key The key to insert (moved into storage).
-         * @param value The value to insert (moved).
+         * Hashes the key once: try_emplace performs the existence check and the
+         * insert in a single map operation.
+         *
+         * @param key The key to insert (copied into storage only when inserting).
+         * @param value The freshly generated value (moved).
          */
-        void put(std::string key, ValueType&& value) {
-            // Insert new entry at front
-            cache_list_.emplace_front(std::move(key), std::move(value));
+        LruCacheResult<ValueType> insert_or_promote(std::string_view key, ValueType&& value) {
+            // Speculatively create the list node first so the map key can be a
+            // string_view into the node's owned string (single key allocation).
+            cache_list_.emplace_front(std::string(key), std::move(value));
+            const auto list_it = cache_list_.begin();
 
-            // Exception-safe: if emplace fails, we won't update the map
-            // Use the key already stored in the list node to avoid a second copy.
+            std::pair<typename MapType::iterator, bool> inserted;
             try {
-                cache_map_.emplace(std::string_view(cache_list_.front().first), cache_list_.begin());
+                inserted = cache_map_.try_emplace(std::string_view(list_it->first), list_it);
             } catch (...) {
-                cache_list_.pop_front();  // Rollback
+                cache_list_.pop_front();  // Rollback the speculative node
                 throw;
+            }
+
+            if (!inserted.second) {
+                // Lost the race: an identical key was inserted concurrently. Drop
+                // our node and promote the existing entry to most-recently-used.
+                cache_list_.pop_front();
+                cache_list_.splice(cache_list_.begin(), cache_list_, inserted.first->second);
+                return LruCacheResult<ValueType>{inserted.first->second->second, true};
             }
 
             // Evict least recently used entry if over capacity
             if (cache_map_.size() > max_size_) {
-                const auto& victim_key = cache_list_.back().first;
-                cache_map_.erase(victim_key);
+                cache_map_.erase(std::string_view(cache_list_.back().first));
                 cache_list_.pop_back();
             }
+            return LruCacheResult<ValueType>{list_it->second, false};
         }
 
         using KeyValuePair = std::pair<std::string, ValueType>;
+        using MapType = std::unordered_map<std::string_view, typename std::list<KeyValuePair>::iterator>;
         std::list<KeyValuePair> cache_list_{};
-        std::unordered_map<std::string_view, typename std::list<KeyValuePair>::iterator> cache_map_{};
+        MapType cache_map_{};
         const size_t max_size_{};
         mutable std::mutex mutex_{};
     };
@@ -226,7 +257,7 @@ namespace pinpoint {
         }
 
     private:
-        LruCacheImpl<std::vector<unsigned char>> cache_;
+        LruCacheImpl<SqlUid> cache_;
     };
 
 } // namespace pinpoint

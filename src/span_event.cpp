@@ -136,8 +136,9 @@ namespace pinpoint {
         const auto config = span->getAgent()->getConfig();
         if (config->sql.enable_sql_stats) {
             auto sql_uid = span->getAgent()->cacheSqlUid(result.normalized_sql);
-            if (!sql_uid.empty()) {
-                annotations_->AppendBytesStringString(ANNOTATION_SQL_UID, sql_uid, result.parameters, args);
+            if (sql_uid) {
+                annotations_->AppendSqlUidStringString(ANNOTATION_SQL_UID, *sql_uid,
+                    result.parameters, args);
             }
         } else {
             auto sql_id = span->getAgent()->cacheSql(result.normalized_sql);

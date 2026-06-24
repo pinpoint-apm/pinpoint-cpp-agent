@@ -370,27 +370,26 @@ TEST_F(GrpcTest, MultipleClientInstancesTest) {
 // SqlUidMeta Tests
 
 TEST_F(GrpcTest, SqlUidMetaTest) {
-    std::vector<unsigned char> uid = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A};
+    SqlUid uid = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A};
     SqlUidMeta sql_uid_meta(uid, "SELECT * FROM orders WHERE id = ?");
 
     EXPECT_EQ(sql_uid_meta.uid_, uid);
     EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM orders WHERE id = ?");
 }
 
-TEST_F(GrpcTest, SqlUidMetaEmptyUidTest) {
-    std::vector<unsigned char> uid;
+TEST_F(GrpcTest, SqlUidMetaZeroUidTest) {
+    SqlUid uid{};
     SqlUidMeta sql_uid_meta(uid, "SELECT 1");
 
-    EXPECT_TRUE(sql_uid_meta.uid_.empty());
+    EXPECT_EQ(sql_uid_meta.uid_, uid);
     EXPECT_EQ(sql_uid_meta.sql_, "SELECT 1");
 }
 
 TEST_F(GrpcTest, SqlUidMetaMoveTest) {
-    std::vector<unsigned char> uid = {0xAA, 0xBB, 0xCC};
-    std::vector<unsigned char> uid_copy = uid;
+    SqlUid uid = {0xAA, 0xBB, 0xCC};
+    SqlUid uid_copy = uid;
     SqlUidMeta sql_uid_meta(std::move(uid), "SELECT 1");
 
-    // uid should be moved into sql_uid_meta
     EXPECT_EQ(sql_uid_meta.uid_, uid_copy);
 }
 
@@ -443,7 +442,7 @@ TEST_F(GrpcTest, ExceptionMetaMultipleExceptionsTest) {
 // MetaData with SQL UID and Exception types
 
 TEST_F(GrpcTest, MetaDataSqlUidTest) {
-    std::vector<unsigned char> uid = {1, 2, 3, 4, 5};
+    SqlUid uid = {1, 2, 3, 4, 5};
     MetaData meta_data(META_SQL_UID, uid, "SELECT * FROM users");
 
     EXPECT_EQ(meta_data.meta_type_, META_SQL_UID);
@@ -489,7 +488,7 @@ TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
     metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "err1", STRING_META_ERROR));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 4, "sql1", STRING_META_SQL));
 
-    std::vector<unsigned char> uid = {1, 2, 3};
+    SqlUid uid = {1, 2, 3};
     metadata.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT 1"));
 
     TraceId txid{"agent", 100, 0};
@@ -647,7 +646,7 @@ TEST_F(GrpcTest, MetaValueVariantIndexTest) {
     MetaData str_meta(META_STRING, 2, "str", STRING_META_ERROR);
     EXPECT_EQ(str_meta.value_.index(), 1u);  // StringMeta
 
-    std::vector<unsigned char> uid = {1};
+    SqlUid uid = {1};
     MetaData uid_meta(META_SQL_UID, uid, "sql");
     EXPECT_EQ(uid_meta.value_.index(), 2u);  // SqlUidMeta
 

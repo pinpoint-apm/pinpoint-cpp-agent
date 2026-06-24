@@ -77,12 +77,12 @@ namespace pinpoint {
      * @brief Container for annotations with binary payloads and additional strings.
      */
     struct BytesStringStringValue {
-        std::vector<unsigned char> bytesValue;
+        SqlUid bytesValue;
         std::string stringValue1;
         std::string stringValue2;
 
-        BytesStringStringValue(std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : bytesValue(std::move(bytesVal)), stringValue1(strVal1), stringValue2(strVal2) {}
+        BytesStringStringValue(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : bytesValue(bytesVal), stringValue1(strVal1), stringValue2(strVal2) {}
     };
 
     /**
@@ -118,8 +118,8 @@ namespace pinpoint {
         AnnotationData(const AnnotationType dType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : dataType(dType), data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
-        AnnotationData(const AnnotationType dType, std::vector<unsigned char> bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(BytesStringStringValue(std::move(bytesVal), strVal1, strVal2)) {}
+        AnnotationData(const AnnotationType dType, SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : dataType(dType), data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
     };
 
     /**
@@ -171,14 +171,14 @@ namespace pinpoint {
          */
         void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override;
         /**
-         * @brief Appends an annotation containing binary data and two strings.
+         * @brief Appends an annotation containing a SQL UID and two strings.
          *
          * @param key Annotation identifier.
-         * @param uid Binary payload.
+         * @param uid 16-byte SQL UID payload.
          * @param s1 First string.
          * @param s2 Second string.
          */
-        void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) override;
+        void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) override;
         /**
          * @brief Appends a detailed network annotation used for RPC metadata.
          *

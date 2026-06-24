@@ -677,12 +677,15 @@ void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
     }
 } catch (...) { pt_handle_exception(__func__); }
 
-void pt_annotation_append_bytes_string_string(pt_annotation_t anno, int32_t key,
+void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t key,
                                               const unsigned char* uid, int uid_len,
                                               const char* s1, const char* s2) try {
     if (!anno || !anno->ptr || !uid || uid_len <= 0) return;
-    std::vector<unsigned char> v(uid, uid + uid_len);
-    anno->ptr->AppendBytesStringString(key, std::move(v),
+    pinpoint::SqlUid sql_uid{};
+    // Only a fixed-size SQL UID is supported; reject any other length.
+    if (static_cast<size_t>(uid_len) != sql_uid.size()) return;
+    std::memcpy(sql_uid.data(), uid, sql_uid.size());
+    anno->ptr->AppendSqlUidStringString(key, sql_uid,
                                        s1 ? s1 : "", s2 ? s2 : "");
 } catch (...) { pt_handle_exception(__func__); }
 

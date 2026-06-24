@@ -385,7 +385,7 @@ pt_annotation_append_string(anno, key, "string value");
 pt_annotation_append_string_string(anno, key, "s1", "s2");
 pt_annotation_append_int_string_string(anno, key, 42, "s1", "s2");
 /* SQL with binary UID: */
-pt_annotation_append_bytes_string_string(anno, PT_ANNOTATION_SQL_UID,
+pt_annotation_append_sql_uid_string_string(anno, PT_ANNOTATION_SQL_UID,
                                          uid_bytes, uid_len, sql, args);
 ```
 

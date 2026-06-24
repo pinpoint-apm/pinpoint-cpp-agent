@@ -965,7 +965,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaFailureTest) {
 
     agent.setMockMetaStub(std::move(mock_meta_stub));
 
-    std::vector<unsigned char> uid = {1, 2, 3};
+    SqlUid uid = {1, 2, 3};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
@@ -1150,7 +1150,7 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 2, "error msg", STRING_META_ERROR));
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "SELECT 1", STRING_META_SQL));
 
-    std::vector<unsigned char> uid = {1, 2, 3};
+    SqlUid uid = {1, 2, 3};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
 
     TraceId txid{"agent", 100, 0};
@@ -1196,7 +1196,7 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesFailureTest) {
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 2, "err", STRING_META_ERROR));
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "SELECT 1", STRING_META_SQL));
 
-    std::vector<unsigned char> uid = {1, 2, 3};
+    SqlUid uid = {1, 2, 3};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
 
     TraceId txid{"agent", 100, 0};
@@ -1287,7 +1287,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaSuccessTest) {
 
     agent.setMockMetaStub(std::move(mock_meta_stub));
 
-    std::vector<unsigned char> uid = {0xAA, 0xBB, 0xCC, 0xDD};
+    SqlUid uid = {0xAA, 0xBB, 0xCC, 0xDD};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "INSERT INTO t VALUES (?)"));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });

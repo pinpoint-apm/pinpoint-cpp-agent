@@ -722,12 +722,13 @@ void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
                                             int i, const char* s1, const char* s2);
 
 /**
- * @brief Mirrors pinpoint::Annotation::AppendBytesStringString().
+ * @brief Mirrors pinpoint::Annotation::AppendSqlUidStringString().
  *
- * @param uid      Pointer to binary data.
- * @param uid_len  Length of @p uid in bytes.
+ * @param uid      Pointer to the 16-byte SQL UID.
+ * @param uid_len  Length of @p uid in bytes; must be exactly 16. The call is
+ *                 ignored if it differs.
  */
-void pt_annotation_append_bytes_string_string(pt_annotation_t anno, int32_t key,
+void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t key,
                                               const unsigned char* uid, int uid_len,
                                               const char* s1, const char* s2);
 

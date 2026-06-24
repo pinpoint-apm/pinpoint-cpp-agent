@@ -17,6 +17,7 @@
 #ifndef PINPOINT_TRACER_H
 #define PINPOINT_TRACER_H
 
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <functional>
@@ -27,6 +28,10 @@
 #include <vector>
 
 namespace pinpoint {
+
+	/// @brief Fixed-size binary UID for a normalized SQL statement
+	/// (128-bit MurmurHash3 output). Trivially copyable — no heap allocation.
+	using SqlUid = std::array<unsigned char, 16>;
 
 	/**
 	 * @brief HTTP header names used to propagate Pinpoint trace context.
@@ -218,8 +223,8 @@ namespace pinpoint {
         virtual void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) = 0;
 		/// @brief Records an annotation with an integer and two string values.
         virtual void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) = 0;
-		/// @brief Records an annotation with binary payload and two strings.
-        virtual void AppendBytesStringString(int32_t key, std::vector<unsigned char> uid, std::string_view s1, std::string_view s2) = 0;
+		/// @brief Records an annotation carrying a SQL UID and two strings.
+        virtual void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) = 0;
 		/// @brief Records a detailed network annotation.
         virtual void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) = 0;
     };

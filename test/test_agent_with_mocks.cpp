@@ -302,7 +302,8 @@ TEST_F(AgentImplTest, CacheSqlReturnsSameIdForSameQuery) {
 
 TEST_F(AgentImplTest, CacheSqlUidReturnsNonEmpty) {
     auto uid = agent_->cacheSqlUid("SELECT 1");
-    EXPECT_FALSE(uid.empty());
+    ASSERT_TRUE(uid.has_value());
+    EXPECT_EQ(uid->size(), 16u);
 }
 
 TEST_F(AgentImplTest, ShutdownDisablesAgent) {

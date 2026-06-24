@@ -155,9 +155,11 @@ namespace pinpoint {
         });
     }
 
-    std::vector<unsigned char> generate_sql_uid(std::string_view sql) {
+    SqlUid generate_sql_uid(std::string_view sql) {
         // MurmurHash3_x64_128 produces 16 bytes (128 bits) of output
-        std::vector<unsigned char> result(kMurmurHashOutputSize);
+        static_assert(SqlUid{}.size() == kMurmurHashOutputSize,
+                      "SqlUid size must match MurmurHash3_x64_128 output");
+        SqlUid result{};
         MurmurHash3_x64_128(sql.data(), static_cast<int>(sql.length()), kMurmurHashSeed, result.data());
         return result;
     }
