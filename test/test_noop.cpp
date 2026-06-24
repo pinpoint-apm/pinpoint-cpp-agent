@@ -458,9 +458,22 @@ TEST_F(NoopTest, UnsampledSpanDoubleEndSpanTest) {
     span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
 
-    // Second EndSpan should be safe (url_stat_ already moved)
+    // The active span must be dropped exactly once on first EndSpan.
+    AgentStatsSnapshot snapshot;
+    mock_agent_service_->getAgentStats().collectAgentStat(snapshot);
+    int active_after_end = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                           snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(active_after_end, 0) << "Active span should be dropped after EndSpan";
+
+    // Second EndSpan must be short-circuited by the finished_ guard: no second
+    // recordUrlStat / dropActiveSpan / collectResponseTime.
     span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "Double EndSpan should not record URL stat twice";
+
+    mock_agent_service_->getAgentStats().collectAgentStat(snapshot);
+    active_after_end = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                       snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(active_after_end, 0) << "Double EndSpan should not corrupt active span tracking";
 }
 
 TEST_F(NoopTest, UnsampledSpanWithFailStatusUrlStatTest) {

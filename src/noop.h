@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <vector>
 
 #include "pinpoint/tracer.h"
@@ -147,6 +148,7 @@ namespace pinpoint {
     private:
         int64_t span_id_;
         int64_t start_time_;
+        std::atomic<bool> finished_{false};
         std::unique_ptr<UrlStatEntry> url_stat_;
         // Keeps the agent alive while user code still holds this span.
         std::shared_ptr<AgentService> agent_ref_;

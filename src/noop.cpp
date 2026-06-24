@@ -52,6 +52,14 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::EndSpan() {
+        // Atomic exchange so only the first caller proceeds: a check-then-set
+        // would let two concurrent EndSpan calls both pass the guard and run
+        // dropActiveSpan / collectResponseTime / recordUrlStat twice.
+        if (finished_.exchange(true)) {
+            LOG_WARN("span is already finished");
+            return;
+        }
+
         auto end_time_ = std::chrono::system_clock::now();
         auto elapsed_ = static_cast<int32_t>(to_milli_seconds(end_time_) - start_time_);
 
