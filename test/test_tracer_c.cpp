@@ -1032,3 +1032,99 @@ TEST_F(TracerCApiTest, SetLoggingWritesToCarrier) {
     pt_span_end(span);
     pt_span_destroy(span);
 }
+
+// ============================================================================
+// 16. Disabled / noop path — static sentinel handles
+//
+// When tracing is disabled (and likewise for filtered/unsampled calls) the
+// C++ layer hands back a shared noop singleton. The C wrapper must collapse
+// these onto a per-type static sentinel handle: the same pointer every time
+// (no per-call malloc, no refcount churn on the singleton) and a destroy that
+// is a safe no-op because the sentinel is never owned by the caller.
+// ============================================================================
+
+namespace {
+
+// With no global agent installed, pt_global_agent() yields the noop agent and
+// every handle derived from it is a static sentinel.
+class TracerCNoopPathTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        pinpoint::reset_global_agent();
+        pinpoint::set_config_string("");
+    }
+    void TearDown() override {
+        pinpoint::reset_global_agent();
+        pinpoint::set_config_string("");
+    }
+};
+
+}  // namespace
+
+TEST_F(TracerCNoopPathTest, GlobalNoopAgentIsStableSentinelAndSafeToDestroy) {
+    pt_agent_t a1 = pt_global_agent();
+    pt_agent_t a2 = pt_global_agent();
+    ASSERT_NE(a1, nullptr);
+    EXPECT_EQ(a1, a2);                      // same static sentinel — no allocation
+    EXPECT_EQ(pt_agent_is_enabled(a1), 0);  // the noop agent is never enabled
+
+    // Destroying a sentinel is a no-op, even when done repeatedly, and leaves
+    // the sentinel usable for subsequent callers.
+    pt_agent_destroy(a1);
+    pt_agent_destroy(a2);
+    EXPECT_EQ(pt_global_agent(), a1);
+    EXPECT_EQ(pt_agent_is_enabled(pt_global_agent()), 0);
+}
+
+TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
+    pt_agent_t agent = pt_global_agent();
+    ASSERT_NE(agent, nullptr);
+
+    // Spans created from the noop agent share one span sentinel.
+    pt_span_t s1 = pt_agent_new_span(agent, "op", "/rpc");
+    pt_span_t s2 = pt_agent_new_span(agent, "op", "/rpc");
+    ASSERT_NE(s1, nullptr);
+    EXPECT_EQ(s1, s2);
+    EXPECT_EQ(pt_span_is_sampled(s1), 0);
+    EXPECT_EQ(pt_span_get_span_id(s1), 0);
+
+    // ...as do their events and annotations.
+    pt_span_event_t e1 = pt_span_new_event(s1, "child");
+    pt_span_event_t e2 = pt_span_get_event(s1);
+    ASSERT_NE(e1, nullptr);
+    EXPECT_EQ(e1, e2);
+
+    pt_annotation_t an1 = pt_span_get_annotations(s1);
+    pt_annotation_t an2 = pt_span_event_get_annotations(e1);
+    ASSERT_NE(an1, nullptr);
+    EXPECT_EQ(an1, an2);
+
+    // The async child of a noop span is still the same span sentinel.
+    pt_span_t async = pt_span_new_async_span(s1, "bg");
+    EXPECT_EQ(async, s1);
+
+    // Distinct types must not collapse onto the same sentinel object.
+    EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(e1));
+    EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(an1));
+    EXPECT_NE(static_cast<const void*>(e1), static_cast<const void*>(an1));
+
+    // No-op recording on sentinels must not crash.
+    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(an1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_error(s1, "ignored"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_end_event(s1));
+    EXPECT_NO_FATAL_FAILURE(pt_span_end(s1));
+
+    // Every handle is a sentinel: destroy is a safe no-op, even for duplicates.
+    pt_annotation_destroy(an1);
+    pt_annotation_destroy(an2);
+    pt_span_event_destroy(e1);
+    pt_span_event_destroy(e2);
+    pt_span_destroy(async);
+    pt_span_destroy(s1);
+    pt_span_destroy(s2);
+
+    // Sentinels survive destruction and are handed out again unchanged.
+    pt_span_t s3 = pt_agent_new_span(pt_global_agent(), "op", "/rpc");
+    EXPECT_EQ(s3, s1);
+    pt_span_destroy(s3);
+}

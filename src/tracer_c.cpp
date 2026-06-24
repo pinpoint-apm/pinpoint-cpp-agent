@@ -32,6 +32,7 @@
 #include "pinpoint/tracer.h"
 
 #include "logging.h"
+#include "noop.h"
 
 #include <chrono>
 #include <cstddef>
@@ -76,6 +77,81 @@ struct pt_agent_s      { pinpoint::AgentPtr      ptr; };
 struct pt_span_s       { pinpoint::SpanPtr        ptr; };
 struct pt_span_event_s { pinpoint::SpanEventPtr   ptr; };
 struct pt_annotation_s { pinpoint::AnnotationPtr  ptr; };
+
+// ============================================================================
+// Static noop sentinel handles
+//
+// The C++ layer treats noop work as free: a disabled / filtered / unsampled
+// call hands back a shared_ptr to one of a handful of process-wide noop
+// singletons (noopAgent / noopSpan / noopSpanEvent / noopAnnotation). The C
+// wrapper used to break that contract — every such call still malloc()'d a
+// fresh handle and copied the singleton's shared_ptr into it, so a hot path
+// doing zero real tracing paid for an allocation, a free, and a pair of atomic
+// refcount operations on a single control block shared by every thread (a
+// cross-core cacheline contention point).
+//
+// To restore "noop is free" at the C layer we hand back one static sentinel
+// handle per noop type. Each sentinel owns a single long-lived reference to its
+// singleton, taken once on first use, so operations routed through
+// sentinel->ptr remain correct no-ops while creation skips the allocation and
+// destruction skips the free. Sentinels live for the lifetime of the process
+// and must never be delete'd.
+//
+// Lazy function-local statics give thread-safe initialization (C++11) and the
+// correct teardown order: each sentinel is constructed after the noop singleton
+// it references (noopXxx() is called during the sentinel's own init), so it is
+// destroyed first and its reference keeps the singleton alive until then.
+// ============================================================================
+
+static pt_agent_s* noop_agent_sentinel() {
+    static pt_agent_s sentinel{pinpoint::noopAgent()};
+    return &sentinel;
+}
+
+static pt_span_s* noop_span_sentinel() {
+    static pt_span_s sentinel{pinpoint::noopSpan()};
+    return &sentinel;
+}
+
+static pt_span_event_s* noop_span_event_sentinel() {
+    static pt_span_event_s sentinel{pinpoint::noopSpanEvent()};
+    return &sentinel;
+}
+
+static pt_annotation_s* noop_annotation_sentinel() {
+    static pt_annotation_s sentinel{pinpoint::noopAnnotation()};
+    return &sentinel;
+}
+
+// Wrap a C++ result in a freshly allocated handle, unless it is the shared noop
+// singleton — in which case hand back the static sentinel and let the local
+// reference drop. A null result maps to a null handle. The pointer comparison
+// is exact: a real (live) object can never share an address with the live noop
+// singleton, so this never misclassifies a span that should record.
+
+static pt_agent_t make_agent_handle(pinpoint::AgentPtr ptr) {
+    if (!ptr) return nullptr;
+    if (ptr.get() == noop_agent_sentinel()->ptr.get()) return noop_agent_sentinel();
+    return new pt_agent_s{std::move(ptr)};
+}
+
+static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
+    if (!ptr) return nullptr;
+    if (ptr.get() == noop_span_sentinel()->ptr.get()) return noop_span_sentinel();
+    return new pt_span_s{std::move(ptr)};
+}
+
+static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
+    if (!ptr) return nullptr;
+    if (ptr.get() == noop_span_event_sentinel()->ptr.get()) return noop_span_event_sentinel();
+    return new pt_span_event_s{std::move(ptr)};
+}
+
+static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
+    if (!ptr) return nullptr;
+    if (ptr.get() == noop_annotation_sentinel()->ptr.get()) return noop_annotation_sentinel();
+    return new pt_annotation_s{std::move(ptr)};
+}
 
 // ============================================================================
 // Trampoline helpers
@@ -238,9 +314,7 @@ void pt_set_config_string(const char* config_string) try {
 // ============================================================================
 
 pt_agent_t pt_create_agent(void) try {
-    auto ptr = pinpoint::CreateAgent();
-    if (!ptr) return nullptr;
-    return new pt_agent_s{std::move(ptr)};
+    return make_agent_handle(pinpoint::CreateAgent());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
@@ -248,19 +322,15 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
                                                 int args_count,
                                                 const char* const* libs,
                                                 int libs_count) try {
-    auto ptr = server_info
+    return make_agent_handle(server_info
         ? pinpoint::CreateAgent(server_info,
                                 to_string_vector(args, args_count),
                                 to_string_vector(libs, libs_count))
-        : pinpoint::CreateAgent();
-    if (!ptr) return nullptr;
-    return new pt_agent_s{std::move(ptr)};
+        : pinpoint::CreateAgent());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_agent_t pt_create_agent_with_type(int32_t app_type) try {
-    auto ptr = pinpoint::CreateAgent(app_type);
-    if (!ptr) return nullptr;
-    return new pt_agent_s{std::move(ptr)};
+    return make_agent_handle(pinpoint::CreateAgent(app_type));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
@@ -269,26 +339,23 @@ pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
                                                          int args_count,
                                                          const char* const* libs,
                                                          int libs_count) try {
-    auto ptr = server_info
+    return make_agent_handle(server_info
         ? pinpoint::CreateAgent(app_type,
                                 server_info,
                                 to_string_vector(args, args_count),
                                 to_string_vector(libs, libs_count))
-        : pinpoint::CreateAgent(app_type);
-    if (!ptr) return nullptr;
-    return new pt_agent_s{std::move(ptr)};
+        : pinpoint::CreateAgent(app_type));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_agent_t pt_global_agent(void) try {
-    auto ptr = pinpoint::GlobalAgent();
-    if (!ptr) return nullptr;
-    // Wrap in a non-owning sentinel: we allocate a handle but the shared_ptr
-    // keeps the global agent alive regardless of whether the caller ever calls
-    // pt_agent_destroy() on this handle.
-    return new pt_agent_s{std::move(ptr)};
+    // A missing global agent collapses to the shared noop-agent sentinel; an
+    // existing one is wrapped in a handle whose shared_ptr keeps it alive
+    // regardless of whether the caller ever calls pt_agent_destroy().
+    return make_agent_handle(pinpoint::GlobalAgent());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 void pt_agent_destroy(pt_agent_t agent) try {
+    if (agent == noop_agent_sentinel()) return;  // static sentinel — never owned
     delete agent;
 } catch (...) { pt_handle_exception(__func__); }
 
@@ -310,16 +377,18 @@ void pt_agent_shutdown(pt_agent_t agent) try {
 pt_span_t pt_agent_new_span(pt_agent_t agent, const char* operation,
                             const char* rpc_point) try {
     if (!agent || !agent->ptr) return nullptr;
-    auto ptr = agent->ptr->NewSpan(operation ? operation : "",
-                                   rpc_point  ? rpc_point  : "");
-    if (!ptr) return nullptr;
-    return new pt_span_s{std::move(ptr)};
+    // The noop agent only ever makes noop spans — skip the call (and the
+    // singleton refcount churn it would trigger) and hand back the sentinel.
+    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
+    return make_span_handle(agent->ptr->NewSpan(operation ? operation : "",
+                                                rpc_point  ? rpc_point  : ""));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_span_t pt_agent_new_span_with_reader(pt_agent_t agent, const char* operation,
                                         const char* rpc_point,
                                         const pt_context_reader_t* reader) try {
     if (!agent || !agent->ptr) return nullptr;
+    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
     pinpoint::SpanPtr ptr;
     if (reader) {
         CContextReader cpt_reader(reader);
@@ -330,14 +399,14 @@ pt_span_t pt_agent_new_span_with_reader(pt_agent_t agent, const char* operation,
         ptr = agent->ptr->NewSpan(operation ? operation : "",
                                   rpc_point  ? rpc_point  : "");
     }
-    if (!ptr) return nullptr;
-    return new pt_span_s{std::move(ptr)};
+    return make_span_handle(std::move(ptr));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
                                         const char* rpc_point, const char* method,
                                         const pt_context_reader_t* reader) try {
     if (!agent || !agent->ptr) return nullptr;
+    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
     pinpoint::SpanPtr ptr;
     if (reader) {
         CContextReader cpt_reader(reader);
@@ -349,8 +418,7 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
         ptr = agent->ptr->NewSpan(operation ? operation : "",
                                   rpc_point  ? rpc_point  : "");
     }
-    if (!ptr) return nullptr;
-    return new pt_span_s{std::move(ptr)};
+    return make_span_handle(std::move(ptr));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 // ============================================================================
@@ -358,29 +426,28 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
 // ============================================================================
 
 void pt_span_destroy(pt_span_t span) try {
+    if (span == noop_span_sentinel()) return;  // static sentinel — never owned
     delete span;
 } catch (...) { pt_handle_exception(__func__); }
 
 pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation) try {
     if (!span || !span->ptr) return nullptr;
-    auto ptr = span->ptr->NewSpanEvent(operation ? operation : "");
-    if (!ptr) return nullptr;
-    return new pt_span_event_s{std::move(ptr)};
+    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
+    return make_span_event_handle(span->ptr->NewSpanEvent(operation ? operation : ""));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operation,
                                             int32_t service_type) try {
     if (!span || !span->ptr) return nullptr;
-    auto ptr = span->ptr->NewSpanEvent(operation ? operation : "", service_type);
-    if (!ptr) return nullptr;
-    return new pt_span_event_s{std::move(ptr)};
+    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
+    return make_span_event_handle(
+        span->ptr->NewSpanEvent(operation ? operation : "", service_type));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 pt_span_event_t pt_span_get_event(pt_span_t span) try {
     if (!span || !span->ptr) return nullptr;
-    auto ptr = span->ptr->GetSpanEvent();
-    if (!ptr) return nullptr;
-    return new pt_span_event_s{std::move(ptr)};
+    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
+    return make_span_event_handle(span->ptr->GetSpanEvent());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 void pt_span_end_event(pt_span_t span) try {
@@ -397,9 +464,9 @@ void pt_span_end(pt_span_t span) try {
 
 pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) try {
     if (!span || !span->ptr) return nullptr;
-    auto ptr = span->ptr->NewAsyncSpan(async_operation ? async_operation : "");
-    if (!ptr) return nullptr;
-    return new pt_span_s{std::move(ptr)};
+    if (span == noop_span_sentinel()) return noop_span_sentinel();
+    return make_span_handle(
+        span->ptr->NewAsyncSpan(async_operation ? async_operation : ""));
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 void pt_span_inject_context(pt_span_t span, pt_context_writer_t* writer) try {
@@ -493,9 +560,8 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
 
 pt_annotation_t pt_span_get_annotations(pt_span_t span) try {
     if (!span || !span->ptr) return nullptr;
-    auto ptr = span->ptr->GetAnnotations();
-    if (!ptr) return nullptr;
-    return new pt_annotation_s{std::move(ptr)};
+    if (span == noop_span_sentinel()) return noop_annotation_sentinel();
+    return make_annotation_handle(span->ptr->GetAnnotations());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 // ============================================================================
@@ -503,6 +569,7 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span) try {
 // ============================================================================
 
 void pt_span_event_destroy(pt_span_event_t se) try {
+    if (se == noop_span_event_sentinel()) return;  // static sentinel — never owned
     delete se;
 } catch (...) { pt_handle_exception(__func__); }
 
@@ -571,9 +638,8 @@ void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
 
 pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) try {
     if (!se || !se->ptr) return nullptr;
-    auto ptr = se->ptr->GetAnnotations();
-    if (!ptr) return nullptr;
-    return new pt_annotation_s{std::move(ptr)};
+    if (se == noop_span_event_sentinel()) return noop_annotation_sentinel();
+    return make_annotation_handle(se->ptr->GetAnnotations());
 } catch (...) { pt_handle_exception(__func__); return nullptr; }
 
 // ============================================================================
@@ -581,6 +647,7 @@ pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) try {
 // ============================================================================
 
 void pt_annotation_destroy(pt_annotation_t anno) try {
+    if (anno == noop_annotation_sentinel()) return;  // static sentinel — never owned
     delete anno;
 } catch (...) { pt_handle_exception(__func__); }
 
