@@ -19,6 +19,7 @@
 #include <atomic>
 #include <list>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -60,10 +61,12 @@ namespace pinpoint {
     /**
      * @brief Thread-safe LRU cache implementation template.
      *
-     * Provides O(1) lookup, insertion, and removal using a combination of
-     * std::list (for LRU ordering) and std::unordered_map (for fast lookup).
-     * Uses transparent hash/equal to allow lookup by std::string_view without
-     * allocating a std::string on the hot (cache-hit) path.
+     * Combines a std::list (LRU ordering) with a std::unordered_map keyed by
+     * std::string_view (O(1) lookup, no std::string allocation on the hit path).
+     * Access is guarded by a std::shared_mutex: lookups take a shared lock so
+     * cache hits run concurrently. LRU reordering is performed lazily — only once
+     * the cache has reached max_size — because no eviction can occur before then,
+     * which makes the ordering irrelevant while the cache is still filling up.
      *
      * @tparam ValueType Type of values stored in the cache.
      */
@@ -87,11 +90,12 @@ namespace pinpoint {
         /**
          * @brief Retrieves or creates a cache entry.
          *
-         * On cache hit the lookup is performed with string_view (zero allocation)
-         * and the key is hashed exactly once. On a miss the generator runs
-         * OUTSIDE the lock, so an expensive generator does not serialize other
-         * threads' lookups; the key string is also allocated off the critical
-         * section.
+         * Lookups take a shared lock, so cache hits run concurrently. While the
+         * cache has not reached capacity no entry can be evicted, so LRU ordering
+         * is irrelevant and the splice is skipped entirely — a hit is then a pure
+         * shared-lock read. Reordering (and the exclusive lock it needs) only kicks
+         * in once the cache is full. On a miss the generator runs OUTSIDE any lock,
+         * so an expensive generator does not serialize other threads' lookups.
          *
          * @param key The key to look up (string_view — no allocation on hit).
          * @param generator Function to generate a new value if key not found.
@@ -99,9 +103,28 @@ namespace pinpoint {
          */
         template<typename Generator>
         LruCacheResult<ValueType> get(std::string_view key, Generator&& generator) {
+            bool hit_while_full = false;
             {
-                // Fast path: on a hit we only hash the key once and bump LRU order.
-                std::unique_lock<std::mutex> lock(mutex_);
+                // Fast path: a shared lock lets concurrent hits proceed in parallel.
+                std::shared_lock<std::shared_mutex> lock(mutex_);
+                const auto it = cache_map_.find(key);
+                if (it != cache_map_.end()) {
+                    if (cache_map_.size() < max_size_) {
+                        // Below capacity: nothing can be evicted, so LRU order does
+                        // not matter — skip the splice and keep this a pure read.
+                        return LruCacheResult<ValueType>{it->second->second, true};
+                    }
+                    hit_while_full = true;
+                }
+            }
+
+            if (hit_while_full) {
+                // Cache is full: promote the entry so it survives the next eviction.
+                // Splicing mutates the list and needs an exclusive lock (a shared
+                // lock cannot be upgraded). The entry may have been evicted between
+                // the two locks, so re-resolve; if it is gone, fall through to
+                // regenerate it below.
+                std::unique_lock<std::shared_mutex> lock(mutex_);
                 const auto it = cache_map_.find(key);
                 if (it != cache_map_.end()) {
                     cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
@@ -114,7 +137,7 @@ namespace pinpoint {
             // which would otherwise serialize every concurrent lookup.
             auto new_value = generator();
 
-            std::unique_lock<std::mutex> lock(mutex_);
+            std::unique_lock<std::shared_mutex> lock(mutex_);
             return insert_or_promote(key, std::move(new_value));
         }
 
@@ -124,7 +147,7 @@ namespace pinpoint {
          * @param key The key to remove.
          */
         void remove(std::string_view key) {
-            std::unique_lock<std::mutex> lock(mutex_);
+            std::unique_lock<std::shared_mutex> lock(mutex_);
 
             const auto it = cache_map_.find(key);
             if (it != cache_map_.end()) {
@@ -183,7 +206,7 @@ namespace pinpoint {
         std::list<KeyValuePair> cache_list_{};
         MapType cache_map_{};
         const size_t max_size_{};
-        mutable std::mutex mutex_{};
+        mutable std::shared_mutex mutex_{};
     };
 
     /**
