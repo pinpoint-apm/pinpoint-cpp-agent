@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -71,7 +72,10 @@ namespace pinpoint {
     class PercentSampler final : public Sampler {
     public:
         explicit PercentSampler(const double rate) {
-            rate_ = static_cast<int>(rate * 100);
+            // Round to nearest hundredth-of-a-percent instead of truncating:
+            // 0.29 * 100 is 28.999999999999996 in double, so a plain cast
+            // would yield 28 and silently sample 0.28% instead of 0.29%.
+            rate_ = static_cast<int>(std::lround(rate * 100));
         }
 
         /**

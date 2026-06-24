@@ -20,7 +20,10 @@
 namespace pinpoint {
 
     bool CounterSampler::isSampled() noexcept {
-        if (rate_ == 0) {
+        // rate_ <= 0 means disabled. A negative rate must be caught here:
+        // count is uint64_t, so `count % rate_` would convert a negative rate_
+        // to a huge unsigned value and silently "almost never" sample instead.
+        if (rate_ <= 0) {
             return false;
         }
 

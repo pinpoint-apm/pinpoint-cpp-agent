@@ -53,7 +53,7 @@ TEST_F(SamplingTest, CounterSamplerZeroRateTest) {
     }
 }
 
-// Test CounterSampler with rate 1 - should always return true  
+// Test CounterSampler with rate 1 - should always return true
 TEST_F(SamplingTest, CounterSamplerOneRateTest) {
     CounterSampler sampler(1);
     
@@ -141,6 +141,25 @@ TEST_F(SamplingTest, PercentSamplerFullRateTest) {
     double actual_rate = static_cast<double>(true_count) / total_calls;
     // With rate 100.0, we expect close to 100% sampling
     EXPECT_GT(actual_rate, 0.95) << "Rate 100.0 should result in >95% sampling, got " << actual_rate;
+}
+
+// Regression: 0.29% must round to 29/10000, not truncate to 28.
+// 0.29 * 100 is 28.999999999999996 in double; a plain int cast would give 28.
+// The percent sampler is deterministic and gcd(29, 10000) == 1, so over exactly
+// MAX_PERCENT_RATE calls it samples true exactly rate_ times.
+TEST_F(SamplingTest, PercentSamplerRoundsFractionalRateTest) {
+    PercentSampler sampler(0.29);
+
+    int true_count = 0;
+    for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
+        if (sampler.isSampled()) {
+            true_count++;
+        }
+    }
+
+    EXPECT_EQ(true_count, 29)
+        << "0.29% should sample exactly 29 per " << MAX_PERCENT_RATE
+        << " (rounded), not 28 (truncated)";
 }
 
 // Test PercentSampler with various rates
@@ -369,14 +388,14 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerWithBlockingSamplerTest) {
 
 // Edge Case Tests
 
-// Test CounterSampler with negative rate - should behave like rate 0
+// Test CounterSampler with negative rate - should be treated as disabled.
+// Without the rate_ <= 0 guard, `count % rate_` would convert the negative
+// rate_ to a huge uint64 and silently "almost never" sample instead.
 TEST_F(SamplingTest, CounterSamplerNegativeRateTest) {
     CounterSampler sampler(-1);
 
-    // Negative rate stored as int; modulo with negative is implementation-defined
-    // but should not crash
-    for (int i = 0; i < 10; ++i) {
-        sampler.isSampled(); // Just verify it doesn't crash
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FALSE(sampler.isSampled()) << "Call " << i << " should return false with a negative rate";
     }
 }
 
