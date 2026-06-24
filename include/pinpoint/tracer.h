@@ -457,14 +457,20 @@ namespace pinpoint {
 		class ScopedSpanEvent {
 		public:
 			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation) : span_(span) {
-				event_ = span_->NewSpanEvent(operation, SERVICE_TYPE_CPP_FUNC);
+				if (span_) {
+					event_ = span_->NewSpanEvent(operation, SERVICE_TYPE_CPP_FUNC);
+				}
 			}
 			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation, int32_t service_type) : span_(span) {
-				event_ = span_->NewSpanEvent(operation, service_type);
+				if (span_) {
+					event_ = span_->NewSpanEvent(operation, service_type);
+				}
 			}
-		
+
 			~ScopedSpanEvent() {
-				span_->EndSpanEvent();
+				if (span_) {
+					span_->EndSpanEvent();
+				}
 			}
 		
 			SpanEventPtr operator->() const { return event_; }

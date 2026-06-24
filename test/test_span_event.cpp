@@ -1083,4 +1083,23 @@ TEST_F(SpanEventTest, GenerateNextSpanIdUniquenessTest) {
     EXPECT_EQ(ids.count(0), 0) << "No generated ID should be 0";
 }
 
+// ========== helper::ScopedSpanEvent null-span safety ==========
+
+TEST_F(SpanEventTest, ScopedSpanEventNullSpanIsSafe) {
+    // A null SpanPtr must not be dereferenced in the constructor or the
+    // destructor. Without the guards this segfaults; with them it is a no-op.
+    SpanPtr null_span;
+    ASSERT_FALSE(null_span);
+
+    {
+        helper::ScopedSpanEvent scoped(null_span, "noop-op");
+        EXPECT_EQ(scoped.value(), nullptr) << "No span event should be created for a null span";
+    }  // destructor must not dereference the null span
+
+    {
+        helper::ScopedSpanEvent scoped(null_span, "noop-op", SERVICE_TYPE_CPP_FUNC);
+        EXPECT_EQ(scoped.value(), nullptr) << "No span event should be created for a null span";
+    }
+}
+
 } // namespace pinpoint
