@@ -160,6 +160,8 @@ namespace pinpoint {
         add_cond_var_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue url stats: unknown exception");
     }
 
     void UrlStats::addUrlStatsWorker() try {
@@ -186,6 +188,8 @@ namespace pinpoint {
         LOG_INFO("add url stats worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("add url stats worker exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("add url stats worker unknown exception");
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
@@ -216,6 +220,8 @@ namespace pinpoint {
         LOG_INFO("send url stats worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("send url stats worker exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("send url stats worker unknown exception");
     }
 
     void UrlStats::stopSendUrlStatsWorker() {

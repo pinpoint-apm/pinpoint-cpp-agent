@@ -382,6 +382,8 @@ namespace pinpoint {
         LOG_INFO("agent stats worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("agent stats worker exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("agent stats worker unknown exception");
     }
 
     void AgentStats::stopAgentStatsWorker() {

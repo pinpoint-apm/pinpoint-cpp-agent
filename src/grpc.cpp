@@ -800,6 +800,8 @@ namespace pinpoint {
         meta_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue metadata: unknown exception");
     }
 
     std::chrono::milliseconds GrpcMetadata::meta_retry_delay() const {
@@ -876,6 +878,8 @@ namespace pinpoint {
         LOG_INFO("send meta worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to send grpc meta: unknown exception");
     }
 
     void GrpcMetadata::stopMetaWorker() {
@@ -1043,6 +1047,13 @@ namespace pinpoint {
                 context_.reset();
             }
             LOG_ERROR("active thread count stream exception = {}", e.what());
+            done_ = true;
+        } catch (...) {
+            {
+                std::unique_lock<std::mutex> lock(context_mutex_);
+                context_.reset();
+            }
+            LOG_ERROR("active thread count stream unknown exception");
             done_ = true;
         }
     };
@@ -1274,6 +1285,9 @@ namespace pinpoint {
     } catch (const std::exception& e) {
         LOG_ERROR("grpc command worker exception = {}", e.what());
         stop_active_thread_count_streams();
+    } catch (...) {
+        LOG_ERROR("grpc command worker unknown exception");
+        stop_active_thread_count_streams();
     }
 
     void GrpcCommand::stopCommandWorker() {
@@ -1471,6 +1485,8 @@ namespace pinpoint {
         }
     } catch (const std::exception& e) {
         LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("AgentInfo scheduler unknown exception");
     }
     // Ping Stream
 
@@ -1619,6 +1635,8 @@ namespace pinpoint {
         LOG_INFO("grpc ping worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc ping worker exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("grpc ping worker unknown exception");
     }
 
     void GrpcAgent::stopPingWorker() {
@@ -1733,6 +1751,8 @@ namespace pinpoint {
         span_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue span: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue span: unknown exception");
     }
 
     void GrpcSpan::collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer) {
@@ -1950,6 +1970,8 @@ namespace pinpoint {
         LOG_INFO("grpc span worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc span worker exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("grpc span worker unknown exception");
     }
 
     void GrpcSpan::stopSpanWorker() {
@@ -2106,6 +2128,8 @@ namespace pinpoint {
         stats_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue stats: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue stats: unknown exception");
     }
 
     void GrpcStats::empty_stats_queue() noexcept try {
@@ -2166,6 +2190,8 @@ namespace pinpoint {
         LOG_INFO("grpc stats worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc stats worker: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("grpc stats worker: unknown exception");
     }
 
     void GrpcStats::stopStatsWorker() {

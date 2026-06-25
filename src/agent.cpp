@@ -240,6 +240,10 @@ namespace pinpoint {
         LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
         enabled_ = false;
         return;
+    } catch (...) {
+        LOG_ERROR("failed to init grpc workers: unknown exception");
+        enabled_ = false;
+        return;
     }
 
     void AgentImpl::onAgentInfoSent() {
