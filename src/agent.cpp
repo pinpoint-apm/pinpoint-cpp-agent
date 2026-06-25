@@ -282,11 +282,16 @@ namespace pinpoint {
 
     void AgentImpl::wait_grpc_workers() {
         // The worker thread handles are moved out of the agent into a
-        // heap-allocated state block owned (via shared_ptr) by the joiner
-        // thread. If the timed wait below expires the joiner is detached, and
-        // because it only touches the state block — never `this` — it cannot
-        // race the agent's destruction. The moved-from members are left
-        // non-joinable, so ~AgentImpl's member destruction stays benign.
+        // heap-allocated state block and joined on a helper thread, purely so
+        // the timed wait below can emit a diagnostic when shutdown runs long.
+        // The workers run member functions of this agent and its gRPC clients
+        // and dereference `this` (isExiting/getConfig/getAgentStats); they are
+        // therefore ALWAYS joined — never detached — before this returns.
+        // Abandoning a straggler while ~AgentImpl tears those objects down
+        // underneath it would be a use-after-free. Every worker's blocking
+        // points are bounded (per-request gRPC deadlines plus the stream
+        // cancellation performed by the stopXWorker() calls that precede this),
+        // so the unconditional join still completes in bounded time.
         struct JoinState {
             std::mutex m;
             std::condition_variable cv;
@@ -332,12 +337,14 @@ namespace pinpoint {
                 [&state] { return state->finished; });
         }
 
-        if (finished) {
-            joiner.join();
-        } else {
-            LOG_WARN("wait grpc workers: timeout - some threads may still be running");
-            joiner.detach();  // Touches only the heap state block, never `this`.
+        if (!finished) {
+            // Do NOT detach: the workers still reference `this` and the gRPC
+            // client members, which ~AgentImpl is about to destroy. Keep
+            // waiting — their blocking points are bounded, so this returns
+            // shortly; we only note that shutdown ran long.
+            LOG_WARN("wait grpc workers: still draining after 5s; waiting for completion");
         }
+        joiner.join();
     }
 
     AgentImpl::~AgentImpl() noexcept {
