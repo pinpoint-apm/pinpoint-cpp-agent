@@ -333,7 +333,9 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
 
     // Take finished events (moves them out, leaving the vector empty)
     auto taken = span_data->takeFinishedEvents();
-    EXPECT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
+    ASSERT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
+    EXPECT_EQ(taken[0], event1) << "Finished events should be returned in sequence order";
+    EXPECT_EQ(taken[1], event2) << "Finished events should be returned in sequence order";
     EXPECT_EQ(span_data->getFinishedEventsCount(), 0) << "Finished events should be cleared";
 }
 
@@ -1151,13 +1153,18 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
     SpanChunk chunk(span_data, true);
     EXPECT_EQ(chunk.getSpanEventChunk().size(), 3);
 
+    auto& events = chunk.getSpanEventChunk();
+    ASSERT_EQ(events.size(), 3);
+    EXPECT_EQ(events[0], event1) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[1], event2) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[2], event3) << "SpanData should drain finished events in sequence order";
+
     chunk.optimizeSpanEvents();
 
-    // After optimization, events should be sorted by sequence
-    auto& events = chunk.getSpanEventChunk();
+    // Finished events are already sequence-ordered before optimization.
     for (size_t i = 1; i < events.size(); i++) {
         EXPECT_GE(events[i]->getSequence(), events[i-1]->getSequence())
-            << "Events should be sorted by sequence after optimization";
+            << "Events should remain sorted by sequence after optimization";
     }
 
     // key_time should be set to span start time for final chunks

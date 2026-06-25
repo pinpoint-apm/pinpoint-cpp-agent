@@ -17,10 +17,12 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <stack>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agent_service.h"
@@ -69,7 +71,7 @@ namespace pinpoint {
             if (stack_.empty()) {
                 return nullptr;
             }
-            auto item = stack_.top();
+            auto item = std::move(stack_.top());
             stack_.pop();
             return item;
         }
@@ -192,17 +194,17 @@ namespace pinpoint {
         int getFlags() const { return flags_; }
 
         /// @brief Sets the event sequence counter.
-        void setEventSequence(int32_t event_sequence) { event_sequence_.store(event_sequence); }
+        void setEventSequence(int32_t event_sequence) { event_sequence_.store(event_sequence, std::memory_order_relaxed); }
         /// @brief Returns the event sequence counter.
-        int32_t getEventSequence() const { return event_sequence_.load(); }
+        int32_t getEventSequence() const { return event_sequence_.load(std::memory_order_relaxed); }
 
         /// @brief Sets the current event depth.
-        void setEventDepth(int32_t event_depth) { event_depth_.store(event_depth); }
+        void setEventDepth(int32_t event_depth) { event_depth_.store(event_depth, std::memory_order_relaxed); }
         /// @brief Returns the current event depth.
-        int32_t getEventDepth() const { return event_depth_.load(); }
+        int32_t getEventDepth() const { return event_depth_.load(std::memory_order_relaxed); }
 
         /// @brief Decrements the event depth counter.
-        void decrEventDepth() { event_depth_.fetch_sub(1); }
+        void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
         /// @brief Sets the error code associated with the span.
         void setErr(int err) { err_ = err; }
@@ -283,11 +285,14 @@ namespace pinpoint {
         /// @note Locks span_event_lock_: finished_events is written under it by
         ///       finishSpanEvent(), so the move must be serialized against
         ///       concurrent pushes (e.g. EndSpanEvent racing EndSpan).
+        void takeFinishedEvents(std::vector<std::shared_ptr<SpanEventImpl>>& out);
+        /// @brief Transfers ownership of finished span events to a new vector.
         std::vector<std::shared_ptr<SpanEventImpl>> takeFinishedEvents() {
-            std::unique_lock<std::mutex> lock(span_event_lock_);
-            return std::move(finished_events);
+            std::vector<std::shared_ptr<SpanEventImpl>> events;
+            takeFinishedEvents(events);
+            return events;
         }
-    	/// @brief Returns the number of finished span events.
+        /// @brief Returns the number of finished span events.
     	size_t getFinishedEventsCount() const {
     	    std::unique_lock<std::mutex> lock(span_event_lock_);
     	    return finished_events.size();
@@ -316,6 +321,8 @@ namespace pinpoint {
     	const std::shared_ptr<const Config>& getConfig() const { return config_; }
 
     private:
+        void storeFinishedEvent(std::shared_ptr<SpanEventImpl> se);
+
     	TraceId trace_id_;
     	int64_t span_id_;
 
@@ -355,7 +362,8 @@ namespace pinpoint {
     	int32_t async_sequence_;
 
     	EventStack event_stack_;
-        std::vector<std::shared_ptr<SpanEventImpl>> finished_events;
+        // Kept sequence-ordered as events finish so chunks do not need to sort.
+        std::deque<std::shared_ptr<SpanEventImpl>> finished_events;
     	// mutable so const accessors (getFinishedEventsCount) can lock it.
     	mutable std::mutex span_event_lock_;
 
