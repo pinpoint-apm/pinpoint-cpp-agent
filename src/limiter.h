@@ -17,33 +17,34 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
-#include <mutex>
+#include <cstdint>
 
 namespace pinpoint {
 
     /**
-     * @brief Simple token-bucket rate limiter used for sampling throughput limits.
+     * @brief Fixed-window rate limiter used for sampling throughput limits.
      */
     class RateLimiter {
     public:
-        explicit RateLimiter(const uint64_t tps) {
-            token_ = bucket_ = tps;
-            base_time_ = std::chrono::duration_cast<std::chrono::seconds>(
-                     std::chrono::steady_clock::now().time_since_epoch()).count();
-        }
+        explicit RateLimiter(uint64_t tps);
 
         /**
-         * @brief Consumes a token if available, replenishing tokens based on elapsed time.
+         * @brief Consumes a token if available, resetting the bucket once per second.
          *
          * @return `true` when the call is permitted.
          */
         bool allow();
 
     private:
-        std::mutex mutex_;
-        uint64_t token_ = 0;
-        uint64_t base_time_ = 0;
-        uint64_t bucket_ = 0;
+        static constexpr uint64_t kResetInProgress = 1;
+
+        static uint64_t current_second();
+        static uint64_t epoch_state(uint64_t second);
+        static uint64_t epoch_second(uint64_t state);
+        static bool is_resetting(uint64_t state);
+
+        const uint64_t token_;
+        std::atomic<uint64_t> epoch_;
+        std::atomic<uint64_t> bucket_;
     };
 }
