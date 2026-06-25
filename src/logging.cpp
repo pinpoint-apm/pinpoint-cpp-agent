@@ -46,7 +46,15 @@ namespace pinpoint {
         std::lock_guard<std::mutex> lock(mutex_);
 
         file_path_ = log_file_path;
-        max_file_size_ = static_cast<std::uint64_t>(max_size) * 1024 * 1024;
+        // max_size is the rotation threshold in MB. Guard against non-positive
+        // values: a negative size cast to uint64_t and scaled by 1 MiB would
+        // overflow into a garbage threshold (erratic or silently-disabled
+        // rotation). Treat <= 0 as "rotation disabled" (max_file_size_ == 0),
+        // matching rotateFileIfNeededLocked()'s existing semantics. A positive
+        // int cannot overflow the multiply (INT_MAX * 2^20 < UINT64_MAX).
+        max_file_size_ = max_size > 0
+            ? static_cast<std::uint64_t>(max_size) * 1024 * 1024
+            : 0;
         current_file_size_ = 0;
         file_enabled_ = !file_path_.empty();
 
