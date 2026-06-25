@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <chrono>
+#include <array>
 
 #include "agent_service.h"
 
@@ -88,6 +90,9 @@ namespace pinpoint {
 
     private:
         int64_t getResponseTimeAvg();
+        void pauseResponseTimeUpdates();
+        void resumeResponseTimeUpdates();
+        void collectAndResetResponseTime(int64_t& avg, int64_t& max);
         
         // System metrics structures
         struct CpuLoad {
@@ -106,6 +111,15 @@ namespace pinpoint {
         ProcessStatus getProcessStatus();
 
     private:
+        static constexpr size_t kActiveSpanShardCount = 64;
+
+        struct ActiveSpanShard {
+            std::mutex mutex_;
+            std::unordered_map<int64_t, int64_t> spans_;
+        };
+
+        ActiveSpanShard& activeSpanShard(int64_t spanId);
+
         // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
         // the stats worker before its own destruction, so agent_ never dangles.
         // A shared_ptr here would form a cycle and leak the agent.
@@ -118,10 +132,12 @@ namespace pinpoint {
         clock_t last_sys_cpu_time_{0};
         clock_t last_proc_cpu_time_{0};
         
-        int64_t acc_response_time_{0};
-        int64_t request_count_{0};
-        int64_t max_response_time_{0};
-        std::mutex response_time_mutex_;
+        std::atomic<int64_t> acc_response_time_{0};
+        std::atomic<int64_t> request_count_{0};
+        std::atomic<int64_t> max_response_time_{0};
+        std::atomic<int64_t> response_time_writers_{0};
+        std::atomic<bool> response_time_snapshotting_{false};
+        std::mutex response_time_snapshot_mutex_;
         
         std::atomic<int64_t> sample_new_{0};
         std::atomic<int64_t> un_sample_new_{0};
@@ -130,8 +146,7 @@ namespace pinpoint {
         std::atomic<int64_t> skip_new_{0};
         std::atomic<int64_t> skip_cont_{0};
         
-        std::mutex active_span_mutex_;
-        std::unordered_map<int64_t, int64_t> active_span_map_;
+        std::array<ActiveSpanShard, kActiveSpanShardCount> active_span_shards_;
         
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};
