@@ -46,12 +46,18 @@ namespace pinpoint {
         error_string_{},
         async_id_{NONE_ASYNC_ID},
         async_seq_gen_{0},
-        api_id_{0},
-        annotations_{std::make_shared<PinpointAnnotation>()} {
+        api_id_{0} {
 
         if (!operation_.empty()) {
             api_id_ = span->getAgent()->cacheApi(operation, API_TYPE_DEFAULT);
         }
+    }
+
+    const std::shared_ptr<PinpointAnnotation>& SpanEventImpl::ensureAnnotations() const {
+        if (!annotations_) {
+            annotations_ = std::make_shared<PinpointAnnotation>();
+        }
+        return annotations_;
     }
 
     SpanPtr SpanEventImpl::GetParentSpan() const {
@@ -116,7 +122,7 @@ namespace pinpoint {
             });
 
             auto exception = std::make_unique<Exception>(std::move(callstack));
-            annotations_->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
+            ensureAnnotations()->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
             span->addException(std::move(exception));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
@@ -137,13 +143,13 @@ namespace pinpoint {
         if (config->sql.enable_sql_stats) {
             auto sql_uid = span->getAgent()->cacheSqlUid(result.normalized_sql);
             if (sql_uid) {
-                annotations_->AppendSqlUidStringString(ANNOTATION_SQL_UID, *sql_uid,
+                ensureAnnotations()->AppendSqlUidStringString(ANNOTATION_SQL_UID, *sql_uid,
                     result.parameters, args);
             }
         } else {
             auto sql_id = span->getAgent()->cacheSql(result.normalized_sql);
             if (sql_id) {
-                annotations_->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
+                ensureAnnotations()->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
             }
         }
     }
@@ -153,7 +159,7 @@ namespace pinpoint {
         if (!span) {
             return;
         }
-        span->getAgent()->recordClientHeader(which, reader, annotations_);
+        span->getAgent()->recordClientHeader(which, reader, ensureAnnotations());
     }
 
 } // namespace pinpoint

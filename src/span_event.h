@@ -48,7 +48,7 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
-        AnnotationPtr GetAnnotations() const override { return annotations_; }
+        AnnotationPtr GetAnnotations() const override { return ensureAnnotations(); }
         SpanPtr GetParentSpan() const override;
         void EndEvent() override;
 
@@ -90,8 +90,9 @@ namespace pinpoint {
         /// @brief Returns the generated asynchronous span identifier.
         int64_t getNextSpanId() const { return next_span_id_; }
 
-        /// @brief Returns the mutable annotation container.
-        std::shared_ptr<PinpointAnnotation>& getAnnotations() { return annotations_; }
+        /// @brief Returns the mutable annotation container, allocating it on
+        /// first use if it has not been created yet.
+        std::shared_ptr<PinpointAnnotation>& getAnnotations() { ensureAnnotations(); return annotations_; }
 
         /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }
@@ -119,6 +120,12 @@ namespace pinpoint {
         int32_t getApiId() const { return api_id_; }
 
     private:
+        /// @brief Lazily allocates the annotation container on first use and
+        /// returns it. Subsequent calls reuse the same instance, so callers can
+        /// rely on a non-null result. Kept const (with a mutable backing field)
+        /// so the const GetAnnotations() override can materialize it on demand.
+        const std::shared_ptr<PinpointAnnotation>& ensureAnnotations() const;
+
         // Weak on purpose: events can outlive their span (the C API documents
         // that destroying a span while holding event handles is safe), and a
         // shared_ptr here would form an ownership cycle with the span's own
@@ -140,7 +147,9 @@ namespace pinpoint {
         int32_t async_id_;
         int32_t async_seq_gen_;
         int32_t api_id_;
-        std::shared_ptr<PinpointAnnotation> annotations_;
+        // Created lazily via ensureAnnotations(); stays null until the first
+        // annotation is recorded or the container is accessed.
+        mutable std::shared_ptr<PinpointAnnotation> annotations_;
     };
 
 }  // namespace pinpoint
