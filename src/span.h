@@ -308,6 +308,12 @@ namespace pinpoint {
         std::shared_ptr<PinpointAnnotation> getAnnotations() const { return annotations_; }
     	/// @brief Returns the owning agent service.
     	AgentService* getAgent() const { return agent_; }
+    	/// @brief Returns the configuration snapshot taken when the span was
+    	/// created. Reused by every span event of this span instead of querying
+    	/// the agent's atomic config_ again, so a span with N events does one
+    	/// config load instead of ~2N. The span uses a consistent config for its
+    	/// whole lifetime even if a reload happens mid-span.
+    	const std::shared_ptr<const Config>& getConfig() const { return config_; }
 
     private:
     	TraceId trace_id_;
@@ -360,6 +366,9 @@ namespace pinpoint {
     	// it) is still held by user code; agent_ below stays valid through it.
     	std::shared_ptr<AgentService> agent_ref_;
     	AgentService *agent_;
+    	// Config snapshot captured at construction; shared by all span events of
+    	// this span (see getConfig()).
+    	std::shared_ptr<const Config> config_;
     };
 
 	/**

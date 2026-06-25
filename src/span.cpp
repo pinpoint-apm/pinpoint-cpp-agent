@@ -59,7 +59,8 @@ namespace pinpoint {
         url_stat_{},
         annotations_{std::make_shared<PinpointAnnotation>()},
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
-        agent_(agent) {
+        agent_(agent),
+        config_(agent != nullptr ? agent->getConfig() : nullptr) {
         // agent_ is always the live AgentImpl in production (NewSpan passes
         // `this`). Guard the deref only to stay consistent with the null check
         // on agent_ref_ above; api_id_ keeps its init value (0) when absent.
@@ -229,7 +230,7 @@ namespace pinpoint {
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
 
-        const auto cfg = agent_->getConfig();
+        const auto& cfg = data_->getConfig();
         const auto depth = data_->getEventDepth();
         const auto seq = data_->getEventSequence();
 
@@ -290,7 +291,7 @@ namespace pinpoint {
 
         data_->finishSpanEvent();
 
-        const auto cfg = agent_->getConfig();
+        const auto& cfg = data_->getConfig();
         if (data_->getFinishedEventsCount() >= cfg->span.event_chunk_size) {
             record_chunk(false);
         }
@@ -338,7 +339,7 @@ namespace pinpoint {
             // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
             // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
             // which writes Pinpoint-pServiceName only when serviceName != null.
-            if (const auto service_name = agent_->getServiceName(); !service_name.empty()) {
+            if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
                 writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
             }
             writer.Set(HEADER_PARENT_APP_NAMESPACE, "");

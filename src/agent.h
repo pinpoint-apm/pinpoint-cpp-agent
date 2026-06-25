@@ -91,11 +91,11 @@ namespace pinpoint {
     	std::shared_ptr<AgentService> selfRef() noexcept override {
     		return weak_from_this().lock();
     	}
-    	std::string getAppName() const override;
+    	const std::string& getAppName() const override;
     	int32_t getAppType() const override;
-    	std::string getAgentId() const override;
-    	std::string getAgentName() const override;
-    	std::string getServiceName() const override;
+    	const std::string& getAgentId() const override;
+    	const std::string& getAgentName() const override;
+    	const std::string& getServiceName() const override;
 
     	std::shared_ptr<const Config> getConfig() const override;
     	int64_t getStartTime() const override { return start_time_; }
@@ -129,6 +129,18 @@ namespace pinpoint {
 
         AtomicSharedPtr<const Config> config_;
         AtomicSharedPtr<TraceSampler> sampler_;
+
+    	// Identity fields snapshotted once at construction. Config::isReloadable()
+    	// guarantees these never change while this agent lives, so they are served
+    	// directly — without an atomic config_ load (shared_mutex lock + shared_ptr
+    	// copy) or a string copy — on the per-request hot path (e.g. InjectContext,
+    	// SpanData ctor, generateTraceId).
+    	std::string app_name_;
+    	int32_t app_type_{};
+    	std::string agent_id_;
+    	std::string agent_name_;
+    	std::string service_name_;
+
     	std::unique_ptr<IdCache> api_cache_{};
     	std::unique_ptr<IdCache> error_cache_{};
     	std::unique_ptr<IdCache> sql_cache_{};

@@ -42,11 +42,11 @@ public:
 
     // AgentService interface implementation
     bool isExiting() const override { return is_exiting_; }
-    std::string getAppName() const override { return app_name_; }
+    const std::string& getAppName() const override { return app_name_; }
     int32_t getAppType() const override { return app_type_; }
-    std::string getAgentId() const override { return agent_id_; }
-    std::string getAgentName() const override { return agent_name_; }
-    std::string getServiceName() const override { return service_name_; }
+    const std::string& getAgentId() const override { return agent_id_; }
+    const std::string& getAgentName() const override { return agent_name_; }
+    const std::string& getServiceName() const override { return service_name_; }
     std::shared_ptr<const Config> getConfig() const override { return config_; }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {

@@ -15,6 +15,7 @@
  */
 
 #include <string>
+#include <charconv>
 #include <exception>
 #include <iterator>
 #include <utility>
@@ -34,6 +35,21 @@ namespace pinpoint {
 
     // Global agent singleton with thread-safe access
     namespace {
+        // Builds the API cache key "<api_str>_<api_type>". Uses std::to_chars
+        // into a stack buffer instead of std::to_string so the hot path (every
+        // span and span-event creation) does not allocate a throwaway string for
+        // the numeric suffix.
+        std::string build_api_cache_key(std::string_view api_str, int32_t api_type) {
+            char num[12];  // widest int32_t is 11 chars incl. sign
+            const auto res = std::to_chars(num, num + sizeof(num), api_type);
+            std::string key;
+            key.reserve(api_str.size() + 1 + static_cast<size_t>(res.ptr - num));
+            key.append(api_str);
+            key.push_back('_');
+            key.append(num, res.ptr);
+            return key;
+        }
+
         std::mutex global_agent_mutex;
 
         // The holder is intentionally heap-allocated and never destroyed so
@@ -62,6 +78,17 @@ namespace pinpoint {
         grpc_command_(std::move(grpc_command)),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
+
+        // Snapshot the immutable identity fields once. isReloadable() guarantees
+        // they never change for this agent, so the per-request getters below can
+        // serve them without touching the atomic config_.
+        if (const auto initial_cfg = config_.load()) {
+            app_name_ = initial_cfg->app_name_;
+            app_type_ = initial_cfg->app_type_;
+            agent_id_ = initial_cfg->agent_id_;
+            agent_name_ = initial_cfg->agent_name_;
+            service_name_ = initial_cfg->service_name_;
+        }
 
         agent_stats_ = std::make_unique<AgentStats>(this);
         url_stats_ = std::make_unique<UrlStats>(this);
@@ -98,29 +125,26 @@ namespace pinpoint {
         return config_.load();
     }
 
-    std::string AgentImpl::getAppName() const {
-        const auto cfg = config_.load();
-        return cfg->app_name_;
+    // Served from the construction-time snapshot (see ctor): these never change
+    // for the agent's lifetime, so no atomic config_ load is needed.
+    const std::string& AgentImpl::getAppName() const {
+        return app_name_;
     }
 
     int32_t AgentImpl::getAppType() const {
-        const auto cfg = config_.load();
-        return cfg->app_type_;
+        return app_type_;
     }
 
-    std::string AgentImpl::getAgentId() const {
-        const auto cfg = config_.load();
-        return cfg->agent_id_;
+    const std::string& AgentImpl::getAgentId() const {
+        return agent_id_;
     }
 
-    std::string AgentImpl::getAgentName() const {
-        const auto cfg = config_.load();
-        return cfg->agent_name_;
+    const std::string& AgentImpl::getAgentName() const {
+        return agent_name_;
     }
 
-    std::string AgentImpl::getServiceName() const {
-        const auto cfg = config_.load();
-        return cfg->service_name_;
+    const std::string& AgentImpl::getServiceName() const {
+        return service_name_;
     }
 
     void AgentImpl::init_header_recorders(const std::shared_ptr<const Config>& cfg) {
@@ -468,8 +492,7 @@ namespace pinpoint {
     TraceId AgentImpl::generateTraceId() {
         TraceId tid;
 
-        const auto cfg = getConfig();
-        tid.AgentId = cfg->agent_id_;
+        tid.AgentId = agent_id_;
         tid.StartTime = start_time_;
         tid.Sequence = trace_id_sequence_.fetch_add(1);
         return tid;
@@ -498,9 +521,7 @@ namespace pinpoint {
             return 0;
         }
 
-        std::string key;
-        key.reserve(api_str.size() + 5);
-        key.append(api_str).append("_").append(std::to_string(api_type));
+        const auto key = build_api_cache_key(api_str, api_type);
 
         const auto [id, found] = api_cache_->get(key);
         if (found) {
@@ -521,9 +542,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const {
         if (enabled_) {
-            std::string key;
-            key.reserve(api_meta.api_str_.size() + 5);
-            key.append(api_meta.api_str_).append("_").append(std::to_string(api_meta.type_));
+            const auto key = build_api_cache_key(api_meta.api_str_, api_meta.type_);
             api_cache_->remove(key);
         }
     }

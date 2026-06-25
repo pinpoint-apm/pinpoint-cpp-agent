@@ -109,7 +109,7 @@ namespace pinpoint {
         }
         SetError(error_name, error_message);
 
-        const auto cfg = span->getAgent()->getConfig();
+        const auto& cfg = span->getConfig();
         if (!cfg->enable_callstack_trace) {
             return;
         }
@@ -139,7 +139,7 @@ namespace pinpoint {
         static const SqlNormalizer normalizer(64*1024);
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
-        const auto config = span->getAgent()->getConfig();
+        const auto& config = span->getConfig();
         if (config->sql.enable_sql_stats) {
             auto sql_uid = span->getAgent()->cacheSqlUid(result.normalized_sql);
             if (sql_uid) {
