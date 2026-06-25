@@ -580,6 +580,65 @@ TEST_F(CacheTest, SpecialCharacterKeysTest) {
     EXPECT_TRUE(cache.get(null_key).found);
 }
 
+// API cache tests
+
+TEST_F(CacheTest, ApiIdCacheKeepsTypesDistinctTest) {
+    ApiIdCache cache(5);
+
+    auto result1 = cache.get(ApiCacheKey{"operation", 100});
+    auto result2 = cache.get(ApiCacheKey{"operation", 200});
+
+    EXPECT_FALSE(result1.found);
+    EXPECT_FALSE(result2.found);
+    EXPECT_NE(result1.value, result2.value) << "Same API string with different types should be distinct";
+
+    auto result1_again = cache.get(ApiCacheKey{"operation", 100});
+    EXPECT_EQ(result1_again.value, result1.value);
+    EXPECT_TRUE(result1_again.found);
+}
+
+TEST_F(CacheTest, ApiIdCacheRemoveOnlyMatchingTypeTest) {
+    ApiIdCache cache(5);
+
+    auto result1 = cache.get(ApiCacheKey{"operation", 100});
+    auto result2 = cache.get(ApiCacheKey{"operation", 200});
+
+    cache.remove(ApiCacheKey{"operation", 100});
+
+    auto removed = cache.get(ApiCacheKey{"operation", 100});
+    EXPECT_FALSE(removed.found);
+    EXPECT_NE(removed.value, result1.value);
+
+    auto retained = cache.get(ApiCacheKey{"operation", 200});
+    EXPECT_TRUE(retained.found);
+    EXPECT_EQ(retained.value, result2.value);
+}
+
+TEST_F(CacheTest, ApiIdCacheStringViewKeyFromTemporaryTest) {
+    ApiIdCache cache(5);
+
+    {
+        std::string temp_key = "temporary_operation";
+        cache.get(ApiCacheKey{temp_key, 100});
+    }
+
+    auto result = cache.get(ApiCacheKey{"temporary_operation", 100});
+    EXPECT_EQ(result.value, 1);
+    EXPECT_TRUE(result.found);
+}
+
+TEST_F(CacheTest, ApiIdCacheLRUEvictionTest) {
+    ApiIdCache cache(2);
+
+    cache.get(ApiCacheKey{"operation1", 100});
+    cache.get(ApiCacheKey{"operation2", 100});
+    cache.get(ApiCacheKey{"operation1", 100});
+    cache.get(ApiCacheKey{"operation3", 100});
+
+    EXPECT_TRUE(cache.get(ApiCacheKey{"operation1", 100}).found);
+    EXPECT_FALSE(cache.get(ApiCacheKey{"operation2", 100}).found);
+}
+
 // SqlUidCache Test Suite
 class SqlUidCacheTest : public ::testing::Test {
 protected:

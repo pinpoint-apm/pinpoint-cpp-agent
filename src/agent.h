@@ -141,7 +141,7 @@ namespace pinpoint {
     	std::string agent_name_;
     	std::string service_name_;
 
-    	std::unique_ptr<IdCache> api_cache_{};
+		std::unique_ptr<ApiIdCache> api_cache_{};
     	std::unique_ptr<IdCache> error_cache_{};
     	std::unique_ptr<IdCache> sql_cache_{};
     	std::unique_ptr<SqlUidCache> sql_uid_cache_{};
@@ -150,7 +150,7 @@ namespace pinpoint {
     	std::unique_ptr<GrpcMetadata> grpc_metadata_{};
     	std::unique_ptr<GrpcSpan> grpc_span_{};
     	std::unique_ptr<GrpcStats> grpc_stat_{};
-	std::unique_ptr<GrpcCommand> grpc_command_{};
+		std::unique_ptr<GrpcCommand> grpc_command_{};
     	std::unique_ptr<UrlStats> url_stats_{};
     	std::unique_ptr<AgentStats> agent_stats_{};
 
@@ -159,7 +159,7 @@ namespace pinpoint {
     	std::thread meta_thread_;
     	std::thread span_thread_;
     	std::thread stat_thread_;
-	std::thread command_thread_;
+		std::thread command_thread_;
     	std::thread url_stat_add_thread_;
     	std::thread url_stat_send_thread_;
     	std::thread agent_stat_thread_;

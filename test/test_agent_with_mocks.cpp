@@ -278,6 +278,12 @@ TEST_F(AgentImplTest, CacheApiReturnsDifferentIdForDifferentKeys) {
     EXPECT_NE(id1, id2);
 }
 
+TEST_F(AgentImplTest, CacheApiReturnsDifferentIdForDifferentTypes) {
+    int32_t id1 = agent_->cacheApi("com.example.Api", 100);
+    int32_t id2 = agent_->cacheApi("com.example.Api", 200);
+    EXPECT_NE(id1, id2);
+}
+
 TEST_F(AgentImplTest, CacheErrorReturnsNonZeroId) {
     int32_t id = agent_->cacheError("TestError");
     EXPECT_NE(id, 0);

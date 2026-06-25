@@ -15,7 +15,6 @@
  */
 
 #include <string>
-#include <charconv>
 #include <exception>
 #include <iterator>
 #include <utility>
@@ -35,21 +34,6 @@ namespace pinpoint {
 
     // Global agent singleton with thread-safe access
     namespace {
-        // Builds the API cache key "<api_str>_<api_type>". Uses std::to_chars
-        // into a stack buffer instead of std::to_string so the hot path (every
-        // span and span-event creation) does not allocate a throwaway string for
-        // the numeric suffix.
-        std::string build_api_cache_key(std::string_view api_str, int32_t api_type) {
-            char num[12];  // widest int32_t is 11 chars incl. sign
-            const auto res = std::to_chars(num, num + sizeof(num), api_type);
-            std::string key;
-            key.reserve(api_str.size() + 1 + static_cast<size_t>(res.ptr - num));
-            key.append(api_str);
-            key.push_back('_');
-            key.append(num, res.ptr);
-            return key;
-        }
-
         std::mutex global_agent_mutex;
 
         // The holder is intentionally heap-allocated and never destroyed so
@@ -93,7 +77,7 @@ namespace pinpoint {
         agent_stats_ = std::make_unique<AgentStats>(this);
         url_stats_ = std::make_unique<UrlStats>(this);
 
-        api_cache_ = std::make_unique<IdCache>(kCacheSize);
+        api_cache_ = std::make_unique<ApiIdCache>(kCacheSize);
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
@@ -521,9 +505,7 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto key = build_api_cache_key(api_str, api_type);
-
-        const auto [id, found] = api_cache_->get(key);
+        const auto [id, found] = api_cache_->get(ApiCacheKey{api_str, api_type});
         if (found) {
             return id;
         }
@@ -542,8 +524,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const {
         if (enabled_) {
-            const auto key = build_api_cache_key(api_meta.api_str_, api_meta.type_);
-            api_cache_->remove(key);
+            api_cache_->remove(ApiCacheKey{api_meta.api_str_, api_meta.type_});
         }
     }
 
