@@ -16,17 +16,23 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <utility>
+
+#if !defined(__cpp_lib_atomic_shared_ptr)
+#include <mutex>
 #include <shared_mutex>
+#endif
 
 namespace pinpoint {
 
     /**
-     * @brief Thread-safe wrapper around std::shared_ptr using std::shared_mutex.
+     * @brief Thread-safe wrapper around std::shared_ptr.
      *
-     * Provides the same interface as std::atomic<std::shared_ptr<T>> (C++20),
-     * working around the missing libc++ specialization on Apple platforms.
-     * Can be replaced with std::atomic<std::shared_ptr<T>> once libc++ adds support.
+     * Uses std::atomic<std::shared_ptr<T>> when the C++20 specialization is
+     * available, and falls back to std::shared_mutex on platforms such as Apple
+     * libc++ where the specialization is still missing.
      */
     template <typename T>
     class AtomicSharedPtr {
@@ -36,20 +42,34 @@ namespace pinpoint {
 
         AtomicSharedPtr(const AtomicSharedPtr&) = delete;
         AtomicSharedPtr& operator=(const AtomicSharedPtr&) = delete;
+        AtomicSharedPtr(AtomicSharedPtr&&) = delete;
+        AtomicSharedPtr& operator=(AtomicSharedPtr&&) = delete;
 
         std::shared_ptr<T> load() const {
+#if defined(__cpp_lib_atomic_shared_ptr)
+            return ptr_.load();
+#else
             std::shared_lock lock(mutex_);
             return ptr_;
+#endif
         }
 
         void store(std::shared_ptr<T> desired) {
+#if defined(__cpp_lib_atomic_shared_ptr)
+            ptr_.store(std::move(desired));
+#else
             std::unique_lock lock(mutex_);
             ptr_ = std::move(desired);
+#endif
         }
 
     private:
+#if defined(__cpp_lib_atomic_shared_ptr)
+        std::atomic<std::shared_ptr<T>> ptr_{std::shared_ptr<T>{}};
+#else
         mutable std::shared_mutex mutex_;
         std::shared_ptr<T> ptr_;
+#endif
     };
 
 }  // namespace pinpoint
