@@ -135,7 +135,7 @@ namespace pinpoint {
     }
 
     void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
-        url_stat_ = std::make_unique<UrlStatEntry>(url_pattern, method, status_code);
+        url_stat_.emplace(url_pattern, method, status_code);
     } catch (const std::exception& e) {
         LOG_ERROR("set url stat exception = {}", e.what());
     }
@@ -145,7 +145,8 @@ namespace pinpoint {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
             url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
-            agent_->recordUrlStat(std::move(url_stat_));
+            agent_->recordUrlStat(std::move(*url_stat_));
+            url_stat_.reset();
         }
     }
 

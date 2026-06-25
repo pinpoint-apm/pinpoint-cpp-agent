@@ -63,13 +63,11 @@ public:
         recorded_spans_.push_back(std::move(span));
     }
 
-    void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override {
+    void recordUrlStat(UrlStatEntry stat) const override {
         recorded_url_stats_++;
-        if (stat) {
-            last_url_stat_url_ = stat->url_pattern_;
-            last_url_stat_method_ = stat->method_;
-            last_url_stat_status_code_ = stat->status_code_;
-        }
+        last_url_stat_url_ = stat.url_pattern_;
+        last_url_stat_method_ = stat.method_;
+        last_url_stat_status_code_ = stat.status_code_;
     }
 
     void recordException(SpanData* span_data) const override {
