@@ -24,6 +24,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <grpcpp/client_context.h>
@@ -127,7 +128,7 @@ namespace pinpoint {
             const auto& v = std::get<BytesStringStringValue>(val.data);
             auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
 
-            bssv->set_bytesvalue(std::string(v.bytesValue.begin(), v.bytesValue.end()));
+            bssv->set_bytesvalue(reinterpret_cast<const char*>(v.bytesValue.data()), v.bytesValue.size());
 
             auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
             s1->set_value(v.stringValue1);
@@ -142,10 +143,10 @@ namespace pinpoint {
         annotation->unsafe_arena_set_allocated_value(annotation_value);
     }
 
-    static void build_string_annotation(v1::PAnnotation *annotation, int32_t key, std::string& val, google::protobuf::Arena* arena) {
+    static void build_string_annotation(v1::PAnnotation *annotation, int32_t key, std::string_view val, google::protobuf::Arena* arena) {
         annotation->set_key(key);
         const auto annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
-        annotation_value->set_stringvalue(val);
+        annotation_value->set_stringvalue(val.data(), val.size());
         annotation->unsafe_arena_set_allocated_value(annotation_value);
     }
 
@@ -172,8 +173,7 @@ namespace pinpoint {
         if (auto api_id = se->getApiId(); api_id > 0) {
             span_event->set_apiid(api_id);
         } else {
-            auto operation_name = se->getOperationName();
-            build_string_annotation(span_event->add_annotation(), ANNOTATION_API, operation_name, arena);
+            build_string_annotation(span_event->add_annotation(), ANNOTATION_API, se->getOperationName(), arena);
         }
 
         auto& annotations = se->getAnnotations()->getAnnotations();
@@ -181,7 +181,7 @@ namespace pinpoint {
             build_annotation(span_event->add_annotation(), key, val, arena);
         }
 
-        if (auto err_str = se->getErrorString(); !err_str.empty()) {
+        if (const auto& err_str = se->getErrorString(); !err_str.empty()) {
             auto* exceptInfo = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
             exceptInfo->set_intvalue(se->getErrorFuncId());
 
@@ -229,7 +229,7 @@ namespace pinpoint {
             build_annotation(grpc_span->add_annotation(), key, val, arena);
         }
 
-        if (auto err_str = span->getErrorString(); !err_str.empty()) {
+        if (const auto& err_str = span->getErrorString(); !err_str.empty()) {
             auto* exceptInfo = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
             exceptInfo->set_intvalue(span->getErrorFuncId());
 
