@@ -73,8 +73,25 @@ namespace pinpoint {
         
         reloadConfig(config_.load());
 
-        init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
+        // Start the config-file watcher BEFORE spawning init_thread_. Both can
+        // throw (std::filesystem errors, thread-creation failure under resource
+        // pressure). If the watcher threw while init_thread_ were already
+        // joinable, the constructor's unwind would run ~std::thread on a
+        // joinable thread and call std::terminate(), crashing the host. Doing
+        // the watcher first means no joinable std::thread member exists yet, so
+        // a throw unwinds normally and surfaces to make_agent() as a failed
+        // (noop) agent.
         start_config_file_watcher();
+
+        try {
+            init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
+        } catch (...) {
+            // The watcher is already running; stop it so a failed construction
+            // does not leak the watcher thread. (init_thread_ never became
+            // joinable here, so it needs no cleanup.)
+            stop_config_file_watcher();
+            throw;
+        }
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
