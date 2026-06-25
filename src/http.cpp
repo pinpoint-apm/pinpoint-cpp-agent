@@ -377,6 +377,9 @@ namespace pinpoint {
 
     namespace helper {
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader) {
+            if (!span) {
+                return;
+            }
             std::string r_addr = HttpTracerUtil::getRemoteAddr(request_reader, remote_addr);
             span->SetRemoteAddress(r_addr);
             span->SetEndPoint(endpoint);
@@ -386,17 +389,26 @@ namespace pinpoint {
         }
 
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader) {
+            if (!span) {
+                return;
+            }
             TraceHttpServerRequest(span, remote_addr, endpoint, request_reader);
             span->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
         void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader){
+            if (!span) {
+                return;
+            }
             span->SetStatusCode(status_code);
             span->SetUrlStat(url_pattern, method, status_code);
             span->RecordHeader(HTTP_RESPONSE, response_reader);
         }
 
         void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader) {
+            if (!span_event) {
+                return;
+            }
             span_event->SetServiceType(SERVICE_TYPE_CPP_HTTP_CLIENT);
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
@@ -405,11 +417,17 @@ namespace pinpoint {
         }
 
         void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader) {
+            if (!span_event) {
+                return;
+            }
             TraceHttpClientRequest(span_event, host, url, request_reader);
             span_event->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
         void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader) {
+            if (!span_event) {
+                return;
+            }
             span_event->GetAnnotations()->AppendInt(ANNOTATION_HTTP_STATUS_CODE, status_code);
             span_event->RecordHeader(HTTP_RESPONSE, response_reader);
         }
