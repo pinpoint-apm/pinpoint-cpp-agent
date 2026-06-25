@@ -1209,7 +1209,7 @@ TEST_F(HttpTest, HttpMethodFilterLowercaseConfigTest) {
     std::vector<std::string> cfg = {"get", "post"};
     HttpMethodFilter filter(cfg);
 
-    // Constructor uppercases config values; isFiltered also uppercases input
+    // Matching is case-insensitive without normalizing the request method.
     EXPECT_TRUE(filter.isFiltered("GET")) << "Should match uppercase GET";
     EXPECT_TRUE(filter.isFiltered("get")) << "Should match lowercase get";
     EXPECT_TRUE(filter.isFiltered("Post")) << "Should match mixed case Post";

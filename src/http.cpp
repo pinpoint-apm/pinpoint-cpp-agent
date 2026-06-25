@@ -15,7 +15,6 @@
  */
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <map>
 #include <string>
@@ -171,20 +170,14 @@ namespace pinpoint {
         return dp[at(0, 0)] != 0;
     }
 
-    HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg) {
-        for (const auto& m : cfg) {
-            std::string upper(m);
-            std::transform(upper.begin(), upper.end(), upper.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
-            methods_.insert(std::move(upper));
-        }
-    }
+    HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg)
+        : methods_(cfg) {}
 
     bool HttpMethodFilter::isFiltered(std::string_view method) const {
-        std::string upper(method);
-        std::transform(upper.begin(), upper.end(), upper.begin(),
-                       [](unsigned char c) { return std::toupper(c); });
-        return methods_.count(upper) > 0;
+        return std::any_of(methods_.begin(), methods_.end(),
+            [method](const auto& filtered_method) {
+                return compare_string(method, filtered_method);
+            });
     }
 
     namespace {
