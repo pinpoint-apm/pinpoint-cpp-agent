@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pinpoint/tracer.h"
@@ -178,8 +179,43 @@ namespace pinpoint {
         bool isFiltered(std::string_view url) const;
 
     private:
-        std::vector<std::string> patterns_;
+        enum class PatternKind {
+            Exact,
+            Prefix,
+            SegmentPrefix,
+            Ant,
+        };
 
+        enum class TokenKind {
+            Literal,
+            Star,
+            DoubleStar,
+            DoubleStarSlash,
+            Question,
+        };
+
+        struct PatternToken {
+            TokenKind kind;
+            char value = '\0';
+        };
+
+        struct CompiledPattern {
+            PatternKind kind = PatternKind::Ant;
+            std::string pattern;
+            std::string literal_prefix;
+            size_t min_length = 0;
+            std::vector<PatternToken> tokens;
+        };
+
+        struct MatchScratch {
+            std::vector<char> current;
+            std::vector<char> next;
+        };
+
+        std::vector<CompiledPattern> patterns_;
+
+        static CompiledPattern compilePattern(const std::string& pattern);
+        static bool ant_match(const CompiledPattern& pattern, std::string_view url, MatchScratch& scratch);
         static bool ant_match(std::string_view pattern, std::string_view url);
     };
 

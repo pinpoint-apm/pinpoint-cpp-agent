@@ -82,92 +82,206 @@ namespace pinpoint {
         }
     }
 
-    HttpUrlFilter::HttpUrlFilter(const std::vector<std::string>& cfg)
-        : patterns_(cfg) {}
+    namespace {
+        bool contains_wildcard(std::string_view value) {
+            return value.find('*') != std::string_view::npos || value.find('?') != std::string_view::npos;
+        }
+
+        bool starts_with(std::string_view value, std::string_view prefix) {
+            return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+        }
+
+        std::string to_string(std::string_view value) {
+            return std::string(value.data(), value.size());
+        }
+
+        std::string_view as_view(const std::string& value) {
+            return std::string_view(value.data(), value.size());
+        }
+    }
+
+    HttpUrlFilter::HttpUrlFilter(const std::vector<std::string>& cfg) {
+        patterns_.reserve(cfg.size());
+        for (const auto& pattern : cfg) {
+            patterns_.push_back(compilePattern(pattern));
+        }
+    }
 
     bool HttpUrlFilter::isFiltered(std::string_view url) const {
+        MatchScratch scratch;
         for (const auto& pattern : patterns_) {
-            if (ant_match(pattern, url)) {
-                return true;
+            switch (pattern.kind) {
+            case PatternKind::Exact:
+                if (url.size() == pattern.pattern.size() && url.compare(as_view(pattern.pattern)) == 0) {
+                    return true;
+                }
+                break;
+            case PatternKind::Prefix:
+                if (starts_with(url, as_view(pattern.literal_prefix))) {
+                    return true;
+                }
+                break;
+            case PatternKind::SegmentPrefix:
+                if (starts_with(url, as_view(pattern.literal_prefix)) &&
+                    url.find('/', pattern.literal_prefix.size()) == std::string_view::npos) {
+                    return true;
+                }
+                break;
+            case PatternKind::Ant: {
+                if (ant_match(pattern, url, scratch)) {
+                    return true;
+                }
+                break;
+            }
             }
         }
         return false;
     }
 
-    bool HttpUrlFilter::ant_match(std::string_view pattern, std::string_view url) {
-        const size_t P = pattern.size();
-        const size_t U = url.size();
+    HttpUrlFilter::CompiledPattern HttpUrlFilter::compilePattern(const std::string& pattern) {
+        CompiledPattern compiled;
+        compiled.pattern = pattern;
 
-        // Bottom-up dynamic programming over (pattern index, url index). This
-        // replaces the previous recursive '**' handling, which retried every
-        // url suffix and cost O(n^k) for a pattern with k '**' wildcards on a
-        // non-matching url — a remote CPU amplifier since the url is supplied
-        // by the caller on every traced request. Each (pi, ui) state is now
-        // visited once, so matching is O(pattern_len * url_len): linear in the
-        // attacker-controlled url length for a fixed configured pattern.
-        //
-        // dp[pi][ui] == "pattern[pi:] matches url[ui:]". Semantics preserved
-        // from the original matcher:
-        //   '*'  matches zero or more characters within a single path segment
-        //        (never crosses '/').
-        //   '**' matches zero or more characters across segments (may cross
-        //        '/'), and absorbs one immediately following '/' in the
-        //        pattern — except when the url is already exhausted, where a
-        //        trailing '/' after '**' must still match literally and so fails.
-        //   '?'  matches exactly one character (including '/').
-        //   any other character matches itself literally.
-        std::vector<char> dp((P + 1) * (U + 1), 0);
-        const auto at = [U](size_t pi, size_t ui) { return pi * (U + 1) + ui; };
-
-        // Base row: an empty remaining pattern matches only an empty remaining url.
-        for (size_t ui = 0; ui <= U; ++ui) {
-            dp[at(P, ui)] = (ui == U) ? 1 : 0;
+        const std::string_view pattern_view = as_view(compiled.pattern);
+        if (!contains_wildcard(pattern_view)) {
+            compiled.kind = PatternKind::Exact;
+            compiled.literal_prefix = compiled.pattern;
+            compiled.min_length = compiled.pattern.size();
+            return compiled;
         }
 
-        for (size_t pi = P; pi-- > 0;) {
-            const char c = pattern[pi];
-
-            // ui == U (url exhausted): only a run of trailing '*' still matches.
-            // A trailing '/' after '**' is intentionally not absorbed here.
-            dp[at(pi, U)] = (c == '*' && dp[at(pi + 1, U)]) ? 1 : 0;
-
-            if (c == '*' && pi + 1 < P && pattern[pi + 1] == '*') {
-                // '**': skip the two stars and one optional following '/'.
-                size_t npi = pi + 2;
-                if (npi < P && pattern[npi] == '/') {
-                    ++npi;
-                }
-                // dp[pi][ui] = OR over k in [ui, U] of dp[npi][k]. The running
-                // OR seeds from dp[npi][U] (not dp[pi][U], which holds the
-                // distinct url-exhausted value computed above).
-                char running = dp[at(npi, U)];
-                for (size_t ui = U; ui-- > 0;) {
-                    running = (running || dp[at(npi, ui)]) ? 1 : 0;
-                    dp[at(pi, ui)] = running;
-                }
-            } else if (c == '*') {
-                // single '*': extend within a segment, never crossing '/'.
-                for (size_t ui = U; ui-- > 0;) {
-                    char v = dp[at(pi + 1, ui)];
-                    if (!v && url[ui] != '/') {
-                        v = dp[at(pi, ui + 1)];
-                    }
-                    dp[at(pi, ui)] = v;
-                }
-            } else if (c == '?') {
-                // '?': match exactly one character (including '/').
-                for (size_t ui = U; ui-- > 0;) {
-                    dp[at(pi, ui)] = dp[at(pi + 1, ui + 1)];
-                }
-            } else {
-                // literal character.
-                for (size_t ui = U; ui-- > 0;) {
-                    dp[at(pi, ui)] = (url[ui] == c) ? dp[at(pi + 1, ui + 1)] : 0;
-                }
+        if (pattern_view.size() >= 2 &&
+            pattern_view[pattern_view.size() - 1] == '*' &&
+            pattern_view[pattern_view.size() - 2] == '*') {
+            const auto prefix = pattern_view.substr(0, pattern_view.size() - 2);
+            if (!contains_wildcard(prefix)) {
+                compiled.kind = PatternKind::Prefix;
+                compiled.literal_prefix = to_string(prefix);
+                return compiled;
             }
         }
 
-        return dp[at(0, 0)] != 0;
+        if (!pattern_view.empty() &&
+            pattern_view.back() == '*' &&
+            (pattern_view.size() == 1 || pattern_view[pattern_view.size() - 2] != '*')) {
+            const auto prefix = pattern_view.substr(0, pattern_view.size() - 1);
+            if (!contains_wildcard(prefix)) {
+                compiled.kind = PatternKind::SegmentPrefix;
+                compiled.literal_prefix = to_string(prefix);
+                return compiled;
+            }
+        }
+
+        compiled.kind = PatternKind::Ant;
+        const auto prefix_end = pattern_view.find_first_of("*?");
+        if (prefix_end != std::string_view::npos && prefix_end > 0) {
+            compiled.literal_prefix = to_string(pattern_view.substr(0, prefix_end));
+        }
+
+        for (size_t i = 0; i < pattern_view.size();) {
+            const char c = pattern_view[i];
+            if (c == '*' && i + 1 < pattern_view.size() && pattern_view[i + 1] == '*') {
+                if (i + 2 < pattern_view.size() && pattern_view[i + 2] == '/') {
+                    compiled.tokens.push_back({TokenKind::DoubleStarSlash, '\0'});
+                    i += 3;
+                } else {
+                    compiled.tokens.push_back({TokenKind::DoubleStar, '\0'});
+                    i += 2;
+                }
+            } else if (c == '*') {
+                compiled.tokens.push_back({TokenKind::Star, '\0'});
+                ++i;
+            } else if (c == '?') {
+                compiled.tokens.push_back({TokenKind::Question, '\0'});
+                ++compiled.min_length;
+                ++i;
+            } else {
+                compiled.tokens.push_back({TokenKind::Literal, c});
+                ++compiled.min_length;
+                ++i;
+            }
+        }
+
+        return compiled;
+    }
+
+    bool HttpUrlFilter::ant_match(const CompiledPattern& pattern, std::string_view url, MatchScratch& scratch) {
+        const size_t U = url.size();
+
+        if (U < pattern.min_length) {
+            return false;
+        }
+        if (!pattern.literal_prefix.empty() && !starts_with(url, as_view(pattern.literal_prefix))) {
+            return false;
+        }
+
+        // Two-row suffix DP. The compiled token stream preserves the existing
+        // '**/' behavior: the slash is skipped only while URL input remains.
+        scratch.next.assign(U + 1, 0);
+        scratch.current.resize(U + 1);
+        scratch.next[U] = 1;
+
+        for (size_t ti = pattern.tokens.size(); ti-- > 0;) {
+            const auto& token = pattern.tokens[ti];
+            switch (token.kind) {
+            case TokenKind::Literal:
+                scratch.current[U] = 0;
+                for (size_t ui = U; ui-- > 0;) {
+                    scratch.current[ui] =
+                        (url[ui] == token.value && scratch.next[ui + 1]) ? 1 : 0;
+                }
+                break;
+            case TokenKind::Question:
+                scratch.current[U] = 0;
+                for (size_t ui = U; ui-- > 0;) {
+                    scratch.current[ui] = scratch.next[ui + 1];
+                }
+                break;
+            case TokenKind::Star:
+                scratch.current[U] = scratch.next[U];
+                for (size_t ui = U; ui-- > 0;) {
+                    char value = scratch.next[ui];
+                    if (!value && url[ui] != '/') {
+                        value = scratch.current[ui + 1];
+                    }
+                    scratch.current[ui] = value;
+                }
+                break;
+            case TokenKind::DoubleStar:
+            case TokenKind::DoubleStarSlash: {
+                scratch.current[U] = (token.kind == TokenKind::DoubleStar) ? scratch.next[U] : 0;
+                char running = scratch.next[U];
+                for (size_t ui = U; ui-- > 0;) {
+                    running = (running || scratch.next[ui]) ? 1 : 0;
+                    scratch.current[ui] = running;
+                }
+                break;
+            }
+            }
+
+            scratch.next.swap(scratch.current);
+        }
+
+        return scratch.next[0] != 0;
+    }
+
+    bool HttpUrlFilter::ant_match(std::string_view pattern, std::string_view url) {
+        const auto compiled = compilePattern(to_string(pattern));
+        switch (compiled.kind) {
+        case PatternKind::Exact:
+            return url.size() == compiled.pattern.size() && url.compare(as_view(compiled.pattern)) == 0;
+        case PatternKind::Prefix:
+            return starts_with(url, as_view(compiled.literal_prefix));
+        case PatternKind::SegmentPrefix:
+            return starts_with(url, as_view(compiled.literal_prefix)) &&
+                url.find('/', compiled.literal_prefix.size()) == std::string_view::npos;
+        case PatternKind::Ant: {
+            MatchScratch scratch;
+            return ant_match(compiled, url, scratch);
+        }
+        }
+
+        return false;
     }
 
     HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg)
