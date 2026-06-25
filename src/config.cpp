@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <system_error>
 #include <mutex>
 #include <thread>
 #include <memory>
@@ -115,11 +116,19 @@ namespace pinpoint {
         config_watcher_stop().store(false);
 
         watcher = std::thread([path]() {
-            auto last_write_time = std::filesystem::last_write_time(path);
+            // Seed with the non-throwing overload: the throwing form could
+            // escape this thread function (the file may have been removed
+            // between the exists() check above and the thread starting), and
+            // an exception leaving a std::thread calls std::terminate(),
+            // crashing the host. On error last_write_time stays default-
+            // constructed, so the first iteration just treats the file as
+            // changed and attempts a reload.
+            std::error_code seed_ec;
+            auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
             while (!config_watcher_stop().load()) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
-                
+
                 try {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
@@ -141,6 +150,8 @@ namespace pinpoint {
                     }
                 } catch (const std::exception& e) {
                     LOG_WARN("failed to watch config file: {}", e.what());
+                } catch (...) {
+                    LOG_WARN("failed to watch config file: unknown exception");
                 }
             }
         });
