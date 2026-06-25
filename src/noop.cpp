@@ -48,7 +48,11 @@ namespace pinpoint {
         url_stat_(nullptr),
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {
-        agent_->getAgentStats().addActiveSpan(span_id_, start_time_);
+        // Guard the deref to stay consistent with the null check on agent_ref_
+        // above (agent_ is always the live AgentImpl in production).
+        if (agent_ != nullptr) {
+            agent_->getAgentStats().addActiveSpan(span_id_, start_time_);
+        }
     }
 
     void UnsampledSpan::EndSpan() {
@@ -57,6 +61,12 @@ namespace pinpoint {
         // dropActiveSpan / collectResponseTime / recordUrlStat twice.
         if (finished_.exchange(true)) {
             LOG_WARN("span is already finished");
+            return;
+        }
+
+        // Paired with the constructor's null guard: nothing to record without
+        // an agent (agent_ is always valid in production).
+        if (agent_ == nullptr) {
             return;
         }
 

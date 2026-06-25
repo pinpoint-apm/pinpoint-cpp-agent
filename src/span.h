@@ -460,6 +460,8 @@ namespace pinpoint {
     	void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
     private:
+		// Non-owning. Kept valid by data_->agent_ref_ (SpanData holds a
+		// shared_ptr to the agent); data_ outlives every use of agent_ here.
 		AgentService *agent_;
     	std::shared_ptr<SpanData> data_;
     	std::atomic<int32_t> overflow_;

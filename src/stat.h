@@ -106,6 +106,9 @@ namespace pinpoint {
         ProcessStatus getProcessStatus();
 
     private:
+        // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
+        // the stats worker before its own destruction, so agent_ never dangles.
+        // A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
         std::mutex mutex_{};
         std::condition_variable cond_var_{};

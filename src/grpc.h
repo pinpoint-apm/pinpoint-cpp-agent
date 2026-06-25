@@ -126,6 +126,9 @@ namespace pinpoint {
         }
 
     protected:
+        // Non-owning. AgentImpl owns every gRPC client (unique_ptr members) and
+        // joins this client's worker before its own destruction, so agent_ never
+        // dangles. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
         std::shared_ptr<const Config> config_{};
         std::shared_ptr<grpc::Channel> channel_{};

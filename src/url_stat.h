@@ -198,8 +198,11 @@ namespace pinpoint {
         TickClock& getTickClock() { return tick_clock_; }
 
     private:
+        // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
+        // the URL-stat workers before its own destruction, so agent_ never
+        // dangles. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
-        
+
         // Queue for incoming URL stats
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};

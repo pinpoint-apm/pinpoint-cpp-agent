@@ -105,6 +105,10 @@ namespace pinpoint {
         virtual bool isContinueSampled() noexcept = 0;
 
     protected:
+        // Non-owning. AgentImpl owns the sampler (sampler_ AtomicSharedPtr
+        // member) and only drives it from NewSpan while the caller holds the
+        // agent alive, so agent_ never dangles. A shared_ptr here would form a
+        // cycle and leak the agent.
         AgentService* agent_;
         std::unique_ptr<Sampler> sampler_{nullptr};
     };

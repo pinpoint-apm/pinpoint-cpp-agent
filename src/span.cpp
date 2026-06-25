@@ -60,7 +60,12 @@ namespace pinpoint {
         annotations_{std::make_shared<PinpointAnnotation>()},
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {
-        api_id_ = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
+        // agent_ is always the live AgentImpl in production (NewSpan passes
+        // `this`). Guard the deref only to stay consistent with the null check
+        // on agent_ref_ above; api_id_ keeps its init value (0) when absent.
+        if (agent_ != nullptr) {
+            api_id_ = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
+        }
     }
 
     void SpanData::addSpanEvent(const std::shared_ptr<SpanEventImpl>& se) {
