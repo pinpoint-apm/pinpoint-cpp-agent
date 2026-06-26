@@ -76,22 +76,53 @@ namespace pinpoint {
         // NewSpanEvent calls would otherwise read the same pre-increment values
         // and emit duplicate sequence numbers, corrupting the server-side call
         // tree. The event takes the current counter value, then we advance it.
-        se->setSequence(event_sequence_.load());
-        se->setDepth(event_depth_.load());
+        se->setSequence(event_sequence_.fetch_add(1, std::memory_order_relaxed));
+        se->setDepth(event_depth_.fetch_add(1, std::memory_order_relaxed));
         event_stack_.push(se);
-        event_sequence_.fetch_add(1);
-        event_depth_.fetch_add(1);
     }
 
     void SpanData::finishSpanEvent() {
         std::unique_lock<std::mutex> lock(span_event_lock_);
-        const auto se = event_stack_.pop();
+        auto se = event_stack_.pop();
         if (se) {
             se->finish();
-            finished_events.push_back(se);
+            storeFinishedEvent(std::move(se));
         } else {
             LOG_WARN("finishSpanEvent: abnormal span - has no event");
         }
+    }
+
+    void SpanData::storeFinishedEvent(std::shared_ptr<SpanEventImpl> se) {
+        const auto sequence = se->getSequence();
+        if (finished_events.empty() || finished_events.back()->getSequence() < sequence) {
+            finished_events.emplace_back(std::move(se));
+            return;
+        }
+        if (sequence < finished_events.front()->getSequence()) {
+            finished_events.emplace_front(std::move(se));
+            return;
+        }
+
+        auto pos = std::lower_bound(
+            finished_events.begin(), finished_events.end(), sequence,
+            [](const std::shared_ptr<SpanEventImpl>& event, int32_t sequence) {
+                return event->getSequence() < sequence;
+            });
+        finished_events.insert(pos, std::move(se));
+    }
+
+    void SpanData::takeFinishedEvents(std::vector<std::shared_ptr<SpanEventImpl>>& out) {
+        std::unique_lock<std::mutex> lock(span_event_lock_);
+        out.clear();
+        if (finished_events.empty()) {
+            return;
+        }
+
+        out.reserve(finished_events.size());
+        for (auto& event : finished_events) {
+            out.emplace_back(std::move(event));
+        }
+        finished_events.clear();
     }
 
     void SpanData::parseTraceId(std::string &txid) noexcept {
@@ -158,18 +189,15 @@ namespace pinpoint {
 
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
                          span_data_(span_data),
-                         event_chunk_(span_data_->takeFinishedEvents()),
+                         event_chunk_{},
                          final_(final), key_time_(0) {
+        span_data_->takeFinishedEvents(event_chunk_);
     }
 
     void SpanChunk::optimizeSpanEvents() {
         if (event_chunk_.empty()) {
             return;
         }
-
-        std::sort(event_chunk_.begin(), event_chunk_.end(),
-            [](const std::shared_ptr<SpanEventImpl>& a, const std::shared_ptr<SpanEventImpl>& b)
-                  { return a->getSequence() < b->getSequence(); });
 
         int64_t prev_start_time = 0;
         int32_t prev_depth = 0;
@@ -241,10 +269,7 @@ namespace pinpoint {
             return noopSpanEvent();
         }
 
-        std::weak_ptr<Span> parent_span_ref;
-        if (auto self = weak_from_this().lock()) {
-            parent_span_ref = std::static_pointer_cast<Span>(self);
-        }
+        std::weak_ptr<Span> parent_span_ref = weak_from_this();
 
         auto se = std::make_shared<SpanEventImpl>(data_, operation, parent_span_ref);
         se->SetServiceType(service_type);
