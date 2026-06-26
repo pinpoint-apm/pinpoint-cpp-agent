@@ -33,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -204,6 +205,14 @@ static void hmap_foreach(void* ud, pt_header_foreach_cb cb, void* cb_ud) {
     for (const auto& kv : *static_cast<HeaderMap*>(ud)) {
         if (cb(kv.first.c_str(), kv.second.c_str(), cb_ud) != 0) break;
     }
+}
+
+static const char* throwing_get(void*, const char*) {
+    throw std::runtime_error("reader failure");
+}
+
+static void throwing_set(void*, const char*, const char*) {
+    throw std::runtime_error("writer failure");
 }
 
 // Callstack data for testing.
@@ -438,6 +447,26 @@ TEST(TracerCNullSafetyTest, NullAnnotationCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_int_string_string(nullptr, PT_ANNOTATION_API, 1, "a", "b"));
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_sql_uid_string_string(nullptr, PT_ANNOTATION_API, nullptr, 0, "a", "b"));
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_long_int_int_byte_byte_string(nullptr, PT_ANNOTATION_API, 0, 0, 0, 0, 0, "s"));
+}
+
+TEST_F(TracerCApiTest, ExceptionFirewallSwallowsCallbackExceptions) {
+    pt_context_reader_t reader{nullptr, throwing_get};
+    pt_span_t reader_span = pt_agent_new_span_with_reader(agent_, "op", "/rpc", &reader);
+    if (reader_span) {
+        pt_span_end(reader_span);
+        pt_span_destroy(reader_span);
+    }
+
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+
+    HeaderMap out;
+    pt_context_writer_t writer{&out, throwing_set};
+    EXPECT_NO_FATAL_FAILURE(pt_span_inject_context(span, &writer));
+    EXPECT_TRUE(out.empty());
+
+    pt_span_end(span);
+    pt_span_destroy(span);
 }
 
 // ============================================================================

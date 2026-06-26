@@ -41,6 +41,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -67,6 +68,57 @@ static void pt_handle_exception(const char* func) noexcept {
     } catch (...) {
         // Logging itself failed; swallow — the firewall must hold.
     }
+}
+
+template <typename F>
+static void pt_api_call(const char* func, F&& fn) noexcept {
+    try {
+        std::forward<F>(fn)();
+    } catch (...) {
+        pt_handle_exception(func);
+    }
+}
+
+template <typename R, typename F>
+static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
+    try {
+        return std::forward<F>(fn)();
+    } catch (...) {
+        pt_handle_exception(func);
+        return fallback;
+    }
+}
+
+template <typename Handle, typename F>
+static void pt_handle_call(Handle handle, F&& fn) {
+    if (handle && handle->ptr) {
+        std::forward<F>(fn)(handle);
+    }
+}
+
+template <typename Handle, typename R, typename F>
+static R pt_handle_call(Handle handle, R fallback, F&& fn) {
+    if (!handle || !handle->ptr) {
+        return fallback;
+    }
+    return std::forward<F>(fn)(handle);
+}
+
+template <typename Handle, typename R, typename F>
+static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result,
+                                R fallback, F&& fn) {
+    return pt_handle_call(handle, fallback, [&](Handle valid) {
+        if (valid == noop_handle) {
+            return noop_result;
+        }
+        return std::forward<F>(fn)(valid);
+    });
+}
+
+template <typename Handle>
+static void destroy_handle(Handle handle, Handle noop_handle) {
+    if (handle == noop_handle) return;  // static sentinel — never owned
+    delete handle;
 }
 
 // ============================================================================
@@ -297,409 +349,602 @@ static std::vector<std::string> to_string_vector(const char* const* values, int 
 // Global configuration
 // ============================================================================
 
-void pt_set_config_file_path(const char* config_file_path) try {
-    if (config_file_path) {
-        pinpoint::SetConfigFilePath(config_file_path);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_set_config_file_path(const char* config_file_path) {
+    pt_api_call(__func__, [&] {
+        if (config_file_path) {
+            pinpoint::SetConfigFilePath(config_file_path);
+        }
+    });
+}
 
-void pt_set_config_string(const char* config_string) try {
-    if (config_string) {
-        pinpoint::SetConfigString(config_string);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_set_config_string(const char* config_string) {
+    pt_api_call(__func__, [&] {
+        if (config_string) {
+            pinpoint::SetConfigString(config_string);
+        }
+    });
+}
 
 // ============================================================================
 // Agent lifecycle
 // ============================================================================
 
-pt_agent_t pt_create_agent(void) try {
-    return make_agent_handle(pinpoint::CreateAgent());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_agent_t pt_create_agent(void) {
+    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [] {
+        return make_agent_handle(pinpoint::CreateAgent());
+    });
+}
 
 pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
                                                 const char* const* args,
                                                 int args_count,
                                                 const char* const* libs,
-                                                int libs_count) try {
-    return make_agent_handle(server_info
-        ? pinpoint::CreateAgent(server_info,
-                                to_string_vector(args, args_count),
-                                to_string_vector(libs, libs_count))
-        : pinpoint::CreateAgent());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                                                int libs_count) {
+    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
+        return make_agent_handle(server_info
+            ? pinpoint::CreateAgent(server_info,
+                                    to_string_vector(args, args_count),
+                                    to_string_vector(libs, libs_count))
+            : pinpoint::CreateAgent());
+    });
+}
 
-pt_agent_t pt_create_agent_with_type(int32_t app_type) try {
-    return make_agent_handle(pinpoint::CreateAgent(app_type));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_agent_t pt_create_agent_with_type(int32_t app_type) {
+    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
+        return make_agent_handle(pinpoint::CreateAgent(app_type));
+    });
+}
 
 pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
                                                          const char* server_info,
                                                          const char* const* args,
                                                          int args_count,
                                                          const char* const* libs,
-                                                         int libs_count) try {
-    return make_agent_handle(server_info
-        ? pinpoint::CreateAgent(app_type,
-                                server_info,
-                                to_string_vector(args, args_count),
-                                to_string_vector(libs, libs_count))
-        : pinpoint::CreateAgent(app_type));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                                                         int libs_count) {
+    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
+        return make_agent_handle(server_info
+            ? pinpoint::CreateAgent(app_type,
+                                    server_info,
+                                    to_string_vector(args, args_count),
+                                    to_string_vector(libs, libs_count))
+            : pinpoint::CreateAgent(app_type));
+    });
+}
 
-pt_agent_t pt_global_agent(void) try {
-    // A missing global agent collapses to the shared noop-agent sentinel; an
-    // existing one is wrapped in a handle whose shared_ptr keeps it alive
-    // regardless of whether the caller ever calls pt_agent_destroy().
-    return make_agent_handle(pinpoint::GlobalAgent());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_agent_t pt_global_agent(void) {
+    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [] {
+        // A missing global agent collapses to the shared noop-agent sentinel; an
+        // existing one is wrapped in a handle whose shared_ptr keeps it alive
+        // regardless of whether the caller ever calls pt_agent_destroy().
+        return make_agent_handle(pinpoint::GlobalAgent());
+    });
+}
 
-void pt_agent_destroy(pt_agent_t agent) try {
-    if (agent == noop_agent_sentinel()) return;  // static sentinel — never owned
-    delete agent;
-} catch (...) { pt_handle_exception(__func__); }
+void pt_agent_destroy(pt_agent_t agent) {
+    pt_api_call(__func__, [&] {
+        destroy_handle(agent, noop_agent_sentinel());
+    });
+}
 
-int pt_agent_is_enabled(pt_agent_t agent) try {
-    if (!agent || !agent->ptr) return 0;
-    return agent->ptr->Enable() ? 1 : 0;
-} catch (...) { pt_handle_exception(__func__); return 0; }
+int pt_agent_is_enabled(pt_agent_t agent) {
+    return pt_api_call(__func__, 0, [&] {
+        return pt_handle_call(agent, 0, [](pt_agent_t valid) {
+            return valid->ptr->Enable() ? 1 : 0;
+        });
+    });
+}
 
-void pt_agent_shutdown(pt_agent_t agent) try {
-    if (agent && agent->ptr) {
-        agent->ptr->Shutdown();
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_agent_shutdown(pt_agent_t agent) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(agent, [](pt_agent_t valid) {
+            valid->ptr->Shutdown();
+        });
+    });
+}
 
 // ============================================================================
 // Span creation
 // ============================================================================
 
 pt_span_t pt_agent_new_span(pt_agent_t agent, const char* operation,
-                            const char* rpc_point) try {
-    if (!agent || !agent->ptr) return nullptr;
-    // The noop agent only ever makes noop spans — skip the call (and the
-    // singleton refcount churn it would trigger) and hand back the sentinel.
-    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
-    return make_span_handle(agent->ptr->NewSpan(operation ? operation : "",
-                                                rpc_point  ? rpc_point  : ""));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                            const char* rpc_point) {
+    return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
+        // The noop agent only ever makes noop spans — skip the call (and the
+        // singleton refcount churn it would trigger) and hand back the sentinel.
+        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
+                                      static_cast<pt_span_t>(noop_span_sentinel()),
+                                      static_cast<pt_span_t>(nullptr),
+                                      [&](pt_agent_t valid) {
+            return make_span_handle(valid->ptr->NewSpan(operation ? operation : "",
+                                                        rpc_point  ? rpc_point  : ""));
+        });
+    });
+}
 
 pt_span_t pt_agent_new_span_with_reader(pt_agent_t agent, const char* operation,
                                         const char* rpc_point,
-                                        const pt_context_reader_t* reader) try {
-    if (!agent || !agent->ptr) return nullptr;
-    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
-    pinpoint::SpanPtr ptr;
-    if (reader) {
-        CContextReader cpt_reader(reader);
-        ptr = agent->ptr->NewSpan(operation ? operation : "",
-                                  rpc_point  ? rpc_point  : "",
-                                  cpt_reader);
-    } else {
-        ptr = agent->ptr->NewSpan(operation ? operation : "",
-                                  rpc_point  ? rpc_point  : "");
-    }
-    return make_span_handle(std::move(ptr));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                                        const pt_context_reader_t* reader) {
+    return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
+                                      static_cast<pt_span_t>(noop_span_sentinel()),
+                                      static_cast<pt_span_t>(nullptr),
+                                      [&](pt_agent_t valid) {
+            pinpoint::SpanPtr ptr;
+            if (reader) {
+                CContextReader cpt_reader(reader);
+                ptr = valid->ptr->NewSpan(operation ? operation : "",
+                                          rpc_point  ? rpc_point  : "",
+                                          cpt_reader);
+            } else {
+                ptr = valid->ptr->NewSpan(operation ? operation : "",
+                                          rpc_point  ? rpc_point  : "");
+            }
+            return make_span_handle(std::move(ptr));
+        });
+    });
+}
 
 pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
                                         const char* rpc_point, const char* method,
-                                        const pt_context_reader_t* reader) try {
-    if (!agent || !agent->ptr) return nullptr;
-    if (agent == noop_agent_sentinel()) return noop_span_sentinel();
-    pinpoint::SpanPtr ptr;
-    if (reader) {
-        CContextReader cpt_reader(reader);
-        ptr = agent->ptr->NewSpan(operation ? operation : "",
-                                  rpc_point  ? rpc_point  : "",
-                                  method     ? method     : "",
-                                  cpt_reader);
-    } else {
-        ptr = agent->ptr->NewSpan(operation ? operation : "",
-                                  rpc_point  ? rpc_point  : "");
-    }
-    return make_span_handle(std::move(ptr));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                                        const pt_context_reader_t* reader) {
+    return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
+                                      static_cast<pt_span_t>(noop_span_sentinel()),
+                                      static_cast<pt_span_t>(nullptr),
+                                      [&](pt_agent_t valid) {
+            pinpoint::SpanPtr ptr;
+            if (reader) {
+                CContextReader cpt_reader(reader);
+                ptr = valid->ptr->NewSpan(operation ? operation : "",
+                                          rpc_point  ? rpc_point  : "",
+                                          method     ? method     : "",
+                                          cpt_reader);
+            } else {
+                ptr = valid->ptr->NewSpan(operation ? operation : "",
+                                          rpc_point  ? rpc_point  : "");
+            }
+            return make_span_handle(std::move(ptr));
+        });
+    });
+}
 
 // ============================================================================
 // Span operations
 // ============================================================================
 
-void pt_span_destroy(pt_span_t span) try {
-    if (span == noop_span_sentinel()) return;  // static sentinel — never owned
-    delete span;
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_destroy(pt_span_t span) {
+    pt_api_call(__func__, [&] {
+        destroy_handle(span, noop_span_sentinel());
+    });
+}
 
-pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation) try {
-    if (!span || !span->ptr) return nullptr;
-    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
-    return make_span_event_handle(span->ptr->NewSpanEvent(operation ? operation : ""));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation) {
+    return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(span, noop_span_sentinel(),
+                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
+                                      static_cast<pt_span_event_t>(nullptr),
+                                      [&](pt_span_t valid) {
+            return make_span_event_handle(
+                valid->ptr->NewSpanEvent(operation ? operation : ""));
+        });
+    });
+}
 
 pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operation,
-                                            int32_t service_type) try {
-    if (!span || !span->ptr) return nullptr;
-    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
-    return make_span_event_handle(
-        span->ptr->NewSpanEvent(operation ? operation : "", service_type));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+                                            int32_t service_type) {
+    return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(span, noop_span_sentinel(),
+                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
+                                      static_cast<pt_span_event_t>(nullptr),
+                                      [&](pt_span_t valid) {
+            return make_span_event_handle(
+                valid->ptr->NewSpanEvent(operation ? operation : "", service_type));
+        });
+    });
+}
 
-pt_span_event_t pt_span_get_event(pt_span_t span) try {
-    if (!span || !span->ptr) return nullptr;
-    if (span == noop_span_sentinel()) return noop_span_event_sentinel();
-    return make_span_event_handle(span->ptr->GetSpanEvent());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_span_event_t pt_span_get_event(pt_span_t span) {
+    return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(span, noop_span_sentinel(),
+                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
+                                      static_cast<pt_span_event_t>(nullptr),
+                                      [](pt_span_t valid) {
+            return make_span_event_handle(valid->ptr->GetSpanEvent());
+        });
+    });
+}
 
-void pt_span_end_event(pt_span_t span) try {
-    if (span && span->ptr) {
-        span->ptr->EndSpanEvent();
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_end_event(pt_span_t span) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [](pt_span_t valid) {
+            valid->ptr->EndSpanEvent();
+        });
+    });
+}
 
-void pt_span_end(pt_span_t span) try {
-    if (span && span->ptr) {
-        span->ptr->EndSpan();
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_end(pt_span_t span) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [](pt_span_t valid) {
+            valid->ptr->EndSpan();
+        });
+    });
+}
 
-pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) try {
-    if (!span || !span->ptr) return nullptr;
-    if (span == noop_span_sentinel()) return noop_span_sentinel();
-    return make_span_handle(
-        span->ptr->NewAsyncSpan(async_operation ? async_operation : ""));
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) {
+    return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(span, noop_span_sentinel(),
+                                      static_cast<pt_span_t>(noop_span_sentinel()),
+                                      static_cast<pt_span_t>(nullptr),
+                                      [&](pt_span_t valid) {
+            return make_span_handle(
+                valid->ptr->NewAsyncSpan(async_operation ? async_operation : ""));
+        });
+    });
+}
 
-void pt_span_inject_context(pt_span_t span, pt_context_writer_t* writer) try {
-    if (!span || !span->ptr || !writer) return;
-    CContextWriter cpt_writer(writer);
-    span->ptr->InjectContext(cpt_writer);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_inject_context(pt_span_t span, pt_context_writer_t* writer) {
+    pt_api_call(__func__, [&] {
+        if (!writer) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CContextWriter cpt_writer(writer);
+            valid->ptr->InjectContext(cpt_writer);
+        });
+    });
+}
 
-void pt_span_extract_context(pt_span_t span, const pt_context_reader_t* reader) try {
-    if (!span || !span->ptr || !reader) return;
-    CContextReader cpt_reader(reader);
-    span->ptr->ExtractContext(cpt_reader);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_extract_context(pt_span_t span, const pt_context_reader_t* reader) {
+    pt_api_call(__func__, [&] {
+        if (!reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CContextReader cpt_reader(reader);
+            valid->ptr->ExtractContext(cpt_reader);
+        });
+    });
+}
 
-pt_trace_id_t pt_span_get_trace_id(pt_span_t span) try {
-    pt_trace_id_t result{};
-    if (span && span->ptr) {
-        fill_trace_id(&result, span->ptr->GetTraceId());
-    }
-    return result;
-} catch (...) { pt_handle_exception(__func__); return pt_trace_id_t{}; }
+pt_trace_id_t pt_span_get_trace_id(pt_span_t span) {
+    return pt_api_call(__func__, pt_trace_id_t{}, [&] {
+        return pt_handle_call(span, pt_trace_id_t{}, [](pt_span_t valid) {
+            pt_trace_id_t result{};
+            fill_trace_id(&result, valid->ptr->GetTraceId());
+            return result;
+        });
+    });
+}
 
-int64_t pt_span_get_span_id(pt_span_t span) try {
-    if (!span || !span->ptr) return 0;
-    return span->ptr->GetSpanId();
-} catch (...) { pt_handle_exception(__func__); return 0; }
+int64_t pt_span_get_span_id(pt_span_t span) {
+    return pt_api_call(__func__, int64_t{0}, [&] {
+        return pt_handle_call(span, int64_t{0}, [](pt_span_t valid) {
+            return valid->ptr->GetSpanId();
+        });
+    });
+}
 
-int pt_span_is_sampled(pt_span_t span) try {
-    if (!span || !span->ptr) return 0;
-    return span->ptr->IsSampled() ? 1 : 0;
-} catch (...) { pt_handle_exception(__func__); return 0; }
+int pt_span_is_sampled(pt_span_t span) {
+    return pt_api_call(__func__, 0, [&] {
+        return pt_handle_call(span, 0, [](pt_span_t valid) {
+            return valid->ptr->IsSampled() ? 1 : 0;
+        });
+    });
+}
 
-void pt_span_set_service_type(pt_span_t span, int32_t service_type) try {
-    if (span && span->ptr) span->ptr->SetServiceType(service_type);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_service_type(pt_span_t span, int32_t service_type) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetServiceType(service_type);
+        });
+    });
+}
 
-void pt_span_set_start_time_ms(pt_span_t span, int64_t ms_since_epoch) try {
-    if (span && span->ptr) {
-        span->ptr->SetStartTime(ms_to_time_point(ms_since_epoch));
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_start_time_ms(pt_span_t span, int64_t ms_since_epoch) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetStartTime(ms_to_time_point(ms_since_epoch));
+        });
+    });
+}
 
-void pt_span_set_remote_address(pt_span_t span, const char* address) try {
-    if (span && span->ptr && address) span->ptr->SetRemoteAddress(address);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_remote_address(pt_span_t span, const char* address) {
+    pt_api_call(__func__, [&] {
+        if (!address) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetRemoteAddress(address);
+        });
+    });
+}
 
-void pt_span_set_end_point(pt_span_t span, const char* end_point) try {
-    if (span && span->ptr && end_point) span->ptr->SetEndPoint(end_point);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_end_point(pt_span_t span, const char* end_point) {
+    pt_api_call(__func__, [&] {
+        if (!end_point) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetEndPoint(end_point);
+        });
+    });
+}
 
-void pt_span_set_acceptor_host(pt_span_t span, const char* host) try {
-    if (span && span->ptr && host) span->ptr->SetAcceptorHost(host);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_acceptor_host(pt_span_t span, const char* host) {
+    pt_api_call(__func__, [&] {
+        if (!host) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetAcceptorHost(host);
+        });
+    });
+}
 
-void pt_span_set_error(pt_span_t span, const char* error_message) try {
-    if (span && span->ptr && error_message) span->ptr->SetError(error_message);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_error(pt_span_t span, const char* error_message) {
+    pt_api_call(__func__, [&] {
+        if (!error_message) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetError(error_message);
+        });
+    });
+}
 
 void pt_span_set_error_named(pt_span_t span, const char* error_name,
-                             const char* error_message) try {
-    if (span && span->ptr && error_name && error_message) {
-        span->ptr->SetError(error_name, error_message);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                             const char* error_message) {
+    pt_api_call(__func__, [&] {
+        if (!error_name || !error_message) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetError(error_name, error_message);
+        });
+    });
+}
 
-void pt_span_set_status_code(pt_span_t span, int status_code) try {
-    if (span && span->ptr) span->ptr->SetStatusCode(status_code);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_status_code(pt_span_t span, int status_code) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetStatusCode(status_code);
+        });
+    });
+}
 
 void pt_span_set_url_stat(pt_span_t span, const char* url_pattern,
-                          const char* method, int status_code) try {
-    if (span && span->ptr) {
-        span->ptr->SetUrlStat(url_pattern ? url_pattern : "",
-                              method      ? method      : "",
-                              status_code);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                          const char* method, int status_code) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetUrlStat(url_pattern ? url_pattern : "",
+                                   method      ? method      : "",
+                                   status_code);
+        });
+    });
+}
 
-void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer) try {
-    if (!span || !span->ptr || !writer) return;
-    CContextWriter cpt_writer(writer);
-    span->ptr->SetLogging(cpt_writer);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer) {
+    pt_api_call(__func__, [&] {
+        if (!writer) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CContextWriter cpt_writer(writer);
+            valid->ptr->SetLogging(cpt_writer);
+        });
+    });
+}
 
 void pt_span_record_header(pt_span_t span, pt_header_type_t which,
-                           const pt_header_reader_t* reader) try {
-    if (!span || !span->ptr || !reader) return;
-    CHeaderReader cpt_reader(reader);
-    span->ptr->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
-} catch (...) { pt_handle_exception(__func__); }
+                           const pt_header_reader_t* reader) {
+    pt_api_call(__func__, [&] {
+        if (!reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CHeaderReader cpt_reader(reader);
+            valid->ptr->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
+        });
+    });
+}
 
-pt_annotation_t pt_span_get_annotations(pt_span_t span) try {
-    if (!span || !span->ptr) return nullptr;
-    if (span == noop_span_sentinel()) return noop_annotation_sentinel();
-    return make_annotation_handle(span->ptr->GetAnnotations());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_annotation_t pt_span_get_annotations(pt_span_t span) {
+    return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(span, noop_span_sentinel(),
+                                      static_cast<pt_annotation_t>(noop_annotation_sentinel()),
+                                      static_cast<pt_annotation_t>(nullptr),
+                                      [](pt_span_t valid) {
+            return make_annotation_handle(valid->ptr->GetAnnotations());
+        });
+    });
+}
 
 // ============================================================================
 // SpanEvent operations
 // ============================================================================
 
-void pt_span_event_destroy(pt_span_event_t se) try {
-    if (se == noop_span_event_sentinel()) return;  // static sentinel — never owned
-    delete se;
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_destroy(pt_span_event_t se) {
+    pt_api_call(__func__, [&] {
+        destroy_handle(se, noop_span_event_sentinel());
+    });
+}
 
-void pt_span_event_set_service_type(pt_span_event_t se, int32_t service_type) try {
-    if (se && se->ptr) se->ptr->SetServiceType(service_type);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_service_type(pt_span_event_t se, int32_t service_type) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetServiceType(service_type);
+        });
+    });
+}
 
-void pt_span_event_set_operation_name(pt_span_event_t se, const char* operation) try {
-    if (se && se->ptr && operation) se->ptr->SetOperationName(operation);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_operation_name(pt_span_event_t se, const char* operation) {
+    pt_api_call(__func__, [&] {
+        if (!operation) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetOperationName(operation);
+        });
+    });
+}
 
-void pt_span_event_set_start_time_ms(pt_span_event_t se, int64_t ms_since_epoch) try {
-    if (se && se->ptr) {
-        se->ptr->SetStartTime(ms_to_time_point(ms_since_epoch));
-    }
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_start_time_ms(pt_span_event_t se, int64_t ms_since_epoch) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetStartTime(ms_to_time_point(ms_since_epoch));
+        });
+    });
+}
 
-void pt_span_event_set_destination(pt_span_event_t se, const char* dest) try {
-    if (se && se->ptr && dest) se->ptr->SetDestination(dest);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_destination(pt_span_event_t se, const char* dest) {
+    pt_api_call(__func__, [&] {
+        if (!dest) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetDestination(dest);
+        });
+    });
+}
 
-void pt_span_event_set_end_point(pt_span_event_t se, const char* end_point) try {
-    if (se && se->ptr && end_point) se->ptr->SetEndPoint(end_point);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_end_point(pt_span_event_t se, const char* end_point) {
+    pt_api_call(__func__, [&] {
+        if (!end_point) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetEndPoint(end_point);
+        });
+    });
+}
 
-void pt_span_event_set_error(pt_span_event_t se, const char* error_message) try {
-    if (se && se->ptr && error_message) se->ptr->SetError(error_message);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_span_event_set_error(pt_span_event_t se, const char* error_message) {
+    pt_api_call(__func__, [&] {
+        if (!error_message) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetError(error_message);
+        });
+    });
+}
 
 void pt_span_event_set_error_named(pt_span_event_t se, const char* error_name,
-                                   const char* error_message) try {
-    if (se && se->ptr && error_name && error_message) {
-        se->ptr->SetError(error_name, error_message);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                   const char* error_message) {
+    pt_api_call(__func__, [&] {
+        if (!error_name || !error_message) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetError(error_name, error_message);
+        });
+    });
+}
 
 void pt_span_event_set_error_with_callstack(pt_span_event_t se,
                                             const char* error_name,
                                             const char* error_message,
-                                            const pt_callstack_reader_t* reader) try {
-    if (!se || !se->ptr) return;
-    const char* name = error_name    ? error_name    : "";
-    const char* msg  = error_message ? error_message : "";
-    if (reader) {
-        CCallstackReader cpt_reader(reader);
-        se->ptr->SetError(name, msg, cpt_reader);
-    } else {
-        se->ptr->SetError(name, msg);
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                            const pt_callstack_reader_t* reader) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            const char* name = error_name    ? error_name    : "";
+            const char* msg  = error_message ? error_message : "";
+            if (reader) {
+                CCallstackReader cpt_reader(reader);
+                valid->ptr->SetError(name, msg, cpt_reader);
+            } else {
+                valid->ptr->SetError(name, msg);
+            }
+        });
+    });
+}
 
 void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
-                                 const char* args) try {
-    if (se && se->ptr) {
-        se->ptr->SetSqlQuery(sql_query ? sql_query : "",
-                             args      ? args      : "");
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                 const char* args) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            valid->ptr->SetSqlQuery(sql_query ? sql_query : "",
+                                    args      ? args      : "");
+        });
+    });
+}
 
 void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
-                                 const pt_header_reader_t* reader) try {
-    if (!se || !se->ptr || !reader) return;
-    CHeaderReader cpt_reader(reader);
-    se->ptr->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
-} catch (...) { pt_handle_exception(__func__); }
+                                 const pt_header_reader_t* reader) {
+    pt_api_call(__func__, [&] {
+        if (!reader) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            CHeaderReader cpt_reader(reader);
+            valid->ptr->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
+        });
+    });
+}
 
-pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) try {
-    if (!se || !se->ptr) return nullptr;
-    if (se == noop_span_event_sentinel()) return noop_annotation_sentinel();
-    return make_annotation_handle(se->ptr->GetAnnotations());
-} catch (...) { pt_handle_exception(__func__); return nullptr; }
+pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) {
+    return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
+        return pt_handle_call_or_noop(se, noop_span_event_sentinel(),
+                                      static_cast<pt_annotation_t>(noop_annotation_sentinel()),
+                                      static_cast<pt_annotation_t>(nullptr),
+                                      [](pt_span_event_t valid) {
+            return make_annotation_handle(valid->ptr->GetAnnotations());
+        });
+    });
+}
 
 // ============================================================================
 // Annotation operations
 // ============================================================================
 
-void pt_annotation_destroy(pt_annotation_t anno) try {
-    if (anno == noop_annotation_sentinel()) return;  // static sentinel — never owned
-    delete anno;
-} catch (...) { pt_handle_exception(__func__); }
+void pt_annotation_destroy(pt_annotation_t anno) {
+    pt_api_call(__func__, [&] {
+        destroy_handle(anno, noop_annotation_sentinel());
+    });
+}
 
-void pt_annotation_append_int(pt_annotation_t anno, int32_t key, int32_t value) try {
-    if (anno && anno->ptr) anno->ptr->AppendInt(key, value);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_annotation_append_int(pt_annotation_t anno, int32_t key, int32_t value) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendInt(key, value);
+        });
+    });
+}
 
-void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value) try {
-    if (anno && anno->ptr) anno->ptr->AppendLong(key, value);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendLong(key, value);
+        });
+    });
+}
 
-void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* value) try {
-    if (anno && anno->ptr && value) anno->ptr->AppendString(key, value);
-} catch (...) { pt_handle_exception(__func__); }
+void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* value) {
+    pt_api_call(__func__, [&] {
+        if (!value) return;
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendString(key, value);
+        });
+    });
+}
 
 void pt_annotation_append_string_string(pt_annotation_t anno, int32_t key,
-                                        const char* s1, const char* s2) try {
-    if (anno && anno->ptr) {
-        anno->ptr->AppendStringString(key, s1 ? s1 : "", s2 ? s2 : "");
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                        const char* s1, const char* s2) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendStringString(key, s1 ? s1 : "", s2 ? s2 : "");
+        });
+    });
+}
 
 void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
-                                            int i, const char* s1, const char* s2) try {
-    if (anno && anno->ptr) {
-        anno->ptr->AppendIntStringString(key, i, s1 ? s1 : "", s2 ? s2 : "");
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                            int i, const char* s1, const char* s2) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendIntStringString(key, i, s1 ? s1 : "", s2 ? s2 : "");
+        });
+    });
+}
 
 void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t key,
                                               const unsigned char* uid, int uid_len,
-                                              const char* s1, const char* s2) try {
-    if (!anno || !anno->ptr || !uid || uid_len <= 0) return;
-    pinpoint::SqlUid sql_uid{};
-    // Only a fixed-size SQL UID is supported; reject any other length.
-    if (static_cast<size_t>(uid_len) != sql_uid.size()) return;
-    std::memcpy(sql_uid.data(), uid, sql_uid.size());
-    anno->ptr->AppendSqlUidStringString(key, sql_uid,
-                                       s1 ? s1 : "", s2 ? s2 : "");
-} catch (...) { pt_handle_exception(__func__); }
+                                              const char* s1, const char* s2) {
+    pt_api_call(__func__, [&] {
+        if (!uid || uid_len <= 0) return;
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            pinpoint::SqlUid sql_uid{};
+            // Only a fixed-size SQL UID is supported; reject any other length.
+            if (static_cast<size_t>(uid_len) != sql_uid.size()) return;
+            std::memcpy(sql_uid.data(), uid, sql_uid.size());
+            valid->ptr->AppendSqlUidStringString(key, sql_uid,
+                                                 s1 ? s1 : "", s2 ? s2 : "");
+        });
+    });
+}
 
 void pt_annotation_append_long_int_int_byte_byte_string(pt_annotation_t anno,
                                                         int32_t key,
                                                         int64_t l,
                                                         int32_t i1, int32_t i2,
                                                         int32_t b1, int32_t b2,
-                                                        const char* s) try {
-    if (anno && anno->ptr) {
-        anno->ptr->AppendLongIntIntByteByteString(key, l, i1, i2, b1, b2,
-                                                  s ? s : "");
-    }
-} catch (...) { pt_handle_exception(__func__); }
+                                                        const char* s) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(anno, [&](pt_annotation_t valid) {
+            valid->ptr->AppendLongIntIntByteByteString(key, l, i1, i2, b1, b2,
+                                                       s ? s : "");
+        });
+    });
+}
 
 // ============================================================================
 // HTTP helper functions
@@ -708,73 +953,97 @@ void pt_annotation_append_long_int_int_byte_byte_string(pt_annotation_t anno,
 void pt_trace_http_server_request(pt_span_t span,
                                   const char* remote_addr,
                                   const char* endpoint,
-                                  const pt_header_reader_t* request_reader) try {
-    if (!span || !span->ptr || !request_reader) return;
-    CHeaderReader cpt_req(request_reader);
-    pinpoint::helper::TraceHttpServerRequest(span->ptr,
-                                             remote_addr ? remote_addr : "",
-                                             endpoint    ? endpoint    : "",
-                                             cpt_req);
-} catch (...) { pt_handle_exception(__func__); }
+                                  const pt_header_reader_t* request_reader) {
+    pt_api_call(__func__, [&] {
+        if (!request_reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CHeaderReader cpt_req(request_reader);
+            pinpoint::helper::TraceHttpServerRequest(valid->ptr,
+                                                     remote_addr ? remote_addr : "",
+                                                     endpoint    ? endpoint    : "",
+                                                     cpt_req);
+        });
+    });
+}
 
 void pt_trace_http_server_request_with_cookie(pt_span_t span,
                                               const char* remote_addr,
                                               const char* endpoint,
                                               const pt_header_reader_t* request_reader,
-                                              const pt_header_reader_t* cookie_reader) try {
-    if (!span || !span->ptr || !request_reader || !cookie_reader) return;
-    CHeaderReader cpt_req(request_reader);
-    CHeaderReader cpt_cookie(cookie_reader);
-    pinpoint::helper::TraceHttpServerRequest(span->ptr,
-                                             remote_addr ? remote_addr : "",
-                                             endpoint    ? endpoint    : "",
-                                             cpt_req, cpt_cookie);
-} catch (...) { pt_handle_exception(__func__); }
+                                              const pt_header_reader_t* cookie_reader) {
+    pt_api_call(__func__, [&] {
+        if (!request_reader || !cookie_reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CHeaderReader cpt_req(request_reader);
+            CHeaderReader cpt_cookie(cookie_reader);
+            pinpoint::helper::TraceHttpServerRequest(valid->ptr,
+                                                     remote_addr ? remote_addr : "",
+                                                     endpoint    ? endpoint    : "",
+                                                     cpt_req, cpt_cookie);
+        });
+    });
+}
 
 void pt_trace_http_server_response(pt_span_t span,
                                    const char* url_pattern,
                                    const char* method,
                                    int status_code,
-                                   const pt_header_reader_t* response_reader) try {
-    if (!span || !span->ptr || !response_reader) return;
-    CHeaderReader cpt_resp(response_reader);
-    pinpoint::helper::TraceHttpServerResponse(span->ptr,
-                                              url_pattern ? url_pattern : "",
-                                              method      ? method      : "",
-                                              status_code,
-                                              cpt_resp);
-} catch (...) { pt_handle_exception(__func__); }
+                                   const pt_header_reader_t* response_reader) {
+    pt_api_call(__func__, [&] {
+        if (!response_reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CHeaderReader cpt_resp(response_reader);
+            pinpoint::helper::TraceHttpServerResponse(valid->ptr,
+                                                      url_pattern ? url_pattern : "",
+                                                      method      ? method      : "",
+                                                      status_code,
+                                                      cpt_resp);
+        });
+    });
+}
 
 void pt_trace_http_client_request(pt_span_event_t se,
                                   const char* host,
                                   const char* url,
-                                  const pt_header_reader_t* request_reader) try {
-    if (!se || !se->ptr || !request_reader) return;
-    CHeaderReader cpt_req(request_reader);
-    pinpoint::helper::TraceHttpClientRequest(se->ptr,
-                                             host ? host : "",
-                                             url  ? url  : "",
-                                             cpt_req);
-} catch (...) { pt_handle_exception(__func__); }
+                                  const pt_header_reader_t* request_reader) {
+    pt_api_call(__func__, [&] {
+        if (!request_reader) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            CHeaderReader cpt_req(request_reader);
+            pinpoint::helper::TraceHttpClientRequest(valid->ptr,
+                                                     host ? host : "",
+                                                     url  ? url  : "",
+                                                     cpt_req);
+        });
+    });
+}
 
 void pt_trace_http_client_request_with_cookie(pt_span_event_t se,
                                               const char* host,
                                               const char* url,
                                               const pt_header_reader_t* request_reader,
-                                              const pt_header_reader_t* cookie_reader) try {
-    if (!se || !se->ptr || !request_reader || !cookie_reader) return;
-    CHeaderReader cpt_req(request_reader);
-    CHeaderReader cpt_cookie(cookie_reader);
-    pinpoint::helper::TraceHttpClientRequest(se->ptr,
-                                             host ? host : "",
-                                             url  ? url  : "",
-                                             cpt_req, cpt_cookie);
-} catch (...) { pt_handle_exception(__func__); }
+                                              const pt_header_reader_t* cookie_reader) {
+    pt_api_call(__func__, [&] {
+        if (!request_reader || !cookie_reader) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            CHeaderReader cpt_req(request_reader);
+            CHeaderReader cpt_cookie(cookie_reader);
+            pinpoint::helper::TraceHttpClientRequest(valid->ptr,
+                                                     host ? host : "",
+                                                     url  ? url  : "",
+                                                     cpt_req, cpt_cookie);
+        });
+    });
+}
 
 void pt_trace_http_client_response(pt_span_event_t se,
                                    int status_code,
-                                   const pt_header_reader_t* response_reader) try {
-    if (!se || !se->ptr || !response_reader) return;
-    CHeaderReader cpt_resp(response_reader);
-    pinpoint::helper::TraceHttpClientResponse(se->ptr, status_code, cpt_resp);
-} catch (...) { pt_handle_exception(__func__); }
+                                   const pt_header_reader_t* response_reader) {
+    pt_api_call(__func__, [&] {
+        if (!response_reader) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            CHeaderReader cpt_resp(response_reader);
+            pinpoint::helper::TraceHttpClientResponse(valid->ptr, status_code, cpt_resp);
+        });
+    });
+}
