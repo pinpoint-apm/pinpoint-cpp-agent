@@ -288,8 +288,9 @@ namespace pinpoint {
             channel_ready_backoff_.reset();
         }
 
-        if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - now).count() >= 5) {
-            force_queue_empty_ = true;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - now);
+        if (elapsed.count() >= 5) {
+            on_slow_channel_recovery(elapsed);
         }
         return true;
     }
@@ -1639,6 +1640,11 @@ namespace pinpoint {
         set_stats_stub(v1::Stat::NewStub(channel_));
     }
 
+    void GrpcStats::on_slow_channel_recovery(std::chrono::seconds elapsed) {
+        force_stats_queue_empty_.store(true, std::memory_order_release);
+        LOG_DEBUG("stats queue marked stale after slow channel recovery: {}s", elapsed.count());
+    }
+
     bool GrpcStats::start_stats_stream() {
         LOG_DEBUG("start_stats_stream");
         if (!readyChannel()) {
@@ -1775,7 +1781,7 @@ namespace pinpoint {
         if (stats_queue_.size() < MAX_STATS_QUEUE_SIZE) {
             stats_queue_.push(stats);
         } else {
-            force_queue_empty_ = true;
+            force_stats_queue_empty_.store(true, std::memory_order_release);
             LOG_DEBUG("drop stats: overflow max queue size {}", MAX_STATS_QUEUE_SIZE);
         }
 
@@ -1793,14 +1799,28 @@ namespace pinpoint {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
             
             stats_queue_.swap(temp_queue);
-            force_queue_empty_ = false;
         }
         
         agent_->getAgentStats().initAgentStats();
         // clear URL stat snapshot
         (void)agent_->getUrlStats().takeSnapshot();
     } catch (const std::exception &e) {
-        LOG_ERROR("failed to empty span queue: exception = {}", e.what());
+        LOG_ERROR("failed to empty stats queue: exception = {}", e.what());
+    }
+
+    bool GrpcStats::empty_stats_queue_if_requested() noexcept try {
+        if (!force_stats_queue_empty_.exchange(false, std::memory_order_acq_rel)) {
+            return false;
+        }
+
+        empty_stats_queue();
+        return true;
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to empty stats queue if requested: exception = {}", e.what());
+        return false;
+    } catch (...) {
+        LOG_ERROR("failed to empty stats queue if requested: unknown exception");
+        return false;
     }
 
     void GrpcStats::sendStatsWorker() try {
@@ -1834,9 +1854,7 @@ namespace pinpoint {
             // The staleness flag is also set by a queue overflow while the
             // stream stays up; consume it every cycle so it cannot linger
             // and purge fresh stats at an unrelated reconnect much later.
-            if (force_queue_empty_) {
-                empty_stats_queue();
-            }
+            empty_stats_queue_if_requested();
 
             lock.lock();
         }
