@@ -19,13 +19,6 @@
 
 namespace pinpoint {
 
-    CacheResult IdCache::get(std::string_view key) {
-        // Use the template cache with a lambda generator for new IDs
-        return cache_.get(key, [this]() {
-            return ++id_sequence_;
-        });
-    }
-
     SqlUidCacheResult SqlUidCache::get(std::string_view key) {
         // Use the template cache with a lambda generator for new UIDs
         return cache_.get(key, [&key]() {
