@@ -84,12 +84,13 @@ pinpoint-cpp-agent/
 ├── BUILD.bazel          # Bazel: main library target
 ├── MODULE.bazel         # Bazel: module dependencies (bzlmod)
 ├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
-├── CMakePresets.json    # CMake: presets (default / vcpkg / conan / fetchcontent / debug)
+├── CMakePresets.json    # CMake: presets (default / vcpkg / conan / debug / debug-cached)
 ├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
 ├── conanfile.txt        # Conan 2 requirements (used by the `conan` preset)
 ├── include/             # Public headers
 │   └── pinpoint/
-│       └── tracer.h
+│       ├── tracer.h
+│       └── tracer_c.h
 ├── src/                 # Library source files
 ├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
@@ -163,8 +164,8 @@ cmake --list-presets
 | `default` | `find_package` against system / `CMAKE_PREFIX_PATH`, FetchContent fallback |
 | `vcpkg` | vcpkg toolchain (requires `VCPKG_ROOT` env var) |
 | `conan` | Conan 2 toolchain (requires `conan install` first) |
-| `fetchcontent` | Force all deps to be built from source |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
+| `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
 
 Configure + build + test using a preset:
 
@@ -226,7 +227,7 @@ cmake --preset default
 cmake --build --preset default
 ```
 
-> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` or `fetchcontent` preset instead.
+> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` or `conan` preset, or let the `default` preset fall back to FetchContent when packages are not found.
 
 **Fedora / RHEL (dnf):**
 
@@ -282,15 +283,6 @@ cmake --build --preset conan
 
 The `conan` preset expects `build/conan/conan_toolchain.cmake` to exist, which is produced by the `conan install` step above.
 
-#### FetchContent (no package manager)
-
-```bash
-cmake --preset fetchcontent
-cmake --build --preset fetchcontent
-```
-
-This ignores any installed packages and compiles every dependency from source. Slow, but hermetic.
-
 ### Compiler Cache (ccache)
 
 If `ccache` is available on `PATH`, `CMakeLists.txt` wires it up automatically as `CMAKE_C_COMPILER_LAUNCHER` / `CMAKE_CXX_COMPILER_LAUNCHER`. Verify:
@@ -318,7 +310,7 @@ The following CMake options are available:
 |---|---|---|
 | `BUILD_TESTING` | ON | Build unit tests |
 | `BUILD_EXAMPLES` | ON | Build example applications |
-| `BUILD_SHARED_LIBS` | OFF | Build as a shared library (.so / .dylib) |
+| `BUILD_SHARED_LIBS` | ON | Build as a shared library (.so / .dylib) |
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
 | `BUILD_COVERAGE` | OFF | Enable code coverage (GCC only) |
 | `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
@@ -359,7 +351,7 @@ ctest --preset default --verbose
 ctest --preset default -R test_sampling
 ```
 
-Substitute the preset name (`vcpkg`, `conan`, `fetchcontent`, `debug`) to run against a different build directory.
+Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run against a different build directory.
 
 ### Available unit tests
 
@@ -372,6 +364,7 @@ Substitute the preset name (`vcpkg`, `conan`, `fetchcontent`, `debug`) to run ag
 | `test_annotation` | Annotation handling |
 | `test_callstack` | Call stack tracking |
 | `test_config` | YAML configuration loading |
+| `test_object_name` | Agent identity / ObjectName version handling |
 | `test_sql` | SQL query normalization |
 | `test_stat` | Statistics collection |
 | `test_url_stat` | URL statistics |
@@ -380,6 +373,7 @@ Substitute the preset name (`vcpkg`, `conan`, `fetchcontent`, `debug`) to run ag
 | `test_noop` | No-op mode behavior |
 | `test_grpc` | gRPC transport |
 | `test_grpc_with_mocks` | gRPC transport with mock services |
+| `test_tracer_c` | Pure-C API wrapper behavior |
 
 ---
 
@@ -437,17 +431,17 @@ The test script supports several modes and options:
 
 The first Bazel build downloads and compiles all external dependencies (gRPC, protobuf, etc.), which can take several minutes. Subsequent builds use the cache and are much faster.
 
-### CMake: FetchContent is slow
+### CMake: FetchContent fallback is slow
 
-The `fetchcontent` preset (and the fallback path in the `default` preset when no system packages are found) downloads and builds every dependency from source on the first run. Use a package manager (vcpkg / Conan / Homebrew / apt / ...) for pre-built packages to avoid this overhead. After the first configure, `ccache` will also dramatically speed up subsequent rebuilds.
+When the `default` preset cannot find required packages, it downloads and builds missing dependencies from source via FetchContent on the first run. Use a package manager (vcpkg / Conan / Homebrew / apt / ...) for pre-built packages to avoid this overhead. After the first configure, `ccache` will also dramatically speed up subsequent rebuilds.
 
 ### Migrating from `FORCE_FETCHCONTENT=ON`
 
-`FORCE_FETCHCONTENT` has been removed. Use the `fetchcontent` preset instead:
+`FORCE_FETCHCONTENT` has been removed, and there is no dedicated force-FetchContent preset in `CMakePresets.json`. Use a package-manager preset for reproducible dependencies, or configure with a clean environment where `find_package(CONFIG)` cannot see system packages so the `default` preset falls back to FetchContent.
 
 ```bash
-cmake --preset fetchcontent
-cmake --build --preset fetchcontent
+cmake --preset default
+cmake --build --preset default
 ```
 
 ### macOS linker warnings

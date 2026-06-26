@@ -24,7 +24,7 @@ Before you begin, ensure you have:
 
 - **Pinpoint Collector**: Version 2.4.0 or higher
 - **C++ Compiler**: Supporting C++17 or higher
-- **Build System**: CMake 3.20+ or Bazel
+- **Build System**: CMake 3.21+ or Bazel
 - **Operating System**: Linux, macOS, or Windows
 
 ---
@@ -66,7 +66,7 @@ Then in your `BUILD` file:
 cc_binary(
     name = "your_app",
     srcs = ["main.cpp"],
-    deps = ["@pinpoint_cpp//:pinpoint_cpp"],
+    deps = ["@pinpoint_cpp//:pinpoint-cpp"],
 )
 ```
 

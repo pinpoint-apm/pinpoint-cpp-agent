@@ -53,14 +53,16 @@ Pinpoint models each transaction as a tree of **spans**.
 
 ### Handle lifetime rules
 
-Every handle obtained from a `pt_*_new_*` or `pt_*_get_*` function **must** be released with its matching `_destroy()` function:
+Every handle obtained from a `pt_*_new_*`, `pt_*_get_*`, `pt_create_agent*()`, or `pt_global_agent()` function **must** be released with its matching `_destroy()` function:
 
 ```c
-pt_agent_t      → pt_agent_destroy()       (except pt_global_agent() — see §3)
+pt_agent_t      → pt_agent_destroy()
 pt_span_t       → pt_span_destroy()        (call pt_span_end() first)
 pt_span_event_t → pt_span_event_destroy()  (call pt_span_end_event() first)
 pt_annotation_t → pt_annotation_destroy()
 ```
+
+`pt_agent_destroy()` releases the C handle wrapper. It does not shut down tracing by itself; call `pt_agent_shutdown()` only for an agent you intend to stop.
 
 ---
 
@@ -113,18 +115,18 @@ pt_agent_t agent = pt_create_agent_with_type(PT_APP_TYPE_CPP);
 
 ### Using the global agent
 
-`pt_global_agent()` returns a non-owning handle to the singleton agent that was created by the most recent `pt_create_agent()` call. **Do not call `pt_agent_destroy()` on a handle returned by `pt_global_agent()`.**
+`pt_global_agent()` returns a C handle wrapper around the singleton agent that was created by the most recent `pt_create_agent()` call. If no global agent exists, it returns a disabled no-op agent handle. Release the returned wrapper with `pt_agent_destroy()` when done. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
 
 ```c
 /* In a request handler, far from main() */
-pt_agent_t agent = pt_global_agent();  /* non-owning */
+pt_agent_t agent = pt_global_agent();  /* wrapper around the global agent */
 
 pt_span_t span = pt_agent_new_span(agent, "MyService", "/api/v1");
 /* ... */
 pt_span_end(span);
 pt_span_destroy(span);
 
-pt_agent_destroy(agent);  /* releases the non-owning handle wrapper */
+pt_agent_destroy(agent);  /* releases this C handle wrapper */
 ```
 
 ### Checking agent status
@@ -520,7 +522,7 @@ static void handle_request(const my_request_t* req, my_response_t* res) {
 
     pt_span_end(span);
     pt_span_destroy(span);
-    pt_agent_destroy(agent);  /* non-owning handle from pt_global_agent() */
+    pt_agent_destroy(agent);  /* releases the pt_global_agent() handle wrapper */
 }
 ```
 
@@ -821,7 +823,7 @@ static void on_request(const my_request_t* req, my_response_t* res) {
 
     pt_span_end(span);
     pt_span_destroy(span);
-    pt_agent_destroy(agent);
+    pt_agent_destroy(agent);  /* releases the pt_global_agent() handle wrapper */
 }
 
 int main(void) {

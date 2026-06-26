@@ -74,27 +74,35 @@ Before you can create spans, you must configure and create an `Agent` instance. 
 #include "pinpoint/tracer.h"
 
 int main() {
-    // Option 1: Set config file path
+    // Configure once before creating the agent.
     pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
+
+    // Or use SetConfigString(...) / environment variables instead.
     auto agent = pinpoint::CreateAgent();
 
-    // Option 2: Set config string (YAML)
-    std::string config = R"(
-        ApplicationName: "MyApp"
-        Collector:
-          GrpcHost: "localhost"
-    )";
-    pinpoint::SetConfigString(config);
-    auto agent = pinpoint::CreateAgent();
-
-    // Option 3: Create with custom app type
-    auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP);
+    // To override the configured application type:
+    // auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP);
 
     // Your application logic ...
 
     agent->Shutdown();  // flush pending data and stop worker threads
     return 0;
 }
+```
+
+### Sending AgentInfo Metadata
+
+`CreateAgent()` overloads can include server runtime metadata that is sent with AgentInfo:
+
+```cpp
+std::vector<std::string> args = {"--port=8080"};
+std::vector<std::string> libs = {"my-http-framework/1.2.3"};
+
+auto agent = pinpoint::CreateAgent("my-service-runtime", args, libs);
+
+// Or combine explicit application type with server metadata.
+// auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP,
+//                                   "my-service-runtime", args, libs);
 ```
 
 ### Using the Global Agent
@@ -429,6 +437,8 @@ pinpoint::HEADER_SAMPLED           // "Pinpoint-Sampled"
 pinpoint::HEADER_FLAG              // "Pinpoint-Flags"
 pinpoint::HEADER_PARENT_APP_NAME   // "Pinpoint-pAppName"
 pinpoint::HEADER_PARENT_APP_TYPE   // "Pinpoint-pAppType"
+pinpoint::HEADER_PARENT_APP_NAMESPACE // "Pinpoint-pAppNamespace"
+pinpoint::HEADER_PARENT_SERVICE_NAME  // "Pinpoint-pServiceName"
 pinpoint::HEADER_HOST              // "Pinpoint-Host"
 ```
 
@@ -808,7 +818,7 @@ span_event->SetError("QueryError", "Invalid SQL syntax");
 
 ### Recording Stack Traces
 
-Implement `CallStackReader` to capture and record stack traces:
+Implement `CallStackReader` to capture and record stack traces. The call-stack overload is available on `SpanEvent`; for a span-level failure, set the span error and record the stack on the span event that represents the failed operation.
 
 ```cpp
 class CppTraceCallStackReader : public pinpoint::CallStackReader {
@@ -860,7 +870,10 @@ void handleRequest() {
 
     } catch (const std::exception& e) {
         CppTraceCallStackReader stack_reader;
-        span->SetError("UnexpectedError", e.what(), stack_reader);
+        span->SetError("UnexpectedError", e.what());
+        auto error_event = span->NewSpanEvent("unexpected_error");
+        error_event->SetError("UnexpectedError", e.what(), stack_reader);
+        span->EndSpanEvent();
         span->SetStatusCode(500);
 
     } catch (...) {
@@ -1314,7 +1327,7 @@ For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shoot
 4. **Add span events** — wrap key internal operations (DB, HTTP client, cache, business logic).
 5. **Attach annotations** — record useful, non-sensitive details (URLs, status codes, IDs).
 6. **Propagate context** — implement and use `TraceContextReader`/`Writer` for all outgoing/incoming calls.
-7. **Handle errors** — use `SetError` (optionally with a `CallStackReader`) on spans or span events.
+7. **Handle errors** — use `SetError` on spans or span events; use `CallStackReader` with span events when stack frames are needed.
 8. **Support async work** — use shared `SpanPtr` carefully or `NewAsyncSpan()` for background tasks.
 9. **Respect sampling and filters** — configure sampling, URL/method filters, and header recording.
 10. **Shutdown cleanly** — call `agent->Shutdown()` to flush spans on application exit.

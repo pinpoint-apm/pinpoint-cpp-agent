@@ -423,11 +423,12 @@ Http:
 
 ### Slow Application Response
 
-Use throughput-based sampling to limit overhead:
+Use throughput-limited sampling to limit overhead:
 
 ```yaml
 Sampling:
-  Type: "THROUGHPUT"
+  Type: "PERCENT"
+  PercentRate: 100.0
   NewThroughput: 100        # Limit new transaction sampling
   ContinueThroughput: 200
 ```

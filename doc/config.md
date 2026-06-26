@@ -14,6 +14,7 @@ This document is a consolidated reference for all configuration options availabl
 - [Stat Configuration](#stat-configuration)
 - [Sampling Configuration](#sampling-configuration)
 - [Span Configuration](#span-configuration)
+- [AgentInfo Configuration](#agentinfo-configuration)
 - [HTTP Configuration](#http-configuration)
 - [SQL Configuration](#sql-configuration)
 - [Advanced Configuration](#advanced-configuration)
@@ -138,6 +139,8 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
+`LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.
+
 ---
 
 ## Collector Configuration
@@ -145,9 +148,9 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Collector.GrpcHost` | `PINPOINT_CPP_GRPC_HOST` | string | `""` | **Required.** Pinpoint Collector hostname or IP. |
-| `Collector.GrpcAgentPort` | `PINPOINT_CPP_GRPC_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. |
-| `Collector.GrpcSpanPort` | `PINPOINT_CPP_GRPC_SPAN_PORT` | int | `9993` | gRPC port for span data. |
-| `Collector.GrpcStatPort` | `PINPOINT_CPP_GRPC_STAT_PORT` | int | `9992` | gRPC port for statistics data. |
+| `Collector.GrpcAgentPort` | `PINPOINT_CPP_GRPC_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. Valid range: `1`-`65535`. |
+| `Collector.GrpcSpanPort` | `PINPOINT_CPP_GRPC_SPAN_PORT` | int | `9993` | gRPC port for span data. Valid range: `1`-`65535`. |
+| `Collector.GrpcStatPort` | `PINPOINT_CPP_GRPC_STAT_PORT` | int | `9992` | gRPC port for statistics data. Valid range: `1`-`65535`. |
 
 ---
 
@@ -172,8 +175,8 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 | `Grpc.KeepAlivePermitWithoutCalls` | `PINPOINT_CPP_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS` | bool | `false` | Maps to `GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS`. |
 | `Grpc.MaxSendMessageSize` | `PINPOINT_CPP_GRPC_MAX_SEND_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_SEND_MESSAGE_LENGTH`. `-1` means unlimited. |
 | `Grpc.MaxReceiveMessageSize` | `PINPOINT_CPP_GRPC_MAX_RECEIVE_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH`. `-1` means unlimited. |
-| `Grpc.SenderQueueSize` | `PINPOINT_CPP_GRPC_SENDER_QUEUE_SIZE` | int | `1000` | Applied to metadata queue. Span still uses `Span.QueueSize`; agent/stat have no separate C++ sender queue. |
-| `Grpc.ChannelExecutorQueueSize` | `PINPOINT_CPP_GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE` | int | `1000` | Parsed for Java config parity. The C++ gRPC API used here does not expose the same Netty executor queue. |
+| `Grpc.SenderQueueSize` | `PINPOINT_CPP_GRPC_SENDER_QUEUE_SIZE` | int | `1000` | Valid range: `1`-`65536`. Applied to metadata queue. Span still uses `Span.QueueSize`; agent/stat have no separate C++ sender queue. |
+| `Grpc.ChannelExecutorQueueSize` | `PINPOINT_CPP_GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE` | int | `1000` | Valid range: `1`-`65536`. Parsed for Java config parity. The C++ gRPC API used here does not expose the same Netty executor queue. |
 
 The same `Grpc` channel options are applied to the agent, metadata, span, and stat gRPC channels. Java-specific name resolver providers, custom interceptor injection, Netty channel type, channelz reporter wiring, retry/hedging service config, flow-control window, and write-buffer watermarks do not have a direct equivalent in the current C++ agent implementation.
 
@@ -194,8 +197,8 @@ Grpc:
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Stat.Enable` | `PINPOINT_CPP_STAT_ENABLE` | bool | `true` | Enable/disable system statistics collection. |
-| `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. |
-| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. |
+| `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. Valid range: `1`-`100`. |
+| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`60000`. |
 
 ---
 
@@ -203,11 +206,13 @@ Grpc:
 
 | YAML Key | Environment Variable | Type | Default | Range / Notes |
 |---|---|---|---|---|
-| `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"`, `"PERCENT"`, `"THROUGHPUT"` |
+| `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). Values other than `PERCENT` use counter sampling. |
 | `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions. `0` = disable. |
-| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Clamped to `[0.01, 100]`. |
+| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Negative values become `0`; positive values below `0.01` become `0.01`; values above `100` become `100`. |
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
+
+Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`.
 
 > Out-of-range values are automatically normalised (clamped) by the agent during `make_config()`.
 
@@ -217,12 +222,26 @@ Grpc:
 
 | YAML Key | Environment Variable | Type | Default | Range / Notes |
 |---|---|---|---|---|
-| `Span.QueueSize` | `PINPOINT_CPP_SPAN_QUEUE_SIZE` | int | `1024` | Min `1`. |
+| `Span.QueueSize` | `PINPOINT_CPP_SPAN_QUEUE_SIZE` | int | `1024` | Valid range: `1`-`65536`. |
 | `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. |
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
+| `Span.Batch.Size` | `PINPOINT_CPP_SPAN_BATCH_SIZE` | int | `20` | Min `1`. Max spans collected per send batch. |
+| `Span.Batch.FlushIntervalMs` | `PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS` | int | `1000` | Min `1`. Span batch flush interval in milliseconds. |
+| `Span.Batch.CollectDeadlineMs` | `PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS` | int | `500` | Min `0`. Deadline for collecting a batch before send. |
+| `Span.Batch.MaxConcurrentRequests` | `PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS` | int | `10` | Min `1`. Max concurrent span-send requests. |
 
 > Negative or invalid values are coerced to safe defaults during `make_config()`.
+
+---
+
+## AgentInfo Configuration
+
+| YAML Key | Environment Variable | Type | Default | Notes |
+|---|---|---|---|---|
+| `AgentInfo.RefreshIntervalMs` | `PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS` | int | `86400000` | AgentInfo refresh interval in milliseconds. |
+| `AgentInfo.SendRetryIntervalMs` | `PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS` | int | `3000` | Retry interval for sending AgentInfo. |
+| `AgentInfo.MaxTryPerAttempt` | `PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT` | int | `3` | Max send attempts per AgentInfo refresh. |
 
 ---
 
@@ -233,7 +252,7 @@ Grpc:
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
-| `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URLs to track. |
+| `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
 | `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. |
 | `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with HTTP method (e.g., `GET:/api/users`). |
@@ -301,13 +320,13 @@ Not all configuration options can be changed at runtime. Options that define the
 | Category | Options | Reloadable? |
 |---|---|---|
 | Agent identity | `ApplicationName`, `ApplicationType`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
-| Collector connection | `Collector.GrpcHost`, `GrpcAgentPort`, `GrpcSpanPort`, `GrpcStatPort` | No |
+| Collector / gRPC connection | `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort`, `Grpc.*` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 
-If the new config file changes any non-reloadable field, the reload is silently skipped and the agent continues with the previous configuration.
+If the new config file changes any non-reloadable field, the reload is skipped, an error is logged, and the agent continues with the previous configuration.
 
 ### Components Rebuilt on Reload
 
@@ -350,7 +369,7 @@ Sampling:
   PercentRate: 10
 ```
 
-The agent detects the change within ~1 second and applies the new sampling rate. A log message is not emitted on success, but a warning is logged if the file cannot be parsed.
+The agent detects the change within ~1 second and applies the new sampling rate. On success it logs `agent config reloaded`; a warning/error is logged if the file cannot be parsed or the update cannot be applied.
 
 ---
 
@@ -381,8 +400,8 @@ Sampling:
 Http:
   CollectUrlStat: true
   Server:
-    RecordRequestHeader: ["*"]
-    RecordResponseHeader: ["*"]
+    RecordRequestHeader: ["HEADERS-ALL"]
+    RecordResponseHeader: ["HEADERS-ALL"]
 
 Sql:
   EnableSqlStats: true
@@ -435,7 +454,7 @@ EnableCallstackTrace: false
 
 ### Example 3: High-Traffic
 
-Throughput-based sampling, large queues, minimal overhead.
+Throughput-limited percentage sampling, large queues, minimal overhead.
 
 ```yaml
 ApplicationName: "HighTrafficApp"
@@ -448,7 +467,8 @@ Collector:
   GrpcHost: "collector.example.com"
 
 Sampling:
-  Type: "THROUGHPUT"
+  Type: "PERCENT"
+  PercentRate: 100.0
   NewThroughput: 500
   ContinueThroughput: 1000
 
@@ -522,16 +542,16 @@ export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
 - `CounterRate: 1` — sample every transaction.
 - `Log.Level: "debug"` — verbose output for diagnostics.
 - `EnableCallstackTrace: true` — capture stack on errors.
-- Record all headers (`["*"]`) for troubleshooting (non-production only).
+- Record all headers (`["HEADERS-ALL"]`) for troubleshooting (non-production only).
 
 ### Production
-- Use `PERCENT` or `THROUGHPUT` sampling to control overhead.
+- Use `PERCENT` sampling or throughput limits to control overhead.
 - `Log.Level: "warn"` or `"error"`.
 - Exclude health-check / monitoring endpoints via `ExcludeUrl`.
 - Record only the headers you need; avoid sensitive ones (`Authorization`, `Cookie`).
 
 ### High-Traffic
-- Prefer `THROUGHPUT` sampling with explicit TPS caps.
+- Prefer explicit `NewThroughput` / `ContinueThroughput` TPS caps.
 - Increase `Span.QueueSize`; decrease `MaxEventDepth` and `MaxEventSequence`.
 - Disable `CollectUrlStat` and `EnableSqlStats` if not needed.
 
@@ -577,6 +597,9 @@ ApplicationName: ""
 ApplicationType: 1300
 AgentId: ""          # auto-generated if empty
 AgentName: ""
+UidVersion: "v3"
+ServiceName: ""      # required only for UidVersion: v4
+ApiKey: ""           # required only for UidVersion: v4; masked in logs
 Enable: true
 IsContainer: false   # auto-detected if not set
 
@@ -621,6 +644,16 @@ Span:
   MaxEventDepth: 64
   MaxEventSequence: 5000
   EventChunkSize: 20
+  Batch:
+    Size: 20
+    FlushIntervalMs: 1000
+    CollectDeadlineMs: 500
+    MaxConcurrentRequests: 10
+
+AgentInfo:
+  RefreshIntervalMs: 86400000
+  SendRetryIntervalMs: 3000
+  MaxTryPerAttempt: 3
 
 Http:
   CollectUrlStat: false
@@ -652,7 +685,7 @@ EnableCallstackTrace: false
 ## Related Documentation
 
 - [Quick Start Guide](quick_start.md)
-- [Instrumentation Guide](instrumentation.md)
+- [Instrumentation Guide](instrument.md)
 - Code examples: see the `example/` directory in the repository
 - GitHub: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues)
 - Pinpoint APM Docs: [https://pinpoint-apm.github.io/pinpoint/](https://pinpoint-apm.github.io/pinpoint/)
