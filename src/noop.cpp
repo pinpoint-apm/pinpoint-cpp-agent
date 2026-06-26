@@ -45,7 +45,7 @@ namespace pinpoint {
     UnsampledSpan::UnsampledSpan(AgentService *agent) : NoopSpan(),
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
-        url_stat_(nullptr),
+        url_stat_(),
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {
         // Guard the deref to stay consistent with the null check on agent_ref_
@@ -80,12 +80,13 @@ namespace pinpoint {
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
-            agent_->recordUrlStat(std::move(url_stat_));
+            agent_->recordUrlStat(std::move(*url_stat_));
+            url_stat_.reset();
         }
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
-        url_stat_ = std::make_unique<UrlStatEntry>(url_pattern, method, status_code);
+        url_stat_.emplace(url_pattern, method, status_code);
     } catch (const std::exception& e) {
         LOG_ERROR("set url stat exception = {}", e.what());
     }
@@ -94,4 +95,3 @@ namespace pinpoint {
         writer.Set(HEADER_SAMPLED, "s0");
     }
 }
-

@@ -19,11 +19,13 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <map>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 
 #include "config.h"
 #include "agent_service.h"
@@ -117,6 +119,17 @@ namespace pinpoint {
             }
             return tick_ < o.tick_;
         }
+        bool operator==(const UrlKey &o) const {
+            return tick_ == o.tick_ && url_ == o.url_;
+        }
+    };
+
+    struct UrlKeyHash {
+        size_t operator()(const UrlKey& key) const noexcept {
+            const auto url_hash = std::hash<std::string>{}(key.url_);
+            const auto tick_hash = std::hash<int64_t>{}(key.tick_);
+            return url_hash ^ (tick_hash + 0x9e3779b97f4a7c15ULL + (url_hash << 6) + (url_hash >> 2));
+        }
     };
 
     /**
@@ -140,7 +153,9 @@ namespace pinpoint {
      */
     class UrlStatSnapshot {
     public:
-        UrlStatSnapshot() : urlMap_{}, mutex_() {}
+        using UrlStatMap = std::unordered_map<UrlKey, std::unique_ptr<EachUrlStat>, UrlKeyHash>;
+
+        UrlStatSnapshot() : urlMap_{} {}
         ~UrlStatSnapshot() = default;
         
         /**
@@ -152,7 +167,7 @@ namespace pinpoint {
          */
         void add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
         /// @brief Returns the const map storing statistics per URL/tick.
-        const std::map<UrlKey, std::unique_ptr<EachUrlStat>>& getEachStats() const { return urlMap_; }
+        const UrlStatMap& getEachStats() const { return urlMap_; }
 
         /**
          * @brief Trims a URL path using the configured depth.
@@ -163,8 +178,7 @@ namespace pinpoint {
         static std::string trim_url_path(std::string_view url, int depth);
 
     private:
-        std::map<UrlKey, std::unique_ptr<EachUrlStat>> urlMap_;
-        std::mutex mutex_;
+        UrlStatMap urlMap_;
     };
 
     /**
@@ -181,6 +195,7 @@ namespace pinpoint {
          * @param stats URL statistic entry (ownership transferred).
          */
         void enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept;
+        void enqueueUrlStats(UrlStatEntry stats) noexcept;
         /// @brief Worker loop that aggregates URL statistics.
         void addUrlStatsWorker();
         /// @brief Stops the aggregation worker.
@@ -206,7 +221,7 @@ namespace pinpoint {
         // Queue for incoming URL stats
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
-        std::queue<std::unique_ptr<UrlStatEntry>> url_stats_{};
+        std::queue<UrlStatEntry> url_stats_{};
 
         // Snapshot management
         TickClock tick_clock_;

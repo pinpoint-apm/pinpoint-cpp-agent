@@ -16,7 +16,6 @@
 
 #include <mutex>
 
-#include "absl/strings/str_cat.h"
 #include "logging.h"
 #include "url_stat.h"
 
@@ -34,6 +33,59 @@ namespace pinpoint {
     constexpr int32_t BUCKET_THRESHOLD_3S = 3000;
     constexpr int32_t BUCKET_THRESHOLD_5S = 5000;
     constexpr int32_t BUCKET_THRESHOLD_8S = 8000;
+
+    struct TrimmedUrlPath {
+        std::string_view path;
+        bool wildcard;
+    };
+
+    static TrimmedUrlPath trim_url_path_view(std::string_view url, int depth) noexcept {
+        if (url.empty()) {
+            return {url, false};
+        }
+
+        if (depth < 1) {
+            depth = 1;
+        }
+
+        size_t end = url.size();
+        bool wildcard = false;
+        for (size_t i = 1; i < url.size(); i++) {
+            if (url[i] == '?') {
+                end = i;
+                break;
+            }
+            if (url[i] == '/') {
+                depth--;
+                if (depth == 0) {
+                    end = i + 1;
+                    wildcard = true;
+                    break;
+                }
+            }
+        }
+
+        return {url.substr(0, end), wildcard};
+    }
+
+    static std::string build_url_stat_key(const UrlStatEntry& us, const Config& config) {
+        const auto trimmed = config.http.url_stat.enable_trim_path
+            ? trim_url_path_view(us.url_pattern_, config.http.url_stat.trim_path_depth)
+            : TrimmedUrlPath{us.url_pattern_, false};
+
+        const auto method_prefix_size = config.http.url_stat.method_prefix ? us.method_.size() + 1 : 0;
+        std::string url;
+        url.reserve(method_prefix_size + trimmed.path.size() + (trimmed.wildcard ? 1 : 0));
+        if (config.http.url_stat.method_prefix) {
+            url.append(us.method_);
+            url.push_back(' ');
+        }
+        url.append(trimmed.path.data(), trimmed.path.size());
+        if (trimmed.wildcard) {
+            url.push_back('*');
+        }
+        return url;
+    }
     
     UrlStats::UrlStats(AgentService* agent)
         : agent_(agent),
@@ -79,16 +131,12 @@ namespace pinpoint {
     }
 
     void UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
-        std::unique_lock<std::mutex> lock(mutex_);
-
-        auto url = config.http.url_stat.enable_trim_path ? 
-            trim_url_path(us->url_pattern_, config.http.url_stat.trim_path_depth) : us->url_pattern_;
-
-        if (config.http.url_stat.method_prefix) {
-            url = absl::StrCat(us->method_, " ", url);
+        if (us == nullptr) {
+            return;
         }
 
-        const auto key = UrlKey{url, tick_clock.tick(us->end_time_)};
+        const auto tick = tick_clock.tick(us->end_time_);
+        auto key = UrlKey{build_url_stat_key(*us, config), tick};
         LOG_DEBUG("url stats snapshot add : {}, {}", key.url_, key.tick_);
 
         EachUrlStat *e;
@@ -96,9 +144,13 @@ namespace pinpoint {
             if (urlMap_.size() >= static_cast<size_t>(config.http.url_stat.limit)) {
                 return;
             }
+            if (urlMap_.empty() && config.http.url_stat.limit > 0) {
+                constexpr size_t kMaxInitialReserve = 4096;
+                urlMap_.reserve(std::min(static_cast<size_t>(config.http.url_stat.limit), kMaxInitialReserve));
+            }
             auto new_stat = std::make_unique<EachUrlStat>(key.tick_);
             e = new_stat.get();
-            urlMap_[key] = std::move(new_stat);
+            urlMap_.emplace(std::move(key), std::move(new_stat));
         } else {
             e = f->second.get();
         }
@@ -110,40 +162,28 @@ namespace pinpoint {
     }
 
     std::string UrlStatSnapshot::trim_url_path(std::string_view url, int depth) {
-        if (url.empty()) {
-            return "";
-        }
-        
-        if (depth < 1) { 
-            depth = 1; 
-        }
-
+        const auto trimmed = trim_url_path_view(url, depth);
         std::string result;
-        result.reserve(url.size());  // Pre-allocate to avoid reallocation
-        result += url[0];
-        
-        bool tailing = false;
-        for (size_t i = 1; i < url.size(); i++) {
-            if (url[i] == '?') {
-                break;
-            }
-            result += url[i];
-            if (url[i] == '/') {
-                depth--;
-                if (depth == 0) {
-                    tailing = true;
-                    break;
-                }
-            }
-        }
-        
-        if (tailing) {
-            result += '*';
+        result.reserve(trimmed.path.size() + (trimmed.wildcard ? 1 : 0));
+        result.append(trimmed.path.data(), trimmed.path.size());
+        if (trimmed.wildcard) {
+            result.push_back('*');
         }
         return result;
     }
 
     void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept try {
+        if (!stats) {
+            return;
+        }
+        enqueueUrlStats(std::move(*stats));
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue url stats: unknown exception");
+    }
+
+    void UrlStats::enqueueUrlStats(UrlStatEntry stats) noexcept try {
         const auto config = agent_->getConfig();
         if (!config->http.url_stat.enable) {
             return;
@@ -153,11 +193,11 @@ namespace pinpoint {
 
         if (url_stats_.size() < config->span.queue_size) {
             url_stats_.push(std::move(stats));
+            lock.unlock();
+            add_cond_var_.notify_one();
         } else {
             LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
         }
-
-        add_cond_var_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
     } catch (...) {
@@ -171,6 +211,7 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(add_mutex_);
+        std::queue<UrlStatEntry> batch;
         while (!agent_->isExiting()) {
             add_cond_var_.wait(lock, [this] {
                 return !url_stats_.empty() || agent_->isExiting();
@@ -179,10 +220,16 @@ namespace pinpoint {
                 break;
             }
 
-            auto us = std::move(url_stats_.front());
-            url_stats_.pop();
+            batch.swap(url_stats_);
             lock.unlock();
-            addSnapshot(us.get(), *config);
+            {
+                std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+                while (!batch.empty()) {
+                    auto us = std::move(batch.front());
+                    batch.pop();
+                    snapshot_->add(&us, *config, tick_clock_);
+                }
+            }
             lock.lock();
         }
         LOG_INFO("add url stats worker end");
@@ -198,7 +245,6 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(add_mutex_);
         add_cond_var_.notify_one();
     }
 
@@ -230,7 +276,6 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(send_mutex_);
         send_cond_var_.notify_one();
     }
 }

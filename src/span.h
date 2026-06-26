@@ -19,6 +19,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stack>
 #include <string>
 #include <vector>
@@ -359,7 +360,7 @@ namespace pinpoint {
     	// mutable so const accessors (getFinishedEventsCount) can lock it.
     	mutable std::mutex span_event_lock_;
 
-        std::unique_ptr<UrlStatEntry> url_stat_;
+        std::optional<UrlStatEntry> url_stat_;
     	std::shared_ptr<PinpointAnnotation> annotations_;
         std::vector<std::unique_ptr<Exception>> exceptions_;
     	// Keeps the agent alive while this span (or any chunk/event referencing

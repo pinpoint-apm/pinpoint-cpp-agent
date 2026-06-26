@@ -105,7 +105,7 @@ namespace pinpoint {
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
-    	void recordUrlStat(std::unique_ptr<UrlStatEntry> stat) const override;
+    	void recordUrlStat(UrlStatEntry stat) const override;
     	void recordException(SpanData* span_data) const override;
     	void recordStats(StatsType stats) const override;
 
