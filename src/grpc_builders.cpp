@@ -32,6 +32,11 @@
 
 namespace pinpoint {
     namespace {
+        template<class... Ts>
+        struct overloaded : Ts... { using Ts::operator()...; };
+        template<class... Ts>
+        overloaded(Ts...) -> overloaded<Ts...>;
+
         v1::PAcceptEvent* build_accept_event(SpanData* span, google::protobuf::Arena* arena) {
             auto* accept_event = google::protobuf::Arena::Create<v1::PAcceptEvent>(arena);
 
@@ -62,68 +67,72 @@ namespace pinpoint {
             annotation->set_key(key);
             auto* annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
 
-            if (val.dataType == ANNOTATION_TYPE_INT) {
-                annotation_value->set_intvalue(std::get<int32_t>(val.data));
-            } else if (val.dataType == ANNOTATION_TYPE_LONG) {
-                annotation_value->set_longvalue(std::get<int64_t>(val.data));
-            } else if (val.dataType == ANNOTATION_TYPE_STRING) {
-                annotation_value->set_stringvalue(std::get<std::string>(val.data));
-            } else if (val.dataType == ANNOTATION_TYPE_STRING_STRING) {
-                const auto& v = std::get<StringStringValue>(val.data);
-                auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
-                auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s1->set_value(v.stringValue1);
-                ssv->unsafe_arena_set_allocated_stringvalue1(s1);
+            std::visit(overloaded{
+                [&](const int32_t v) {
+                    annotation_value->set_intvalue(v);
+                },
+                [&](const int64_t v) {
+                    annotation_value->set_longvalue(v);
+                },
+                [&](const std::string& v) {
+                    annotation_value->set_stringvalue(v);
+                },
+                [&](const StringStringValue& v) {
+                    auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
+                    auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s1->set_value(v.stringValue1);
+                    ssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
-                auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s2->set_value(v.stringValue2);
-                ssv->unsafe_arena_set_allocated_stringvalue2(s2);
+                    auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s2->set_value(v.stringValue2);
+                    ssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-                annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);
-            } else if (val.dataType == ANNOTATION_TYPE_INT_STRING_STRING) {
-                const auto& v = std::get<IntStringStringValue>(val.data);
-                auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
-                issv->set_intvalue(v.intValue);
+                    annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);
+                },
+                [&](const IntStringStringValue& v) {
+                    auto* issv = google::protobuf::Arena::Create<v1::PIntStringStringValue>(arena);
+                    issv->set_intvalue(v.intValue);
 
-                auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s1->set_value(v.stringValue1);
-                issv->unsafe_arena_set_allocated_stringvalue1(s1);
+                    auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s1->set_value(v.stringValue1);
+                    issv->unsafe_arena_set_allocated_stringvalue1(s1);
 
-                auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s2->set_value(v.stringValue2);
-                issv->unsafe_arena_set_allocated_stringvalue2(s2);
+                    auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s2->set_value(v.stringValue2);
+                    issv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-                annotation_value->unsafe_arena_set_allocated_intstringstringvalue(issv);
-            } else if (val.dataType == ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) {
-                const auto& v = std::get<LongIntIntByteByteStringValue>(val.data);
-                auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
-                liibbsv->set_longvalue(v.longValue);
-                liibbsv->set_intvalue1(v.intValue1);
-                liibbsv->set_intvalue2(v.intValue2);
-                liibbsv->set_bytevalue1(v.byteValue1);
-                liibbsv->set_bytevalue2(v.byteValue2);
+                    annotation_value->unsafe_arena_set_allocated_intstringstringvalue(issv);
+                },
+                [&](const LongIntIntByteByteStringValue& v) {
+                    auto* liibbsv = google::protobuf::Arena::Create<v1::PLongIntIntByteByteStringValue>(arena);
+                    liibbsv->set_longvalue(v.longValue);
+                    liibbsv->set_intvalue1(v.intValue1);
+                    liibbsv->set_intvalue2(v.intValue2);
+                    liibbsv->set_bytevalue1(v.byteValue1);
+                    liibbsv->set_bytevalue2(v.byteValue2);
 
-                auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s->set_value(v.stringValue);
-                liibbsv->unsafe_arena_set_allocated_stringvalue(s);
+                    auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s->set_value(v.stringValue);
+                    liibbsv->unsafe_arena_set_allocated_stringvalue(s);
 
-                annotation_value->unsafe_arena_set_allocated_longintintbytebytestringvalue(liibbsv);
-            } else if (val.dataType == ANNOTATION_TYPE_BYTES_STRING_STRING) {
-                const auto& v = std::get<BytesStringStringValue>(val.data);
-                auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
+                    annotation_value->unsafe_arena_set_allocated_longintintbytebytestringvalue(liibbsv);
+                },
+                [&](const BytesStringStringValue& v) {
+                    auto* bssv = google::protobuf::Arena::Create<v1::PBytesStringStringValue>(arena);
 
-                bssv->set_bytesvalue(reinterpret_cast<const char*>(v.bytesValue.data()), v.bytesValue.size());
+                    bssv->set_bytesvalue(reinterpret_cast<const char*>(v.bytesValue.data()), v.bytesValue.size());
 
-                auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s1->set_value(v.stringValue1);
-                bssv->unsafe_arena_set_allocated_stringvalue1(s1);
+                    auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s1->set_value(v.stringValue1);
+                    bssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
-                auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s2->set_value(v.stringValue2);
-                bssv->unsafe_arena_set_allocated_stringvalue2(s2);
+                    auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+                    s2->set_value(v.stringValue2);
+                    bssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
-                annotation_value->unsafe_arena_set_allocated_bytesstringstringvalue(bssv);
-            }
+                    annotation_value->unsafe_arena_set_allocated_bytesstringstringvalue(bssv);
+                }
+            }, val.data);
             annotation->unsafe_arena_set_allocated_value(annotation_value);
         }
 

@@ -1820,6 +1820,128 @@ TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
         << "Built gRPC span should carry parentServiceName (PParentInfo field 4)";
 }
 
+TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->span.batch.size = 1;
+    cfg->span.batch.flush_interval_ms = 50;
+    cfg->span.batch.collect_deadline_ms = 100;
+    cfg->span.batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    SqlUid uid{};
+    uid[0] = 0xDE;
+    uid[1] = 0xAD;
+    uid[2] = 0xBE;
+    uid[3] = 0xEF;
+
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "annotation-op");
+    auto& annotations = span_data->getAnnotations()->getAnnotations();
+    annotations.emplace_back(101, AnnotationData(ANNOTATION_TYPE_STRING, int32_t{42}));
+    span_data->getAnnotations()->AppendLong(102, 1234567890123LL);
+    span_data->getAnnotations()->AppendString(103, "string-value");
+    span_data->getAnnotations()->AppendStringString(104, "left", "right");
+    span_data->getAnnotations()->AppendIntStringString(105, 7, "method", "GET");
+    span_data->getAnnotations()->AppendLongIntIntByteByteString(106, 99, 1, 2, 3, 4, "rpc");
+    span_data->getAnnotations()->AppendSqlUidStringString(107, uid, "sql", "args");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    ASSERT_TRUE(request.span(0).has_span());
+    const auto& span = request.span(0).span();
+    ASSERT_EQ(span.annotation_size(), 7);
+
+    EXPECT_EQ(span.annotation(0).key(), 101);
+    EXPECT_EQ(span.annotation(0).value().intvalue(), 42)
+        << "A mismatched legacy constructor tag must not drive serialization";
+
+    EXPECT_EQ(span.annotation(1).key(), 102);
+    EXPECT_EQ(span.annotation(1).value().longvalue(), 1234567890123LL);
+
+    EXPECT_EQ(span.annotation(2).key(), 103);
+    EXPECT_EQ(span.annotation(2).value().stringvalue(), "string-value");
+
+    const auto& string_string = span.annotation(3).value().stringstringvalue();
+    EXPECT_EQ(span.annotation(3).key(), 104);
+    EXPECT_EQ(string_string.stringvalue1().value(), "left");
+    EXPECT_EQ(string_string.stringvalue2().value(), "right");
+
+    const auto& int_string_string = span.annotation(4).value().intstringstringvalue();
+    EXPECT_EQ(span.annotation(4).key(), 105);
+    EXPECT_EQ(int_string_string.intvalue(), 7);
+    EXPECT_EQ(int_string_string.stringvalue1().value(), "method");
+    EXPECT_EQ(int_string_string.stringvalue2().value(), "GET");
+
+    const auto& complex_value = span.annotation(5).value().longintintbytebytestringvalue();
+    EXPECT_EQ(span.annotation(5).key(), 106);
+    EXPECT_EQ(complex_value.longvalue(), 99);
+    EXPECT_EQ(complex_value.intvalue1(), 1);
+    EXPECT_EQ(complex_value.intvalue2(), 2);
+    EXPECT_EQ(complex_value.bytevalue1(), 3);
+    EXPECT_EQ(complex_value.bytevalue2(), 4);
+    EXPECT_EQ(complex_value.stringvalue().value(), "rpc");
+
+    const auto& bytes_value = span.annotation(6).value().bytesstringstringvalue();
+    EXPECT_EQ(span.annotation(6).key(), 107);
+    ASSERT_EQ(bytes_value.bytesvalue().size(), uid.size());
+    EXPECT_EQ(static_cast<unsigned char>(bytes_value.bytesvalue()[0]), uid[0]);
+    EXPECT_EQ(static_cast<unsigned char>(bytes_value.bytesvalue()[1]), uid[1]);
+    EXPECT_EQ(static_cast<unsigned char>(bytes_value.bytesvalue()[2]), uid[2]);
+    EXPECT_EQ(static_cast<unsigned char>(bytes_value.bytesvalue()[3]), uid[3]);
+    EXPECT_EQ(bytes_value.stringvalue1().value(), "sql");
+    EXPECT_EQ(bytes_value.stringvalue2().value(), "args");
+}
+
+TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->span.batch.size = 1;
+    cfg->span.batch.flush_interval_ms = 50;
+    cfg->span.batch.collect_deadline_ms = 100;
+    cfg->span.batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "event-annotation-op");
+    auto span_event = std::make_shared<SpanEventImpl>(span_data, "child-op");
+    span_event->GetAnnotations()->AppendString(201, "event-annotation");
+    span_data->addSpanEvent(span_event);
+    span_data->finishSpanEvent();
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    ASSERT_TRUE(request.span(0).has_span());
+    const auto& span = request.span(0).span();
+    ASSERT_EQ(span.spanevent_size(), 1);
+    const auto& event = span.spanevent(0);
+    ASSERT_EQ(event.annotation_size(), 1);
+    EXPECT_EQ(event.annotation(0).key(), 201);
+    EXPECT_EQ(event.annotation(0).value().stringvalue(), "event-annotation");
+}
+
 TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->span.batch.size = 2;

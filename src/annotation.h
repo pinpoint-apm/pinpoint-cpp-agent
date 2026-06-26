@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <type_traits>
 #include <variant>
 #include <vector>
 #include "pinpoint/tracer.h"
@@ -99,27 +100,47 @@ namespace pinpoint {
     >;
 
     /**
-     * @brief Annotation payload paired with its declared type.
+     * @brief Annotation payload whose type is derived from the stored value.
      */
     struct AnnotationData {
-        AnnotationType dataType;
         AnnotationValue data;
 
-        AnnotationData(const AnnotationType dType, const int32_t intVal)
-            : dataType(dType), data(intVal) {}
-        AnnotationData(const AnnotationType dType, const int64_t longVal)
-            : dataType(dType), data(longVal) {}
-        AnnotationData(const AnnotationType dType, std::string_view strVal)
-            : dataType(dType), data(std::string(strVal)) {}
-        AnnotationData(const AnnotationType dType, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(StringStringValue(strVal1, strVal2)) {}
-        AnnotationData(const AnnotationType dType, const int intVal, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(IntStringStringValue(intVal, strVal1, strVal2)) {}
-        AnnotationData(const AnnotationType dType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
+        AnnotationData(const AnnotationType, const int32_t intVal)
+            : data(intVal) {}
+        AnnotationData(const AnnotationType, const int64_t longVal)
+            : data(longVal) {}
+        AnnotationData(const AnnotationType, std::string_view strVal)
+            : data(std::string(strVal)) {}
+        AnnotationData(const AnnotationType, std::string_view strVal1, std::string_view strVal2)
+            : data(StringStringValue(strVal1, strVal2)) {}
+        AnnotationData(const AnnotationType, const int intVal, std::string_view strVal1, std::string_view strVal2)
+            : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
+        AnnotationData(const AnnotationType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
-            : dataType(dType), data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
-        AnnotationData(const AnnotationType dType, SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : dataType(dType), data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
+            : data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
+        AnnotationData(const AnnotationType, SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
+            : data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
+
+        AnnotationType type() const {
+            return std::visit([](const auto& value) -> AnnotationType {
+                using Value = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<Value, int32_t>) {
+                    return ANNOTATION_TYPE_INT;
+                } else if constexpr (std::is_same_v<Value, int64_t>) {
+                    return ANNOTATION_TYPE_LONG;
+                } else if constexpr (std::is_same_v<Value, std::string>) {
+                    return ANNOTATION_TYPE_STRING;
+                } else if constexpr (std::is_same_v<Value, StringStringValue>) {
+                    return ANNOTATION_TYPE_STRING_STRING;
+                } else if constexpr (std::is_same_v<Value, IntStringStringValue>) {
+                    return ANNOTATION_TYPE_INT_STRING_STRING;
+                } else if constexpr (std::is_same_v<Value, LongIntIntByteByteStringValue>) {
+                    return ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING;
+                } else {
+                    return ANNOTATION_TYPE_BYTES_STRING_STRING;
+                }
+            }, data);
+        }
     };
 
     /**
