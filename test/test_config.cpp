@@ -53,6 +53,9 @@ private:
         saved_env_vars_[env::APPLICATION_TYPE] = GetEnvVar(env::APPLICATION_TYPE);
         saved_env_vars_[env::AGENT_ID] = GetEnvVar(env::AGENT_ID);
         saved_env_vars_[env::AGENT_NAME] = GetEnvVar(env::AGENT_NAME);
+        saved_env_vars_[env::UID_VERSION] = GetEnvVar(env::UID_VERSION);
+        saved_env_vars_[env::SERVICE_NAME] = GetEnvVar(env::SERVICE_NAME);
+        saved_env_vars_[env::API_KEY] = GetEnvVar(env::API_KEY);
         saved_env_vars_[env::LOG_LEVEL] = GetEnvVar(env::LOG_LEVEL);
         saved_env_vars_[env::GRPC_HOST] = GetEnvVar(env::GRPC_HOST);
         saved_env_vars_[env::GRPC_AGENT_PORT] = GetEnvVar(env::GRPC_AGENT_PORT);
@@ -689,6 +692,8 @@ TEST_F(ConfigTest, ConfigurationToStringTest) {
         << "Config string should contain application name";
     EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
         << "Config string should contain application type";
+    EXPECT_TRUE(config_string.find("UidVersion:") != std::string::npos)
+        << "Config string should contain UID version";
     EXPECT_TRUE(config_string.find("GrpcHost: test.collector.host") != std::string::npos) 
         << "Config string should contain GRPC host";
     EXPECT_TRUE(config_string.find("Type: PERCENT") != std::string::npos) 
@@ -716,6 +721,7 @@ TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, config2->sampling.percent_rate) << "Percent rate should match after round-trip";
     EXPECT_EQ(config->http.server.status_errors.size(), config2->http.server.status_errors.size()) 
         << "Status errors count should match after round-trip";
+    EXPECT_EQ(config->uid_version_, config2->uid_version_) << "UID version should match after round-trip";
 }
 
 // Test empty configuration string generation
@@ -732,6 +738,82 @@ TEST_F(ConfigTest, EmptyConfigurationStringTest) {
         << "Config string should contain default log level";
     EXPECT_TRUE(config_string.find("Type: COUNTER") != std::string::npos) 
         << "Config string should contain default sampling type";
+    EXPECT_TRUE(config_string.find("UidVersion:") != std::string::npos)
+        << "Config string should contain default UID version field";
+}
+
+TEST_F(ConfigTest, UidVersionV1ConfigurationToStringAndRoundTripTest) {
+    set_config_string(R"(
+ApplicationName: "UidV1App"
+UidVersion: v1
+Collector:
+  GrpcHost: localhost
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    ASSERT_TRUE(config->identity_resolved_);
+    EXPECT_EQ(config->uid_version_, "v1");
+    EXPECT_EQ(config->object_name_version_, 1);
+
+    std::string config_string = to_config_string(*config);
+    EXPECT_TRUE(config_string.find("UidVersion: v1") != std::string::npos)
+        << "Config string should contain v1 UID version";
+
+    set_config_string(config_string);
+    auto config2 = make_config();
+    ASSERT_NE(config2, nullptr);
+    EXPECT_EQ(config2->uid_version_, "v1");
+    EXPECT_EQ(config2->object_name_version_, 1);
+}
+
+TEST_F(ConfigTest, UidVersionV3ConfigurationToStringAndRoundTripTest) {
+    set_config_string(R"(
+ApplicationName: "UidV3App"
+UidVersion: v3
+Collector:
+  GrpcHost: localhost
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    ASSERT_TRUE(config->identity_resolved_);
+    EXPECT_EQ(config->uid_version_, "v3");
+    EXPECT_EQ(config->object_name_version_, 1);
+
+    std::string config_string = to_config_string(*config);
+    EXPECT_TRUE(config_string.find("UidVersion: v3") != std::string::npos)
+        << "Config string should contain v3 UID version";
+
+    set_config_string(config_string);
+    auto config2 = make_config();
+    ASSERT_NE(config2, nullptr);
+    EXPECT_EQ(config2->uid_version_, "v3");
+    EXPECT_EQ(config2->object_name_version_, 1);
+}
+
+TEST_F(ConfigTest, UidVersionV4ConfigurationToStringMasksApiKeyTest) {
+    set_config_string(R"(
+ApplicationName: "UidV4App"
+UidVersion: v4
+ServiceName: "uid-v4-service"
+ApiKey: "super-secret-key"
+Collector:
+  GrpcHost: localhost
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    ASSERT_TRUE(config->identity_resolved_);
+    EXPECT_EQ(config->uid_version_, "v4");
+    EXPECT_EQ(config->object_name_version_, 4);
+
+    std::string config_string = to_config_string(*config);
+    EXPECT_TRUE(config_string.find("UidVersion: v4") != std::string::npos)
+        << "Config string should contain v4 UID version";
+    EXPECT_TRUE(config_string.find("ServiceName: uid-v4-service") != std::string::npos)
+        << "Config string should contain v4 service name";
+    EXPECT_TRUE(config_string.find("****") != std::string::npos)
+        << "Config string should mask v4 API key";
+    EXPECT_TRUE(config_string.find("super-secret-key") == std::string::npos)
+        << "Config string should not contain plaintext API key";
 }
 
 TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
@@ -743,9 +825,10 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
     config.span.max_event_depth = 32;
     config.http.url_stat.enable = true;
     config.sql.enable_sql_stats = true;
+    config.uid_version_ = "v4";
 
     const auto config_strings = to_non_default_config_strings(config);
-    EXPECT_EQ(config_strings.size(), 4);
+    EXPECT_EQ(config_strings.size(), 5);
 
     auto contains_config = [&config_strings](const std::string& expected) {
         for (const auto& config_string : config_strings) {
@@ -756,6 +839,7 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
         return false;
     };
 
+    EXPECT_TRUE(contains_config("UidVersion=v4"));
     EXPECT_TRUE(contains_config("Log.Level=debug"));
     EXPECT_TRUE(contains_config("Span.MaxEventDepth=32"));
     EXPECT_TRUE(contains_config("Http.CollectUrlStat=true"));
@@ -1632,6 +1716,34 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenAppNameChangesTest) {
 
     EXPECT_FALSE(new_config.isReloadable(old_config))
         << "Should not be reloadable when app name changes";
+}
+
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenRawUidVersionChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->uid_version_ = "v1";
+    old_config->object_name_version_ = 1;
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.uid_version_ = "v3";
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when raw UID version changes";
+}
+
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenUidVersionChangesFromDefaultRawValueTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->uid_version_ = "";
+    old_config->object_name_version_ = 1;
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.uid_version_ = "v3";
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when UID version is explicitly changed";
 }
 
 // Test isReloadable() returns false when collector host changes

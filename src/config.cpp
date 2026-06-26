@@ -966,6 +966,7 @@ namespace pinpoint {
         std::vector<std::string> config_strings;
         config_strings.reserve(64);
 
+        add_non_default_config(config_strings, "UidVersion", config.uid_version_, default_config.uid_version_);
         add_non_default_config(config_strings, "Log.Level", config.log.level, default_config.log.level);
         add_non_default_config(config_strings, "Log.FilePath", config.log.file_path, default_config.log.file_path);
         add_non_default_config(config_strings, "Log.MaxFileSize", config.log.max_file_size, default_config.log.max_file_size);
@@ -1072,6 +1073,7 @@ namespace pinpoint {
         emitter << YAML::Key << "ApplicationType" << YAML::Value << config.app_type_;
         emitter << YAML::Key << "AgentId" << YAML::Value << config.agent_id_;
         emitter << YAML::Key << "AgentName" << YAML::Value << config.agent_name_;
+        emitter << YAML::Key << "UidVersion" << YAML::Value << config.uid_version_;
         if (config.is_v4()) {
             emitter << YAML::Key << "ServiceName" << YAML::Value << config.service_name_;
             // ApiKey is intentionally masked and never serialized in plaintext.
@@ -1293,10 +1295,10 @@ namespace pinpoint {
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
         return std::tie(app_name_, app_type_, agent_id_, agent_name_,
-                        service_name_, api_key_, object_name_version_,
+                        uid_version_, service_name_, api_key_, object_name_version_,
                         collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
                std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
-                        old->service_name_, old->api_key_, old->object_name_version_,
+                        old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
                         old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
                same_grpc_config(*this, *old);
     }
