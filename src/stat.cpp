@@ -22,6 +22,8 @@
 #include <mutex>
 #include <cctype>
 #include <unistd.h>
+#include <functional>
+#include <thread>
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -218,27 +220,57 @@ namespace pinpoint {
     }
 
     void AgentStats::resetAgentStats() {
-        std::lock_guard<std::mutex> lock(response_time_mutex_);
-        acc_response_time_ = 0;
-        request_count_ = 0;
-        max_response_time_ = 0;
+        {
+            std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
+            pauseResponseTimeUpdates();
+            acc_response_time_.store(0, std::memory_order_relaxed);
+            request_count_.store(0, std::memory_order_relaxed);
+            max_response_time_.store(0, std::memory_order_relaxed);
+            resumeResponseTimeUpdates();
+        }
         
-        sample_new_ = 0;
-        un_sample_new_ = 0;
-        sample_cont_ = 0;
-        un_sample_cont_ = 0;
-        skip_new_ = 0;
-        skip_cont_ = 0;
+        sample_new_.store(0, std::memory_order_relaxed);
+        un_sample_new_.store(0, std::memory_order_relaxed);
+        sample_cont_.store(0, std::memory_order_relaxed);
+        un_sample_cont_.store(0, std::memory_order_relaxed);
+        skip_new_.store(0, std::memory_order_relaxed);
+        skip_cont_.store(0, std::memory_order_relaxed);
     }
 
     int64_t AgentStats::getResponseTimeAvg() {
-        // Mutex required: acc_response_time_ and request_count_ must be read atomically
-        // as a pair. Individual atomics cannot guarantee consistency between the two values.
-        std::lock_guard<std::mutex> lock(response_time_mutex_);
-        if (request_count_ > 0) {
-            return acc_response_time_ / request_count_;
+        std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
+        pauseResponseTimeUpdates();
+        const auto request_count = request_count_.load(std::memory_order_relaxed);
+        const auto acc_response_time = acc_response_time_.load(std::memory_order_relaxed);
+        resumeResponseTimeUpdates();
+
+        if (request_count > 0) {
+            return acc_response_time / request_count;
         }
         return 0;
+    }
+
+    void AgentStats::pauseResponseTimeUpdates() {
+        response_time_snapshotting_.store(true, std::memory_order_release);
+        while (response_time_writers_.load(std::memory_order_acquire) != 0) {
+            std::this_thread::yield();
+        }
+    }
+
+    void AgentStats::resumeResponseTimeUpdates() {
+        response_time_snapshotting_.store(false, std::memory_order_release);
+    }
+
+    void AgentStats::collectAndResetResponseTime(int64_t& avg, int64_t& max) {
+        std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
+        pauseResponseTimeUpdates();
+
+        const auto request_count = request_count_.exchange(0, std::memory_order_relaxed);
+        const auto acc_response_time = acc_response_time_.exchange(0, std::memory_order_relaxed);
+        max = max_response_time_.exchange(0, std::memory_order_relaxed);
+
+        resumeResponseTimeUpdates();
+        avg = request_count > 0 ? acc_response_time / request_count : 0;
     }
 
     void AgentStats::initAgentStats() {
@@ -253,24 +285,46 @@ namespace pinpoint {
     }
 
     void AgentStats::collectResponseTime(int64_t response_time) {
-        std::lock_guard<std::mutex> lock(response_time_mutex_);
+        for (;;) {
+            while (response_time_snapshotting_.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
 
-        acc_response_time_ += response_time;
-        request_count_++;
-
-        if (max_response_time_ < response_time) {
-            max_response_time_ = response_time;
+            response_time_writers_.fetch_add(1, std::memory_order_acq_rel);
+            if (!response_time_snapshotting_.load(std::memory_order_acquire)) {
+                break;
+            }
+            response_time_writers_.fetch_sub(1, std::memory_order_acq_rel);
         }
+
+        acc_response_time_.fetch_add(response_time, std::memory_order_relaxed);
+        request_count_.fetch_add(1, std::memory_order_relaxed);
+
+        auto current_max = max_response_time_.load(std::memory_order_relaxed);
+        while (current_max < response_time &&
+               !max_response_time_.compare_exchange_weak(current_max, response_time,
+                                                          std::memory_order_relaxed,
+                                                          std::memory_order_relaxed)) {
+        }
+
+        response_time_writers_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    AgentStats::ActiveSpanShard& AgentStats::activeSpanShard(int64_t spanId) {
+        const auto shard_index = std::hash<int64_t>{}(spanId) % active_span_shards_.size();
+        return active_span_shards_[shard_index];
     }
 
     void AgentStats::addActiveSpan(int64_t spanId, int64_t start_time) {
-        std::lock_guard<std::mutex> lock(active_span_mutex_);
-        active_span_map_.insert(std::make_pair(spanId, start_time));
+        auto& shard = activeSpanShard(spanId);
+        std::lock_guard<std::mutex> lock(shard.mutex_);
+        shard.spans_.insert(std::make_pair(spanId, start_time));
     }
 
     void AgentStats::dropActiveSpan(int64_t spanId) {
-        std::lock_guard<std::mutex> lock(active_span_mutex_);
-        active_span_map_.erase(spanId);
+        auto& shard = activeSpanShard(spanId);
+        std::lock_guard<std::mutex> lock(shard.mutex_);
+        shard.spans_.erase(spanId);
     }
 
     void AgentStats::collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms) {
@@ -279,17 +333,19 @@ namespace pinpoint {
         active_requests[2] = 0;
         active_requests[3] = 0;
 
-        std::lock_guard<std::mutex> lock(active_span_mutex_);
-        for (const auto& iter : active_span_map_) {
-            auto active_time = sample_time_ms - iter.second;
-            if (active_time < 1000) {
-                active_requests[0]++;
-            } else if (active_time < 3000) {
-                active_requests[1]++;
-            } else if (active_time < 5000) {
-                active_requests[2]++;
-            } else {
-                active_requests[3]++;
+        for (auto& shard : active_span_shards_) {
+            std::lock_guard<std::mutex> lock(shard.mutex_);
+            for (const auto& iter : shard.spans_) {
+                auto active_time = sample_time_ms - iter.second;
+                if (active_time < 1000) {
+                    active_requests[0]++;
+                } else if (active_time < 3000) {
+                    active_requests[1]++;
+                } else if (active_time < 5000) {
+                    active_requests[2]++;
+                } else {
+                    active_requests[3]++;
+                }
             }
         }
     }
@@ -312,20 +368,7 @@ namespace pinpoint {
         stat.num_threads_ = process_status.num_threads;
 
         // Calculate avg response time and snapshot max
-        {
-            std::lock_guard<std::mutex> lock(response_time_mutex_);
-            if (request_count_ > 0) {
-                stat.response_time_avg_ = acc_response_time_ / request_count_;
-            } else {
-                stat.response_time_avg_ = 0;
-            }
-            stat.response_time_max_ = max_response_time_;
-            
-            // Reset logic moved here to be under the same lock
-            acc_response_time_ = 0;
-            request_count_ = 0;
-            max_response_time_ = 0;
-        }
+        collectAndResetResponseTime(stat.response_time_avg_, stat.response_time_max_);
 
         // Snapshot atomics
         stat.num_sample_new_ = sample_new_.exchange(0);

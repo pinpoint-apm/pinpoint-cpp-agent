@@ -643,6 +643,56 @@ TEST_F(StatTest, ConcurrentResponseTimeTest) {
     EXPECT_EQ(snapshot.response_time_max_, 10);
 }
 
+// Test concurrent active span collection
+TEST_F(StatTest, ConcurrentActiveSpanTest) {
+    const int spans_per_thread = 50;
+    const int num_threads = 4;
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    auto add_fn = [this, now_ms](int thread_index) {
+        const int base_id = 100000 + thread_index * spans_per_thread;
+        for (int i = 0; i < spans_per_thread; i++) {
+            agent_stats_->addActiveSpan(base_id + i, now_ms - 10);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back(add_fn, t);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+
+    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+                snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, num_threads * spans_per_thread);
+
+    threads.clear();
+    auto drop_fn = [this](int thread_index) {
+        const int base_id = 100000 + thread_index * spans_per_thread;
+        for (int i = 0; i < spans_per_thread; i++) {
+            agent_stats_->dropActiveSpan(base_id + i);
+        }
+    };
+
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back(drop_fn, t);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    agent_stats_->collectAgentStat(snapshot);
+    total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+            snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    EXPECT_EQ(total, 0);
+}
+
 // Test sample_time is set to current time in milliseconds
 TEST_F(StatTest, SampleTimeIsCurrentTest) {
     auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
