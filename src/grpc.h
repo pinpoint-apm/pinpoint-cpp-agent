@@ -142,7 +142,6 @@ namespace pinpoint {
         grpc::Status stream_status_{};
         // Idle state: no write in flight and the stream is not finished.
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
-        std::atomic<bool> force_queue_empty_{false};
         ExponentialBackoff channel_ready_backoff_{};
 
         /**
@@ -151,6 +150,11 @@ namespace pinpoint {
         bool wait_channel_ready(std::chrono::milliseconds delay) const;
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
+
+        /**
+         * @brief Notifies derived clients that channel recovery took long enough to stale client-owned queues.
+         */
+        virtual void on_slow_channel_recovery(std::chrono::seconds) {}
     };
 
     /**
@@ -573,6 +577,8 @@ namespace pinpoint {
 
     protected:
         void set_stats_stub(std::unique_ptr<v1::Stat::StubInterface> stub) { stats_stub_ = std::move(stub); }
+        void on_slow_channel_recovery(std::chrono::seconds elapsed) override;
+        bool empty_stats_queue_if_requested() noexcept;
 
     private:
         std::unique_ptr<v1::Stat::StubInterface> stats_stub_{};
@@ -584,6 +590,7 @@ namespace pinpoint {
         std::mutex stats_queue_mutex_{};
         std::condition_variable stats_queue_cv_{};
         bool stats_stop_requested_{false};
+        std::atomic<bool> force_stats_queue_empty_{false};
 
         bool start_stats_stream();
         GrpcStreamStatus write_and_await_stats_stream();

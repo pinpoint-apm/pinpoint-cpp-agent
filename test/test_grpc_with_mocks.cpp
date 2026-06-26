@@ -360,6 +360,8 @@ public:
 
     bool readyChannel() override { return ready_channel_; }
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
+    void markSlowChannelRecoveryForTest() { on_slow_channel_recovery(std::chrono::seconds(5)); }
+    bool emptyStatsQueueIfRequestedForTest() { return empty_stats_queue_if_requested(); }
 
 protected:
     bool wait_channel_ready() const { return true; }
@@ -754,6 +756,49 @@ TEST_F(GrpcMockTest, GrpcStatsEnqueueStatsTest) {
     stats_client.enqueueStats(URL_STATS);
     
     SUCCEED() << "Stats enqueue should work with mock stub";
+}
+
+TEST_F(GrpcMockTest, GrpcStatsOverflowRequestsStatsQueuePurge) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+
+    mock_agent_service_->getAgentStats().incrSampleNew();
+    UrlStatEntry url_stat{"/overflow", "GET", 200};
+    url_stat.end_time_ = std::chrono::system_clock::now();
+    url_stat.elapsed_ = 10;
+    mock_agent_service_->getUrlStats().addSnapshot(&url_stat, *mock_agent_service_->getConfig());
+
+    stats_client.enqueueStats(AGENT_STATS);
+    stats_client.enqueueStats(URL_STATS);
+    stats_client.enqueueStats(AGENT_STATS);
+
+    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
+    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
+
+    AgentStatsSnapshot agent_snapshot;
+    mock_agent_service_->getAgentStats().collectAgentStat(agent_snapshot);
+    EXPECT_EQ(agent_snapshot.num_sample_new_, 0);
+    EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().empty());
+}
+
+TEST_F(GrpcMockTest, GrpcStatsSlowChannelRecoveryRequestsStatsQueuePurge) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+
+    mock_agent_service_->getAgentStats().incrSampleNew();
+    UrlStatEntry url_stat{"/reconnect", "GET", 200};
+    url_stat.end_time_ = std::chrono::system_clock::now();
+    url_stat.elapsed_ = 10;
+    mock_agent_service_->getUrlStats().addSnapshot(&url_stat, *mock_agent_service_->getConfig());
+
+    stats_client.enqueueStats(AGENT_STATS);
+    stats_client.markSlowChannelRecoveryForTest();
+
+    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
+    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
+
+    AgentStatsSnapshot agent_snapshot;
+    mock_agent_service_->getAgentStats().collectAgentStat(agent_snapshot);
+    EXPECT_EQ(agent_snapshot.num_sample_new_, 0);
+    EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().empty());
 }
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
