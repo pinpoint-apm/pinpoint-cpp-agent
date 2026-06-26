@@ -678,6 +678,42 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
     EXPECT_EQ(config->log.level, "info") << "Log level should be default when YAML is invalid";
 }
 
+// Test invalid YAML still allows environment overrides and post-load validation.
+TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
+    set_config_string(invalid_yaml_);
+    setenv(env::APPLICATION_NAME, "EnvRecoveredApp", 1);
+    setenv(env::AGENT_ID, "env-agent-recovered", 1);
+    setenv(env::GRPC_HOST, "env.collector.host", 1);
+    setenv(env::GRPC_AGENT_PORT, "70000", 1);
+    setenv(env::SPAN_MAX_EVENT_DEPTH, "1", 1);
+    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
+    setenv(env::LOG_LEVEL, "error", 1);
+
+    auto config = make_config();
+
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->app_name_, "EnvRecoveredApp")
+        << "Environment app name should apply even when YAML parsing fails";
+    EXPECT_EQ(config->agent_id_, "env-agent-recovered")
+        << "Environment agent ID should apply and survive identity resolution";
+    EXPECT_EQ(config->agent_name_, "env-agent-recovered")
+        << "Identity resolution should still derive the default agent name";
+    EXPECT_TRUE(config->identity_resolved_)
+        << "Identity resolution should run after YAML parse failure";
+    EXPECT_EQ(config->collector.host, "env.collector.host")
+        << "Environment collector host should apply after YAML parse failure";
+    EXPECT_EQ(config->collector.agent_port, defaults::AGENT_PORT)
+        << "Out-of-range environment port should still be clamped";
+    EXPECT_EQ(config->span.max_event_depth, 2)
+        << "Environment span depth should still be validated";
+    EXPECT_TRUE(config->sql.enable_sql_stats)
+        << "Boolean environment override should apply after YAML parse failure";
+    EXPECT_EQ(config->log.level, "error")
+        << "Logger config environment override should apply after YAML parse failure";
+    EXPECT_TRUE(config->check())
+        << "Recovered configuration should pass normal validation";
+}
+
 // ========== Configuration String Generation Tests ==========
 
 // Test configuration to string conversion

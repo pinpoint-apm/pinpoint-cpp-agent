@@ -744,8 +744,7 @@ namespace pinpoint {
             try {
                 yaml = YAML::Load(user_config);
             } catch (const YAML::Exception& e) {
-                LOG_ERROR("yaml parsing exception = {}", e.what());
-                return config;
+                LOG_ERROR("yaml parsing exception = {} - continuing with defaults", e.what());
             }
         }
 
