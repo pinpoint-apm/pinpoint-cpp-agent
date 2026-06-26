@@ -221,6 +221,7 @@ set(SRCS src/agent.cpp
          src/config.cpp
          src/object_name.cpp
          src/grpc.cpp
+         src/grpc_builders.cpp
          src/limiter.cpp
          src/logging.cpp
          src/noop.cpp
