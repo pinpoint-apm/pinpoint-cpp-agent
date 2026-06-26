@@ -15,24 +15,67 @@
  */
 
 #include "limiter.h"
-#include <mutex>
+#include <chrono>
 
 namespace pinpoint {
 
-    bool RateLimiter::allow() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        
-        const uint64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now().time_since_epoch()).count();
+    RateLimiter::RateLimiter(uint64_t tps)
+        : token_(tps),
+          epoch_(epoch_state(current_second())),
+          bucket_(tps) {
+    }
 
-        if (auto passed = now - base_time_; passed > 0) {
-            base_time_ = now;
-            bucket_ = token_;
+    uint64_t RateLimiter::current_second() {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    uint64_t RateLimiter::epoch_state(uint64_t second) {
+        return second << 1;
+    }
+
+    uint64_t RateLimiter::epoch_second(uint64_t state) {
+        return state >> 1;
+    }
+
+    bool RateLimiter::is_resetting(uint64_t state) {
+        return (state & kResetInProgress) != 0;
+    }
+
+    bool RateLimiter::allow() {
+        if (token_ == 0) {
+            return false;
         }
 
-        if (bucket_ > 0) {
-            --bucket_;
-            return true;
+        const auto now = current_second();
+        auto epoch = epoch_.load(std::memory_order_acquire);
+
+        for (;;) {
+            if (is_resetting(epoch)) {
+                epoch = epoch_.load(std::memory_order_acquire);
+                continue;
+            }
+
+            if (now <= epoch_second(epoch)) {
+                break;
+            }
+
+            if (epoch_.compare_exchange_weak(epoch, epoch | kResetInProgress,
+                                             std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
+                bucket_.store(token_, std::memory_order_relaxed);
+                epoch_.store(epoch_state(now), std::memory_order_release);
+                break;
+            }
+        }
+
+        auto bucket = bucket_.load(std::memory_order_relaxed);
+        while (bucket > 0) {
+            if (bucket_.compare_exchange_weak(bucket, bucket - 1,
+                                             std::memory_order_relaxed,
+                                             std::memory_order_relaxed)) {
+                return true;
+            }
         }
 
         return false;
