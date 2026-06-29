@@ -248,8 +248,15 @@ public:
 
     std::optional<std::string> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        std::string k(key);
-        const char* v = r_->get(r_->userdata, k.c_str());
+        const char* k_ptr = nullptr;
+        std::string k_str;
+        if (!key.empty() && key.data()[key.size()] == '\0') {
+            k_ptr = key.data();
+        } else {
+            k_str = std::string(key);
+            k_ptr = k_str.c_str();
+        }
+        const char* v = r_->get(r_->userdata, k_ptr);
         return v ? std::optional<std::string>(v) : std::nullopt;
     }
 
@@ -266,8 +273,15 @@ public:
 
     std::optional<std::string> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        std::string k(key);
-        const char* v = r_->get(r_->userdata, k.c_str());
+        const char* k_ptr = nullptr;
+        std::string k_str;
+        if (!key.empty() && key.data()[key.size()] == '\0') {
+            k_ptr = key.data();
+        } else {
+            k_str = std::string(key);
+            k_ptr = k_str.c_str();
+        }
+        const char* v = r_->get(r_->userdata, k_ptr);
         return v ? std::optional<std::string>(v) : std::nullopt;
     }
 
@@ -290,8 +304,24 @@ public:
 
     void Set(std::string_view key, std::string_view value) override {
         if (!w_ || !w_->set) return;
-        std::string k(key), v(value);
-        w_->set(w_->userdata, k.c_str(), v.c_str());
+        const char* k_ptr = nullptr;
+        std::string k_str;
+        if (!key.empty() && key.data()[key.size()] == '\0') {
+            k_ptr = key.data();
+        } else {
+            k_str = std::string(key);
+            k_ptr = k_str.c_str();
+        }
+
+        const char* v_ptr = nullptr;
+        std::string v_str;
+        if (!value.empty() && value.data()[value.size()] == '\0') {
+            v_ptr = value.data();
+        } else {
+            v_str = std::string(value);
+            v_ptr = v_str.c_str();
+        }
+        w_->set(w_->userdata, k_ptr, v_ptr);
     }
 
 private:

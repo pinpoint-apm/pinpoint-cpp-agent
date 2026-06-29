@@ -118,41 +118,24 @@ namespace pinpoint {
         return std::equal(str1.begin(), str1.end(), str2.begin(), char_iequal());
     }
 
-    namespace {
-        // Template helper for safe string conversions
-        template<typename T, typename ConversionFunc>
-        std::optional<T> safe_string_convert(std::string_view str, ConversionFunc&& func) {
-            T result{};
-            
-            std::string temp(str);
-            const bool success = func(temp.c_str(), &result);
-            
-            return success ? std::optional<T>(result) : std::nullopt;
-        }
-    }
-
     std::optional<int> stoi_(std::string_view str) {
-        return safe_string_convert<int>(str, [](const char* s, int* out) {
-            return absl::SimpleAtoi(s, out);
-        });
+        int result{};
+        return absl::SimpleAtoi(str, &result) ? std::optional<int>(result) : std::nullopt;
     }
 
     std::optional<int64_t> stoll_(std::string_view str) {
-        return safe_string_convert<int64_t>(str, [](const char* s, int64_t* out) {
-            return absl::SimpleAtoi(s, out);
-        });
+        int64_t result{};
+        return absl::SimpleAtoi(str, &result) ? std::optional<int64_t>(result) : std::nullopt;
     }
 
     std::optional<double> stod_(std::string_view str) {
-        return safe_string_convert<double>(str, [](const char* s, double* out) {
-            return absl::SimpleAtod(s, out);
-        });
+        double result{};
+        return absl::SimpleAtod(str, &result) ? std::optional<double>(result) : std::nullopt;
     }
 
     std::optional<bool> stob_(std::string_view str) {
-        return safe_string_convert<bool>(str, [](const char* s, bool* out) {
-            return absl::SimpleAtob(s, out);
-        });
+        bool result{};
+        return absl::SimpleAtob(str, &result) ? std::optional<bool>(result) : std::nullopt;
     }
 
     SqlUid generate_sql_uid(std::string_view sql) {

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/strings/str_split.h"
+#include "absl/strings/numbers.h"
 #include "logging.h"
 #include "pinpoint/tracer.h"
 #include "utility.h"
@@ -297,27 +298,27 @@ namespace pinpoint {
     namespace {
         /// @brief Extracts and trims the first IP address from a comma-separated list.
         /// @param value Header value that may contain comma-separated IP addresses.
-        /// @return The first IP address with whitespace trimmed, or empty string if parsing fails.
-        std::string extractFirstIp(const std::string& value) {
+        /// @return The first IP address with whitespace trimmed.
+        std::string_view extractFirstIp(std::string_view value) {
             if (value.empty()) {
-                return "";
+                return {};
             }
 
             // Extract first IP from comma-separated list
             auto comma_pos = value.find(',');
             std::string_view first_ip = (comma_pos != std::string::npos) 
-                ? std::string_view(value).substr(0, comma_pos)
-                : std::string_view(value);
+                ? value.substr(0, comma_pos)
+                : value;
 
             // Trim leading/trailing whitespace
             auto start = first_ip.find_first_not_of(" \t");
             auto end = first_ip.find_last_not_of(" \t");
             
             if (start != std::string::npos && end != std::string::npos) {
-                return std::string(first_ip.substr(start, end - start + 1));
+                return first_ip.substr(start, end - start + 1);
             }
 
-            return "";
+            return {};
         }
     }
 
@@ -326,7 +327,7 @@ namespace pinpoint {
         if (auto xff = reader.Get("X-Forwarded-For"); xff.has_value()) {
             auto ip = extractFirstIp(xff.value());
             if (!ip.empty()) {
-                return ip;
+                return std::string(ip);
             }
         }
 
@@ -334,7 +335,7 @@ namespace pinpoint {
         if (auto xri = reader.Get("X-Real-Ip"); xri.has_value()) {
             auto ip = extractFirstIp(xri.value());
             if (!ip.empty()) {
-                return ip;
+                return std::string(ip);
             }
         }
 
@@ -367,69 +368,53 @@ namespace pinpoint {
     }
 
     namespace {
-        /// @brief Parses space-separated key=value pairs from a header string.
-        /// @param value Header value containing key=value pairs separated by spaces.
-        /// @return Map of key-value pairs.
-        std::map<std::string, std::string> parseKeyValuePairs(const std::string& value) {
-            std::map<std::string, std::string> result;
-            
-            // Split by space and parse each key=value pair
-            for (const auto& pair : absl::StrSplit(value, ' ', absl::SkipEmpty())) {
-                std::vector<std::string> kv = absl::StrSplit(pair, absl::MaxSplits('=', 1));
-                if (kv.size() == 2) {
-                    result[kv[0]] = kv[1];
+        struct ProxyHeaderValues {
+            std::string_view t_val;
+            std::string_view D_val;
+            std::string_view i_val;
+            std::string_view b_val;
+            std::string_view app_val;
+        };
+
+        ProxyHeaderValues parseProxyHeaderInline(std::string_view value) {
+            ProxyHeaderValues result{};
+            size_t pos = 0;
+            const size_t len = value.size();
+            while (pos < len) {
+                pos = value.find_first_not_of(' ', pos);
+                if (pos == std::string_view::npos) {
+                    break;
                 }
+                
+                size_t eq_pos = value.find('=', pos);
+                if (eq_pos == std::string_view::npos) {
+                    break;
+                }
+                
+                std::string_view key = value.substr(pos, eq_pos - pos);
+                
+                size_t val_end = value.find(' ', eq_pos + 1);
+                if (val_end == std::string_view::npos) {
+                    val_end = len;
+                }
+                
+                std::string_view val = value.substr(eq_pos + 1, val_end - eq_pos - 1);
+                
+                if (key == "t") {
+                    result.t_val = val;
+                } else if (key == "D") {
+                    result.D_val = val;
+                } else if (key == "i") {
+                    result.i_val = val;
+                } else if (key == "b") {
+                    result.b_val = val;
+                } else if (key == "app") {
+                    result.app_val = val;
+                }
+                
+                pos = val_end;
             }
-            
             return result;
-        }
-
-        /// @brief Extracts and parses a value from key-value pairs with optional transformation.
-        /// @tparam T Target type for the output value.
-        /// @tparam ParseFunc Parser function type (e.g., stoi_, stoll_, stod_).
-        /// @tparam TransformFunc Transformation function type.
-        /// @param pairs Map of key-value pairs.
-        /// @param key Key to look up.
-        /// @param parser Parser function that returns std::optional<T>.
-        /// @param transform Transformation function applied to parsed value.
-        /// @param output Reference to store the result.
-        /// @return true if value was found and parsed successfully, false otherwise.
-        template<typename T, typename ParseFunc, typename TransformFunc>
-        bool parseAndSet(const std::map<std::string, std::string>& pairs,
-                        const std::string& key,
-                        ParseFunc parser,
-                        TransformFunc transform,
-                        T& output) {
-            auto it = pairs.find(key);
-            if (it != pairs.end()) {
-                auto parsed = parser(it->second);
-                if (parsed.has_value()) {
-                    output = transform(parsed.value());
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /// @brief Overload without transformation (identity function).
-        template<typename T, typename ParseFunc>
-        bool parseAndSet(const std::map<std::string, std::string>& pairs,
-                        const std::string& key,
-                        ParseFunc parser,
-                        T& output) {
-            return parseAndSet(pairs, key, parser, [](const auto& v) { return v; }, output);
-        }
-
-        /// @brief Extracts a string value directly without parsing.
-        bool extractString(const std::map<std::string, std::string>& pairs,
-                          const std::string& key,
-                          std::string& output) {
-            auto it = pairs.find(key);
-            if (it != pairs.end()) {
-                output = it->second;
-                return true;
-            }
-            return false;
         }
     }
 
@@ -443,28 +428,33 @@ namespace pinpoint {
 
         // Check Pinpoint-ProxyApache header
         if (auto apache = reader.Get("Pinpoint-ProxyApache"); apache.has_value()) {
-            auto pairs = parseKeyValuePairs(apache.value());
-            
-            parseAndSet(pairs, "t", stoll_, [](int64_t v) { return v / 1000; }, received_time);
-            parseAndSet(pairs, "D", stoi_, duration_time);
-            parseAndSet(pairs, "i", stoi_, idle_percent);
-            parseAndSet(pairs, "b", stoi_, busy_percent);
+            auto values = parseProxyHeaderInline(apache.value());
+            if (!values.t_val.empty()) {
+                int64_t t = 0;
+                if (absl::SimpleAtoi(values.t_val, &t)) received_time = t / 1000;
+            }
+            if (!values.D_val.empty()) absl::SimpleAtoi(values.D_val, &duration_time);
+            if (!values.i_val.empty()) absl::SimpleAtoi(values.i_val, &idle_percent);
+            if (!values.b_val.empty()) absl::SimpleAtoi(values.b_val, &busy_percent);
             code = 3;
         }
         // Check Pinpoint-ProxyNginx header
         else if (auto nginx = reader.Get("Pinpoint-ProxyNginx"); nginx.has_value()) {
-            auto pairs = parseKeyValuePairs(nginx.value());
-            
-            parseAndSet(pairs, "t", stod_, [](double v) { return static_cast<int64_t>(v * 1000); }, received_time);
-            parseAndSet(pairs, "D", stoi_, duration_time);
+            auto values = parseProxyHeaderInline(nginx.value());
+            if (!values.t_val.empty()) {
+                double t = 0.0;
+                if (absl::SimpleAtod(values.t_val, &t)) received_time = static_cast<int64_t>(t * 1000);
+            }
+            if (!values.D_val.empty()) absl::SimpleAtoi(values.D_val, &duration_time);
             code = 2;
         }
         // Check Pinpoint-ProxyApp header
         else if (auto proxy_app = reader.Get("Pinpoint-ProxyApp"); proxy_app.has_value()) {
-            auto pairs = parseKeyValuePairs(proxy_app.value());
-            
-            parseAndSet(pairs, "t", stoll_, received_time);
-            extractString(pairs, "app", app);
+            auto values = parseProxyHeaderInline(proxy_app.value());
+            if (!values.t_val.empty()) {
+                absl::SimpleAtoi(values.t_val, &received_time);
+            }
+            if (!values.app_val.empty()) app = std::string(values.app_val);
             code = 1;
         }
 
