@@ -65,7 +65,7 @@ namespace pinpoint {
     }
 
     void HttpHeaderRecorder::recordHeader(const HeaderReader& header, AnnotationPtr annotation) {
-        if (cfg_.empty()) {
+        if (cfg_.empty() || annotation == nullptr) {
             return;
         }
 
@@ -418,7 +418,11 @@ namespace pinpoint {
         }
     }
 
-    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, const AnnotationPtr& annotation) {
+    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, AnnotationPtr annotation) {
+        if (annotation == nullptr) {
+            return;
+        }
+
         int64_t received_time = 0;
         int duration_time = 0;
         int idle_percent = 0;
@@ -433,9 +437,15 @@ namespace pinpoint {
                 int64_t t = 0;
                 if (absl::SimpleAtoi(values.t_val, &t)) received_time = t / 1000;
             }
-            if (!values.D_val.empty()) absl::SimpleAtoi(values.D_val, &duration_time);
-            if (!values.i_val.empty()) absl::SimpleAtoi(values.i_val, &idle_percent);
-            if (!values.b_val.empty()) absl::SimpleAtoi(values.b_val, &busy_percent);
+            if (!values.D_val.empty() && !absl::SimpleAtoi(values.D_val, &duration_time)) {
+                duration_time = 0;
+            }
+            if (!values.i_val.empty() && !absl::SimpleAtoi(values.i_val, &idle_percent)) {
+                idle_percent = 0;
+            }
+            if (!values.b_val.empty() && !absl::SimpleAtoi(values.b_val, &busy_percent)) {
+                busy_percent = 0;
+            }
             code = 3;
         }
         // Check Pinpoint-ProxyNginx header
@@ -445,14 +455,18 @@ namespace pinpoint {
                 double t = 0.0;
                 if (absl::SimpleAtod(values.t_val, &t)) received_time = static_cast<int64_t>(t * 1000);
             }
-            if (!values.D_val.empty()) absl::SimpleAtoi(values.D_val, &duration_time);
+            if (!values.D_val.empty() && !absl::SimpleAtoi(values.D_val, &duration_time)) {
+                duration_time = 0;
+            }
             code = 2;
         }
         // Check Pinpoint-ProxyApp header
         else if (auto proxy_app = reader.Get("Pinpoint-ProxyApp"); proxy_app.has_value()) {
             auto values = parseProxyHeaderInline(proxy_app.value());
             if (!values.t_val.empty()) {
-                absl::SimpleAtoi(values.t_val, &received_time);
+                if (!absl::SimpleAtoi(values.t_val, &received_time)) {
+                    received_time = 0;
+                }
             }
             if (!values.app_val.empty()) app = std::string(values.app_val);
             code = 1;

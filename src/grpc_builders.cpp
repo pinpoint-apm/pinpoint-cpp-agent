@@ -147,7 +147,7 @@ namespace pinpoint {
         }
 
         void build_span_event(v1::PSpanEvent* span_event,
-                              const std::shared_ptr<SpanEventImpl>& se,
+                              const std::unique_ptr<SpanEventImpl>& se,
                               google::protobuf::Arena* arena) {
             span_event->set_sequence(se->getSequence());
             span_event->set_depth(se->getDepth());

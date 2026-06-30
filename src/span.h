@@ -58,8 +58,8 @@ namespace pinpoint {
          * @param item Span event to add.
          * @note Caller must hold span_event_lock_.
          */
-        void push(const std::shared_ptr<SpanEventImpl>& item) {
-            stack_.push(item);
+        void push(std::unique_ptr<SpanEventImpl> item) {
+            stack_.push(std::move(item));
         }
 
         /**
@@ -68,7 +68,7 @@ namespace pinpoint {
          * @return Span event that was at the top of the stack, or nullptr if the stack is empty.
          * @note Caller must hold span_event_lock_.
          */
-        std::shared_ptr<SpanEventImpl> pop() {
+        std::unique_ptr<SpanEventImpl> pop() {
             if (stack_.empty()) {
                 return nullptr;
             }
@@ -82,11 +82,11 @@ namespace pinpoint {
          * @return Span event at the top of the stack, or nullptr if the stack is empty.
          * @note Caller must hold span_event_lock_.
          */
-        std::shared_ptr<SpanEventImpl> top() {
+        SpanEventImpl* top() {
             if (stack_.empty()) {
                 return nullptr;
             }
-            return stack_.top();
+            return stack_.top().get();
         }
 
         /// @brief Returns the number of events contained in the stack.
@@ -96,7 +96,7 @@ namespace pinpoint {
         }
 
     private:
-        std::stack<std::shared_ptr<SpanEventImpl>> stack_;
+        std::stack<std::unique_ptr<SpanEventImpl>> stack_;
     };
 
     /**
@@ -271,13 +271,13 @@ namespace pinpoint {
     	 *
     	 * @param se Span event to track.
     	 */
-    	void addSpanEvent(const std::shared_ptr<SpanEventImpl>& se);
+    	SpanEventImpl* addSpanEvent(std::unique_ptr<SpanEventImpl> se);
     	/**
     	 * @brief Finalizes the top span event and moves it into the finished list.
     	 */
     	void finishSpanEvent();
     	/// @brief Returns the current active span event, or nullptr if the stack is empty.
-    	std::shared_ptr<SpanEventImpl> topSpanEvent() {
+    	SpanEventImpl* topSpanEvent() {
     	    std::unique_lock<std::mutex> lock(span_event_lock_);
     	    return event_stack_.top();
     	}
@@ -286,10 +286,10 @@ namespace pinpoint {
         /// @note Locks span_event_lock_: finished_events is written under it by
         ///       finishSpanEvent(), so the move must be serialized against
         ///       concurrent pushes (e.g. EndSpanEvent racing EndSpan).
-        void takeFinishedEvents(std::vector<std::shared_ptr<SpanEventImpl>>& out);
+        void takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out);
         /// @brief Transfers ownership of finished span events to a new vector.
-        std::vector<std::shared_ptr<SpanEventImpl>> takeFinishedEvents() {
-            std::vector<std::shared_ptr<SpanEventImpl>> events;
+        std::vector<std::unique_ptr<SpanEventImpl>> takeFinishedEvents() {
+            std::vector<std::unique_ptr<SpanEventImpl>> events;
             takeFinishedEvents(events);
             return events;
         }
@@ -311,7 +311,7 @@ namespace pinpoint {
     	void sendExceptions();
 
         /// @brief Returns the annotation container for the span.
-        std::shared_ptr<PinpointAnnotation> getAnnotations() const { return annotations_; }
+        PinpointAnnotation* getAnnotations() const { return annotations_.get(); }
     	/// @brief Returns the owning agent service.
     	AgentService* getAgent() const { return agent_; }
     	/// @brief Returns the configuration snapshot taken when the span was
@@ -322,7 +322,7 @@ namespace pinpoint {
     	const std::shared_ptr<const Config>& getConfig() const { return config_; }
 
     private:
-        void storeFinishedEvent(std::shared_ptr<SpanEventImpl> se);
+        void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
 
     	TraceId trace_id_;
     	int64_t span_id_;
@@ -364,12 +364,12 @@ namespace pinpoint {
 
     	EventStack event_stack_;
         // Kept sequence-ordered as events finish so chunks do not need to sort.
-        std::deque<std::shared_ptr<SpanEventImpl>> finished_events;
+        std::deque<std::unique_ptr<SpanEventImpl>> finished_events;
     	// mutable so const accessors (getFinishedEventsCount) can lock it.
     	mutable std::mutex span_event_lock_;
 
         std::optional<UrlStatEntry> url_stat_;
-    	std::shared_ptr<PinpointAnnotation> annotations_;
+    	std::unique_ptr<PinpointAnnotation> annotations_;
         std::vector<std::unique_ptr<Exception>> exceptions_;
     	// Keeps the agent alive while this span (or any chunk/event referencing
     	// it) is still held by user code; agent_ below stays valid through it.
@@ -396,7 +396,7 @@ namespace pinpoint {
 		/// @brief Returns the parent span data associated with this chunk.
 		std::shared_ptr<SpanData>& getSpanData() { return span_data_; }
 		/// @brief Returns the span events contained in this chunk.
-		std::vector<std::shared_ptr<SpanEventImpl>>& getSpanEventChunk() { return event_chunk_; }
+		std::vector<std::unique_ptr<SpanEventImpl>>& getSpanEventChunk() { return event_chunk_; }
 		/// @brief Timestamp used for ordering span chunks.
 		int64_t getKeyTime() const { return key_time_; }
 		/// @brief Indicates whether this chunk represents the final events of the span.
@@ -404,7 +404,7 @@ namespace pinpoint {
 
 	private:
 		std::shared_ptr<SpanData> span_data_;
-		std::vector<std::shared_ptr<SpanEventImpl>> event_chunk_;
+		std::vector<std::unique_ptr<SpanEventImpl>> event_chunk_;
 		bool final_;
 		int64_t key_time_;
 	};
@@ -453,6 +453,7 @@ namespace pinpoint {
     	int64_t GetSpanId() override { return data_->getSpanId(); }
     	bool IsSampled() override { return true; }
     	AnnotationPtr GetAnnotations() const override { return data_->getAnnotations(); }
+        const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
 
     	/// @brief Sets the service type recorded on the span.
     	void SetServiceType(int32_t service_type) override;
@@ -478,6 +479,8 @@ namespace pinpoint {
     	void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
     private:
+        friend class SpanEventImpl;
+
 		// Non-owning. Kept valid by data_->agent_ref_ (SpanData holds a
 		// shared_ptr to the agent); data_ outlives every use of agent_ here.
 		AgentService *agent_;

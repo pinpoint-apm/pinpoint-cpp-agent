@@ -180,7 +180,7 @@
        * @param reader Header accessor provided by user code.
        * @param annotation Destination annotation aggregator.
        */
-      virtual void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const = 0;
+      virtual void recordServerHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const = 0;
       /**
        * @brief Records client-side headers into the supplied annotation.
        *
@@ -188,7 +188,7 @@
        * @param reader Header accessor provided by user code.
        * @param annotation Destination annotation aggregator.
        */
-      virtual void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const = 0;
+      virtual void recordClientHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const = 0;
 
       /**
        * @brief Returns a reference to the AgentStats instance.

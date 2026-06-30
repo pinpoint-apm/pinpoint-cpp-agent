@@ -50,6 +50,10 @@
  *   pt_agent_shutdown(agent);
  *   pt_agent_destroy(agent);
  * @endcode
+ *
+ * Span-event and annotation handles are non-owning views. Use them only while
+ * the parent span/span event is alive and active; do not store them for work
+ * that can run after pt_span_end_event(), pt_span_end(), or pt_span_destroy().
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -129,9 +133,9 @@ extern "C" {
 typedef struct pt_agent_s*      pt_agent_t;
 /** Opaque handle to a distributed trace span. */
 typedef struct pt_span_s*       pt_span_t;
-/** Opaque handle to a span event (child operation). */
+/** Non-owning handle to a span event (child operation). */
 typedef struct pt_span_event_s* pt_span_event_t;
-/** Opaque handle to the annotation container of a span or span event. */
+/** Non-owning handle to the annotation container of a span or span event. */
 typedef struct pt_annotation_s* pt_annotation_t;
 
 /* ========================================================================== */
@@ -481,7 +485,9 @@ void pt_span_destroy(pt_span_t span);
 /**
  * @brief Creates a new child span event and pushes it onto the event stack.
  *
- * The returned handle must be released with pt_span_event_destroy().
+ * The returned handle must be used only while the parent span is alive and the
+ * event is active. Release the handle with pt_span_event_destroy(); this only
+ * frees the C wrapper and does not extend the event lifetime.
  * Call pt_span_end_event() on the *span* (not on the event handle) to pop and
  * finalize the event.
  *
@@ -500,8 +506,8 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
 /**
  * @brief Returns the current (top-of-stack) span event.
  *
- * The returned handle must be released with pt_span_event_destroy().
- * Returns NULL if there is no active event.
+ * The returned non-owning handle must be released with
+ * pt_span_event_destroy(). Returns NULL if there is no active event.
  *
  * Mirrors pinpoint::Span::GetSpanEvent().
  */
@@ -510,9 +516,8 @@ pt_span_event_t pt_span_get_event(pt_span_t span);
 /**
  * @brief Pops and finalizes the current span event.
  *
- * Records the elapsed time and removes the event from the event stack.
- * The span event handle obtained from pt_span_new_event() remains valid
- * after this call but should be released with pt_span_event_destroy().
+ * Records the elapsed time and removes the event from the event stack. Do not
+ * use span event or event-annotation handles after this call.
  *
  * Mirrors pinpoint::Span::EndSpanEvent().
  */
@@ -618,8 +623,8 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
 /**
  * @brief Returns the annotation container for this span.
  *
- * The returned handle must be released with pt_annotation_destroy() when no
- * longer needed.
+ * The returned non-owning handle must be released with pt_annotation_destroy()
+ * when no longer needed. Do not use it after the span ends or is destroyed.
  *
  * Mirrors pinpoint::Span::GetAnnotations().
  */
@@ -632,8 +637,8 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span);
 /**
  * @brief Releases a span event handle.
  *
- * Does NOT end/finalize the event — call pt_span_end_event() on the parent
- * span first.
+ * Does NOT end/finalize the event or destroy the underlying event — call
+ * pt_span_end_event() on the parent span first.
  */
 void pt_span_event_destroy(pt_span_event_t se);
 
@@ -688,7 +693,8 @@ void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
 /**
  * @brief Returns the annotation container for this span event.
  *
- * The returned handle must be released with pt_annotation_destroy().
+ * The returned non-owning handle must be released with pt_annotation_destroy().
+ * Do not use it after the span event is ended or the parent span is destroyed.
  *
  * Mirrors pinpoint::SpanEvent::GetAnnotations().
  */

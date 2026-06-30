@@ -229,7 +229,12 @@ namespace pinpoint {
         virtual void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) = 0;
     };
 
-	using AnnotationPtr = std::shared_ptr<Annotation>;
+	/// @brief Non-owning annotation pointer.
+	///
+	/// The returned annotation object is owned by the span or span event that
+	/// created it. Do not keep this pointer after the owning span/event has
+	/// ended or been destroyed.
+	using AnnotationPtr = Annotation*;
 
 	class Span;
 	using SpanPtr = std::shared_ptr<Span>;
@@ -264,13 +269,16 @@ namespace pinpoint {
 
 		/// @brief Returns the mutable annotation container.
         virtual AnnotationPtr GetAnnotations() const = 0;
-		/// @brief Returns the parent span that owns this event.
-		virtual SpanPtr GetParentSpan() const = 0;
 		/// @brief Finalizes this span event through its parent span.
 		virtual void EndEvent() = 0;
     };
 
-	using SpanEventPtr = std::shared_ptr<SpanEvent>;
+	/// @brief Non-owning span-event pointer.
+	///
+	/// Span events are owned by their parent span. Use this pointer only while
+	/// the parent span is alive and the event is still in scope; do not retain it
+	/// for work that can outlive the span.
+	using SpanEventPtr = SpanEvent*;
 
 	/**
 	 * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
@@ -478,7 +486,7 @@ namespace pinpoint {
 		
 		private:
 			SpanPtr span_;
-			SpanEventPtr event_;
+			SpanEventPtr event_{nullptr};
 		};
    
 	};

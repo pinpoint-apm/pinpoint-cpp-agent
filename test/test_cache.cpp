@@ -778,6 +778,7 @@ TEST_F(SqlUidCacheTest, LRUOrderingTest) {
     auto result1_original = cache.get(sql1);
     auto result2_original = cache.get(sql2);
     auto result3_original = cache.get(sql3);
+    EXPECT_FALSE(result3_original.found);
     
     // Access sql1 again - should move it to front of LRU list
     auto result1 = cache.get(sql1);
@@ -1152,6 +1153,7 @@ TEST_F(SqlUidCacheTest, RemoveAllAndReuseTest) {
 
     auto orig1 = cache.get(sql1);
     auto orig2 = cache.get(sql2);
+    EXPECT_FALSE(orig2.found);
 
     cache.remove(sql1);
     cache.remove(sql2);

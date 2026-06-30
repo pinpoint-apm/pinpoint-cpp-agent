@@ -1916,10 +1916,11 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
     auto* fake = fake_stub.get();
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "event-annotation-op");
-    auto span_event = std::make_shared<SpanEventImpl>(span_data, "child-op");
+    auto span_parent = std::make_shared<SpanImpl>(mock_agent_service_.get(), "event-annotation-op", "test-rpc");
+    auto span_data = span_parent->getSpanData();
+    auto span_event = std::make_unique<SpanEventImpl>(span_parent.get(), "child-op");
     span_event->GetAnnotations()->AppendString(201, "event-annotation");
-    span_data->addSpanEvent(span_event);
+    span_data->addSpanEvent(std::move(span_event));
     span_data->finishSpanEvent();
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 

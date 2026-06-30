@@ -332,8 +332,8 @@ TEST_F(NoopTest, GlobalNoopFunctionsTest) {
     auto span2 = noopSpan();
     auto agent2 = noopAgent();
 
-    EXPECT_EQ(annotation.get(), annotation2.get()) << "noopAnnotation should return the same instance";
-    EXPECT_EQ(span_event.get(), span_event2.get()) << "noopSpanEvent should return the same instance";
+    EXPECT_EQ(annotation, annotation2) << "noopAnnotation should return the same instance";
+    EXPECT_EQ(span_event, span_event2) << "noopSpanEvent should return the same instance";
     EXPECT_EQ(span.get(), span2.get()) << "noopSpan should return the same instance";
     EXPECT_EQ(agent.get(), agent2.get()) << "noopAgent should return the same instance";
 }
@@ -428,11 +428,11 @@ TEST_F(NoopTest, NoopHolderReturnsSameInstancesTest) {
 
     auto event1 = noop.spanEvent();
     auto event2 = noop.spanEvent();
-    EXPECT_EQ(event1.get(), event2.get()) << "Noop holder should return same spanEvent instance";
+    EXPECT_EQ(event1, event2) << "Noop holder should return same spanEvent instance";
 
     auto anno1 = noop.annotation();
     auto anno2 = noop.annotation();
-    EXPECT_EQ(anno1.get(), anno2.get()) << "Noop holder should return same annotation instance";
+    EXPECT_EQ(anno1, anno2) << "Noop holder should return same annotation instance";
 }
 
 TEST_F(NoopTest, NoopHolderAllInstancesAreValidTest) {

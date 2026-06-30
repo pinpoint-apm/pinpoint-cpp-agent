@@ -113,7 +113,7 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
           span_event_->SetError(status->error_message());
         }
         parent_span_->EndSpanEvent();
-        span_event_.reset();
+        span_event_ = nullptr;
       }
     }
 
@@ -149,5 +149,4 @@ class PinpointClientInterceptorFactory final
 };
 
 }  // namespace grpc_demo
-
 

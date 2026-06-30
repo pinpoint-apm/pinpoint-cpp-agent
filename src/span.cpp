@@ -57,7 +57,7 @@ namespace pinpoint {
         finished_events{},
         span_event_lock_{},
         url_stat_{},
-        annotations_{std::make_shared<PinpointAnnotation>()},
+        annotations_{std::make_unique<PinpointAnnotation>()},
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent),
         config_(agent != nullptr ? agent->getConfig() : nullptr) {
@@ -69,7 +69,10 @@ namespace pinpoint {
         }
     }
 
-    void SpanData::addSpanEvent(const std::shared_ptr<SpanEventImpl>& se) {
+    SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
+        if (!se) {
+            return nullptr;
+        }
         std::unique_lock<std::mutex> lock(span_event_lock_);
         // Assign the event's sequence/depth here, under the lock, rather than
         // letting the SpanEventImpl ctor snapshot them: two concurrent
@@ -78,7 +81,9 @@ namespace pinpoint {
         // tree. The event takes the current counter value, then we advance it.
         se->setSequence(event_sequence_.fetch_add(1, std::memory_order_relaxed));
         se->setDepth(event_depth_.fetch_add(1, std::memory_order_relaxed));
-        event_stack_.push(se);
+        auto* event = se.get();
+        event_stack_.push(std::move(se));
+        return event;
     }
 
     void SpanData::finishSpanEvent() {
@@ -92,7 +97,7 @@ namespace pinpoint {
         }
     }
 
-    void SpanData::storeFinishedEvent(std::shared_ptr<SpanEventImpl> se) {
+    void SpanData::storeFinishedEvent(std::unique_ptr<SpanEventImpl> se) {
         const auto sequence = se->getSequence();
         if (finished_events.empty() || finished_events.back()->getSequence() < sequence) {
             finished_events.emplace_back(std::move(se));
@@ -105,13 +110,13 @@ namespace pinpoint {
 
         auto pos = std::lower_bound(
             finished_events.begin(), finished_events.end(), sequence,
-            [](const std::shared_ptr<SpanEventImpl>& event, int32_t sequence) {
+            [](const std::unique_ptr<SpanEventImpl>& event, int32_t sequence) {
                 return event->getSequence() < sequence;
             });
         finished_events.insert(pos, std::move(se));
     }
 
-    void SpanData::takeFinishedEvents(std::vector<std::shared_ptr<SpanEventImpl>>& out) {
+    void SpanData::takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out) {
         std::unique_lock<std::mutex> lock(span_event_lock_);
         out.clear();
         if (finished_events.empty()) {
@@ -269,13 +274,9 @@ namespace pinpoint {
             return noopSpanEvent();
         }
 
-        std::weak_ptr<Span> parent_span_ref = weak_from_this();
-
-        auto se = std::make_shared<SpanEventImpl>(data_, operation, parent_span_ref);
+        auto se = std::make_unique<SpanEventImpl>(this, operation);
         se->SetServiceType(service_type);
-        data_->addSpanEvent(se);
-
-        return se;
+        return data_->addSpanEvent(std::move(se));
     } catch (const std::exception& e) {
         LOG_ERROR("new span event exception = {}", e.what());
         return noopSpanEvent();
@@ -460,12 +461,11 @@ namespace pinpoint {
         async_span->data_->setAsyncId(se->getAsyncId());
         async_span->data_->setAsyncSequence(se->getAsyncSeqGen());
 
-        const auto async_se = std::make_shared<SpanEventImpl>(
-            async_span->data_, "", std::static_pointer_cast<Span>(async_span));
+        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), "");
         auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
         async_se->setApiId(async_api_id);
         async_se->SetServiceType(SERVICE_TYPE_ASYNC);
-        async_span->data_->addSpanEvent(async_se);
+        async_span->data_->addSpanEvent(std::move(async_se));
 
         return async_span;
     } catch (const std::exception& e) {

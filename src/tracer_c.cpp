@@ -18,9 +18,9 @@
  * @file tracer_c.cpp
  * @brief C++ implementation of the pure-C public API declared in tracer_c.h.
  *
- * Each C handle type wraps a C++ shared_ptr so that object lifetimes are
- * managed safely even when the C caller mixes pt_span_destroy() with
- * pt_span_new_async_span() or pt_span_get_event().
+ * Agent and span handles wrap C++ shared_ptr instances. Span-event and
+ * annotation handles are non-owning: their pointees are owned by the parent
+ * span/span event and must not be used after that owner is ended or destroyed.
  *
  * Adapter classes (CContextReader, CHeaderReader, CContextWriter,
  * CCallstackReader) bridge the C callback structs to the corresponding
@@ -133,21 +133,10 @@ struct pt_annotation_s { pinpoint::AnnotationPtr  ptr; };
 // ============================================================================
 // Static noop sentinel handles
 //
-// The C++ layer treats noop work as free: a disabled / filtered / unsampled
-// call hands back a shared_ptr to one of a handful of process-wide noop
-// singletons (noopAgent / noopSpan / noopSpanEvent / noopAnnotation). The C
-// wrapper used to break that contract — every such call still malloc()'d a
-// fresh handle and copied the singleton's shared_ptr into it, so a hot path
-// doing zero real tracing paid for an allocation, a free, and a pair of atomic
-// refcount operations on a single control block shared by every thread (a
-// cross-core cacheline contention point).
-//
-// To restore "noop is free" at the C layer we hand back one static sentinel
-// handle per noop type. Each sentinel owns a single long-lived reference to its
-// singleton, taken once on first use, so operations routed through
-// sentinel->ptr remain correct no-ops while creation skips the allocation and
-// destruction skips the free. Sentinels live for the lifetime of the process
-// and must never be delete'd.
+// The C++ layer treats noop work as free. To preserve that at the C boundary we
+// hand back one static sentinel handle per noop type so hot disabled paths skip
+// handle allocation/free. Agent/span sentinels keep the shared noop owners; the
+// event/annotation sentinels hold process-lifetime raw pointers owned by Noop.
 //
 // Lazy function-local statics give thread-safe initialization (C++11) and the
 // correct teardown order: each sentinel is constructed after the noop singleton
@@ -195,14 +184,14 @@ static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
 
 static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
     if (!ptr) return nullptr;
-    if (ptr.get() == noop_span_event_sentinel()->ptr.get()) return noop_span_event_sentinel();
-    return new pt_span_event_s{std::move(ptr)};
+    if (ptr == noop_span_event_sentinel()->ptr) return noop_span_event_sentinel();
+    return new pt_span_event_s{ptr};
 }
 
 static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
     if (!ptr) return nullptr;
-    if (ptr.get() == noop_annotation_sentinel()->ptr.get()) return noop_annotation_sentinel();
-    return new pt_annotation_s{std::move(ptr)};
+    if (ptr == noop_annotation_sentinel()->ptr) return noop_annotation_sentinel();
+    return new pt_annotation_s{ptr};
 }
 
 // ============================================================================

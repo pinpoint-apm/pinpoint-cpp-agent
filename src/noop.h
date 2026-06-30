@@ -87,7 +87,6 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
-        SpanPtr GetParentSpan() const override { return noopSpan(); }
         void EndEvent() override {}
     };
 
@@ -193,8 +192,8 @@ namespace pinpoint {
         Noop() :
             noop_agent_(std::make_shared<NoopAgent>()),
             noop_span_ (std::make_shared<NoopSpan>()),
-            noop_event_(std::make_shared<NoopSpanEvent>()),
-            noop_annotation_(std::make_shared<NoopAnnotation>())
+            noop_event_(std::make_unique<NoopSpanEvent>()),
+            noop_annotation_(std::make_unique<NoopAnnotation>())
         {}
 
         /// @brief Returns the shared noop agent.
@@ -202,9 +201,9 @@ namespace pinpoint {
         /// @brief Returns the shared noop span.
         SpanPtr span() const { return noop_span_; }
         /// @brief Returns the shared noop span event.
-        SpanEventPtr spanEvent() const { return noop_event_; }
+        SpanEventPtr spanEvent() const { return noop_event_.get(); }
         /// @brief Returns the shared noop annotation.
-        AnnotationPtr annotation() const { return noop_annotation_; }
+        AnnotationPtr annotation() const { return noop_annotation_.get(); }
 
     private:
         Noop(const Noop&) = delete;
@@ -214,7 +213,7 @@ namespace pinpoint {
 
         AgentPtr noop_agent_;
         SpanPtr noop_span_;
-        SpanEventPtr noop_event_;
-        AnnotationPtr noop_annotation_;
+        std::unique_ptr<NoopSpanEvent> noop_event_;
+        std::unique_ptr<NoopAnnotation> noop_annotation_;
     };
 }

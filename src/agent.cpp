@@ -633,7 +633,7 @@ namespace pinpoint {
         return false;
     }
 
-    void AgentImpl::recordServerHeader(const HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const {
+    void AgentImpl::recordServerHeader(const HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
@@ -643,7 +643,7 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::recordClientHeader(const HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const {
+    void AgentImpl::recordClientHeader(const HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }

@@ -28,6 +28,7 @@
 #include "../src/url_stat.h"
 #include "../src/stat.h"
 #include "../src/callstack.h"
+#include "../src/noop.h"
 #include "../include/pinpoint/tracer.h"
 #include "mock_agent_service.h"
 #include "mock_helpers.h"
@@ -60,34 +61,36 @@ TEST_F(SpanTest, EventStackBasicOperationsTest) {
     EXPECT_EQ(stack.size(), 0) << "Initial stack should be empty";
     
     // Create test span events
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
-    auto event1 = std::make_shared<SpanEventImpl>(span_data, "event1");
-    auto event2 = std::make_shared<SpanEventImpl>(span_data, "event2");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
+    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
+    auto* event1_ptr = event1.get();
+    auto* event2_ptr = event2.get();
     
     // Test push
-    stack.push(event1);
+    stack.push(std::move(event1));
     EXPECT_EQ(stack.size(), 1) << "Stack size should be 1 after first push";
     
-    stack.push(event2);
+    stack.push(std::move(event2));
     EXPECT_EQ(stack.size(), 2) << "Stack size should be 2 after second push";
     
     // Test top
     auto top_event = stack.top();
-    EXPECT_EQ(top_event, event2) << "Top should return the last pushed event";
+    EXPECT_EQ(top_event, event2_ptr) << "Top should return the last pushed event";
     EXPECT_EQ(stack.size(), 2) << "Top should not change stack size";
     
     // Test pop
     auto popped_event = stack.pop();
-    EXPECT_EQ(popped_event, event2) << "Pop should return the last pushed event";
+    EXPECT_EQ(popped_event.get(), event2_ptr) << "Pop should return the last pushed event";
     EXPECT_EQ(stack.size(), 1) << "Stack size should be 1 after pop";
     
     auto second_pop = stack.pop();
-    EXPECT_EQ(second_pop, event1) << "Second pop should return first event";
+    EXPECT_EQ(second_pop.get(), event1_ptr) << "Second pop should return first event";
     EXPECT_EQ(stack.size(), 0) << "Stack should be empty after popping all events";
 }
 
 TEST_F(SpanTest, EventStackConcurrentAccessTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
     EventStack stack;
     std::mutex stack_mutex;  // External mutex (mirrors SpanData::span_event_lock_)
 
@@ -99,11 +102,11 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
 
     // Pre-create all events on the main thread to avoid data races on
     // MockAgentService (cacheApi / cached_apis_ is not thread-safe).
-    std::vector<std::vector<std::shared_ptr<SpanEventImpl>>> pre_created(num_push_threads);
+    std::vector<std::vector<std::unique_ptr<SpanEventImpl>>> pre_created(num_push_threads);
     for (int t = 0; t < num_push_threads; t++) {
         for (int i = 0; i < events_per_thread; i++) {
             pre_created[t].push_back(
-                std::make_shared<SpanEventImpl>(span_data, "event" + std::to_string(t * events_per_thread + i)));
+                std::make_unique<SpanEventImpl>(span.get(), "event" + std::to_string(t * events_per_thread + i)));
         }
     }
 
@@ -115,7 +118,7 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
             for (int i = 0; i < events_per_thread; i++) {
                 {
                     std::lock_guard<std::mutex> lock(stack_mutex);
-                    stack.push(events[i]);
+                    stack.push(std::move(events[i]));
                 }
                 push_count++;
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
@@ -303,26 +306,29 @@ TEST_F(SpanTest, SpanDataEventSequenceTest) {
 }
 
 TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto span_data = span->getSpanData();
 
     // Create span events
-    auto event1 = std::make_shared<SpanEventImpl>(span_data, "event1");
-    auto event2 = std::make_shared<SpanEventImpl>(span_data, "event2");
+    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
+    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
+    auto* event1_ptr = event1.get();
+    auto* event2_ptr = event2.get();
 
     EXPECT_EQ(span_data->getFinishedEventsCount(), 0) << "Initial finished events should be 0";
 
     // Add span events
-    span_data->addSpanEvent(event1);
+    EXPECT_EQ(span_data->addSpanEvent(std::move(event1)), event1_ptr);
     EXPECT_EQ(span_data->getEventSequence(), 1) << "Event sequence should increment";
     EXPECT_EQ(span_data->getEventDepth(), 2) << "Event depth should increment";
 
-    span_data->addSpanEvent(event2);
+    EXPECT_EQ(span_data->addSpanEvent(std::move(event2)), event2_ptr);
     EXPECT_EQ(span_data->getEventSequence(), 2) << "Event sequence should be 2";
     EXPECT_EQ(span_data->getEventDepth(), 3) << "Event depth should be 3";
 
     // Get top event
     auto top_event = span_data->topSpanEvent();
-    EXPECT_EQ(top_event, event2) << "Top event should be the last added";
+    EXPECT_EQ(top_event, event2_ptr) << "Top event should be the last added";
 
     // Finish span events
     span_data->finishSpanEvent();
@@ -334,8 +340,8 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     // Take finished events (moves them out, leaving the vector empty)
     auto taken = span_data->takeFinishedEvents();
     ASSERT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
-    EXPECT_EQ(taken[0], event1) << "Finished events should be returned in sequence order";
-    EXPECT_EQ(taken[1], event2) << "Finished events should be returned in sequence order";
+    EXPECT_EQ(taken[0].get(), event1_ptr) << "Finished events should be returned in sequence order";
+    EXPECT_EQ(taken[1].get(), event2_ptr) << "Finished events should be returned in sequence order";
     EXPECT_EQ(span_data->getFinishedEventsCount(), 0) << "Finished events should be cleared";
 }
 
@@ -377,14 +383,15 @@ TEST_F(SpanTest, SpanChunkConstructorTest) {
 }
 
 TEST_F(SpanTest, SpanChunkWithEventsTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto span_data = span->getSpanData();
     
     // Add some finished events to span data
-    auto event1 = std::make_shared<SpanEventImpl>(span_data, "event1");
-    auto event2 = std::make_shared<SpanEventImpl>(span_data, "event2");
+    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
+    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
     
-    span_data->addSpanEvent(event1);
-    span_data->addSpanEvent(event2);
+    span_data->addSpanEvent(std::move(event1));
+    span_data->addSpanEvent(std::move(event2));
     span_data->finishSpanEvent();
     span_data->finishSpanEvent();
     
@@ -395,11 +402,12 @@ TEST_F(SpanTest, SpanChunkWithEventsTest) {
 }
 
 TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto span_data = span->getSpanData();
     
     // Add some events
-    auto event1 = std::make_shared<SpanEventImpl>(span_data, "event1");
-    span_data->addSpanEvent(event1);
+    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
+    span_data->addSpanEvent(std::move(event1));
     span_data->finishSpanEvent();
     
     SpanChunk chunk(span_data, true);
@@ -450,16 +458,19 @@ TEST_F(SpanTest, SpanImplEndSpanEventTest) {
     SUCCEED() << "End span event should complete without errors";
 }
 
-TEST_F(SpanTest, SpanEventGetParentSpanTest) {
+TEST_F(SpanTest, SpanEventEndEventUsesParentSpanTest) {
     SpanPtr span = std::make_shared<SpanImpl>(
         mock_agent_service_.get(), "test-operation", "test-rpc");
 
     auto event = span->NewSpanEvent("test-event");
 
-    EXPECT_EQ(event->GetParentSpan().get(), span.get());
-
     event->EndEvent();
     span->EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0]->getOperationName(), "test-event");
 }
 
 TEST_F(SpanTest, SpanEventEndEventTest) {
@@ -956,6 +967,7 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
     // Next one should overflow
     auto overflow = span.NewSpanEvent("overflow");
     // The overflow event should be a noop
+    EXPECT_EQ(overflow, noopSpanEvent());
     span.EndSpanEvent();  // decrements overflow
 
     span.EndSpan();
@@ -1134,16 +1146,20 @@ TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
 // ========== SpanChunk Optimize Multi-Event Test ==========
 
 TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-op");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    auto span_data = span->getSpanData();
 
     // Create events with different depths/sequences to test optimization
-    auto event1 = std::make_shared<SpanEventImpl>(span_data, "e1");
-    auto event2 = std::make_shared<SpanEventImpl>(span_data, "e2");
-    auto event3 = std::make_shared<SpanEventImpl>(span_data, "e3");
+    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "e1");
+    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "e2");
+    auto event3 = std::make_unique<SpanEventImpl>(span.get(), "e3");
+    auto* event1_ptr = event1.get();
+    auto* event2_ptr = event2.get();
+    auto* event3_ptr = event3.get();
 
-    span_data->addSpanEvent(event1);
-    span_data->addSpanEvent(event2);
-    span_data->addSpanEvent(event3);
+    span_data->addSpanEvent(std::move(event1));
+    span_data->addSpanEvent(std::move(event2));
+    span_data->addSpanEvent(std::move(event3));
 
     // Finish in reverse order (stack LIFO)
     span_data->finishSpanEvent(); // event3
@@ -1155,9 +1171,9 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
 
     auto& events = chunk.getSpanEventChunk();
     ASSERT_EQ(events.size(), 3);
-    EXPECT_EQ(events[0], event1) << "SpanData should drain finished events in sequence order";
-    EXPECT_EQ(events[1], event2) << "SpanData should drain finished events in sequence order";
-    EXPECT_EQ(events[2], event3) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[0].get(), event1_ptr) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[1].get(), event2_ptr) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[2].get(), event3_ptr) << "SpanData should drain finished events in sequence order";
 
     chunk.optimizeSpanEvents();
 
@@ -1172,10 +1188,11 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
 }
 
 TEST_F(SpanTest, SpanChunkOptimizeNonFinalKeyTimeTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-op");
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    auto span_data = span->getSpanData();
 
-    auto event = std::make_shared<SpanEventImpl>(span_data, "e1");
-    span_data->addSpanEvent(event);
+    auto event = std::make_unique<SpanEventImpl>(span.get(), "e1");
+    span_data->addSpanEvent(std::move(event));
     span_data->finishSpanEvent();
 
     SpanChunk chunk(span_data, false);

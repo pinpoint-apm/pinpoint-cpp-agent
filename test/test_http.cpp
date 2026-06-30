@@ -703,7 +703,7 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyConfigTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should not record any headers with empty config
     EXPECT_EQ(annotation->GetStringStringCount(), 0) << "Should not record headers with empty config";
@@ -723,7 +723,7 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecificHeadersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only configured headers
     EXPECT_EQ(annotation->GetStringStringCount(), 2) << "Should record exactly 2 headers";
@@ -751,7 +751,7 @@ TEST_F(HttpTest, HttpHeaderRecorderSingleHeaderTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only Content-Type header
     EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record exactly 1 header";
@@ -774,7 +774,7 @@ TEST_F(HttpTest, HttpHeaderRecorderMissingHeadersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only the available header (Content-Type)
     EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record exactly 1 header (only available one)";
@@ -800,7 +800,7 @@ TEST_F(HttpTest, HttpHeaderRecorderAllHeadersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record all headers
     EXPECT_EQ(annotation->GetStringStringCount(), 5) << "Should record all 5 headers";
@@ -824,7 +824,7 @@ TEST_F(HttpTest, HttpHeaderRecorderCaseSensitivityTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // The behavior depends on the HeaderReader implementation
     // Our mock treats keys as case-sensitive
@@ -844,7 +844,7 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyValuesTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record both headers, including the one with empty value
     EXPECT_EQ(annotation->GetStringStringCount(), 2) << "Should record both headers including empty value";
@@ -866,7 +866,7 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecialCharactersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record header with special characters
     EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record header with special characters";
@@ -889,7 +889,7 @@ TEST_F(HttpTest, HttpHeaderRecorderMultipleAllConfigTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should NOT behave as HEADERS-ALL since cfg size > 1
     // Only "Content-Type" should be recorded ("HEADERS-ALL" is not a real header name)
@@ -925,7 +925,7 @@ TEST_F(HttpTest, HttpHeaderRecorderRealisticHeadersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only configured headers (6 out of 7)
     EXPECT_EQ(annotation->GetStringStringCount(), 6) << "Should record exactly 6 configured headers";
@@ -946,7 +946,7 @@ TEST_F(HttpTest, HttpHeaderRecorderNoHeadersTest) {
     MockHeaderReader headerReader(headers);
     
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
     
     // Should not record any headers
     EXPECT_EQ(annotation->GetStringStringCount(), 0) << "Should not record any headers when none are available";
@@ -1099,7 +1099,7 @@ TEST_F(HttpTest, SetProxyHeaderApacheTest) {
     auto annotation = std::make_shared<PinpointAnnotation>();
     
     // Should not throw and parse successfully
-    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
 // Test setProxyHeader with Pinpoint-ProxyNginx
@@ -1111,7 +1111,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxTest) {
     auto annotation = std::make_shared<PinpointAnnotation>();
     
     // Should not throw and parse successfully
-    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
 // Test setProxyHeader with Pinpoint-ProxyApp
@@ -1123,7 +1123,7 @@ TEST_F(HttpTest, SetProxyHeaderAppTest) {
     auto annotation = std::make_shared<PinpointAnnotation>();
     
     // Should not throw and parse successfully
-    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
 // Test setProxyHeader without proxy headers
@@ -1133,7 +1133,7 @@ TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
     auto annotation = std::make_shared<PinpointAnnotation>();
     
     // Should not throw (just no annotation added)
-    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation));
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
 // ========== Edge Case Tests ==========
@@ -1284,7 +1284,7 @@ TEST_F(HttpTest, SetProxyHeaderApachePriorityTest) {
     MockHeaderReader reader(headers);
     auto annotation = std::make_shared<MockAnnotation>();
 
-    HttpTracerUtil::setProxyHeader(reader, annotation);
+    HttpTracerUtil::setProxyHeader(reader, annotation.get());
 
     // Only Apache header should produce annotation (code=3)
     const auto& stringValues = annotation->GetStringValues();
@@ -1302,7 +1302,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxPriorityTest) {
     MockHeaderReader reader(headers);
     auto annotation = std::make_shared<MockAnnotation>();
 
-    HttpTracerUtil::setProxyHeader(reader, annotation);
+    HttpTracerUtil::setProxyHeader(reader, annotation.get());
 
     const auto& stringValues = annotation->GetStringValues();
     auto it = stringValues.find(ANNOTATION_HTTP_PROXY_HEADER);
@@ -1322,7 +1322,7 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
     MockHeaderReader headerReader(headers);
 
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
 
     // compare_string is case-insensitive, so "headers-all" should trigger dump_all_headers_
     EXPECT_EQ(annotation->GetStringStringCount(), 3)
@@ -1338,7 +1338,7 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllEmptyHeadersTest) {
     MockHeaderReader headerReader(headers);
 
     auto annotation = std::make_shared<MockAnnotation>();
-    recorder.recordHeader(headerReader, annotation);
+    recorder.recordHeader(headerReader, annotation.get());
 
     EXPECT_EQ(annotation->GetStringStringCount(), 0)
         << "HEADERS-ALL with no headers should record nothing";

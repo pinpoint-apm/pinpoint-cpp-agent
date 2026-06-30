@@ -23,14 +23,14 @@
 namespace pinpoint {
 
     class SpanData;
+    class SpanImpl;
 
     /**
      * @brief Concrete span event implementation that records timing and metadata.
      */
     class SpanEventImpl final : public SpanEvent {
     public:
-        SpanEventImpl(const std::shared_ptr<SpanData>& span, std::string_view operation,
-                      std::weak_ptr<Span> parent_span_ref = {});
+        SpanEventImpl(SpanImpl* span, std::string_view operation);
         ~SpanEventImpl() override {}
 
         /// @brief Sets the service type for this event.
@@ -49,7 +49,6 @@ namespace pinpoint {
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
         AnnotationPtr GetAnnotations() const override { return ensureAnnotations(); }
-        SpanPtr GetParentSpan() const override;
         void EndEvent() override;
 
         /**
@@ -57,9 +56,6 @@ namespace pinpoint {
          */
         void finish();
 
-        /// @brief Returns the parent span data that owns this event, or nullptr
-        /// when the span has already been destroyed.
-        std::shared_ptr<SpanData> getParentSpan() const { return parent_span_.lock(); }
         /// @brief Returns the service type identifier.
         int32_t getServiceType() const { return service_type_; }
         /// @brief Returns the recorded operation name.
@@ -92,7 +88,7 @@ namespace pinpoint {
 
         /// @brief Returns the mutable annotation container, allocating it on
         /// first use if it has not been created yet.
-        std::shared_ptr<PinpointAnnotation>& getAnnotations() { ensureAnnotations(); return annotations_; }
+        PinpointAnnotation* getAnnotations() { return ensureAnnotations(); }
 
         /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }
@@ -124,14 +120,14 @@ namespace pinpoint {
         /// returns it. Subsequent calls reuse the same instance, so callers can
         /// rely on a non-null result. Kept const (with a mutable backing field)
         /// so the const GetAnnotations() override can materialize it on demand.
-        const std::shared_ptr<PinpointAnnotation>& ensureAnnotations() const;
+        PinpointAnnotation* ensureAnnotations() const;
 
-        // Weak on purpose: events can outlive their span (the C API documents
-        // that destroying a span while holding event handles is safe), and a
-        // shared_ptr here would form an ownership cycle with the span's own
-        // event containers. Every use locks and degrades to a no-op if expired.
-        std::weak_ptr<SpanData> parent_span_;
-        std::weak_ptr<Span> parent_span_ref_;
+        SpanData& parentSpanData() const;
+
+        // Non-owning by design. SpanData owns SpanEventImpl instances and keeps
+        // them within the parent span's lifetime, while this pointer lets hot
+        // event operations avoid weak_ptr::lock() and shared_ptr refcount traffic.
+        SpanImpl* parent_span_;
         int32_t service_type_;
         std::string operation_;
         int32_t sequence_;
@@ -149,7 +145,7 @@ namespace pinpoint {
         int32_t api_id_;
         // Created lazily via ensureAnnotations(); stays null until the first
         // annotation is recorded or the container is accessed.
-        mutable std::shared_ptr<PinpointAnnotation> annotations_;
+        mutable std::unique_ptr<PinpointAnnotation> annotations_;
     };
 
 }  // namespace pinpoint

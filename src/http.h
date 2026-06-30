@@ -264,7 +264,7 @@ namespace pinpoint {
          * @param reader Header reader to access HTTP headers.
          * @param annotation Annotation destination for proxy metadata.
          */
-        static void setProxyHeader(const HeaderReader& reader, const AnnotationPtr& annotation);
+        static void setProxyHeader(const HeaderReader& reader, AnnotationPtr annotation);
     };
 
 }

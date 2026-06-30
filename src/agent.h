@@ -119,8 +119,8 @@ namespace pinpoint {
     	void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override;
 
     	bool isStatusFail(int status) const override;
-    	void recordServerHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
-    	void recordClientHeader(HeaderType which, HeaderReader& reader, const AnnotationPtr& annotation) const override;
+    	void recordServerHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const override;
+    	void recordClientHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const override;
 
     	AgentStats& getAgentStats() override { return *agent_stats_; }
     	UrlStats& getUrlStats() override { return *url_stats_; }
