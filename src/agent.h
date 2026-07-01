@@ -188,6 +188,12 @@ namespace pinpoint {
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
 
+    	/// @brief (Re)builds config-derived components (sampler, HTTP filters,
+    	/// header recorders), skipping any whose backing configuration is
+    	/// unchanged from old_cfg. A null old_cfg forces a full build and is used
+    	/// for the initial construction path.
+    	void apply_config(const std::shared_ptr<const Config>& old_cfg,
+    	                  const std::shared_ptr<const Config>& cfg);
     	/// @brief Initializes HTTP header recorders for server and client.
     	void init_header_recorders(const std::shared_ptr<const Config>& cfg);
     	/// @brief Starts background threads responsible for gRPC communication.

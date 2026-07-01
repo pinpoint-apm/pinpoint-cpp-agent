@@ -82,7 +82,10 @@ namespace pinpoint {
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
         
-        reloadConfig(config_.load());
+        // Initial build: no previous config, so every component is created.
+        // config_ was already set from the ctor init-list above; apply_config
+        // only builds the derived components and does not touch config_.
+        apply_config(nullptr, config_.load());
 
         // Start the config-file watcher BEFORE spawning init_thread_. Both can
         // throw (std::filesystem errors, thread-creation failure under resource
@@ -174,58 +177,102 @@ namespace pinpoint {
         }
     }
 
+    namespace {
+        // The reloadable components below are each derived from a specific slice
+        // of Config. These predicates tell apply_config() which slices changed so
+        // it can leave the other live components (and their warmed-up state)
+        // untouched across a reload.
+        bool sampling_config_changed(const Config& a, const Config& b) {
+            return a.sampling.type != b.sampling.type
+                || a.sampling.counter_rate != b.sampling.counter_rate
+                || a.sampling.percent_rate != b.sampling.percent_rate
+                || a.sampling.new_throughput != b.sampling.new_throughput
+                || a.sampling.cont_throughput != b.sampling.cont_throughput;
+        }
+
+        bool header_recorder_config_changed(const Config& a, const Config& b) {
+            return a.http.server.rec_request_header != b.http.server.rec_request_header
+                || a.http.server.rec_response_header != b.http.server.rec_response_header
+                || a.http.server.rec_request_cookie != b.http.server.rec_request_cookie
+                || a.http.client.rec_request_header != b.http.client.rec_request_header
+                || a.http.client.rec_response_header != b.http.client.rec_response_header
+                || a.http.client.rec_request_cookie != b.http.client.rec_request_cookie;
+        }
+    }
+
+    void AgentImpl::apply_config(const std::shared_ptr<const Config>& old_cfg,
+                                 const std::shared_ptr<const Config>& cfg) {
+        // A null old_cfg means the initial construction, where nothing has been
+        // built yet, so every component must be created. On a reload we already
+        // have live components and only rebuild the ones whose backing config
+        // changed — rebuilding unchanged components would needlessly discard
+        // their accumulated state (e.g. the throughput sampler's counters).
+        const bool first_build = (old_cfg == nullptr);
+
+        // Rebuild sampler
+        if (first_build || sampling_config_changed(*old_cfg, *cfg)) {
+            std::unique_ptr<Sampler> sampler;
+            if (compare_string(cfg->sampling.type, PERCENT_SAMPLING)) {
+                sampler = std::make_unique<PercentSampler>(cfg->sampling.percent_rate);
+            } else {
+                sampler = std::make_unique<CounterSampler>(cfg->sampling.counter_rate);
+            }
+
+            std::shared_ptr<TraceSampler> new_sampler;
+            if (cfg->sampling.new_throughput > 0 || cfg->sampling.cont_throughput > 0) {
+                new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
+                                                                            cfg->sampling.new_throughput,
+                                                                            cfg->sampling.cont_throughput);
+            } else {
+                new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
+            }
+            sampler_.store(std::move(new_sampler));
+        }
+
+        // Rebuild HTTP filters
+        if (first_build || old_cfg->http.server.exclude_url != cfg->http.server.exclude_url) {
+            std::shared_ptr<HttpUrlFilter> new_url_filter;
+            if (!cfg->http.server.exclude_url.empty()) {
+                new_url_filter = std::make_shared<HttpUrlFilter>(cfg->http.server.exclude_url);
+            }
+            http_url_filter_.store(std::move(new_url_filter));
+        }
+
+        if (first_build || old_cfg->http.server.exclude_method != cfg->http.server.exclude_method) {
+            std::shared_ptr<HttpMethodFilter> new_method_filter;
+            if (!cfg->http.server.exclude_method.empty()) {
+                new_method_filter = std::make_shared<HttpMethodFilter>(cfg->http.server.exclude_method);
+            }
+            http_method_filter_.store(std::move(new_method_filter));
+        }
+
+        if (first_build || old_cfg->http.server.status_errors != cfg->http.server.status_errors) {
+            std::shared_ptr<HttpStatusErrors> new_status_errors;
+            if (!cfg->http.server.status_errors.empty()) {
+                new_status_errors = std::make_shared<HttpStatusErrors>(cfg->http.server.status_errors);
+            }
+            http_status_errors_.store(std::move(new_status_errors));
+        }
+
+        // Rebuild header recorders
+        if (first_build || header_recorder_config_changed(*old_cfg, *cfg)) {
+            init_header_recorders(cfg);
+        }
+
+        if (grpc_agent_) {
+            grpc_agent_->refreshAgentInfo();
+        }
+    }
+
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
         // Serialize writers so a CreateAgent()-driven reload and the config-file
         // watcher thread cannot interleave their stores and publish a mixed
         // configuration. Readers remain lock-free (AtomicSharedPtr::load()).
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
 
+        const auto old_cfg = config_.load();
         config_.store(std::move(cfg));
-        const auto local_cfg = config_.load();
-
-        // Rebuild sampler
-        std::unique_ptr<Sampler> sampler;
-        if (compare_string(local_cfg->sampling.type, PERCENT_SAMPLING)) {
-            sampler = std::make_unique<PercentSampler>(local_cfg->sampling.percent_rate);
-        } else {
-            sampler = std::make_unique<CounterSampler>(local_cfg->sampling.counter_rate);
-        }
-
-        std::shared_ptr<TraceSampler> new_sampler;
-        if (local_cfg->sampling.new_throughput > 0 || local_cfg->sampling.cont_throughput > 0) {
-            new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                        local_cfg->sampling.new_throughput,
-                                                                        local_cfg->sampling.cont_throughput);
-        } else {
-            new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
-        }
-        sampler_.store(std::move(new_sampler));
-
-        // Rebuild HTTP filters
-        std::shared_ptr<HttpUrlFilter> new_url_filter;
-        if (!local_cfg->http.server.exclude_url.empty()) {
-            new_url_filter = std::make_shared<HttpUrlFilter>(local_cfg->http.server.exclude_url);
-        }
-        http_url_filter_.store(std::move(new_url_filter));
-
-        std::shared_ptr<HttpMethodFilter> new_method_filter;
-        if (!local_cfg->http.server.exclude_method.empty()) {
-            new_method_filter = std::make_shared<HttpMethodFilter>(local_cfg->http.server.exclude_method);
-        }
-        http_method_filter_.store(std::move(new_method_filter));
-
-        std::shared_ptr<HttpStatusErrors> new_status_errors;
-        if (!local_cfg->http.server.status_errors.empty()) {
-            new_status_errors = std::make_shared<HttpStatusErrors>(local_cfg->http.server.status_errors);
-        }
-        http_status_errors_.store(std::move(new_status_errors));
-
-        // Rebuild header recorders
-        init_header_recorders(local_cfg);
-
-        if (grpc_agent_) {
-            grpc_agent_->refreshAgentInfo();
-        }
+        apply_config(old_cfg, config_.load());
     }
 
     void AgentImpl::init_grpc_workers() try {
