@@ -1831,6 +1831,108 @@ TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
         << "Should be reloadable when old config is null";
 }
 
+// ========== Config::retainNonReloadableFrom() Tests ==========
+
+// Test retainNonReloadableFrom() overwrites every non-reloadable field with the
+// running config's value, making the two configs reloadable-equivalent.
+TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "OldApp";
+    old_config->app_type_ = 1300;
+    old_config->agent_id_ = "old-agent-id";
+    old_config->agent_name_ = "old-agent-name";
+    old_config->uid_version_ = "v1";
+    old_config->service_name_ = "old-service";
+    old_config->api_key_ = "old-key";
+    old_config->object_name_version_ = 1;
+    old_config->identity_resolved_ = true;
+    old_config->collector.host = "old.host";
+    old_config->collector.agent_port = 9991;
+    old_config->collector.span_port = 9993;
+    old_config->collector.stat_port = 9992;
+    old_config->grpc.channel.ssl_enable = true;
+    old_config->grpc.ssl.trust_cert_file_path = "/old/trust.pem";
+
+    Config new_config;
+    new_config.app_name_ = "NewApp";
+    new_config.app_type_ = 1400;
+    new_config.agent_id_ = "new-agent-id";
+    new_config.agent_name_ = "new-agent-name";
+    new_config.uid_version_ = "v4";
+    new_config.service_name_ = "new-service";
+    new_config.api_key_ = "new-key";
+    new_config.object_name_version_ = 4;
+    new_config.identity_resolved_ = false;
+    new_config.collector.host = "new.host";
+    new_config.collector.agent_port = 8888;
+    new_config.grpc.channel.ssl_enable = false;
+    new_config.grpc.ssl.trust_cert_file_path = "/new/trust.pem";
+
+    new_config.retainNonReloadableFrom(old_config);
+
+    EXPECT_EQ(new_config.app_name_, "OldApp");
+    EXPECT_EQ(new_config.app_type_, 1300);
+    EXPECT_EQ(new_config.agent_id_, "old-agent-id");
+    EXPECT_EQ(new_config.agent_name_, "old-agent-name");
+    EXPECT_EQ(new_config.uid_version_, "v1");
+    EXPECT_EQ(new_config.service_name_, "old-service");
+    EXPECT_EQ(new_config.api_key_, "old-key");
+    EXPECT_EQ(new_config.object_name_version_, 1);
+    EXPECT_TRUE(new_config.identity_resolved_);
+    EXPECT_EQ(new_config.collector.host, "old.host");
+    EXPECT_EQ(new_config.collector.agent_port, 9991);
+    EXPECT_EQ(new_config.collector.span_port, 9993);
+    EXPECT_EQ(new_config.collector.stat_port, 9992);
+    EXPECT_TRUE(new_config.grpc.channel.ssl_enable);
+    EXPECT_EQ(new_config.grpc.ssl.trust_cert_file_path, "/old/trust.pem");
+
+    // After retaining, all non-reloadable fields match the running config.
+    EXPECT_TRUE(new_config.isReloadable(old_config))
+        << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
+}
+
+// Test retainNonReloadableFrom() leaves reloadable fields untouched, so a reload
+// still applies them while only reverting the non-reloadable ones.
+TEST_F(ConfigTest, RetainNonReloadableFromPreservesReloadableFieldsTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "OldApp";
+    old_config->collector.host = "old.host";
+    old_config->sampling.counter_rate = 1;
+    old_config->log.level = "info";
+    old_config->http.server.exclude_url = {"/old"};
+
+    Config new_config = *old_config;
+    // Reloadable changes that must survive the retain.
+    new_config.sampling.counter_rate = 99;
+    new_config.log.level = "debug";
+    new_config.http.server.exclude_url = {"/new1", "/new2"};
+    // Non-reloadable change that must be reverted to the running value.
+    new_config.collector.host = "new.host";
+
+    new_config.retainNonReloadableFrom(old_config);
+
+    EXPECT_EQ(new_config.sampling.counter_rate, 99);
+    EXPECT_EQ(new_config.log.level, "debug");
+    EXPECT_EQ(new_config.http.server.exclude_url,
+              (std::vector<std::string>{"/new1", "/new2"}));
+    EXPECT_EQ(new_config.collector.host, "old.host");
+}
+
+// Test retainNonReloadableFrom(nullptr) is a no-op (initial-build path has no
+// running config to retain from).
+TEST_F(ConfigTest, RetainNonReloadableFromNullOldIsNoopTest) {
+    Config new_config;
+    new_config.app_name_ = "NewApp";
+    new_config.collector.host = "new.host";
+    new_config.sampling.counter_rate = 42;
+
+    new_config.retainNonReloadableFrom(nullptr);
+
+    EXPECT_EQ(new_config.app_name_, "NewApp");
+    EXPECT_EQ(new_config.collector.host, "new.host");
+    EXPECT_EQ(new_config.sampling.counter_rate, 42);
+}
+
 // ========== Port Clamping Validation Tests ==========
 
 // Test port clamping for out-of-range values

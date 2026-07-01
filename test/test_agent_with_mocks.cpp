@@ -969,4 +969,32 @@ Sampling:
     EXPECT_EQ(impl_v3.get(), original_agent.get());
 }
 
+// Environment variables seed only the initial config. Once an agent is running,
+// make_config() (called for reloads) must NOT re-read them, so a value set only
+// via env can never override the running config on reload.
+TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsWhenAgentAlreadyExists) {
+    // No agent yet (SetUp reset the global agent): the env var IS applied.
+    setenv(env::APPLICATION_NAME, "env-app-name", 1);
+    auto cfg_initial = make_config();
+    ASSERT_NE(cfg_initial, nullptr);
+    const auto app_name_initial = cfg_initial->app_name_;
+
+    // Install a running agent, then rebuild the config: the env var must now be
+    // ignored (config string is empty, so app_name falls back to unset).
+    auto agent = install_mock_agent(make_test_config());
+    ASSERT_TRUE(agent->Enable());
+    auto cfg_reload = make_config();
+    ASSERT_NE(cfg_reload, nullptr);
+    const auto app_name_reload = cfg_reload->app_name_;
+
+    unsetenv(env::APPLICATION_NAME);
+
+    EXPECT_EQ(app_name_initial, "env-app-name")
+        << "env var should seed the initial config when no agent exists";
+    EXPECT_NE(app_name_reload, "env-app-name")
+        << "env var must be ignored once an agent is running";
+    EXPECT_TRUE(app_name_reload.empty())
+        << "with an empty config string and env skipped, app name should be unset";
+}
+
 }  // namespace pinpoint
