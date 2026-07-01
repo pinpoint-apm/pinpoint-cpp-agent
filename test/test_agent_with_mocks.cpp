@@ -761,24 +761,28 @@ Sampling:
 )";
     set_config_string(non_reloadable_config);
 
-    // 3. Call CreateAgent() — should keep the existing agent because config is not reloadable
+    // 3. Call CreateAgent() — reloads the existing agent, retaining the
+    //    non-reloadable app name.
     auto returned_agent = CreateAgent();
 
     // 4. Verify: returned agent is the existing instance
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
-    ASSERT_NE(returned_impl, nullptr) << "Should return existing agent when config is not reloadable";
+    ASSERT_NE(returned_impl, nullptr) << "Should return existing agent instance";
     EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
 
-    // 5. Original agent should still be unchanged
+    // 5. The non-reloadable app name should retain the running value.
     EXPECT_EQ(original_agent->getAppName(), "test-app");
     EXPECT_EQ(returned_impl->getAppName(), "test-app");
+    EXPECT_EQ(returned_impl->getConfig()->app_name_, "test-app");
 }
 
-TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsErrorWhenNotReloadable) {
+TEST_F(CreateAgentTest, CreateAgentReloadConfigWarnsWhenNotReloadable) {
     auto cfg = make_test_config_for_create_agent();
     auto original_agent = install_mock_agent(cfg);
     ASSERT_TRUE(original_agent->Enable());
 
+    // Changes a non-reloadable field (app name) AND a reloadable one (counter
+    // rate) at once.
     std::string non_reloadable_config = R"(
 ApplicationName: different-app-name
 ApplicationType: 1300
@@ -792,7 +796,7 @@ Collector:
   GrpcStatPort: 9992
 Sampling:
   Type: COUNTER
-  CounterRate: 1
+  CounterRate: 7
 )";
     set_config_string(non_reloadable_config);
 
@@ -800,14 +804,20 @@ Sampling:
     auto returned_agent = CreateAgent();
     const auto log = read_captured_log();
 
+    // A non-reloadable change no longer blocks the reload: the running values
+    // are retained (with a warning) and the reloadable fields are applied.
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
     ASSERT_NE(returned_impl, nullptr);
     EXPECT_EQ(returned_impl.get(), original_agent.get());
-    EXPECT_NE(log.find("[error]"), std::string::npos);
-    EXPECT_NE(log.find("failed to reload agent config: config is not reloadable"), std::string::npos);
-    EXPECT_EQ(log.find("agent config reloaded"), std::string::npos);
+    EXPECT_NE(log.find("[warning]"), std::string::npos);
+    EXPECT_NE(log.find("non-reloadable config fields changed at runtime"), std::string::npos);
+    EXPECT_NE(log.find("agent config reloaded"), std::string::npos);
+    // The non-reloadable app name keeps the running value, not the new one.
     EXPECT_EQ(original_agent->getAppName(), "test-app");
     EXPECT_EQ(returned_impl->getAppName(), "test-app");
+    EXPECT_EQ(returned_impl->getConfig()->app_name_, "test-app");
+    // The reloadable counter rate still takes effect.
+    EXPECT_EQ(returned_impl->getConfig()->sampling.counter_rate, 7);
 }
 
 TEST_F(CreateAgentTest, CreateAgentReturnsExistingAgentWhenCollectorPortChanged) {
@@ -886,12 +896,9 @@ Http:
 }
 
 TEST_F(CreateAgentTest, CreateAgentReturnsNoopWhenConfigInvalid) {
-    // 1. Install a mock agent as the global agent
-    auto cfg = make_test_config_for_create_agent();
-    auto original_agent = install_mock_agent(cfg);
-    ASSERT_TRUE(original_agent->Enable());
-
-    // 2. Set invalid config (empty app_name fails check())
+    // No agent exists yet (SetUp resets the global agent). On initial creation
+    // there are no running values to retain, so an invalid config (empty
+    // app_name fails check()) must degrade to a noop agent.
     std::string invalid_config = R"(
 ApplicationName: ""
 Collector:

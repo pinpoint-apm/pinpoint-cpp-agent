@@ -275,6 +275,20 @@ namespace pinpoint {
          * @return true if reload is allowed.
          */
         bool isReloadable(const std::shared_ptr<const Config>& old) const;
+
+        /**
+         * @brief Copies the non-reloadable fields (identity, collector endpoint
+         * and gRPC transport) from an existing config into this one.
+         *
+         * These fields cannot change while the agent is running. When a new
+         * config is built for a reload it may carry different values for them;
+         * this method overwrites them with the running values so the reload
+         * never disturbs the live agent, and logs a warning naming the change
+         * when one was attempted. No-op when @p old is null.
+         *
+         * @param old Currently active config to retain values from.
+         */
+        void retainNonReloadableFrom(const std::shared_ptr<const Config>& old);
     };
 
     /**

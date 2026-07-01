@@ -138,13 +138,16 @@ namespace pinpoint {
                         auto agent = GlobalAgent();
                         auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
 
-                        if (agent_impl && new_cfg && new_cfg->check()) {
-                            const auto current_cfg = agent_impl->getConfig();
-                            if (!current_cfg || new_cfg->isReloadable(current_cfg)) {
+                        if (agent_impl && new_cfg) {
+                            // Always reload. Non-reloadable fields cannot change
+                            // on a live agent, so retain the running values (with
+                            // a warning) before reloading the reloadable rest.
+                            new_cfg->retainNonReloadableFrom(agent_impl->getConfig());
+                            if (new_cfg->check()) {
                                 agent_impl->reloadConfig(new_cfg);
                                 LOG_INFO("agent config reloaded");
                             } else {
-                                LOG_ERROR("failed to reload agent config: config is not reloadable");
+                                LOG_ERROR("failed to reload agent config: invalid config");
                             }
                         }
                     }
@@ -1308,5 +1311,35 @@ namespace pinpoint {
                         old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
                         old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
                same_grpc_config(*this, *old);
+    }
+
+    void Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {
+        if (!old) {
+            return;
+        }
+
+        // isReloadable() returns true only when every non-reloadable field
+        // already matches, so a false result means the incoming config tried to
+        // change at least one of them. We cannot honor that on a live agent, so
+        // warn and fall through to overwrite them with the running values.
+        if (!isReloadable(old)) {
+            LOG_WARN("non-reloadable config fields changed at runtime "
+                     "(identity, collector endpoint or gRPC transport); "
+                     "retaining the existing values and reloading the rest");
+        }
+
+        app_name_ = old->app_name_;
+        app_type_ = old->app_type_;
+        agent_id_ = old->agent_id_;
+        agent_name_ = old->agent_name_;
+        uid_version_ = old->uid_version_;
+        service_name_ = old->service_name_;
+        api_key_ = old->api_key_;
+        object_name_version_ = old->object_name_version_;
+        // Identity was resolved for the running agent; keep that outcome so a
+        // reload whose new identity failed resolution still passes check().
+        identity_resolved_ = old->identity_resolved_;
+        collector = old->collector;
+        grpc = old->grpc;
     }
 }

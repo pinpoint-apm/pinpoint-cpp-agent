@@ -747,26 +747,29 @@ namespace pinpoint {
         set_config_string(config_string);
     }
 
-    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg,
+    static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg,
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto& agent = global_agent();
 
-        if (!cfg->check()) {
-            return noopAgent();
-        }
-
         if (agent != nullptr) {
-            const auto current_cfg = agent->getConfig();
-            if (cfg->isReloadable(current_cfg)) {
-                agent->reloadConfig(std::move(cfg));
-                LOG_INFO("agent config reloaded");
-            } else {
-                LOG_ERROR("failed to reload agent config: config is not reloadable");
+            // A new config always triggers a reload. Non-reloadable fields
+            // (identity, collector endpoint, gRPC transport) cannot change on a
+            // live agent, so retain the running values (warning on any attempted
+            // change) before reloading so only the reloadable fields take effect.
+            cfg->retainNonReloadableFrom(agent->getConfig());
+            if (!cfg->check()) {
+                LOG_ERROR("failed to reload agent config: invalid config");
+                return agent;
             }
+            agent->reloadConfig(std::move(cfg));
+            LOG_INFO("agent config reloaded");
             return agent;
         }
 
+        if (!cfg->check()) {
+            return noopAgent();
+        }
         agent = make_agent(std::move(cfg), server_meta_data);
         if (agent == nullptr) {
             return noopAgent();
@@ -774,7 +777,7 @@ namespace pinpoint {
         return agent;
     }
 
-    static AgentPtr create_agent_helper(std::shared_ptr<const Config> cfg) {
+    static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg) {
         return create_agent_helper(std::move(cfg), std::nullopt);
     }
 
