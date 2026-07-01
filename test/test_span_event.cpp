@@ -60,7 +60,7 @@ protected:
 // ========== SpanEventImpl Constructor Tests ==========
 
 TEST_F(SpanEventTest, ConstructorTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-operation");
+    auto span_event = make_test_span_event(*test_span_, "test-operation");
     
     EXPECT_EQ(span_event.getServiceType(), defaults::SPAN_EVENT_SERVICE_TYPE) << "Default service type should be set";
     EXPECT_EQ(span_event.getOperationName(), "test-operation") << "Operation name should match";
@@ -68,7 +68,7 @@ TEST_F(SpanEventTest, ConstructorTest) {
     EXPECT_EQ(span_event.getStartElapsed(), 0) << "Initial start elapsed should be 0";
     EXPECT_EQ(span_event.getEndElapsed(), 0) << "Initial end elapsed should be 0";
     EXPECT_EQ(span_event.getSequence(), 0) << "First event should have sequence 0";
-    EXPECT_EQ(span_event.getDepth(), 1) << "Initial depth should be 1";
+    EXPECT_EQ(span_event.getDepth(), 0) << "Initial depth should be 0 until the event is added";
     EXPECT_EQ(span_event.getNextSpanId(), 0) << "Initial next span ID should be 0";
     EXPECT_EQ(span_event.getAsyncId(), NONE_ASYNC_ID) << "Initial async ID should be NONE_ASYNC_ID";
     EXPECT_EQ(span_event.getAsyncSeqGen(), 0) << "Initial async seq gen should be 0";
@@ -76,14 +76,14 @@ TEST_F(SpanEventTest, ConstructorTest) {
 }
 
 TEST_F(SpanEventTest, ConstructorWithEmptyOperationTest) {
-    SpanEventImpl span_event(test_span_.get(), "");
+    auto span_event = make_test_span_event(*test_span_, "");
     
     EXPECT_EQ(span_event.getOperationName(), "") << "Empty operation should be preserved";
     EXPECT_EQ(span_event.getApiId(), 0) << "API ID should remain 0 for empty operation";
 }
 
 TEST_F(SpanEventTest, ConstructorWithNonEmptyOperationTest) {
-    SpanEventImpl span_event(test_span_.get(), "database-query");
+    auto span_event = make_test_span_event(*test_span_, "database-query");
     
     EXPECT_EQ(span_event.getOperationName(), "database-query") << "Operation name should be set";
     EXPECT_GT(span_event.getApiId(), 0) << "API ID should be cached for non-empty operation";
@@ -96,21 +96,21 @@ TEST_F(SpanEventTest, ConstructorWithNonEmptyOperationTest) {
 // ========== Setter Methods Tests ==========
 
 TEST_F(SpanEventTest, SetServiceTypeTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetServiceType(1234);
     EXPECT_EQ(span_event.getServiceType(), 1234) << "Service type should be updated";
 }
 
 TEST_F(SpanEventTest, SetOperationNameTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetOperationName("new-operation");
     EXPECT_EQ(span_event.getOperationName(), "new-operation") << "Operation name should be updated";
 }
 
 TEST_F(SpanEventTest, SetStartTimeTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     auto test_time = std::chrono::system_clock::now();
     span_event.SetStartTime(test_time);
@@ -120,42 +120,42 @@ TEST_F(SpanEventTest, SetStartTimeTest) {
 }
 
 TEST_F(SpanEventTest, SetDestinationTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetDestination("test-destination");
     EXPECT_EQ(span_event.getDestinationId(), "test-destination") << "Destination should be updated";
 }
 
 TEST_F(SpanEventTest, SetEndPointTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetEndPoint("http://example.com");
     EXPECT_EQ(span_event.getEndPoint(), "http://example.com") << "EndPoint should be updated";
 }
 
 TEST_F(SpanEventTest, SetStartElapsedTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.setStartElapsed(100);
     EXPECT_EQ(span_event.getStartElapsed(), 100) << "Start elapsed should be updated";
 }
 
 TEST_F(SpanEventTest, SetDepthTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.setDepth(5);
     EXPECT_EQ(span_event.getDepth(), 5) << "Depth should be updated";
 }
 
 TEST_F(SpanEventTest, SetAsyncIdTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.setAsyncId(42);
     EXPECT_EQ(span_event.getAsyncId(), 42) << "Async ID should be updated";
 }
 
 TEST_F(SpanEventTest, SetApiIdTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.setApiId(999);
     EXPECT_EQ(span_event.getApiId(), 999) << "API ID should be updated";
@@ -164,7 +164,7 @@ TEST_F(SpanEventTest, SetApiIdTest) {
 // ========== Error Handling Tests ==========
 
 TEST_F(SpanEventTest, SetErrorWithMessageOnlyTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetError("Something went wrong");
     
@@ -177,7 +177,7 @@ TEST_F(SpanEventTest, SetErrorWithMessageOnlyTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithNameAndMessageTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     span_event.SetError("SQLException", "Connection timeout");
     
@@ -192,7 +192,7 @@ TEST_F(SpanEventTest, SetErrorWithNameAndMessageTest) {
 // ========== Error with CallStack Tests ==========
 
 TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     // Add a single stack frame
@@ -213,14 +213,14 @@ TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
     
     // Verify exception was added to parent span
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added to parent span";
     EXPECT_NE(exceptions[0], nullptr) << "Exception should not be null";
     EXPECT_GT(exceptions[0]->getId(), 0) << "Exception should have valid ID";
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     // Add multiple stack frames
@@ -236,7 +236,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
     EXPECT_EQ(span_event.getErrorString(), "Stack overflow occurred") << "Error message should be set";
     
     // Verify exception was added
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
     
     // Verify callstack contains all frames
@@ -259,7 +259,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     // Don't add any frames
@@ -272,7 +272,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     EXPECT_EQ(span_event.getErrorString(), "Error with empty stack") << "Error message should be set";
     
     // Verify exception was added even with empty stack
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added even with empty stack";
     
     const auto& callstack = exceptions[0]->getCallStack();
@@ -283,7 +283,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     reader.AddFrame("/lib/app.so", "doWork", "/src/worker.cpp", 55);
@@ -291,7 +291,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
     span_event.SetError("NullPointerError", "Null pointer dereference", reader);
     
     // Get the exception ID from the exception
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1) << "Should have one exception";
     int32_t exception_id = exceptions[0]->getId();
     
@@ -306,8 +306,8 @@ TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
 
 TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     // Test that multiple errors can be set on different span events
-    SpanEventImpl event1(test_span_.get(), "op1");
-    SpanEventImpl event2(test_span_.get(), "op2");
+    auto event1 = make_test_span_event(*test_span_, "op1");
+    auto event2 = make_test_span_event(*test_span_, "op2");
     
     MockCallStackReader reader1;
     reader1.AddFrame("/lib/app.so", "function1", "/src/file1.cpp", 10);
@@ -324,7 +324,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_EQ(event2.getErrorString(), "Second error");
     
     // Both exceptions should be added to parent span
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
     
     // Verify different exception IDs
@@ -334,7 +334,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     // Add frames with various details
@@ -345,7 +345,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
     span_event.SetError("ProcessingError", "Failed to process request", reader);
     
     // Verify exception
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     const auto& callstack = exceptions[0]->getCallStack();
@@ -372,7 +372,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
     reader.AddFrame("/lib/app.so", "testFunc", "/src/test.cpp", 1);
@@ -384,7 +384,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     auto after_time = to_milli_seconds(std::chrono::system_clock::now());
     
     // Verify exception
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     const auto& callstack = exceptions[0]->getCallStack();
@@ -395,7 +395,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
-    SpanEventImpl span_event(test_span_.get(), "database-operation");
+    auto span_event = make_test_span_event(*test_span_, "database-operation");
     
     // Set up the span event
     span_event.SetServiceType(SERVICE_TYPE_MYSQL_QUERY);
@@ -425,7 +425,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
     EXPECT_GT(span_event.getEndElapsed(), 0);
     
     // Verify exception and callstack
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
     
     const auto& callstack = exceptions[0]->getCallStack();
@@ -442,7 +442,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
 // ========== Async Operations Tests ==========
 
 TEST_F(SpanEventTest, IncrAsyncSeqTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     EXPECT_EQ(span_event.getAsyncSeqGen(), 0) << "Initial async seq gen should be 0";
     
@@ -456,7 +456,7 @@ TEST_F(SpanEventTest, IncrAsyncSeqTest) {
 // ========== Span ID Generation Tests ==========
 
 TEST_F(SpanEventTest, GenerateNextSpanIdTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     EXPECT_EQ(span_event.getNextSpanId(), 0) << "Initial next span ID should be 0";
     
@@ -467,7 +467,7 @@ TEST_F(SpanEventTest, GenerateNextSpanIdTest) {
 }
 
 TEST_F(SpanEventTest, GenerateMultipleSpanIdsTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     int64_t id1 = span_event.generateNextSpanId();
     int64_t id2 = span_event.generateNextSpanId();
@@ -479,7 +479,7 @@ TEST_F(SpanEventTest, GenerateMultipleSpanIdsTest) {
 // ========== Header Recording Tests ==========
 
 TEST_F(SpanEventTest, RecordHeaderTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockHeaderReader header_reader;
     
     header_reader.SetHeader("Content-Type", "application/json");
@@ -492,7 +492,7 @@ TEST_F(SpanEventTest, RecordHeaderTest) {
 }
 
 TEST_F(SpanEventTest, RecordMultipleHeadersTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockHeaderReader header_reader1;
     MockHeaderReader header_reader2;
     
@@ -508,7 +508,7 @@ TEST_F(SpanEventTest, RecordMultipleHeadersTest) {
 // ========== Finish Tests ==========
 
 TEST_F(SpanEventTest, FinishTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     // Get initial state
     int32_t initial_depth = test_span_data_->getEventDepth();
@@ -526,7 +526,7 @@ TEST_F(SpanEventTest, FinishTest) {
 }
 
 TEST_F(SpanEventTest, FinishCalculatesElapsedTimeTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     // Set a specific start time
     auto start_time = std::chrono::system_clock::now() - std::chrono::milliseconds(100);
@@ -542,7 +542,7 @@ TEST_F(SpanEventTest, FinishCalculatesElapsedTimeTest) {
 // ========== Annotations Tests ==========
 
 TEST_F(SpanEventTest, GetAnnotationsTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     auto annotations = span_event.GetAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
@@ -553,7 +553,7 @@ TEST_F(SpanEventTest, GetAnnotationsTest) {
 }
 
 TEST_F(SpanEventTest, GetAnnotationsRawPointerTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations pointer should not be null";
@@ -566,7 +566,7 @@ TEST_F(SpanEventTest, GetAnnotationsRawPointerTest) {
 // ========== Integration Tests ==========
 
 TEST_F(SpanEventTest, CompleteWorkflowTest) {
-    SpanEventImpl span_event(test_span_.get(), "http-request");
+    auto span_event = make_test_span_event(*test_span_, "http-request");
     
     // Set up span event
     span_event.SetServiceType(9999);
@@ -617,19 +617,19 @@ TEST_F(SpanEventTest, CompleteWorkflowTest) {
 
 TEST_F(SpanEventTest, MultipleSpanEventsTest) {
     // Create multiple span events to test that they can be created from same SpanData
-    SpanEventImpl event1(test_span_.get(), "operation-1");
-    SpanEventImpl event2(test_span_.get(), "operation-2");
-    SpanEventImpl event3(test_span_.get(), "operation-3");
+    auto event1 = make_test_span_event(*test_span_, "operation-1");
+    auto event2 = make_test_span_event(*test_span_, "operation-2");
+    auto event3 = make_test_span_event(*test_span_, "operation-3");
     
     // Each should have valid sequence numbers (actual values depend on SpanData implementation)
     EXPECT_GE(event1.getSequence(), 0);
     EXPECT_GE(event2.getSequence(), 0);
     EXPECT_GE(event3.getSequence(), 0);
     
-    // Each should have valid depths
-    EXPECT_GT(event1.getDepth(), 0);
-    EXPECT_GT(event2.getDepth(), 0);
-    EXPECT_GT(event3.getDepth(), 0);
+    // Detached events receive their depth when added to SpanData.
+    EXPECT_GE(event1.getDepth(), 0);
+    EXPECT_GE(event2.getDepth(), 0);
+    EXPECT_GE(event3.getDepth(), 0);
     
     // Each should have different operation names
     EXPECT_EQ(event1.getOperationName(), "operation-1");
@@ -652,7 +652,7 @@ TEST_F(SpanEventTest, MultipleSpanEventsTest) {
 // ========== SQL Query Tests ==========
 
 TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string sql_query = "SELECT * FROM users WHERE id = ?";
     std::string args = "123";
@@ -670,7 +670,7 @@ TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string sql_query = "INSERT INTO products (name, price) VALUES ('iPhone', 999.99)";
     std::string args = "name=iPhone, price=999.99";
@@ -687,7 +687,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryEmptyTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string empty_sql = "";
     std::string args = "";
@@ -699,7 +699,7 @@ TEST_F(SpanEventTest, SetSqlQueryEmptyTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string complex_sql = R"(
         SELECT u.id, u.name, p.title 
@@ -722,7 +722,7 @@ TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryMultipleCallsTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     // Call SetSqlQuery multiple times with different queries
     span_event.SetSqlQuery("SELECT * FROM table1", "");
@@ -734,8 +734,8 @@ TEST_F(SpanEventTest, SetSqlQueryMultipleCallsTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
-    SpanEventImpl span_event1(test_span_.get(), "test-op1");
-    SpanEventImpl span_event2(test_span_.get(), "test-op2");
+    auto span_event1 = make_test_span_event(*test_span_, "test-op1");
+    auto span_event2 = make_test_span_event(*test_span_, "test-op2");
     
     std::string same_sql = "SELECT * FROM users";
     
@@ -751,7 +751,7 @@ TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     // Test SQL with literals that should be normalized
     std::string sql_with_literals = "SELECT * FROM users WHERE id = 123 AND name = 'John'";
@@ -767,7 +767,7 @@ TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryWithSpecialCharactersTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string sql_special = "SELECT * FROM `table_name` WHERE `column` = 'O''Reilly'";
     std::string args = "column=O'Reilly";
@@ -779,7 +779,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSpecialCharactersTest) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
-    SpanEventImpl span_event(test_span_.get(), "database-operation");
+    auto span_event = make_test_span_event(*test_span_, "database-operation");
     
     // Set up span event for database operation
     span_event.SetServiceType(SERVICE_TYPE_CPP_FUNC);
@@ -804,30 +804,32 @@ TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
 
 // ========== Sequence and Depth Tests ==========
 
-TEST_F(SpanEventTest, SequenceReadsFromParentSpanTest) {
-    // SpanEventImpl reads the current sequence from parent SpanData
-    SpanEventImpl event1(test_span_.get(), "op1");
-    EXPECT_EQ(event1.getSequence(), 0) << "First event should read initial sequence 0";
+TEST_F(SpanEventTest, AddSpanEventAssignsSequenceTest) {
+    auto event1 = make_test_span_event_unique(*test_span_, "op1");
+    auto* event1_ptr = event1.get();
+    test_span_data_->addSpanEvent(std::move(event1));
+    EXPECT_EQ(event1_ptr->getSequence(), 0) << "First added event should get sequence 0";
 
-    // Manually increment sequence in parent to simulate higher-level management
-    test_span_data_->setEventSequence(5);
-    SpanEventImpl event2(test_span_.get(), "op2");
-    EXPECT_EQ(event2.getSequence(), 5) << "Event should read updated sequence from parent";
+    auto event2 = make_test_span_event_unique(*test_span_, "op2");
+    auto* event2_ptr = event2.get();
+    test_span_data_->addSpanEvent(std::move(event2));
+    EXPECT_EQ(event2_ptr->getSequence(), 1) << "Second added event should get sequence 1";
 }
 
-TEST_F(SpanEventTest, DepthReadsFromParentSpanTest) {
-    // SpanEventImpl reads the current depth from parent SpanData
-    SpanEventImpl event1(test_span_.get(), "op1");
-    EXPECT_EQ(event1.getDepth(), 1) << "First event should read initial depth 1";
+TEST_F(SpanEventTest, AddSpanEventAssignsDepthTest) {
+    auto event1 = make_test_span_event_unique(*test_span_, "op1");
+    auto* event1_ptr = event1.get();
+    test_span_data_->addSpanEvent(std::move(event1));
+    EXPECT_EQ(event1_ptr->getDepth(), 1) << "First added event should get current depth 1";
 
-    // Manually set depth in parent to simulate nesting
-    test_span_data_->setEventDepth(3);
-    SpanEventImpl event2(test_span_.get(), "op2");
-    EXPECT_EQ(event2.getDepth(), 3) << "Event should read updated depth from parent";
+    auto event2 = make_test_span_event_unique(*test_span_, "op2");
+    auto* event2_ptr = event2.get();
+    test_span_data_->addSpanEvent(std::move(event2));
+    EXPECT_EQ(event2_ptr->getDepth(), 2) << "Second added event should get current depth 2";
 }
 
 TEST_F(SpanEventTest, FinishDecrementsDepthTest) {
-    SpanEventImpl event1(test_span_.get(), "op1");
+    auto event1 = make_test_span_event(*test_span_, "op1");
 
     int32_t depth_before_finish = test_span_data_->getEventDepth();
     event1.finish();
@@ -836,8 +838,8 @@ TEST_F(SpanEventTest, FinishDecrementsDepthTest) {
 }
 
 TEST_F(SpanEventTest, MultipleFinishDecrementsDepthTest) {
-    SpanEventImpl event1(test_span_.get(), "op1");
-    SpanEventImpl event2(test_span_.get(), "op2");
+    auto event1 = make_test_span_event(*test_span_, "op1");
+    auto event2 = make_test_span_event(*test_span_, "op2");
 
     int32_t depth_before = test_span_data_->getEventDepth();
     event2.finish();
@@ -849,7 +851,7 @@ TEST_F(SpanEventTest, MultipleFinishDecrementsDepthTest) {
 // ========== Double Finish Edge Case ==========
 
 TEST_F(SpanEventTest, DoubleFinishTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     span_event.finish();
@@ -874,7 +876,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDisabledTest) {
     mutable_config->enable_callstack_trace = false;
     mock_agent_service_->reloadConfig(mutable_config);
 
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     reader.AddFrame("/lib/app.so", "myFunc", "/src/file.cpp", 10);
 
@@ -885,14 +887,14 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDisabledTest) {
     EXPECT_EQ(span_event.getErrorString(), "Error with stack");
 
     // But exception should NOT be added (callstack trace disabled)
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 0) << "No exception should be added when callstack trace is disabled";
 }
 
 // ========== SetError Overwrite Tests ==========
 
 TEST_F(SpanEventTest, SetErrorOverwriteTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
 
     span_event.SetError("FirstError", "First message");
     EXPECT_EQ(span_event.getErrorString(), "First message");
@@ -906,7 +908,7 @@ TEST_F(SpanEventTest, SetErrorOverwriteTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorSingleArgDefaultNameTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
 
     span_event.SetError("Something went wrong");
 
@@ -924,7 +926,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsEnabledTest) {
     mutable_config->sql.enable_sql_stats = true;
     mock_agent_service_->reloadConfig(mutable_config);
 
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     span_event.SetSqlQuery("SELECT * FROM users WHERE id = 1", "id=1");
 
     // With sql stats enabled, cacheSqlUid should be called instead of cacheSql
@@ -943,7 +945,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsDisabledTest) {
     mutable_config->sql.enable_sql_stats = false;
     mock_agent_service_->reloadConfig(mutable_config);
 
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     span_event.SetSqlQuery("SELECT * FROM users", "");
 
     // cacheSql should be called, incrementing the counter
@@ -954,7 +956,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsDisabledTest) {
 // ========== SetOperationName Does Not Update ApiId ==========
 
 TEST_F(SpanEventTest, SetOperationNameDoesNotUpdateApiIdTest) {
-    SpanEventImpl span_event(test_span_.get(), "original-op");
+    auto span_event = make_test_span_event(*test_span_, "original-op");
     int32_t original_api_id = span_event.getApiId();
     EXPECT_GT(original_api_id, 0);
 
@@ -968,14 +970,14 @@ TEST_F(SpanEventTest, SetOperationNameDoesNotUpdateApiIdTest) {
 
 TEST_F(SpanEventTest, LongOperationNameTest) {
     std::string long_name(10000, 'x');
-    SpanEventImpl span_event(test_span_.get(), long_name);
+    auto span_event = make_test_span_event(*test_span_, long_name);
 
     EXPECT_EQ(span_event.getOperationName(), long_name);
     EXPECT_GT(span_event.getApiId(), 0) << "Long operation name should still be cached";
 }
 
 TEST_F(SpanEventTest, LongErrorMessageTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     std::string long_msg(50000, 'E');
 
     span_event.SetError("LargeError", long_msg);
@@ -985,7 +987,7 @@ TEST_F(SpanEventTest, LongErrorMessageTest) {
 }
 
 TEST_F(SpanEventTest, LongDestinationAndEndpointTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     std::string long_dest(5000, 'd');
     std::string long_ep(5000, 'e');
 
@@ -999,7 +1001,7 @@ TEST_F(SpanEventTest, LongDestinationAndEndpointTest) {
 // ========== Multiple Errors with CallStack on Same Span ==========
 
 TEST_F(SpanEventTest, MultipleCallStackErrorsOnSameEventTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
 
     MockCallStackReader reader1;
     reader1.AddFrame("/lib/a.so", "funcA", "/a.cpp", 1);
@@ -1013,7 +1015,7 @@ TEST_F(SpanEventTest, MultipleCallStackErrorsOnSameEventTest) {
     EXPECT_EQ(span_event.getErrorString(), "Second error");
 
     // Both exceptions should be accumulated on the parent span
-    const auto& exceptions = test_span_data_->getExceptions();
+    const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 2) << "Both exceptions should be added to parent span";
 
     EXPECT_EQ(exceptions[0]->getCallStack().getStack()[0].function, "funcA");
@@ -1023,7 +1025,7 @@ TEST_F(SpanEventTest, MultipleCallStackErrorsOnSameEventTest) {
 // ========== Finish Elapsed Accuracy ==========
 
 TEST_F(SpanEventTest, FinishElapsedZeroWhenImmediateTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     span_event.finish();
 
     // Immediate finish should have elapsed time close to 0
@@ -1031,7 +1033,7 @@ TEST_F(SpanEventTest, FinishElapsedZeroWhenImmediateTest) {
 }
 
 TEST_F(SpanEventTest, FinishElapsedWithDelayTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     span_event.finish();
@@ -1043,7 +1045,7 @@ TEST_F(SpanEventTest, FinishElapsedWithDelayTest) {
 // ========== RecordHeader Edge Cases ==========
 
 TEST_F(SpanEventTest, RecordHeaderEmptyHeadersTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockHeaderReader empty_reader;
 
     span_event.RecordHeader(HTTP_REQUEST, empty_reader);
@@ -1053,7 +1055,7 @@ TEST_F(SpanEventTest, RecordHeaderEmptyHeadersTest) {
 }
 
 TEST_F(SpanEventTest, RecordHeaderMultipleSameTypeTest) {
-    SpanEventImpl span_event(test_span_.get(), "test-op");
+    auto span_event = make_test_span_event(*test_span_, "test-op");
     MockHeaderReader reader1, reader2, reader3;
 
     reader1.SetHeader("X-Custom-1", "value1");
@@ -1075,7 +1077,7 @@ TEST_F(SpanEventTest, GenerateNextSpanIdUniquenessTest) {
     std::set<int64_t> ids;
 
     for (int i = 0; i < count; ++i) {
-        SpanEventImpl span_event(test_span_.get(), "test-op");
+        auto span_event = make_test_span_event(*test_span_, "test-op");
         int64_t id = span_event.generateNextSpanId();
         ids.insert(id);
     }

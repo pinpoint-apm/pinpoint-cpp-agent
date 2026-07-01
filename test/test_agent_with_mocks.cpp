@@ -35,6 +35,7 @@
 #include "../src/logging.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
+#include "mock_helpers.h"
 
 using ::testing::_;
 using ::testing::Return;
@@ -251,7 +252,7 @@ TEST_F(AgentImplTest, NewSpanWithMethodReturnsValidSpan) {
 }
 
 TEST_F(AgentImplTest, RecordSpanDoesNotCrash) {
-    auto span_data = std::make_shared<SpanData>(agent_.get(), "test-op");
+    auto span_data = make_test_span_data_ptr(*agent_, "test-op");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     agent_->recordSpan(std::move(span_chunk));
 }
@@ -354,7 +355,7 @@ TEST_F(AgentImplTest, CacheSqlAfterShutdownReturnsZero) {
 
 TEST_F(AgentImplTest, RecordSpanAfterShutdownDoesNotCrash) {
     agent_->Shutdown();
-    auto span_data = std::make_shared<SpanData>(agent_.get(), "test-op");
+    auto span_data = make_test_span_data_ptr(*agent_, "test-op");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     agent_->recordSpan(std::move(span_chunk));
 }

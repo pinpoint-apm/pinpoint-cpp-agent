@@ -28,8 +28,8 @@
    struct ApiMeta;
    struct StringMeta;
    struct SqlUidMeta;
+   class Exception;
    class SpanChunk;
-   class SpanData;
    struct UrlStatEntry;
    class AgentStats;
    class UrlStats;
@@ -115,11 +115,10 @@
        */
       virtual void recordUrlStat(UrlStatEntry stat) const = 0;
       /**
-       * @brief Reports an exception captured during span processing.
-       *
-       * @param span_data Span data that carries exception metadata.
+       * @brief Reports exceptions captured during span processing.
        */
-      virtual void recordException(SpanData* span_data) const = 0;
+      virtual void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
+                                   std::vector<std::unique_ptr<Exception>>&& exceptions) const = 0;
       /**
        * @brief Pushes agent- or URL-level statistics to the collector.
        *

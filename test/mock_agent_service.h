@@ -70,7 +70,8 @@ public:
         last_url_stat_status_code_ = stat.status_code_;
     }
 
-    void recordException(SpanData* span_data) const override {
+    void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
+                         std::vector<std::unique_ptr<Exception>>&& exceptions) const override {
         recorded_exceptions_++;
     }
 

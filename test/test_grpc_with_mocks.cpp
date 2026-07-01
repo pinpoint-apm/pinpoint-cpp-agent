@@ -36,6 +36,7 @@
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 #include "mock_agent_service.h"
+#include "mock_helpers.h"
 
 using ::testing::_;
 using ::testing::Return;
@@ -695,7 +696,7 @@ TEST_F(GrpcMockTest, GrpcSpanEnqueueSpanTest) {
     span_client.setMockSpanStub(std::move(mock_span_stub));
     
     // Create test span data and enqueue (without worker)
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     
     span_client.enqueueSpan(std::move(span_chunk));
@@ -717,7 +718,7 @@ TEST_F(GrpcMockTest, GrpcSpanWorkerTest) {
     span_client.setMockSpanStub(std::move(mock_span_stub));
     
     // Create test span data and enqueue
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     span_client.enqueueSpan(std::move(span_chunk));
     
@@ -898,7 +899,7 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
     agent.enqueueMeta(std::move(api_meta));
     
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "workflow-test");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "workflow-test");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     span_client.enqueueSpan(std::move(span_chunk));
     
@@ -1735,9 +1736,9 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSuccessTest) {
     auto* fake = fake_stub.get();
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    auto span_data1 = std::make_shared<SpanData>(mock_agent_service_.get(), "batch-op-1");
+    auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "batch-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
-    auto span_data2 = std::make_shared<SpanData>(mock_agent_service_.get(), "batch-op-2");
+    auto span_data2 = make_test_span_data_ptr(*mock_agent_service_, "batch-op-2");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
 
     std::thread worker([&span_client] { span_client.sendSpanWorker(); });
@@ -1767,9 +1768,9 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSpanVsSpanChunkTest) {
     auto* fake = fake_stub.get();
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    auto final_span = std::make_shared<SpanData>(mock_agent_service_.get(), "final-op");
+    auto final_span = make_test_span_data_ptr(*mock_agent_service_, "final-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(final_span, true));
-    auto partial_span = std::make_shared<SpanData>(mock_agent_service_.get(), "partial-op");
+    auto partial_span = make_test_span_data_ptr(*mock_agent_service_, "partial-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(partial_span, false));
 
     std::thread worker([&span_client] { span_client.sendSpanWorker(); });
@@ -1798,7 +1799,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
     auto* fake = fake_stub.get();
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "parent-service-op");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "parent-service-op");
     // parentinfo is only emitted when the parent application name is present.
     span_data->setParentAppName("ParentApp");
     span_data->setParentServiceName("parent-service");
@@ -1838,7 +1839,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     uid[2] = 0xBE;
     uid[3] = 0xEF;
 
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "annotation-op");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "annotation-op");
     auto& annotations = span_data->getAnnotations()->getAnnotations();
     annotations.emplace_back(101, AnnotationData(ANNOTATION_TYPE_STRING, int32_t{42}));
     span_data->getAnnotations()->AppendLong(102, 1234567890123LL);
@@ -1918,7 +1919,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
 
     auto span_parent = std::make_shared<SpanImpl>(mock_agent_service_.get(), "event-annotation-op", "test-rpc");
     auto span_data = span_parent->getSpanData();
-    auto span_event = std::make_unique<SpanEventImpl>(span_parent.get(), "child-op");
+    auto span_event = make_test_span_event_unique(*span_parent, "child-op");
     span_event->GetAnnotations()->AppendString(201, "event-annotation");
     span_data->addSpanEvent(std::move(span_event));
     span_data->finishSpanEvent();
@@ -1956,7 +1957,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
     span_client.setMockSpanStub(std::move(fake_stub));
 
     for (int i = 0; i < 4; i++) {
-        auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "split-op-" + std::to_string(i));
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "split-op-" + std::to_string(i));
         span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
     }
 
@@ -1990,7 +1991,7 @@ TEST_F(GrpcMockTest, GrpcSpanQueueOverflowHeadDropTest) {
     // operation name starting at 100, which identifies each span below.
     std::vector<int32_t> api_ids;
     for (int i = 0; i < 3; i++) {
-        auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "overflow-op-" + std::to_string(i));
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "overflow-op-" + std::to_string(i));
         api_ids.push_back(span_data->getApiId());
         span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
     }
@@ -2026,19 +2027,19 @@ TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
     std::thread worker([&span_client] { span_client.sendSpanWorker(); });
 
     // First batch acquires the only permit; its callback is held by the fake
-    auto span_data1 = std::make_shared<SpanData>(mock_agent_service_.get(), "permit-op-1");
+    auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "permit-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
     // Second batch cannot acquire a permit within flush_interval_ms and is dropped
-    auto span_data2 = std::make_shared<SpanData>(mock_agent_service_.get(), "permit-op-2");
+    auto span_data2 = make_test_span_data_ptr(*mock_agent_service_, "permit-op-2");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     EXPECT_EQ(fake->batchCount(), 1u) << "Batch should be dropped while the permit is in flight";
 
     // Completing the in-flight RPC returns the permit; the next batch goes out
     fake->releaseHeldCallbacks(grpc::Status::OK);
-    auto span_data3 = std::make_shared<SpanData>(mock_agent_service_.get(), "permit-op-3");
+    auto span_data3 = make_test_span_data_ptr(*mock_agent_service_, "permit-op-3");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data3, true));
     ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
         << "Releasing the permit should allow the next batch to be sent";
@@ -2068,12 +2069,12 @@ TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
 
     std::thread worker([&span_client] { span_client.sendSpanWorker(); });
 
-    auto span_data1 = std::make_shared<SpanData>(mock_agent_service_.get(), "error-op-1");
+    auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "error-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
     // A failed RPC must release its permit, or this second batch could never be sent
-    auto span_data2 = std::make_shared<SpanData>(mock_agent_service_.get(), "error-op-2");
+    auto span_data2 = make_test_span_data_ptr(*mock_agent_service_, "error-op-2");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
     ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
         << "Permit should be released after an RPC failure";
@@ -2098,13 +2099,13 @@ TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {
 
     std::thread worker([&span_client] { span_client.sendSpanWorker(); });
 
-    auto span_data1 = std::make_shared<SpanData>(mock_agent_service_.get(), "partial-success-op-1");
+    auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "partial-success-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
     // partial_success is observability-only: the worker keeps going and the
     // permit is released, so a following batch still goes out
-    auto span_data2 = std::make_shared<SpanData>(mock_agent_service_.get(), "partial-success-op-2");
+    auto span_data2 = make_test_span_data_ptr(*mock_agent_service_, "partial-success-op-2");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
     ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)));
 

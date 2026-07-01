@@ -22,7 +22,7 @@
 
 namespace pinpoint {
 
-    class SpanData;
+    class AgentService;
     class SpanImpl;
 
     /**
@@ -70,7 +70,7 @@ namespace pinpoint {
         /// @brief Returns the elapsed duration of the event.
         int32_t getEndElapsed() const { return elapsed_; }
 
-        /// @brief Assigns the sequence number (set under the parent's lock by addSpanEvent).
+        /// @brief Assigns the sequence number.
         void setSequence(int32_t sequence) { sequence_ = sequence; }
         /// @brief Returns the sequence number assigned to this event.
         int32_t getSequence() const { return sequence_; }
@@ -122,12 +122,11 @@ namespace pinpoint {
         /// so the const GetAnnotations() override can materialize it on demand.
         PinpointAnnotation* ensureAnnotations() const;
 
-        SpanData& parentSpanData() const;
-
         // Non-owning by design. SpanData owns SpanEventImpl instances and keeps
         // them within the parent span's lifetime, while this pointer lets hot
         // event operations avoid weak_ptr::lock() and shared_ptr refcount traffic.
-        SpanImpl* parent_span_;
+        SpanImpl* span_;
+        AgentService* agent_;
         int32_t service_type_;
         std::string operation_;
         int32_t sequence_;

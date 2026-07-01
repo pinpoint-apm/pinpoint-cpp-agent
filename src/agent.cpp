@@ -613,15 +613,15 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::recordException(SpanData* span_data) const {
+    void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
+                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const {
         const auto cfg = getConfig();
         if (!enabled_ || !cfg->enable_callstack_trace) {
             return;
         }
 
-        auto meta = std::make_unique<MetaData>(META_EXCEPTION, span_data->getTraceId(), 
-                                               span_data->getSpanId(), span_data->getUrlTemplate(),
-                                               span_data->takeExceptions());
+        auto meta = std::make_unique<MetaData>(META_EXCEPTION, trace_id, span_id, url_template,
+                                               std::move(exceptions));
         grpc_metadata_->enqueueMeta(std::move(meta));
     }
 

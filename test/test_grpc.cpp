@@ -30,6 +30,7 @@
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 #include "mock_agent_service.h"
+#include "mock_helpers.h"
 
 using ::testing::_;
 using ::testing::Return;
@@ -179,7 +180,7 @@ TEST_F(GrpcTest, GrpcSpanEnqueueTest) {
     GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     
     // Create a test span chunk
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     
     // Test enqueueSpan
@@ -301,7 +302,7 @@ TEST_F(GrpcTest, CompleteWorkflowTest) {
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
     metadata.enqueueMeta(std::move(api_meta));
     
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "workflow-test");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "workflow-test");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     span_client.enqueueSpan(std::move(span_chunk));
     
@@ -504,7 +505,7 @@ TEST_F(GrpcTest, GrpcSpanMultipleEnqueueTest) {
     GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
 
     for (int i = 0; i < 5; i++) {
-        auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "op-" + std::to_string(i));
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "op-" + std::to_string(i));
         auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
         span_client.enqueueSpan(std::move(span_chunk));
     }
@@ -621,7 +622,7 @@ TEST_F(GrpcTest, GrpcSpanEnqueueWhileExitingTest) {
     GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
     mock_agent_service_->setExiting(true);
 
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "exit-op");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "exit-op");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
     span_client.enqueueSpan(std::move(span_chunk));
 

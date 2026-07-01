@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <cassert>
 
 #include "logging.h"
 #include "noop.h"
@@ -25,7 +26,7 @@ namespace pinpoint {
 
     static std::atomic<int32_t> async_id_gen{1};
 
-    SpanData::SpanData(AgentService* agent, std::string_view operation) :
+    SpanData::SpanData(std::string_view operation, int32_t app_type, int32_t api_id) :
         trace_id_{},
         span_id_{},
         parent_span_id_{-1},
@@ -33,10 +34,10 @@ namespace pinpoint {
         parent_app_type_{1},
         parent_app_namespace_{},
         parent_service_name_{},
-        app_type_{agent->getAppType()},
-		service_type_{defaults::SPAN_SERVICE_TYPE},
+        app_type_{app_type},
+        service_type_{defaults::SPAN_SERVICE_TYPE},
         operation_{operation},
-        api_id_{},
+        api_id_{api_id},
         rpc_name_{},
         endpoint_{},
         remote_addr_{},
@@ -56,31 +57,14 @@ namespace pinpoint {
         event_stack_{},
         finished_events{},
         span_event_lock_{},
-        url_stat_{},
-        annotations_{std::make_unique<PinpointAnnotation>()},
-        agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
-        agent_(agent),
-        config_(agent != nullptr ? agent->getConfig() : nullptr) {
-        // agent_ is always the live AgentImpl in production (NewSpan passes
-        // `this`). Guard the deref only to stay consistent with the null check
-        // on agent_ref_ above; api_id_ keeps its init value (0) when absent.
-        if (agent_ != nullptr) {
-            api_id_ = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
-        }
-    }
+        annotations_{std::make_unique<PinpointAnnotation>()} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
-        if (!se) {
-            return nullptr;
-        }
         std::unique_lock<std::mutex> lock(span_event_lock_);
-        // Assign the event's sequence/depth here, under the lock, rather than
-        // letting the SpanEventImpl ctor snapshot them: two concurrent
-        // NewSpanEvent calls would otherwise read the same pre-increment values
-        // and emit duplicate sequence numbers, corrupting the server-side call
-        // tree. The event takes the current counter value, then we advance it.
-        se->setSequence(event_sequence_.fetch_add(1, std::memory_order_relaxed));
-        se->setDepth(event_depth_.fetch_add(1, std::memory_order_relaxed));
+        const auto [sequence, depth] = nextEventSequenceAndDepth();
+        se->setSequence(sequence);
+        se->setDepth(depth);
+ 
         auto* event = se.get();
         event_stack_.push(std::move(se));
         return event;
@@ -170,28 +154,6 @@ namespace pinpoint {
         trace_id_.Sequence = stoll_(sequence_str).value_or(0);
     }
 
-    void SpanData::setUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
-        url_stat_.emplace(url_pattern, method, status_code);
-    } catch (const std::exception& e) {
-        LOG_ERROR("set url stat exception = {}", e.what());
-    }
-
-    void SpanData::sendUrlStat() {
-        if (url_stat_) {
-            url_stat_->end_time_ = end_time_;
-            url_stat_->elapsed_ = elapsed_;
-            url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
-            agent_->recordUrlStat(std::move(*url_stat_));
-            url_stat_.reset();
-        }
-    }
-
-    void SpanData::sendExceptions() {
-        if (!exceptions_.empty()) {
-            agent_->recordException(this);
-        }
-    }
-
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
                          span_data_(span_data),
                          event_chunk_{},
@@ -256,15 +218,23 @@ namespace pinpoint {
         } while(0)
 
     SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point) :
-        agent_(agent), data_(nullptr), overflow_(0), finished_(false) {
-        data_ = std::make_shared<SpanData>(agent, operation);
+        agent_(agent),
+        data_(nullptr),
+        overflow_(0),
+        finished_(false),
+        url_stat_{},
+        exceptions_{} {
+        assert(agent_ != nullptr);
+        const auto app_type = agent_->getAppType();
+        const auto api_id = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
+        data_ = std::make_shared<SpanData>(operation, app_type, api_id);
         data_->setRpcName(rpc_point);
     }
 
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
 
-        const auto& cfg = data_->getConfig();
+        const auto cfg = agent_->getConfig();
         const auto depth = data_->getEventDepth();
         const auto seq = data_->getEventSequence();
 
@@ -318,7 +288,7 @@ namespace pinpoint {
 
         data_->finishSpanEvent();
 
-        const auto& cfg = data_->getConfig();
+        const auto cfg = agent_->getConfig();
         if (data_->getFinishedEventsCount() >= cfg->span.event_chunk_size) {
             record_chunk(false);
         }
@@ -338,11 +308,11 @@ namespace pinpoint {
         if (data_->isAsyncSpan()) {
             data_->finishSpanEvent(); //async span event
         } else {
-            auto& stats = data_->getAgent()->getAgentStats();
+            auto& stats = agent_->getAgentStats();
             stats.dropActiveSpan(data_->getSpanId());
             stats.collectResponseTime(data_->getElapsed());
-            data_->sendExceptions();
-            data_->sendUrlStat();
+            sendExceptions();
+            sendUrlStat();
         }
 
         record_chunk(true);
@@ -432,7 +402,7 @@ namespace pinpoint {
             data_->setRemoteAddr(v);
         }
 
-        data_->getAgent()->getAgentStats().addActiveSpan(data_->getSpanId(), data_->getStartTime());
+        agent_->getAgentStats().addActiveSpan(data_->getSpanId(), data_->getStartTime());
     }
 
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation) try {
@@ -473,9 +443,13 @@ namespace pinpoint {
         return noopSpan();
     }
 
+    void SpanImpl::decrEventDepth() {
+        data_->decrEventDepth();
+    }
+
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) {
         CHECK_FINISHED();
-        data_->setUrlStat(url_pattern, method, status_code);
+        url_stat_.emplace(url_pattern, method, status_code);
     }
 
     void SpanImpl::SetServiceType(int32_t service_type) {
@@ -532,6 +506,23 @@ namespace pinpoint {
 
 	const std::string LOG_TRACE_ID_KEY = "PtxId";
 	const std::string LOG_SPAN_ID_KEY = "PspanId";
+
+    void SpanImpl::sendUrlStat() {
+        if (!url_stat_) {
+            return;
+        }
+        url_stat_->end_time_ = data_->getEndTime();
+        url_stat_->elapsed_ = data_->getElapsed();
+        url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
+        agent_->recordUrlStat(std::move(*url_stat_));
+        url_stat_.reset();
+    }
+
+    void SpanImpl::sendExceptions() {
+        if (!exceptions_.empty()) {
+            agent_->recordException(data_->getTraceId(), data_->getSpanId(), getUrlTemplate(), takeExceptions());
+        }
+    }
 
     void SpanImpl::SetLogging(TraceContextWriter& writer) {
         CHECK_FINISHED();

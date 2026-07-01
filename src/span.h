@@ -108,7 +108,7 @@ namespace pinpoint {
      */
     class SpanData final {
     public:
-        SpanData(AgentService* agent, std::string_view operation);
+        SpanData(std::string_view operation, int32_t app_type, int32_t api_id);
         ~SpanData() = default;
 
     	/// @brief Returns the trace identifier.
@@ -194,16 +194,17 @@ namespace pinpoint {
         /// @brief Returns span flag bits.
         int getFlags() const { return flags_; }
 
-        /// @brief Sets the event sequence counter.
-        void setEventSequence(int32_t event_sequence) { event_sequence_.store(event_sequence, std::memory_order_relaxed); }
         /// @brief Returns the event sequence counter.
         int32_t getEventSequence() const { return event_sequence_.load(std::memory_order_relaxed); }
-
-        /// @brief Sets the current event depth.
-        void setEventDepth(int32_t event_depth) { event_depth_.store(event_depth, std::memory_order_relaxed); }
         /// @brief Returns the current event depth.
         int32_t getEventDepth() const { return event_depth_.load(std::memory_order_relaxed); }
-
+        /// @brief Reserves the next event sequence and depth for a new span event.
+        std::pair<int32_t, int32_t> nextEventSequenceAndDepth() {
+            return {
+                event_sequence_.fetch_add(1, std::memory_order_relaxed),
+                event_depth_.fetch_add(1, std::memory_order_relaxed)
+            };
+        }
         /// @brief Decrements the event depth counter.
         void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
@@ -234,25 +235,6 @@ namespace pinpoint {
         /// @brief Returns the asynchronous sequence number.
         int32_t getAsyncSequence() const { return async_sequence_; }
 
-    	/**
-    	 * @brief Captures URL statistics for the span using the given metadata.
-    	 *
-    	 * @param url_pattern Normalized URL template.
-    	 * @param method HTTP method.
-    	 * @param status_code HTTP status code.
-    	 */
-    	void setUrlStat(std::string_view url_pattern, std::string_view method, int status_code);
-    	/**
-    	 * @brief Enqueues the recorded URL statistics for asynchronous sending.
-    	 */
-    	void sendUrlStat();
-		std::string getUrlTemplate() {
-			if (url_stat_) {
-				return url_stat_->url_pattern_;
-			}
-			return "NULL";
-		}
-
     	/// @brief Stores the start timestamp of the span in epoch milliseconds.
     	void setStartTime(std::chrono::system_clock::time_point start_time) { start_time_ = to_milli_seconds(start_time); }
         /// @brief Returns the recorded start timestamp.
@@ -263,6 +245,7 @@ namespace pinpoint {
 	        end_time_ = std::chrono::system_clock::now();
         	elapsed_ = to_milli_seconds(end_time_) - start_time_;
         }
+        std::chrono::system_clock::time_point getEndTime() const { return end_time_; }
         /// @brief Returns the elapsed duration in milliseconds.
         int32_t getElapsed() const { return elapsed_; }
 
@@ -299,27 +282,8 @@ namespace pinpoint {
     	    return finished_events.size();
     	}
 
-        /// @brief Appends a captured exception call stack.
-        void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
-        /// @brief Returns a const reference to the collected exceptions.
-        const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
-        /// @brief Transfers ownership of the collected exceptions to the caller.
-        std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
-    	/**
-    	 * @brief Streams the collected exceptions through the agent service.
-    	 */
-    	void sendExceptions();
-
         /// @brief Returns the annotation container for the span.
         PinpointAnnotation* getAnnotations() const { return annotations_.get(); }
-    	/// @brief Returns the owning agent service.
-    	AgentService* getAgent() const { return agent_; }
-    	/// @brief Returns the configuration snapshot taken when the span was
-    	/// created. Reused by every span event of this span instead of querying
-    	/// the agent's atomic config_ again, so a span with N events does one
-    	/// config load instead of ~2N. The span uses a consistent config for its
-    	/// whole lifetime even if a reload happens mid-span.
-    	const std::shared_ptr<const Config>& getConfig() const { return config_; }
 
     private:
         void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
@@ -343,9 +307,8 @@ namespace pinpoint {
     	std::string remote_addr_;
     	std::string acceptor_host_;
 
-    	// Atomic so the unlocked reads (SpanEventImpl ctor snapshot, NewSpanEvent
-    	// overflow check) never race the increments addSpanEvent performs while
-    	// holding span_event_lock_.
+        // Atomic so overflow checks and event position reservation never race
+        // concurrent NewSpanEvent calls.
     	std::atomic<int32_t> event_sequence_;
     	std::atomic<int32_t> event_depth_;
 
@@ -368,16 +331,7 @@ namespace pinpoint {
     	// mutable so const accessors (getFinishedEventsCount) can lock it.
     	mutable std::mutex span_event_lock_;
 
-        std::optional<UrlStatEntry> url_stat_;
     	std::unique_ptr<PinpointAnnotation> annotations_;
-        std::vector<std::unique_ptr<Exception>> exceptions_;
-    	// Keeps the agent alive while this span (or any chunk/event referencing
-    	// it) is still held by user code; agent_ below stays valid through it.
-    	std::shared_ptr<AgentService> agent_ref_;
-    	AgentService *agent_;
-    	// Config snapshot captured at construction; shared by all span events of
-    	// this span (see getConfig()).
-    	std::shared_ptr<const Config> config_;
     };
 
 	/**
@@ -449,11 +403,19 @@ namespace pinpoint {
       	/// @brief Extracts a span context from an inbound propagation carrier.
       	void ExtractContext(TraceContextReader& reader) override;
 
-    	TraceId& GetTraceId() override { return data_->getTraceId(); }
-    	int64_t GetSpanId() override { return data_->getSpanId(); }
-    	bool IsSampled() override { return true; }
-    	AnnotationPtr GetAnnotations() const override { return data_->getAnnotations(); }
+        TraceId& GetTraceId() override { return data_->getTraceId(); }
+        int64_t GetSpanId() override { return data_->getSpanId(); }
+        bool IsSampled() override { return true; }
+        AnnotationPtr GetAnnotations() const override { return data_->getAnnotations(); }
         const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
+        const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
+        std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
+        std::string getUrlTemplate() const {
+            if (url_stat_) {
+                return url_stat_->url_pattern_;
+            }
+            return "NULL";
+        }
 
     	/// @brief Sets the service type recorded on the span.
     	void SetServiceType(int32_t service_type) override;
@@ -478,22 +440,27 @@ namespace pinpoint {
     	/// @brief Records HTTP headers into span annotations.
     	void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
-    private:
-        friend class SpanEventImpl;
+	private:
+	    friend class SpanEventImpl;
 
-		// Non-owning. Kept valid by data_->agent_ref_ (SpanData holds a
-		// shared_ptr to the agent); data_ outlives every use of agent_ here.
-		AgentService *agent_;
-    	std::shared_ptr<SpanData> data_;
-    	std::atomic<int32_t> overflow_;
-    	std::atomic<bool> finished_;
+            AgentService *agent_;
+            std::shared_ptr<SpanData> data_;
+            std::atomic<int32_t> overflow_;
+            std::atomic<bool> finished_;
+            std::optional<UrlStatEntry> url_stat_;
+            std::vector<std::unique_ptr<Exception>> exceptions_;
 
-    	/**
-    	 * @brief Emits a span chunk via the agent service.
-    	 *
-    	 * @param final Indicates whether the chunk completes the span.
-    	 */
-    	void record_chunk(bool final) const;
-    };
+		/**
+		 * @brief Emits a span chunk via the agent service.
+		 *
+		 * @param final Indicates whether the chunk completes the span.
+		 */
+            void record_chunk(bool final) const;
+            void sendUrlStat();
+            void sendExceptions();
+            void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
+            AgentService* getAgent() const { return agent_; }
+            void decrEventDepth();
+	};
 
 }  // namespace pinpoint

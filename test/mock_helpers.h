@@ -18,13 +18,32 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../include/pinpoint/tracer.h"
+#include "../src/span.h"
 
 namespace pinpoint {
+
+inline SpanData make_test_span_data(AgentService& agent, std::string_view operation) {
+    return SpanData(operation, agent.getAppType(), agent.cacheApi(operation, API_TYPE_WEB_REQUEST));
+}
+
+inline std::shared_ptr<SpanData> make_test_span_data_ptr(AgentService& agent, std::string_view operation) {
+    return std::make_shared<SpanData>(operation, agent.getAppType(), agent.cacheApi(operation, API_TYPE_WEB_REQUEST));
+}
+
+inline SpanEventImpl make_test_span_event(SpanImpl& span, std::string_view operation) {
+    return SpanEventImpl(&span, operation);
+}
+
+inline std::unique_ptr<SpanEventImpl> make_test_span_event_unique(SpanImpl& span, std::string_view operation) {
+    return std::make_unique<SpanEventImpl>(&span, operation);
+}
 
 class MockTraceContextReader : public TraceContextReader {
 public:

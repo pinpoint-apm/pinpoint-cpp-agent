@@ -62,8 +62,8 @@ TEST_F(SpanTest, EventStackBasicOperationsTest) {
     
     // Create test span events
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
-    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
-    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
+    auto event1 = make_test_span_event_unique(*span, "event1");
+    auto event2 = make_test_span_event_unique(*span, "event2");
     auto* event1_ptr = event1.get();
     auto* event2_ptr = event2.get();
     
@@ -106,7 +106,7 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
     for (int t = 0; t < num_push_threads; t++) {
         for (int i = 0; i < events_per_thread; i++) {
             pre_created[t].push_back(
-                std::make_unique<SpanEventImpl>(span.get(), "event" + std::to_string(t * events_per_thread + i)));
+                make_test_span_event_unique(*span, "event" + std::to_string(t * events_per_thread + i)));
         }
     }
 
@@ -164,7 +164,7 @@ TEST_F(SpanTest, EventStackConcurrentAccessTest) {
 // ========== SpanData Tests ==========
 
 TEST_F(SpanTest, SpanDataConstructorTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
     EXPECT_EQ(span_data.getOperationName(), "test-operation") << "Operation name should match";
     EXPECT_EQ(span_data.getAppType(), 1300) << "App type should match agent's app type";
@@ -179,12 +179,11 @@ TEST_F(SpanTest, SpanDataConstructorTest) {
     EXPECT_EQ(span_data.getAsyncId(), NONE_ASYNC_ID) << "Initial async ID should be NONE_ASYNC_ID";
     EXPECT_FALSE(span_data.isAsyncSpan()) << "Should not be async span initially";
     EXPECT_NE(span_data.getAnnotations(), nullptr) << "Annotations should be initialized";
-    EXPECT_EQ(span_data.getAgent(), mock_agent_service_.get()) << "Agent should match";
     EXPECT_EQ(span_data.getFinishedEventsCount(), 0) << "Initial finished events count should be 0";
 }
 
 TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
     // Test TraceId
     TraceId trace_id;
@@ -259,12 +258,9 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
 }
 
 TEST_F(SpanTest, SpanDataEventDepthManagementTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
     EXPECT_EQ(span_data.getEventDepth(), 1) << "Initial depth should be 1";
-    
-    span_data.setEventDepth(5);
-    EXPECT_EQ(span_data.getEventDepth(), 5) << "Depth should be updated to 5";
     
     span_data.decrEventDepth();
     EXPECT_EQ(span_data.getEventDepth(), 4) << "Depth should be decremented to 4";
@@ -275,7 +271,7 @@ TEST_F(SpanTest, SpanDataEventDepthManagementTest) {
 }
 
 TEST_F(SpanTest, SpanDataTimeManagementTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
     int64_t initial_start_time = span_data.getStartTime();
     EXPECT_GT(initial_start_time, 0) << "Initial start time should be positive";
@@ -297,12 +293,8 @@ TEST_F(SpanTest, SpanDataTimeManagementTest) {
 }
 
 TEST_F(SpanTest, SpanDataEventSequenceTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
-    
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     EXPECT_EQ(span_data.getEventSequence(), 0) << "Initial sequence should be 0";
-    
-    span_data.setEventSequence(42);
-    EXPECT_EQ(span_data.getEventSequence(), 42) << "Sequence should be updated to 42";
 }
 
 TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
@@ -310,12 +302,14 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     auto span_data = span->getSpanData();
 
     // Create span events
-    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
-    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
+    auto event1 = make_test_span_event_unique(*span, "event1");
+    auto event2 = make_test_span_event_unique(*span, "event2");
     auto* event1_ptr = event1.get();
     auto* event2_ptr = event2.get();
 
     EXPECT_EQ(span_data->getFinishedEventsCount(), 0) << "Initial finished events should be 0";
+    EXPECT_EQ(span_data->getEventSequence(), 0) << "Event sequence should not be reserved during event creation";
+    EXPECT_EQ(span_data->getEventDepth(), 1) << "Event depth should not be reserved during event creation";
 
     // Add span events
     EXPECT_EQ(span_data->addSpanEvent(std::move(event1)), event1_ptr);
@@ -346,7 +340,7 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
 }
 
 TEST_F(SpanTest, SpanDataTraceIdParsingTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
     // Test valid trace ID parsing
     std::string valid_tid = "test-agent-001^1234567890^42";
@@ -357,22 +351,24 @@ TEST_F(SpanTest, SpanDataTraceIdParsingTest) {
     EXPECT_TRUE(true) << "TraceId parsing should not crash";
 }
 
-TEST_F(SpanTest, SpanDataUrlStatTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-operation");
+TEST_F(SpanTest, SpanImplUrlStatTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     
     // Set URL stat
-    span_data.setUrlStat("/api/users", "GET", 200);
-    
-    // Send URL stat
-    span_data.sendUrlStat();
-    
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    EXPECT_EQ(span.getUrlTemplate(), "/api/users");
+    span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "URL stat should be recorded";
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/users");
+    EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "GET");
+    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 200);
 }
 
 // ========== SpanChunk Tests ==========
 
 TEST_F(SpanTest, SpanChunkConstructorTest) {
-    auto span_data = std::make_shared<SpanData>(mock_agent_service_.get(), "test-operation");
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
     
     SpanChunk chunk(span_data, true);
     
@@ -387,8 +383,8 @@ TEST_F(SpanTest, SpanChunkWithEventsTest) {
     auto span_data = span->getSpanData();
     
     // Add some finished events to span data
-    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
-    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "event2");
+    auto event1 = make_test_span_event_unique(*span, "event1");
+    auto event2 = make_test_span_event_unique(*span, "event2");
     
     span_data->addSpanEvent(std::move(event1));
     span_data->addSpanEvent(std::move(event2));
@@ -406,7 +402,7 @@ TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
     auto span_data = span->getSpanData();
     
     // Add some events
-    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "event1");
+    auto event1 = make_test_span_event_unique(*span, "event1");
     span_data->addSpanEvent(std::move(event1));
     span_data->finishSpanEvent();
     
@@ -773,7 +769,7 @@ TEST_F(SpanTest, EventStackTopOnEmptyReturnsNullptrTest) {
 // ========== SpanData parseTraceId Edge Case Tests ==========
 
 TEST_F(SpanTest, SpanDataParseTraceIdMissingSeparatorTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     // No '^' at all — should not crash, trace_id fields remain default
     std::string invalid = "no-separator-here";
@@ -784,7 +780,7 @@ TEST_F(SpanTest, SpanDataParseTraceIdMissingSeparatorTest) {
 }
 
 TEST_F(SpanTest, SpanDataParseTraceIdOnlyOneSeparatorTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     // Only one '^' — second field parse should fail gracefully
     std::string partial = "agent^12345";
@@ -796,7 +792,7 @@ TEST_F(SpanTest, SpanDataParseTraceIdOnlyOneSeparatorTest) {
 }
 
 TEST_F(SpanTest, SpanDataParseTraceIdAgentIdTooLongTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     // AgentId exceeds kMaxAgentIdLength (24)
     std::string long_agent = "this-agent-id-is-way-too-long^1234567890^1";
@@ -807,7 +803,7 @@ TEST_F(SpanTest, SpanDataParseTraceIdAgentIdTooLongTest) {
 }
 
 TEST_F(SpanTest, SpanDataParseTraceIdEmptyFieldsTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     std::string empty_fields = "^^";
     span_data.parseTraceId(empty_fields);
@@ -820,7 +816,7 @@ TEST_F(SpanTest, SpanDataParseTraceIdEmptyFieldsTest) {
 // ========== SpanData finishSpanEvent on Empty Stack ==========
 
 TEST_F(SpanTest, SpanDataFinishSpanEventOnEmptyStackTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     // Should not crash — logs a warning, finished_events unchanged
     span_data.finishSpanEvent();
@@ -831,61 +827,65 @@ TEST_F(SpanTest, SpanDataFinishSpanEventOnEmptyStackTest) {
 // ========== SpanData Exception Tests ==========
 
 TEST_F(SpanTest, SpanDataSendExceptionsEmptyTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
-    span_data.sendExceptions();
+    span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_exceptions_, 0)
         << "No exceptions should be recorded when list is empty";
 }
 
 TEST_F(SpanTest, SpanDataSendExceptionsWithDataTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
+    auto event = make_test_span_event(span, "event-op");
+    MockCallStackReader reader;
+    reader.AddFrame("/lib/app.so", "func", "/src/file.cpp", 10);
 
-    auto ex = std::make_unique<Exception>(std::make_unique<CallStack>("test error"));
-    span_data.addException(std::move(ex));
-    EXPECT_EQ(span_data.getExceptions().size(), 1);
+    event.SetError("TestError", "test error", reader);
+    EXPECT_EQ(span.getExceptions().size(), 1);
 
-    span_data.sendExceptions();
+    span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_exceptions_, 1)
         << "Exception should be recorded through agent service";
 }
 
 TEST_F(SpanTest, SpanDataTakeExceptionsTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
+    auto event1 = make_test_span_event(span, "event-op-1");
+    auto event2 = make_test_span_event(span, "event-op-2");
+    MockCallStackReader reader;
+    reader.AddFrame("/lib/app.so", "func", "/src/file.cpp", 10);
 
-    span_data.addException(std::make_unique<Exception>(std::make_unique<CallStack>("test error")));
-    span_data.addException(std::make_unique<Exception>(std::make_unique<CallStack>("test error")));
-    EXPECT_EQ(span_data.getExceptions().size(), 2);
+    event1.SetError("TestError1", "test error", reader);
+    event2.SetError("TestError2", "test error", reader);
+    EXPECT_EQ(span.getExceptions().size(), 2);
 
-    auto taken = span_data.takeExceptions();
+    auto taken = span.takeExceptions();
     EXPECT_EQ(taken.size(), 2);
-    EXPECT_EQ(span_data.getExceptions().size(), 0)
+    EXPECT_EQ(span.getExceptions().size(), 0)
         << "Exceptions should be moved out";
 }
 
 // ========== SpanData URL Stat Edge Cases ==========
 
 TEST_F(SpanTest, SpanDataSendUrlStatWithoutSettingTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
-    // sendUrlStat without setUrlStat should be a no-op
-    span_data.setEndTime();
-    span_data.sendUrlStat();
+    span.EndSpan();
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0);
 }
 
 TEST_F(SpanTest, SpanDataGetUrlTemplateWithoutStatTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
-    EXPECT_EQ(span_data.getUrlTemplate(), "NULL")
+    EXPECT_EQ(span.getUrlTemplate(), "NULL")
         << "URL template should return NULL when no stat is set";
 }
 
 TEST_F(SpanTest, SpanDataGetUrlTemplateWithStatTest) {
-    SpanData span_data(mock_agent_service_.get(), "test-op");
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
-    span_data.setUrlStat("/api/v1/users", "POST", 201);
-    EXPECT_EQ(span_data.getUrlTemplate(), "/api/v1/users");
+    span.SetUrlStat("/api/v1/users", "POST", 201);
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users");
 }
 
 // ========== SpanImpl Operations After Finished ==========
@@ -1150,9 +1150,9 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
     auto span_data = span->getSpanData();
 
     // Create events with different depths/sequences to test optimization
-    auto event1 = std::make_unique<SpanEventImpl>(span.get(), "e1");
-    auto event2 = std::make_unique<SpanEventImpl>(span.get(), "e2");
-    auto event3 = std::make_unique<SpanEventImpl>(span.get(), "e3");
+    auto event1 = make_test_span_event_unique(*span, "e1");
+    auto event2 = make_test_span_event_unique(*span, "e2");
+    auto event3 = make_test_span_event_unique(*span, "e3");
     auto* event1_ptr = event1.get();
     auto* event2_ptr = event2.get();
     auto* event3_ptr = event3.get();
@@ -1191,7 +1191,7 @@ TEST_F(SpanTest, SpanChunkOptimizeNonFinalKeyTimeTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
     auto span_data = span->getSpanData();
 
-    auto event = std::make_unique<SpanEventImpl>(span.get(), "e1");
+    auto event = make_test_span_event_unique(*span, "e1");
     span_data->addSpanEvent(std::move(event));
     span_data->finishSpanEvent();
 

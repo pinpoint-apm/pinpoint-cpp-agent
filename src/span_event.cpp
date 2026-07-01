@@ -30,7 +30,8 @@ namespace pinpoint {
     std::atomic<int32_t> Exception::exception_id_gen{1};
 
     SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation) :
-        parent_span_(span),
+        span_(span),
+        agent_(span->getAgent()),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
         sequence_{0},
@@ -46,14 +47,11 @@ namespace pinpoint {
         async_id_{NONE_ASYNC_ID},
         async_seq_gen_{0},
         api_id_{0} {
-        assert(parent_span_ != nullptr);
-
-        auto& span_data = parentSpanData();
-        sequence_ = span_data.getEventSequence();
-        depth_ = span_data.getEventDepth();
+        assert(span_ != nullptr);
+        assert(agent_ != nullptr);
 
         if (!operation_.empty()) {
-            api_id_ = span_data.getAgent()->cacheApi(operation, API_TYPE_DEFAULT);
+            api_id_ = agent_->cacheApi(operation, API_TYPE_DEFAULT);
         }
     }
 
@@ -64,19 +62,12 @@ namespace pinpoint {
         return annotations_.get();
     }
 
-    SpanData& SpanEventImpl::parentSpanData() const {
-        assert(parent_span_ != nullptr);
-        assert(parent_span_->data_ != nullptr);
-        return *parent_span_->data_;
-    }
-
     void SpanEventImpl::EndEvent() {
-        assert(parent_span_ != nullptr);
-        parent_span_->EndSpanEvent();
+        span_->EndSpanEvent();
     }
 
     void SpanEventImpl::finish() {
-        parentSpanData().decrEventDepth();
+        span_->decrEventDepth();
         elapsed_ = to_milli_seconds(std::chrono::system_clock::now()) - start_time_;
     }
 
@@ -90,16 +81,14 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
-        auto& span_data = parentSpanData();
-        error_func_id_ = span_data.getAgent()->cacheError(error_name);
+        error_func_id_ = agent_->cacheError(error_name);
         error_string_ = error_message;
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
-        auto& span_data = parentSpanData();
         SetError(error_name, error_message);
 
-        const auto& cfg = span_data.getConfig();
+        const auto cfg = agent_->getConfig();
         if (!cfg->enable_callstack_trace) {
             return;
         }
@@ -113,28 +102,26 @@ namespace pinpoint {
 
             auto exception = std::make_unique<Exception>(std::move(callstack));
             ensureAnnotations()->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
-            span_data.addException(std::move(exception));
+            span_->addException(std::move(exception));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
     }
 
     void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
-        auto& span_data = parentSpanData();
-
         // Use a thread-local or static instance since SqlNormalizer is now stateless/thread-safe for normalize()
         static const SqlNormalizer normalizer(64*1024);
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
-        const auto& config = span_data.getConfig();
+        const auto config = agent_->getConfig();
         if (config->sql.enable_sql_stats) {
-            auto sql_uid = span_data.getAgent()->cacheSqlUid(result.normalized_sql);
+            auto sql_uid = agent_->cacheSqlUid(result.normalized_sql);
             if (sql_uid) {
                 ensureAnnotations()->AppendSqlUidStringString(ANNOTATION_SQL_UID, *sql_uid,
                     result.parameters, args);
             }
         } else {
-            auto sql_id = span_data.getAgent()->cacheSql(result.normalized_sql);
+            auto sql_id = agent_->cacheSql(result.normalized_sql);
             if (sql_id) {
                 ensureAnnotations()->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
             }
@@ -142,8 +129,7 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
-        auto& span_data = parentSpanData();
-        span_data.getAgent()->recordClientHeader(which, reader, ensureAnnotations());
+        agent_->recordClientHeader(which, reader, ensureAnnotations());
     }
 
 } // namespace pinpoint
