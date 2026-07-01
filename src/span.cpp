@@ -56,11 +56,9 @@ namespace pinpoint {
         async_sequence_{},
         event_stack_{},
         finished_events{},
-        span_event_lock_{},
         annotations_{std::make_unique<PinpointAnnotation>()} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
-        std::unique_lock<std::mutex> lock(span_event_lock_);
         const auto [sequence, depth] = nextEventSequenceAndDepth();
         se->setSequence(sequence);
         se->setDepth(depth);
@@ -71,7 +69,6 @@ namespace pinpoint {
     }
 
     void SpanData::finishSpanEvent() {
-        std::unique_lock<std::mutex> lock(span_event_lock_);
         auto se = event_stack_.pop();
         if (se) {
             se->finish();
@@ -101,7 +98,6 @@ namespace pinpoint {
     }
 
     void SpanData::takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out) {
-        std::unique_lock<std::mutex> lock(span_event_lock_);
         out.clear();
         if (finished_events.empty()) {
             return;

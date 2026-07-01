@@ -19,7 +19,6 @@
 #include <atomic>
 #include <deque>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stack>
 #include <string>
@@ -46,8 +45,9 @@ namespace pinpoint {
     /**
      * @brief Stack wrapper used to manage nested span events.
      *
-     * This class is NOT thread-safe on its own. All access must be
-     * externally synchronized by the caller (SpanData::span_event_lock_).
+     * This class is NOT thread-safe on its own, and does not need to be: a span
+     * is owned by a single thread (see the Span thread-safety contract in
+     * pinpoint/tracer.h), so all access happens on that one thread.
      */
     class EventStack {
     public:
@@ -57,7 +57,7 @@ namespace pinpoint {
          * @brief Pushes a span event onto the internal stack.
          *
          * @param item Span event to add.
-         * @note Caller must hold span_event_lock_.
+         * @note Must be called on the span's owning thread.
          */
         void push(std::unique_ptr<SpanEventImpl> item) {
             stack_.push(std::move(item));
@@ -67,7 +67,7 @@ namespace pinpoint {
          * @brief Removes and returns the most recent span event.
          *
          * @return Span event that was at the top of the stack, or nullptr if the stack is empty.
-         * @note Caller must hold span_event_lock_.
+         * @note Must be called on the span's owning thread.
          */
         std::unique_ptr<SpanEventImpl> pop() {
             if (stack_.empty()) {
@@ -81,7 +81,7 @@ namespace pinpoint {
         /**
          * @brief Returns (without removing) the top span event.
          * @return Span event at the top of the stack, or nullptr if the stack is empty.
-         * @note Caller must hold span_event_lock_.
+         * @note Must be called on the span's owning thread.
          */
         SpanEventImpl* top() {
             if (stack_.empty()) {
@@ -91,7 +91,7 @@ namespace pinpoint {
         }
 
         /// @brief Returns the number of events contained in the stack.
-        /// @note Caller must hold span_event_lock_.
+        /// @note Must be called on the span's owning thread.
         size_t size() const {
             return stack_.size();
         }
@@ -262,14 +262,10 @@ namespace pinpoint {
     	void finishSpanEvent();
     	/// @brief Returns the current active span event, or nullptr if the stack is empty.
     	SpanEventImpl* topSpanEvent() {
-    	    std::unique_lock<std::mutex> lock(span_event_lock_);
     	    return event_stack_.top();
     	}
 
         /// @brief Transfers ownership of finished span events to the caller.
-        /// @note Locks span_event_lock_: finished_events is written under it by
-        ///       finishSpanEvent(), so the move must be serialized against
-        ///       concurrent pushes (e.g. EndSpanEvent racing EndSpan).
         void takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out);
         /// @brief Transfers ownership of finished span events to a new vector.
         std::vector<std::unique_ptr<SpanEventImpl>> takeFinishedEvents() {
@@ -279,7 +275,6 @@ namespace pinpoint {
         }
         /// @brief Returns the number of finished span events.
     	size_t getFinishedEventsCount() const {
-    	    std::unique_lock<std::mutex> lock(span_event_lock_);
     	    return finished_events.size();
     	}
 
@@ -328,9 +323,10 @@ namespace pinpoint {
 
     	EventStack event_stack_;
         // Kept sequence-ordered as events finish so chunks do not need to sort.
+        // Not mutex-guarded: a span is single-threaded (see the Span thread-safety
+        // contract in pinpoint/tracer.h), so the stack and this list are only ever
+        // touched by the span's owning thread.
         std::deque<std::unique_ptr<SpanEventImpl>> finished_events;
-    	// mutable so const accessors (getFinishedEventsCount) can lock it.
-    	mutable std::mutex span_event_lock_;
 
     	std::unique_ptr<PinpointAnnotation> annotations_;
     };
@@ -379,12 +375,13 @@ namespace pinpoint {
      *          `EndSpan`/`EndSpanEvent` on one thread can free a span event still
      *          referenced through a raw pointer on another.
      *
-     *          The `finished_`/`overflow_` atomics and `SpanData::span_event_lock_`
-     *          are NOT a general concurrency guarantee. They exist only to keep the
-     *          one supported cross-thread interaction safe: the async child span
-     *          created via NewAsyncSpan() finishing its event (finishSpanEvent)
-     *          while the parent thread ends the parent span. Do not read them as
-     *          license to share a span across threads.
+     *          The `finished_`/`overflow_` atomics are defensive idempotency
+     *          guards (e.g. so a repeated EndSpan is a no-op), NOT a concurrency
+     *          guarantee. There is no lock protecting the span event stack either:
+     *          each span — including an async child from NewAsyncSpan(), which
+     *          owns its own SpanData — is only ever touched by its single owning
+     *          thread. Do not read any of this as license to share a span across
+     *          threads.
      */
     class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
