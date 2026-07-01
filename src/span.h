@@ -23,6 +23,7 @@
 #include <optional>
 #include <stack>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -368,6 +369,22 @@ namespace pinpoint {
      *
      * `SpanImpl` delegates storage to `SpanData` while coordinating span event creation,
      * context propagation and final flushing through the agent service.
+     *
+     * @warning Single-threaded per instance. See the `Span` thread-safety contract
+     *          in pinpoint/tracer.h: one `SpanImpl` (and the `SpanEventImpl`s it
+     *          returns as raw `SpanEventPtr`) must be used by a single thread for
+     *          its whole lifetime. Concurrent calls on the same instance are
+     *          undefined behaviour and can crash — `exceptions_`, `url_stat_` and
+     *          the `SpanData` string/annotation buffers are unsynchronized, and
+     *          `EndSpan`/`EndSpanEvent` on one thread can free a span event still
+     *          referenced through a raw pointer on another.
+     *
+     *          The `finished_`/`overflow_` atomics and `SpanData::span_event_lock_`
+     *          are NOT a general concurrency guarantee. They exist only to keep the
+     *          one supported cross-thread interaction safe: the async child span
+     *          created via NewAsyncSpan() finishing its event (finishSpanEvent)
+     *          while the parent thread ends the parent span. Do not read them as
+     *          license to share a span across threads.
      */
     class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
@@ -449,6 +466,19 @@ namespace pinpoint {
             std::atomic<bool> finished_;
             std::optional<UrlStatEntry> url_stat_;
             std::vector<std::unique_ptr<Exception>> exceptions_;
+
+            // Owning-thread guard enforcing the Span single-thread contract
+            // (see pinpoint/tracer.h). Bound lazily on the first NewSpanEvent
+            // call rather than at construction, so an async child span created
+            // via NewAsyncSpan on one thread but consumed on another binds to its
+            // consuming thread instead of its creator. The check is just a
+            // thread-id load-and-compare (an already-bound span does no store),
+            // cheap enough to stay enabled in release builds: a violation is
+            // logged there, and additionally asserts in debug builds. Atomic so
+            // the detection path itself — which by definition runs when the span
+            // is touched concurrently — is not a data race.
+            std::atomic<std::thread::id> owner_thread_id_{};
+            void checkOwnerThread();
 
 		/**
 		 * @brief Emits a span chunk via the agent service.

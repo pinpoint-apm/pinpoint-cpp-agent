@@ -47,6 +47,7 @@
 #  define sleep_sec(s) Sleep((DWORD)((s) * 1000))
 #else
 #  include <unistd.h>
+#  include <pthread.h>
 #  define sleep_sec(s) sleep((unsigned)(s))
 #endif
 
@@ -60,6 +61,33 @@
 typedef struct {
     pt_agent_t agent;
 } handler_ctx_t;
+
+/* ========================================================================== */
+/* Async span worker — runs on a separate thread                                */
+/* ========================================================================== */
+
+/* Runs the async span's whole lifecycle on the worker thread. The async span is
+ * created on the request thread (its owner) and handed here as an opaque arg;
+ * one span instance must only ever be used by a single thread. */
+static void run_async_span(pt_span_t async_span) {
+    pt_span_event_t async_event = pt_span_new_event(async_span, "ThreadSpanEvent");
+    pt_span_end_event(async_span);
+    pt_span_event_destroy(async_event);
+    pt_span_end(async_span);
+    pt_span_destroy(async_span);
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI async_worker(LPVOID arg) {
+    run_async_span((pt_span_t)arg);
+    return 0;
+}
+#else
+static void* async_worker(void* arg) {
+    run_async_span((pt_span_t)arg);
+    return NULL;
+}
+#endif
 
 /* ========================================================================== */
 /* GET /foo — builds a full trace for this request                              */
@@ -149,12 +177,25 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
 
     pt_span_event_t se2 = pt_span_new_event(span, "TestSpanEvent2");
 
+    /* Create the async span on the owning (request) thread, then run its whole
+     * lifecycle on a separate worker thread — the sanctioned cross-thread pattern. */
     pt_span_t async_span = pt_span_new_async_span(span, "New Thread");
-    pt_span_event_t async_event = pt_span_new_event(async_span, "ThreadSpanEvent");
-    pt_span_end_event(async_span);
-    pt_span_event_destroy(async_event);
-    pt_span_end(async_span);
-    pt_span_destroy(async_span);
+#if defined(_WIN32)
+    HANDLE async_thread = CreateThread(NULL, 0, async_worker, async_span, 0, NULL);
+    if (async_thread) {
+        WaitForSingleObject(async_thread, INFINITE);
+        CloseHandle(async_thread);
+    } else {
+        run_async_span(async_span); /* fallback: run inline if thread creation fails */
+    }
+#else
+    pthread_t async_thread;
+    if (pthread_create(&async_thread, NULL, async_worker, async_span) == 0) {
+        pthread_join(async_thread, NULL);
+    } else {
+        run_async_span(async_span); /* fallback: run inline if thread creation fails */
+    }
+#endif
 
     pt_span_end_event(span);
     pt_span_event_destroy(se2);

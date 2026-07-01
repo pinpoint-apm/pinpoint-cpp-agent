@@ -59,10 +59,17 @@ int main() {
         span->EndSpanEvent();
 
         span->NewSpanEvent("TestSpanEvent2");
+        // Create the async span on the thread that owns `span` (required), then
+        // hand it to a separate worker thread that uses it exclusively. This is
+        // the sanctioned way to continue a trace on another thread: never touch
+        // one span instance from more than one thread.
         auto async_span = span->NewAsyncSpan("New Thread");
-        async_span->NewSpanEvent("ThreadSpanEvent");
-        async_span->EndSpanEvent();
-        async_span->EndSpan();
+        std::thread async_worker([async_span]() {
+            async_span->NewSpanEvent("ThreadSpanEvent");
+            async_span->EndSpanEvent();
+            async_span->EndSpan();
+        });
+        async_worker.join();
         span->EndSpanEvent();
 
         span->SetStatusCode(200);

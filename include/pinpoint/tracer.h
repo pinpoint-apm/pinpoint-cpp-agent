@@ -277,11 +277,28 @@ namespace pinpoint {
 	///
 	/// Span events are owned by their parent span. Use this pointer only while
 	/// the parent span is alive and the event is still in scope; do not retain it
-	/// for work that can outlive the span.
+	/// for work that can outlive the span. Because the event is owned by the span,
+	/// it inherits the span's single-thread contract: use it only on the thread
+	/// that owns the parent span. Ending the span (or the event) on another thread
+	/// can free the event out from under this pointer.
 	using SpanEventPtr = SpanEvent*;
 
 	/**
 	 * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
+	 *
+	 * @warning Thread-safety contract: a single `Span` instance is NOT safe for
+	 *          concurrent use. All methods on one span — including those of the
+	 *          `SpanEvent`s it hands out — must be called from a single thread
+	 *          for the lifetime of that span. Sharing one `SpanPtr` across
+	 *          threads and calling into it concurrently is undefined behaviour
+	 *          and can crash the process (use-after-free of span events,
+	 *          heap corruption of the internal string/annotation/exception
+	 *          buffers), independent of any data-consistency concerns.
+	 *
+	 *          To trace work that runs on another thread, do NOT share this span.
+	 *          Instead call NewAsyncSpan() on the owning thread to obtain a
+	 *          separate child span, then use that child exclusively on the other
+	 *          thread. Each span instance thus remains single-threaded.
 	 */
 	class Span {
 	public:
@@ -298,6 +315,12 @@ namespace pinpoint {
 		/// @brief Completes the span and flushes recorded data.
 		virtual void EndSpan() = 0;
 		/// @brief Creates an asynchronous child span for background work.
+		///
+		/// This is the ONLY sanctioned way to continue a trace on another thread.
+		/// Call it on the thread that owns this span; the returned child span is a
+		/// distinct instance that the other thread then uses exclusively. Never
+		/// share `this` span across threads — see the Span class thread-safety
+		/// contract above.
 		virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
 
 		/// @brief Injects the span context into an outbound carrier.

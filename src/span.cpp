@@ -231,8 +231,26 @@ namespace pinpoint {
         data_->setRpcName(rpc_point);
     }
 
+    void SpanImpl::checkOwnerThread() {
+        const auto current = std::this_thread::get_id();
+        auto expected = std::thread::id{};
+        // Bind to the first thread that records a span event. On an already-bound
+        // span the CAS compares the stored (non-empty) owner against the empty
+        // sentinel, fails without writing, and leaves `expected` holding the owner.
+        if (owner_thread_id_.compare_exchange_strong(expected, current, std::memory_order_relaxed)) {
+            return;
+        }
+        if (expected != current) {
+            LOG_ERROR("span accessed from another thread (owner hash={}, current hash={}): a span "
+                      "must be used by a single thread; use NewAsyncSpan() to continue on another thread",
+                      std::hash<std::thread::id>{}(expected), std::hash<std::thread::id>{}(current));
+            assert(false && "SpanImpl accessed from a thread other than its owner");
+        }
+    }
+
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
+        checkOwnerThread();
 
         const auto cfg = agent_->getConfig();
         const auto depth = data_->getEventDepth();

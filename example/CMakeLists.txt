@@ -4,8 +4,12 @@ else()
     set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
 endif()
 
+# tutorial/tutorial_c now run the async span on a dedicated thread
+# (std::thread / pthreads), which needs the platform threading library.
+find_package(Threads REQUIRED)
+
 add_executable(tutorial tutorial.cpp)
-target_link_libraries(tutorial ${PINPOINT_CPP_LIBRARY})
+target_link_libraries(tutorial ${PINPOINT_CPP_LIBRARY} Threads::Threads)
 
 add_executable(http_server http_server.cpp)
 target_link_libraries(http_server ${PINPOINT_CPP_LIBRARY})
@@ -21,7 +25,7 @@ set_target_properties(http_server_c PROPERTIES
 )
 
 add_executable(tutorial_c tutorial_c.c httplib_c.cpp)
-target_link_libraries(tutorial_c ${PINPOINT_CPP_LIBRARY})
+target_link_libraries(tutorial_c ${PINPOINT_CPP_LIBRARY} Threads::Threads)
 set_source_files_properties(tutorial_c.c PROPERTIES LANGUAGE C)
 set_target_properties(tutorial_c PROPERTIES
     C_STANDARD 11

@@ -904,12 +904,26 @@ TEST_F(TracerCApiTest, NewAsyncSpan) {
     pt_span_t parent = pt_agent_new_span(agent_, "parent", "/rpc");
     ASSERT_NE(parent, nullptr);
 
+    // NewAsyncSpan needs a live span event on the parent for context; without
+    // one it silently falls back to the noop span. Open an event first so we
+    // exercise the real async-span path rather than the noop fallback.
+    pt_span_event_t parent_event = pt_span_new_event(parent, "prepare");
+    ASSERT_NE(parent_event, nullptr);
+
     pt_span_t async_span = pt_span_new_async_span(parent, "bg_task");
     ASSERT_NE(async_span, nullptr);
+    // A real async span inherits the parent's span id; a noop fallback would not.
+    EXPECT_EQ(pt_span_get_span_id(async_span), pt_span_get_span_id(parent));
 
+    pt_span_event_t async_event = pt_span_new_event(async_span, "bg_event");
+    ASSERT_NE(async_event, nullptr);
+    pt_span_end_event(async_span);
+    pt_span_event_destroy(async_event);
     pt_span_end(async_span);
     pt_span_destroy(async_span);
 
+    pt_span_end_event(parent);
+    pt_span_event_destroy(parent_event);
     pt_span_end(parent);
     pt_span_destroy(parent);
 }

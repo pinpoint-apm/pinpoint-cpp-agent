@@ -630,12 +630,28 @@ TEST_F(SpanTest, SpanImplExtractContextTest) {
 
 TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-    
-    // Create a span event first for context
+
+    // Give the parent a known trace/span identity so we can assert the async
+    // child inherits it (rather than trivially comparing default zeros).
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    span.ExtractContext(reader);
+
+    // Create a span event first for context (required by NewAsyncSpan).
     span.NewSpanEvent("base-event");
-    
+
     auto async_span = span.NewAsyncSpan("async-operation");
-    EXPECT_NE(async_span, nullptr) << "Async span should be created";
+    ASSERT_NE(async_span, nullptr) << "Async span should be created";
+    // A real (non-noop) async span inherits the parent's span id and trace id.
+    EXPECT_EQ(async_span->GetSpanId(), span.GetSpanId())
+        << "Async child should inherit the parent span id";
+    EXPECT_EQ(async_span->GetTraceId().Sequence, span.GetTraceId().Sequence)
+        << "Async child should inherit the parent trace id";
+
+    async_span->EndSpan();
+    span.EndSpanEvent();
+    span.EndSpan();
 }
 
 // ========== Integration Tests ==========
@@ -736,22 +752,65 @@ TEST_F(SpanTest, MultipleSpanEventsTest) {
 
 TEST_F(SpanTest, AsyncSpanTest) {
     SpanImpl parent_span(mock_agent_service_.get(), "parent-operation", "parent-rpc");
-    
-    // Create span event first to provide context for async span
+
+    // Create span event first to provide context for async span.
     parent_span.NewSpanEvent("prepare-async");
-    
-    try {
-        auto async_span = parent_span.NewAsyncSpan("async-task");
-        if (async_span != nullptr) {
-            async_span->EndSpan();
-        }
-    } catch (...) {
-        // Async span creation might fail in test environment
-    }
-    
+
+    // NewAsyncSpan never throws (it returns a noop span on internal failure), so
+    // no try/catch is needed — assert the real, non-noop result directly.
+    auto async_span = parent_span.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr) << "Async span should be created";
+    EXPECT_EQ(async_span->GetSpanId(), parent_span.GetSpanId())
+        << "Async child should inherit the parent span id";
+
+    async_span->EndSpan();
+
+    parent_span.EndSpanEvent();
     parent_span.EndSpan();
-    
+
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Parent span should be recorded";
+}
+
+// Exercises the sanctioned cross-thread pattern: the async span is CREATED on the
+// thread that owns the parent (where a live span event exists), then USED
+// exclusively on a separate worker thread. This also guards the lazy owner-thread
+// binding in SpanImpl::NewSpanEvent — the async child must bind to the worker
+// thread on its first event and must NOT trip the owning-thread check.
+TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-operation", "parent-rpc");
+
+    // Known identity so we can assert trace linkage across the thread boundary.
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^7");
+    reader.SetContext(HEADER_SPAN_ID, "123456789");
+    parent.ExtractContext(reader);
+
+    // Created on the owning thread (needs a live span event for context).
+    parent.NewSpanEvent("prepare-async");
+    auto async_span = parent.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+
+    const auto recorded_before = mock_agent_service_->getRecordedSpansCount();
+
+    // Used only on the worker thread. main thread blocks on join(), so there is
+    // no concurrent access to the async span or the mock recorder.
+    std::thread worker([&]() {
+        auto se = async_span->NewSpanEvent("thread-event");
+        EXPECT_NE(se, nullptr) << "Async span event should be created on the worker thread";
+        async_span->EndSpanEvent();
+        async_span->EndSpan();
+    });
+    worker.join();
+
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), recorded_before)
+        << "Async span should record its own chunk from the worker thread";
+    EXPECT_EQ(async_span->GetSpanId(), parent.GetSpanId())
+        << "Async child should inherit the parent span id";
+    EXPECT_EQ(async_span->GetTraceId().Sequence, parent.GetTraceId().Sequence)
+        << "Async child should inherit the parent trace id";
+
+    parent.EndSpanEvent();
+    parent.EndSpan();
 }
 
 // ========== EventStack Edge Case Tests ==========
