@@ -259,15 +259,32 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
 
 TEST_F(SpanTest, SpanDataEventDepthManagementTest) {
     SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
-    
+
+    // Depth starts at 1 (the span itself); sequence starts at 0.
     EXPECT_EQ(span_data.getEventDepth(), 1) << "Initial depth should be 1";
-    
-    span_data.decrEventDepth();
-    EXPECT_EQ(span_data.getEventDepth(), 4) << "Depth should be decremented to 4";
-    
-    span_data.decrEventDepth();
+    EXPECT_EQ(span_data.getEventSequence(), 0) << "Initial sequence should be 0";
+
+    // nextEventSequenceAndDepth() returns the pre-increment values and advances both.
+    auto [seq0, depth0] = span_data.nextEventSequenceAndDepth();
+    EXPECT_EQ(seq0, 0) << "First reserved sequence should be pre-increment value 0";
+    EXPECT_EQ(depth0, 1) << "First reserved depth should be pre-increment value 1";
+    EXPECT_EQ(span_data.getEventSequence(), 1) << "Sequence should advance to 1";
+    EXPECT_EQ(span_data.getEventDepth(), 2) << "Depth should advance to 2";
+
+    // A nested reservation advances both again.
+    auto [seq1, depth1] = span_data.nextEventSequenceAndDepth();
+    EXPECT_EQ(seq1, 1);
+    EXPECT_EQ(depth1, 2);
+    EXPECT_EQ(span_data.getEventDepth(), 3) << "Depth should advance to 3";
+
+    // decrEventDepth() unwinds nesting depth without rewinding the sequence.
     span_data.decrEventDepth();
     EXPECT_EQ(span_data.getEventDepth(), 2) << "Depth should be decremented to 2";
+    EXPECT_EQ(span_data.getEventSequence(), 2)
+        << "Sequence must not be affected by depth decrement";
+
+    span_data.decrEventDepth();
+    EXPECT_EQ(span_data.getEventDepth(), 1) << "Depth should return to its initial value";
 }
 
 TEST_F(SpanTest, SpanDataTimeManagementTest) {
