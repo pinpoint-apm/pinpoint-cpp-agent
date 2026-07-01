@@ -19,6 +19,7 @@
 #include <atomic>
 #include <thread>
 #include <memory>
+#include <mutex>
 
 #include "pinpoint/tracer.h"
 #include "atomic_shared_ptr.h"
@@ -170,6 +171,17 @@ namespace pinpoint {
     	AtomicSharedPtr<HttpStatusErrors> http_status_errors_;
     	AtomicSharedPtr<HttpHeaderRecorder> http_srv_header_recorder_[3];
     	AtomicSharedPtr<HttpHeaderRecorder> http_cli_header_recorder_[3];
+
+    	// Serializes reloadConfig() writers. reloadConfig performs a sequence of
+    	// independent AtomicSharedPtr stores (config_, sampler_, filters, and the
+    	// six header-recorder slots); each store is individually atomic, but the
+    	// sequence is not. Two concurrent reloads — e.g. a CreateAgent()-driven
+    	// reload (holding global_agent_mutex) racing the config-file watcher
+    	// thread (which does NOT hold it) — could otherwise interleave their
+    	// stores and leave a mixed configuration snapshot (config_ from one
+    	// version, sampler_/recorders from another). Readers on the hot path
+    	// stay lock-free via AtomicSharedPtr::load(); only writers take this.
+    	std::mutex reload_mutex_;
 
         int64_t start_time_{};
     	std::atomic<uint64_t> trace_id_sequence_{};

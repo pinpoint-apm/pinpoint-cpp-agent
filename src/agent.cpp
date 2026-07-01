@@ -175,6 +175,11 @@ namespace pinpoint {
     }
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
+        // Serialize writers so a CreateAgent()-driven reload and the config-file
+        // watcher thread cannot interleave their stores and publish a mixed
+        // configuration. Readers remain lock-free (AtomicSharedPtr::load()).
+        std::lock_guard<std::mutex> reload_lock(reload_mutex_);
+
         config_.store(std::move(cfg));
         const auto local_cfg = config_.load();
 
