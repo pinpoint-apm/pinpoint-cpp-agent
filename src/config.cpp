@@ -129,6 +129,13 @@ namespace pinpoint {
             while (!config_watcher_stop().load()) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
 
+                // Re-check after waking: a stop may have been requested during
+                // the sleep, and we must not run a reload while shutdown is in
+                // progress (or delay it by a full file-check iteration).
+                if (config_watcher_stop().load()) {
+                    break;
+                }
+
                 try {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
@@ -138,7 +145,7 @@ namespace pinpoint {
                         auto agent = GlobalAgent();
                         auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
 
-                        if (agent_impl && new_cfg) {
+                        if (agent_impl && new_cfg && !config_watcher_stop().load()) {
                             // Always reload. Non-reloadable fields cannot change
                             // on a live agent, so retain the running values (with
                             // a warning) before reloading the reloadable rest.
