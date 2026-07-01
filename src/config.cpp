@@ -143,12 +143,8 @@ namespace pinpoint {
                             // on a live agent, so retain the running values (with
                             // a warning) before reloading the reloadable rest.
                             new_cfg->retainNonReloadableFrom(agent_impl->getConfig());
-                            if (new_cfg->check()) {
-                                agent_impl->reloadConfig(new_cfg);
-                                LOG_INFO("agent config reloaded");
-                            } else {
-                                LOG_ERROR("failed to reload agent config: invalid config");
-                            }
+                            agent_impl->reloadConfig(new_cfg);
+                            LOG_INFO("agent config reloaded");
                         }
                     }
                 } catch (const std::exception& e) {

@@ -758,10 +758,6 @@ namespace pinpoint {
             // live agent, so retain the running values (warning on any attempted
             // change) before reloading so only the reloadable fields take effect.
             cfg->retainNonReloadableFrom(agent->getConfig());
-            if (!cfg->check()) {
-                LOG_ERROR("failed to reload agent config: invalid config");
-                return agent;
-            }
             agent->reloadConfig(std::move(cfg));
             LOG_INFO("agent config reloaded");
             return agent;
