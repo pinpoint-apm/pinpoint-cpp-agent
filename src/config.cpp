@@ -756,7 +756,15 @@ namespace pinpoint {
             // far and continue with defaults plus environment overrides.
             LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
         }
-        load_env_config(*config, is_container_set);
+        // Environment variables are process-level identity/bootstrap inputs and
+        // are only meant to seed the very first configuration. Once an agent is
+        // already running, make_config() is being called to rebuild the config
+        // from an updated file (a reload), so env overrides must not be
+        // re-applied — otherwise they would silently override values the user
+        // just changed in the config file.
+        if (!global_agent_exists()) {
+            load_env_config(*config, is_container_set);
+        }
 
         if (!config->log.file_path.empty()) {
             Logger::getInstance().setFileLogger(config->log.file_path, config->log.max_file_size);

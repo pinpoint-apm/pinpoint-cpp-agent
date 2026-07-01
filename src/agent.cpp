@@ -791,6 +791,11 @@ namespace pinpoint {
         return global_agent();
     }
 
+    bool global_agent_exists() {
+        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        return global_agent() != nullptr;
+    }
+
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         global_agent() = std::move(agent);

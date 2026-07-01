@@ -202,6 +202,12 @@ namespace pinpoint {
     	void do_shutdown() noexcept;
     };
 
+    // Returns true once a real (non-noop) agent has been installed as the
+    // global singleton. make_config() uses this to decide whether it is
+    // building the initial config or rebuilding it for an already-running
+    // agent (a reload), in which case environment variables are not re-read.
+    bool global_agent_exists();
+
     // Test helpers for managing the global agent singleton
     void set_global_agent(std::shared_ptr<AgentImpl> agent);
     void reset_global_agent();
