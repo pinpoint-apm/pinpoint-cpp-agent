@@ -35,6 +35,8 @@ The agent merges configuration from three sources. **Later sources override earl
 
 During startup (`make_config`), the agent loads defaults → reads the optional config file → parses YAML → applies environment overrides → normalises values → initialises logging.
 
+> **Environment variables are read only while building the initial configuration** (before the agent exists). Once the agent is running, a [hot reload](#configuration-hot-reload) rebuilds the config from the file **without re-reading environment variables** — so a value provided only via an env var is fixed for the agent's lifetime and cannot change at runtime.
+
 ### Method 1: YAML Configuration File
 
 Create a `pinpoint-config.yaml` file and set its path:
@@ -308,10 +310,9 @@ The agent supports hot-reloading a subset of configuration options from the YAML
 ### How It Works
 
 1. The file-watcher compares the file's last-write timestamp once per second.
-2. When a change is detected, the file is re-read and parsed into a new `Config` object.
-3. The new config passes the same validation (`check()`) as the initial config.
-4. An **identity check** (`isReloadable`) ensures that immutable fields have not been changed (see below).
-5. If validation passes, the agent atomically swaps the internal configuration and rebuilds the affected components.
+2. When a change is detected, the file is re-read and parsed into a new `Config` object (environment variables are **not** re-read).
+3. Non-reloadable fields (identity, collector endpoint, gRPC transport) are copied from the currently running configuration into the new one, so they can never change at runtime. If the file changed any of them, `isReloadable` detects the mismatch and a **warning** is logged while the running values are kept.
+4. The agent atomically swaps the internal configuration and rebuilds **only the components whose backing configuration actually changed**.
 
 ### Reloadable vs. Non-Reloadable Options
 
@@ -326,17 +327,17 @@ Not all configuration options can be changed at runtime. Options that define the
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 
-If the new config file changes any non-reloadable field, the reload is skipped, an error is logged, and the agent continues with the previous configuration.
+The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect. (Non-reloadable fields still require an application restart to actually change.)
 
 ### Components Rebuilt on Reload
 
-When a reload is accepted, the following internal components are rebuilt from the new configuration:
+On reload, each of the following internal components is rebuilt **only if its backing configuration changed**; components whose configuration is unchanged keep running as-is (preserving any accumulated state, such as throughput-sampler counters):
 
-- **Sampler** — sampling strategy and rates are updated.
-- **HTTP URL filter** — the URL exclusion list is replaced.
-- **HTTP method filter** — the method exclusion list is replaced.
-- **HTTP status error codes** — the error-code set is replaced.
-- **HTTP header recorders** — server-side and client-side header recording rules are replaced.
+- **Sampler** — rebuilt when any `Sampling.*` value changes.
+- **HTTP URL filter** — rebuilt when `Http.Server.ExcludeUrl` changes.
+- **HTTP method filter** — rebuilt when `Http.Server.ExcludeMethod` changes.
+- **HTTP status error codes** — rebuilt when `Http.Server.StatusCodeErrors` changes.
+- **HTTP header recorders** — rebuilt when any server- or client-side header/cookie recording list changes.
 
 All swaps are performed atomically (thread-safe), so in-flight requests are not affected.
 
@@ -369,7 +370,7 @@ Sampling:
   PercentRate: 10
 ```
 
-The agent detects the change within ~1 second and applies the new sampling rate. On success it logs `agent config reloaded`; a warning/error is logged if the file cannot be parsed or the update cannot be applied.
+The agent detects the change within ~1 second and applies the new sampling rate, logging `agent config reloaded`. If the same edit also changed a non-reloadable field, a warning notes that the running value was retained; a warning is also logged if the file cannot be parsed.
 
 ---
 
