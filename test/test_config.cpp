@@ -23,6 +23,13 @@
 
 namespace pinpoint {
 
+// env:: constants hold only the suffix; the agent reads "<prefix>_<suffix>".
+// These tests drive the OS environment variables the agent consumes, so compose
+// the full default-prefixed name here.
+static std::string full_env(const char* suffix) {
+    return std::string(env::DEFAULT_PREFIX) + "_" + suffix;
+}
+
 class ConfigTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -31,7 +38,9 @@ protected:
         
         // Clear any existing config
         set_config_string("");
-        
+        // Reset the env var prefix to its default so a prior test cannot leak it.
+        set_env_prefix("");
+
         // Create a temporary directory for test files
         temp_dir_ = "/tmp/pinpoint_config_test_" + std::to_string(getpid());
         mkdir(temp_dir_.c_str(), 0755);
@@ -48,66 +57,66 @@ protected:
 private:
     void SaveEnvironmentVariables() {
         // Save environment variables that might affect config
-        saved_env_vars_[env::ENABLE] = GetEnvVar(env::ENABLE);
-        saved_env_vars_[env::APPLICATION_NAME] = GetEnvVar(env::APPLICATION_NAME);
-        saved_env_vars_[env::APPLICATION_TYPE] = GetEnvVar(env::APPLICATION_TYPE);
-        saved_env_vars_[env::AGENT_ID] = GetEnvVar(env::AGENT_ID);
-        saved_env_vars_[env::AGENT_NAME] = GetEnvVar(env::AGENT_NAME);
-        saved_env_vars_[env::UID_VERSION] = GetEnvVar(env::UID_VERSION);
-        saved_env_vars_[env::SERVICE_NAME] = GetEnvVar(env::SERVICE_NAME);
-        saved_env_vars_[env::API_KEY] = GetEnvVar(env::API_KEY);
-        saved_env_vars_[env::LOG_LEVEL] = GetEnvVar(env::LOG_LEVEL);
-        saved_env_vars_[env::GRPC_HOST] = GetEnvVar(env::GRPC_HOST);
-        saved_env_vars_[env::GRPC_AGENT_PORT] = GetEnvVar(env::GRPC_AGENT_PORT);
-        saved_env_vars_[env::GRPC_SPAN_PORT] = GetEnvVar(env::GRPC_SPAN_PORT);
-        saved_env_vars_[env::GRPC_STAT_PORT] = GetEnvVar(env::GRPC_STAT_PORT);
-        const std::vector<const char*> grpc_env_vars = {
-            env::GRPC_SSL_TRUST_CERT_FILE_PATH,
-            env::GRPC_SSL_ROOT_CERT_FILE_PATH,
-            env::GRPC_SSL_ENABLE,
-            env::GRPC_KEEPALIVE_TIME_MS,
-            env::GRPC_KEEPALIVE_TIMEOUT_MS,
-            env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-            env::GRPC_MAX_SEND_MESSAGE_SIZE,
-            env::GRPC_MAX_RECEIVE_MESSAGE_SIZE,
-            env::GRPC_SENDER_QUEUE_SIZE,
-            env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE,
+        saved_env_vars_[full_env(env::ENABLE)] = GetEnvVar(full_env(env::ENABLE));
+        saved_env_vars_[full_env(env::APPLICATION_NAME)] = GetEnvVar(full_env(env::APPLICATION_NAME));
+        saved_env_vars_[full_env(env::APPLICATION_TYPE)] = GetEnvVar(full_env(env::APPLICATION_TYPE));
+        saved_env_vars_[full_env(env::AGENT_ID)] = GetEnvVar(full_env(env::AGENT_ID));
+        saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
+        saved_env_vars_[full_env(env::UID_VERSION)] = GetEnvVar(full_env(env::UID_VERSION));
+        saved_env_vars_[full_env(env::SERVICE_NAME)] = GetEnvVar(full_env(env::SERVICE_NAME));
+        saved_env_vars_[full_env(env::API_KEY)] = GetEnvVar(full_env(env::API_KEY));
+        saved_env_vars_[full_env(env::LOG_LEVEL)] = GetEnvVar(full_env(env::LOG_LEVEL));
+        saved_env_vars_[full_env(env::GRPC_HOST)] = GetEnvVar(full_env(env::GRPC_HOST));
+        saved_env_vars_[full_env(env::GRPC_AGENT_PORT)] = GetEnvVar(full_env(env::GRPC_AGENT_PORT));
+        saved_env_vars_[full_env(env::GRPC_SPAN_PORT)] = GetEnvVar(full_env(env::GRPC_SPAN_PORT));
+        saved_env_vars_[full_env(env::GRPC_STAT_PORT)] = GetEnvVar(full_env(env::GRPC_STAT_PORT));
+        const std::vector<std::string> grpc_env_vars = {
+            full_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH),
+            full_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH),
+            full_env(env::GRPC_SSL_ENABLE),
+            full_env(env::GRPC_KEEPALIVE_TIME_MS),
+            full_env(env::GRPC_KEEPALIVE_TIMEOUT_MS),
+            full_env(env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS),
+            full_env(env::GRPC_MAX_SEND_MESSAGE_SIZE),
+            full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE),
+            full_env(env::GRPC_SENDER_QUEUE_SIZE),
+            full_env(env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE),
         };
-        for (const char* name : grpc_env_vars) {
+        for (const std::string& name : grpc_env_vars) {
             saved_env_vars_[name] = GetEnvVar(name);
         }
-        saved_env_vars_[env::SAMPLING_TYPE] = GetEnvVar(env::SAMPLING_TYPE);
-        saved_env_vars_[env::SAMPLING_PERCENT_RATE] = GetEnvVar(env::SAMPLING_PERCENT_RATE);
-        saved_env_vars_[env::IS_CONTAINER] = GetEnvVar(env::IS_CONTAINER);
-        saved_env_vars_[env::CONFIG_FILE] = GetEnvVar(env::CONFIG_FILE);
-        saved_env_vars_[env::SQL_MAX_BIND_ARGS_SIZE] = GetEnvVar(env::SQL_MAX_BIND_ARGS_SIZE);
-        saved_env_vars_[env::SQL_ENABLE_SQL_STATS] = GetEnvVar(env::SQL_ENABLE_SQL_STATS);
-        saved_env_vars_[env::ENABLE_CALLSTACK_TRACE] = GetEnvVar(env::ENABLE_CALLSTACK_TRACE);
-        saved_env_vars_[env::HTTP_COLLECT_URL_STAT] = GetEnvVar(env::HTTP_COLLECT_URL_STAT);
-        saved_env_vars_[env::HTTP_URL_STAT_LIMIT] = GetEnvVar(env::HTTP_URL_STAT_LIMIT);
-        saved_env_vars_[env::HTTP_URL_STAT_ENABLE_TRIM_PATH] = GetEnvVar(env::HTTP_URL_STAT_ENABLE_TRIM_PATH);
-        saved_env_vars_[env::HTTP_URL_STAT_TRIM_PATH_DEPTH] = GetEnvVar(env::HTTP_URL_STAT_TRIM_PATH_DEPTH);
-        saved_env_vars_[env::HTTP_URL_STAT_METHOD_PREFIX] = GetEnvVar(env::HTTP_URL_STAT_METHOD_PREFIX);
-        saved_env_vars_[env::HTTP_SERVER_STATUS_CODE_ERRORS] = GetEnvVar(env::HTTP_SERVER_STATUS_CODE_ERRORS);
-        saved_env_vars_[env::HTTP_SERVER_EXCLUDE_URL] = GetEnvVar(env::HTTP_SERVER_EXCLUDE_URL);
-        saved_env_vars_[env::HTTP_SERVER_EXCLUDE_METHOD] = GetEnvVar(env::HTTP_SERVER_EXCLUDE_METHOD);
-        saved_env_vars_[env::HTTP_SERVER_RECORD_REQUEST_HEADER] = GetEnvVar(env::HTTP_SERVER_RECORD_REQUEST_HEADER);
-        saved_env_vars_[env::HTTP_SERVER_RECORD_REQUEST_COOKIE] = GetEnvVar(env::HTTP_SERVER_RECORD_REQUEST_COOKIE);
-        saved_env_vars_[env::HTTP_SERVER_RECORD_RESPONSE_HEADER] = GetEnvVar(env::HTTP_SERVER_RECORD_RESPONSE_HEADER);
-        saved_env_vars_[env::HTTP_CLIENT_RECORD_REQUEST_HEADER] = GetEnvVar(env::HTTP_CLIENT_RECORD_REQUEST_HEADER);
-        saved_env_vars_[env::HTTP_CLIENT_RECORD_REQUEST_COOKIE] = GetEnvVar(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE);
-        saved_env_vars_[env::HTTP_CLIENT_RECORD_RESPONSE_HEADER] = GetEnvVar(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER);
-        saved_env_vars_[env::SPAN_QUEUE_SIZE] = GetEnvVar(env::SPAN_QUEUE_SIZE);
-        saved_env_vars_[env::SPAN_MAX_EVENT_DEPTH] = GetEnvVar(env::SPAN_MAX_EVENT_DEPTH);
-        saved_env_vars_[env::SPAN_MAX_EVENT_SEQUENCE] = GetEnvVar(env::SPAN_MAX_EVENT_SEQUENCE);
-        saved_env_vars_[env::SPAN_EVENT_CHUNK_SIZE] = GetEnvVar(env::SPAN_EVENT_CHUNK_SIZE);
-        saved_env_vars_[env::AGENT_INFO_REFRESH_INTERVAL_MS] = GetEnvVar(env::AGENT_INFO_REFRESH_INTERVAL_MS);
-        saved_env_vars_[env::AGENT_INFO_SEND_RETRY_INTERVAL_MS] = GetEnvVar(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-        saved_env_vars_[env::AGENT_INFO_MAX_TRY_PER_ATTEMPT] = GetEnvVar(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
-        saved_env_vars_[env::STAT_ENABLE] = GetEnvVar(env::STAT_ENABLE);
-        saved_env_vars_[env::STAT_BATCH_COUNT] = GetEnvVar(env::STAT_BATCH_COUNT);
-        saved_env_vars_[env::STAT_BATCH_INTERVAL] = GetEnvVar(env::STAT_BATCH_INTERVAL);
-        saved_env_vars_[env::AGENT_NAME] = GetEnvVar(env::AGENT_NAME);
+        saved_env_vars_[full_env(env::SAMPLING_TYPE)] = GetEnvVar(full_env(env::SAMPLING_TYPE));
+        saved_env_vars_[full_env(env::SAMPLING_PERCENT_RATE)] = GetEnvVar(full_env(env::SAMPLING_PERCENT_RATE));
+        saved_env_vars_[full_env(env::IS_CONTAINER)] = GetEnvVar(full_env(env::IS_CONTAINER));
+        saved_env_vars_[full_env(env::CONFIG_FILE)] = GetEnvVar(full_env(env::CONFIG_FILE));
+        saved_env_vars_[full_env(env::SQL_MAX_BIND_ARGS_SIZE)] = GetEnvVar(full_env(env::SQL_MAX_BIND_ARGS_SIZE));
+        saved_env_vars_[full_env(env::SQL_ENABLE_SQL_STATS)] = GetEnvVar(full_env(env::SQL_ENABLE_SQL_STATS));
+        saved_env_vars_[full_env(env::ENABLE_CALLSTACK_TRACE)] = GetEnvVar(full_env(env::ENABLE_CALLSTACK_TRACE));
+        saved_env_vars_[full_env(env::HTTP_COLLECT_URL_STAT)] = GetEnvVar(full_env(env::HTTP_COLLECT_URL_STAT));
+        saved_env_vars_[full_env(env::HTTP_URL_STAT_LIMIT)] = GetEnvVar(full_env(env::HTTP_URL_STAT_LIMIT));
+        saved_env_vars_[full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH));
+        saved_env_vars_[full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH));
+        saved_env_vars_[full_env(env::HTTP_URL_STAT_METHOD_PREFIX)] = GetEnvVar(full_env(env::HTTP_URL_STAT_METHOD_PREFIX));
+        saved_env_vars_[full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS)] = GetEnvVar(full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS));
+        saved_env_vars_[full_env(env::HTTP_SERVER_EXCLUDE_URL)] = GetEnvVar(full_env(env::HTTP_SERVER_EXCLUDE_URL));
+        saved_env_vars_[full_env(env::HTTP_SERVER_EXCLUDE_METHOD)] = GetEnvVar(full_env(env::HTTP_SERVER_EXCLUDE_METHOD));
+        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER));
+        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE));
+        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER));
+        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER));
+        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE));
+        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER));
+        saved_env_vars_[full_env(env::SPAN_QUEUE_SIZE)] = GetEnvVar(full_env(env::SPAN_QUEUE_SIZE));
+        saved_env_vars_[full_env(env::SPAN_MAX_EVENT_DEPTH)] = GetEnvVar(full_env(env::SPAN_MAX_EVENT_DEPTH));
+        saved_env_vars_[full_env(env::SPAN_MAX_EVENT_SEQUENCE)] = GetEnvVar(full_env(env::SPAN_MAX_EVENT_SEQUENCE));
+        saved_env_vars_[full_env(env::SPAN_EVENT_CHUNK_SIZE)] = GetEnvVar(full_env(env::SPAN_EVENT_CHUNK_SIZE));
+        saved_env_vars_[full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)] = GetEnvVar(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS));
+        saved_env_vars_[full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)] = GetEnvVar(full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS));
+        saved_env_vars_[full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)] = GetEnvVar(full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT));
+        saved_env_vars_[full_env(env::STAT_ENABLE)] = GetEnvVar(full_env(env::STAT_ENABLE));
+        saved_env_vars_[full_env(env::STAT_BATCH_COUNT)] = GetEnvVar(full_env(env::STAT_BATCH_COUNT));
+        saved_env_vars_[full_env(env::STAT_BATCH_INTERVAL)] = GetEnvVar(full_env(env::STAT_BATCH_INTERVAL));
+        saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
 
         // Clear environment variables for clean test
         for (const auto& pair : saved_env_vars_) {
@@ -508,27 +517,27 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 // Test environment variable configuration
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
-    setenv(env::APPLICATION_NAME, "EnvApp", 1);
-    setenv(env::APPLICATION_TYPE, "1302", 1);
-    setenv(env::AGENT_ID, "env-agent-456", 1);
-    setenv(env::LOG_LEVEL, "error", 1);
-    setenv(env::GRPC_HOST, "env.collector.host", 1);
-    setenv(env::GRPC_AGENT_PORT, "8888", 1);
-    setenv(env::SAMPLING_TYPE, "PERCENT", 1);
-    setenv(env::SAMPLING_PERCENT_RATE, "25.5", 1);
-    setenv(env::IS_CONTAINER, "true", 1);
-    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "4096", 1);
-    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
-    setenv(env::AGENT_INFO_REFRESH_INTERVAL_MS, "120000", 1);
-    setenv(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS, "50", 1);
-    setenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, "4", 1);
-    setenv(env::GRPC_SSL_TRUST_CERT_FILE_PATH, "/env/trust.pem", 1);
-    setenv(env::GRPC_SSL_ENABLE, "true", 1);
-    setenv(env::GRPC_KEEPALIVE_TIME_MS, "22222", 1);
-    setenv(env::GRPC_MAX_SEND_MESSAGE_SIZE, "33333", 1);
-    setenv(env::GRPC_SENDER_QUEUE_SIZE, "4444", 1);
-    setenv(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE, "55555", 1);
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvApp", 1);
+    setenv(full_env(env::APPLICATION_TYPE).c_str(), "1302", 1);
+    setenv(full_env(env::AGENT_ID).c_str(), "env-agent-456", 1);
+    setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
+    setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
+    setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8888", 1);
+    setenv(full_env(env::SAMPLING_TYPE).c_str(), "PERCENT", 1);
+    setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), "25.5", 1);
+    setenv(full_env(env::IS_CONTAINER).c_str(), "true", 1);
+    setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "4096", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
+    setenv(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS).c_str(), "120000", 1);
+    setenv(full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS).c_str(), "50", 1);
+    setenv(full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT).c_str(), "4", 1);
+    setenv(full_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH).c_str(), "/env/trust.pem", 1);
+    setenv(full_env(env::GRPC_SSL_ENABLE).c_str(), "true", 1);
+    setenv(full_env(env::GRPC_KEEPALIVE_TIME_MS).c_str(), "22222", 1);
+    setenv(full_env(env::GRPC_MAX_SEND_MESSAGE_SIZE).c_str(), "33333", 1);
+    setenv(full_env(env::GRPC_SENDER_QUEUE_SIZE).c_str(), "4444", 1);
+    setenv(full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE).c_str(), "55555", 1);
     
     auto config = make_config();
     
@@ -569,10 +578,10 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     set_config_string(partial_config_yaml_);
     
     // Set environment variables that should override YAML
-    setenv(env::APPLICATION_NAME, "EnvOverrideApp", 1);
-    setenv(env::GRPC_HOST, "env.override.host", 1);
-    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "8192", 1);
-    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvOverrideApp", 1);
+    setenv(full_env(env::GRPC_HOST).c_str(), "env.override.host", 1);
+    setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "8192", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
     
     auto config = make_config();
     
@@ -598,7 +607,7 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     file.close();
     
     // Set environment variable to point to config file
-    setenv(env::CONFIG_FILE, config_file.c_str(), 1);
+    setenv(full_env(env::CONFIG_FILE).c_str(), config_file.c_str(), 1);
     
     auto config = make_config();
     
@@ -612,7 +621,7 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
 TEST_F(ConfigTest, MissingConfigurationFileTest) {
     // Set environment variable to point to non-existent file
     std::string missing_file = temp_dir_ + "/missing_config.yaml";
-    setenv(env::CONFIG_FILE, missing_file.c_str(), 1);
+    setenv(full_env(env::CONFIG_FILE).c_str(), missing_file.c_str(), 1);
     
     auto config = make_config();
     
@@ -681,13 +690,13 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
 // Test invalid YAML still allows environment overrides and post-load validation.
 TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
     set_config_string(invalid_yaml_);
-    setenv(env::APPLICATION_NAME, "EnvRecoveredApp", 1);
-    setenv(env::AGENT_ID, "env-agent-recovered", 1);
-    setenv(env::GRPC_HOST, "env.collector.host", 1);
-    setenv(env::GRPC_AGENT_PORT, "70000", 1);
-    setenv(env::SPAN_MAX_EVENT_DEPTH, "1", 1);
-    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
-    setenv(env::LOG_LEVEL, "error", 1);
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvRecoveredApp", 1);
+    setenv(full_env(env::AGENT_ID).c_str(), "env-agent-recovered", 1);
+    setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
+    setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "70000", 1);
+    setenv(full_env(env::SPAN_MAX_EVENT_DEPTH).c_str(), "1", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
+    setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
 
     auto config = make_config();
 
@@ -893,9 +902,9 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     file.close();
     
     // Set environment variables
-    setenv(env::CONFIG_FILE, config_file.c_str(), 1);
-    setenv(env::APPLICATION_NAME, "OverriddenApp", 1); // Should override file
-    setenv(env::LOG_LEVEL, "warn", 1); // Should override file
+    setenv(full_env(env::CONFIG_FILE).c_str(), config_file.c_str(), 1);
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "OverriddenApp", 1); // Should override file
+    setenv(full_env(env::LOG_LEVEL).c_str(), "warn", 1); // Should override file
     
     auto config = make_config();
     
@@ -995,12 +1004,12 @@ Span:
 // Test environment variable validation for invalid values
 TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     // Set invalid environment variables
-    setenv(env::ENABLE, "invalid_bool", 1);                  // Invalid bool
-    setenv(env::APPLICATION_TYPE, "not_a_number", 1);        // Invalid int
-    setenv(env::GRPC_AGENT_PORT, "invalid_port", 1);         // Invalid int
-    setenv(env::SAMPLING_PERCENT_RATE, "not_a_double", 1);   // Invalid double
-    setenv(env::STAT_ENABLE, "maybe", 1);                    // Invalid bool
-    setenv(env::SPAN_QUEUE_SIZE, "abc", 1);                  // Invalid int
+    setenv(full_env(env::ENABLE).c_str(), "invalid_bool", 1);                  // Invalid bool
+    setenv(full_env(env::APPLICATION_TYPE).c_str(), "not_a_number", 1);        // Invalid int
+    setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "invalid_port", 1);         // Invalid int
+    setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), "not_a_double", 1);   // Invalid double
+    setenv(full_env(env::STAT_ENABLE).c_str(), "maybe", 1);                    // Invalid bool
+    setenv(full_env(env::SPAN_QUEUE_SIZE).c_str(), "abc", 1);                  // Invalid int
     
     auto config = make_config();
     
@@ -1016,12 +1025,12 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
 // Test environment variable validation for valid values
 TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     // Set valid environment variables
-    setenv(env::ENABLE, "false", 1);                  // Valid bool
-    setenv(env::APPLICATION_TYPE, "1500", 1);         // Valid int
-    setenv(env::GRPC_AGENT_PORT, "8080", 1);          // Valid int
-    setenv(env::SAMPLING_PERCENT_RATE, "75.5", 1);    // Valid double
-    setenv(env::STAT_ENABLE, "1", 1);                 // Valid bool
-    setenv(env::SPAN_QUEUE_SIZE, "2048", 1);          // Valid int
+    setenv(full_env(env::ENABLE).c_str(), "false", 1);                  // Valid bool
+    setenv(full_env(env::APPLICATION_TYPE).c_str(), "1500", 1);         // Valid int
+    setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8080", 1);          // Valid int
+    setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), "75.5", 1);    // Valid double
+    setenv(full_env(env::STAT_ENABLE).c_str(), "1", 1);                 // Valid bool
+    setenv(full_env(env::SPAN_QUEUE_SIZE).c_str(), "2048", 1);          // Valid int
     
     auto config = make_config();
     
@@ -1037,10 +1046,10 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
 // Test environment variable validation for boolean edge cases
 TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
     // Test various valid boolean representations
-    setenv(env::ENABLE, "TRUE", 1);
-    setenv(env::STAT_ENABLE, "False", 1);
-    setenv(env::IS_CONTAINER, "yes", 1);
-    setenv(env::HTTP_COLLECT_URL_STAT, "NO", 1);
+    setenv(full_env(env::ENABLE).c_str(), "TRUE", 1);
+    setenv(full_env(env::STAT_ENABLE).c_str(), "False", 1);
+    setenv(full_env(env::IS_CONTAINER).c_str(), "yes", 1);
+    setenv(full_env(env::HTTP_COLLECT_URL_STAT).c_str(), "NO", 1);
     
     auto config = make_config();
     
@@ -1053,8 +1062,8 @@ TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
 // Test environment variable validation for negative values
 TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     // Set valid negative values where applicable
-    setenv(env::SPAN_MAX_EVENT_DEPTH, "-1", 1);       // Valid -1 (should be processed by make_config validation)
-    setenv(env::SPAN_MAX_EVENT_SEQUENCE, "-1", 1);    // Valid -1 (should be processed by make_config validation)
+    setenv(full_env(env::SPAN_MAX_EVENT_DEPTH).c_str(), "-1", 1);       // Valid -1 (should be processed by make_config validation)
+    setenv(full_env(env::SPAN_MAX_EVENT_SEQUENCE).c_str(), "-1", 1);    // Valid -1 (should be processed by make_config validation)
     
     auto config = make_config();
     
@@ -1082,7 +1091,7 @@ Sql:
     EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
     // Test environment variable override
-    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "16384", 1);
+    setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "16384", 1);
     auto config3 = make_config();
     EXPECT_EQ(config3->sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
 }
@@ -1103,12 +1112,12 @@ Sql:
     
     // Test enabling via environment variable
     set_config_string("");
-    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
     auto config3 = make_config();
     EXPECT_TRUE(config3->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     
     // Test disabling via environment variable  
-    setenv(env::SQL_ENABLE_SQL_STATS, "false", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "false", 1);
     auto config4 = make_config();
     EXPECT_FALSE(config4->sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
 }
@@ -1182,8 +1191,8 @@ Sql:
 // Test invalid SQL environment variable values
 TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
     // Test invalid max bind args size (should fallback to default)
-    setenv(env::SQL_MAX_BIND_ARGS_SIZE, "invalid", 1);
-    setenv(env::SQL_ENABLE_SQL_STATS, "invalid", 1);
+    setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "invalid", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "invalid", 1);
     
     auto config = make_config();
     
@@ -1224,7 +1233,7 @@ EnableCallstackTrace: false
 
 // Test enabling callstack trace via environment variable
 TEST_F(ConfigTest, CallstackTraceEnableViaEnvironmentVariableTest) {
-    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
     
     auto config = make_config();
     
@@ -1233,7 +1242,7 @@ TEST_F(ConfigTest, CallstackTraceEnableViaEnvironmentVariableTest) {
 
 // Test disabling callstack trace via environment variable
 TEST_F(ConfigTest, CallstackTraceDisableViaEnvironmentVariableTest) {
-    setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "false", 1);
     
     auto config = make_config();
     
@@ -1248,7 +1257,7 @@ EnableCallstackTrace: false
 )");
     
     // Set environment variable to enable (should override YAML)
-    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
     
     auto config = make_config();
     
@@ -1263,7 +1272,7 @@ EnableCallstackTrace: true
 )");
     
     // Set environment variable to disable (should override YAML)
-    setenv(env::ENABLE_CALLSTACK_TRACE, "false", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "false", 1);
     
     auto config = make_config();
     
@@ -1348,7 +1357,7 @@ EnableCallstackTrace: true
 // Test invalid callstack trace environment variable value
 TEST_F(ConfigTest, CallstackTraceInvalidEnvironmentVariableTest) {
     // Test invalid boolean value (should fallback to default)
-    setenv(env::ENABLE_CALLSTACK_TRACE, "invalid_bool", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "invalid_bool", 1);
     
     auto config = make_config();
     
@@ -1359,32 +1368,32 @@ TEST_F(ConfigTest, CallstackTraceInvalidEnvironmentVariableTest) {
 // Test various valid boolean representations for callstack trace
 TEST_F(ConfigTest, CallstackTraceBooleanRepresentationsTest) {
     // Test "1" as true
-    setenv(env::ENABLE_CALLSTACK_TRACE, "1", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "1", 1);
     auto config1 = make_config();
     EXPECT_TRUE(config1->enable_callstack_trace) << "1 should be parsed as true";
     
     // Test "0" as false
-    setenv(env::ENABLE_CALLSTACK_TRACE, "0", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "0", 1);
     auto config2 = make_config();
     EXPECT_FALSE(config2->enable_callstack_trace) << "0 should be parsed as false";
     
     // Test "TRUE" as true
-    setenv(env::ENABLE_CALLSTACK_TRACE, "TRUE", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "TRUE", 1);
     auto config3 = make_config();
     EXPECT_TRUE(config3->enable_callstack_trace) << "TRUE should be parsed as true";
     
     // Test "False" as false
-    setenv(env::ENABLE_CALLSTACK_TRACE, "False", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "False", 1);
     auto config4 = make_config();
     EXPECT_FALSE(config4->enable_callstack_trace) << "False should be parsed as false";
     
     // Test "yes" as true
-    setenv(env::ENABLE_CALLSTACK_TRACE, "yes", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "yes", 1);
     auto config5 = make_config();
     EXPECT_TRUE(config5->enable_callstack_trace) << "yes should be parsed as true";
     
     // Test "NO" as false
-    setenv(env::ENABLE_CALLSTACK_TRACE, "NO", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "NO", 1);
     auto config6 = make_config();
     EXPECT_FALSE(config6->enable_callstack_trace) << "NO should be parsed as false";
 }
@@ -1446,10 +1455,10 @@ Sql:
 
 // Test callstack trace environment variable with other environment variables
 TEST_F(ConfigTest, CallstackTraceEnvironmentVariableWithOthersTest) {
-    setenv(env::APPLICATION_NAME, "EnvMixedApp", 1);
-    setenv(env::ENABLE_CALLSTACK_TRACE, "true", 1);
-    setenv(env::SQL_ENABLE_SQL_STATS, "true", 1);
-    setenv(env::LOG_LEVEL, "error", 1);
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvMixedApp", 1);
+    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
+    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
+    setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
     
     auto config = make_config();
     
@@ -1489,7 +1498,7 @@ Http:
 
 // Test URL stat enable trim path via environment variable
 TEST_F(ConfigTest, UrlStatEnableTrimPathViaEnvironmentVariableTest) {
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
     auto config = make_config();
     
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via environment variable";
@@ -1501,7 +1510,7 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlTest) {
 Http:
   UrlStatEnableTrimPath: false
 )");
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "true", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "true", 1);
     auto config = make_config();
     
     EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path";
@@ -1513,7 +1522,7 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlOppositeT
 Http:
   UrlStatEnableTrimPath: true
 )");
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "false", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
     auto config = make_config();
     
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path (opposite)";
@@ -1521,7 +1530,7 @@ Http:
 
 // Test invalid environment variable for enable trim path
 TEST_F(ConfigTest, UrlStatEnableTrimPathInvalidEnvironmentVariableTest) {
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "invalid", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "invalid", 1);
     auto config = make_config();
     
     // Should use default value (true) when invalid
@@ -1585,22 +1594,22 @@ Http:
 // Test enable trim path environment variable boolean variations
 TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest) {
     // Test "1"
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "1", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "1", 1);
     auto config1 = make_config();
     EXPECT_TRUE(config1->http.url_stat.enable_trim_path) << "1 should be parsed as true";
     
     // Test "0"
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "0", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "0", 1);
     auto config2 = make_config();
     EXPECT_FALSE(config2->http.url_stat.enable_trim_path) << "0 should be parsed as false";
     
     // Test "yes"
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "yes", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "yes", 1);
     auto config3 = make_config();
     EXPECT_TRUE(config3->http.url_stat.enable_trim_path) << "yes should be parsed as true";
     
     // Test "no"
-    setenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, "no", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "no", 1);
     auto config4 = make_config();
     EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "no should be parsed as false";
 }
@@ -1933,6 +1942,57 @@ TEST_F(ConfigTest, RetainNonReloadableFromNullOldIsNoopTest) {
     EXPECT_EQ(new_config.sampling.counter_rate, 42);
 }
 
+// ========== Environment Variable Prefix Tests ==========
+
+// Test a custom prefix makes make_config read <prefix>_<suffix> instead of the
+// default PINPOINT_CPP_ names.
+TEST_F(ConfigTest, EnvVarPrefixCustomTest) {
+    set_env_prefix("MYAPP");
+    setenv("MYAPP_APPLICATION_NAME", "custom-prefixed-app", 1);
+    setenv("MYAPP_SAMPLING_COUNTER_RATE", "7", 1);
+    // The default-prefixed names must be ignored while a custom prefix is active.
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "default-prefixed-app", 1);
+
+    auto config = make_config();
+
+    unsetenv("MYAPP_APPLICATION_NAME");
+    unsetenv("MYAPP_SAMPLING_COUNTER_RATE");
+    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
+
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->app_name_, "custom-prefixed-app");
+    EXPECT_EQ(config->sampling.counter_rate, 7);
+}
+
+// Test an empty prefix resets to the default PINPOINT_CPP prefix.
+TEST_F(ConfigTest, EnvVarPrefixEmptyResetsToDefaultTest) {
+    set_env_prefix("MYAPP");
+    set_env_prefix("");  // reset to default
+
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "default-app", 1);
+    setenv("MYAPP_APPLICATION_NAME", "should-be-ignored", 1);
+
+    auto config = make_config();
+
+    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
+    unsetenv("MYAPP_APPLICATION_NAME");
+
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->app_name_, "default-app");
+}
+
+// Test the default (no override) prefix is PINPOINT_CPP.
+TEST_F(ConfigTest, EnvVarPrefixDefaultIsPinpointCppTest) {
+    setenv("PINPOINT_CPP_APPLICATION_NAME", "default-app", 1);
+
+    auto config = make_config();
+
+    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
+
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->app_name_, "default-app");
+}
+
 // ========== Port Clamping Validation Tests ==========
 
 // Test port clamping for out-of-range values
@@ -2128,12 +2188,12 @@ Span:
 
 // Test HTTP server env vars with comma-separated values
 TEST_F(ConfigTest, HttpServerCommaSeperatedEnvVarsTest) {
-    setenv(env::HTTP_SERVER_STATUS_CODE_ERRORS, "5xx,401,403", 1);
-    setenv(env::HTTP_SERVER_EXCLUDE_URL, "/health,/metrics,/ready", 1);
-    setenv(env::HTTP_SERVER_EXCLUDE_METHOD, "PUT,DELETE", 1);
-    setenv(env::HTTP_SERVER_RECORD_REQUEST_HEADER, "Authorization,Accept,Content-Type", 1);
-    setenv(env::HTTP_SERVER_RECORD_REQUEST_COOKIE, "session,tracking", 1);
-    setenv(env::HTTP_SERVER_RECORD_RESPONSE_HEADER, "Content-Type,X-Request-Id", 1);
+    setenv(full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS).c_str(), "5xx,401,403", 1);
+    setenv(full_env(env::HTTP_SERVER_EXCLUDE_URL).c_str(), "/health,/metrics,/ready", 1);
+    setenv(full_env(env::HTTP_SERVER_EXCLUDE_METHOD).c_str(), "PUT,DELETE", 1);
+    setenv(full_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER).c_str(), "Authorization,Accept,Content-Type", 1);
+    setenv(full_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE).c_str(), "session,tracking", 1);
+    setenv(full_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER).c_str(), "Content-Type,X-Request-Id", 1);
 
     auto config = make_config();
 
@@ -2155,9 +2215,9 @@ TEST_F(ConfigTest, HttpServerCommaSeperatedEnvVarsTest) {
 
 // Test HTTP client env vars with comma-separated values
 TEST_F(ConfigTest, HttpClientCommaSeparatedEnvVarsTest) {
-    setenv(env::HTTP_CLIENT_RECORD_REQUEST_HEADER, "User-Agent,Accept", 1);
-    setenv(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE, "session", 1);
-    setenv(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER, "Content-Type,Set-Cookie,X-Trace-Id", 1);
+    setenv(full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER).c_str(), "User-Agent,Accept", 1);
+    setenv(full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE).c_str(), "session", 1);
+    setenv(full_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER).c_str(), "Content-Type,Set-Cookie,X-Trace-Id", 1);
 
     auto config = make_config();
 
@@ -2179,8 +2239,8 @@ Http:
     StatusCodeErrors: ["5xx"]
     ExcludeUrl: ["/old-health"]
 )");
-    setenv(env::HTTP_SERVER_STATUS_CODE_ERRORS, "4xx,5xx", 1);
-    setenv(env::HTTP_SERVER_EXCLUDE_URL, "/new-health,/new-metrics", 1);
+    setenv(full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS).c_str(), "4xx,5xx", 1);
+    setenv(full_env(env::HTTP_SERVER_EXCLUDE_URL).c_str(), "/new-health,/new-metrics", 1);
 
     auto config = make_config();
 

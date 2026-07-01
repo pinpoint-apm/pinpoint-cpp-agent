@@ -79,6 +79,19 @@ int main() {
 }
 ```
 
+#### Customizing the environment variable prefix
+
+All environment variable names use the `PINPOINT_CPP` prefix by default. Call `SetConfigEnvVarPrefix()` **before** `CreateAgent()` to change it — the agent then reads `<prefix>_<suffix>` (e.g. `MYAPP_APPLICATION_NAME`). An empty prefix resets to the default.
+
+```cpp
+pinpoint::SetConfigEnvVarPrefix("MYAPP");   // read MYAPP_* instead of PINPOINT_CPP_*
+setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
+setenv("MYAPP_GRPC_HOST", "localhost", 1);
+auto agent = pinpoint::CreateAgent();
+```
+
+Because environment variables are read only while building the initial configuration, the prefix must be set before the agent is created; it has no effect on a running agent.
+
 ### Method 3: Configuration String (Inline YAML)
 
 ```cpp

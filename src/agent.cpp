@@ -747,6 +747,10 @@ namespace pinpoint {
         set_config_string(config_string);
     }
 
+    void SetConfigEnvVarPrefix(std::string_view prefix) {
+        set_env_prefix(prefix);
+    }
+
     static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg,
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);

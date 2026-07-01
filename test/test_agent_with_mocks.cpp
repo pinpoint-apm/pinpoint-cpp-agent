@@ -974,7 +974,9 @@ Sampling:
 // via env can never override the running config on reload.
 TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsWhenAgentAlreadyExists) {
     // No agent yet (SetUp reset the global agent): the env var IS applied.
-    setenv(env::APPLICATION_NAME, "env-app-name", 1);
+    // env::APPLICATION_NAME is only the suffix; the agent reads "<prefix>_<suffix>".
+    const std::string app_name_env = std::string(env::DEFAULT_PREFIX) + "_" + env::APPLICATION_NAME;
+    setenv(app_name_env.c_str(), "env-app-name", 1);
     auto cfg_initial = make_config();
     ASSERT_NE(cfg_initial, nullptr);
     const auto app_name_initial = cfg_initial->app_name_;
@@ -987,7 +989,7 @@ TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsWhenAgentAlreadyExists) {
     ASSERT_NE(cfg_reload, nullptr);
     const auto app_name_reload = cfg_reload->app_name_;
 
-    unsetenv(env::APPLICATION_NAME);
+    unsetenv(app_name_env.c_str());
 
     EXPECT_EQ(app_name_initial, "env-app-name")
         << "env var should seed the initial config when no agent exists";

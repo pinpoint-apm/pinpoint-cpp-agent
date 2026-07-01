@@ -405,6 +405,12 @@ namespace pinpoint {
 	void SetConfigFilePath(std::string_view config_file_path);
 	/// @brief Inject raw configuration YAML directly.
 	void SetConfigString(std::string_view config_string);
+	/// @brief Overrides the prefix of the environment variable names the agent
+	///        reads (e.g. `MYAPP` makes it read `MYAPP_APPLICATION_NAME`).
+	///        Defaults to `PINPOINT_CPP`; an empty prefix resets to the default.
+	///        Must be called before CreateAgent(); environment variables are read
+	///        only while building the initial configuration.
+	void SetConfigEnvVarPrefix(std::string_view prefix);
 
 	/// @brief Creates an agent using the global configuration.
 	AgentPtr CreateAgent();

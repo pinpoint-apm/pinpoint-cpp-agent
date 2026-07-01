@@ -63,6 +63,41 @@ namespace pinpoint {
         return mutex;
     }
 
+    static std::string& env_prefix() {
+        static std::string prefix = env::DEFAULT_PREFIX;
+        return prefix;
+    }
+
+    static std::mutex& env_prefix_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::string get_env_prefix_copy() {
+        std::lock_guard<std::mutex> lock(env_prefix_mutex());
+        return env_prefix();
+    }
+
+    // Builds the full env var name from a suffix (e.g. "APPLICATION_NAME") by
+    // prepending the active prefix: "<prefix>_<suffix>".
+    static std::string resolve_env_name(const char* suffix) {
+        return get_env_prefix_copy() + "_" + suffix;
+    }
+
+    // Result of looking up a prefix-resolved env var: the fully resolved name
+    // (for accurate logging) and the value (null when unset).
+    struct ResolvedEnv {
+        std::string name;
+        const char* value;
+        explicit operator bool() const { return value != nullptr; }
+    };
+
+    static ResolvedEnv get_env(const char* suffix) {
+        std::string name = resolve_env_name(suffix);
+        const char* value = std::getenv(name.c_str());
+        return {std::move(name), value};
+    }
+
     static std::string get_config_file_path_copy() {
         std::lock_guard<std::mutex> lock(config_file_path_mutex());
         return global_agent_config_file_path();
@@ -416,148 +451,148 @@ namespace pinpoint {
                                       const char* max_receive_env,
                                       const char* sender_queue_env,
                                       const char* channel_executor_queue_env) {
-        if(const char* env_p = std::getenv(ssl_enable_env)) {
-            options.ssl_enable = safe_env_stob(ssl_enable_env, env_p, options.ssl_enable);
+        if(auto e = get_env(ssl_enable_env)) {
+            options.ssl_enable = safe_env_stob(e.name.c_str(), e.value, options.ssl_enable);
         }
-        if(const char* env_p = std::getenv(keepalive_time_env)) {
-            options.keepalive_time_ms = safe_env_stoi(keepalive_time_env, env_p, options.keepalive_time_ms);
+        if(auto e = get_env(keepalive_time_env)) {
+            options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
         }
-        if(const char* env_p = std::getenv(keepalive_timeout_env)) {
-            options.keepalive_timeout_ms = safe_env_stoi(keepalive_timeout_env, env_p, options.keepalive_timeout_ms);
+        if(auto e = get_env(keepalive_timeout_env)) {
+            options.keepalive_timeout_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_timeout_ms);
         }
-        if(const char* env_p = std::getenv(keepalive_permit_env)) {
+        if(auto e = get_env(keepalive_permit_env)) {
             options.keepalive_permit_without_calls =
-                safe_env_stob(keepalive_permit_env, env_p, options.keepalive_permit_without_calls);
+                safe_env_stob(e.name.c_str(), e.value, options.keepalive_permit_without_calls);
         }
-        if(const char* env_p = std::getenv(max_send_env)) {
-            options.max_send_message_size = safe_env_stoi(max_send_env, env_p, options.max_send_message_size);
+        if(auto e = get_env(max_send_env)) {
+            options.max_send_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_send_message_size);
         }
-        if(const char* env_p = std::getenv(max_receive_env)) {
-            options.max_receive_message_size = safe_env_stoi(max_receive_env, env_p, options.max_receive_message_size);
+        if(auto e = get_env(max_receive_env)) {
+            options.max_receive_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_receive_message_size);
         }
-        if(const char* env_p = std::getenv(sender_queue_env)) {
-            options.sender_queue_size = safe_env_stoi(sender_queue_env, env_p, options.sender_queue_size);
+        if(auto e = get_env(sender_queue_env)) {
+            options.sender_queue_size = safe_env_stoi(e.name.c_str(), e.value, options.sender_queue_size);
         }
-        if(const char* env_p = std::getenv(channel_executor_queue_env)) {
+        if(auto e = get_env(channel_executor_queue_env)) {
             options.channel_executor_queue_size =
-                safe_env_stoi(channel_executor_queue_env, env_p, options.channel_executor_queue_size);
+                safe_env_stoi(e.name.c_str(), e.value, options.channel_executor_queue_size);
         }
     }
 
     static void load_env_config(Config& config, bool& is_container_set) {
-        if(const char* env_p = std::getenv(env::ENABLE)) {
-            config.enable = safe_env_stob(env::ENABLE, env_p, true);
+        if(auto e = get_env(env::ENABLE)) {
+            config.enable = safe_env_stob(e.name.c_str(), e.value, true);
         }
-        if(const char* env_p = std::getenv(env::APPLICATION_NAME)) {
-            config.app_name_ = std::string(env_p);
+        if(auto e = get_env(env::APPLICATION_NAME)) {
+            config.app_name_ = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::APPLICATION_TYPE)) {
-            config.app_type_ = safe_env_stoi(env::APPLICATION_TYPE, env_p, defaults::APP_TYPE);
+        if(auto e = get_env(env::APPLICATION_TYPE)) {
+            config.app_type_ = safe_env_stoi(e.name.c_str(), e.value, defaults::APP_TYPE);
         }
-        if(const char* env_p = std::getenv(env::AGENT_ID)) {
-            config.agent_id_ = std::string(env_p);
+        if(auto e = get_env(env::AGENT_ID)) {
+            config.agent_id_ = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::AGENT_NAME)) {
-            config.agent_name_ = std::string(env_p);
+        if(auto e = get_env(env::AGENT_NAME)) {
+            config.agent_name_ = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::UID_VERSION)) {
-            config.uid_version_ = std::string(env_p);
+        if(auto e = get_env(env::UID_VERSION)) {
+            config.uid_version_ = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::SERVICE_NAME)) {
-            config.service_name_ = std::string(env_p);
+        if(auto e = get_env(env::SERVICE_NAME)) {
+            config.service_name_ = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::API_KEY)) {
-            config.api_key_ = std::string(env_p);
-        }
-
-        if(const char* env_p = std::getenv(env::LOG_LEVEL)) {
-            config.log.level = std::string(env_p);
-        }
-        if(const char* env_p = std::getenv(env::LOG_FILE_PATH)) {
-            config.log.file_path = std::string(env_p);
-        }
-        if(const char* env_p = std::getenv(env::LOG_MAX_FILE_SIZE)) {
-            config.log.max_file_size = safe_env_stoi(env::LOG_MAX_FILE_SIZE, env_p, defaults::LOG_MAX_FILE_SIZE_MB);
+        if(auto e = get_env(env::API_KEY)) {
+            config.api_key_ = std::string(e.value);
         }
 
-        if(const char* env_p = std::getenv(env::GRPC_HOST)) {
-            config.collector.host = std::string(env_p);
+        if(auto e = get_env(env::LOG_LEVEL)) {
+            config.log.level = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::GRPC_AGENT_PORT)) {
-            config.collector.agent_port = safe_env_stoi(env::GRPC_AGENT_PORT, env_p, defaults::AGENT_PORT);
+        if(auto e = get_env(env::LOG_FILE_PATH)) {
+            config.log.file_path = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::GRPC_SPAN_PORT)) {
-            config.collector.span_port = safe_env_stoi(env::GRPC_SPAN_PORT, env_p, defaults::SPAN_PORT);
-        }
-        if(const char* env_p = std::getenv(env::GRPC_STAT_PORT)) {
-            config.collector.stat_port = safe_env_stoi(env::GRPC_STAT_PORT, env_p, defaults::STAT_PORT);
+        if(auto e = get_env(env::LOG_MAX_FILE_SIZE)) {
+            config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, defaults::LOG_MAX_FILE_SIZE_MB);
         }
 
-        if(const char* env_p = std::getenv(env::STAT_ENABLE)) {
-            config.stat.enable = safe_env_stob(env::STAT_ENABLE, env_p, true);
+        if(auto e = get_env(env::GRPC_HOST)) {
+            config.collector.host = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::STAT_BATCH_COUNT)) {
-            config.stat.batch_count = safe_env_stoi(env::STAT_BATCH_COUNT, env_p, defaults::STAT_BATCH_COUNT);
+        if(auto e = get_env(env::GRPC_AGENT_PORT)) {
+            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_PORT);
         }
-        if(const char* env_p = std::getenv(env::STAT_BATCH_INTERVAL)) {
-            config.stat.collect_interval = safe_env_stoi(env::STAT_BATCH_INTERVAL, env_p, defaults::STAT_INTERVAL_MS);
+        if(auto e = get_env(env::GRPC_SPAN_PORT)) {
+            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_PORT);
         }
-
-        if(const char* env_p = std::getenv(env::SAMPLING_TYPE)) {
-            config.sampling.type = std::string(env_p);
-        }
-        if(const char* env_p = std::getenv(env::SAMPLING_COUNTER_RATE)) {
-            config.sampling.counter_rate = safe_env_stoi(env::SAMPLING_COUNTER_RATE, env_p, defaults::SAMPLING_COUNTER_RATE);
-        }
-        if(const char* env_p = std::getenv(env::SAMPLING_PERCENT_RATE)) {
-            config.sampling.percent_rate = safe_env_stod(env::SAMPLING_PERCENT_RATE, env_p, defaults::SAMPLING_PERCENT_RATE);
-        }
-        if(const char* env_p = std::getenv(env::SAMPLING_NEW_THROUGHPUT)) {
-            config.sampling.new_throughput = safe_env_stoi(env::SAMPLING_NEW_THROUGHPUT, env_p, 0);
-        }
-        if(const char* env_p = std::getenv(env::SAMPLING_CONTINUE_THROUGHPUT)) {
-            config.sampling.cont_throughput = safe_env_stoi(env::SAMPLING_CONTINUE_THROUGHPUT, env_p, 0);
+        if(auto e = get_env(env::GRPC_STAT_PORT)) {
+            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_PORT);
         }
 
-        if(const char* env_p = std::getenv(env::SPAN_QUEUE_SIZE)) {
-            config.span.queue_size = safe_env_stoi(env::SPAN_QUEUE_SIZE, env_p, defaults::SPAN_QUEUE_SIZE);
+        if(auto e = get_env(env::STAT_ENABLE)) {
+            config.stat.enable = safe_env_stob(e.name.c_str(), e.value, true);
         }
-        if(const char* env_p = std::getenv(env::SPAN_MAX_EVENT_DEPTH)) {
-            config.span.max_event_depth = safe_env_stoi(env::SPAN_MAX_EVENT_DEPTH, env_p, defaults::SPAN_MAX_EVENT_DEPTH);
+        if(auto e = get_env(env::STAT_BATCH_COUNT)) {
+            config.stat.batch_count = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_BATCH_COUNT);
         }
-        if(const char* env_p = std::getenv(env::SPAN_MAX_EVENT_SEQUENCE)) {
-            config.span.max_event_sequence = safe_env_stoi(env::SPAN_MAX_EVENT_SEQUENCE, env_p, defaults::SPAN_MAX_EVENT_SEQUENCE);
-        }
-        if(const char* env_p = std::getenv(env::SPAN_EVENT_CHUNK_SIZE)) {
-            config.span.event_chunk_size = safe_env_stoi(env::SPAN_EVENT_CHUNK_SIZE, env_p, defaults::SPAN_EVENT_CHUNK_SIZE);
-        }
-        if(const char* env_p = std::getenv(env::SPAN_BATCH_SIZE)) {
-            config.span.batch.size = safe_env_stoi(env::SPAN_BATCH_SIZE, env_p, defaults::SPAN_BATCH_SIZE);
-        }
-        if(const char* env_p = std::getenv(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
-            config.span.batch.flush_interval_ms = safe_env_stoi(env::SPAN_BATCH_FLUSH_INTERVAL_MS, env_p, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
-        }
-        if(const char* env_p = std::getenv(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
-            config.span.batch.collect_deadline_ms = safe_env_stoi(env::SPAN_BATCH_COLLECT_DEADLINE_MS, env_p, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
-        }
-        if(const char* env_p = std::getenv(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
-            config.span.batch.max_concurrent_requests = safe_env_stoi(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, env_p, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
-        }
-        if(const char* env_p = std::getenv(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
-            config.agent_info.refresh_interval_ms = safe_env_stoi(env::AGENT_INFO_REFRESH_INTERVAL_MS, env_p, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
-        }
-        if(const char* env_p = std::getenv(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
-            config.agent_info.send_retry_interval_ms = safe_env_stoi(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS, env_p, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-        }
-        if(const char* env_p = std::getenv(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
-            config.agent_info.max_try_per_attempt = safe_env_stoi(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT, env_p, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+        if(auto e = get_env(env::STAT_BATCH_INTERVAL)) {
+            config.stat.collect_interval = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_INTERVAL_MS);
         }
 
-        if(const char* env_p = std::getenv(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
-            config.grpc.ssl.trust_cert_file_path = std::string(env_p);
+        if(auto e = get_env(env::SAMPLING_TYPE)) {
+            config.sampling.type = std::string(e.value);
         }
-        if(const char* env_p = std::getenv(env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
-            config.grpc.ssl.root_cert_file_path = std::string(env_p);
+        if(auto e = get_env(env::SAMPLING_COUNTER_RATE)) {
+            config.sampling.counter_rate = safe_env_stoi(e.name.c_str(), e.value, defaults::SAMPLING_COUNTER_RATE);
+        }
+        if(auto e = get_env(env::SAMPLING_PERCENT_RATE)) {
+            config.sampling.percent_rate = safe_env_stod(e.name.c_str(), e.value, defaults::SAMPLING_PERCENT_RATE);
+        }
+        if(auto e = get_env(env::SAMPLING_NEW_THROUGHPUT)) {
+            config.sampling.new_throughput = safe_env_stoi(e.name.c_str(), e.value, 0);
+        }
+        if(auto e = get_env(env::SAMPLING_CONTINUE_THROUGHPUT)) {
+            config.sampling.cont_throughput = safe_env_stoi(e.name.c_str(), e.value, 0);
+        }
+
+        if(auto e = get_env(env::SPAN_QUEUE_SIZE)) {
+            config.span.queue_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_QUEUE_SIZE);
+        }
+        if(auto e = get_env(env::SPAN_MAX_EVENT_DEPTH)) {
+            config.span.max_event_depth = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_MAX_EVENT_DEPTH);
+        }
+        if(auto e = get_env(env::SPAN_MAX_EVENT_SEQUENCE)) {
+            config.span.max_event_sequence = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_MAX_EVENT_SEQUENCE);
+        }
+        if(auto e = get_env(env::SPAN_EVENT_CHUNK_SIZE)) {
+            config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_EVENT_CHUNK_SIZE);
+        }
+        if(auto e = get_env(env::SPAN_BATCH_SIZE)) {
+            config.span.batch.size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_SIZE);
+        }
+        if(auto e = get_env(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
+            config.span.batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+        }
+        if(auto e = get_env(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
+            config.span.batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+        }
+        if(auto e = get_env(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
+            config.span.batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+        }
+        if(auto e = get_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
+            config.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+        }
+        if(auto e = get_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
+            config.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+        }
+        if(auto e = get_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
+            config.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+        }
+
+        if(auto e = get_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
+            config.grpc.ssl.trust_cert_file_path = std::string(e.value);
+        }
+        if(auto e = get_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
+            config.grpc.ssl.root_cert_file_path = std::string(e.value);
         }
         load_env_grpc_channel(config.grpc.channel,
                               env::GRPC_SSL_ENABLE,
@@ -569,63 +604,63 @@ namespace pinpoint {
                               env::GRPC_SENDER_QUEUE_SIZE,
                               env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE);
 
-        if(const char* env_p = std::getenv(env::IS_CONTAINER)) {
-            config.is_container = safe_env_stob(env::IS_CONTAINER, env_p, false);
+        if(auto e = get_env(env::IS_CONTAINER)) {
+            config.is_container = safe_env_stob(e.name.c_str(), e.value, false);
             is_container_set = true;
         }
 
-        if(const char* env_p = std::getenv(env::HTTP_COLLECT_URL_STAT)) {
-            config.http.url_stat.enable = safe_env_stob(env::HTTP_COLLECT_URL_STAT, env_p, false);
+        if(auto e = get_env(env::HTTP_COLLECT_URL_STAT)) {
+            config.http.url_stat.enable = safe_env_stob(e.name.c_str(), e.value, false);
         }
-        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_LIMIT)) {
-            config.http.url_stat.limit = safe_env_stoi(env::HTTP_URL_STAT_LIMIT, env_p, defaults::HTTP_URL_STAT_LIMIT);
+        if(auto e = get_env(env::HTTP_URL_STAT_LIMIT)) {
+            config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, defaults::HTTP_URL_STAT_LIMIT);
         }
-        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
-            config.http.url_stat.enable_trim_path = safe_env_stob(env::HTTP_URL_STAT_ENABLE_TRIM_PATH, env_p, true);
+        if(auto e = get_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
+            config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, true);
         }
-        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
-            config.http.url_stat.trim_path_depth = safe_env_stoi(env::HTTP_URL_STAT_TRIM_PATH_DEPTH, env_p, 1);
+        if(auto e = get_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
+            config.http.url_stat.trim_path_depth = safe_env_stoi(e.name.c_str(), e.value, 1);
         }
-        if(const char* env_p = std::getenv(env::HTTP_URL_STAT_METHOD_PREFIX)) {
-            config.http.url_stat.method_prefix = safe_env_stob(env::HTTP_URL_STAT_METHOD_PREFIX, env_p, false);
-        }
-
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
-            config.http.server.status_errors = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_EXCLUDE_URL)) {
-            config.http.server.exclude_url = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_EXCLUDE_METHOD)) {
-            config.http.server.exclude_method = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
-            config.http.server.rec_request_header = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
-            config.http.server.rec_request_cookie = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
-            config.http.server.rec_response_header = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
-            config.http.client.rec_request_header = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
-            config.http.client.rec_request_cookie = absl::StrSplit(env_p, ',');
-        }
-        if(const char* env_p = std::getenv(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
-            config.http.client.rec_response_header = absl::StrSplit(env_p, ',');
+        if(auto e = get_env(env::HTTP_URL_STAT_METHOD_PREFIX)) {
+            config.http.url_stat.method_prefix = safe_env_stob(e.name.c_str(), e.value, false);
         }
 
-        if(const char* env_p = std::getenv(env::SQL_MAX_BIND_ARGS_SIZE)) {
-            config.sql.max_bind_args_size = safe_env_stoi(env::SQL_MAX_BIND_ARGS_SIZE, env_p, defaults::SQL_MAX_BIND_ARGS_SIZE);
+        if(auto e = get_env(env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
+            config.http.server.status_errors = absl::StrSplit(e.value, ',');
         }
-        if(const char* env_p = std::getenv(env::SQL_ENABLE_SQL_STATS)) {
-            config.sql.enable_sql_stats = safe_env_stob(env::SQL_ENABLE_SQL_STATS, env_p, false);
+        if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_URL)) {
+            config.http.server.exclude_url = absl::StrSplit(e.value, ',');
         }
-        if(const char* env_p = std::getenv(env::ENABLE_CALLSTACK_TRACE)) {
-            config.enable_callstack_trace = safe_env_stob(env::ENABLE_CALLSTACK_TRACE, env_p, false);
+        if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_METHOD)) {
+            config.http.server.exclude_method = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
+            config.http.server.rec_request_header = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
+            config.http.server.rec_request_cookie = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
+            config.http.server.rec_response_header = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
+            config.http.client.rec_request_header = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
+            config.http.client.rec_request_cookie = absl::StrSplit(e.value, ',');
+        }
+        if(auto e = get_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
+            config.http.client.rec_response_header = absl::StrSplit(e.value, ',');
+        }
+
+        if(auto e = get_env(env::SQL_MAX_BIND_ARGS_SIZE)) {
+            config.sql.max_bind_args_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SQL_MAX_BIND_ARGS_SIZE);
+        }
+        if(auto e = get_env(env::SQL_ENABLE_SQL_STATS)) {
+            config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, false);
+        }
+        if(auto e = get_env(env::ENABLE_CALLSTACK_TRACE)) {
+            config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, false);
         }
     }
 
@@ -655,6 +690,11 @@ namespace pinpoint {
             std::lock_guard<std::mutex> lock(config_file_path_mutex());
             global_agent_config_file_path() = file_path;
         }
+    }
+
+    void set_env_prefix(std::string_view prefix) {
+        std::lock_guard<std::mutex> lock(env_prefix_mutex());
+        env_prefix() = prefix.empty() ? std::string(env::DEFAULT_PREFIX) : std::string(prefix);
     }
 
     constexpr int MIN_PORT = 1;
@@ -732,8 +772,8 @@ namespace pinpoint {
         auto config = std::make_shared<Config>();
         bool is_container_set = false;
 
-        if(const char* env_p = std::getenv(env::CONFIG_FILE); env_p != nullptr) {
-            set_config_file_path(env_p);
+        if(auto e = get_env(env::CONFIG_FILE)) {
+            set_config_file_path(e.value);
         }
         const auto config_path = get_config_file_path_copy();
         if(!config_path.empty()) {

@@ -60,72 +60,79 @@ namespace pinpoint {
     }
 
     /**
-     * @brief Environment variable names that override configuration values.
+     * @brief Environment variable name suffixes that override configuration values.
+     *
+     * The constants below hold only the suffix (without a prefix). At read time
+     * the agent builds the full name as `<prefix>_<suffix>`, where the prefix is
+     * `DEFAULT_PREFIX` (`PINPOINT_CPP`) unless overridden via `set_env_prefix()`
+     * (public `SetConfigEnvVarPrefix()`). E.g. `APPLICATION_NAME` is read from
+     * `PINPOINT_CPP_APPLICATION_NAME` by default.
      */
     namespace env {
-        constexpr const char* ENABLE = "PINPOINT_CPP_ENABLE";
-        constexpr const char* APPLICATION_NAME = "PINPOINT_CPP_APPLICATION_NAME";
-        constexpr const char* APPLICATION_TYPE = "PINPOINT_CPP_APPLICATION_TYPE";
-        constexpr const char* AGENT_ID = "PINPOINT_CPP_AGENT_ID";
-        constexpr const char* AGENT_NAME = "PINPOINT_CPP_AGENT_NAME";
-        constexpr const char* UID_VERSION = "PINPOINT_CPP_UID_VERSION";
-        constexpr const char* SERVICE_NAME = "PINPOINT_CPP_SERVICE_NAME";
-        constexpr const char* API_KEY = "PINPOINT_CPP_API_KEY";
-        constexpr const char* LOG_LEVEL = "PINPOINT_CPP_LOG_LEVEL";
-        constexpr const char* LOG_FILE_PATH = "PINPOINT_CPP_LOG_FILE_PATH";
-        constexpr const char* LOG_MAX_FILE_SIZE = "PINPOINT_CPP_LOG_MAX_FILE_SIZE";
-        constexpr const char* GRPC_HOST = "PINPOINT_CPP_GRPC_HOST";
-        constexpr const char* GRPC_AGENT_PORT = "PINPOINT_CPP_GRPC_AGENT_PORT";
-        constexpr const char* GRPC_SPAN_PORT = "PINPOINT_CPP_GRPC_SPAN_PORT";
-        constexpr const char* GRPC_STAT_PORT = "PINPOINT_CPP_GRPC_STAT_PORT";
-        constexpr const char* STAT_ENABLE = "PINPOINT_CPP_STAT_ENABLE";
-        constexpr const char* STAT_BATCH_COUNT = "PINPOINT_CPP_STAT_BATCH_COUNT";
-        constexpr const char* STAT_BATCH_INTERVAL = "PINPOINT_CPP_STAT_BATCH_INTERVAL";
-        constexpr const char* SAMPLING_TYPE = "PINPOINT_CPP_SAMPLING_TYPE";
-        constexpr const char* SAMPLING_COUNTER_RATE = "PINPOINT_CPP_SAMPLING_COUNTER_RATE";
-        constexpr const char* SAMPLING_PERCENT_RATE = "PINPOINT_CPP_SAMPLING_PERCENT_RATE";
-        constexpr const char* SAMPLING_NEW_THROUGHPUT = "PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT";
-        constexpr const char* SAMPLING_CONTINUE_THROUGHPUT = "PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT";
-        constexpr const char* SPAN_QUEUE_SIZE = "PINPOINT_CPP_SPAN_QUEUE_SIZE";
-        constexpr const char* SPAN_MAX_EVENT_DEPTH = "PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH";
-        constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE";
-        constexpr const char* SPAN_EVENT_CHUNK_SIZE = "PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE";
-        constexpr const char* SPAN_BATCH_SIZE = "PINPOINT_CPP_SPAN_BATCH_SIZE";
-        constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS";
-        constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS";
-        constexpr const char* SPAN_BATCH_MAX_CONCURRENT_REQUESTS = "PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS";
-        constexpr const char* AGENT_INFO_REFRESH_INTERVAL_MS = "PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS";
-        constexpr const char* AGENT_INFO_SEND_RETRY_INTERVAL_MS = "PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS";
-        constexpr const char* AGENT_INFO_MAX_TRY_PER_ATTEMPT = "PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT";
-        constexpr const char* GRPC_SSL_TRUST_CERT_FILE_PATH = "PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH";
-        constexpr const char* GRPC_SSL_ROOT_CERT_FILE_PATH = "PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH";
-        constexpr const char* GRPC_SSL_ENABLE = "PINPOINT_CPP_GRPC_SSL_ENABLE";
-        constexpr const char* GRPC_KEEPALIVE_TIME_MS = "PINPOINT_CPP_GRPC_KEEPALIVE_TIME_MS";
-        constexpr const char* GRPC_KEEPALIVE_TIMEOUT_MS = "PINPOINT_CPP_GRPC_KEEPALIVE_TIMEOUT_MS";
-        constexpr const char* GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS = "PINPOINT_CPP_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS";
-        constexpr const char* GRPC_MAX_SEND_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_MAX_SEND_MESSAGE_SIZE";
-        constexpr const char* GRPC_MAX_RECEIVE_MESSAGE_SIZE = "PINPOINT_CPP_GRPC_MAX_RECEIVE_MESSAGE_SIZE";
-        constexpr const char* GRPC_SENDER_QUEUE_SIZE = "PINPOINT_CPP_GRPC_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = "PINPOINT_CPP_GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE";
-        constexpr const char* IS_CONTAINER = "PINPOINT_CPP_IS_CONTAINER";
-        constexpr const char* HTTP_COLLECT_URL_STAT = "PINPOINT_CPP_HTTP_COLLECT_URL_STAT";
-        constexpr const char* HTTP_URL_STAT_LIMIT = "PINPOINT_CPP_HTTP_URL_STAT_LIMIT";
-        constexpr const char* HTTP_URL_STAT_ENABLE_TRIM_PATH = "PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH";
-        constexpr const char* HTTP_URL_STAT_TRIM_PATH_DEPTH = "PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH";
-        constexpr const char* HTTP_URL_STAT_METHOD_PREFIX = "PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX";
-        constexpr const char* HTTP_SERVER_STATUS_CODE_ERRORS = "PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS";
-        constexpr const char* HTTP_SERVER_EXCLUDE_URL = "PINPOINT_CPP_HTTP_SERVER_EXCLUDE_URL";
-        constexpr const char* HTTP_SERVER_EXCLUDE_METHOD = "PINPOINT_CPP_HTTP_SERVER_EXCLUDE_METHOD";
-        constexpr const char* HTTP_SERVER_RECORD_REQUEST_HEADER = "PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER";
-        constexpr const char* HTTP_SERVER_RECORD_REQUEST_COOKIE = "PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE";
-        constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER";
-        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_HEADER";
-        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE";
-        constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER";
-        constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE";
-        constexpr const char* SQL_ENABLE_SQL_STATS = "PINPOINT_CPP_SQL_ENABLE_SQL_STATS";
-        constexpr const char* CONFIG_FILE = "PINPOINT_CPP_CONFIG_FILE";
-        constexpr const char* ENABLE_CALLSTACK_TRACE = "PINPOINT_CPP_ENABLE_CALLSTACK_TRACE";
+        constexpr const char* DEFAULT_PREFIX = "PINPOINT_CPP";
+        constexpr const char* ENABLE = "ENABLE";
+        constexpr const char* APPLICATION_NAME = "APPLICATION_NAME";
+        constexpr const char* APPLICATION_TYPE = "APPLICATION_TYPE";
+        constexpr const char* AGENT_ID = "AGENT_ID";
+        constexpr const char* AGENT_NAME = "AGENT_NAME";
+        constexpr const char* UID_VERSION = "UID_VERSION";
+        constexpr const char* SERVICE_NAME = "SERVICE_NAME";
+        constexpr const char* API_KEY = "API_KEY";
+        constexpr const char* LOG_LEVEL = "LOG_LEVEL";
+        constexpr const char* LOG_FILE_PATH = "LOG_FILE_PATH";
+        constexpr const char* LOG_MAX_FILE_SIZE = "LOG_MAX_FILE_SIZE";
+        constexpr const char* GRPC_HOST = "GRPC_HOST";
+        constexpr const char* GRPC_AGENT_PORT = "GRPC_AGENT_PORT";
+        constexpr const char* GRPC_SPAN_PORT = "GRPC_SPAN_PORT";
+        constexpr const char* GRPC_STAT_PORT = "GRPC_STAT_PORT";
+        constexpr const char* STAT_ENABLE = "STAT_ENABLE";
+        constexpr const char* STAT_BATCH_COUNT = "STAT_BATCH_COUNT";
+        constexpr const char* STAT_BATCH_INTERVAL = "STAT_BATCH_INTERVAL";
+        constexpr const char* SAMPLING_TYPE = "SAMPLING_TYPE";
+        constexpr const char* SAMPLING_COUNTER_RATE = "SAMPLING_COUNTER_RATE";
+        constexpr const char* SAMPLING_PERCENT_RATE = "SAMPLING_PERCENT_RATE";
+        constexpr const char* SAMPLING_NEW_THROUGHPUT = "SAMPLING_NEW_THROUGHPUT";
+        constexpr const char* SAMPLING_CONTINUE_THROUGHPUT = "SAMPLING_CONTINUE_THROUGHPUT";
+        constexpr const char* SPAN_QUEUE_SIZE = "SPAN_QUEUE_SIZE";
+        constexpr const char* SPAN_MAX_EVENT_DEPTH = "SPAN_MAX_EVENT_DEPTH";
+        constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "SPAN_MAX_EVENT_SEQUENCE";
+        constexpr const char* SPAN_EVENT_CHUNK_SIZE = "SPAN_EVENT_CHUNK_SIZE";
+        constexpr const char* SPAN_BATCH_SIZE = "SPAN_BATCH_SIZE";
+        constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "SPAN_BATCH_FLUSH_INTERVAL_MS";
+        constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "SPAN_BATCH_COLLECT_DEADLINE_MS";
+        constexpr const char* SPAN_BATCH_MAX_CONCURRENT_REQUESTS = "SPAN_BATCH_MAX_CONCURRENT_REQUESTS";
+        constexpr const char* AGENT_INFO_REFRESH_INTERVAL_MS = "AGENT_INFO_REFRESH_INTERVAL_MS";
+        constexpr const char* AGENT_INFO_SEND_RETRY_INTERVAL_MS = "AGENT_INFO_SEND_RETRY_INTERVAL_MS";
+        constexpr const char* AGENT_INFO_MAX_TRY_PER_ATTEMPT = "AGENT_INFO_MAX_TRY_PER_ATTEMPT";
+        constexpr const char* GRPC_SSL_TRUST_CERT_FILE_PATH = "GRPC_SSL_TRUST_CERT_FILE_PATH";
+        constexpr const char* GRPC_SSL_ROOT_CERT_FILE_PATH = "GRPC_SSL_ROOT_CERT_FILE_PATH";
+        constexpr const char* GRPC_SSL_ENABLE = "GRPC_SSL_ENABLE";
+        constexpr const char* GRPC_KEEPALIVE_TIME_MS = "GRPC_KEEPALIVE_TIME_MS";
+        constexpr const char* GRPC_KEEPALIVE_TIMEOUT_MS = "GRPC_KEEPALIVE_TIMEOUT_MS";
+        constexpr const char* GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS = "GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS";
+        constexpr const char* GRPC_MAX_SEND_MESSAGE_SIZE = "GRPC_MAX_SEND_MESSAGE_SIZE";
+        constexpr const char* GRPC_MAX_RECEIVE_MESSAGE_SIZE = "GRPC_MAX_RECEIVE_MESSAGE_SIZE";
+        constexpr const char* GRPC_SENDER_QUEUE_SIZE = "GRPC_SENDER_QUEUE_SIZE";
+        constexpr const char* GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = "GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE";
+        constexpr const char* IS_CONTAINER = "IS_CONTAINER";
+        constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
+        constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
+        constexpr const char* HTTP_URL_STAT_ENABLE_TRIM_PATH = "HTTP_URL_STAT_ENABLE_TRIM_PATH";
+        constexpr const char* HTTP_URL_STAT_TRIM_PATH_DEPTH = "HTTP_URL_STAT_TRIM_PATH_DEPTH";
+        constexpr const char* HTTP_URL_STAT_METHOD_PREFIX = "HTTP_URL_STAT_METHOD_PREFIX";
+        constexpr const char* HTTP_SERVER_STATUS_CODE_ERRORS = "HTTP_SERVER_STATUS_CODE_ERRORS";
+        constexpr const char* HTTP_SERVER_EXCLUDE_URL = "HTTP_SERVER_EXCLUDE_URL";
+        constexpr const char* HTTP_SERVER_EXCLUDE_METHOD = "HTTP_SERVER_EXCLUDE_METHOD";
+        constexpr const char* HTTP_SERVER_RECORD_REQUEST_HEADER = "HTTP_SERVER_RECORD_REQUEST_HEADER";
+        constexpr const char* HTTP_SERVER_RECORD_REQUEST_COOKIE = "HTTP_SERVER_RECORD_REQUEST_COOKIE";
+        constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "HTTP_SERVER_RECORD_RESPONSE_HEADER";
+        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "HTTP_CLIENT_RECORD_REQUEST_HEADER";
+        constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
+        constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
+        constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
+        constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
+        constexpr const char* CONFIG_FILE = "CONFIG_FILE";
+        constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
     }
 
     /**
@@ -304,6 +311,15 @@ namespace pinpoint {
      * @param file_path Configuration file path.
      */
     void set_config_file_path(std::string_view file_path);
+
+    /**
+     * @brief Sets the prefix used to build environment variable names read by
+     *        `make_config` (default `PINPOINT_CPP`). An empty prefix resets to
+     *        the default.
+     *
+     * @param prefix Environment variable name prefix (without trailing `_`).
+     */
+    void set_env_prefix(std::string_view prefix);
 
     /**
      * @brief Starts the config file watcher thread.
