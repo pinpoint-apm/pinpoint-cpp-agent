@@ -37,7 +37,7 @@ class GrpcServerTraceContextReader final : public pinpoint::TraceContextReader {
       : context_(context) {}
   ~GrpcServerTraceContextReader() override = default;
 
-  std::optional<std::string> Get(std::string_view key) const override {
+  std::optional<std::string_view> Get(std::string_view key) const override {
     if (context_ == nullptr) {
       return std::nullopt;
     }
@@ -47,7 +47,9 @@ class GrpcServerTraceContextReader final : public pinpoint::TraceContextReader {
     for (const auto& entry : metadata) {
       std::string entry_key(entry.first.data(), entry.first.size());
       if (grpc_demo_detail::to_lower(entry_key) == lower_key) {
-        return std::string(entry.second.data(), entry.second.size());
+        // View into the gRPC-owned metadata, valid while the server context
+        // (which outlives this reader) is alive.
+        return std::string_view(entry.second.data(), entry.second.size());
       }
     }
     return std::nullopt;

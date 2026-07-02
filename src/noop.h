@@ -181,7 +181,7 @@ namespace pinpoint {
         NoopTraceContextReader() = default;
         ~NoopTraceContextReader() override = default;
 
-        std::optional<std::string> Get(std::string_view key) const override { return std::nullopt; }
+        std::optional<std::string_view> Get(std::string_view key) const override { return std::nullopt; }
     };
 
     /**

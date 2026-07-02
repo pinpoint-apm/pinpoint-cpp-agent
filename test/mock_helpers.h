@@ -49,10 +49,10 @@ class MockTraceContextReader : public TraceContextReader {
 public:
     MockTraceContextReader() = default;
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = context_.find(std::string(key));
         if (it != context_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }
@@ -73,10 +73,10 @@ public:
         context_[std::string(key)] = std::string(value);
     }
 
-    std::optional<std::string> Get(std::string_view key) const {
+    std::optional<std::string_view> Get(std::string_view key) const {
         auto it = context_.find(std::string(key));
         if (it != context_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }
@@ -89,10 +89,10 @@ class MockHeaderReader : public HeaderReader {
 public:
     MockHeaderReader() = default;
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = headers_.find(std::string(key));
         if (it != headers_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }

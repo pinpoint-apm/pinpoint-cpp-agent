@@ -121,7 +121,7 @@ namespace pinpoint {
     	 *
     	 * @param tid String containing the trace identifier.
     	 */
-    	void parseTraceId(std::string &tid) noexcept;
+    	void parseTraceId(std::string_view tid) noexcept;
 
     	/// @brief Stores the numeric span identifier.
     	void setSpanId(int64_t span_id) { span_id_ = span_id; }
@@ -423,8 +423,10 @@ namespace pinpoint {
     	 *
     	 * @param reader Trace context reader provided by user code.
     	 * @param tid Value of HEADER_TRACE_ID previously read from the reader.
+    	 *            Consumed (parsed into owned storage) before any further
+    	 *            reader.Get() call, per the Get view-lifetime contract.
     	 */
-    	void extractContext(TraceContextReader& reader, std::optional<std::string> tid);
+    	void extractContext(TraceContextReader& reader, std::optional<std::string_view> tid);
 
         TraceId& GetTraceId() override { return data_->getTraceId(); }
         int64_t GetSpanId() override { return data_->getSpanId(); }

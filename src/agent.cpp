@@ -479,15 +479,15 @@ namespace pinpoint {
             return noopSpan();
         }
 
-        auto tid = reader.Get(HEADER_TRACE_ID);
+        const auto tid = reader.Get(HEADER_TRACE_ID);
         const bool my_sampling = tid.has_value() ? sampler->isContinueSampled()
                                                  : sampler->isNewSampled();
 
         if (my_sampling) {
             // Hand the already-read trace id to the impl-level extract so the
-            // header is not looked up (and its value not allocated) twice.
+            // header is not looked up twice.
             auto span = std::make_shared<SpanImpl>(this, operation, rpc_point);
-            span->extractContext(reader, std::move(tid));
+            span->extractContext(reader, tid);
             return span;
         }
         auto span = std::make_shared<UnsampledSpan>(this);

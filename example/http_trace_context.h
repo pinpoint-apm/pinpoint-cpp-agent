@@ -9,12 +9,13 @@ public:
     explicit HttpHeaderReader(const httplib::Headers& header) : headers_(header) {}
     ~HttpHeaderReader() override = default;
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    // Returns a view into the httplib header map, which outlives the reader.
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = headers_.find(key.data());
         if (it == headers_.end()) {
             return std::nullopt;
         }
-        return it->second;
+        return std::string_view(it->second);
     }
 
     void ForEach(std::function<bool(std::string_view, std::string_view)> callback) const override {
@@ -32,12 +33,13 @@ public:
     explicit HttpHeaderReaderWriter(httplib::Headers& header) : headers_(header) {}
     ~HttpHeaderReaderWriter() override = default;
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    // Returns a view into the httplib header map, which outlives the reader.
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = headers_.find(key.data());
         if (it == headers_.end()) {
             return std::nullopt;
         }
-        return it->second;
+        return std::string_view(it->second);
     }
 
     void ForEach(std::function<bool(std::string_view, std::string_view)> callback) const override {

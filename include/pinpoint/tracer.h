@@ -127,10 +127,17 @@ namespace pinpoint {
 		/**
 		 * @brief Reads a key value from the propagation carrier.
 		 *
+		 * Returning a view keeps per-request lookups allocation-free: most
+		 * implementations can point straight into their backing header map.
+		 *
 		 * @param key Case-sensitive header name or key.
-		 * @return Value if present.
+		 * @return View of the value if present. The view must remain valid
+		 *         until the next call on the same reader or until the reader
+		 *         is destroyed, whichever comes first. Implementations that
+		 *         build the value on the fly must keep the backing storage
+		 *         alive accordingly (e.g. in a member buffer).
 		 */
-        virtual std::optional<std::string> Get(std::string_view key) const = 0;
+        virtual std::optional<std::string_view> Get(std::string_view key) const = 0;
     };
 
 	/**
@@ -163,8 +170,11 @@ namespace pinpoint {
 		virtual ~HeaderReader() override = default;
 		/**
 		 * @brief Looks up a single header value by key.
+		 *
+		 * See TraceContextReader::Get for the lifetime contract of the
+		 * returned view.
 		 */
-		virtual std::optional<std::string> Get(std::string_view key) const override = 0;
+		virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
 		/**
 		 * @brief Iterates through all headers invoking the callback for each entry.
 		 *
@@ -178,8 +188,11 @@ namespace pinpoint {
 		virtual ~HeaderReaderWriter() override = default;
 		/**
 		 * @brief Looks up a single header value by key.
+		 *
+		 * See TraceContextReader::Get for the lifetime contract of the
+		 * returned view.
 		 */
-		virtual std::optional<std::string> Get(std::string_view key) const override = 0;
+		virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
 		/**
 		 * @brief Iterates through all headers invoking the callback for each entry.
 		 *

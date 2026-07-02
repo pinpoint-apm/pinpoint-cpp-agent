@@ -492,10 +492,13 @@ public:
     explicit HttpTraceContextReader(const httplib::Headers& headers)
         : headers_(headers) {}
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    // Returns a view into the header map. The view must stay valid until
+    // the next call on this reader (or until the reader is destroyed), so
+    // point into storage you own — do not return a view of a temporary.
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = headers_.find(std::string(key));
         if (it != headers_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }
@@ -618,10 +621,10 @@ class HttpHeaderReader : public pinpoint::HeaderReader {
 public:
     HttpHeaderReader(const httplib::Headers& headers) : headers_(headers) {}
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         auto it = headers_.find(std::string(key));
         if (it != headers_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }

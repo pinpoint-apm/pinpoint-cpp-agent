@@ -235,7 +235,7 @@ class CContextReader final : public pinpoint::TraceContextReader {
 public:
     explicit CContextReader(const pt_context_reader_t* r) : r_(r) {}
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
         const char* k_ptr = nullptr;
         std::string k_str;
@@ -245,8 +245,11 @@ public:
             k_str = std::string(key);
             k_ptr = k_str.c_str();
         }
+        // Zero-copy: pt_reader_get_fn's contract already requires the returned
+        // pointer to stay valid until the next call on the same carrier, which
+        // matches the TraceContextReader::Get view-lifetime contract exactly.
         const char* v = r_->get(r_->userdata, k_ptr);
-        return v ? std::optional<std::string>(v) : std::nullopt;
+        return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
 private:
@@ -260,7 +263,7 @@ class CHeaderReader final : public pinpoint::HeaderReader {
 public:
     explicit CHeaderReader(const pt_header_reader_t* r) : r_(r) {}
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
         const char* k_ptr = nullptr;
         std::string k_str;
@@ -270,8 +273,10 @@ public:
             k_str = std::string(key);
             k_ptr = k_str.c_str();
         }
+        // Zero-copy: see CContextReader::Get — the C contract matches the
+        // TraceContextReader::Get view-lifetime contract.
         const char* v = r_->get(r_->userdata, k_ptr);
-        return v ? std::optional<std::string>(v) : std::nullopt;
+        return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
     void ForEach(std::function<bool(std::string_view, std::string_view)> cb) const override {

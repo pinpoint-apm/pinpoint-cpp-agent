@@ -33,11 +33,11 @@ class MockHeaderReader : public HeaderReader {
 public:
     MockHeaderReader(const std::map<std::string, std::string>& headers) : headers_(headers) {}
 
-    std::optional<std::string> Get(std::string_view key) const override {
+    std::optional<std::string_view> Get(std::string_view key) const override {
         std::string keyStr(key.data(), key.size());
         auto it = headers_.find(keyStr);
         if (it != headers_.end()) {
-            return it->second;
+            return std::string_view(it->second);
         }
         return std::nullopt;
     }

@@ -110,11 +110,11 @@ namespace pinpoint {
         finished_events.clear();
     }
 
-    void SpanData::parseTraceId(std::string &txid) noexcept {
+    void SpanData::parseTraceId(std::string_view txid) noexcept {
         constexpr size_t kMaxAgentIdLength = 24;
         constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
 
-        std::string_view sv(txid);
+        const std::string_view sv = txid;
 
         // Parse AgentId (first field before '^')
         const auto pos1 = sv.find('^');
@@ -369,7 +369,7 @@ namespace pinpoint {
         extractContext(reader, reader.Get(HEADER_TRACE_ID));
     }
 
-    void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string> tid) {
+    void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string_view> tid) {
         CHECK_FINISHED();
 
         if (!tid.has_value()) {
