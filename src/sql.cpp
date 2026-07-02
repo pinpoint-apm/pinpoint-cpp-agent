@@ -17,6 +17,7 @@
 #include "sql.h"
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <limits>
 
 namespace pinpoint {
@@ -46,6 +47,15 @@ namespace pinpoint {
             } else {
                 result.parameters += ch;
             }
+        }
+
+        // Appends the decimal digits of a parameter index without the
+        // temporary std::string that std::to_string would create for every
+        // replaced literal.
+        void appendParameterIndex(std::string& out, int index) {
+            char buf[16];
+            const auto res = std::to_chars(buf, buf + sizeof(buf), index);
+            out.append(buf, static_cast<size_t>(res.ptr - buf));
         }
 
         bool parseIndex(std::string_view text, size_t& index) {
@@ -330,7 +340,7 @@ namespace pinpoint {
                     result.parameters += "''";
                     continue;
                 } else {
-                    result.normalized_sql += std::to_string(result.param_index);
+                    appendParameterIndex(result.normalized_sql, result.param_index);
                     result.normalized_sql += kSymbolReplace;
                     result.normalized_sql += quote_char;
                     ++result.param_index;
@@ -345,7 +355,7 @@ namespace pinpoint {
 
     size_t SqlNormalizer::handleNumericLiteral(std::string_view sql, size_t sql_length, size_t start_idx, SqlNormalizeResult& result) {
         appendParameterSeparator(result);
-        result.normalized_sql += std::to_string(result.param_index);
+        appendParameterIndex(result.normalized_sql, result.param_index);
         result.normalized_sql += kNumberReplace;
         ++result.param_index;
 

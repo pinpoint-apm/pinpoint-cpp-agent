@@ -57,6 +57,8 @@ namespace pinpoint {
 
         IntStringStringValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
+        IntStringStringValue(const int intVal, std::string&& strVal1, std::string_view strVal2)
+            : intValue(intVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
     };
 
     /**
@@ -84,6 +86,8 @@ namespace pinpoint {
 
         BytesStringStringValue(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
             : bytesValue(bytesVal), stringValue1(strVal1), stringValue2(strVal2) {}
+        BytesStringStringValue(SqlUid bytesVal, std::string&& strVal1, std::string_view strVal2)
+            : bytesValue(bytesVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
     };
 
     /**
@@ -115,11 +119,15 @@ namespace pinpoint {
             : data(StringStringValue(strVal1, strVal2)) {}
         AnnotationData(const AnnotationType, const int intVal, std::string_view strVal1, std::string_view strVal2)
             : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
+        AnnotationData(const AnnotationType, const int intVal, std::string&& strVal1, std::string_view strVal2)
+            : data(IntStringStringValue(intVal, std::move(strVal1), strVal2)) {}
         AnnotationData(const AnnotationType, const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
         AnnotationData(const AnnotationType, SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
             : data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
+        AnnotationData(const AnnotationType, SqlUid bytesVal, std::string&& strVal1, std::string_view strVal2)
+            : data(BytesStringStringValue(bytesVal, std::move(strVal1), strVal2)) {}
 
         AnnotationType type() const {
             return std::visit([](const auto& value) -> AnnotationType {
@@ -212,6 +220,18 @@ namespace pinpoint {
          * @param s String payload.
          */
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override;
+
+        /**
+         * @brief Appends a pre-built annotation payload.
+         *
+         * Lets internal callers move large strings (e.g. normalized SQL
+         * parameters) into the annotation instead of copying them through
+         * the string_view Append overloads.
+         *
+         * @param key Annotation identifier.
+         * @param data Annotation payload (moved).
+         */
+        void AppendData(int32_t key, AnnotationData&& data);
 
         /**
          * @brief Returns the internal annotation list for serialization.

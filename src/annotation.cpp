@@ -74,4 +74,12 @@ namespace pinpoint {
             LOG_ERROR("make annotation data exception = {}", e.what());
         }
     }
+
+    void PinpointAnnotation::AppendData(int32_t key, AnnotationData&& data) {
+        try {
+            annotation_list_.emplace_back(key, std::move(data));
+        } catch (const std::exception& e) {
+            LOG_ERROR("make annotation data exception = {}", e.what());
+        }
+    }
 } // namespace pinpoint

@@ -485,7 +485,8 @@ namespace pinpoint {
             // call rather than at construction, so an async child span created
             // via NewAsyncSpan on one thread but consumed on another binds to its
             // consuming thread instead of its creator. The check is just a
-            // thread-id load-and-compare (an already-bound span does no store),
+            // relaxed thread-id load-and-compare (an already-bound span does
+            // no atomic RMW, only the one-time binding uses a CAS),
             // cheap enough to stay enabled in release builds: a violation is
             // logged there, and additionally asserts in debug builds. Atomic so
             // the detection path itself — which by definition runs when the span

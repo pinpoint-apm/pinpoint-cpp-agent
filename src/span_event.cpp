@@ -117,13 +117,18 @@ namespace pinpoint {
         if (config->sql.enable_sql_stats) {
             auto sql_uid = agent_->cacheSqlUid(result.normalized_sql);
             if (sql_uid) {
-                ensureAnnotations()->AppendSqlUidStringString(ANNOTATION_SQL_UID, *sql_uid,
-                    result.parameters, args);
+                // result.parameters is dead after this call: move it into the
+                // annotation instead of copying through the string_view path.
+                ensureAnnotations()->AppendData(ANNOTATION_SQL_UID,
+                    AnnotationData(ANNOTATION_TYPE_BYTES_STRING_STRING, *sql_uid,
+                                   std::move(result.parameters), args));
             }
         } else {
             auto sql_id = agent_->cacheSql(result.normalized_sql);
             if (sql_id) {
-                ensureAnnotations()->AppendIntStringString(ANNOTATION_SQL_ID, sql_id, result.parameters, args);
+                ensureAnnotations()->AppendData(ANNOTATION_SQL_ID,
+                    AnnotationData(ANNOTATION_TYPE_INT_STRING_STRING, sql_id,
+                                   std::move(result.parameters), args));
             }
         }
     }

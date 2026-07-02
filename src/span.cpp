@@ -230,19 +230,25 @@ namespace pinpoint {
 
     void SpanImpl::checkOwnerThread() {
         const auto current = std::this_thread::get_id();
-        auto expected = std::thread::id{};
-        // Bind to the first thread that records a span event. On an already-bound
-        // span the CAS compares the stored (non-empty) owner against the empty
-        // sentinel, fails without writing, and leaves `expected` holding the owner.
-        if (owner_thread_id_.compare_exchange_strong(expected, current, std::memory_order_relaxed)) {
+        // Fast path: an already-bound span does a plain relaxed load. Even a
+        // failed compare_exchange is an RMW that takes the cache line
+        // exclusive, so the CAS is reserved for the one-time binding below.
+        auto owner = owner_thread_id_.load(std::memory_order_relaxed);
+        if (owner == current) {
             return;
         }
-        if (expected != current) {
-            LOG_ERROR("span accessed from another thread (owner hash={}, current hash={}): a span "
-                      "must be used by a single thread; use NewAsyncSpan() to continue on another thread",
-                      std::hash<std::thread::id>{}(expected), std::hash<std::thread::id>{}(current));
-            assert(false && "SpanImpl accessed from a thread other than its owner");
+        // Bind to the first thread that records a span event. The CAS resolves
+        // the (already contract-violating) race of two threads both observing
+        // an unbound span: exactly one binds, the loser falls through with
+        // `owner` holding the winner and reports the violation below.
+        if (owner == std::thread::id{} &&
+            owner_thread_id_.compare_exchange_strong(owner, current, std::memory_order_relaxed)) {
+            return;
         }
+        LOG_ERROR("span accessed from another thread (owner hash={}, current hash={}): a span "
+                  "must be used by a single thread; use NewAsyncSpan() to continue on another thread",
+                  std::hash<std::thread::id>{}(owner), std::hash<std::thread::id>{}(current));
+        assert(false && "SpanImpl accessed from a thread other than its owner");
     }
 
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
