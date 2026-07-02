@@ -112,13 +112,26 @@ namespace pinpoint {
 
     private:
         static constexpr size_t kActiveSpanShardCount = 64;
+        static constexpr size_t kResponseTimeShardCount = 16;
 
         struct ActiveSpanShard {
             std::mutex mutex_;
             std::unordered_map<int64_t, int64_t> spans_;
         };
 
+        // One cache line per shard: every request end updates exactly one
+        // shard (picked by thread id), so the per-request RMWs never contend
+        // across shards. writers_ shares its shard's line on purpose — it is
+        // only ever touched by the same threads that update that shard.
+        struct alignas(64) ResponseTimeShard {
+            std::atomic<int64_t> acc_response_time_{0};
+            std::atomic<int64_t> request_count_{0};
+            std::atomic<int64_t> max_response_time_{0};
+            std::atomic<int64_t> writers_{0};
+        };
+
         ActiveSpanShard& activeSpanShard(int64_t spanId);
+        ResponseTimeShard& responseTimeShard();
 
         // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
         // the stats worker before its own destruction, so agent_ never dangles.
@@ -132,10 +145,7 @@ namespace pinpoint {
         clock_t last_sys_cpu_time_{0};
         clock_t last_proc_cpu_time_{0};
         
-        std::atomic<int64_t> acc_response_time_{0};
-        std::atomic<int64_t> request_count_{0};
-        std::atomic<int64_t> max_response_time_{0};
-        std::atomic<int64_t> response_time_writers_{0};
+        std::array<ResponseTimeShard, kResponseTimeShardCount> response_time_shards_;
         std::atomic<bool> response_time_snapshotting_{false};
         std::mutex response_time_snapshot_mutex_;
         

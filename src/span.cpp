@@ -221,6 +221,7 @@ namespace pinpoint {
         url_stat_{},
         exceptions_{} {
         assert(agent_ != nullptr);
+        config_ = agent_->getConfig();
         const auto app_type = agent_->getAppType();
         const auto api_id = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
         data_ = std::make_shared<SpanData>(operation, app_type, api_id);
@@ -248,7 +249,7 @@ namespace pinpoint {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         checkOwnerThread();
 
-        const auto cfg = agent_->getConfig();
+        const auto& cfg = config_;
         const auto depth = data_->getEventDepth();
         const auto seq = data_->getEventSequence();
 
@@ -302,8 +303,7 @@ namespace pinpoint {
 
         data_->finishSpanEvent();
 
-        const auto cfg = agent_->getConfig();
-        if (data_->getFinishedEventsCount() >= cfg->span.event_chunk_size) {
+        if (data_->getFinishedEventsCount() >= config_->span.event_chunk_size) {
             record_chunk(false);
         }
     }

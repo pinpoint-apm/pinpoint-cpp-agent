@@ -88,7 +88,7 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
         SetError(error_name, error_message);
 
-        const auto cfg = agent_->getConfig();
+        const auto& cfg = span_->config_;
         if (!cfg->enable_callstack_trace) {
             return;
         }
@@ -113,7 +113,7 @@ namespace pinpoint {
         static const SqlNormalizer normalizer(64*1024);
         SqlNormalizeResult result = normalizer.normalize(sql_query);
 
-        const auto config = agent_->getConfig();
+        const auto& config = span_->config_;
         if (config->sql.enable_sql_stats) {
             auto sql_uid = agent_->cacheSqlUid(result.normalized_sql);
             if (sql_uid) {

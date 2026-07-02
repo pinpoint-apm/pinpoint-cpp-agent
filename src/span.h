@@ -458,6 +458,13 @@ namespace pinpoint {
 	    friend class SpanEventImpl;
 
             AgentService *agent_;
+            // Config snapshot taken once at span creation. Per-event hot paths
+            // (NewSpanEvent/EndSpanEvent and the SpanEventImpl recorders) read
+            // this instead of agent_->getConfig(), so they pay no atomic
+            // shared_ptr load per call, and the span's limits (max_event_depth,
+            // event_chunk_size, ...) stay consistent for its whole lifetime
+            // even when a config reload lands mid-span.
+            std::shared_ptr<const Config> config_;
             std::shared_ptr<SpanData> data_;
             std::atomic<int32_t> overflow_;
             std::atomic<bool> finished_;

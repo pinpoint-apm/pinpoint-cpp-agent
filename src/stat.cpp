@@ -223,9 +223,11 @@ namespace pinpoint {
         {
             std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
             pauseResponseTimeUpdates();
-            acc_response_time_.store(0, std::memory_order_relaxed);
-            request_count_.store(0, std::memory_order_relaxed);
-            max_response_time_.store(0, std::memory_order_relaxed);
+            for (auto& shard : response_time_shards_) {
+                shard.acc_response_time_.store(0, std::memory_order_relaxed);
+                shard.request_count_.store(0, std::memory_order_relaxed);
+                shard.max_response_time_.store(0, std::memory_order_relaxed);
+            }
             resumeResponseTimeUpdates();
         }
         
@@ -240,8 +242,12 @@ namespace pinpoint {
     int64_t AgentStats::getResponseTimeAvg() {
         std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
         pauseResponseTimeUpdates();
-        const auto request_count = request_count_.load(std::memory_order_relaxed);
-        const auto acc_response_time = acc_response_time_.load(std::memory_order_relaxed);
+        int64_t request_count = 0;
+        int64_t acc_response_time = 0;
+        for (auto& shard : response_time_shards_) {
+            request_count += shard.request_count_.load(std::memory_order_relaxed);
+            acc_response_time += shard.acc_response_time_.load(std::memory_order_relaxed);
+        }
         resumeResponseTimeUpdates();
 
         if (request_count > 0) {
@@ -252,8 +258,10 @@ namespace pinpoint {
 
     void AgentStats::pauseResponseTimeUpdates() {
         response_time_snapshotting_.store(true, std::memory_order_release);
-        while (response_time_writers_.load(std::memory_order_acquire) != 0) {
-            std::this_thread::yield();
+        for (auto& shard : response_time_shards_) {
+            while (shard.writers_.load(std::memory_order_acquire) != 0) {
+                std::this_thread::yield();
+            }
         }
     }
 
@@ -265,9 +273,17 @@ namespace pinpoint {
         std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
         pauseResponseTimeUpdates();
 
-        const auto request_count = request_count_.exchange(0, std::memory_order_relaxed);
-        const auto acc_response_time = acc_response_time_.exchange(0, std::memory_order_relaxed);
-        max = max_response_time_.exchange(0, std::memory_order_relaxed);
+        int64_t request_count = 0;
+        int64_t acc_response_time = 0;
+        max = 0;
+        for (auto& shard : response_time_shards_) {
+            request_count += shard.request_count_.exchange(0, std::memory_order_relaxed);
+            acc_response_time += shard.acc_response_time_.exchange(0, std::memory_order_relaxed);
+            const auto shard_max = shard.max_response_time_.exchange(0, std::memory_order_relaxed);
+            if (shard_max > max) {
+                max = shard_max;
+            }
+        }
 
         resumeResponseTimeUpdates();
         avg = request_count > 0 ? acc_response_time / request_count : 0;
@@ -284,30 +300,40 @@ namespace pinpoint {
         batch_ = 0;
     }
 
+    AgentStats::ResponseTimeShard& AgentStats::responseTimeShard() {
+        // Hashed once per thread: each application thread sticks to one shard
+        // for its lifetime, so its RMWs stay on a single cache line that no
+        // other shard's threads touch.
+        static const thread_local size_t shard_index =
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) % kResponseTimeShardCount;
+        return response_time_shards_[shard_index];
+    }
+
     void AgentStats::collectResponseTime(int64_t response_time) {
+        auto& shard = responseTimeShard();
         for (;;) {
             while (response_time_snapshotting_.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
 
-            response_time_writers_.fetch_add(1, std::memory_order_acq_rel);
+            shard.writers_.fetch_add(1, std::memory_order_acq_rel);
             if (!response_time_snapshotting_.load(std::memory_order_acquire)) {
                 break;
             }
-            response_time_writers_.fetch_sub(1, std::memory_order_acq_rel);
+            shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
         }
 
-        acc_response_time_.fetch_add(response_time, std::memory_order_relaxed);
-        request_count_.fetch_add(1, std::memory_order_relaxed);
+        shard.acc_response_time_.fetch_add(response_time, std::memory_order_relaxed);
+        shard.request_count_.fetch_add(1, std::memory_order_relaxed);
 
-        auto current_max = max_response_time_.load(std::memory_order_relaxed);
+        auto current_max = shard.max_response_time_.load(std::memory_order_relaxed);
         while (current_max < response_time &&
-               !max_response_time_.compare_exchange_weak(current_max, response_time,
-                                                          std::memory_order_relaxed,
-                                                          std::memory_order_relaxed)) {
+               !shard.max_response_time_.compare_exchange_weak(current_max, response_time,
+                                                               std::memory_order_relaxed,
+                                                               std::memory_order_relaxed)) {
         }
 
-        response_time_writers_.fetch_sub(1, std::memory_order_acq_rel);
+        shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
     AgentStats::ActiveSpanShard& AgentStats::activeSpanShard(int64_t spanId) {
