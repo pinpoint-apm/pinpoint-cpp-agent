@@ -54,7 +54,6 @@ namespace pinpoint {
                          std::unique_ptr<GrpcSpan> grpc_span,
                          std::unique_ptr<GrpcStats> grpc_stat,
                          std::unique_ptr<GrpcCommand> grpc_command) :
-        config_(std::shared_ptr<const Config>(std::move(cfg))),
         grpc_agent_(std::move(grpc_agent)),
         grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
@@ -65,13 +64,13 @@ namespace pinpoint {
 
         // Snapshot the immutable identity fields once. isReloadable() guarantees
         // they never change for this agent, so the per-request getters below can
-        // serve them without touching the atomic config_.
-        if (const auto initial_cfg = config_.load()) {
-            app_name_ = initial_cfg->app_name_;
-            app_type_ = initial_cfg->app_type_;
-            agent_id_ = initial_cfg->agent_id_;
-            agent_name_ = initial_cfg->agent_name_;
-            service_name_ = initial_cfg->service_name_;
+        // serve them without touching the atomic runtime_.
+        if (cfg) {
+            app_name_ = cfg->app_name_;
+            app_type_ = cfg->app_type_;
+            agent_id_ = cfg->agent_id_;
+            agent_name_ = cfg->agent_name_;
+            service_name_ = cfg->service_name_;
         }
 
         agent_stats_ = std::make_unique<AgentStats>(this);
@@ -81,11 +80,10 @@ namespace pinpoint {
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
-        
-        // Initial build: no previous config, so every component is created.
-        // config_ was already set from the ctor init-list above; apply_config
-        // only builds the derived components and does not touch config_.
-        apply_config(nullptr, config_.load());
+
+        // Initial build: no previous runtime, so every component is created
+        // and published together in one atomic store.
+        apply_config(nullptr, std::move(cfg));
 
         // Start the config-file watcher BEFORE spawning init_thread_. Both can
         // throw (std::filesystem errors, thread-creation failure under resource
@@ -109,7 +107,8 @@ namespace pinpoint {
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
-        return config_.load();
+        const auto runtime = runtime_.load();
+        return runtime ? runtime->config : nullptr;
     }
 
     // Served from the construction-time snapshot (see ctor): these never change
@@ -134,8 +133,7 @@ namespace pinpoint {
         return service_name_;
     }
 
-    void AgentImpl::init_header_recorders(const std::shared_ptr<const Config>& cfg) {
-        // Server-side header recorders
+    void AgentImpl::build_header_recorders(AgentRuntime& rt, const Config& cfg) {
         struct HeaderRecorderConfig {
             HeaderType type;
             int32_t annotation_key;
@@ -143,37 +141,29 @@ namespace pinpoint {
         };
 
         const HeaderRecorderConfig server_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg->http.server.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg->http.server.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg->http.server.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg.http.server.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.server.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg.http.server.rec_request_cookie}
         };
 
         const HeaderRecorderConfig client_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg->http.client.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg->http.client.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg->http.client.rec_request_cookie}
+            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg.http.client.rec_request_header},
+            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.client.rec_response_header},
+            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg.http.client.rec_request_cookie}
         };
-
-        std::shared_ptr<HttpHeaderRecorder> new_srv[3]{};
-        std::shared_ptr<HttpHeaderRecorder> new_cli[3]{};
 
         for (const auto& recorder_cfg : server_configs) {
             if (!recorder_cfg.config_value.empty()) {
-                new_srv[recorder_cfg.type] =
+                rt.http_srv_header_recorder[recorder_cfg.type] =
                     std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
             }
         }
 
         for (const auto& recorder_cfg : client_configs) {
             if (!recorder_cfg.config_value.empty()) {
-                new_cli[recorder_cfg.type] =
+                rt.http_cli_header_recorder[recorder_cfg.type] =
                     std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
             }
-        }
-
-        for (size_t i = 0; i < 3; ++i) {
-            http_srv_header_recorder_[i].store(new_srv[i]);
-            http_cli_header_recorder_[i].store(new_cli[i]);
         }
     }
 
@@ -200,64 +190,82 @@ namespace pinpoint {
         }
     }
 
-    void AgentImpl::apply_config(const std::shared_ptr<const Config>& old_cfg,
-                                 const std::shared_ptr<const Config>& cfg) {
-        // A null old_cfg means the initial construction, where nothing has been
+    std::shared_ptr<const AgentRuntime> AgentImpl::build_runtime(
+            const std::shared_ptr<const AgentRuntime>& old_rt,
+            std::shared_ptr<const Config> cfg) {
+        // A null old_rt means the initial construction, where nothing has been
         // built yet, so every component must be created. On a reload we already
         // have live components and only rebuild the ones whose backing config
         // changed — rebuilding unchanged components would needlessly discard
         // their accumulated state (e.g. the throughput sampler's counters).
-        const bool first_build = (old_cfg == nullptr);
+        // Unchanged components are shared with the previous runtime instead.
+        const Config* old_cfg = old_rt ? old_rt->config.get() : nullptr;
+
+        auto rt = std::make_shared<AgentRuntime>();
+        rt->config = std::move(cfg);
+        const Config& c = *rt->config;
 
         // Rebuild sampler
-        if (first_build || sampling_config_changed(*old_cfg, *cfg)) {
+        if (!old_cfg || sampling_config_changed(*old_cfg, c)) {
             std::unique_ptr<Sampler> sampler;
-            if (compare_string(cfg->sampling.type, PERCENT_SAMPLING)) {
-                sampler = std::make_unique<PercentSampler>(cfg->sampling.percent_rate);
+            if (compare_string(c.sampling.type, PERCENT_SAMPLING)) {
+                sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
             } else {
-                sampler = std::make_unique<CounterSampler>(cfg->sampling.counter_rate);
+                sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
             }
 
-            std::shared_ptr<TraceSampler> new_sampler;
-            if (cfg->sampling.new_throughput > 0 || cfg->sampling.cont_throughput > 0) {
-                new_sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                            cfg->sampling.new_throughput,
-                                                                            cfg->sampling.cont_throughput);
+            if (c.sampling.new_throughput > 0 || c.sampling.cont_throughput > 0) {
+                rt->sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
+                                                                            c.sampling.new_throughput,
+                                                                            c.sampling.cont_throughput);
             } else {
-                new_sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
+                rt->sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
             }
-            sampler_.store(std::move(new_sampler));
+        } else {
+            rt->sampler = old_rt->sampler;
         }
 
         // Rebuild HTTP filters
-        if (first_build || old_cfg->http.server.exclude_url != cfg->http.server.exclude_url) {
-            std::shared_ptr<HttpUrlFilter> new_url_filter;
-            if (!cfg->http.server.exclude_url.empty()) {
-                new_url_filter = std::make_shared<HttpUrlFilter>(cfg->http.server.exclude_url);
+        if (!old_cfg || old_cfg->http.server.exclude_url != c.http.server.exclude_url) {
+            if (!c.http.server.exclude_url.empty()) {
+                rt->http_url_filter = std::make_shared<HttpUrlFilter>(c.http.server.exclude_url);
             }
-            http_url_filter_.store(std::move(new_url_filter));
+        } else {
+            rt->http_url_filter = old_rt->http_url_filter;
         }
 
-        if (first_build || old_cfg->http.server.exclude_method != cfg->http.server.exclude_method) {
-            std::shared_ptr<HttpMethodFilter> new_method_filter;
-            if (!cfg->http.server.exclude_method.empty()) {
-                new_method_filter = std::make_shared<HttpMethodFilter>(cfg->http.server.exclude_method);
+        if (!old_cfg || old_cfg->http.server.exclude_method != c.http.server.exclude_method) {
+            if (!c.http.server.exclude_method.empty()) {
+                rt->http_method_filter = std::make_shared<HttpMethodFilter>(c.http.server.exclude_method);
             }
-            http_method_filter_.store(std::move(new_method_filter));
+        } else {
+            rt->http_method_filter = old_rt->http_method_filter;
         }
 
-        if (first_build || old_cfg->http.server.status_errors != cfg->http.server.status_errors) {
-            std::shared_ptr<HttpStatusErrors> new_status_errors;
-            if (!cfg->http.server.status_errors.empty()) {
-                new_status_errors = std::make_shared<HttpStatusErrors>(cfg->http.server.status_errors);
+        if (!old_cfg || old_cfg->http.server.status_errors != c.http.server.status_errors) {
+            if (!c.http.server.status_errors.empty()) {
+                rt->http_status_errors = std::make_shared<HttpStatusErrors>(c.http.server.status_errors);
             }
-            http_status_errors_.store(std::move(new_status_errors));
+        } else {
+            rt->http_status_errors = old_rt->http_status_errors;
         }
 
         // Rebuild header recorders
-        if (first_build || header_recorder_config_changed(*old_cfg, *cfg)) {
-            init_header_recorders(cfg);
+        if (!old_cfg || header_recorder_config_changed(*old_cfg, c)) {
+            build_header_recorders(*rt, c);
+        } else {
+            for (size_t i = 0; i < 3; ++i) {
+                rt->http_srv_header_recorder[i] = old_rt->http_srv_header_recorder[i];
+                rt->http_cli_header_recorder[i] = old_rt->http_cli_header_recorder[i];
+            }
         }
+
+        return rt;
+    }
+
+    void AgentImpl::apply_config(const std::shared_ptr<const AgentRuntime>& old_rt,
+                                 std::shared_ptr<const Config> cfg) {
+        runtime_.store(build_runtime(old_rt, std::move(cfg)));
 
         if (grpc_agent_) {
             grpc_agent_->refreshAgentInfo();
@@ -265,14 +273,13 @@ namespace pinpoint {
     }
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
-        // Serialize writers so a CreateAgent()-driven reload and the config-file
-        // watcher thread cannot interleave their stores and publish a mixed
-        // configuration. Readers remain lock-free (AtomicSharedPtr::load()).
+        // Serialize writers: building the new runtime is a load-build-store
+        // read-modify-write of runtime_, so a CreateAgent()-driven reload and
+        // the config-file watcher thread could otherwise both build from the
+        // same old runtime and lose one of the updates. Readers remain
+        // lock-free (a single AtomicSharedPtr::load()).
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
-
-        const auto old_cfg = config_.load();
-        config_.store(std::move(cfg));
-        apply_config(old_cfg, config_.load());
+        apply_config(runtime_.load(), std::move(cfg));
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -451,11 +458,13 @@ namespace pinpoint {
         if (!enabled_) {
             return noopSpan();
         }
-        const auto url_filter = http_url_filter_.load();
+        // One atomic load covers the filters and the sampler for this request.
+        const auto runtime = runtime_.load();
+        const auto& url_filter = runtime->http_url_filter;
         if (url_filter && url_filter->isFiltered(rpc_point)) {
             return noopSpan();
         }
-        const auto method_filter = http_method_filter_.load();
+        const auto& method_filter = runtime->http_method_filter;
         if (!method.empty() && method_filter && method_filter->isFiltered(method)) {
             return noopSpan();
         }
@@ -465,24 +474,23 @@ namespace pinpoint {
             return std::make_shared<UnsampledSpan>(this);
         }
 
-        auto sampler = sampler_.load();
+        const auto& sampler = runtime->sampler;
         if (!sampler) {
             return noopSpan();
         }
 
-        bool my_sampling = false;
-        if (const auto tid = reader.Get(HEADER_TRACE_ID); tid.has_value()) {
-            my_sampling = sampler->isContinueSampled();
-        } else {
-            my_sampling = sampler->isNewSampled();
-        }
+        auto tid = reader.Get(HEADER_TRACE_ID);
+        const bool my_sampling = tid.has_value() ? sampler->isContinueSampled()
+                                                 : sampler->isNewSampled();
 
-        SpanPtr span;
         if (my_sampling) {
-            span = std::make_shared<SpanImpl>(this, operation, rpc_point);
-        } else {
-            span = std::make_shared<UnsampledSpan>(this);
+            // Hand the already-read trace id to the impl-level extract so the
+            // header is not looked up (and its value not allocated) twice.
+            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point);
+            span->extractContext(reader, std::move(tid));
+            return span;
         }
+        auto span = std::make_shared<UnsampledSpan>(this);
         span->ExtractContext(reader);
         return span;
     } catch (const std::exception& e) {
@@ -678,9 +686,9 @@ namespace pinpoint {
     }
 
     bool AgentImpl::isStatusFail(const int status) const {
-        const auto status_errors = http_status_errors_.load();
-        if (enabled_ && status_errors) {
-            return status_errors->isErrorCode(status);
+        const auto runtime = runtime_.load();
+        if (enabled_ && runtime->http_status_errors) {
+            return runtime->http_status_errors->isErrorCode(status);
         }
         return false;
     }
@@ -689,7 +697,8 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto recorder = http_srv_header_recorder_[which].load();
+        const auto runtime = runtime_.load();
+        const auto& recorder = runtime->http_srv_header_recorder[which];
         if (enabled_ && recorder) {
             recorder->recordHeader(reader, annotation);
         }
@@ -699,7 +708,8 @@ namespace pinpoint {
         if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto recorder = http_cli_header_recorder_[which].load();
+        const auto runtime = runtime_.load();
+        const auto& recorder = runtime->http_cli_header_recorder[which];
         if (enabled_ && recorder) {
             recorder->recordHeader(reader, annotation);
         }

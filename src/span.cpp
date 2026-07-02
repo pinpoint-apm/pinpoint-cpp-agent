@@ -360,8 +360,13 @@ namespace pinpoint {
 
     void SpanImpl::ExtractContext(TraceContextReader& reader) {
         CHECK_FINISHED();
+        extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    }
 
-        if (auto tid = reader.Get(HEADER_TRACE_ID); !tid.has_value()) {
+    void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string> tid) {
+        CHECK_FINISHED();
+
+        if (!tid.has_value()) {
             data_->setTraceId(agent_->generateTraceId());
         } else {
             data_->parseTraceId(tid.value());

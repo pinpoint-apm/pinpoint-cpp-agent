@@ -352,7 +352,7 @@ On reload, each of the following internal components is rebuilt **only if its ba
 - **HTTP status error codes** — rebuilt when `Http.Server.StatusCodeErrors` changes.
 - **HTTP header recorders** — rebuilt when any server- or client-side header/cookie recording list changes.
 
-All swaps are performed atomically (thread-safe), so in-flight requests are not affected. Each span also snapshots the configuration once at creation, so reloadable per-span options (e.g. `Span.MaxEventDepth`, `Span.EventChunkSize`, `Sql.EnableSqlStats`) take effect for spans **created after** the reload; a span that is already open keeps the values it started with.
+All rebuilt components are published together in a **single atomic swap** (thread-safe), so in-flight requests are not affected and can never observe a half-applied reload. Each span also snapshots the configuration once at creation, so reloadable per-span options (e.g. `Span.MaxEventDepth`, `Span.EventChunkSize`, `Sql.EnableSqlStats`) take effect for spans **created after** the reload; a span that is already open keeps the values it started with.
 
 ### Requirements
 

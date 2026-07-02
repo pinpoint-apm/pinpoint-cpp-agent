@@ -36,6 +36,24 @@
 namespace pinpoint {
 
     /**
+     * @brief Immutable bundle of the resolved config and every component derived from it.
+     *
+     * Covers the sampler, HTTP filters and header recorders. Published behind a
+     * single AtomicSharedPtr so per-request readers pay one atomic load for a
+     * mutually consistent set, and a reload swap can never be observed
+     * half-applied.
+     */
+    struct AgentRuntime {
+        std::shared_ptr<const Config> config;
+        std::shared_ptr<TraceSampler> sampler;
+        std::shared_ptr<HttpUrlFilter> http_url_filter;
+        std::shared_ptr<HttpMethodFilter> http_method_filter;
+        std::shared_ptr<HttpStatusErrors> http_status_errors;
+        std::shared_ptr<HttpHeaderRecorder> http_srv_header_recorder[3];
+        std::shared_ptr<HttpHeaderRecorder> http_cli_header_recorder[3];
+    };
+
+    /**
      * @brief Concrete agent implementation that wires together configuration, samplers and transports.
      *
      * `AgentImpl` orchestrates span creation, metadata caching, gRPC workers and statistics collection.
@@ -129,12 +147,14 @@ namespace pinpoint {
 
     private:
 
-        AtomicSharedPtr<const Config> config_;
-        AtomicSharedPtr<TraceSampler> sampler_;
+        // Single source of truth for the config and its derived components
+        // (see AgentRuntime). One load() per request yields a mutually
+        // consistent snapshot of all of them.
+        AtomicSharedPtr<const AgentRuntime> runtime_;
 
     	// Identity fields snapshotted once at construction. Config::isReloadable()
     	// guarantees these never change while this agent lives, so they are served
-    	// directly — without an atomic config_ load (shared_mutex lock + shared_ptr
+    	// directly — without an atomic runtime_ load (shared_mutex lock + shared_ptr
     	// copy) or a string copy — on the per-request hot path (e.g. InjectContext,
     	// SpanData ctor, generateTraceId).
     	std::string app_name_;
@@ -166,21 +186,13 @@ namespace pinpoint {
     	std::thread url_stat_send_thread_;
     	std::thread agent_stat_thread_;
 
-    	AtomicSharedPtr<HttpUrlFilter> http_url_filter_;
-    	AtomicSharedPtr<HttpMethodFilter> http_method_filter_;
-    	AtomicSharedPtr<HttpStatusErrors> http_status_errors_;
-    	AtomicSharedPtr<HttpHeaderRecorder> http_srv_header_recorder_[3];
-    	AtomicSharedPtr<HttpHeaderRecorder> http_cli_header_recorder_[3];
-
-    	// Serializes reloadConfig() writers. reloadConfig performs a sequence of
-    	// independent AtomicSharedPtr stores (config_, sampler_, filters, and the
-    	// six header-recorder slots); each store is individually atomic, but the
-    	// sequence is not. Two concurrent reloads — e.g. a CreateAgent()-driven
-    	// reload (holding global_agent_mutex) racing the config-file watcher
-    	// thread (which does NOT hold it) — could otherwise interleave their
-    	// stores and leave a mixed configuration snapshot (config_ from one
-    	// version, sampler_/recorders from another). Readers on the hot path
-    	// stay lock-free via AtomicSharedPtr::load(); only writers take this.
+    	// Serializes reloadConfig() writers. Building a new AgentRuntime is a
+    	// load-build-store read-modify-write of runtime_: two concurrent
+    	// reloads — e.g. a CreateAgent()-driven reload (holding
+    	// global_agent_mutex) racing the config-file watcher thread (which does
+    	// NOT hold it) — could otherwise both build from the same old runtime
+    	// and lose one of the updates. Readers on the hot path stay lock-free
+    	// via a single AtomicSharedPtr::load(); only writers take this.
     	std::mutex reload_mutex_;
 
         int64_t start_time_{};
@@ -188,14 +200,19 @@ namespace pinpoint {
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
 
-    	/// @brief (Re)builds config-derived components (sampler, HTTP filters,
-    	/// header recorders), skipping any whose backing configuration is
-    	/// unchanged from old_cfg. A null old_cfg forces a full build and is used
-    	/// for the initial construction path.
-    	void apply_config(const std::shared_ptr<const Config>& old_cfg,
-    	                  const std::shared_ptr<const Config>& cfg);
-    	/// @brief Initializes HTTP header recorders for server and client.
-    	void init_header_recorders(const std::shared_ptr<const Config>& cfg);
+    	/// @brief Builds a new AgentRuntime for cfg, rebuilding only the
+    	/// components whose backing configuration changed relative to old_rt;
+    	/// unchanged components are shared with the previous runtime so their
+    	/// warmed-up state (e.g. throughput-sampler counters) survives. A null
+    	/// old_rt forces a full build and is used for the initial construction.
+    	std::shared_ptr<const AgentRuntime> build_runtime(
+    	        const std::shared_ptr<const AgentRuntime>& old_rt,
+    	        std::shared_ptr<const Config> cfg);
+    	/// @brief Builds and atomically publishes the runtime for cfg.
+    	void apply_config(const std::shared_ptr<const AgentRuntime>& old_rt,
+    	                  std::shared_ptr<const Config> cfg);
+    	/// @brief Populates rt's HTTP header recorders for server and client.
+    	static void build_header_recorders(AgentRuntime& rt, const Config& cfg);
     	/// @brief Starts background threads responsible for gRPC communication.
     	void init_grpc_workers();
     	/// @brief Signals all gRPC workers to stop and joins their threads.
