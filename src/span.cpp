@@ -262,7 +262,11 @@ namespace pinpoint {
         if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
             overflow_++;
             LOG_WARN("span event maximum depth/sequence exceeded. (depth:{}, seq:{})", depth, seq);
-            return noopSpanEvent();
+            // Overflow is a profiling depth limit, not a sampling decision:
+            // like the Java agent's DisableSpanEvent, the returned event
+            // records nothing but its InjectContext still propagates the full
+            // trace context so the distributed trace is not cut here.
+            return disabledSpanEvent();
         }
 
         auto se = std::make_unique<SpanEventImpl>(this, operation);
@@ -275,7 +279,10 @@ namespace pinpoint {
 
     SpanEventPtr SpanImpl::GetSpanEvent() {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
-        CHECK_OVERFLOW_WITH_RETURN(noopSpanEvent());
+        // While overflowed, the top of the stack is a discarded event: hand
+        // out the disabled event so InjectContext keeps working (see
+        // NewSpanEvent).
+        CHECK_OVERFLOW_WITH_RETURN(disabledSpanEvent());
 
         auto se = data_->topSpanEvent();
         if (!se) {
@@ -336,6 +343,35 @@ namespace pinpoint {
         }
 
         record_chunk(true);
+    }
+
+    SpanEventPtr SpanImpl::disabledSpanEvent() {
+        if (!disabled_event_) {
+            disabled_event_ = std::make_unique<DisabledSpanEvent>(this);
+        }
+        return disabled_event_.get();
+    }
+
+    void SpanImpl::injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host) {
+        CHECK_FINISHED();
+
+        const auto& trace_id = data_->getTraceId();
+
+        writer.Set(HEADER_TRACE_ID, trace_id.ToString());
+        writer.Set(HEADER_SPAN_ID, std::to_string(next_span_id));
+        writer.Set(HEADER_PARENT_SPAN_ID, std::to_string(data_->getSpanId()));
+        writer.Set(HEADER_FLAG, std::to_string(data_->getFlags()));
+        writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
+        writer.Set(HEADER_PARENT_APP_TYPE, std::to_string(agent_->getAppType()));
+        // The agent's own service name is sent only when present, which (per
+        // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
+        // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
+        // which writes Pinpoint-pServiceName only when serviceName != null.
+        if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
+            writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
+        }
+        writer.Set(HEADER_PARENT_APP_NAMESPACE, "");
+        writer.Set(HEADER_HOST, host);
     }
 
     void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string_view> tid) {

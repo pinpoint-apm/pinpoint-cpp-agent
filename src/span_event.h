@@ -151,4 +151,45 @@ namespace pinpoint {
         mutable std::unique_ptr<PinpointAnnotation> annotations_;
     };
 
+    /**
+     * @brief Span event handed out when the span's event stack has overflowed
+     *        (max depth/sequence reached), mirroring the Java agent's
+     *        DisableSpanEvent: nothing is recorded locally, but InjectContext
+     *        still writes the full trace context so the distributed trace is
+     *        not cut at the overflow point — overflow is a profiling depth
+     *        limit, not a sampling decision.
+     *
+     * One instance per span, created lazily on first overflow and owned by the
+     * SpanImpl that hands it out, so the pointer stays valid for the span's
+     * whole lifetime. Because the instance is shared by every overflowed event
+     * of the span, the kept destination reflects the most recent SetDestination
+     * call (only used for the Pinpoint-Host header).
+     */
+    class DisabledSpanEvent final : public SpanEvent {
+    public:
+        explicit DisabledSpanEvent(SpanImpl* span) : span_(span) {}
+        ~DisabledSpanEvent() override {}
+
+        void SetServiceType(int32_t type) override {}
+        void SetOperationName(std::string_view operation) override {}
+        void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
+        /// @brief Destination is kept (not recorded) so InjectContext can still
+        /// write the Pinpoint-Host header for the outbound call.
+        void SetDestination(std::string_view dest) override { destination_id_ = dest; }
+        void SetEndPoint(std::string_view end_point) override {}
+        void SetError(std::string_view error_message) override {}
+        void SetError(std::string_view error_name, std::string_view error_message) override {}
+        void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
+        void SetSqlQuery(std::string_view sql_query, std::string_view args) override {}
+        void RecordHeader(HeaderType which, HeaderReader& reader) override {}
+        void InjectContext(TraceContextWriter& writer) override;
+
+        AnnotationPtr GetAnnotations() const override;
+        void EndEvent() override;
+
+    private:
+        SpanImpl* span_;
+        std::string destination_id_;
+    };
+
 }  // namespace pinpoint

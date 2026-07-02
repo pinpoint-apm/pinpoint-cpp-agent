@@ -1010,7 +1010,7 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
 
     // Next event should overflow (depth = 64 >= max_event_depth=64)
     auto overflow_event = span.NewSpanEvent("overflow-event");
-    EXPECT_NE(overflow_event, nullptr) << "Should return noop event on overflow";
+    EXPECT_NE(overflow_event, nullptr) << "Should return disabled event on overflow";
 
     // EndSpanEvent should decrement overflow counter, not pop from stack
     span.EndSpanEvent();
@@ -1042,11 +1042,63 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
 
     // Next one should overflow
     auto overflow = span.NewSpanEvent("overflow");
-    // The overflow event should be a noop
-    EXPECT_EQ(overflow, noopSpanEvent());
+    // The overflow event records nothing, but it is NOT the plain noop: it
+    // still injects the full trace context (Java DisableSpanEvent parity).
+    EXPECT_NE(overflow, noopSpanEvent());
+    MockTraceContextWriter writer;
+    overflow->InjectContext(writer);
+    EXPECT_TRUE(writer.Get(HEADER_TRACE_ID).has_value())
+        << "Sequence overflow must not cut the distributed trace";
     span.EndSpanEvent();  // decrements overflow
 
     span.EndSpan();
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+// ========== SpanImpl Overflow: DisabledSpanEvent (Java DisableSpanEvent parity) ==========
+
+// Overflow is a profiling depth limit, not a sampling decision: the disabled
+// event returned on overflow records nothing locally but still injects the
+// full trace context, so the distributed trace continues downstream.
+TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 2;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+
+    auto real = span.NewSpanEvent("real-event");
+    auto overflowed = span.NewSpanEvent("overflowed-event"); // depth 2 >= max 2
+    EXPECT_NE(overflowed, noopSpanEvent())
+        << "Overflow should hand out the disabled event, not the plain noop";
+    EXPECT_EQ(span.GetSpanEvent(), overflowed)
+        << "GetSpanEvent during overflow should return the disabled event";
+
+    // Recording is a no-op and must not crash.
+    overflowed->SetDestination("downstream:8080");
+    overflowed->SetError("ignored");
+    EXPECT_EQ(overflowed->GetAnnotations(), noopAnnotation());
+
+    MockTraceContextWriter writer;
+    overflowed->InjectContext(writer);
+    EXPECT_EQ(writer.Get(HEADER_TRACE_ID).value(), "test-agent^1700000000^42");
+    EXPECT_EQ(writer.Get(HEADER_PARENT_SPAN_ID).value(), "555");
+    EXPECT_TRUE(writer.Get(HEADER_SPAN_ID).has_value())
+        << "A child span id must still be generated during overflow";
+    EXPECT_EQ(writer.Get(HEADER_HOST).value(), "downstream:8080");
+
+    span.EndSpanEvent(); // consumes the overflow placeholder
+    EXPECT_EQ(span.GetSpanEvent(), real)
+        << "After the overflow resolves, the real top event is handed out again";
+    span.EndSpanEvent();
+    span.EndSpan();
+
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 

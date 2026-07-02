@@ -426,6 +426,18 @@ namespace pinpoint {
     	 *            reader.Get() call, per the Get view-lifetime contract.
     	 */
     	void extractContext(TraceContextReader& reader, std::optional<std::string_view> tid);
+    	/**
+    	 * @brief Injects this span's context into an outbound propagation carrier.
+    	 *
+    	 * Impl-level only: called by the span events this span hands out
+    	 * (SpanEventImpl and DisabledSpanEvent) to implement
+    	 * SpanEvent::InjectContext. No-op once the span is finished.
+    	 *
+    	 * @param writer Outbound carrier writer.
+    	 * @param next_span_id Child span id generated for the outbound call.
+    	 * @param host Destination of the outbound call (Pinpoint-Host header).
+    	 */
+    	void injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host);
 
         TraceId& GetTraceId() override { return data_->getTraceId(); }
         int64_t GetSpanId() override { return data_->getSpanId(); }
@@ -480,6 +492,12 @@ namespace pinpoint {
             std::atomic<bool> finished_;
             std::optional<UrlStatEntry> url_stat_;
             std::vector<std::unique_ptr<Exception>> exceptions_;
+            // Handed out instead of a real event while the event stack is
+            // overflowed (Java agent's DisableSpanEvent parity): records
+            // nothing but still injects full trace context. Created lazily on
+            // the first overflow, one shared instance per span.
+            std::unique_ptr<DisabledSpanEvent> disabled_event_;
+            SpanEventPtr disabledSpanEvent();
 
             // Owning-thread guard enforcing the Span single-thread contract
             // (see pinpoint/tracer.h). Bound lazily on the first NewSpanEvent
