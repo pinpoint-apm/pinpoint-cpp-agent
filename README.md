@@ -105,7 +105,7 @@ int main() {
     // Record a sub-operation
     auto se = span->NewSpanEvent("processData");
     // ... your business logic ...
-    span->EndSpanEvent();
+    se->EndEvent();
 
     // End the span (sends trace to collector)
     span->EndSpan();

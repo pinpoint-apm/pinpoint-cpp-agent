@@ -114,7 +114,7 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
         if (auto* status = methods->GetRecvStatus(); status != nullptr && !status->ok()) {
           span_event_->SetError(status->error_message());
         }
-        parent_span_->EndSpanEvent();
+        span_event_->EndEvent();
         span_event_ = nullptr;
       }
     }

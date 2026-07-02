@@ -121,57 +121,56 @@ static pt_span_t make_span(const hlc_request_t* req) {
 
 /**
  * Creates a nested cascade of span events exactly like the C++ example.
- * Each "New" pushes an event, and the matching "End" pops it.
+ * Each "New" pushes an event, and pt_span_event_end() on that event's own
+ * handle pops it (innermost first).
  */
 static void record_nested_events(pt_span_t span) {
     const int rand_url    = random_number();
     const int rand_method = random_number();
     const int rand_status = random_number();
 
-    pt_span_event_t e;
-
-    e = pt_span_new_event(span, "func_example");
+    pt_span_event_t e_example = pt_span_new_event(span, "func_example");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_event_destroy(e);
 
-    e = pt_span_new_event(span, "func_1");
+    pt_span_event_t e_1 = pt_span_new_event(span, "func_1");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_event_destroy(e);
 
-    e = pt_span_new_event(span, "func_2");
+    pt_span_event_t e_2 = pt_span_new_event(span, "func_2");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_end_event(span);
-    pt_span_event_destroy(e);
+    pt_span_event_end(e_2);
+    pt_span_event_destroy(e_2);
 
-    e = pt_span_new_event(span, "func_3");
+    pt_span_event_t e_3 = pt_span_new_event(span, "func_3");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_event_destroy(e);
 
-    e = pt_span_new_event(span, "func_4");
+    pt_span_event_t e_4 = pt_span_new_event(span, "func_4");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_event_destroy(e);
 
-    e = pt_span_new_event(span, "func_5");
+    pt_span_event_t e_5 = pt_span_new_event(span, "func_5");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_end_event(span);
-    pt_span_event_destroy(e);
+    pt_span_event_end(e_5);
+    pt_span_event_destroy(e_5);
 
-    pt_span_end_event(span);  /* closes func_4 */
-    pt_span_end_event(span);  /* closes func_3 */
+    pt_span_event_end(e_4);
+    pt_span_event_destroy(e_4);
+    pt_span_event_end(e_3);
+    pt_span_event_destroy(e_3);
 
-    e = pt_span_new_event(span, "foo");
+    pt_span_event_t e_foo = pt_span_new_event(span, "foo");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_event_destroy(e);
 
-    e = pt_span_new_event(span, "bar");
+    pt_span_event_t e_bar = pt_span_new_event(span, "bar");
     sleep_ms(kSleepMillis[random_number()]);
-    pt_span_end_event(span);
-    pt_span_event_destroy(e);
+    pt_span_event_end(e_bar);
+    pt_span_event_destroy(e_bar);
 
-    pt_span_end_event(span);  /* closes foo  */
+    pt_span_event_end(e_foo);
+    pt_span_event_destroy(e_foo);
 
-    pt_span_end_event(span);  /* closes func_1 */
-    pt_span_end_event(span);  /* closes func_example */
+    pt_span_event_end(e_1);
+    pt_span_event_destroy(e_1);
+    pt_span_event_end(e_example);
+    pt_span_event_destroy(e_example);
 
     const int status_code = kHttpStatus[rand_status];
     pt_span_set_status_code(span, status_code);
@@ -194,7 +193,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* ud) {
 
     hlc_response_set_content(res, "hello, foo!!", "text/plain");
 
-    pt_span_end_event(span);
+    pt_span_event_end(foo_event);
     pt_span_event_destroy(foo_event);
 
     /* Record response headers on the span. */

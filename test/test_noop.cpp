@@ -194,7 +194,7 @@ TEST_F(NoopTest, UnsampledSpanInheritedNoopBehaviorTest) {
     EXPECT_NE(current_event, nullptr) << "GetSpanEvent should return a valid SpanEvent";
 
     // These should not throw exceptions
-    span.EndSpanEvent();
+    current_event->EndEvent();
     span.SetServiceType(1000);
     span.SetStartTime(std::chrono::system_clock::now());
     span.SetRemoteAddress("192.168.1.1");
@@ -246,7 +246,7 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
     auto current_event = span.GetSpanEvent();
     EXPECT_NE(current_event, nullptr) << "GetSpanEvent should return a valid SpanEvent";
 
-    span.EndSpanEvent();
+    current_event->EndEvent();
     span.EndSpan();
 
     auto async_span = span.NewAsyncSpan("async-operation");

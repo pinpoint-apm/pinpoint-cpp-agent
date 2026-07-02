@@ -64,34 +64,34 @@ static void f(const pinpoint::SpanPtr& span) {
     const auto rand_method = random_number();
     const auto rand_status = random_number();
 
-    span->NewSpanEvent("func_example");
+    auto se_example = span->NewSpanEvent("func_example");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->NewSpanEvent("func_1");
+    auto se_1 = span->NewSpanEvent("func_1");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
 
-    span->NewSpanEvent("func_2");
+    auto se_2 = span->NewSpanEvent("func_2");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->EndSpanEvent();
+    se_2->EndEvent();
 
-    span->NewSpanEvent("func_3");
+    auto se_3 = span->NewSpanEvent("func_3");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->NewSpanEvent("func_4");
+    auto se_4 = span->NewSpanEvent("func_4");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->NewSpanEvent("func_5");
+    auto se_5 = span->NewSpanEvent("func_5");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->EndSpanEvent();
-    span->EndSpanEvent();
-    span->EndSpanEvent();
+    se_5->EndEvent();
+    se_4->EndEvent();
+    se_3->EndEvent();
 
-    span->NewSpanEvent("foo");
+    auto se_foo = span->NewSpanEvent("foo");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->NewSpanEvent("bar");
+    auto se_bar = span->NewSpanEvent("bar");
     std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time[random_number()]));
-    span->EndSpanEvent();
-    span->EndSpanEvent();
+    se_bar->EndEvent();
+    se_foo->EndEvent();
 
-    span->EndSpanEvent();
-    span->EndSpanEvent();
+    se_1->EndEvent();
+    se_example->EndEvent();
 
     auto& path = urls[rand_url];
     const auto status_code = http_status[rand_status];
@@ -101,14 +101,14 @@ static void f(const pinpoint::SpanPtr& span) {
 
 void on_foo(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
-    span->NewSpanEvent("foo");
+    auto se = span->NewSpanEvent("foo");
 
     std::random_device rd;
     std::uniform_int_distribution<int> distribution(10, 500);
     std::this_thread::sleep_for(std::chrono::milliseconds(distribution(rd)));
 
     res.set_content("hello, foo!!", "text/plain");
-    span->EndSpanEvent();
+    se->EndEvent();
 
     HttpHeaderReader http_reader(res.headers);
     span->RecordHeader(pinpoint::HTTP_RESPONSE, http_reader);

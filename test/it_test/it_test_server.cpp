@@ -70,8 +70,7 @@ void on_simple(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
 
-    span->NewSpanEvent("simple_work");
-    span->EndSpanEvent();
+    span->NewSpanEvent("simple_work")->EndEvent();
 
     res.status = 200;
     res.set_content("ok", "text/plain");
@@ -89,11 +88,13 @@ void on_deep(const httplib::Request& req, httplib::Response& res) {
         depth = std::min(std::max(std::stoi(depth_param), 1), 60);
     }
 
+    std::vector<pinpoint::SpanEventPtr> events;
+    events.reserve(depth);
     for (int i = 0; i < depth; ++i) {
-        span->NewSpanEvent("deep_level_" + std::to_string(i));
+        events.push_back(span->NewSpanEvent("deep_level_" + std::to_string(i)));
     }
-    for (int i = 0; i < depth; ++i) {
-        span->EndSpanEvent();
+    for (auto it = events.rbegin(); it != events.rend(); ++it) {
+        (*it)->EndEvent();
     }
 
     res.status = 200;
@@ -113,8 +114,7 @@ void on_wide(const httplib::Request& req, httplib::Response& res) {
     }
 
     for (int i = 0; i < width; ++i) {
-        span->NewSpanEvent("wide_event_" + std::to_string(i));
-        span->EndSpanEvent();
+        span->NewSpanEvent("wide_event_" + std::to_string(i))->EndEvent();
     }
 
     res.status = 200;
@@ -128,8 +128,7 @@ void on_annotated(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
 
     for (int i = 0; i < 10; ++i) {
-        span->NewSpanEvent("annotated_op_" + std::to_string(i));
-        auto ev = span->GetSpanEvent();
+        auto ev = span->NewSpanEvent("annotated_op_" + std::to_string(i));
         if (ev) {
             ev->SetServiceType(pinpoint::SERVICE_TYPE_CPP_FUNC);
             ev->SetDestination("test-dest-" + std::to_string(i));
@@ -144,7 +143,7 @@ void on_annotated(const httplib::Request& req, httplib::Response& res) {
                                         "value-" + std::to_string(i));
             }
         }
-        span->EndSpanEvent();
+        ev->EndEvent();
     }
 
     res.status = 200;
@@ -158,21 +157,18 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
 
     // Nested span events simulating DB query
-    span->NewSpanEvent("db_query");
-    auto ev = span->GetSpanEvent();
+    auto ev = span->NewSpanEvent("db_query");
     if (ev) {
         ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
         ev->SetEndPoint("localhost:3306");
         ev->SetDestination("test");
         ev->SetSqlQuery("SELECT * FROM users WHERE id = ?", "42");
     }
-    span->NewSpanEvent("db_parse");
-    span->EndSpanEvent();
-    span->EndSpanEvent();
+    span->NewSpanEvent("db_parse")->EndEvent();
+    ev->EndEvent();
 
     // Simulate HTTP client call
-    span->NewSpanEvent("http_client_call");
-    ev = span->GetSpanEvent();
+    ev = span->NewSpanEvent("http_client_call");
     if (ev) {
         ev->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
         ev->SetDestination("downstream-service");
@@ -184,10 +180,10 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
             ann->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
         }
     }
-    span->EndSpanEvent();
+    ev->EndEvent();
 
     // Async span — fire-and-forget background work in a separate thread
-    span->NewSpanEvent("prepare_async");
+    auto prepare_ev = span->NewSpanEvent("prepare_async");
     auto async_span = span->NewAsyncSpan("async_task");
 
     std::thread([async_span]() {
@@ -196,13 +192,13 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
         std::uniform_int_distribution<int> sleep_dist(1, 50);
         int count = count_dist(rng);
         for (int i = 0; i < count; ++i) {
-            async_span->NewSpanEvent("async_work_" + std::to_string(i));
+            auto async_ev = async_span->NewSpanEvent("async_work_" + std::to_string(i));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
-            async_span->EndSpanEvent();
+            async_ev->EndEvent();
         }
         async_span->EndSpan();
     }).detach();
-    span->EndSpanEvent();
+    prepare_ev->EndEvent();
 
     // More sequential events (random 1~20)
     {
@@ -211,9 +207,9 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
         std::uniform_int_distribution<int> sleep_dist(1, 50);
         int count = count_dist(rng);
         for (int i = 0; i < count; ++i) {
-            span->NewSpanEvent("post_process_" + std::to_string(i));
+            auto post_ev = span->NewSpanEvent("post_process_" + std::to_string(i));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
-            span->EndSpanEvent();
+            post_ev->EndEvent();
         }
     }
 
@@ -227,12 +223,11 @@ void on_error(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
 
-    span->NewSpanEvent("failing_operation");
-    auto ev = span->GetSpanEvent();
+    auto ev = span->NewSpanEvent("failing_operation");
     if (ev) {
         ev->SetError("ConnectionTimeout", "simulated error: connection timeout");
     }
-    span->EndSpanEvent();
+    ev->EndEvent();
 
     span->SetError("Internal Server Error");
     res.status = 500;
@@ -246,8 +241,7 @@ void on_error(const httplib::Request& req, httplib::Response& res) {
 
 static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
                       const std::string& sql, const std::string& params) {
-    span->NewSpanEvent("SQL_" + operation);
-    auto ev = span->GetSpanEvent();
+    auto ev = span->NewSpanEvent("SQL_" + operation);
     if (ev) {
         ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
         ev->SetEndPoint("localhost:33060");
@@ -275,7 +269,7 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
         ev->SetError("MySQL_Error", error_messages[msg_dist(rng)]);
     }
 
-    span->EndSpanEvent();
+    ev->EndEvent();
 }
 
 // /db-crud: Full CRUD cycle with SQL tracing (no actual DB)
@@ -423,7 +417,7 @@ void on_grpc_unary(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
     grpc_demo::SetCurrentSpan(span);
 
-    span->NewSpanEvent("grpc_unary_call");
+    auto ev = span->NewSpanEvent("grpc_unary_call");
 
     grpc::ClientContext context;
     grpcdemo::Greeting request;
@@ -432,7 +426,6 @@ void on_grpc_unary(const httplib::Request& req, httplib::Response& res) {
 
     auto status = g_grpc_stub->UnaryCallUnaryReturn(&context, request, &response);
 
-    auto ev = span->GetSpanEvent();
     if (ev) {
         if (!status.ok()) {
             ev->SetError("gRPC_Error", status.error_message());
@@ -440,7 +433,7 @@ void on_grpc_unary(const httplib::Request& req, httplib::Response& res) {
             ev->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API, response.msg());
         }
     }
-    span->EndSpanEvent();
+    ev->EndEvent();
 
     if (status.ok()) {
         res.status = 200;
@@ -462,7 +455,7 @@ void on_grpc_stream(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
     grpc_demo::SetCurrentSpan(span);
 
-    span->NewSpanEvent("grpc_server_stream_call");
+    auto ev = span->NewSpanEvent("grpc_server_stream_call");
 
     grpc::ClientContext context;
     grpcdemo::Greeting request;
@@ -481,13 +474,12 @@ void on_grpc_stream(const httplib::Request& req, httplib::Response& res) {
     msgs << "]";
 
     auto status = reader->Finish();
-    auto ev = span->GetSpanEvent();
     if (ev) {
         if (!status.ok()) {
             ev->SetError("gRPC_Error", status.error_message());
         }
     }
-    span->EndSpanEvent();
+    ev->EndEvent();
 
     if (status.ok()) {
         res.status = 200;
@@ -509,7 +501,7 @@ void on_grpc_bidi(const httplib::Request& req, httplib::Response& res) {
     auto span = make_span(req);
     grpc_demo::SetCurrentSpan(span);
 
-    span->NewSpanEvent("grpc_bidi_stream_call");
+    auto ev = span->NewSpanEvent("grpc_bidi_stream_call");
 
     grpc::ClientContext context;
     auto stream = g_grpc_stub->StreamCallStreamReturn(&context);
@@ -536,13 +528,12 @@ void on_grpc_bidi(const httplib::Request& req, httplib::Response& res) {
     stream->WritesDone();
 
     auto status = stream->Finish();
-    auto ev = span->GetSpanEvent();
     if (ev) {
         if (!status.ok()) {
             ev->SetError("gRPC_Error", status.error_message());
         }
     }
-    span->EndSpanEvent();
+    ev->EndEvent();
 
     if (status.ok()) {
         res.status = 200;
@@ -569,14 +560,13 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
 
     // 1. Unary
     {
-        span->NewSpanEvent("grpc_unary");
+        auto ev = span->NewSpanEvent("grpc_unary");
         grpc::ClientContext ctx;
         grpcdemo::Greeting rq, rs;
         rq.set_msg("all-test unary");
         auto st = g_grpc_stub->UnaryCallUnaryReturn(&ctx, rq, &rs);
-        auto ev = span->GetSpanEvent();
         if (ev && !st.ok()) ev->SetError("gRPC_Error", st.error_message());
-        span->EndSpanEvent();
+        ev->EndEvent();
         result << "{\"method\":\"unary\",\"ok\":" << (st.ok() ? "true" : "false") << "}";
     }
 
@@ -584,7 +574,7 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
 
     // 2. Server streaming
     {
-        span->NewSpanEvent("grpc_server_stream");
+        auto ev = span->NewSpanEvent("grpc_server_stream");
         grpc::ClientContext ctx;
         grpcdemo::Greeting rq;
         rq.set_msg("all-test stream");
@@ -593,9 +583,8 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
         int n = 0;
         while (reader->Read(&rs)) ++n;
         auto st = reader->Finish();
-        auto ev = span->GetSpanEvent();
         if (ev && !st.ok()) ev->SetError("gRPC_Error", st.error_message());
-        span->EndSpanEvent();
+        ev->EndEvent();
         result << "{\"method\":\"server_stream\",\"ok\":" << (st.ok() ? "true" : "false")
                << ",\"count\":" << n << "}";
     }
@@ -604,7 +593,7 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
 
     // 3. Bidirectional streaming
     {
-        span->NewSpanEvent("grpc_bidi_stream");
+        auto ev = span->NewSpanEvent("grpc_bidi_stream");
         grpc::ClientContext ctx;
         auto stream = g_grpc_stub->StreamCallStreamReturn(&ctx);
         for (int i = 0; i < 3; ++i) {
@@ -616,9 +605,8 @@ void on_grpc_all(const httplib::Request& req, httplib::Response& res) {
         }
         stream->WritesDone();
         auto st = stream->Finish();
-        auto ev = span->GetSpanEvent();
         if (ev && !st.ok()) ev->SetError("gRPC_Error", st.error_message());
-        span->EndSpanEvent();
+        ev->EndEvent();
         result << "{\"method\":\"bidi\",\"ok\":" << (st.ok() ? "true" : "false") << "}";
     }
 

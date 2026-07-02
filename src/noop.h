@@ -122,7 +122,6 @@ namespace pinpoint {
         SpanEventPtr NewSpanEvent(std::string_view operation) override { return noopSpanEvent(); }
         SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return noopSpanEvent(); }
         SpanEventPtr GetSpanEvent() override { return noopSpanEvent(); }
-        void EndSpanEvent() override {}
         void EndSpan() override {}
         SpanPtr NewAsyncSpan(std::string_view async_operation) override { return noopSpan(); }
 

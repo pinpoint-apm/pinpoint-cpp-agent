@@ -63,10 +63,20 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::EndEvent() {
-        span_->EndSpanEvent();
+        // Atomic exchange so only the first end proceeds: ending an event
+        // twice would pop a DIFFERENT (still-active) event from the span's
+        // stack and desync the whole call tree.
+        if (finished_.exchange(true)) {
+            LOG_WARN("span event is already finished");
+            return;
+        }
+        span_->endSpanEvent();
     }
 
     void SpanEventImpl::finish() {
+        // Ended through an internal path (event-stack pop): mark it so a
+        // later user-level EndEvent on this event is rejected by the guard.
+        finished_.store(true);
         span_->decrEventDepth();
         elapsed_ = to_milli_seconds(std::chrono::system_clock::now()) - start_time_;
     }
@@ -146,7 +156,11 @@ namespace pinpoint {
     }
 
     void DisabledSpanEvent::EndEvent() {
-        span_->EndSpanEvent();
+        // The shared per-span instance stands in for every overflowed event,
+        // so it cannot carry a per-instance finished flag; the span's overflow
+        // counter provides the duplicate-end guard instead (warns and refuses
+        // to touch the real event stack once no overflow is pending).
+        span_->endDisabledSpanEvent();
     }
 
     void DisabledSpanEvent::InjectContext(TraceContextWriter& writer) {

@@ -578,14 +578,6 @@ pt_span_event_t pt_span_get_event(pt_span_t span) {
     });
 }
 
-void pt_span_end_event(pt_span_t span) {
-    pt_api_call(__func__, [&] {
-        pt_handle_call(span, [](pt_span_t valid) {
-            valid->ptr->EndSpanEvent();
-        });
-    });
-}
-
 void pt_span_end(pt_span_t span) {
     pt_api_call(__func__, [&] {
         pt_handle_call(span, [](pt_span_t valid) {
@@ -752,6 +744,14 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span) {
 void pt_span_event_destroy(pt_span_event_t se) {
     pt_api_call(__func__, [&] {
         destroy_handle(se, noop_span_event_sentinel());
+    });
+}
+
+void pt_span_event_end(pt_span_event_t se) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(se, [](pt_span_event_t valid) {
+            valid->ptr->EndEvent();
+        });
     });
 }
 

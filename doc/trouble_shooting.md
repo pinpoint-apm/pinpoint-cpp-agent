@@ -541,12 +541,12 @@ ping -M do -s 1472 pinpoint-collector
      MaxEventSequence: -1   # Unlimited
    ```
 
-2. **Check Event Ending** — ensure every `NewSpanEvent()` has a matching `EndSpanEvent()`:
+2. **Check Event Ending** — ensure every `NewSpanEvent()` has a matching `EndEvent()` on the returned event:
 
    ```cpp
-   span->NewSpanEvent("operation");
+   auto se = span->NewSpanEvent("operation");
    // ... do work ...
-   span->EndSpanEvent();  // Must call this!
+   se->EndEvent();  // Must call this!
    ```
 
 ### Missing Distributed Tracing

@@ -463,12 +463,34 @@ TEST_F(SpanTest, SpanImplGetSpanEventTest) {
 
 TEST_F(SpanTest, SpanImplEndSpanEventTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-    
+
     // Create and end span event
-    span.NewSpanEvent("test-event");
-    span.EndSpanEvent();
-    
+    auto se = span.NewSpanEvent("test-event");
+    se->EndEvent();
+
     SUCCEED() << "End span event should complete without errors";
+}
+
+// EndEvent is guarded like EndSpan: a duplicate end is a warning no-op and
+// must not pop another (still-active) event from the span's stack.
+TEST_F(SpanTest, SpanEventEndEventDuplicateGuardTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    auto outer = span.NewSpanEvent("outer");
+    auto inner = span.NewSpanEvent("inner");
+
+    inner->EndEvent();
+    inner->EndEvent(); // duplicate: must NOT end "outer"
+
+    EXPECT_EQ(span.GetSpanEvent(), outer)
+        << "Duplicate EndEvent must not pop the outer event";
+
+    outer->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 2u)
+        << "Both events should be recorded exactly once";
 }
 
 TEST_F(SpanTest, SpanEventEndEventUsesParentSpanTest) {
@@ -656,7 +678,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     // Create a span event first for context (required by NewAsyncSpan).
-    span.NewSpanEvent("base-event");
+    auto base_event = span.NewSpanEvent("base-event");
 
     auto async_span = span.NewAsyncSpan("async-operation");
     ASSERT_NE(async_span, nullptr) << "Async span should be created";
@@ -667,7 +689,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
         << "Async child should inherit the parent trace id";
 
     async_span->EndSpan();
-    span.EndSpanEvent();
+    base_event->EndEvent();
     span.EndSpan();
 }
 
@@ -694,8 +716,8 @@ TEST_F(SpanTest, CompleteSpanWorkflowTest) {
     EXPECT_NE(cache_event, nullptr);
     
     // End events in reverse order
-    span.EndSpanEvent(); // End cache event
-    span.EndSpanEvent(); // End db event
+    cache_event->EndEvent();
+    db_event->EndEvent();
     
     // Set error
     span.SetError("NetworkError", "Connection timeout");
@@ -753,14 +775,14 @@ TEST_F(SpanTest, MultipleSpanEventsTest) {
     SpanImpl span(mock_agent_service_.get(), "complex-operation", "complex-rpc");
     
     // Create multiple nested span events
-    span.NewSpanEvent("step1");
-    span.NewSpanEvent("step2");
-    span.NewSpanEvent("step3");
-    
-    // End them all
-    span.EndSpanEvent(); // End step3
-    span.EndSpanEvent(); // End step2
-    span.EndSpanEvent(); // End step1
+    auto step1 = span.NewSpanEvent("step1");
+    auto step2 = span.NewSpanEvent("step2");
+    auto step3 = span.NewSpanEvent("step3");
+
+    // End them all (innermost first)
+    step3->EndEvent();
+    step2->EndEvent();
+    step1->EndEvent();
     
     span.EndSpan();
     
@@ -771,7 +793,7 @@ TEST_F(SpanTest, AsyncSpanTest) {
     SpanImpl parent_span(mock_agent_service_.get(), "parent-operation", "parent-rpc");
 
     // Create span event first to provide context for async span.
-    parent_span.NewSpanEvent("prepare-async");
+    auto prepare_event = parent_span.NewSpanEvent("prepare-async");
 
     // NewAsyncSpan never throws (it returns a noop span on internal failure), so
     // no try/catch is needed — assert the real, non-noop result directly.
@@ -782,7 +804,7 @@ TEST_F(SpanTest, AsyncSpanTest) {
 
     async_span->EndSpan();
 
-    parent_span.EndSpanEvent();
+    prepare_event->EndEvent();
     parent_span.EndSpan();
 
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Parent span should be recorded";
@@ -803,7 +825,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     parent.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     // Created on the owning thread (needs a live span event for context).
-    parent.NewSpanEvent("prepare-async");
+    auto prepare_event = parent.NewSpanEvent("prepare-async");
     auto async_span = parent.NewAsyncSpan("async-task");
     ASSERT_NE(async_span, nullptr);
 
@@ -814,7 +836,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     std::thread worker([&]() {
         auto se = async_span->NewSpanEvent("thread-event");
         EXPECT_NE(se, nullptr) << "Async span event should be created on the worker thread";
-        async_span->EndSpanEvent();
+        se->EndEvent();
         async_span->EndSpan();
     });
     worker.join();
@@ -826,7 +848,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     EXPECT_EQ(async_span->GetTraceId().Sequence, parent.GetTraceId().Sequence)
         << "Async child should inherit the parent trace id";
 
-    parent.EndSpanEvent();
+    prepare_event->EndEvent();
     parent.EndSpan();
 }
 
@@ -976,7 +998,7 @@ TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
     auto se = span.NewSpanEvent("should-not-create");
     EXPECT_NE(se, nullptr) << "Should return noop span event, not nullptr";
 
-    span.EndSpanEvent();
+    se->EndEvent();
     span.EndSpan();
 
     // No additional spans should be recorded
@@ -1012,12 +1034,13 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     auto overflow_event = span.NewSpanEvent("overflow-event");
     EXPECT_NE(overflow_event, nullptr) << "Should return disabled event on overflow";
 
-    // EndSpanEvent should decrement overflow counter, not pop from stack
-    span.EndSpanEvent();
+    // Ending the disabled event should decrement the overflow counter,
+    // not pop from the stack
+    overflow_event->EndEvent();
 
     // Now ending the real events should work
     for (int i = 62; i >= 0; i--) {
-        span.EndSpanEvent();
+        events[i]->EndEvent();
     }
 
     span.EndSpan();
@@ -1036,8 +1059,7 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
 
     // Create and end events up to the sequence limit
     for (int i = 0; i < 5; i++) {
-        span.NewSpanEvent("event-" + std::to_string(i));
-        span.EndSpanEvent();
+        span.NewSpanEvent("event-" + std::to_string(i))->EndEvent();
     }
 
     // Next one should overflow
@@ -1049,7 +1071,7 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
     overflow->InjectContext(writer);
     EXPECT_TRUE(writer.Get(HEADER_TRACE_ID).has_value())
         << "Sequence overflow must not cut the distributed trace";
-    span.EndSpanEvent();  // decrements overflow
+    overflow->EndEvent();  // decrements overflow
 
     span.EndSpan();
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
@@ -1093,10 +1115,10 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
         << "A child span id must still be generated during overflow";
     EXPECT_EQ(writer.Get(HEADER_HOST).value(), "downstream:8080");
 
-    span.EndSpanEvent(); // consumes the overflow placeholder
+    overflowed->EndEvent(); // consumes the overflow placeholder
     EXPECT_EQ(span.GetSpanEvent(), real)
         << "After the overflow resolves, the real top event is handed out again";
-    span.EndSpanEvent();
+    real->EndEvent();
     span.EndSpan();
 
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
@@ -1116,8 +1138,7 @@ TEST_F(SpanTest, SpanImplEventChunkingTest) {
 
     // Create and end 3 events to trigger a chunk flush
     for (int i = 0; i < 3; i++) {
-        span.NewSpanEvent("event-" + std::to_string(i));
-        span.EndSpanEvent();
+        span.NewSpanEvent("event-" + std::to_string(i))->EndEvent();
     }
 
     size_t chunks_after_3 = mock_agent_service_->getRecordedSpansCount();
@@ -1373,18 +1394,18 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanOverflowTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
 
     // Push one real event
-    span.NewSpanEvent("e1");
+    auto e1 = span.NewSpanEvent("e1");
 
     // This should overflow (depth now 3 >= 2)
-    span.NewSpanEvent("e2-overflow");
+    auto e2 = span.NewSpanEvent("e2-overflow");
 
     // NewAsyncSpan should return noop when overflow > 0
     auto async = span.NewAsyncSpan("async-op");
     EXPECT_NE(async, nullptr) << "Should return noop span on overflow";
 
     // Clean up
-    span.EndSpanEvent(); // overflow--
-    span.EndSpanEvent(); // real event
+    e2->EndEvent(); // overflow--
+    e1->EndEvent(); // real event
     span.EndSpan();
 }
 

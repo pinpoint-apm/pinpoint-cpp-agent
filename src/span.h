@@ -372,7 +372,7 @@ namespace pinpoint {
      *          its whole lifetime. Concurrent calls on the same instance are
      *          undefined behaviour and can crash — `exceptions_`, `url_stat_` and
      *          the `SpanData` string/annotation buffers are unsynchronized, and
-     *          `EndSpan`/`EndSpanEvent` on one thread can free a span event still
+     *          `EndSpan`/`EndEvent` on one thread can free a span event still
      *          referenced through a raw pointer on another.
      *
      *          The `finished_`/`overflow_` atomics are defensive idempotency
@@ -401,8 +401,6 @@ namespace pinpoint {
     	SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override;
         /// @brief Returns the currently active span event.
         SpanEventPtr GetSpanEvent() override;
-      	/// @brief Finalizes the current span event.
-      	void EndSpanEvent() override;
       	/// @brief Finalizes the span and schedules it for flushing.
       	void EndSpan() override;
     	/**
@@ -438,6 +436,23 @@ namespace pinpoint {
     	 * @param host Destination of the outbound call (Pinpoint-Host header).
     	 */
     	void injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host);
+    	/**
+    	 * @brief Pops and finalizes the top span event of this span's stack.
+    	 *
+    	 * Impl-level only (no public Span counterpart): called by
+    	 * SpanEventImpl::EndEvent — user code ends an event through the event
+    	 * handle, which guards against duplicate ends before delegating here.
+    	 */
+    	void endSpanEvent();
+    	/**
+    	 * @brief Consumes one pending overflow placeholder.
+    	 *
+    	 * Impl-level only: called by DisabledSpanEvent::EndEvent. Overflowed
+    	 * events are never pushed onto the stack, so ending one must not pop a
+    	 * real event; it only balances the overflow counter kept by
+    	 * NewSpanEvent. Warns when there is no pending overflow (duplicate end).
+    	 */
+    	void endDisabledSpanEvent();
 
         TraceId& GetTraceId() override { return data_->getTraceId(); }
         int64_t GetSpanId() override { return data_->getSpanId(); }
@@ -481,7 +496,7 @@ namespace pinpoint {
 
             AgentService *agent_;
             // Config snapshot taken once at span creation. Per-event hot paths
-            // (NewSpanEvent/EndSpanEvent and the SpanEventImpl recorders) read
+            // (NewSpanEvent/EndEvent and the SpanEventImpl recorders) read
             // this instead of agent_->getConfig(), so they pay no atomic
             // shared_ptr load per call, and the span's limits (max_event_depth,
             // event_chunk_size, ...) stay consistent for its whole lifetime

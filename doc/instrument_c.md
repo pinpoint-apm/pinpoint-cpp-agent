@@ -47,7 +47,7 @@ Pinpoint models each transaction as a tree of **spans**.
 | Handle types | Smart pointers (`SpanPtr`) | Opaque pointers (`pt_span_t`) |
 | Memory management | RAII / destructors | Manual `_destroy()` calls |
 | Propagation carriers | Virtual base classes | Callback structs (`pt_context_reader_t`, etc.) |
-| Span event lifecycle | `ScopedSpanEvent` helper available | Manual `pt_span_end_event(span)` + `pt_span_event_destroy(se)` |
+| Span event lifecycle | `ScopedSpanEvent` helper available | Manual `pt_span_event_end(se)` + `pt_span_event_destroy(se)` |
 | Error handling | C++ exceptions | Return values / `pt_span_set_error()` |
 | Header file | `include/pinpoint/tracer.h` | `include/pinpoint/tracer_c.h` |
 
@@ -58,7 +58,7 @@ Every handle obtained from a `pt_*_new_*`, `pt_*_get_*`, `pt_create_agent*()`, o
 ```c
 pt_agent_t      → pt_agent_destroy()
 pt_span_t       → pt_span_destroy()        (call pt_span_end() first)
-pt_span_event_t → pt_span_event_destroy()  (call pt_span_end_event() first)
+pt_span_event_t → pt_span_event_destroy()  (call pt_span_event_end() first)
 pt_annotation_t → pt_annotation_destroy()
 ```
 
@@ -296,11 +296,11 @@ pt_span_event_t se = pt_span_new_event(span, "db_query");
 
 /* ... perform the operation ... */
 
-pt_span_end_event(span);      /* pop and finalize the event — called on SPAN */
+pt_span_event_end(se);        /* finalize the event — called on the EVENT handle */
 pt_span_event_destroy(se);    /* release the handle */
 ```
 
-> `pt_span_end_event()` is called on the **parent span**, not on the event handle. The event handle may still be read after `pt_span_end_event()` but must be released with `pt_span_event_destroy()`.
+> `pt_span_event_end()` is called on the **event handle**, not on the parent span. The event handle may still be read after `pt_span_event_end()` but must be released with `pt_span_event_destroy()`.
 
 ### Creating an event with an explicit service type
 
@@ -321,16 +321,16 @@ pt_span_event_set_start_time_ms(se, start_ms);
 
 ### Nested span events
 
-`pt_span_new_event()` pushes onto an internal stack. Each `pt_span_end_event()` pops the top of the stack. You are responsible for ensuring pops are balanced with pushes.
+`pt_span_new_event()` pushes onto an internal stack; `pt_span_event_end(se)` finalizes and pops that event. End events in innermost-first order so pops stay balanced with pushes. Ending the same event twice is a warning no-op — it does not pop another event.
 
 ```c
 pt_span_event_t e1 = pt_span_new_event(span, "outer");
 
     pt_span_event_t e2 = pt_span_new_event(span, "inner");
-    pt_span_end_event(span);   /* ends inner */
+    pt_span_event_end(e2);     /* ends inner */
     pt_span_event_destroy(e2);
 
-pt_span_end_event(span);       /* ends outer */
+pt_span_event_end(e1);         /* ends outer */
 pt_span_event_destroy(e1);
 ```
 
@@ -450,7 +450,7 @@ pt_span_event_inject_context(se, &writer);
 my_http_get(client, "/downstream", &out);
 my_headers_destroy(&out);
 
-pt_span_end_event(span);
+pt_span_event_end(se);
 pt_span_event_destroy(se);
 ```
 
@@ -510,7 +510,7 @@ static void handle_request(const my_request_t* req, my_response_t* res) {
     /* -- business logic -- */
     pt_span_event_t se = pt_span_new_event(span, "process");
     /* ... */
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 
     /* Record response */
@@ -556,7 +556,7 @@ static void call_downstream(pt_span_t span) {
     pt_annotation_append_int(anno2, PT_ANNOTATION_HTTP_STATUS_CODE, status);
     pt_annotation_destroy(anno2);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 }
 ```
@@ -579,7 +579,7 @@ static void* background_worker(void* arg) {
 
     pt_span_event_t e = pt_span_new_event(async_span, "background_job");
     /* ... work ... */
-    pt_span_end_event(async_span);
+    pt_span_event_end(e);
     pt_span_event_destroy(e);
 
     pt_span_end(async_span);
@@ -666,7 +666,7 @@ if (rc != 0) {
     pt_span_event_set_sql_query(se, sql, "");  /* sanitize args */
 }
 
-pt_span_end_event(span);
+pt_span_event_end(se);
 pt_span_event_destroy(se);
 ```
 
@@ -747,12 +747,12 @@ if (pt_span_is_sampled(span)) {
 
 ### Balance every push with a pop
 
-Each `pt_span_new_event()` pushes an event; each `pt_span_end_event()` pops one. Unbalanced calls corrupt the event stack and produce incorrect call-graph data in the Pinpoint UI.
+Each `pt_span_new_event()` pushes an event; each `pt_span_event_end(se)` pops the event it ends. Unbalanced calls corrupt the event stack and produce incorrect call-graph data in the Pinpoint UI. Ending the same event twice is a warning no-op — it does not pop another event.
 
 ```c
 pt_span_event_t e = pt_span_new_event(span, "op");
 /* ... */
-pt_span_end_event(span);    /* pop   */
+pt_span_event_end(e);       /* pop   */
 pt_span_event_destroy(e);   /* free  */
 ```
 
@@ -815,7 +815,7 @@ static void on_request(const my_request_t* req, my_response_t* res) {
 
     pt_span_event_t se = pt_span_new_event(span, "handle");
     my_response_set_body(res, "OK");
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 
     pt_span_set_status_code(span, 200);

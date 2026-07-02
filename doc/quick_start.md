@@ -227,7 +227,7 @@ void handleRequest() {
 
     // Execute database query ...
 
-    span->EndSpanEvent();
+    dbEvent->EndEvent();
     span->EndSpan();
 }
 ```
@@ -273,7 +273,7 @@ void doWork() {
     // Simulate some work
     auto spanEvent = span->NewSpanEvent("processData");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    span->EndSpanEvent();
+    spanEvent->EndEvent();
 
     // Add result annotations
     auto annotations = span->GetAnnotations();
@@ -355,7 +355,7 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
     // ... business logic ...
 
     // End SpanEvent and Span
-    span->EndSpanEvent();
+    se->EndEvent();
     span->SetStatusCode(res.status);
     span->EndSpan();
 }
@@ -400,7 +400,7 @@ void trace_db_op(pinpoint::SpanPtr span,
         throw;
     }
 
-    span->EndSpanEvent();
+    se->EndEvent();
 }
 
 void db_logic(pinpoint::SpanPtr span) {

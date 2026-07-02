@@ -300,25 +300,30 @@ namespace pinpoint {
         LOG_ERROR("record span chunk exception = {}", e.what());
     }
 
-    void SpanImpl::EndSpanEvent() {
+    void SpanImpl::endSpanEvent() {
         CHECK_FINISHED();
-
-        // Consume one overflow placeholder if any, using a CAS loop so two
-        // concurrent EndSpanEvent calls cannot both decrement the same value
-        // and drive overflow_ negative (which would later pop real events that
-        // were never overflowed and desync the event stack).
-        int32_t pending = overflow_.load();
-        while (pending > 0) {
-            if (overflow_.compare_exchange_weak(pending, pending - 1)) {
-                return;
-            }
-        }
 
         data_->finishSpanEvent();
 
         if (data_->getFinishedEventsCount() >= config_->span.event_chunk_size) {
             record_chunk(false);
         }
+    }
+
+    void SpanImpl::endDisabledSpanEvent() {
+        CHECK_FINISHED();
+
+        // Consume one overflow placeholder, using a CAS loop so two
+        // concurrent calls cannot both decrement the same value and drive
+        // overflow_ negative. Overflowed events are never on the stack, so
+        // this must never fall through to a real pop.
+        int32_t pending = overflow_.load();
+        while (pending > 0) {
+            if (overflow_.compare_exchange_weak(pending, pending - 1)) {
+                return;
+            }
+        }
+        LOG_WARN("span event is already finished");
     }
 
     void SpanImpl::EndSpan() {

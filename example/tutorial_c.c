@@ -71,7 +71,7 @@ typedef struct {
  * one span instance must only ever be used by a single thread. */
 static void run_async_span(pt_span_t async_span) {
     pt_span_event_t async_event = pt_span_new_event(async_span, "ThreadSpanEvent");
-    pt_span_end_event(async_span);
+    pt_span_event_end(async_event);
     pt_span_event_destroy(async_event);
     pt_span_end(async_span);
     pt_span_destroy(async_span);
@@ -170,7 +170,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
     hlc_client_destroy(cli);
     hlc_mutable_headers_destroy(out_headers);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 
     /* ---- 3. Second event with a nested async span -------------------------- */
@@ -197,7 +197,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
     }
 #endif
 
-    pt_span_end_event(span);
+    pt_span_event_end(se2);
     pt_span_event_destroy(se2);
 
     /* ---- 4. Finalise ------------------------------------------------------- */

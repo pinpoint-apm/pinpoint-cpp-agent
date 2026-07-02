@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "pinpoint/tracer.h"
 #include "annotation.h"
 #include "utility.h"
@@ -53,6 +55,9 @@ namespace pinpoint {
         /// into an outbound propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
         AnnotationPtr GetAnnotations() const override { return ensureAnnotations(); }
+        /// @brief Finalizes this event through the parent span. Guarded so a
+        /// duplicate call is a warning no-op instead of popping (and thereby
+        /// corrupting) another event from the span's event stack.
         void EndEvent() override;
 
         /**
@@ -146,6 +151,13 @@ namespace pinpoint {
         int32_t async_id_;
         int32_t async_seq_gen_;
         int32_t api_id_;
+        // Defensive idempotency guard for EndEvent, same shape as
+        // SpanImpl::finished_: the atomic exchange lets only the first end
+        // proceed; it is NOT a concurrency guarantee (events follow the span's
+        // single-thread contract). Also set by finish() so an event ended
+        // through an internal path (e.g. async-span EndSpan) rejects a later
+        // user-level EndEvent.
+        std::atomic<bool> finished_{false};
         // Created lazily via ensureAnnotations(); stays null until the first
         // annotation is recorded or the container is accessed.
         mutable std::unique_ptr<PinpointAnnotation> annotations_;

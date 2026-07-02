@@ -286,6 +286,8 @@ namespace pinpoint {
 		/// @brief Returns the mutable annotation container.
         virtual AnnotationPtr GetAnnotations() const = 0;
 		/// @brief Finalizes this span event through its parent span.
+		///        Guarded against duplicate calls: ending an already-ended
+		///        event is a warning no-op, like Span::EndSpan.
 		virtual void EndEvent() = 0;
     };
 
@@ -326,9 +328,9 @@ namespace pinpoint {
 		virtual SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) = 0;
 		/// @brief Returns the active span event.
 		virtual SpanEventPtr GetSpanEvent() = 0;
-		/// @brief Finalizes the current span event.
-		virtual void EndSpanEvent() = 0;
 		/// @brief Completes the span and flushes recorded data.
+		///        Span events are finalized individually via
+		///        SpanEvent::EndEvent on the event handle.
 		virtual void EndSpan() = 0;
 		/// @brief Creates an asynchronous child span for background work.
 		///
@@ -516,8 +518,8 @@ namespace pinpoint {
 			}
 
 			~ScopedSpanEvent() {
-				if (span_) {
-					span_->EndSpanEvent();
+				if (event_) {
+					event_->EndEvent();
 				}
 			}
 		

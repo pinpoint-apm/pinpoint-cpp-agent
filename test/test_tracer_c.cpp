@@ -403,7 +403,6 @@ TEST(TracerCNullSafetyTest, NullSpanCalls) {
     EXPECT_EQ(pt_span_new_event(nullptr, "op"), nullptr);
     EXPECT_EQ(pt_span_new_event_with_type(nullptr, "op", 0), nullptr);
     EXPECT_EQ(pt_span_get_event(nullptr), nullptr);
-    EXPECT_NO_FATAL_FAILURE(pt_span_end_event(nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_end(nullptr));
     EXPECT_EQ(pt_span_new_async_span(nullptr, "op"), nullptr);
     EXPECT_EQ(pt_span_get_span_id(nullptr), 0);
@@ -434,6 +433,7 @@ TEST(TracerCNullSafetyTest, NullSpanEventCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_sql_query(nullptr, "SELECT 1", ""));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(nullptr, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_end(nullptr));
     EXPECT_EQ(pt_span_event_get_annotations(nullptr), nullptr);
 }
 
@@ -467,7 +467,7 @@ TEST_F(TracerCApiTest, ExceptionFirewallSwallowsCallbackExceptions) {
     EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(se, &writer));
     EXPECT_TRUE(out.empty());
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -583,7 +583,7 @@ TEST_F(TracerCApiTest, InjectContextWritesHeaders) {
     EXPECT_FALSE(out.empty());
     EXPECT_NE(out.find(PT_HEADER_TRACE_ID), out.end());
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -617,7 +617,7 @@ TEST_F(TracerCApiTest, ExtractContextFromInjectedHeaders) {
 
     pt_span_end(child);
     pt_span_destroy(child);
-    pt_span_end_event(parent);
+    pt_span_event_end(parent_se);
     pt_span_event_destroy(parent_se);
     pt_span_end(parent);
     pt_span_destroy(parent);
@@ -640,7 +640,7 @@ TEST_F(TracerCApiTest, SpanEventLifecycle) {
     pt_span_event_set_end_point(se, "db-host:3306");
     pt_span_event_set_sql_query(se, "SELECT * FROM users WHERE id = ?", "42");
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 
     pt_span_end(span);
@@ -655,7 +655,7 @@ TEST_F(TracerCApiTest, SpanEventWithType) {
                                                       PT_SERVICE_TYPE_CPP_HTTP_CLIENT);
     ASSERT_NE(se, nullptr);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
 
     pt_span_end(span);
@@ -671,7 +671,7 @@ TEST_F(TracerCApiTest, SpanEventSetStartTime) {
 
     pt_span_event_set_start_time_ms(se, 1700000000000LL);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -690,7 +690,7 @@ TEST_F(TracerCApiTest, GetSpanEventReturnsHandle) {
     // Both handles refer to the same underlying event.
     EXPECT_EQ(pt_span_event_get_annotations(created) != nullptr, true);
 
-    pt_span_end_event(span);
+    pt_span_event_end(created);
     pt_span_event_destroy(fetched);
     pt_span_event_destroy(created);
     pt_span_end(span);
@@ -716,7 +716,7 @@ TEST_F(TracerCApiTest, SpanEventSetError) {
     cs_reader.for_each  = callstack_foreach;
     pt_span_event_set_error_with_callstack(se, "IOError", "connection refused", &cs_reader);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -732,7 +732,7 @@ TEST_F(TracerCApiTest, SpanEventSetErrorWithNullCallstack) {
     EXPECT_NO_FATAL_FAILURE(
         pt_span_event_set_error_with_callstack(se, "Err", "msg", nullptr));
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -792,7 +792,7 @@ TEST_F(TracerCApiTest, SpanEventAnnotationsAllTypes) {
     pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "http://example.com/");
 
     pt_annotation_destroy(anno);
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -848,7 +848,7 @@ TEST_F(TracerCApiTest, SpanEventRecordHeaderWithForEach) {
     pt_header_reader_t reader{&resp_headers, hmap_get, hmap_foreach};
     pt_span_event_record_header(se, PT_HTTP_RESPONSE, &reader);
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -921,12 +921,12 @@ TEST_F(TracerCApiTest, NewAsyncSpan) {
 
     pt_span_event_t async_event = pt_span_new_event(async_span, "bg_event");
     ASSERT_NE(async_event, nullptr);
-    pt_span_end_event(async_span);
+    pt_span_event_end(async_event);
     pt_span_event_destroy(async_event);
     pt_span_end(async_span);
     pt_span_destroy(async_span);
 
-    pt_span_end_event(parent);
+    pt_span_event_end(parent_event);
     pt_span_event_destroy(parent_event);
     pt_span_end(parent);
     pt_span_destroy(parent);
@@ -1008,7 +1008,7 @@ TEST_F(TracerCApiTest, TraceHttpClientRequest) {
         pt_trace_http_client_request(se, "downstream.svc:8080",
                                      "http://downstream.svc:8080/api", &reader));
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -1034,7 +1034,7 @@ TEST_F(TracerCApiTest, TraceHttpClientRequestWithCookie) {
             se, "downstream.svc:8080", "http://downstream.svc:8080/api",
             &req_reader, &cookie_reader));
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -1056,7 +1056,7 @@ TEST_F(TracerCApiTest, TraceHttpClientResponse) {
     EXPECT_NO_FATAL_FAILURE(
         pt_trace_http_client_response(se, 200, &reader));
 
-    pt_span_end_event(span);
+    pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
@@ -1159,7 +1159,7 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     // No-op recording on sentinels must not crash.
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(an1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_error(s1, "ignored"));
-    EXPECT_NO_FATAL_FAILURE(pt_span_end_event(s1));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_end(e1));
     EXPECT_NO_FATAL_FAILURE(pt_span_end(s1));
 
     // Every handle is a sentinel: destroy is a safe no-op, even for duplicates.

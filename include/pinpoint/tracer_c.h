@@ -41,7 +41,7 @@
  *   pt_annotation_t anno = pt_span_event_get_annotations(se);
  *   pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "/api/v1");
  *   pt_annotation_destroy(anno);
- *   pt_span_end_event(span);
+ *   pt_span_event_end(se);
  *   pt_span_event_destroy(se);
  *
  *   pt_span_end(span);
@@ -53,7 +53,7 @@
  *
  * Span-event and annotation handles are non-owning views. Use them only while
  * the parent span/span event is alive and active; do not store them for work
- * that can run after pt_span_end_event(), pt_span_end(), or pt_span_destroy().
+ * that can run after pt_span_event_end(), pt_span_end(), or pt_span_destroy().
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -488,8 +488,7 @@ void pt_span_destroy(pt_span_t span);
  * The returned handle must be used only while the parent span is alive and the
  * event is active. Release the handle with pt_span_event_destroy(); this only
  * frees the C wrapper and does not extend the event lifetime.
- * Call pt_span_end_event() on the *span* (not on the event handle) to pop and
- * finalize the event.
+ * Call pt_span_event_end() on the event handle to pop and finalize the event.
  *
  * Mirrors pinpoint::Span::NewSpanEvent(operation).
  */
@@ -512,16 +511,6 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
  * Mirrors pinpoint::Span::GetSpanEvent().
  */
 pt_span_event_t pt_span_get_event(pt_span_t span);
-
-/**
- * @brief Pops and finalizes the current span event.
- *
- * Records the elapsed time and removes the event from the event stack. Do not
- * use span event or event-annotation handles after this call.
- *
- * Mirrors pinpoint::Span::EndSpanEvent().
- */
-void pt_span_end_event(pt_span_t span);
 
 /**
  * @brief Completes the span and flushes all recorded data to the collector.
@@ -624,9 +613,21 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span);
  * @brief Releases a span event handle.
  *
  * Does NOT end/finalize the event or destroy the underlying event — call
- * pt_span_end_event() on the parent span first.
+ * pt_span_event_end() first.
  */
 void pt_span_event_destroy(pt_span_event_t se);
+
+/**
+ * @brief Pops and finalizes this span event.
+ *
+ * Records the elapsed time and removes the event from the parent span's event
+ * stack. Ending an already-ended event is a warning no-op. Do not use the
+ * event or its annotation handles after this call (release them with
+ * pt_span_event_destroy() / pt_annotation_destroy()).
+ *
+ * Mirrors pinpoint::SpanEvent::EndEvent().
+ */
+void pt_span_event_end(pt_span_event_t se);
 
 /** Mirrors pinpoint::SpanEvent::SetServiceType(). */
 void pt_span_event_set_service_type(pt_span_event_t se, int32_t service_type);

@@ -56,21 +56,21 @@ int main() {
             span->SetError("http client error");
         }
 
-        span->EndSpanEvent();
+        se->EndEvent();
 
-        span->NewSpanEvent("TestSpanEvent2");
+        auto se2 = span->NewSpanEvent("TestSpanEvent2");
         // Create the async span on the thread that owns `span` (required), then
         // hand it to a separate worker thread that uses it exclusively. This is
         // the sanctioned way to continue a trace on another thread: never touch
         // one span instance from more than one thread.
         auto async_span = span->NewAsyncSpan("New Thread");
         std::thread async_worker([async_span]() {
-            async_span->NewSpanEvent("ThreadSpanEvent");
-            async_span->EndSpanEvent();
+            auto thread_se = async_span->NewSpanEvent("ThreadSpanEvent");
+            thread_se->EndEvent();
             async_span->EndSpan();
         });
         async_worker.join();
-        span->EndSpanEvent();
+        se2->EndEvent();
 
         span->SetStatusCode(200);
         span->EndSpan();

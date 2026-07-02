@@ -250,8 +250,8 @@ auto se = span->NewSpanEvent("process_logic");
 
 // ... execute logic ...
 
-// End the span event
-span->EndSpanEvent();
+// End the span event on its own handle
+se->EndEvent();
 
 span->EndSpan();
 ```
@@ -264,24 +264,24 @@ Nest events to reflect the call hierarchy:
 auto span = agent->NewSpan("MyService", "/api/endpoint");
 
 // Level 1
-span->NewSpanEvent("processRequest");
+auto processRequest = span->NewSpanEvent("processRequest");
 {
     // Level 2
-    span->NewSpanEvent("validateInput");
+    auto validate = span->NewSpanEvent("validateInput");
     validateInput();
-    span->EndSpanEvent();
+    validate->EndEvent();
 
     // Level 2
-    span->NewSpanEvent("businessLogic");
+    auto businessLogic = span->NewSpanEvent("businessLogic");
     {
         // Level 3
-        span->NewSpanEvent("queryDatabase");
+        auto query = span->NewSpanEvent("queryDatabase");
         queryDatabase();
-        span->EndSpanEvent();
+        query->EndEvent();
     }
-    span->EndSpanEvent();
+    businessLogic->EndEvent();
 }
-span->EndSpanEvent();
+processRequest->EndEvent();
 
 span->EndSpan();
 ```
@@ -299,7 +299,7 @@ span_event->SetEndPoint("mysql-server:3306");
 auto start_time = std::chrono::system_clock::now();
 span_event->SetStartTime(start_time);
 
-span->EndSpanEvent();
+span_event->EndEvent();
 ```
 
 ### Getting the Current Span Event
@@ -314,7 +314,7 @@ if (span_event) {
 
 ### RAII Helper: `helper::ScopedSpanEvent`
 
-The `helper::ScopedSpanEvent` class automatically calls `EndSpanEvent()` when it goes out of scope, preventing dangling events:
+The `helper::ScopedSpanEvent` class automatically calls `EndEvent()` on the event when it goes out of scope, preventing dangling events:
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -327,7 +327,7 @@ void processRequest(pinpoint::SpanPtr span) {
     guard->SetDestination("backend-service");
     guard->SetEndPoint("localhost:9000");
 
-    // No need to call span->EndSpanEvent() — destructor handles it
+    // No need to call EndEvent() — destructor handles it
 }
 
 // With a custom service type
@@ -336,7 +336,7 @@ void queryDatabase(pinpoint::SpanPtr span) {
     guard->SetEndPoint("mysql-server:3306");
     guard->SetDestination("user_database");
 
-    // Even if an exception is thrown, EndSpanEvent() is called
+    // Even if an exception is thrown, EndEvent() is called
     database->execute("SELECT * FROM users");
 }
 ```
@@ -344,9 +344,9 @@ void queryDatabase(pinpoint::SpanPtr span) {
 ### Recommendations
 
 - Create **one span event per major logical step**.
-- Always pair `NewSpanEvent()` with `EndSpanEvent()` — prefer `helper::ScopedSpanEvent` for automatic cleanup.
+- Always pair `NewSpanEvent()` with `EndEvent()` on the returned event — prefer `helper::ScopedSpanEvent` for automatic cleanup.
 - Use appropriate `SERVICE_TYPE_*` constants for downstream services.
-- Call `EndSpanEvent()` in the same scope or via RAII wrappers to avoid dangling events.
+- Call `EndEvent()` in the same scope or via RAII wrappers to avoid dangling events. Ending an already-ended event is a warning no-op.
 
 ---
 
@@ -399,7 +399,7 @@ auto anno = se->GetAnnotations();
 anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, url);
 anno->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, status_code);
 
-span->EndSpanEvent();
+se->EndEvent();
 ```
 
 ### Custom Annotations
@@ -474,7 +474,7 @@ void sendRequest(pinpoint::SpanPtr span) {
     se->InjectContext(writer);  // adds Pinpoint-* headers
 
     auto res = cli.Get("/target", headers);
-    span->EndSpanEvent();
+    se->EndEvent();
 }
 ```
 
@@ -588,12 +588,12 @@ httplib::Server::Handler wrap_handler(httplib::Server::Handler handler) {
 // Example handler
 void handle_users(const httplib::Request& req, httplib::Response& res) {
     auto span = get_span_context();
-    span->NewSpanEvent("handle_users");
+    auto se = span->NewSpanEvent("handle_users");
 
     res.set_content("{\"users\": []}", "application/json");
     res.status = 200;
 
-    span->EndSpanEvent();
+    se->EndEvent();
 }
 
 int main() {
@@ -689,7 +689,7 @@ void callExternalService(pinpoint::SpanPtr span) {
     HttpHeaderReader response_headers(res.headers);
     pinpoint::helper::TraceHttpClientResponse(se, res.status, response_headers);
 
-    span->EndSpanEvent();
+    se->EndEvent();
 }
 ```
 
@@ -739,7 +739,7 @@ void executeQuery(pinpoint::SpanPtr span, const std::string& sql) {
         db_event->SetError("SQL_ERROR", e.what());
     }
 
-    span->EndSpanEvent();
+    db_event->EndEvent();
 }
 ```
 
@@ -774,7 +774,7 @@ void executeParameterizedQuery(pinpoint::SpanPtr span,
         db_event->SetError("DB_ERROR", e.what());
     }
 
-    span->EndSpanEvent();
+    db_event->EndEvent();
 }
 ```
 
@@ -872,7 +872,7 @@ void handleRequest() {
         span->SetError("UnexpectedError", e.what());
         auto error_event = span->NewSpanEvent("unexpected_error");
         error_event->SetError("UnexpectedError", e.what(), stack_reader);
-        span->EndSpanEvent();
+        error_event->EndEvent();
         span->SetStatusCode(500);
 
     } catch (...) {
@@ -906,7 +906,7 @@ void outgoingRequest(pinpoint::SpanPtr span) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    span->EndSpanEvent();
+    se->EndEvent();
 }
 
 void asyncWithThread(const httplib::Request& req, httplib::Response& res) {
@@ -929,7 +929,7 @@ Use `Span::NewAsyncSpan()` to trace background tasks that continue after the ori
 void backgroundTask(pinpoint::SpanPtr asyncSpan) {
     auto se = asyncSpan->NewSpanEvent("background_job");
     // ... do work ...
-    asyncSpan->EndSpanEvent();
+    se->EndEvent();
     asyncSpan->EndSpan();
 }
 
@@ -960,7 +960,7 @@ void safeAsyncOperation() {
         try {
             auto event = async_span->NewSpanEvent("work");
             performWork();
-            async_span->EndSpanEvent();
+            event->EndEvent();
             async_span->EndSpan();
 
         } catch (const std::exception& e) {
@@ -1234,9 +1234,9 @@ pinpoint::SpanPtr getSpan() { return current_span; }
 void processData() {
     auto span = getSpan();
     if (span) {
-        span->NewSpanEvent("processData");
+        auto se = span->NewSpanEvent("processData");
         // ...
-        span->EndSpanEvent();
+        se->EndEvent();
     }
 }
 ```
