@@ -100,9 +100,11 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
         }
       }
 
-      if (auto* context = info_->client_context()) {
-        GrpcClientTraceContextWriter writer(context);
-        parent_span_->InjectContext(writer);
+      if (span_event_) {
+        if (auto* context = info_->client_context()) {
+          GrpcClientTraceContextWriter writer(context);
+          span_event_->InjectContext(writer);
+        }
       }
     }
 

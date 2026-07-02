@@ -490,9 +490,7 @@ namespace pinpoint {
             span->extractContext(reader, tid);
             return span;
         }
-        auto span = std::make_shared<UnsampledSpan>(this);
-        span->ExtractContext(reader);
-        return span;
+        return std::make_shared<UnsampledSpan>(this);
     } catch (const std::exception& e) {
         LOG_ERROR("new span exception = {}", e.what());
         return noopSpan();

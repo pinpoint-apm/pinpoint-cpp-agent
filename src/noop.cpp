@@ -38,6 +38,10 @@ namespace pinpoint {
         return getNoop().span();
     }
 
+    SpanEventPtr unsampledSpanEvent() {
+        return getNoop().unsampledSpanEvent();
+    }
+
     AgentPtr noopAgent() {
         return getNoop().agent();
     }
@@ -91,7 +95,7 @@ namespace pinpoint {
         LOG_ERROR("set url stat exception = {}", e.what());
     }
 
-    void UnsampledSpan::InjectContext(TraceContextWriter& writer) {
+    void UnsampledSpanEvent::InjectContext(TraceContextWriter& writer) {
         writer.Set(HEADER_SAMPLED, "s0");
     }
 }

@@ -412,14 +412,13 @@ namespace pinpoint {
     	 */
     	SpanPtr NewAsyncSpan(std::string_view async_operation) override;
 
-      	/// @brief Injects the current span context into an outbound propagation carrier.
-      	void InjectContext(TraceContextWriter& writer) override;
-      	/// @brief Extracts a span context from an inbound propagation carrier.
-      	void ExtractContext(TraceContextReader& reader) override;
     	/**
-    	 * @brief ExtractContext variant taking the already-read HEADER_TRACE_ID
-    	 *        value, so NewSpan's sampling decision and the context
-    	 *        extraction share a single header lookup (and allocation).
+    	 * @brief Extracts a span context from an inbound propagation carrier.
+    	 *
+    	 * Impl-level only (no public Span counterpart): called by
+    	 * AgentImpl::NewSpan right after span creation. Takes the already-read
+    	 * HEADER_TRACE_ID value so NewSpan's sampling decision and the context
+    	 * extraction share a single header lookup (and allocation).
     	 *
     	 * @param reader Trace context reader provided by user code.
     	 * @param tid Value of HEADER_TRACE_ID previously read from the reader.

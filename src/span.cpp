@@ -338,37 +338,6 @@ namespace pinpoint {
         record_chunk(true);
     }
 
-    void SpanImpl::InjectContext(TraceContextWriter& writer) {
-        CHECK_FINISHED();
-        CHECK_OVERFLOW();
-
-        if (const auto se = data_->topSpanEvent()) {
-            const auto& trace_id = data_->getTraceId();
-            const int64_t next_span_id = se->generateNextSpanId();
-
-            writer.Set(HEADER_TRACE_ID, trace_id.ToString());
-            writer.Set(HEADER_SPAN_ID, std::to_string(next_span_id));
-            writer.Set(HEADER_PARENT_SPAN_ID, std::to_string(data_->getSpanId()));
-            writer.Set(HEADER_FLAG, std::to_string(data_->getFlags()));
-            writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
-            writer.Set(HEADER_PARENT_APP_TYPE, std::to_string(agent_->getAppType()));
-            // The agent's own service name is sent only when present, which (per
-            // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
-            // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
-            // which writes Pinpoint-pServiceName only when serviceName != null.
-            if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
-                writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
-            }
-            writer.Set(HEADER_PARENT_APP_NAMESPACE, "");
-            writer.Set(HEADER_HOST, se->getDestinationId());
-        }
-    }
-
-    void SpanImpl::ExtractContext(TraceContextReader& reader) {
-        CHECK_FINISHED();
-        extractContext(reader, reader.Get(HEADER_TRACE_ID));
-    }
-
     void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string_view> tid) {
         CHECK_FINISHED();
 

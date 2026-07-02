@@ -566,14 +566,14 @@ TEST_F(SpanTest, SpanImplSetLoggingTest) {
     EXPECT_TRUE(pspan_id.has_value()) << "PspanId should be injected";
 }
 
-TEST_F(SpanTest, SpanImplInjectContextTest) {
+TEST_F(SpanTest, SpanEventInjectContextTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextWriter writer;
-    
-    // Create a span event to enable context injection
-    span.NewSpanEvent("test-event");
-    
-    span.InjectContext(writer);
+
+    // Context is injected through the span event for the outbound call
+    auto se = span.NewSpanEvent("test-event");
+
+    se->InjectContext(writer);
     
     // Verify context was injected
     auto trace_id = writer.Get(HEADER_TRACE_ID);
@@ -588,14 +588,14 @@ TEST_F(SpanTest, SpanImplInjectContextTest) {
 
 // uid.version=v4: the agent has its own service name, so InjectContext must
 // propagate it via the Pinpoint-pServiceName header (Java DefaultRequestTraceWriter).
-TEST_F(SpanTest, SpanImplInjectContextWritesParentServiceNameForV4Test) {
+TEST_F(SpanTest, SpanEventInjectContextWritesParentServiceNameForV4Test) {
     mock_agent_service_->setServiceName("my-service");
 
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextWriter writer;
-    span.NewSpanEvent("test-event");
+    auto se = span.NewSpanEvent("test-event");
 
-    span.InjectContext(writer);
+    se->InjectContext(writer);
 
     auto service_name = writer.Get(HEADER_PARENT_SERVICE_NAME);
     ASSERT_TRUE(service_name.has_value()) << "Pinpoint-pServiceName should be injected for v4";
@@ -604,14 +604,14 @@ TEST_F(SpanTest, SpanImplInjectContextWritesParentServiceNameForV4Test) {
 
 // uid.version=v1/v3: the agent has no service name (empty), so InjectContext must
 // omit the Pinpoint-pServiceName header (Java writes it only when serviceName != null).
-TEST_F(SpanTest, SpanImplInjectContextOmitsParentServiceNameWhenEmptyTest) {
+TEST_F(SpanTest, SpanEventInjectContextOmitsParentServiceNameWhenEmptyTest) {
     mock_agent_service_->setServiceName(""); // default for v1/v3
 
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextWriter writer;
-    span.NewSpanEvent("test-event");
+    auto se = span.NewSpanEvent("test-event");
 
-    span.InjectContext(writer);
+    se->InjectContext(writer);
 
     EXPECT_FALSE(writer.Get(HEADER_PARENT_SERVICE_NAME).has_value())
         << "Pinpoint-pServiceName must be omitted when the agent has no service name (v1/v3)";
@@ -634,7 +634,7 @@ TEST_F(SpanTest, SpanImplExtractContextTest) {
     reader.SetContext(HEADER_PARENT_APP_NAME, expected_parent_app_name);
     reader.SetContext(HEADER_PARENT_APP_TYPE, std::to_string(expected_parent_app_type));
     
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
     
     // Verify context was extracted with correct values
     EXPECT_EQ(span.GetSpanId(), expected_span_id) << "Span ID should match the value from context";
@@ -653,7 +653,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     // Create a span event first for context (required by NewAsyncSpan).
     span.NewSpanEvent("base-event");
@@ -720,11 +720,11 @@ TEST_F(SpanTest, ContextPropagationTest) {
     MockTraceContextReader parent_reader;
     parent_reader.SetContext(HEADER_TRACE_ID, "test-agent-001^1234567890^1");
     parent_reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent_span.ExtractContext(parent_reader);
-    
+    parent_span.extractContext(parent_reader, parent_reader.Get(HEADER_TRACE_ID));
+
     // Create span event and inject context
-    parent_span.NewSpanEvent("external-call");
-    parent_span.InjectContext(writer);
+    auto parent_se = parent_span.NewSpanEvent("external-call");
+    parent_se->InjectContext(writer);
     
     // Create child span and extract context
     SpanImpl child_span(mock_agent_service_.get(), "child-operation", "child-rpc");
@@ -741,7 +741,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
         reader.SetContext(HEADER_PARENT_SPAN_ID, parent_span_id.value());
     }
     
-    child_span.ExtractContext(reader);
+    child_span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
     
     // Both spans should have valid IDs (after context extraction)
     EXPECT_NE(parent_span.GetSpanId(), 0) << "Parent span should have non-zero ID";
@@ -800,7 +800,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^7");
     reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent.ExtractContext(reader);
+    parent.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     // Created on the owning thread (needs a live span event for context).
     parent.NewSpanEvent("prepare-async");
@@ -984,7 +984,7 @@ TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
         << "No additional spans should be recorded after finish";
 
     MockTraceContextWriter writer;
-    span.InjectContext(writer);
+    se->InjectContext(writer);
     EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
         << "InjectContext should be no-op after finish";
 
@@ -1112,14 +1112,14 @@ TEST_F(SpanTest, SpanImplSetStatusCodeFailureTest) {
         << "Failure status (>=400) should set error";
 }
 
-// ========== SpanImpl ExtractContext ==========
+// ========== SpanImpl extractContext ==========
 
 TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
 
     // No HEADER_TRACE_ID set — should generate a new trace ID
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     TraceId& tid = span.GetTraceId();
     EXPECT_EQ(tid.StartTime, mock_agent_service_->getStartTime())
@@ -1134,7 +1134,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
 
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
 
     span.EndSpan();
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1152,7 +1152,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_FLAG, "5");
 
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1169,7 +1169,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
     reader.SetContext(HEADER_PARENT_APP_NAMESPACE, "ParentNamespace");
     reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
 
-    span.ExtractContext(reader);
+    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1180,17 +1180,19 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
         << "Pinpoint-pAppNamespace header should populate the span's parentAppNamespace";
 }
 
-// ========== SpanImpl InjectContext Without Active Event ==========
+// ========== SpanEventImpl InjectContext After Span Finished ==========
 
-TEST_F(SpanTest, SpanImplInjectContextWithoutEventTest) {
+TEST_F(SpanTest, SpanEventInjectContextAfterSpanFinishedTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
-    MockTraceContextWriter writer;
+    auto se = span.NewSpanEvent("test-event");
 
-    // No NewSpanEvent called — topSpanEvent returns nullptr
-    span.InjectContext(writer);
+    span.EndSpan();
+
+    MockTraceContextWriter writer;
+    se->InjectContext(writer);
 
     EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
-        << "Should not inject context when there is no active event";
+        << "Should not inject context once the owning span is finished";
 }
 
 // ========== SpanImpl GetSpanEvent Without Events ==========

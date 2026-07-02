@@ -279,6 +279,9 @@ namespace pinpoint {
 		virtual void SetSqlQuery(std::string_view sql_query, std::string_view args) = 0;
 		/// @brief Records HTTP headers into the event.
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
+		/// @brief Injects the trace context for the outbound call represented
+		///        by this span event into an outbound carrier.
+		virtual void InjectContext(TraceContextWriter& writer) = 0;
 
 		/// @brief Returns the mutable annotation container.
         virtual AnnotationPtr GetAnnotations() const = 0;
@@ -335,11 +338,6 @@ namespace pinpoint {
 		/// share `this` span across threads — see the Span class thread-safety
 		/// contract above.
 		virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
-
-		/// @brief Injects the span context into an outbound carrier.
-		virtual void InjectContext(TraceContextWriter& writer) = 0;
-		/// @brief Extracts a span context from an inbound carrier.
-		virtual void ExtractContext(TraceContextReader& reader) = 0;
 
 		/// @brief Returns the trace identifier for the span.
 		virtual TraceId& GetTraceId() = 0;

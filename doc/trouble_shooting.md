@@ -558,9 +558,10 @@ ping -M do -s 1472 pinpoint-collector
    HttpTraceContextReader reader(req.headers);
    auto span = agent->NewSpan("Service", "/endpoint", reader);
 
-   // Client: Inject context
+   // Client: Inject context through the span event for the outbound call
+   auto se = span->NewSpanEvent("outgoing-call");
    HttpTraceContextWriter writer(headers);
-   span->InjectContext(writer);
+   se->InjectContext(writer);
    ```
 
 2. **Check Headers** — verify Pinpoint headers are present in the request:

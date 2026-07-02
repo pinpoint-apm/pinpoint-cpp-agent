@@ -141,7 +141,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
         hlc_mutable_headers_handle(out_headers),
         hlc_headers_set,
     };
-    pt_span_inject_context(span, &ctx_writer);
+    pt_span_event_inject_context(se, &ctx_writer);
 
     /* Annotate the outbound URL. */
     pt_annotation_t anno = pt_span_event_get_annotations(se);

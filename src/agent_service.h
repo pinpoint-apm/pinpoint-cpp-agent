@@ -73,7 +73,7 @@
       // These identity fields are immutable for the agent's lifetime:
       // Config::isReloadable() rejects any reload that would change them, so a
       // const-reference return is safe and lets per-request hot-path callers
-      // (e.g. Span::InjectContext) avoid a string copy. Implementations must
+      // (e.g. SpanEvent::InjectContext) avoid a string copy. Implementations must
       // back them with storage that outlives the agent, not a temporary.
       /// @brief Returns the configured application name.
       virtual const std::string& getAppName() const = 0;

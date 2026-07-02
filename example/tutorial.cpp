@@ -35,7 +35,7 @@ int main() {
 
         httplib::Headers headers;
         HttpHeaderReaderWriter trace_context_writer(headers);
-        span->InjectContext(trace_context_writer);
+        se->InjectContext(trace_context_writer);
 
         auto anno = se->GetAnnotations();
         anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, "localhost:8090/foo");

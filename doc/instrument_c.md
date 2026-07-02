@@ -187,7 +187,7 @@ pt_context_writer_t writer = {
     .userdata = &out_headers,
     .set      = my_hdr_set,
 };
-pt_span_inject_context(span, &writer);
+pt_span_event_inject_context(se, &writer);
 ```
 
 ### `pt_header_reader_t` — full header access with iteration
@@ -432,26 +432,26 @@ pt_span_t span = pt_agent_new_span_with_reader(
     agent, "C Web Server", req->path, &reader);
 ```
 
-You can also extract context after creating a span:
-
-```c
-pt_span_t span = pt_agent_new_span(agent, "MyService", "/api");
-pt_context_reader_t reader = { &req->headers, my_hdr_get };
-pt_span_extract_context(span, &reader);
-```
-
 ### Client side — injecting outgoing context
 
+Context is injected through the span event that represents the outbound call:
+
 ```c
+/* Span event representing the outbound call */
+pt_span_event_t se = pt_span_new_event(span, "HTTP_CLIENT");
+
 /* Build outbound headers, then inject trace context */
 my_headers_t out = my_headers_create();
 
 pt_context_writer_t writer = { &out, my_hdr_set };
-pt_span_inject_context(span, &writer);
+pt_span_event_inject_context(se, &writer);
 
 /* Issue the outgoing request with out headers */
 my_http_get(client, "/downstream", &out);
 my_headers_destroy(&out);
+
+pt_span_end_event(span);
+pt_span_event_destroy(se);
 ```
 
 See `example/tutorial_c.c` for a complete client-side injection example using `hlc_mutable_headers_t`.
@@ -540,7 +540,7 @@ static void call_downstream(pt_span_t span) {
     /* Inject trace context into outbound headers */
     my_headers_t out = my_headers_create();
     pt_context_writer_t writer = { &out, my_hdr_set };
-    pt_span_inject_context(span, &writer);
+    pt_span_event_inject_context(se, &writer);
 
     /* Annotate the outbound URL */
     pt_annotation_t anno = pt_span_event_get_annotations(se);

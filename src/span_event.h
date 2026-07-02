@@ -48,6 +48,10 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
+        /// @brief Injects the trace context for the outbound call represented
+        /// by this event (trace id, generated child span id, parent app info)
+        /// into an outbound propagation carrier.
+        void InjectContext(TraceContextWriter& writer) override;
         AnnotationPtr GetAnnotations() const override { return ensureAnnotations(); }
         void EndEvent() override;
 

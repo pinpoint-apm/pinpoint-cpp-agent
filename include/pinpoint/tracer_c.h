@@ -540,20 +540,6 @@ void pt_span_end(pt_span_t span);
 pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation);
 
 /**
- * @brief Injects the current span context into an outbound carrier.
- *
- * Mirrors pinpoint::Span::InjectContext(writer).
- */
-void pt_span_inject_context(pt_span_t span, pt_context_writer_t* writer);
-
-/**
- * @brief Applies trace context from an inbound carrier to the span.
- *
- * Mirrors pinpoint::Span::ExtractContext(reader).
- */
-void pt_span_extract_context(pt_span_t span, const pt_context_reader_t* reader);
-
-/**
  * @brief Returns the distributed trace identifier for this span.
  *
  * The returned structure is a value copy and is valid independently of the
@@ -689,6 +675,14 @@ void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
 /** Mirrors pinpoint::SpanEvent::RecordHeader(). */
 void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
                                  const pt_header_reader_t* reader);
+
+/**
+ * @brief Injects the trace context for the outbound call represented by this
+ *        span event into an outbound carrier.
+ *
+ * Mirrors pinpoint::SpanEvent::InjectContext(writer).
+ */
+void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* writer);
 
 /**
  * @brief Returns the annotation container for this span event.

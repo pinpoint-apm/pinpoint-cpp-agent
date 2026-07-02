@@ -75,15 +75,31 @@ TEST_F(NoopTest, UnsampledSpanUniqueSpanIdsTest) {
     EXPECT_NE(span1.GetSpanId(), span2.GetSpanId()) << "Different UnsampledSpan instances should have unique span IDs";
 }
 
-TEST_F(NoopTest, UnsampledSpanInjectContextTest) {
+TEST_F(NoopTest, UnsampledSpanEventInjectContextTest) {
     UnsampledSpan span(mock_agent_service_.get());
     MockTraceContextWriter writer;
 
-    span.InjectContext(writer);
+    auto se = span.NewSpanEvent("outgoing-call");
+    se->InjectContext(writer);
 
     auto sampled_value = writer.Get(HEADER_SAMPLED);
     EXPECT_TRUE(sampled_value.has_value()) << "Sampled header should be set";
     EXPECT_EQ(sampled_value.value(), "s0") << "Sampled header should be 's0' for unsampled span";
+}
+
+TEST_F(NoopTest, UnsampledSpanEventGlobalSingletonTest) {
+    UnsampledSpan span1(mock_agent_service_.get());
+    UnsampledSpan span2(mock_agent_service_.get());
+
+    // Every unsampled span hands out the single global UnsampledSpanEvent.
+    EXPECT_EQ(span1.NewSpanEvent("op"), unsampledSpanEvent());
+    EXPECT_EQ(span1.NewSpanEvent("op", 1000), unsampledSpanEvent());
+    EXPECT_EQ(span1.GetSpanEvent(), unsampledSpanEvent());
+    EXPECT_EQ(span2.NewSpanEvent("op"), unsampledSpanEvent());
+    EXPECT_EQ(unsampledSpanEvent(), unsampledSpanEvent())
+        << "unsampledSpanEvent should always return the same instance";
+    EXPECT_NE(unsampledSpanEvent(), noopSpanEvent())
+        << "Unsampled span event is distinct from the plain noop span event";
 }
 
 TEST_F(NoopTest, UnsampledSpanSetUrlStatTest) {
@@ -129,7 +145,7 @@ TEST_F(NoopTest, UnsampledSpanCompleteWorkflowTest) {
         span.SetUrlStat("/api/orders", "POST", 201);
 
         MockTraceContextWriter writer;
-        span.InjectContext(writer);
+        span.NewSpanEvent("outgoing-call")->InjectContext(writer);
 
         auto sampled_value = writer.Get(HEADER_SAMPLED);
         EXPECT_EQ(sampled_value.value(), "s0") << "Context should indicate unsampled";
@@ -190,12 +206,10 @@ TEST_F(NoopTest, UnsampledSpanInheritedNoopBehaviorTest) {
     auto async_span = span.NewAsyncSpan("async-operation");
     EXPECT_NE(async_span, nullptr) << "NewAsyncSpan should return a valid Span";
 
+    // InjectContext on the handed-out event propagates the unsampled decision
     MockTraceContextWriter writer;
-    span.InjectContext(writer); // This should work (overridden method)
-
-    // ExtractContext should be no-op (inherited behavior)
-    MockTraceContextReader reader;
-    span.ExtractContext(reader);
+    span.GetSpanEvent()->InjectContext(writer);
+    EXPECT_EQ(writer.Get(HEADER_SAMPLED), "s0");
 
     auto trace_id = span.GetTraceId();
     EXPECT_NE(&trace_id, nullptr) << "GetTraceId should return a valid reference";
@@ -238,12 +252,6 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
     auto async_span = span.NewAsyncSpan("async-operation");
     EXPECT_NE(async_span, nullptr) << "NewAsyncSpan should return a valid Span";
 
-    MockTraceContextWriter writer;
-    span.InjectContext(writer);
-
-    MockTraceContextReader reader;
-    span.ExtractContext(reader);
-
     span.SetServiceType(1000);
     span.SetStartTime(std::chrono::system_clock::now());
     span.SetRemoteAddress("192.168.1.1");
@@ -280,6 +288,11 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
 
     MockHeaderReader reader;
     span_event.RecordHeader(HTTP_REQUEST, reader);
+
+    MockTraceContextWriter writer;
+    span_event.InjectContext(writer);
+    EXPECT_FALSE(writer.Get(HEADER_SAMPLED).has_value())
+        << "NoopSpanEvent::InjectContext should write nothing";
 
     SUCCEED() << "All NoopSpanEvent methods should execute without throwing exceptions";
 }
@@ -487,11 +500,11 @@ TEST_F(NoopTest, UnsampledSpanWithFailStatusUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 500);
 }
 
-TEST_F(NoopTest, UnsampledSpanInjectContextDoesNotSetOtherHeadersTest) {
+TEST_F(NoopTest, UnsampledSpanEventInjectContextDoesNotSetOtherHeadersTest) {
     UnsampledSpan span(mock_agent_service_.get());
     MockTraceContextWriter writer;
 
-    span.InjectContext(writer);
+    span.NewSpanEvent("outgoing-call")->InjectContext(writer);
 
     EXPECT_TRUE(writer.Get(HEADER_SAMPLED).has_value()) << "Sampled header should be set";
     EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value()) << "TraceId header should NOT be set for unsampled";

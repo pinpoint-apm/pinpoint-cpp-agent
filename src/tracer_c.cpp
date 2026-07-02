@@ -606,26 +606,6 @@ pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) {
     });
 }
 
-void pt_span_inject_context(pt_span_t span, pt_context_writer_t* writer) {
-    pt_api_call(__func__, [&] {
-        if (!writer) return;
-        pt_handle_call(span, [&](pt_span_t valid) {
-            CContextWriter cpt_writer(writer);
-            valid->ptr->InjectContext(cpt_writer);
-        });
-    });
-}
-
-void pt_span_extract_context(pt_span_t span, const pt_context_reader_t* reader) {
-    pt_api_call(__func__, [&] {
-        if (!reader) return;
-        pt_handle_call(span, [&](pt_span_t valid) {
-            CContextReader cpt_reader(reader);
-            valid->ptr->ExtractContext(cpt_reader);
-        });
-    });
-}
-
 pt_trace_id_t pt_span_get_trace_id(pt_span_t span) {
     return pt_api_call(__func__, pt_trace_id_t{}, [&] {
         return pt_handle_call(span, pt_trace_id_t{}, [](pt_span_t valid) {
@@ -861,6 +841,16 @@ void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
         pt_handle_call(se, [&](pt_span_event_t valid) {
             valid->ptr->SetSqlQuery(sql_query ? sql_query : "",
                                     args      ? args      : "");
+        });
+    });
+}
+
+void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* writer) {
+    pt_api_call(__func__, [&] {
+        if (!writer) return;
+        pt_handle_call(se, [&](pt_span_event_t valid) {
+            CContextWriter cpt_writer(writer);
+            valid->ptr->InjectContext(cpt_writer);
         });
     });
 }

@@ -406,8 +406,6 @@ TEST(TracerCNullSafetyTest, NullSpanCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_end_event(nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_end(nullptr));
     EXPECT_EQ(pt_span_new_async_span(nullptr, "op"), nullptr);
-    EXPECT_NO_FATAL_FAILURE(pt_span_inject_context(nullptr, nullptr));
-    EXPECT_NO_FATAL_FAILURE(pt_span_extract_context(nullptr, nullptr));
     EXPECT_EQ(pt_span_get_span_id(nullptr), 0);
     EXPECT_EQ(pt_span_is_sampled(nullptr), 0);
     EXPECT_NO_FATAL_FAILURE(pt_span_set_service_type(nullptr, 0));
@@ -435,6 +433,7 @@ TEST(TracerCNullSafetyTest, NullSpanEventCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_error_with_callstack(nullptr, "n", "m", nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_sql_query(nullptr, "SELECT 1", ""));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(nullptr, nullptr));
     EXPECT_EQ(pt_span_event_get_annotations(nullptr), nullptr);
 }
 
@@ -460,11 +459,16 @@ TEST_F(TracerCApiTest, ExceptionFirewallSwallowsCallbackExceptions) {
     pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
     ASSERT_NE(span, nullptr);
 
+    pt_span_event_t se = pt_span_new_event(span, "http_out");
+    ASSERT_NE(se, nullptr);
+
     HeaderMap out;
     pt_context_writer_t writer{&out, throwing_set};
-    EXPECT_NO_FATAL_FAILURE(pt_span_inject_context(span, &writer));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(se, &writer));
     EXPECT_TRUE(out.empty());
 
+    pt_span_end_event(span);
+    pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
 }
@@ -562,8 +566,8 @@ TEST_F(TracerCApiTest, GetTraceIdFillsStruct) {
 // ============================================================================
 
 TEST_F(TracerCApiTest, InjectContextWritesHeaders) {
-    // InjectContext uses the active span event to generate the child span ID,
-    // so a span event must be open before calling inject.
+    // InjectContext lives on the span event: the event representing the
+    // outbound call generates the child span ID and writes the headers.
     pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
     ASSERT_NE(span, nullptr);
 
@@ -573,7 +577,7 @@ TEST_F(TracerCApiTest, InjectContextWritesHeaders) {
 
     HeaderMap out;
     pt_context_writer_t writer{&out, hmap_set};
-    pt_span_inject_context(span, &writer);
+    pt_span_event_inject_context(se, &writer);
 
     // After injection the trace-id header must be present.
     EXPECT_FALSE(out.empty());
@@ -596,7 +600,7 @@ TEST_F(TracerCApiTest, ExtractContextFromInjectedHeaders) {
 
     HeaderMap carrier;
     pt_context_writer_t writer{&carrier, hmap_set};
-    pt_span_inject_context(parent, &writer);
+    pt_span_event_inject_context(parent_se, &writer);
     ASSERT_FALSE(carrier.empty());
 
     // Create a child span by extracting from the carrier.

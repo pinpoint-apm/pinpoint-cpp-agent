@@ -137,4 +137,33 @@ namespace pinpoint {
         agent_->recordClientHeader(which, reader, ensureAnnotations());
     }
 
+    void SpanEventImpl::InjectContext(TraceContextWriter& writer) {
+        // Defensive idempotency guard, same as the span-level recorders: a
+        // finished span must not propagate context any more.
+        if (span_->finished_.load()) {
+            LOG_WARN("span is already finished");
+            return;
+        }
+
+        const auto& data = span_->data_;
+        const auto& trace_id = data->getTraceId();
+        const int64_t next_span_id = generateNextSpanId();
+
+        writer.Set(HEADER_TRACE_ID, trace_id.ToString());
+        writer.Set(HEADER_SPAN_ID, std::to_string(next_span_id));
+        writer.Set(HEADER_PARENT_SPAN_ID, std::to_string(data->getSpanId()));
+        writer.Set(HEADER_FLAG, std::to_string(data->getFlags()));
+        writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
+        writer.Set(HEADER_PARENT_APP_TYPE, std::to_string(agent_->getAppType()));
+        // The agent's own service name is sent only when present, which (per
+        // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
+        // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
+        // which writes Pinpoint-pServiceName only when serviceName != null.
+        if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
+            writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
+        }
+        writer.Set(HEADER_PARENT_APP_NAMESPACE, "");
+        writer.Set(HEADER_HOST, destination_id_);
+    }
+
 } // namespace pinpoint

@@ -39,6 +39,10 @@ namespace pinpoint {
      */
     SpanPtr noopSpan();
     /**
+     * @brief Returns the global singleton span event handed out by unsampled spans.
+     */
+    SpanEventPtr unsampledSpanEvent();
+    /**
      * @brief Returns a shared noop agent instance.
      */
     AgentPtr noopAgent();
@@ -70,7 +74,7 @@ namespace pinpoint {
     /**
      * @brief Span event implementation that ignores all recording operations.
      */
-    class NoopSpanEvent final : public SpanEvent {
+    class NoopSpanEvent : public SpanEvent {
     public:
         NoopSpanEvent() {}
         ~NoopSpanEvent() override {}
@@ -85,9 +89,26 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
         void SetSqlQuery(std::string_view sql_query, std::string_view args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
+        void InjectContext(TraceContextWriter& writer) override {}
 
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
         void EndEvent() override {}
+    };
+
+    /**
+     * @brief Span event handed out by UnsampledSpan: records nothing but still
+     *        propagates the unsampled decision (`Pinpoint-Sampled: s0`) to
+     *        downstream services on InjectContext.
+     *
+     * Stateless, so a single global instance (see unsampledSpanEvent()) is
+     * shared by every unsampled span.
+     */
+    class UnsampledSpanEvent final : public NoopSpanEvent {
+    public:
+        UnsampledSpanEvent() {}
+        ~UnsampledSpanEvent() override {}
+
+        void InjectContext(TraceContextWriter& writer) override;
     };
 
     /**
@@ -104,9 +125,6 @@ namespace pinpoint {
         void EndSpanEvent() override {}
         void EndSpan() override {}
         SpanPtr NewAsyncSpan(std::string_view async_operation) override { return noopSpan(); }
-
-        void InjectContext(TraceContextWriter& writer) override {}
-        void ExtractContext(TraceContextReader& reader) override {}
 
         void SetServiceType(int32_t service_type) override {}
         void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
@@ -137,8 +155,13 @@ namespace pinpoint {
         explicit UnsampledSpan(AgentService *agent);
         ~UnsampledSpan() override {}
 
+        // Hand out the unsampled span event so that InjectContext on the event
+        // still propagates the `s0` sampling decision downstream.
+        SpanEventPtr NewSpanEvent(std::string_view operation) override { return unsampledSpanEvent(); }
+        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return unsampledSpanEvent(); }
+        SpanEventPtr GetSpanEvent() override { return unsampledSpanEvent(); }
+
         void EndSpan() override;
-        void InjectContext(TraceContextWriter& writer) override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 
         int64_t GetSpanId() override {
@@ -193,6 +216,7 @@ namespace pinpoint {
             noop_agent_(std::make_shared<NoopAgent>()),
             noop_span_ (std::make_shared<NoopSpan>()),
             noop_event_(std::make_unique<NoopSpanEvent>()),
+            unsampled_event_(std::make_unique<UnsampledSpanEvent>()),
             noop_annotation_(std::make_unique<NoopAnnotation>())
         {}
 
@@ -202,6 +226,8 @@ namespace pinpoint {
         SpanPtr span() const { return noop_span_; }
         /// @brief Returns the shared noop span event.
         SpanEventPtr spanEvent() const { return noop_event_.get(); }
+        /// @brief Returns the shared unsampled span event.
+        SpanEventPtr unsampledSpanEvent() const { return unsampled_event_.get(); }
         /// @brief Returns the shared noop annotation.
         AnnotationPtr annotation() const { return noop_annotation_.get(); }
 
@@ -214,6 +240,7 @@ namespace pinpoint {
         AgentPtr noop_agent_;
         SpanPtr noop_span_;
         std::unique_ptr<NoopSpanEvent> noop_event_;
+        std::unique_ptr<UnsampledSpanEvent> unsampled_event_;
         std::unique_ptr<NoopAnnotation> noop_annotation_;
     };
 }

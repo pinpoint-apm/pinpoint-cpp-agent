@@ -458,27 +458,23 @@ void handleRequest(const httplib::Request& req) {
 }
 ```
 
-You can also extract context after span creation:
-
-```cpp
-auto span = agent->NewSpan("MyService", "/api/endpoint");
-HttpTraceContextReader trace_reader(req.headers);
-span->ExtractContext(trace_reader);
-```
-
 ### Client Side: Injecting Context
 
-When making an outgoing call, inject the trace context into the request headers:
+When making an outgoing call, create a span event for the call and inject the
+trace context into the request headers through that event:
 
 ```cpp
 void sendRequest(pinpoint::SpanPtr span) {
     httplib::Client cli("localhost", 8080);
     httplib::Headers headers;
 
+    auto se = span->NewSpanEvent("outgoing-call",
+                                 pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
     HttpTraceContextWriter writer(headers);
-    span->InjectContext(writer);  // adds Pinpoint-* headers
+    se->InjectContext(writer);  // adds Pinpoint-* headers
 
     auto res = cli.Get("/target", headers);
+    span->EndSpanEvent();
 }
 ```
 
