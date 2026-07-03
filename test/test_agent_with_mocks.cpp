@@ -960,11 +960,11 @@ Sampling:
     EXPECT_EQ(impl_v3.get(), original_agent.get());
 }
 
-// Environment variables seed only the initial config. Once an agent is running,
-// make_config() (called for reloads) must NOT re-read them, so a value set only
-// via env can never override the running config on reload.
-TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsWhenAgentAlreadyExists) {
-    // No agent yet (SetUp reset the global agent): the env var IS applied.
+// Environment variables seed only the initial config. When make_config() is
+// handed the running config (a reload), it must NOT re-read them, so a value
+// set only via env can never override the running config on reload.
+TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsOnReload) {
+    // First load (no old config): the env var IS applied.
     // env::APPLICATION_NAME is only the suffix; the agent reads "<prefix>_<suffix>".
     const std::string app_name_env = std::string(env::DEFAULT_PREFIX) + "_" + env::APPLICATION_NAME;
     setenv(app_name_env.c_str(), "env-app-name", 1);
@@ -972,22 +972,38 @@ TEST_F(CreateAgentTest, MakeConfigSkipsEnvVarsWhenAgentAlreadyExists) {
     ASSERT_NE(cfg_initial, nullptr);
     const auto app_name_initial = cfg_initial->app_name_;
 
-    // Install a running agent, then rebuild the config: the env var must now be
-    // ignored (config string is empty, so app_name falls back to unset).
-    auto agent = install_mock_agent(make_test_config());
-    ASSERT_TRUE(agent->Enable());
-    auto cfg_reload = make_config();
+    // Rebuild for a reload: the env var must now be ignored, and the identity
+    // is retained from the running config.
+    auto running_cfg = make_test_config();
+    auto cfg_reload = make_config(running_cfg);
     ASSERT_NE(cfg_reload, nullptr);
-    const auto app_name_reload = cfg_reload->app_name_;
 
     unsetenv(app_name_env.c_str());
 
     EXPECT_EQ(app_name_initial, "env-app-name")
-        << "env var should seed the initial config when no agent exists";
-    EXPECT_NE(app_name_reload, "env-app-name")
-        << "env var must be ignored once an agent is running";
-    EXPECT_TRUE(app_name_reload.empty())
-        << "with an empty config string and env skipped, app name should be unset";
+        << "env var should seed the initial config";
+    EXPECT_EQ(cfg_reload->app_name_, running_cfg->app_name_)
+        << "reload must retain the running app name, not re-read the env var";
+}
+
+// Env-sourced values still survive reloads: the reload config is seeded from
+// the running config (which absorbed the env overrides at first load), so an
+// env-forced debug level does not silently revert when an unrelated file
+// setting changes — as long as the file does not set the key itself.
+TEST_F(CreateAgentTest, MakeConfigKeepsEnvSeededLogLevelOnReload) {
+    const std::string log_level_env = std::string(env::DEFAULT_PREFIX) + "_" + env::LOG_LEVEL;
+    setenv(log_level_env.c_str(), "debug", 1);
+    auto cfg_initial = make_config();
+    unsetenv(log_level_env.c_str());
+    ASSERT_NE(cfg_initial, nullptr);
+    ASSERT_EQ(cfg_initial->log.level, "debug");
+
+    // Rebuild for a reload with an empty config string: the level is inherited
+    // from the running config, not reset to the "info" default.
+    auto cfg_reload = make_config(cfg_initial);
+    ASSERT_NE(cfg_reload, nullptr);
+    EXPECT_EQ(cfg_reload->log.level, "debug")
+        << "env-seeded log settings must survive a config rebuild for reload";
 }
 
 }  // namespace pinpoint

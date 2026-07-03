@@ -74,8 +74,10 @@ namespace pinpoint {
         /**
          * @brief Switches the logger to file output with basic log rotation support.
          *
-         * @param log_file_path Path to the log file.
-         * @param max_size Maximum file size (bytes) before rotation.
+         * @param log_file_path Path to the log file. An empty path disables
+         *        file output and switches back to stdout.
+         * @param max_size Maximum file size (MB) before rotation; <= 0
+         *        disables rotation.
          */
         void setFileLogger(const std::string& log_file_path, const int max_size);
         /**

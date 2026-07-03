@@ -336,9 +336,22 @@ namespace pinpoint {
     /**
      * @brief Builds a `Config` object by combining defaults, the cached YAML and environment overrides.
      *
-     * @return Resolved configuration ready to be consumed by the agent.
+     * On the first load (@p old is nullptr) environment overrides are applied
+     * and the logger is configured immediately. When @p old — the running
+     * agent's config — is given, the sources are being re-read for a reload:
+     * the config is seeded from @p old so keys absent from the file keep
+     * their running values (env-sourced ones included) instead of reverting
+     * to defaults, environment variables are not re-read, the non-reloadable
+     * fields are retained from @p old, and the global logger is reconfigured
+     * for the log settings that actually changed. Either way the returned
+     * config is final: reload callers pass it straight to `reloadConfig()`.
+     *
+     * @param old Currently active config when rebuilding for a reload,
+     *        nullptr on the first load.
+     * @return Resolved configuration ready to be consumed by the agent, or
+     *         nullptr when construction failed entirely.
      */
-    std::shared_ptr<Config> make_config();
+    std::shared_ptr<Config> make_config(const std::shared_ptr<const Config>& old = nullptr);
 
     /**
      * @brief Serializes a `Config` object back into its YAML representation.

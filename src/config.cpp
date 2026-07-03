@@ -176,17 +176,17 @@ namespace pinpoint {
                     if (current != last_write_time) {
                         last_write_time = current;
                         read_config_from_file(path.c_str());
-                        auto new_cfg = make_config();
-                        auto agent = GlobalAgent();
-                        auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
-
-                        if (agent_impl && new_cfg && !config_watcher_stop().load()) {
-                            // Always reload. Non-reloadable fields cannot change
-                            // on a live agent, so retain the running values (with
-                            // a warning) before reloading the reloadable rest.
-                            new_cfg->retainNonReloadableFrom(agent_impl->getConfig());
-                            agent_impl->reloadConfig(new_cfg);
-                            LOG_INFO("agent config reloaded");
+                        const auto agent_impl =
+                            std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
+                        if (agent_impl && !config_watcher_stop().load()) {
+                            // make_config(old) returns the final reload config:
+                            // non-reloadable fields retained from the running
+                            // config and the logger already reconfigured.
+                            auto new_cfg = make_config(agent_impl->getConfig());
+                            if (new_cfg && !config_watcher_stop().load()) {
+                                agent_impl->reloadConfig(new_cfg);
+                                LOG_INFO("agent config reloaded");
+                            }
                         }
                     }
                 } catch (const std::exception& e) {
@@ -333,24 +333,29 @@ namespace pinpoint {
         return default_value;
     }
 
+    // Every getter falls back to the current member value, never a hardcoded
+    // default. `config` arrives pre-seeded: with the Config member initializers
+    // (the defaults) on a first load, or with a copy of the running config on a
+    // reload — so a key absent from the file keeps the running value instead of
+    // silently reverting to its default.
     static void load_yaml_config(const YAML::Node& yaml, Config& config, bool& is_container_set) {
         if (yaml.size() < 1) {
             return;
         }
 
-        config.log.level = get_string(yaml, "LogLevel", defaults::LOG_LEVEL);
-        config.enable = get_boolean(yaml, "Enable", true);
-        config.app_name_ = get_string(yaml, "ApplicationName", "");
-        config.agent_id_ = get_string(yaml, "AgentId", "");
-        config.agent_name_ = get_string(yaml, "AgentName", "");
-        config.uid_version_ = get_string(yaml, "UidVersion", "");
-        config.service_name_ = get_string(yaml, "ServiceName", "");
-        config.api_key_ = get_string(yaml, "ApiKey", "");
+        config.log.level = get_string(yaml, "LogLevel", config.log.level);
+        config.enable = get_boolean(yaml, "Enable", config.enable);
+        config.app_name_ = get_string(yaml, "ApplicationName", config.app_name_);
+        config.agent_id_ = get_string(yaml, "AgentId", config.agent_id_);
+        config.agent_name_ = get_string(yaml, "AgentName", config.agent_name_);
+        config.uid_version_ = get_string(yaml, "UidVersion", config.uid_version_);
+        config.service_name_ = get_string(yaml, "ServiceName", config.service_name_);
+        config.api_key_ = get_string(yaml, "ApiKey", config.api_key_);
 
         if (auto log = find_node(yaml, "Log")) {
-            config.log.level = get_string(log, "Level", defaults::LOG_LEVEL);
-            config.log.file_path = get_string(log, "FilePath", "");
-            config.log.max_file_size = get_int(log, "MaxFileSize", defaults::LOG_MAX_FILE_SIZE_MB);
+            config.log.level = get_string(log, "Level", config.log.level);
+            config.log.file_path = get_string(log, "FilePath", config.log.file_path);
+            config.log.max_file_size = get_int(log, "MaxFileSize", config.log.max_file_size);
         }
 
         if (auto collector = find_node(yaml, "Collector")) {
@@ -358,86 +363,86 @@ namespace pinpoint {
             // GrpcHost/GrpcAgentPort/GrpcSpanPort/GrpcStatPort keys are read as
             // a fallback for backward compatibility.
             config.collector.host =
-                get_string(collector, "Host", get_string(collector, "GrpcHost", ""));
+                get_string(collector, "Host", get_string(collector, "GrpcHost", config.collector.host));
             config.collector.agent_port =
-                get_int(collector, "AgentPort", get_int(collector, "GrpcAgentPort", defaults::AGENT_PORT));
+                get_int(collector, "AgentPort", get_int(collector, "GrpcAgentPort", config.collector.agent_port));
             config.collector.span_port =
-                get_int(collector, "SpanPort", get_int(collector, "GrpcSpanPort", defaults::SPAN_PORT));
+                get_int(collector, "SpanPort", get_int(collector, "GrpcSpanPort", config.collector.span_port));
             config.collector.stat_port =
-                get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", defaults::STAT_PORT));
+                get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", config.collector.stat_port));
         }
 
         if (auto stat = find_node(yaml, "Stat")) {
-            config.stat.enable = get_boolean(stat, "Enable", true);
-            config.stat.batch_count = get_int(stat, "BatchCount", defaults::STAT_BATCH_COUNT);
-            config.stat.collect_interval = get_int(stat, "BatchInterval", defaults::STAT_INTERVAL_MS);
+            config.stat.enable = get_boolean(stat, "Enable", config.stat.enable);
+            config.stat.batch_count = get_int(stat, "BatchCount", config.stat.batch_count);
+            config.stat.collect_interval = get_int(stat, "BatchInterval", config.stat.collect_interval);
         }
 
         if (auto http = find_node(yaml, "Http")) {
-            config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", false);
-            config.http.url_stat.limit = get_int(http, "UrlStatLimit", defaults::HTTP_URL_STAT_LIMIT);
-            config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", true);
-            config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", 1);
-            config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", false);
+            config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", config.http.url_stat.enable);
+            config.http.url_stat.limit = get_int(http, "UrlStatLimit", config.http.url_stat.limit);
+            config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path);
+            config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth);
+            config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", config.http.url_stat.method_prefix);
 
             if (auto srv = find_node(http, "Server")) {
-                config.http.server.status_errors = get_string_vector(srv, "StatusCodeErrors", {"5xx"});
-                config.http.server.exclude_url = get_string_vector(srv, "ExcludeUrl", {});
-                config.http.server.exclude_method = get_string_vector(srv, "ExcludeMethod", {});
-                config.http.server.rec_request_header = get_string_vector(srv, "RecordRequestHeader", {});
-                config.http.server.rec_request_cookie = get_string_vector(srv, "RecordRequestCookie", {});
-                config.http.server.rec_response_header = get_string_vector(srv, "RecordResponseHeader", {});
+                config.http.server.status_errors = get_string_vector(srv, "StatusCodeErrors", config.http.server.status_errors);
+                config.http.server.exclude_url = get_string_vector(srv, "ExcludeUrl", config.http.server.exclude_url);
+                config.http.server.exclude_method = get_string_vector(srv, "ExcludeMethod", config.http.server.exclude_method);
+                config.http.server.rec_request_header = get_string_vector(srv, "RecordRequestHeader", config.http.server.rec_request_header);
+                config.http.server.rec_request_cookie = get_string_vector(srv, "RecordRequestCookie", config.http.server.rec_request_cookie);
+                config.http.server.rec_response_header = get_string_vector(srv, "RecordResponseHeader", config.http.server.rec_response_header);
             }
 
             if (auto cli = find_node(http, "Client")) {
-                config.http.client.rec_request_header = get_string_vector(cli, "RecordRequestHeader", {});
-                config.http.client.rec_request_cookie = get_string_vector(cli, "RecordRequestCookie", {});
-                config.http.client.rec_response_header = get_string_vector(cli, "RecordResponseHeader", {});
+                config.http.client.rec_request_header = get_string_vector(cli, "RecordRequestHeader", config.http.client.rec_request_header);
+                config.http.client.rec_request_cookie = get_string_vector(cli, "RecordRequestCookie", config.http.client.rec_request_cookie);
+                config.http.client.rec_response_header = get_string_vector(cli, "RecordResponseHeader", config.http.client.rec_response_header);
             }
         }
 
         if (auto sampling = find_node(yaml, "Sampling")) {
-            config.sampling.type = get_string(sampling, "Type", COUNTER_SAMPLING);
-            config.sampling.counter_rate = get_int(sampling, "CounterRate", defaults::SAMPLING_COUNTER_RATE);
-            config.sampling.percent_rate = get_double(sampling, "PercentRate", defaults::SAMPLING_PERCENT_RATE);
-            config.sampling.new_throughput = get_int(sampling, "NewThroughput", 0);
-            config.sampling.cont_throughput = get_int(sampling, "ContinueThroughput", 0);
+            config.sampling.type = get_string(sampling, "Type", config.sampling.type);
+            config.sampling.counter_rate = get_int(sampling, "CounterRate", config.sampling.counter_rate);
+            config.sampling.percent_rate = get_double(sampling, "PercentRate", config.sampling.percent_rate);
+            config.sampling.new_throughput = get_int(sampling, "NewThroughput", config.sampling.new_throughput);
+            config.sampling.cont_throughput = get_int(sampling, "ContinueThroughput", config.sampling.cont_throughput);
         }
 
         if (auto span = find_node(yaml, "Span")) {
-            config.span.queue_size = get_int(span, "QueueSize", defaults::SPAN_QUEUE_SIZE);
-            config.span.max_event_depth = get_int(span, "MaxEventDepth", defaults::SPAN_MAX_EVENT_DEPTH);
-            config.span.max_event_sequence = get_int(span, "MaxEventSequence", defaults::SPAN_MAX_EVENT_SEQUENCE);
-            config.span.event_chunk_size = get_int(span, "EventChunkSize", defaults::SPAN_EVENT_CHUNK_SIZE);
+            config.span.queue_size = get_int(span, "QueueSize", static_cast<int>(config.span.queue_size));
+            config.span.max_event_depth = get_int(span, "MaxEventDepth", config.span.max_event_depth);
+            config.span.max_event_sequence = get_int(span, "MaxEventSequence", config.span.max_event_sequence);
+            config.span.event_chunk_size = get_int(span, "EventChunkSize", static_cast<int>(config.span.event_chunk_size));
         }
 
         if (auto collector = find_node(yaml, "Collector")) {
             if (auto agent_info = find_node(collector, "AgentInfo")) {
-                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
-                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms);
+                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms);
+                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt);
             }
             if (auto span_batch = find_node(collector, "SpanBatch")) {
-                config.collector.span_batch.size = get_int(span_batch, "Size", defaults::SPAN_BATCH_SIZE);
-                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
-                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
-                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+                config.collector.span_batch.size = get_int(span_batch, "Size", config.collector.span_batch.size);
+                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", config.collector.span_batch.flush_interval_ms);
+                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms);
+                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", config.collector.span_batch.max_concurrent_requests);
             }
         }
 
         load_grpc_yaml(yaml, config);
 
         if (find_node(yaml, "IsContainer")) {
-            config.is_container = get_boolean(yaml, "IsContainer", false);
+            config.is_container = get_boolean(yaml, "IsContainer", config.is_container);
             is_container_set = true;
         }
 
         if (auto sql = find_node(yaml, "Sql")) {
-            config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", defaults::SQL_MAX_BIND_ARGS_SIZE);
-            config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", false);
+            config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", config.sql.max_bind_args_size);
+            config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", config.sql.enable_sql_stats);
         }
 
-        config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", false);
+        config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", config.enable_callstack_trace);
     }
 
     static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
@@ -791,12 +796,36 @@ namespace pinpoint {
         }
     }
 
+    static void apply_log_config(const Config& cfg, const Config* old) {
+        // Skip the file logger when its settings are unchanged: setFileLogger()
+        // closes and reopens the stream, and a reload triggered by an unrelated
+        // setting should not churn the log file. An empty path is applied too —
+        // that is how removing FilePath at runtime switches back to stdout.
+        if (!old || old->log.file_path != cfg.log.file_path ||
+            old->log.max_file_size != cfg.log.max_file_size) {
+            Logger::getInstance().setFileLogger(cfg.log.file_path, cfg.log.max_file_size);
+        }
+        if (!old || old->log.level != cfg.log.level) {
+            Logger::getInstance().setLogLevel(cfg.log.level);
+        }
+    }
+
     // make_config() is reached from the public CreateAgent() entry points, so
     // it must never let a parsing problem escape into the host application:
     // yaml errors degrade to defaults, and the function-level handler below is
     // the last-resort backstop.
-    std::shared_ptr<Config> make_config() try {
-        auto config = std::make_shared<Config>();
+    //
+    // `old` is the running agent's config when the sources are re-read for a
+    // reload, nullptr on the first load. The returned config is final: on a
+    // reload the non-reloadable fields are already retained from `old` and the
+    // logger is already reconfigured, so callers pass it straight to
+    // reloadConfig().
+    std::shared_ptr<Config> make_config(const std::shared_ptr<const Config>& old) try {
+        // Seed the config with the running values on a reload so every setting
+        // absent from the file keeps its current value (including env-sourced
+        // ones applied at first load) instead of reverting to its default.
+        // On a first load the Config member initializers are the defaults.
+        auto config = old ? std::make_shared<Config>(*old) : std::make_shared<Config>();
         bool is_container_set = false;
 
         if(auto e = get_env(env::CONFIG_FILE)) {
@@ -830,19 +859,24 @@ namespace pinpoint {
             LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
         }
         // Environment variables are process-level identity/bootstrap inputs and
-        // are only meant to seed the very first configuration. Once an agent is
-        // already running, make_config() is being called to rebuild the config
-        // from an updated file (a reload), so env overrides must not be
-        // re-applied — otherwise they would silently override values the user
-        // just changed in the config file.
-        if (!global_agent_exists()) {
+        // are only meant to seed the very first configuration. When rebuilding
+        // for a reload (`old` set), env overrides must not be re-applied —
+        // otherwise they would silently override values the user just changed
+        // in the config file. Env-sourced values still survive reloads through
+        // the old-config seeding above, as long as the file does not
+        // explicitly override them.
+        if (!old) {
             load_env_config(*config, is_container_set);
         }
 
-        if (!config->log.file_path.empty()) {
-            Logger::getInstance().setFileLogger(config->log.file_path, config->log.max_file_size);
+        // Configure the logger immediately on the first load so the rest of
+        // make_config() (identity resolution, range checks) already logs to
+        // the configured sink and level. On a reload the logger is applied at
+        // the end instead, once this config is complete and can no longer be
+        // rejected.
+        if (!old) {
+            apply_log_config(*config, nullptr);
         }
-        Logger::getInstance().setLogLevel(config->log.level);
 
         // Resolve agent self-identity (ObjectName) according to the configured
         // uid version. Mirrors Java ObjectNameResolver{V1,V4}. The resolver owns
@@ -1000,6 +1034,16 @@ namespace pinpoint {
 
         if (!is_container_set) {
             config->is_container = is_container_env();
+        }
+
+        if (old) {
+            // Finalize the reload config: non-reloadable fields cannot change
+            // on a live agent, so retain the running values (with a warning on
+            // any attempted change), then reconfigure the logger for the log
+            // settings that actually changed. The "config:" line below already
+            // goes to the new sink/level and shows the final merged config.
+            config->retainNonReloadableFrom(old);
+            apply_log_config(*config, old.get());
         }
 
         LOG_INFO("config: {}", "\n" + to_config_string(*config));

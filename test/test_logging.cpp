@@ -155,6 +155,16 @@ TEST_F(LoggingTest, SetLogLevelInvalidKeepsCurrent) {
     EXPECT_TRUE(content.find("still info") != std::string::npos);
 }
 
+TEST_F(LoggingTest, SetLogLevelInvalidWarns) {
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setLogLevel("warn");  // common typo; valid value is "warning"
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_TRUE(content.find("unknown log level 'warn'") != std::string::npos);
+}
+
 // ========== setFileLogger Tests ==========
 
 TEST_F(LoggingTest, SetFileLoggerCreatesFile) {

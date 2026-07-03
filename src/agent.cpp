@@ -761,20 +761,25 @@ namespace pinpoint {
         set_env_prefix(prefix);
     }
 
-    static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg,
-                                        int32_t app_type,
+    static AgentPtr create_agent_helper(int32_t app_type,
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto& agent = global_agent();
 
+        // Build the config under the lock so the running-config snapshot
+        // handed to make_config() cannot race with a concurrent CreateAgent()
+        // or Shutdown() swapping the global agent.
+        auto cfg = make_config(agent ? agent->getConfig() : nullptr);
+        if (!cfg) {
+            return noopAgent();
+        }
+
         if (agent != nullptr) {
-            // A new config always triggers a reload. Non-reloadable fields
-            // (identity, collector endpoint, gRPC transport) cannot change on a
-            // live agent, so retain the running values (warning on any attempted
-            // change) before reloading so only the reloadable fields take effect.
-            // app_type is part of the agent identity and likewise fixed for the
-            // agent's lifetime, so the incoming value is ignored on reload.
-            cfg->retainNonReloadableFrom(agent->getConfig());
+            // A new config always triggers a reload. make_config() already
+            // returned the final reload config (non-reloadable fields retained
+            // from the running config, logger reconfigured). app_type is part
+            // of the agent identity and likewise fixed for the agent's
+            // lifetime, so the incoming value is ignored on reload.
             agent->reloadConfig(std::move(cfg));
             LOG_INFO("agent config reloaded");
             return agent;
@@ -796,11 +801,7 @@ namespace pinpoint {
                          std::string_view server_info,
                          const std::vector<std::string>& args,
                          const std::vector<std::string>& libs) try {
-        auto cfg = make_config();
-        if (!cfg) {
-            return noopAgent();
-        }
-        return create_agent_helper(std::move(cfg), app_type,
+        return create_agent_helper(app_type,
                                    ServerMetaData{std::string(server_info), args, libs});
     } catch (...) {
         return noopAgent();
@@ -813,11 +814,6 @@ namespace pinpoint {
             return noopAgent();
         }
         return global_agent();
-    }
-
-    bool global_agent_exists() {
-        std::lock_guard<std::mutex> lock(global_agent_mutex);
-        return global_agent() != nullptr;
     }
 
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {

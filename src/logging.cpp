@@ -39,6 +39,11 @@ namespace pinpoint {
             current_level_.store(static_cast<int>(LogLevel::kWarn), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_ERROR)) {
             current_level_.store(static_cast<int>(LogLevel::kError), std::memory_order_relaxed);
+        } else {
+            // Keep the current level, but say so: a silently ignored typo
+            // (e.g. "warn" instead of "warning") would otherwise look like a
+            // successful change, especially on a config reload.
+            LOG_WARN("unknown log level '{}'; keeping the current level", log_level);
         }
     }
 

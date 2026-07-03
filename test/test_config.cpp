@@ -15,8 +15,10 @@
  */
 
 #include "../src/config.h"
+#include "../src/logging.h"
 #include <gtest/gtest.h>
 #include <string>
+#include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <unistd.h>
@@ -2442,6 +2444,95 @@ Http:
 
     EXPECT_EQ(config->http.server.exclude_url.size(), 2);
     EXPECT_EQ(config->http.server.exclude_url[0], "/new-health");
+}
+
+// ========== make_config log reload Tests ==========
+
+class MakeConfigLogReloadTest : public ConfigTest {
+protected:
+    void TearDown() override {
+        Logger::getInstance().shutdown();
+        Logger::getInstance().setLogLevel("info");
+        ConfigTest::TearDown();
+    }
+
+    std::string log_path() const { return temp_dir_ + "/make_config_log.log"; }
+
+    std::string log_yaml() const {
+        return "Log:\n  FilePath: \"" + log_path() + "\"\n";
+    }
+
+    static std::string read_file(const std::string& path) {
+        std::ifstream ifs(path);
+        return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
+    }
+};
+
+// Setting Log.FilePath to an explicit empty string on a reload must switch
+// logging back to stdout instead of keeping the stale file stream. (A key
+// absent from the file keeps the running value by design, so disabling file
+// output at runtime requires the explicit empty value.)
+TEST_F(MakeConfigLogReloadTest, EmptyFilePathSwitchesBackToStdout) {
+    set_config_string(log_yaml());
+    auto with_file = make_config();
+    ASSERT_NE(with_file, nullptr);
+    Logger::getInstance().logInfo("test.cpp", 1, "to file");
+
+    set_config_string("Log:\n  FilePath: \"\"\n");
+    auto without_file = make_config(with_file);
+    ASSERT_NE(without_file, nullptr);
+    Logger::getInstance().logInfo("test.cpp", 1, "to stdout");
+    Logger::getInstance().shutdown();
+
+    const auto content = read_file(log_path());
+    EXPECT_TRUE(content.find("to file") != std::string::npos);
+    EXPECT_TRUE(content.find("to stdout") == std::string::npos)
+        << "file logger must be released when the file path is set to empty";
+}
+
+// A key absent from the reloaded file keeps the running value instead of
+// reverting to its default.
+TEST_F(MakeConfigLogReloadTest, AbsentKeysKeepRunningValuesOnReload) {
+    set_config_string("Log:\n  Level: \"debug\"\nSampling:\n  CounterRate: 42\n");
+    auto cfg1 = make_config();
+    ASSERT_NE(cfg1, nullptr);
+    ASSERT_EQ(cfg1->log.level, "debug");
+    ASSERT_EQ(cfg1->sampling.counter_rate, 42);
+
+    // The reloaded file only touches sampling; the log level must not fall
+    // back to the "info" default.
+    set_config_string("Sampling:\n  CounterRate: 7\n");
+    auto cfg2 = make_config(cfg1);
+    ASSERT_NE(cfg2, nullptr);
+    EXPECT_EQ(cfg2->sampling.counter_rate, 7);
+    EXPECT_EQ(cfg2->log.level, "debug")
+        << "keys absent from the reloaded file must keep their running values";
+}
+
+// A reload triggered by unrelated settings must not close and reopen the log
+// file. Observable via an externally removed file: an untouched stream keeps
+// writing to the deleted inode, while a reopen would recreate the file.
+TEST_F(MakeConfigLogReloadTest, UnchangedFileLoggerIsNotReopened) {
+    set_config_string(log_yaml());
+    auto cfg1 = make_config();
+    ASSERT_NE(cfg1, nullptr);
+
+    std::filesystem::remove(log_path());
+    set_config_string(log_yaml() + "Sampling:\n  CounterRate: 42\n");
+    auto cfg2 = make_config(cfg1);
+    ASSERT_NE(cfg2, nullptr);
+    Logger::getInstance().logInfo("test.cpp", 1, "second");
+    EXPECT_FALSE(std::filesystem::exists(log_path()))
+        << "unchanged log settings must not reopen the file";
+
+    set_config_string(log_yaml() + "  MaxFileSize: 20\n");
+    auto cfg3 = make_config(cfg2);
+    ASSERT_NE(cfg3, nullptr);
+    Logger::getInstance().logInfo("test.cpp", 1, "third");
+    Logger::getInstance().shutdown();
+    EXPECT_TRUE(std::filesystem::exists(log_path()))
+        << "changed log settings must reopen the file";
+    EXPECT_TRUE(read_file(log_path()).find("third") != std::string::npos);
 }
 
 } // namespace pinpoint
