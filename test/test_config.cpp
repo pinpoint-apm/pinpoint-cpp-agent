@@ -69,6 +69,10 @@ private:
         saved_env_vars_[full_env(env::GRPC_AGENT_PORT)] = GetEnvVar(full_env(env::GRPC_AGENT_PORT));
         saved_env_vars_[full_env(env::GRPC_SPAN_PORT)] = GetEnvVar(full_env(env::GRPC_SPAN_PORT));
         saved_env_vars_[full_env(env::GRPC_STAT_PORT)] = GetEnvVar(full_env(env::GRPC_STAT_PORT));
+        saved_env_vars_[full_env(env::COLLECTOR_HOST)] = GetEnvVar(full_env(env::COLLECTOR_HOST));
+        saved_env_vars_[full_env(env::COLLECTOR_AGENT_PORT)] = GetEnvVar(full_env(env::COLLECTOR_AGENT_PORT));
+        saved_env_vars_[full_env(env::COLLECTOR_SPAN_PORT)] = GetEnvVar(full_env(env::COLLECTOR_SPAN_PORT));
+        saved_env_vars_[full_env(env::COLLECTOR_STAT_PORT)] = GetEnvVar(full_env(env::COLLECTOR_STAT_PORT));
         const std::vector<std::string> grpc_env_vars = {
             full_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH),
             full_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH),
@@ -561,6 +565,74 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 55555) << "gRPC max receive size should match environment variable";
 }
 
+// Test the preferred COLLECTOR_* environment variables
+TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
+    setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env.host", 1);
+    setenv(full_env(env::COLLECTOR_AGENT_PORT).c_str(), "7001", 1);
+    setenv(full_env(env::COLLECTOR_SPAN_PORT).c_str(), "7002", 1);
+    setenv(full_env(env::COLLECTOR_STAT_PORT).c_str(), "7003", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.host, "collector.env.host") << "Collector host should match COLLECTOR_HOST";
+    EXPECT_EQ(config->collector.agent_port, 7001) << "Agent port should match COLLECTOR_AGENT_PORT";
+    EXPECT_EQ(config->collector.span_port, 7002) << "Span port should match COLLECTOR_SPAN_PORT";
+    EXPECT_EQ(config->collector.stat_port, 7003) << "Stat port should match COLLECTOR_STAT_PORT";
+}
+
+// Test COLLECTOR_* takes precedence over the deprecated GRPC_* variables
+TEST_F(ConfigTest, CollectorEnvironmentVariableOverridesDeprecatedTest) {
+    setenv(full_env(env::GRPC_HOST).c_str(), "deprecated.host", 1);
+    setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8001", 1);
+    setenv(full_env(env::COLLECTOR_HOST).c_str(), "preferred.host", 1);
+    setenv(full_env(env::COLLECTOR_AGENT_PORT).c_str(), "9001", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.host, "preferred.host")
+        << "COLLECTOR_HOST should take precedence over deprecated GRPC_HOST";
+    EXPECT_EQ(config->collector.agent_port, 9001)
+        << "COLLECTOR_AGENT_PORT should take precedence over deprecated GRPC_AGENT_PORT";
+}
+
+// Test the preferred Collector.* YAML keys
+TEST_F(ConfigTest, CollectorYamlKeyTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Collector:
+  Host: "yaml.collector.host"
+  AgentPort: 7101
+  SpanPort: 7102
+  StatPort: 7103
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.host, "yaml.collector.host") << "Collector host should match Collector.Host";
+    EXPECT_EQ(config->collector.agent_port, 7101) << "Agent port should match Collector.AgentPort";
+    EXPECT_EQ(config->collector.span_port, 7102) << "Span port should match Collector.SpanPort";
+    EXPECT_EQ(config->collector.stat_port, 7103) << "Stat port should match Collector.StatPort";
+}
+
+// Test Collector.Host takes precedence over the deprecated Collector.GrpcHost
+TEST_F(ConfigTest, CollectorYamlKeyOverridesDeprecatedTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Collector:
+  GrpcHost: "deprecated.yaml.host"
+  GrpcAgentPort: 8101
+  Host: "preferred.yaml.host"
+  AgentPort: 9101
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->collector.host, "preferred.yaml.host")
+        << "Collector.Host should take precedence over deprecated Collector.GrpcHost";
+    EXPECT_EQ(config->collector.agent_port, 9101)
+        << "Collector.AgentPort should take precedence over deprecated Collector.GrpcAgentPort";
+}
+
 // Test environment variable override YAML
 TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set YAML config
@@ -722,8 +794,8 @@ TEST_F(ConfigTest, ConfigurationToStringTest) {
         << "Config string should contain application name";
     EXPECT_TRUE(config_string.find("UidVersion:") != std::string::npos)
         << "Config string should contain UID version";
-    EXPECT_TRUE(config_string.find("GrpcHost: test.collector.host") != std::string::npos) 
-        << "Config string should contain GRPC host";
+    EXPECT_TRUE(config_string.find("Host: test.collector.host") != std::string::npos)
+        << "Config string should contain collector host";
     EXPECT_TRUE(config_string.find("Type: PERCENT") != std::string::npos) 
         << "Config string should contain sampling type";
     EXPECT_TRUE(config_string.find("Level: debug") != std::string::npos) 

@@ -72,7 +72,7 @@ Create a `pinpoint-config.yaml`:
 ```yaml
 ApplicationName: "MyAppName"
 Collector:
-  GrpcHost: "my.collector.host"
+  Host: "my.collector.host"
 Sampling:
   Type: "COUNTING"
   CounterRate: 1
@@ -84,7 +84,7 @@ Or use environment variables:
 
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyAppName"
-export PINPOINT_CPP_GRPC_HOST="my.collector.host"
+export PINPOINT_CPP_COLLECTOR_HOST="my.collector.host"
 ```
 
 ### 3. Instrument

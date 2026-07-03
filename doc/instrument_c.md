@@ -81,7 +81,7 @@ pt_set_config_file_path("/etc/pinpoint/agent.yaml");
 /* Option 2: inline YAML string */
 pt_set_config_string("ApplicationName: my-c-service\n"
                      "Collector:\n"
-                     "  GrpcHost: localhost\n");
+                     "  Host: localhost\n");
 
 /* Option 3: environment variables (set before calling pt_create_agent) */
 setenv("PINPOINT_CPP_CONFIG_FILE",           "/tmp/pinpoint-config.yaml", 0);

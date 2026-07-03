@@ -12,10 +12,10 @@ EnableCallstackTrace: true
 
 # --- Collector (gRPC) ---
 Collector:
-  GrpcHost: "localhost"
-  GrpcAgentPort: 9991
-  GrpcSpanPort: 9993
-  GrpcStatPort: 9992
+  Host: "localhost"
+  AgentPort: 9991
+  SpanPort: 9993
+  StatPort: 9992
 
 # --- Logging ---
 Log:

@@ -79,6 +79,13 @@ namespace pinpoint {
         constexpr const char* LOG_LEVEL = "LOG_LEVEL";
         constexpr const char* LOG_FILE_PATH = "LOG_FILE_PATH";
         constexpr const char* LOG_MAX_FILE_SIZE = "LOG_MAX_FILE_SIZE";
+        constexpr const char* COLLECTOR_HOST = "COLLECTOR_HOST";
+        constexpr const char* COLLECTOR_AGENT_PORT = "COLLECTOR_AGENT_PORT";
+        constexpr const char* COLLECTOR_SPAN_PORT = "COLLECTOR_SPAN_PORT";
+        constexpr const char* COLLECTOR_STAT_PORT = "COLLECTOR_STAT_PORT";
+        // Deprecated: use COLLECTOR_HOST / COLLECTOR_*_PORT instead. Kept for
+        // backward compatibility; still honored as a fallback when the
+        // COLLECTOR_* variant is not set.
         constexpr const char* GRPC_HOST = "GRPC_HOST";
         constexpr const char* GRPC_AGENT_PORT = "GRPC_AGENT_PORT";
         constexpr const char* GRPC_SPAN_PORT = "GRPC_SPAN_PORT";

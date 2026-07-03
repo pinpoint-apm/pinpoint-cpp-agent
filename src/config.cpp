@@ -334,10 +334,17 @@ namespace pinpoint {
         }
 
         if (auto& collector = yaml["Collector"]) {
-            config.collector.host = get_string(collector, "GrpcHost", "");
-            config.collector.agent_port = get_int(collector, "GrpcAgentPort", defaults::AGENT_PORT);
-            config.collector.span_port = get_int(collector, "GrpcSpanPort", defaults::SPAN_PORT);
-            config.collector.stat_port = get_int(collector, "GrpcStatPort", defaults::STAT_PORT);
+            // Host/AgentPort/SpanPort/StatPort take precedence; the deprecated
+            // GrpcHost/GrpcAgentPort/GrpcSpanPort/GrpcStatPort keys are read as
+            // a fallback for backward compatibility.
+            config.collector.host =
+                get_string(collector, "Host", get_string(collector, "GrpcHost", ""));
+            config.collector.agent_port =
+                get_int(collector, "AgentPort", get_int(collector, "GrpcAgentPort", defaults::AGENT_PORT));
+            config.collector.span_port =
+                get_int(collector, "SpanPort", get_int(collector, "GrpcSpanPort", defaults::SPAN_PORT));
+            config.collector.stat_port =
+                get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", defaults::STAT_PORT));
         }
 
         if (auto& stat = yaml["Stat"]) {
@@ -513,16 +520,30 @@ namespace pinpoint {
             config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, defaults::LOG_MAX_FILE_SIZE_MB);
         }
 
+        // The deprecated GRPC_* variables are read first, then the preferred
+        // COLLECTOR_* variables override them when both are set.
         if(auto e = get_env(env::GRPC_HOST)) {
+            config.collector.host = std::string(e.value);
+        }
+        if(auto e = get_env(env::COLLECTOR_HOST)) {
             config.collector.host = std::string(e.value);
         }
         if(auto e = get_env(env::GRPC_AGENT_PORT)) {
             config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_PORT);
         }
+        if(auto e = get_env(env::COLLECTOR_AGENT_PORT)) {
+            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_PORT);
+        }
         if(auto e = get_env(env::GRPC_SPAN_PORT)) {
             config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_PORT);
         }
+        if(auto e = get_env(env::COLLECTOR_SPAN_PORT)) {
+            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_PORT);
+        }
         if(auto e = get_env(env::GRPC_STAT_PORT)) {
+            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_PORT);
+        }
+        if(auto e = get_env(env::COLLECTOR_STAT_PORT)) {
             config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_PORT);
         }
 
@@ -1144,10 +1165,10 @@ namespace pinpoint {
 
         emitter << YAML::Key << "Collector";
         emitter << YAML::BeginMap;
-        emitter << YAML::Key << "GrpcHost" << YAML::Value << config.collector.host;
-        emitter << YAML::Key << "GrpcAgentPort" << YAML::Value << config.collector.agent_port;
-        emitter << YAML::Key << "GrpcSpanPort" << YAML::Value << config.collector.span_port;
-        emitter << YAML::Key << "GrpcStatPort" << YAML::Value << config.collector.stat_port;
+        emitter << YAML::Key << "Host" << YAML::Value << config.collector.host;
+        emitter << YAML::Key << "AgentPort" << YAML::Value << config.collector.agent_port;
+        emitter << YAML::Key << "SpanPort" << YAML::Value << config.collector.span_port;
+        emitter << YAML::Key << "StatPort" << YAML::Value << config.collector.stat_port;
 
         auto emit_grpc_channel = [&emitter](const Config::GrpcChannelOptions& options) {
             emitter << YAML::Key << "KeepAliveTimeMs" << YAML::Value << options.keepalive_time_ms;

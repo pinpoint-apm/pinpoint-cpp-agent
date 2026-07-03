@@ -62,7 +62,7 @@ export PINPOINT_CPP_CONFIG_FILE="/path/to/pinpoint-config.yaml"
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
 export PINPOINT_CPP_AGENT_ID="my-agent-001"
-export PINPOINT_CPP_GRPC_HOST="localhost"
+export PINPOINT_CPP_COLLECTOR_HOST="localhost"
 export PINPOINT_CPP_LOG_LEVEL="info"
 ```
 
@@ -73,7 +73,7 @@ Or programmatically:
 
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
-    setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 1);
+    setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
     auto agent = pinpoint::CreateAgent();
     // ...
 }
@@ -86,7 +86,7 @@ All environment variable names use the `PINPOINT_CPP` prefix by default. Call `S
 ```cpp
 pinpoint::SetConfigEnvVarPrefix("MYAPP");   // read MYAPP_* instead of PINPOINT_CPP_*
 setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
-setenv("MYAPP_GRPC_HOST", "localhost", 1);
+setenv("MYAPP_COLLECTOR_HOST", "localhost", 1);
 auto agent = pinpoint::CreateAgent();
 ```
 
@@ -101,7 +101,7 @@ int main() {
     std::string config = R"(
         ApplicationName: "MyApplication"
         Collector:
-          GrpcHost: "localhost"
+          Host: "localhost"
         Sampling:
           Type: "PERCENT"
           PercentRate: 10
@@ -163,10 +163,12 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Collector.GrpcHost` | `PINPOINT_CPP_GRPC_HOST` | string | `""` | **Required.** Pinpoint Collector hostname or IP. |
-| `Collector.GrpcAgentPort` | `PINPOINT_CPP_GRPC_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. Valid range: `1`-`65535`. |
-| `Collector.GrpcSpanPort` | `PINPOINT_CPP_GRPC_SPAN_PORT` | int | `9993` | gRPC port for span data. Valid range: `1`-`65535`. |
-| `Collector.GrpcStatPort` | `PINPOINT_CPP_GRPC_STAT_PORT` | int | `9992` | gRPC port for statistics data. Valid range: `1`-`65535`. |
+| `Collector.Host` | `PINPOINT_CPP_COLLECTOR_HOST` | string | `""` | **Required.** Pinpoint Collector hostname or IP. |
+| `Collector.AgentPort` | `PINPOINT_CPP_COLLECTOR_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. Valid range: `1`-`65535`. |
+| `Collector.SpanPort` | `PINPOINT_CPP_COLLECTOR_SPAN_PORT` | int | `9993` | gRPC port for span data. Valid range: `1`-`65535`. |
+| `Collector.StatPort` | `PINPOINT_CPP_COLLECTOR_STAT_PORT` | int | `9992` | gRPC port for statistics data. Valid range: `1`-`65535`. |
+
+> **Deprecated aliases.** The earlier keys `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort` (env `PINPOINT_CPP_GRPC_HOST`, `PINPOINT_CPP_GRPC_AGENT_PORT`, `PINPOINT_CPP_GRPC_SPAN_PORT`, `PINPOINT_CPP_GRPC_STAT_PORT`) are still honored as a fallback for backward compatibility, but are deprecated. Prefer the `Collector.Host` / `Collector.*Port` keys above; when both are set, the preferred key wins.
 
 ---
 
@@ -336,7 +338,7 @@ Not all configuration options can be changed at runtime. Options that define the
 | Category | Options | Reloadable? |
 |---|---|---|
 | Agent identity | `ApplicationName`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
-| Collector / gRPC connection | `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort`, `Grpc.*` | No |
+| Collector / gRPC connection | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
@@ -368,7 +370,7 @@ Initial config file:
 ```yaml
 ApplicationName: "MyApp"
 Collector:
-  GrpcHost: "collector.example.com"
+  Host: "collector.example.com"
 Sampling:
   Type: "PERCENT"
   PercentRate: 100
@@ -379,7 +381,7 @@ To reduce sampling to 10% without restart, edit the file in place:
 ```yaml
 ApplicationName: "MyApp"
 Collector:
-  GrpcHost: "collector.example.com"
+  Host: "collector.example.com"
 Sampling:
   Type: "PERCENT"
   PercentRate: 10
@@ -404,10 +406,10 @@ Log:
   FilePath: ""  # stdout
 
 Collector:
-  GrpcHost: "localhost"
-  GrpcAgentPort: 9991
-  GrpcSpanPort: 9993
-  GrpcStatPort: 9992
+  Host: "localhost"
+  AgentPort: 9991
+  SpanPort: 9993
+  StatPort: 9992
 
 Sampling:
   Type: "COUNTER"
@@ -440,7 +442,7 @@ Log:
   MaxFileSize: 50
 
 Collector:
-  GrpcHost: "pinpoint-collector.prod.example.com"
+  Host: "pinpoint-collector.prod.example.com"
 
 Sampling:
   Type: "PERCENT"
@@ -480,7 +482,7 @@ Log:
   Level: "error"
 
 Collector:
-  GrpcHost: "collector.example.com"
+  Host: "collector.example.com"
 
 Sampling:
   Type: "PERCENT"
@@ -526,10 +528,10 @@ export PINPOINT_CPP_AGENT_ID="app-server-01"
 export PINPOINT_CPP_ENABLE="true"
 
 # Collector
-export PINPOINT_CPP_GRPC_HOST="pinpoint-collector"
-export PINPOINT_CPP_GRPC_AGENT_PORT="9991"
-export PINPOINT_CPP_GRPC_SPAN_PORT="9993"
-export PINPOINT_CPP_GRPC_STAT_PORT="9992"
+export PINPOINT_CPP_COLLECTOR_HOST="pinpoint-collector"
+export PINPOINT_CPP_COLLECTOR_AGENT_PORT="9991"
+export PINPOINT_CPP_COLLECTOR_SPAN_PORT="9993"
+export PINPOINT_CPP_COLLECTOR_STAT_PORT="9992"
 
 # Logging
 export PINPOINT_CPP_LOG_LEVEL="info"
@@ -586,7 +588,7 @@ export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
 ## Troubleshooting
 
 ### Agent Not Connecting
-1. Verify `Collector.GrpcHost` and port values match the collector cluster.
+1. Verify `Collector.Host` and port values match the collector cluster.
 2. Set `Log.Level: "debug"` and review startup logs — `make_config()` prints the resolved configuration.
 
 ### High Memory Usage
@@ -624,10 +626,10 @@ Log:
   MaxFileSize: 10
 
 Collector:
-  GrpcHost: ""
-  GrpcAgentPort: 9991
-  GrpcSpanPort: 9993
-  GrpcStatPort: 9992
+  Host: ""
+  AgentPort: 9991
+  SpanPort: 9993
+  StatPort: 9992
   Grpc:
     Ssl:
       Enable: false
