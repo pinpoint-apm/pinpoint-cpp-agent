@@ -286,13 +286,11 @@ namespace pinpoint {
             return;
         }
         if (auto& grpc = collector["Grpc"]) {
-            if (auto& ssl = grpc["Ssl"]) {
-                config.collector.grpc.ssl.enable = get_boolean(ssl, "Enable", config.collector.grpc.ssl.enable);
-                config.collector.grpc.ssl.trust_cert_file_path =
-                    get_string(ssl, "TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path);
-                config.collector.grpc.ssl.root_cert_file_path =
-                    get_string(ssl, "RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path);
-            }
+            config.collector.grpc.ssl.enable = get_boolean(grpc, "SslEnable", config.collector.grpc.ssl.enable);
+            config.collector.grpc.ssl.trust_cert_file_path =
+                get_string(grpc, "TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path);
+            config.collector.grpc.ssl.root_cert_file_path =
+                get_string(grpc, "RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path);
 
             load_grpc_channel_yaml(grpc, config.collector.grpc.channel);
         }
@@ -1028,11 +1026,11 @@ namespace pinpoint {
         add_non_default_config(config_strings, "Log.Level", config.log.level, default_config.log.level);
         add_non_default_config(config_strings, "Log.FilePath", config.log.file_path, default_config.log.file_path);
         add_non_default_config(config_strings, "Log.MaxFileSize", config.log.max_file_size, default_config.log.max_file_size);
-        add_non_default_config(config_strings, "Collector.Grpc.Ssl.TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path,
+        add_non_default_config(config_strings, "Collector.Grpc.TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path,
                                default_config.collector.grpc.ssl.trust_cert_file_path);
-        add_non_default_config(config_strings, "Collector.Grpc.Ssl.RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path,
+        add_non_default_config(config_strings, "Collector.Grpc.RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path,
                                default_config.collector.grpc.ssl.root_cert_file_path);
-        add_non_default_config(config_strings, "Collector.Grpc.Ssl.Enable", config.collector.grpc.ssl.enable,
+        add_non_default_config(config_strings, "Collector.Grpc.SslEnable", config.collector.grpc.ssl.enable,
                                default_config.collector.grpc.ssl.enable);
         add_non_default_config(config_strings, "Collector.Grpc.KeepAliveTimeMs", config.collector.grpc.channel.keepalive_time_ms,
                                default_config.collector.grpc.channel.keepalive_time_ms);
@@ -1162,12 +1160,9 @@ namespace pinpoint {
 
         emitter << YAML::Key << "Grpc";
         emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Ssl";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Enable" << YAML::Value << config.collector.grpc.ssl.enable;
+        emitter << YAML::Key << "SslEnable" << YAML::Value << config.collector.grpc.ssl.enable;
         emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.collector.grpc.ssl.trust_cert_file_path;
         emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.collector.grpc.ssl.root_cert_file_path;
-        emitter << YAML::EndMap;
         emit_grpc_channel(config.collector.grpc.channel);
         emitter << YAML::EndMap;
         emitter << YAML::Key << "AgentInfo";

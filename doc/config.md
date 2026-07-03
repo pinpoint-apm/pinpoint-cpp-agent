@@ -184,9 +184,9 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Collector.Grpc.Ssl.Enable` | `PINPOINT_CPP_GRPC_SSL_ENABLE` | bool | `false` | Enables TLS credentials for all gRPC channels. |
-| `Collector.Grpc.Ssl.TrustCertFilePath` | `PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH` | string | `""` | PEM trust certificate path used by TLS credentials. |
-| `Collector.Grpc.Ssl.RootCertFilePath` | `PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH` | string | `""` | Alias for gRPC root certificate path. `TrustCertFilePath` takes precedence when both are set. |
+| `Collector.Grpc.SslEnable` | `PINPOINT_CPP_GRPC_SSL_ENABLE` | bool | `false` | Enables TLS credentials for all gRPC channels. |
+| `Collector.Grpc.TrustCertFilePath` | `PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH` | string | `""` | PEM trust certificate path used by TLS credentials. |
+| `Collector.Grpc.RootCertFilePath` | `PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH` | string | `""` | Alias for gRPC root certificate path. `TrustCertFilePath` takes precedence when both are set. |
 
 ### Channel Options
 
@@ -204,9 +204,8 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 ```yaml
 Collector:
   Grpc:
-    Ssl:
-      Enable: true
-      TrustCertFilePath: "/etc/pinpoint/collector-ca.pem"
+    SslEnable: true
+    TrustCertFilePath: "/etc/pinpoint/collector-ca.pem"
     SenderQueueSize: 1000
     MaxSendMessageSize: 4194304
     MaxReceiveMessageSize: 4194304
@@ -630,10 +629,9 @@ Collector:
   SpanPort: 9993
   StatPort: 9992
   Grpc:
-    Ssl:
-      Enable: false
-      TrustCertFilePath: ""
-      RootCertFilePath: ""
+    SslEnable: false
+    TrustCertFilePath: ""
+    RootCertFilePath: ""
     KeepAliveTimeMs: 30000
     KeepAliveTimeoutMs: 60000
     KeepAlivePermitWithoutCalls: false

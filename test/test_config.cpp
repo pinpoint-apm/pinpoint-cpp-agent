@@ -164,10 +164,9 @@ Collector:
   GrpcSpanPort: 9001
   GrpcStatPort: 9002
   Grpc:
-    Ssl:
-      Enable: true
-      TrustCertFilePath: "/tmp/trust.pem"
-      RootCertFilePath: "/tmp/root.pem"
+    SslEnable: true
+    TrustCertFilePath: "/tmp/trust.pem"
+    RootCertFilePath: "/tmp/root.pem"
     KeepAliveTimeMs: 31000
     KeepAliveTimeoutMs: 62000
     KeepAlivePermitWithoutCalls: true
