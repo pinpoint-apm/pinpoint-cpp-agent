@@ -391,10 +391,12 @@ namespace pinpoint {
             }
         }
 
-        if (auto& agent_info = yaml["AgentInfo"]) {
-            config.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
-            config.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-            config.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+        if (auto& collector = yaml["Collector"]) {
+            if (auto& agent_info = collector["AgentInfo"]) {
+                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            }
         }
 
         load_grpc_yaml(yaml, config);
@@ -575,13 +577,13 @@ namespace pinpoint {
             config.span.batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
         }
         if(auto e = get_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
-            config.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+            config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
         }
         if(auto e = get_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
-            config.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+            config.collector.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
         }
         if(auto e = get_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
-            config.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            config.collector.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         }
 
         if(auto e = get_env(env::GRPC_SSL_ENABLE)) {
@@ -942,20 +944,20 @@ namespace pinpoint {
                      config->span.batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
             config->span.batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
         }
-        if (config->agent_info.refresh_interval_ms < 1) {
+        if (config->collector.agent_info.refresh_interval_ms < 1) {
             LOG_WARN("agent info refresh interval {}ms is invalid, using default: {}ms",
-                     config->agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
-            config->agent_info.refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
+                     config->collector.agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+            config->collector.agent_info.refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
         }
-        if (config->agent_info.send_retry_interval_ms < 1) {
+        if (config->collector.agent_info.send_retry_interval_ms < 1) {
             LOG_WARN("agent info send retry interval {}ms is invalid, using default: {}ms",
-                     config->agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-            config->agent_info.send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
+                     config->collector.agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+            config->collector.agent_info.send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
         }
-        if (config->agent_info.max_try_per_attempt < 1) {
+        if (config->collector.agent_info.max_try_per_attempt < 1) {
             LOG_WARN("agent info max try per attempt {} is invalid, using default: {}",
-                     config->agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
-            config->agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
+                     config->collector.agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            config->collector.agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
         }
 
         // A negative limit would cast to a huge size_t at the use site
@@ -1072,12 +1074,12 @@ namespace pinpoint {
         add_non_default_config(config_strings, "Span.Batch.MaxConcurrentRequests",
                                config.span.batch.max_concurrent_requests,
                                default_config.span.batch.max_concurrent_requests);
-        add_non_default_config(config_strings, "AgentInfo.RefreshIntervalMs", config.agent_info.refresh_interval_ms,
-                               default_config.agent_info.refresh_interval_ms);
-        add_non_default_config(config_strings, "AgentInfo.SendRetryIntervalMs", config.agent_info.send_retry_interval_ms,
-                               default_config.agent_info.send_retry_interval_ms);
-        add_non_default_config(config_strings, "AgentInfo.MaxTryPerAttempt", config.agent_info.max_try_per_attempt,
-                               default_config.agent_info.max_try_per_attempt);
+        add_non_default_config(config_strings, "Collector.AgentInfo.RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms,
+                               default_config.collector.agent_info.refresh_interval_ms);
+        add_non_default_config(config_strings, "Collector.AgentInfo.SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms,
+                               default_config.collector.agent_info.send_retry_interval_ms);
+        add_non_default_config(config_strings, "Collector.AgentInfo.MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt,
+                               default_config.collector.agent_info.max_try_per_attempt);
         add_non_default_config(config_strings, "Http.CollectUrlStat", config.http.url_stat.enable,
                                default_config.http.url_stat.enable);
         add_non_default_config(config_strings, "Http.UrlStatLimit", config.http.url_stat.limit,
@@ -1167,6 +1169,12 @@ namespace pinpoint {
         emitter << YAML::EndMap;
         emit_grpc_channel(config.collector.grpc.channel);
         emitter << YAML::EndMap;
+        emitter << YAML::Key << "AgentInfo";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "RefreshIntervalMs" << YAML::Value << config.collector.agent_info.refresh_interval_ms;
+        emitter << YAML::Key << "SendRetryIntervalMs" << YAML::Value << config.collector.agent_info.send_retry_interval_ms;
+        emitter << YAML::Key << "MaxTryPerAttempt" << YAML::Value << config.collector.agent_info.max_try_per_attempt;
+        emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Stat";
@@ -1198,13 +1206,6 @@ namespace pinpoint {
         emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.span.batch.collect_deadline_ms;
         emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.span.batch.max_concurrent_requests;
         emitter << YAML::EndMap;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "AgentInfo";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "RefreshIntervalMs" << YAML::Value << config.agent_info.refresh_interval_ms;
-        emitter << YAML::Key << "SendRetryIntervalMs" << YAML::Value << config.agent_info.send_retry_interval_ms;
-        emitter << YAML::Key << "MaxTryPerAttempt" << YAML::Value << config.agent_info.max_try_per_attempt;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Http";

@@ -199,6 +199,12 @@ namespace pinpoint {
                 GrpcSslOptions ssl;
                 GrpcChannelOptions channel;
             } grpc;
+
+            struct {
+                int refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
+                int send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
+                int max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
+            } agent_info;
         } collector;
 
         struct {
@@ -228,12 +234,6 @@ namespace pinpoint {
                 int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
             } batch;
         } span;
-
-        struct {
-            int refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
-            int send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
-            int max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
-        } agent_info;
 
         struct {
             struct {

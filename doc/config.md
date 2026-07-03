@@ -256,9 +256,9 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `AgentInfo.RefreshIntervalMs` | `PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS` | int | `86400000` | AgentInfo refresh interval in milliseconds. |
-| `AgentInfo.SendRetryIntervalMs` | `PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS` | int | `3000` | Retry interval for sending AgentInfo. |
-| `AgentInfo.MaxTryPerAttempt` | `PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT` | int | `3` | Max send attempts per AgentInfo refresh. |
+| `Collector.AgentInfo.RefreshIntervalMs` | `PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS` | int | `86400000` | AgentInfo refresh interval in milliseconds. |
+| `Collector.AgentInfo.SendRetryIntervalMs` | `PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS` | int | `3000` | Retry interval for sending AgentInfo. |
+| `Collector.AgentInfo.MaxTryPerAttempt` | `PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT` | int | `3` | Max send attempts per AgentInfo refresh. |
 
 ---
 
@@ -640,6 +640,10 @@ Collector:
     MaxReceiveMessageSize: 4194304
     SenderQueueSize: 1000
     ChannelExecutorQueueSize: 1000
+  AgentInfo:
+    RefreshIntervalMs: 86400000
+    SendRetryIntervalMs: 3000
+    MaxTryPerAttempt: 3
 
 Stat:
   Enable: true
@@ -663,11 +667,6 @@ Span:
     FlushIntervalMs: 1000
     CollectDeadlineMs: 500
     MaxConcurrentRequests: 10
-
-AgentInfo:
-  RefreshIntervalMs: 86400000
-  SendRetryIntervalMs: 3000
-  MaxTryPerAttempt: 3
 
 Http:
   CollectUrlStat: false

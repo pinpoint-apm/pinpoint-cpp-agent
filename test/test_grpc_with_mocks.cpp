@@ -573,9 +573,9 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
 
 TEST_F(GrpcMockTest, GrpcAgentInfoRetriesUntilSuccess) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->agent_info.refresh_interval_ms = 60 * 1000;
-    cfg->agent_info.send_retry_interval_ms = 10;
-    cfg->agent_info.max_try_per_attempt = 3;
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 3;
 
     RetryingAgentInfoGrpcAgent grpc_agent(cfg);
     std::promise<void> success_promise;
@@ -2119,9 +2119,9 @@ TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {
 
 TEST_F(GrpcMockTest, GrpcAgentRefreshAgentInfoTriggersImmediateResend) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->agent_info.refresh_interval_ms = 60 * 1000;
-    cfg->agent_info.send_retry_interval_ms = 10;
-    cfg->agent_info.max_try_per_attempt = 1;
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 1;
 
     CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_OK);
     grpc_agent.setAgentService(mock_agent_service_.get());
@@ -2139,9 +2139,9 @@ TEST_F(GrpcMockTest, GrpcAgentRefreshAgentInfoTriggersImmediateResend) {
 
 TEST_F(GrpcMockTest, GrpcAgentStartAgentInfoIsIdempotent) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->agent_info.refresh_interval_ms = 60 * 1000;
-    cfg->agent_info.send_retry_interval_ms = 10;
-    cfg->agent_info.max_try_per_attempt = 1;
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 1;
 
     CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_OK);
     grpc_agent.setAgentService(mock_agent_service_.get());
@@ -2158,9 +2158,9 @@ TEST_F(GrpcMockTest, GrpcAgentStartAgentInfoIsIdempotent) {
 
 TEST_F(GrpcMockTest, GrpcAgentStopAgentInfoDuringRetriesReturnsPromptly) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->agent_info.refresh_interval_ms = 60 * 1000;
-    cfg->agent_info.send_retry_interval_ms = 60 * 1000;
-    cfg->agent_info.max_try_per_attempt = 3;
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.max_try_per_attempt = 3;
 
     CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL);
     grpc_agent.setAgentService(mock_agent_service_.get());

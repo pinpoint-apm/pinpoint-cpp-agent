@@ -172,6 +172,10 @@ Collector:
     MaxReceiveMessageSize: 6291456
     SenderQueueSize: 1100
     ChannelExecutorQueueSize: 1200
+  AgentInfo:
+    RefreshIntervalMs: 60000
+    SendRetryIntervalMs: 25
+    MaxTryPerAttempt: 2
 
 Sampling:
   Type: "PERCENT"
@@ -185,11 +189,6 @@ Span:
   MaxEventDepth: 32
   MaxEventSequence: 512
   EventChunkSize: 50
-
-AgentInfo:
-  RefreshIntervalMs: 60000
-  SendRetryIntervalMs: 25
-  MaxTryPerAttempt: 2
 
 Stat:
   Enable: true
@@ -308,11 +307,11 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
     EXPECT_EQ(config->span.event_chunk_size, 20) << "Default event chunk size should be 20";
 
-    EXPECT_EQ(config->agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS)
+    EXPECT_EQ(config->collector.agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS)
         << "Default AgentInfo refresh interval should match Java daily refresh";
-    EXPECT_EQ(config->agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS)
+    EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS)
         << "Default AgentInfo retry interval should be 3000ms";
-    EXPECT_EQ(config->agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT)
+    EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT)
         << "Default AgentInfo max try count should be 3";
     
     // Test stat defaults
@@ -411,9 +410,9 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->span.max_event_sequence, 512) << "Max event sequence should match YAML";
     EXPECT_EQ(config->span.event_chunk_size, 50) << "Event chunk size should match YAML";
 
-    EXPECT_EQ(config->agent_info.refresh_interval_ms, 60000) << "AgentInfo refresh interval should match YAML";
-    EXPECT_EQ(config->agent_info.send_retry_interval_ms, 25) << "AgentInfo retry interval should match YAML";
-    EXPECT_EQ(config->agent_info.max_try_per_attempt, 2) << "AgentInfo max try count should match YAML";
+    EXPECT_EQ(config->collector.agent_info.refresh_interval_ms, 60000) << "AgentInfo refresh interval should match YAML";
+    EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, 25) << "AgentInfo retry interval should match YAML";
+    EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, 2) << "AgentInfo max try count should match YAML";
     
     // Test stat configuration
     EXPECT_TRUE(config->stat.enable) << "Stat enable should match YAML";
@@ -549,9 +548,9 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Test HTTP environment variable values
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
 
-    EXPECT_EQ(config->agent_info.refresh_interval_ms, 120000) << "AgentInfo refresh interval should match environment variable";
-    EXPECT_EQ(config->agent_info.send_retry_interval_ms, 50) << "AgentInfo retry interval should match environment variable";
-    EXPECT_EQ(config->agent_info.max_try_per_attempt, 4) << "AgentInfo max try count should match environment variable";
+    EXPECT_EQ(config->collector.agent_info.refresh_interval_ms, 120000) << "AgentInfo refresh interval should match environment variable";
+    EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, 50) << "AgentInfo retry interval should match environment variable";
+    EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, 4) << "AgentInfo max try count should match environment variable";
 
     // Test gRPC environment variable values
     EXPECT_EQ(config->collector.grpc.ssl.trust_cert_file_path, "/env/trust.pem") << "Trust cert path should match environment variable";

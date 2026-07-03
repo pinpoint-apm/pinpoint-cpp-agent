@@ -1090,7 +1090,7 @@ namespace pinpoint {
     }
 
     bool GrpcAgent::send_agent_info_with_retries(const int max_try_count) {
-        const auto retry_interval = std::chrono::milliseconds(config_->agent_info.send_retry_interval_ms);
+        const auto retry_interval = std::chrono::milliseconds(config_->collector.agent_info.send_retry_interval_ms);
         for (int try_count = 0; try_count < max_try_count; ++try_count) {
             if (agent_->isExiting()) {
                 return false;
@@ -1122,7 +1122,7 @@ namespace pinpoint {
             return;
         }
 
-        const auto refresh_interval = std::chrono::milliseconds(config_->agent_info.refresh_interval_ms);
+        const auto refresh_interval = std::chrono::milliseconds(config_->collector.agent_info.refresh_interval_ms);
         auto next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         while (true) {
             if (wait_agent_info_until(next_refresh)) {
@@ -1134,7 +1134,7 @@ namespace pinpoint {
                 agent_info_refresh_requested_ = false;
             }
 
-            send_agent_info_with_retries(config_->agent_info.max_try_per_attempt);
+            send_agent_info_with_retries(config_->collector.agent_info.max_try_per_attempt);
             next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         }
     } catch (const std::exception& e) {
