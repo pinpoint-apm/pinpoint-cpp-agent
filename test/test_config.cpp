@@ -59,7 +59,6 @@ private:
         // Save environment variables that might affect config
         saved_env_vars_[full_env(env::ENABLE)] = GetEnvVar(full_env(env::ENABLE));
         saved_env_vars_[full_env(env::APPLICATION_NAME)] = GetEnvVar(full_env(env::APPLICATION_NAME));
-        saved_env_vars_[full_env(env::APPLICATION_TYPE)] = GetEnvVar(full_env(env::APPLICATION_TYPE));
         saved_env_vars_[full_env(env::AGENT_ID)] = GetEnvVar(full_env(env::AGENT_ID));
         saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
         saved_env_vars_[full_env(env::UID_VERSION)] = GetEnvVar(full_env(env::UID_VERSION));
@@ -146,7 +145,6 @@ protected:
     // Test YAML configurations
     const std::string complete_config_yaml_ = R"(
 ApplicationName: "MyTestApp"
-ApplicationType: 1300
 AgentId: "test-agent-123"
 AgentName: "TestAgentName"
 Enable: true
@@ -226,7 +224,6 @@ Sql:
 
     const std::string partial_config_yaml_ = R"(
 ApplicationName: "PartialApp"
-ApplicationType: 1301
 
 Collector:
   GrpcHost: "partial.host"
@@ -277,7 +274,6 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     
     // Test basic default values
     EXPECT_EQ(config->app_name_, "") << "Default app name should be empty";
-    EXPECT_EQ(config->app_type_, 1300) << "Default app type should be 1300"; // defaults::APP_TYPE
     EXPECT_FALSE(config->agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
     EXPECT_EQ(config->agent_name_, "") << "Default agent name should be empty";
     EXPECT_TRUE(config->enable) << "Should be enabled by default";
@@ -375,7 +371,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     
     // Test basic values
     EXPECT_EQ(config->app_name_, "MyTestApp") << "App name should match YAML";
-    EXPECT_EQ(config->app_type_, 1300) << "App type should match YAML";
     EXPECT_EQ(config->agent_id_, "test-agent-123") << "Agent ID should match YAML";
     EXPECT_EQ(config->agent_name_, "TestAgentName") << "Agent name should match YAML";
     EXPECT_TRUE(config->enable) << "Enable should match YAML";
@@ -479,7 +474,6 @@ TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     
     // Test overridden values
     EXPECT_EQ(config->app_name_, "PartialApp") << "App name should match partial YAML";
-    EXPECT_EQ(config->app_type_, 1301) << "App type should match partial YAML";
     EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should match partial YAML";
     EXPECT_EQ(config->collector.agent_port, 8000) << "Agent port should match partial YAML";
     EXPECT_EQ(config->sampling.type, "COUNTER") << "Sampling type should match partial YAML";
@@ -507,7 +501,6 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
     
     // Should have all default values
     EXPECT_EQ(config->app_name_, "") << "App name should be default (empty)";
-    EXPECT_EQ(config->app_type_, 1300) << "App type should be default";
     EXPECT_EQ(config->log.level, "info") << "Log level should be default";
     EXPECT_EQ(config->collector.agent_port, 9991) << "Agent port should be default";
 }
@@ -518,7 +511,6 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvApp", 1);
-    setenv(full_env(env::APPLICATION_TYPE).c_str(), "1302", 1);
     setenv(full_env(env::AGENT_ID).c_str(), "env-agent-456", 1);
     setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
     setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
@@ -543,7 +535,6 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     
     // Test environment variable values
     EXPECT_EQ(config->app_name_, "EnvApp") << "App name should match environment variable";
-    EXPECT_EQ(config->app_type_, 1302) << "App type should match environment variable";
     EXPECT_EQ(config->agent_id_, "env-agent-456") << "Agent ID should match environment variable";
     EXPECT_EQ(config->log.level, "error") << "Log level should match environment variable";
     EXPECT_EQ(config->collector.host, "env.collector.host") << "Collector host should match environment variable";
@@ -592,7 +583,6 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     EXPECT_TRUE(config->sql.enable_sql_stats) << "Environment variable should override YAML SQL stats setting";
     
     // YAML values should remain where no environment variable is set
-    EXPECT_EQ(config->app_type_, 1301) << "App type should remain from YAML";
     EXPECT_EQ(config->collector.agent_port, 8000) << "Agent port should remain from YAML";
 }
 
@@ -613,7 +603,6 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     
     // Values should be loaded from file
     EXPECT_EQ(config->app_name_, "PartialApp") << "App name should be loaded from file";
-    EXPECT_EQ(config->app_type_, 1301) << "App type should be loaded from file";
     EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should be loaded from file";
 }
 
@@ -627,7 +616,6 @@ TEST_F(ConfigTest, MissingConfigurationFileTest) {
     
     // Should use default values when file is missing
     EXPECT_EQ(config->app_name_, "") << "App name should be default when file is missing";
-    EXPECT_EQ(config->app_type_, 1300) << "App type should be default when file is missing";
 }
 
 // ========== Validation Logic Tests ==========
@@ -683,7 +671,6 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
     
     // Should fallback to default values when YAML is invalid
     EXPECT_EQ(config->app_name_, "") << "App name should be default when YAML is invalid";
-    EXPECT_EQ(config->app_type_, 1300) << "App type should be default when YAML is invalid";
     EXPECT_EQ(config->log.level, "info") << "Log level should be default when YAML is invalid";
 }
 
@@ -733,10 +720,8 @@ TEST_F(ConfigTest, ConfigurationToStringTest) {
     std::string config_string = to_config_string(*config);
     
     // Check that generated string contains expected values
-    EXPECT_TRUE(config_string.find("ApplicationName: MyTestApp") != std::string::npos) 
+    EXPECT_TRUE(config_string.find("ApplicationName: MyTestApp") != std::string::npos)
         << "Config string should contain application name";
-    EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
-        << "Config string should contain application type";
     EXPECT_TRUE(config_string.find("UidVersion:") != std::string::npos)
         << "Config string should contain UID version";
     EXPECT_TRUE(config_string.find("GrpcHost: test.collector.host") != std::string::npos) 
@@ -760,7 +745,6 @@ TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     
     // Both configs should have same values
     EXPECT_EQ(config->app_name_, config2->app_name_) << "App name should match after round-trip";
-    EXPECT_EQ(config->app_type_, config2->app_type_) << "App type should match after round-trip";
     EXPECT_EQ(config->collector.host, config2->collector.host) << "Collector host should match after round-trip";
     EXPECT_EQ(config->sampling.type, config2->sampling.type) << "Sampling type should match after round-trip";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, config2->sampling.percent_rate) << "Percent rate should match after round-trip";
@@ -777,9 +761,7 @@ TEST_F(ConfigTest, EmptyConfigurationStringTest) {
     std::string config_string = to_config_string(*config);
     
     // Should contain default values
-    EXPECT_TRUE(config_string.find("ApplicationType: 1300") != std::string::npos) 
-        << "Config string should contain default application type";
-    EXPECT_TRUE(config_string.find("Level: info") != std::string::npos) 
+    EXPECT_TRUE(config_string.find("Level: info") != std::string::npos)
         << "Config string should contain default log level";
     EXPECT_TRUE(config_string.find("Type: COUNTER") != std::string::npos) 
         << "Config string should contain default sampling type";
@@ -913,7 +895,6 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     EXPECT_EQ(config->log.level, "warn") << "Environment variable should override file log level";
     
     // File values should be used where no environment variable exists
-    EXPECT_EQ(config->app_type_, 1300) << "App type should come from file";
     EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should come from file";
     EXPECT_EQ(config->agent_id_, "test-agent-123") << "Agent ID should come from file";
 }
@@ -925,7 +906,6 @@ TEST_F(ConfigTest, TypeConversionExceptionHandlingTest) {
     // YAML with invalid type conversions
     std::string invalid_type_yaml = R"(
 ApplicationName: ValidString
-ApplicationType: "not_a_number"  # Should be int, will use default
 Enable: "invalid_bool"           # Should be bool, will use default
 Collector:
   GrpcAgentPort: "not_a_port"    # Should be int, will use default
@@ -950,7 +930,6 @@ Http:
     EXPECT_EQ(config->app_name_, "ValidString") << "Valid string should be parsed correctly";
     
     // Invalid conversions should use default values
-    EXPECT_EQ(config->app_type_, 1300) << "Invalid int should use default value";
     EXPECT_TRUE(config->enable) << "Invalid bool should use default value (true)";
     EXPECT_EQ(config->collector.agent_port, 9991) << "Invalid port should use default value";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100.0) << "Invalid double should use default value";
@@ -965,7 +944,6 @@ Http:
 TEST_F(ConfigTest, MixedValidInvalidConfigurationTest) {
     std::string mixed_yaml = R"(
 ApplicationName: ValidApp
-ApplicationType: 1305            # Valid int
 Enable: true                     # Valid bool
 Collector:
   GrpcHost: valid.host.com       # Valid string
@@ -985,7 +963,6 @@ Span:
     
     // Valid values should be parsed correctly
     EXPECT_EQ(config->app_name_, "ValidApp") << "Valid app name should be parsed";
-    EXPECT_EQ(config->app_type_, 1305) << "Valid app type should be parsed";
     EXPECT_TRUE(config->enable) << "Valid enable should be parsed";
     EXPECT_EQ(config->collector.host, "valid.host.com") << "Valid host should be parsed";
     EXPECT_EQ(config->collector.span_port, 9999) << "Valid span port should be parsed";
@@ -1005,7 +982,6 @@ Span:
 TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     // Set invalid environment variables
     setenv(full_env(env::ENABLE).c_str(), "invalid_bool", 1);                  // Invalid bool
-    setenv(full_env(env::APPLICATION_TYPE).c_str(), "not_a_number", 1);        // Invalid int
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "invalid_port", 1);         // Invalid int
     setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), "not_a_double", 1);   // Invalid double
     setenv(full_env(env::STAT_ENABLE).c_str(), "maybe", 1);                    // Invalid bool
@@ -1015,7 +991,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     
     // All invalid values should use defaults
     EXPECT_TRUE(config->enable) << "Invalid bool should use default value (true)";
-    EXPECT_EQ(config->app_type_, 1300) << "Invalid int should use default value";
     EXPECT_EQ(config->collector.agent_port, 9991) << "Invalid port should use default value";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100.0) << "Invalid double should use default value";
     EXPECT_TRUE(config->stat.enable) << "Invalid bool should use default value (true)";
@@ -1026,7 +1001,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
 TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     // Set valid environment variables
     setenv(full_env(env::ENABLE).c_str(), "false", 1);                  // Valid bool
-    setenv(full_env(env::APPLICATION_TYPE).c_str(), "1500", 1);         // Valid int
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8080", 1);          // Valid int
     setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), "75.5", 1);    // Valid double
     setenv(full_env(env::STAT_ENABLE).c_str(), "1", 1);                 // Valid bool
@@ -1036,7 +1010,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     
     // All valid values should be parsed correctly
     EXPECT_FALSE(config->enable) << "Valid bool should be parsed correctly";
-    EXPECT_EQ(config->app_type_, 1500) << "Valid int should be parsed correctly";
     EXPECT_EQ(config->collector.agent_port, 8080) << "Valid port should be parsed correctly";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 75.5) << "Valid double should be parsed correctly";
     EXPECT_TRUE(config->stat.enable) << "Valid bool should be parsed correctly";
@@ -1283,7 +1256,6 @@ EnableCallstackTrace: true
 TEST_F(ConfigTest, CallstackTraceInCompleteConfigurationTest) {
     const std::string complete_config = R"(
 ApplicationName: "CallstackTestApp"
-ApplicationType: 1300
 EnableCallstackTrace: true
 
 Log:
@@ -1416,7 +1388,6 @@ EnableCallstackTrace: "not_a_boolean"
 TEST_F(ConfigTest, CallstackTraceMixedConfigurationTest) {
     const std::string mixed_config = R"(
 ApplicationName: "MixedApp"
-ApplicationType: 1305
 Enable: true
 EnableCallstackTrace: true
 
@@ -1441,7 +1412,6 @@ Sql:
     
     // Verify all config values including callstack trace
     EXPECT_EQ(config->app_name_, "MixedApp") << "App name should match";
-    EXPECT_EQ(config->app_type_, 1305) << "App type should match";
     EXPECT_TRUE(config->enable) << "Enable should be true";
     EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled";
     EXPECT_EQ(config->log.level, "warn") << "Log level should match";
@@ -1732,7 +1702,6 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
 TEST_F(ConfigTest, IsReloadableReturnsTrueWhenCriticalFieldsMatchTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
-    old_config->app_type_ = 1300;
     old_config->agent_id_ = "agent-001";
     old_config->agent_name_ = "Agent";
     old_config->collector.host = "localhost";
@@ -1847,7 +1816,6 @@ TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
 TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "OldApp";
-    old_config->app_type_ = 1300;
     old_config->agent_id_ = "old-agent-id";
     old_config->agent_name_ = "old-agent-name";
     old_config->uid_version_ = "v1";
@@ -1864,7 +1832,6 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
 
     Config new_config;
     new_config.app_name_ = "NewApp";
-    new_config.app_type_ = 1400;
     new_config.agent_id_ = "new-agent-id";
     new_config.agent_name_ = "new-agent-name";
     new_config.uid_version_ = "v4";
@@ -1880,7 +1847,6 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     new_config.retainNonReloadableFrom(old_config);
 
     EXPECT_EQ(new_config.app_name_, "OldApp");
-    EXPECT_EQ(new_config.app_type_, 1300);
     EXPECT_EQ(new_config.agent_id_, "old-agent-id");
     EXPECT_EQ(new_config.agent_name_, "old-agent-name");
     EXPECT_EQ(new_config.uid_version_, "v1");

@@ -62,7 +62,6 @@ protected:
         cfg->collector.span_port = 9993;
         cfg->collector.stat_port = 9992;
         cfg->app_name_ = "test-app";
-        cfg->app_type_ = 1300;
         cfg->agent_id_ = "test-agent-id";
         cfg->agent_name_ = "test-agent-name";
         mock_agent_service_->setAppName("test-app");
@@ -666,9 +665,10 @@ namespace {
 
 std::map<std::string, std::string> metadata_map(const Config& config,
                                                 int64_t start_time,
-                                                unsigned long socket_id) {
+                                                unsigned long socket_id,
+                                                int32_t app_type = APP_TYPE_CPP) {
     std::map<std::string, std::string> m;
-    for (const auto& [k, v] : build_grpc_metadata(config, start_time, socket_id)) {
+    for (const auto& [k, v] : build_grpc_metadata(config, start_time, app_type, socket_id)) {
         m[k] = v;
     }
     return m;
@@ -681,7 +681,6 @@ TEST(GrpcMetadataTest, V1V3CommonHeaders) {
     config.app_name_ = "my-app";
     config.agent_id_ = "agent-1";
     config.agent_name_ = "agent-name";
-    config.app_type_ = 1300;
     config.object_name_version_ = 1; // v1/v3
 
     const auto m = metadata_map(config, 12345, 0);
@@ -715,7 +714,6 @@ TEST(GrpcMetadataTest, V4Headers) {
     config.agent_name_ = "agent-name";
     config.service_name_ = "my-service";
     config.api_key_ = "secret-key";
-    config.app_type_ = 1300;
     config.object_name_version_ = 4;
 
     const auto m = metadata_map(config, 999, 0);

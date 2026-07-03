@@ -437,7 +437,6 @@ protected:
         cfg->collector.span_port = 9993;
         cfg->collector.stat_port = 9992;
         cfg->app_name_ = "test-app";
-        cfg->app_type_ = 1300;
         cfg->agent_id_ = "test-agent-id";
         cfg->agent_name_ = "test-agent-name";
         mock_agent_service_->setAppName("test-app");

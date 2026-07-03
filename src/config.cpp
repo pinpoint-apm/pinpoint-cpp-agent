@@ -317,7 +317,6 @@ namespace pinpoint {
         config.log.level = get_string(yaml, "LogLevel", defaults::LOG_LEVEL);
         config.enable = get_boolean(yaml, "Enable", true);
         config.app_name_ = get_string(yaml, "ApplicationName", "");
-        config.app_type_ = get_int(yaml, "ApplicationType", defaults::APP_TYPE);
         config.agent_id_ = get_string(yaml, "AgentId", "");
         config.agent_name_ = get_string(yaml, "AgentName", "");
         config.uid_version_ = get_string(yaml, "UidVersion", "");
@@ -485,9 +484,6 @@ namespace pinpoint {
         }
         if(auto e = get_env(env::APPLICATION_NAME)) {
             config.app_name_ = std::string(e.value);
-        }
-        if(auto e = get_env(env::APPLICATION_TYPE)) {
-            config.app_type_ = safe_env_stoi(e.name.c_str(), e.value, defaults::APP_TYPE);
         }
         if(auto e = get_env(env::AGENT_ID)) {
             config.agent_id_ = std::string(e.value);
@@ -1123,7 +1119,6 @@ namespace pinpoint {
 
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "ApplicationName" << YAML::Value << config.app_name_;
-        emitter << YAML::Key << "ApplicationType" << YAML::Value << config.app_type_;
         emitter << YAML::Key << "AgentId" << YAML::Value << config.agent_id_;
         emitter << YAML::Key << "AgentName" << YAML::Value << config.agent_name_;
         emitter << YAML::Key << "UidVersion" << YAML::Value << config.uid_version_;
@@ -1347,10 +1342,10 @@ namespace pinpoint {
 
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
-        return std::tie(app_name_, app_type_, agent_id_, agent_name_,
+        return std::tie(app_name_, agent_id_, agent_name_,
                         uid_version_, service_name_, api_key_, object_name_version_,
                         collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
-               std::tie(old->app_name_, old->app_type_, old->agent_id_, old->agent_name_,
+               std::tie(old->app_name_, old->agent_id_, old->agent_name_,
                         old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
                         old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
                same_grpc_config(*this, *old);
@@ -1372,7 +1367,6 @@ namespace pinpoint {
         }
 
         app_name_ = old->app_name_;
-        app_type_ = old->app_type_;
         agent_id_ = old->agent_id_;
         agent_name_ = old->agent_name_;
         uid_version_ = old->uid_version_;

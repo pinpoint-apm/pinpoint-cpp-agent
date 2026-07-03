@@ -54,7 +54,6 @@ namespace pinpoint {
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         constexpr const char* LOG_LEVEL = "info";
 
-        constexpr int32_t APP_TYPE = APP_TYPE_CPP;
         constexpr int32_t SPAN_SERVICE_TYPE = SERVICE_TYPE_CPP;
         constexpr int32_t SPAN_EVENT_SERVICE_TYPE = SERVICE_TYPE_CPP_FUNC;
     }
@@ -72,7 +71,6 @@ namespace pinpoint {
         constexpr const char* DEFAULT_PREFIX = "PINPOINT_CPP";
         constexpr const char* ENABLE = "ENABLE";
         constexpr const char* APPLICATION_NAME = "APPLICATION_NAME";
-        constexpr const char* APPLICATION_TYPE = "APPLICATION_TYPE";
         constexpr const char* AGENT_ID = "AGENT_ID";
         constexpr const char* AGENT_NAME = "AGENT_NAME";
         constexpr const char* UID_VERSION = "UID_VERSION";
@@ -143,7 +141,6 @@ namespace pinpoint {
      */
     struct Config {
         std::string app_name_;
-        int32_t app_type_ = defaults::APP_TYPE;
         std::string agent_id_;
         std::string agent_name_;
 

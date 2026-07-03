@@ -128,7 +128,6 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
     auto cfg = std::make_shared<pinpoint::Config>();
     cfg->enable              = true;
     cfg->app_name_           = "c-api-test";
-    cfg->app_type_           = PT_APP_TYPE_CPP;
     cfg->agent_id_           = "c-api-agent";
     cfg->agent_name_         = "c-api-agent-name";
     cfg->collector.host      = "127.0.0.1";
@@ -148,7 +147,6 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
 
 static constexpr const char* kCreateAgentConfigYaml = R"(
 ApplicationName: c-api-test
-ApplicationType: 1300
 AgentId: c-api-agent
 AgentName: c-api-agent-name
 Enable: true

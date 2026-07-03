@@ -72,7 +72,8 @@ namespace pinpoint {
 				  std::unique_ptr<GrpcMetadata> grpc_metadata,
 				  std::unique_ptr<GrpcSpan> grpc_span,
 				  std::unique_ptr<GrpcStats> grpc_stat,
-				  std::unique_ptr<GrpcCommand> grpc_command = nullptr);
+				  std::unique_ptr<GrpcCommand> grpc_command = nullptr,
+				  int32_t app_type = DEFAULT_APP_TYPE);
         ~AgentImpl() noexcept override;
 
 		/**

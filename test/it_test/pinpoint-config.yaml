@@ -4,7 +4,6 @@
 Enable: true
 
 ApplicationName: "it-test-server"
-ApplicationType: 1300    # SERVICE_TYPE_CPP
 AgentId: "it-test-001"
 AgentName: "it-test-agent"
 

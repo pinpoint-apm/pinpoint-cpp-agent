@@ -130,7 +130,6 @@ static std::shared_ptr<Config> make_test_config() {
     auto cfg = std::make_shared<Config>();
     cfg->enable = true;
     cfg->app_name_ = "test-app";
-    cfg->app_type_ = 1300;
     cfg->agent_id_ = "test-agent-id";
     cfg->agent_name_ = "test-agent-name";
     cfg->collector.host = "127.0.0.1";
@@ -588,7 +587,6 @@ protected:
 
     static constexpr const char* kBaseConfigYaml = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -614,7 +612,6 @@ TEST_F(CreateAgentTest, CreateAgentReloadConfigWhenReloadable) {
     //    Same core fields (app_name, app_type, agent_id, agent_name, collector)
     std::string reloadable_config = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -649,7 +646,6 @@ TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsInfoWhenReloadable) {
 
     std::string reloadable_config = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -747,7 +743,6 @@ TEST_F(CreateAgentTest, CreateAgentReturnsExistingAgentWhenNotReloadable) {
     // 2. Set a config with different app_name (non-reloadable field)
     std::string non_reloadable_config = R"(
 ApplicationName: different-app-name
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -786,7 +781,6 @@ TEST_F(CreateAgentTest, CreateAgentReloadConfigWarnsWhenNotReloadable) {
     // rate) at once.
     std::string non_reloadable_config = R"(
 ApplicationName: different-app-name
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -830,7 +824,6 @@ TEST_F(CreateAgentTest, CreateAgentReturnsExistingAgentWhenCollectorPortChanged)
     // 2. Set a config with different collector port (non-reloadable field)
     std::string non_reloadable_config = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -866,7 +859,6 @@ TEST_F(CreateAgentTest, CreateAgentReloadsUrlFilter) {
     // 2. Reload with exclude_url added
     std::string config_with_filter = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -924,7 +916,6 @@ TEST_F(CreateAgentTest, CreateAgentReloadsMultipleTimes) {
     // 2. First reload: change counter rate to 10
     std::string config_v2 = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
@@ -946,7 +937,6 @@ Sampling:
     // 3. Second reload: change counter rate to 100
     std::string config_v3 = R"(
 ApplicationName: test-app
-ApplicationType: 1300
 AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true

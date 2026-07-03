@@ -207,12 +207,12 @@ namespace pinpoint {
     const std::string METADATA_API_KEY = "apikey";
 
     std::vector<std::pair<std::string, std::string>>
-    build_grpc_metadata(const Config& config, int64_t start_time, unsigned long socket_id) {
+    build_grpc_metadata(const Config& config, int64_t start_time, int32_t app_type, unsigned long socket_id) {
         std::vector<std::pair<std::string, std::string>> headers;
         headers.emplace_back(METADATA_APPLICATION_NAME, config.app_name_);
         headers.emplace_back(METADATA_AGENT_ID, config.agent_id_);
         headers.emplace_back(METADATA_START_TIME, std::to_string(start_time));
-        headers.emplace_back(METADATA_SERVICE_TYPE, std::to_string(config.app_type_));
+        headers.emplace_back(METADATA_SERVICE_TYPE, std::to_string(app_type));
         headers.emplace_back(METADATA_PROTOCOL_VERSION, std::to_string(config.protocol_version()));
 
         if (config.is_v4()) {
@@ -232,7 +232,7 @@ namespace pinpoint {
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
-        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getStartTime(), socket_id)) {
+        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getStartTime(), agent_->getAppType(), socket_id)) {
             context->AddMetadata(key, value);
         }
     }
@@ -972,7 +972,7 @@ namespace pinpoint {
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
         agent_info->set_hostname(get_host_name());
         agent_info->set_ip(get_host_ip_addr());
-        agent_info->set_servicetype(config_->app_type_);
+        agent_info->set_servicetype(agent_->getAppType());
         agent_info->set_pid(getpid());
         agent_info->set_agentversion(VERSION_STRING);
         agent_info->set_container(config_->is_container);

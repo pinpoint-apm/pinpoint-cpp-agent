@@ -53,7 +53,8 @@ namespace pinpoint {
                          std::unique_ptr<GrpcMetadata> grpc_metadata,
                          std::unique_ptr<GrpcSpan> grpc_span,
                          std::unique_ptr<GrpcStats> grpc_stat,
-                         std::unique_ptr<GrpcCommand> grpc_command) :
+                         std::unique_ptr<GrpcCommand> grpc_command,
+                         int32_t app_type) :
         grpc_agent_(std::move(grpc_agent)),
         grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
@@ -65,9 +66,9 @@ namespace pinpoint {
         // Snapshot the immutable identity fields once. isReloadable() guarantees
         // they never change for this agent, so the per-request getters below can
         // serve them without touching the atomic runtime_.
+        app_type_ = app_type;
         if (cfg) {
             app_name_ = cfg->app_name_;
-            app_type_ = cfg->app_type_;
             agent_id_ = cfg->agent_id_;
             agent_name_ = cfg->agent_name_;
             service_name_ = cfg->service_name_;
@@ -720,6 +721,7 @@ namespace pinpoint {
     };
 
     static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg,
+                                                 int32_t app_type,
                                                  const std::optional<ServerMetaData>& server_meta_data) {
         if (!cfg->enable) {
             return nullptr;
@@ -737,7 +739,7 @@ namespace pinpoint {
             auto grpc_command = std::make_unique<GrpcCommand>(cfg);
             return std::make_shared<AgentImpl>(cfg,
                 std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span),
-                std::move(grpc_stat), std::move(grpc_command));
+                std::move(grpc_stat), std::move(grpc_command), app_type);
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;
@@ -760,6 +762,7 @@ namespace pinpoint {
     }
 
     static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg,
+                                        int32_t app_type,
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto& agent = global_agent();
@@ -769,6 +772,8 @@ namespace pinpoint {
             // (identity, collector endpoint, gRPC transport) cannot change on a
             // live agent, so retain the running values (warning on any attempted
             // change) before reloading so only the reloadable fields take effect.
+            // app_type is part of the agent identity and likewise fixed for the
+            // agent's lifetime, so the incoming value is ignored on reload.
             cfg->retainNonReloadableFrom(agent->getConfig());
             agent->reloadConfig(std::move(cfg));
             LOG_INFO("agent config reloaded");
@@ -778,15 +783,11 @@ namespace pinpoint {
         if (!cfg->check()) {
             return noopAgent();
         }
-        agent = make_agent(std::move(cfg), server_meta_data);
+        agent = make_agent(std::move(cfg), app_type, server_meta_data);
         if (agent == nullptr) {
             return noopAgent();
         }
         return agent;
-    }
-
-    static AgentPtr create_agent_helper(std::shared_ptr<Config> cfg) {
-        return create_agent_helper(std::move(cfg), std::nullopt);
     }
 
     // Public entry point: a failure to configure or construct the agent must
@@ -799,8 +800,7 @@ namespace pinpoint {
         if (!cfg) {
             return noopAgent();
         }
-        cfg->app_type_ = app_type;
-        return create_agent_helper(std::move(cfg),
+        return create_agent_helper(std::move(cfg), app_type,
                                    ServerMetaData{std::string(server_info), args, libs});
     } catch (...) {
         return noopAgent();

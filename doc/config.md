@@ -120,13 +120,14 @@ int main() {
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
-| `ApplicationType` | `PINPOINT_CPP_APPLICATION_TYPE` | int | `1300` | Pinpoint service type code. `1300` = C++ App. |
 | `AgentId` | `PINPOINT_CPP_AGENT_ID` | string | auto-generated | Allowed chars `[a-zA-Z0-9._-]`, max 24 chars. Auto-generated as a 22-char URL-safe Base64 UUIDv7 when empty/invalid. **Ignored for `UidVersion: v4`** (a fresh UUIDv7 is always generated). |
 | `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to `AgentId` when omitted. |
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars). Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
+
+> **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as the `app_type` argument of `pinpoint::CreateAgent()` and defaults to `APP_TYPE_CPP` (`1300`).
 
 ### Identity Versions
 
@@ -333,7 +334,7 @@ Not all configuration options can be changed at runtime. Options that define the
 
 | Category | Options | Reloadable? |
 |---|---|---|
-| Agent identity | `ApplicationName`, `ApplicationType`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
+| Agent identity | `ApplicationName`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector / gRPC connection | `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort`, `Grpc.*` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
@@ -608,7 +609,6 @@ Below is a complete YAML config with all keys and their default values:
 
 ```yaml
 ApplicationName: ""
-ApplicationType: 1300
 AgentId: ""          # auto-generated if empty
 AgentName: ""
 UidVersion: "v3"

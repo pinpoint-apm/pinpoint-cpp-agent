@@ -70,7 +70,7 @@ namespace pinpoint {
      * Extracted as a pure function so the per-version header set is unit-testable.
      */
     std::vector<std::pair<std::string, std::string>>
-    build_grpc_metadata(const Config& config, int64_t start_time, unsigned long socket_id);
+    build_grpc_metadata(const Config& config, int64_t start_time, int32_t app_type, unsigned long socket_id);
 
     /**
      * @brief Exponential backoff with jitter for reconnect attempts.
