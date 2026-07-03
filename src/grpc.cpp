@@ -79,9 +79,8 @@ namespace pinpoint {
 
         std::shared_ptr<grpc::ChannelCredentials> make_channel_credentials(
                 const Config::GrpcSslOptions& ssl,
-                const Config::GrpcChannelOptions& channel_options,
                 std::string_view client_name) {
-            if (!channel_options.ssl_enable) {
+            if (!ssl.enable) {
                 return grpc::InsecureChannelCredentials();
             }
 
@@ -115,12 +114,12 @@ namespace pinpoint {
             const auto& options = config.grpc.channel;
             const auto client_name = grpc_client_name(client_type);
             const auto addr = absl::StrCat(config.collector.host, ":", grpc_collector_port(config, client_type));
-            auto credentials = make_channel_credentials(config.grpc.ssl, options, client_name);
+            auto credentials = make_channel_credentials(config.grpc.ssl, client_name);
             auto channel_args = make_channel_arguments(options);
 
             LOG_INFO("create {} grpc channel: addr={}, ssl={}, keepaliveTimeMs={}, keepaliveTimeoutMs={}, "
                      "maxSendMessageSize={}, maxReceiveMessageSize={}",
-                     client_name, addr, options.ssl_enable, options.keepalive_time_ms,
+                     client_name, addr, config.grpc.ssl.enable, options.keepalive_time_ms,
                      options.keepalive_timeout_ms, options.max_send_message_size,
                      options.max_receive_message_size);
             return grpc::CreateCustomChannel(addr, credentials, channel_args);

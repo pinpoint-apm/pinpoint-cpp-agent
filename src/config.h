@@ -209,12 +209,12 @@ namespace pinpoint {
         } span;
 
         struct GrpcSslOptions {
+            bool enable = false;
             std::string trust_cert_file_path;
             std::string root_cert_file_path;
         };
 
         struct GrpcChannelOptions {
-            bool ssl_enable = false;
             int keepalive_time_ms = defaults::GRPC_KEEPALIVE_TIME_MS;
             int keepalive_timeout_ms = defaults::GRPC_KEEPALIVE_TIMEOUT_MS;
             bool keepalive_permit_without_calls = false;

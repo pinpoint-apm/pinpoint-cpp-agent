@@ -163,9 +163,9 @@ Collector:
 
 Grpc:
   Ssl:
+    Enable: true
     TrustCertFilePath: "/tmp/trust.pem"
     RootCertFilePath: "/tmp/root.pem"
-  SslEnable: true
   KeepAliveTimeMs: 31000
   KeepAliveTimeoutMs: 62000
   KeepAlivePermitWithoutCalls: true
@@ -290,7 +290,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->collector.stat_port, 9992) << "Default stat port should be 9992";
 
     // Test gRPC channel defaults
-    EXPECT_FALSE(config->grpc.channel.ssl_enable) << "gRPC SSL should be disabled by default";
+    EXPECT_FALSE(config->grpc.ssl.enable) << "gRPC SSL should be disabled by default";
     EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 30000) << "Default keepalive time should be 30s";
     EXPECT_EQ(config->grpc.channel.keepalive_timeout_ms, 60000) << "Default keepalive timeout should be 60s";
     EXPECT_EQ(config->grpc.channel.max_send_message_size, 4 * 1024 * 1024) << "Default max send size should be 4MiB";
@@ -390,7 +390,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     // Test gRPC channel configuration
     EXPECT_EQ(config->grpc.ssl.trust_cert_file_path, "/tmp/trust.pem") << "Trust cert path should match YAML";
     EXPECT_EQ(config->grpc.ssl.root_cert_file_path, "/tmp/root.pem") << "Root cert path should match YAML";
-    EXPECT_TRUE(config->grpc.channel.ssl_enable) << "gRPC SSL enable should match YAML";
+    EXPECT_TRUE(config->grpc.ssl.enable) << "gRPC SSL enable should match YAML";
     EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 31000) << "gRPC keepalive time should match YAML";
     EXPECT_EQ(config->grpc.channel.keepalive_timeout_ms, 62000) << "gRPC keepalive timeout should match YAML";
     EXPECT_TRUE(config->grpc.channel.keepalive_permit_without_calls) << "gRPC keepalive permit should match YAML";
@@ -556,7 +556,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
 
     // Test gRPC environment variable values
     EXPECT_EQ(config->grpc.ssl.trust_cert_file_path, "/env/trust.pem") << "Trust cert path should match environment variable";
-    EXPECT_TRUE(config->grpc.channel.ssl_enable) << "gRPC SSL enable should match environment variable";
+    EXPECT_TRUE(config->grpc.ssl.enable) << "gRPC SSL enable should match environment variable";
     EXPECT_EQ(config->grpc.channel.keepalive_time_ms, 22222) << "gRPC keepalive time should match environment variable";
     EXPECT_EQ(config->grpc.channel.max_send_message_size, 33333) << "gRPC max send size should match environment variable";
     EXPECT_EQ(config->grpc.channel.sender_queue_size, 4444) << "gRPC sender queue should match environment variable";
@@ -1794,7 +1794,7 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenGrpcChannelOptionsChangeTest) {
     old_config->collector.host = "localhost";
 
     Config new_config = *old_config;
-    new_config.grpc.channel.ssl_enable = true;
+    new_config.grpc.ssl.enable = true;
 
     EXPECT_FALSE(new_config.isReloadable(old_config))
         << "Should not be reloadable when gRPC channel options change";
@@ -1827,7 +1827,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     old_config->collector.agent_port = 9991;
     old_config->collector.span_port = 9993;
     old_config->collector.stat_port = 9992;
-    old_config->grpc.channel.ssl_enable = true;
+    old_config->grpc.ssl.enable = true;
     old_config->grpc.ssl.trust_cert_file_path = "/old/trust.pem";
 
     Config new_config;
@@ -1841,7 +1841,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     new_config.identity_resolved_ = false;
     new_config.collector.host = "new.host";
     new_config.collector.agent_port = 8888;
-    new_config.grpc.channel.ssl_enable = false;
+    new_config.grpc.ssl.enable = false;
     new_config.grpc.ssl.trust_cert_file_path = "/new/trust.pem";
 
     new_config.retainNonReloadableFrom(old_config);
@@ -1858,7 +1858,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     EXPECT_EQ(new_config.collector.agent_port, 9991);
     EXPECT_EQ(new_config.collector.span_port, 9993);
     EXPECT_EQ(new_config.collector.stat_port, 9992);
-    EXPECT_TRUE(new_config.grpc.channel.ssl_enable);
+    EXPECT_TRUE(new_config.grpc.ssl.enable);
     EXPECT_EQ(new_config.grpc.ssl.trust_cert_file_path, "/old/trust.pem");
 
     // After retaining, all non-reloadable fields match the running config.

@@ -178,6 +178,7 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
+| `Grpc.Ssl.Enable` | `PINPOINT_CPP_GRPC_SSL_ENABLE` | bool | `false` | Enables TLS credentials for all gRPC channels. |
 | `Grpc.Ssl.TrustCertFilePath` | `PINPOINT_CPP_GRPC_SSL_TRUST_CERT_FILE_PATH` | string | `""` | PEM trust certificate path used by TLS credentials. |
 | `Grpc.Ssl.RootCertFilePath` | `PINPOINT_CPP_GRPC_SSL_ROOT_CERT_FILE_PATH` | string | `""` | Alias for gRPC root certificate path. `TrustCertFilePath` takes precedence when both are set. |
 
@@ -185,7 +186,6 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Grpc.SslEnable` | `PINPOINT_CPP_GRPC_SSL_ENABLE` | bool | `false` | Enables TLS credentials for all gRPC channels. |
 | `Grpc.KeepAliveTimeMs` | `PINPOINT_CPP_GRPC_KEEPALIVE_TIME_MS` | int | `30000` | Maps to `GRPC_ARG_KEEPALIVE_TIME_MS`. |
 | `Grpc.KeepAliveTimeoutMs` | `PINPOINT_CPP_GRPC_KEEPALIVE_TIMEOUT_MS` | int | `60000` | Maps to `GRPC_ARG_KEEPALIVE_TIMEOUT_MS`. |
 | `Grpc.KeepAlivePermitWithoutCalls` | `PINPOINT_CPP_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS` | bool | `false` | Maps to `GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS`. |
@@ -199,8 +199,8 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 ```yaml
 Grpc:
   Ssl:
+    Enable: true
     TrustCertFilePath: "/etc/pinpoint/collector-ca.pem"
-  SslEnable: true
   SenderQueueSize: 1000
   MaxSendMessageSize: 4194304
   MaxReceiveMessageSize: 4194304
@@ -630,9 +630,9 @@ Collector:
 
 Grpc:
   Ssl:
+    Enable: false
     TrustCertFilePath: ""
     RootCertFilePath: ""
-  SslEnable: false
   KeepAliveTimeMs: 30000
   KeepAliveTimeoutMs: 60000
   KeepAlivePermitWithoutCalls: false

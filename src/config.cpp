@@ -271,7 +271,6 @@ namespace pinpoint {
     }
 
     static void load_grpc_channel_yaml(const YAML::Node& grpc, Config::GrpcChannelOptions& options) {
-        options.ssl_enable = get_boolean(grpc, "SslEnable", options.ssl_enable);
         options.keepalive_time_ms = get_int(grpc, "KeepAliveTimeMs", options.keepalive_time_ms);
         options.keepalive_timeout_ms = get_int(grpc, "KeepAliveTimeoutMs", options.keepalive_timeout_ms);
         options.keepalive_permit_without_calls =
@@ -286,6 +285,7 @@ namespace pinpoint {
     static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
         if (auto& grpc = yaml["Grpc"]) {
             if (auto& ssl = grpc["Ssl"]) {
+                config.grpc.ssl.enable = get_boolean(ssl, "Enable", config.grpc.ssl.enable);
                 config.grpc.ssl.trust_cert_file_path =
                     get_string(ssl, "TrustCertFilePath", config.grpc.ssl.trust_cert_file_path);
                 config.grpc.ssl.root_cert_file_path =
@@ -442,7 +442,6 @@ namespace pinpoint {
     }
 
     static void load_env_grpc_channel(Config::GrpcChannelOptions& options,
-                                      const char* ssl_enable_env,
                                       const char* keepalive_time_env,
                                       const char* keepalive_timeout_env,
                                       const char* keepalive_permit_env,
@@ -450,9 +449,6 @@ namespace pinpoint {
                                       const char* max_receive_env,
                                       const char* sender_queue_env,
                                       const char* channel_executor_queue_env) {
-        if(auto e = get_env(ssl_enable_env)) {
-            options.ssl_enable = safe_env_stob(e.name.c_str(), e.value, options.ssl_enable);
-        }
         if(auto e = get_env(keepalive_time_env)) {
             options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
         }
@@ -584,6 +580,9 @@ namespace pinpoint {
             config.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
         }
 
+        if(auto e = get_env(env::GRPC_SSL_ENABLE)) {
+            config.grpc.ssl.enable = safe_env_stob(e.name.c_str(), e.value, config.grpc.ssl.enable);
+        }
         if(auto e = get_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
             config.grpc.ssl.trust_cert_file_path = std::string(e.value);
         }
@@ -591,7 +590,6 @@ namespace pinpoint {
             config.grpc.ssl.root_cert_file_path = std::string(e.value);
         }
         load_env_grpc_channel(config.grpc.channel,
-                              env::GRPC_SSL_ENABLE,
                               env::GRPC_KEEPALIVE_TIME_MS,
                               env::GRPC_KEEPALIVE_TIMEOUT_MS,
                               env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
@@ -1023,8 +1021,8 @@ namespace pinpoint {
                                default_config.grpc.ssl.trust_cert_file_path);
         add_non_default_config(config_strings, "Grpc.Ssl.RootCertFilePath", config.grpc.ssl.root_cert_file_path,
                                default_config.grpc.ssl.root_cert_file_path);
-        add_non_default_config(config_strings, "Grpc.SslEnable", config.grpc.channel.ssl_enable,
-                               default_config.grpc.channel.ssl_enable);
+        add_non_default_config(config_strings, "Grpc.Ssl.Enable", config.grpc.ssl.enable,
+                               default_config.grpc.ssl.enable);
         add_non_default_config(config_strings, "Grpc.KeepAliveTimeMs", config.grpc.channel.keepalive_time_ms,
                                default_config.grpc.channel.keepalive_time_ms);
         add_non_default_config(config_strings, "Grpc.KeepAliveTimeoutMs", config.grpc.channel.keepalive_timeout_ms,
@@ -1147,7 +1145,6 @@ namespace pinpoint {
         emitter << YAML::EndMap;
 
         auto emit_grpc_channel = [&emitter](const Config::GrpcChannelOptions& options) {
-            emitter << YAML::Key << "SslEnable" << YAML::Value << options.ssl_enable;
             emitter << YAML::Key << "KeepAliveTimeMs" << YAML::Value << options.keepalive_time_ms;
             emitter << YAML::Key << "KeepAliveTimeoutMs" << YAML::Value << options.keepalive_timeout_ms;
             emitter << YAML::Key << "KeepAlivePermitWithoutCalls" << YAML::Value << options.keepalive_permit_without_calls;
@@ -1161,6 +1158,7 @@ namespace pinpoint {
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "Ssl";
         emitter << YAML::BeginMap;
+        emitter << YAML::Key << "Enable" << YAML::Value << config.grpc.ssl.enable;
         emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.grpc.ssl.trust_cert_file_path;
         emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.grpc.ssl.root_cert_file_path;
         emitter << YAML::EndMap;
@@ -1314,16 +1312,14 @@ namespace pinpoint {
 
     static bool same_grpc_channel(const Config::GrpcChannelOptions& lhs,
                                   const Config::GrpcChannelOptions& rhs) {
-        return std::tie(lhs.ssl_enable,
-                        lhs.keepalive_time_ms,
+        return std::tie(lhs.keepalive_time_ms,
                         lhs.keepalive_timeout_ms,
                         lhs.keepalive_permit_without_calls,
                         lhs.max_send_message_size,
                         lhs.max_receive_message_size,
                         lhs.sender_queue_size,
                         lhs.channel_executor_queue_size) ==
-               std::tie(rhs.ssl_enable,
-                        rhs.keepalive_time_ms,
+               std::tie(rhs.keepalive_time_ms,
                         rhs.keepalive_timeout_ms,
                         rhs.keepalive_permit_without_calls,
                         rhs.max_send_message_size,
@@ -1333,9 +1329,11 @@ namespace pinpoint {
     }
 
     static bool same_grpc_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.grpc.ssl.trust_cert_file_path,
+        return std::tie(lhs.grpc.ssl.enable,
+                        lhs.grpc.ssl.trust_cert_file_path,
                         lhs.grpc.ssl.root_cert_file_path) ==
-               std::tie(rhs.grpc.ssl.trust_cert_file_path,
+               std::tie(rhs.grpc.ssl.enable,
+                        rhs.grpc.ssl.trust_cert_file_path,
                         rhs.grpc.ssl.root_cert_file_path) &&
                same_grpc_channel(lhs.grpc.channel, rhs.grpc.channel);
     }
