@@ -173,11 +173,32 @@ namespace pinpoint {
             int max_file_size = defaults::LOG_MAX_FILE_SIZE_MB;
         } log;
 
+        struct GrpcSslOptions {
+            bool enable = false;
+            std::string trust_cert_file_path;
+            std::string root_cert_file_path;
+        };
+
+        struct GrpcChannelOptions {
+            int keepalive_time_ms = defaults::GRPC_KEEPALIVE_TIME_MS;
+            int keepalive_timeout_ms = defaults::GRPC_KEEPALIVE_TIMEOUT_MS;
+            bool keepalive_permit_without_calls = false;
+            int max_send_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
+            int max_receive_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
+            int sender_queue_size = defaults::GRPC_SENDER_QUEUE_SIZE;
+            int channel_executor_queue_size = defaults::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE;
+        };
+
         struct {
             std::string host;
             int agent_port = defaults::AGENT_PORT;
             int span_port = defaults::SPAN_PORT;
             int stat_port = defaults::STAT_PORT;
+
+            struct {
+                GrpcSslOptions ssl;
+                GrpcChannelOptions channel;
+            } grpc;
         } collector;
 
         struct {
@@ -207,27 +228,6 @@ namespace pinpoint {
                 int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
             } batch;
         } span;
-
-        struct GrpcSslOptions {
-            bool enable = false;
-            std::string trust_cert_file_path;
-            std::string root_cert_file_path;
-        };
-
-        struct GrpcChannelOptions {
-            int keepalive_time_ms = defaults::GRPC_KEEPALIVE_TIME_MS;
-            int keepalive_timeout_ms = defaults::GRPC_KEEPALIVE_TIMEOUT_MS;
-            bool keepalive_permit_without_calls = false;
-            int max_send_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
-            int max_receive_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
-            int sender_queue_size = defaults::GRPC_SENDER_QUEUE_SIZE;
-            int channel_executor_queue_size = defaults::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE;
-        };
-
-        struct {
-            GrpcSslOptions ssl;
-            GrpcChannelOptions channel;
-        } grpc;
 
         struct {
             int refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;

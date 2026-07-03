@@ -2182,7 +2182,7 @@ TEST_F(GrpcMockTest, GrpcAgentStopAgentInfoDuringRetriesReturnsPromptly) {
 // ============================================================
 
 TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
-    mock_agent_service_->mutableConfig()->grpc.channel.sender_queue_size = 2;
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.sender_queue_size = 2;
 
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 

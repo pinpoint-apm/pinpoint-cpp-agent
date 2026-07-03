@@ -283,16 +283,20 @@ namespace pinpoint {
     }
 
     static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
-        if (auto& grpc = yaml["Grpc"]) {
+        auto& collector = yaml["Collector"];
+        if (!collector) {
+            return;
+        }
+        if (auto& grpc = collector["Grpc"]) {
             if (auto& ssl = grpc["Ssl"]) {
-                config.grpc.ssl.enable = get_boolean(ssl, "Enable", config.grpc.ssl.enable);
-                config.grpc.ssl.trust_cert_file_path =
-                    get_string(ssl, "TrustCertFilePath", config.grpc.ssl.trust_cert_file_path);
-                config.grpc.ssl.root_cert_file_path =
-                    get_string(ssl, "RootCertFilePath", config.grpc.ssl.root_cert_file_path);
+                config.collector.grpc.ssl.enable = get_boolean(ssl, "Enable", config.collector.grpc.ssl.enable);
+                config.collector.grpc.ssl.trust_cert_file_path =
+                    get_string(ssl, "TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path);
+                config.collector.grpc.ssl.root_cert_file_path =
+                    get_string(ssl, "RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path);
             }
 
-            load_grpc_channel_yaml(grpc, config.grpc.channel);
+            load_grpc_channel_yaml(grpc, config.collector.grpc.channel);
         }
     }
 
@@ -581,15 +585,15 @@ namespace pinpoint {
         }
 
         if(auto e = get_env(env::GRPC_SSL_ENABLE)) {
-            config.grpc.ssl.enable = safe_env_stob(e.name.c_str(), e.value, config.grpc.ssl.enable);
+            config.collector.grpc.ssl.enable = safe_env_stob(e.name.c_str(), e.value, config.collector.grpc.ssl.enable);
         }
         if(auto e = get_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
-            config.grpc.ssl.trust_cert_file_path = std::string(e.value);
+            config.collector.grpc.ssl.trust_cert_file_path = std::string(e.value);
         }
         if(auto e = get_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
-            config.grpc.ssl.root_cert_file_path = std::string(e.value);
+            config.collector.grpc.ssl.root_cert_file_path = std::string(e.value);
         }
-        load_env_grpc_channel(config.grpc.channel,
+        load_env_grpc_channel(config.collector.grpc.channel,
                               env::GRPC_KEEPALIVE_TIME_MS,
                               env::GRPC_KEEPALIVE_TIMEOUT_MS,
                               env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
@@ -963,7 +967,7 @@ namespace pinpoint {
             config->http.url_stat.limit = defaults::HTTP_URL_STAT_LIMIT;
         }
 
-        validate_grpc_channel(config->grpc.channel, "grpc", Config::GrpcChannelOptions());
+        validate_grpc_channel(config->collector.grpc.channel, "grpc", Config::GrpcChannelOptions());
 
         if (!is_container_set) {
             config->is_container = is_container_env();
@@ -1017,28 +1021,28 @@ namespace pinpoint {
         add_non_default_config(config_strings, "Log.Level", config.log.level, default_config.log.level);
         add_non_default_config(config_strings, "Log.FilePath", config.log.file_path, default_config.log.file_path);
         add_non_default_config(config_strings, "Log.MaxFileSize", config.log.max_file_size, default_config.log.max_file_size);
-        add_non_default_config(config_strings, "Grpc.Ssl.TrustCertFilePath", config.grpc.ssl.trust_cert_file_path,
-                               default_config.grpc.ssl.trust_cert_file_path);
-        add_non_default_config(config_strings, "Grpc.Ssl.RootCertFilePath", config.grpc.ssl.root_cert_file_path,
-                               default_config.grpc.ssl.root_cert_file_path);
-        add_non_default_config(config_strings, "Grpc.Ssl.Enable", config.grpc.ssl.enable,
-                               default_config.grpc.ssl.enable);
-        add_non_default_config(config_strings, "Grpc.KeepAliveTimeMs", config.grpc.channel.keepalive_time_ms,
-                               default_config.grpc.channel.keepalive_time_ms);
-        add_non_default_config(config_strings, "Grpc.KeepAliveTimeoutMs", config.grpc.channel.keepalive_timeout_ms,
-                               default_config.grpc.channel.keepalive_timeout_ms);
-        add_non_default_config(config_strings, "Grpc.KeepAlivePermitWithoutCalls",
-                               config.grpc.channel.keepalive_permit_without_calls,
-                               default_config.grpc.channel.keepalive_permit_without_calls);
-        add_non_default_config(config_strings, "Grpc.MaxSendMessageSize", config.grpc.channel.max_send_message_size,
-                               default_config.grpc.channel.max_send_message_size);
-        add_non_default_config(config_strings, "Grpc.MaxReceiveMessageSize", config.grpc.channel.max_receive_message_size,
-                               default_config.grpc.channel.max_receive_message_size);
-        add_non_default_config(config_strings, "Grpc.SenderQueueSize", config.grpc.channel.sender_queue_size,
-                               default_config.grpc.channel.sender_queue_size);
-        add_non_default_config(config_strings, "Grpc.ChannelExecutorQueueSize",
-                               config.grpc.channel.channel_executor_queue_size,
-                               default_config.grpc.channel.channel_executor_queue_size);
+        add_non_default_config(config_strings, "Collector.Grpc.Ssl.TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path,
+                               default_config.collector.grpc.ssl.trust_cert_file_path);
+        add_non_default_config(config_strings, "Collector.Grpc.Ssl.RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path,
+                               default_config.collector.grpc.ssl.root_cert_file_path);
+        add_non_default_config(config_strings, "Collector.Grpc.Ssl.Enable", config.collector.grpc.ssl.enable,
+                               default_config.collector.grpc.ssl.enable);
+        add_non_default_config(config_strings, "Collector.Grpc.KeepAliveTimeMs", config.collector.grpc.channel.keepalive_time_ms,
+                               default_config.collector.grpc.channel.keepalive_time_ms);
+        add_non_default_config(config_strings, "Collector.Grpc.KeepAliveTimeoutMs", config.collector.grpc.channel.keepalive_timeout_ms,
+                               default_config.collector.grpc.channel.keepalive_timeout_ms);
+        add_non_default_config(config_strings, "Collector.Grpc.KeepAlivePermitWithoutCalls",
+                               config.collector.grpc.channel.keepalive_permit_without_calls,
+                               default_config.collector.grpc.channel.keepalive_permit_without_calls);
+        add_non_default_config(config_strings, "Collector.Grpc.MaxSendMessageSize", config.collector.grpc.channel.max_send_message_size,
+                               default_config.collector.grpc.channel.max_send_message_size);
+        add_non_default_config(config_strings, "Collector.Grpc.MaxReceiveMessageSize", config.collector.grpc.channel.max_receive_message_size,
+                               default_config.collector.grpc.channel.max_receive_message_size);
+        add_non_default_config(config_strings, "Collector.Grpc.SenderQueueSize", config.collector.grpc.channel.sender_queue_size,
+                               default_config.collector.grpc.channel.sender_queue_size);
+        add_non_default_config(config_strings, "Collector.Grpc.ChannelExecutorQueueSize",
+                               config.collector.grpc.channel.channel_executor_queue_size,
+                               default_config.collector.grpc.channel.channel_executor_queue_size);
         add_non_default_config(config_strings, "Stat.Enable", config.stat.enable, default_config.stat.enable);
         add_non_default_config(config_strings, "Stat.BatchCount", config.stat.batch_count, default_config.stat.batch_count);
         add_non_default_config(config_strings, "Stat.BatchInterval", config.stat.collect_interval,
@@ -1142,7 +1146,6 @@ namespace pinpoint {
         emitter << YAML::Key << "GrpcAgentPort" << YAML::Value << config.collector.agent_port;
         emitter << YAML::Key << "GrpcSpanPort" << YAML::Value << config.collector.span_port;
         emitter << YAML::Key << "GrpcStatPort" << YAML::Value << config.collector.stat_port;
-        emitter << YAML::EndMap;
 
         auto emit_grpc_channel = [&emitter](const Config::GrpcChannelOptions& options) {
             emitter << YAML::Key << "KeepAliveTimeMs" << YAML::Value << options.keepalive_time_ms;
@@ -1158,11 +1161,12 @@ namespace pinpoint {
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "Ssl";
         emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Enable" << YAML::Value << config.grpc.ssl.enable;
-        emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.grpc.ssl.trust_cert_file_path;
-        emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.grpc.ssl.root_cert_file_path;
+        emitter << YAML::Key << "Enable" << YAML::Value << config.collector.grpc.ssl.enable;
+        emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.collector.grpc.ssl.trust_cert_file_path;
+        emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.collector.grpc.ssl.root_cert_file_path;
         emitter << YAML::EndMap;
-        emit_grpc_channel(config.grpc.channel);
+        emit_grpc_channel(config.collector.grpc.channel);
+        emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Stat";
@@ -1329,13 +1333,13 @@ namespace pinpoint {
     }
 
     static bool same_grpc_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.grpc.ssl.enable,
-                        lhs.grpc.ssl.trust_cert_file_path,
-                        lhs.grpc.ssl.root_cert_file_path) ==
-               std::tie(rhs.grpc.ssl.enable,
-                        rhs.grpc.ssl.trust_cert_file_path,
-                        rhs.grpc.ssl.root_cert_file_path) &&
-               same_grpc_channel(lhs.grpc.channel, rhs.grpc.channel);
+        return std::tie(lhs.collector.grpc.ssl.enable,
+                        lhs.collector.grpc.ssl.trust_cert_file_path,
+                        lhs.collector.grpc.ssl.root_cert_file_path) ==
+               std::tie(rhs.collector.grpc.ssl.enable,
+                        rhs.collector.grpc.ssl.trust_cert_file_path,
+                        rhs.collector.grpc.ssl.root_cert_file_path) &&
+               same_grpc_channel(lhs.collector.grpc.channel, rhs.collector.grpc.channel);
     }
 
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
@@ -1375,6 +1379,5 @@ namespace pinpoint {
         // reload whose new identity failed resolution still passes check().
         identity_resolved_ = old->identity_resolved_;
         collector = old->collector;
-        grpc = old->grpc;
     }
 }

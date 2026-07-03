@@ -111,15 +111,15 @@ namespace pinpoint {
         }
 
         std::shared_ptr<grpc::Channel> build_channel(const Config& config, ClientType client_type) {
-            const auto& options = config.grpc.channel;
+            const auto& options = config.collector.grpc.channel;
             const auto client_name = grpc_client_name(client_type);
             const auto addr = absl::StrCat(config.collector.host, ":", grpc_collector_port(config, client_type));
-            auto credentials = make_channel_credentials(config.grpc.ssl, client_name);
+            auto credentials = make_channel_credentials(config.collector.grpc.ssl, client_name);
             auto channel_args = make_channel_arguments(options);
 
             LOG_INFO("create {} grpc channel: addr={}, ssl={}, keepaliveTimeMs={}, keepaliveTimeoutMs={}, "
                      "maxSendMessageSize={}, maxReceiveMessageSize={}",
-                     client_name, addr, config.grpc.ssl.enable, options.keepalive_time_ms,
+                     client_name, addr, config.collector.grpc.ssl.enable, options.keepalive_time_ms,
                      options.keepalive_timeout_ms, options.max_send_message_size,
                      options.max_receive_message_size);
             return grpc::CreateCustomChannel(addr, credentials, channel_args);
@@ -444,7 +444,7 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        const auto max_queue_size = static_cast<size_t>(config_->grpc.channel.sender_queue_size);
+        const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
         if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
             meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}});
         } else {
