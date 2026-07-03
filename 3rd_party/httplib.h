@@ -1,3 +1,4 @@
+// copied from: https://github.com/yhirose/cpp-httplib/blob/v0.23.0/httplib.h
 //
 //  httplib.h
 //
