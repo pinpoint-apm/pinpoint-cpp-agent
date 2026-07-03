@@ -683,7 +683,8 @@ TEST_F(CreateAgentTest, CreateAgentWithServerMetaDataReloadsExistingAgent) {
 
     set_config_string(kBaseConfigYaml);
 
-    auto returned_agent = CreateAgent("test-server",
+    auto returned_agent = CreateAgent(APP_TYPE_CPP,
+                                      "test-server",
                                       std::vector<std::string>{"--port=8080"},
                                       std::vector<std::string>{"libfoo.so"});
 
@@ -699,7 +700,7 @@ TEST_F(CreateAgentTest, CreateAgentWithServerInfoOnlyReloadsExistingAgent) {
 
     set_config_string(kBaseConfigYaml);
 
-    auto returned_agent = CreateAgent("test-server");
+    auto returned_agent = CreateAgent(APP_TYPE_CPP, "test-server");
 
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
     ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";

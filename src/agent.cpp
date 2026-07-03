@@ -789,42 +789,8 @@ namespace pinpoint {
         return create_agent_helper(std::move(cfg), std::nullopt);
     }
 
-    // Public entry points: a failure to configure or construct the agent must
+    // Public entry point: a failure to configure or construct the agent must
     // surface as a noop agent, never as an exception in the host application.
-    AgentPtr CreateAgent() try {
-        const auto cfg = make_config();
-        if (!cfg) {
-            return noopAgent();
-        }
-        return create_agent_helper(std::move(cfg));
-    } catch (...) {
-        return noopAgent();
-    }
-
-    AgentPtr CreateAgent(std::string_view server_info,
-                         const std::vector<std::string>& args,
-                         const std::vector<std::string>& libs) try {
-        const auto cfg = make_config();
-        if (!cfg) {
-            return noopAgent();
-        }
-        return create_agent_helper(std::move(cfg),
-                                   ServerMetaData{std::string(server_info), args, libs});
-    } catch (...) {
-        return noopAgent();
-    }
-
-    AgentPtr CreateAgent(int32_t app_type) try {
-        auto cfg = make_config();
-        if (!cfg) {
-            return noopAgent();
-        }
-        cfg->app_type_ = app_type;
-        return create_agent_helper(std::move(cfg));
-    } catch (...) {
-        return noopAgent();
-    }
-
     AgentPtr CreateAgent(int32_t app_type,
                          std::string_view server_info,
                          const std::vector<std::string>& args,

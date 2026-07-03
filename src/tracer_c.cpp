@@ -406,32 +406,11 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
                                                 int libs_count) {
     return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
         return make_agent_handle(server_info
-            ? pinpoint::CreateAgent(server_info,
-                                    to_string_vector(args, args_count),
-                                    to_string_vector(libs, libs_count))
-            : pinpoint::CreateAgent());
-    });
-}
-
-pt_agent_t pt_create_agent_with_type(int32_t app_type) {
-    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
-        return make_agent_handle(pinpoint::CreateAgent(app_type));
-    });
-}
-
-pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
-                                                         const char* server_info,
-                                                         const char* const* args,
-                                                         int args_count,
-                                                         const char* const* libs,
-                                                         int libs_count) {
-    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
-        return make_agent_handle(server_info
-            ? pinpoint::CreateAgent(app_type,
+            ? pinpoint::CreateAgent(pinpoint::DEFAULT_APP_TYPE,
                                     server_info,
                                     to_string_vector(args, args_count),
                                     to_string_vector(libs, libs_count))
-            : pinpoint::CreateAgent(app_type));
+            : pinpoint::CreateAgent());
     });
 }
 

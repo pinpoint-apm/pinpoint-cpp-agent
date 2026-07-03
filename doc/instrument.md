@@ -82,6 +82,7 @@ int main() {
 
     // To override the configured application type:
     // auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP);
+    // (app_type defaults to APP_TYPE_CPP.)
 
     // Your application logic ...
 
@@ -92,17 +93,16 @@ int main() {
 
 ### Sending AgentInfo Metadata
 
-`CreateAgent()` overloads can include server runtime metadata that is sent with AgentInfo:
+`CreateAgent()` can include server runtime metadata that is sent with AgentInfo.
+All arguments are optional: `app_type` defaults to `APP_TYPE_CPP` and `server_info`
+to `"C/C++ Application"`.
 
 ```cpp
 std::vector<std::string> args = {"--port=8080"};
 std::vector<std::string> libs = {"my-http-framework/1.2.3"};
 
-auto agent = pinpoint::CreateAgent("my-service-runtime", args, libs);
-
-// Or combine explicit application type with server metadata.
-// auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP,
-//                                   "my-service-runtime", args, libs);
+auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP,
+                                   "my-service-runtime", args, libs);
 ```
 
 ### Using the Global Agent

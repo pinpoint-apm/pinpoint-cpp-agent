@@ -358,7 +358,7 @@ pt_agent_t pt_create_agent(void);
  *
  * @param server_info Server runtime description. If NULL, behaves like
  *                    pt_create_agent().
- * @param args        Optional array of VM/runtime argument strings. May be NULL.
+ * @param args        Optional array of command line argument strings. May be NULL.
  * @param args_count  Number of entries in args. Values <= 0 are treated as 0.
  * @param libs        Optional array of service library strings. May be NULL.
  * @param libs_count  Number of entries in libs. Values <= 0 are treated as 0.
@@ -372,36 +372,6 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
                                                 int libs_count);
 
 /**
- * @brief Creates a new Pinpoint agent with an explicit application type.
- *
- * @param app_type  Application service-type constant (e.g. PT_APP_TYPE_CPP).
- *
- * Mirrors pinpoint::CreateAgent(int32_t).
- */
-pt_agent_t pt_create_agent_with_type(int32_t app_type);
-
-/**
- * @brief Creates a new Pinpoint agent with an explicit application type and
- *        AgentInfo server metadata.
- *
- * @param app_type    Application service-type constant (e.g. PT_APP_TYPE_CPP).
- * @param server_info Server runtime description. If NULL, behaves like
- *                    pt_create_agent_with_type(app_type).
- * @param args        Optional array of VM/runtime argument strings. May be NULL.
- * @param args_count  Number of entries in args. Values <= 0 are treated as 0.
- * @param libs        Optional array of service library strings. May be NULL.
- * @param libs_count  Number of entries in libs. Values <= 0 are treated as 0.
- *
- * Mirrors pinpoint::CreateAgent(int32_t, std::string_view, args, libs).
- */
-pt_agent_t pt_create_agent_with_type_and_server_metadata(int32_t app_type,
-                                                         const char* server_info,
-                                                         const char* const* args,
-                                                         int args_count,
-                                                         const char* const* libs,
-                                                         int libs_count);
-
-/**
  * @brief Returns a handle to the singleton global agent.
  *
  * The returned handle must NOT be passed to pt_agent_destroy() — its lifetime
@@ -413,7 +383,7 @@ pt_agent_t pt_global_agent(void);
 
 /**
  * @brief Releases an agent handle created by pt_create_agent() or
- *        pt_create_agent_with_type().
+ *        pt_create_agent_with_server_metadata().
  *
  * @warning Do NOT call this on a handle obtained from pt_global_agent().
  */

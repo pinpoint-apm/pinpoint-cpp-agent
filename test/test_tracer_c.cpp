@@ -368,23 +368,6 @@ TEST_F(TracerCApiTest, CreateAgentWithServerMetadataAllowsMissingArgsAndLibs) {
     pt_agent_destroy(agent);
 }
 
-TEST_F(TracerCApiTest, CreateAgentWithTypeAndServerMetadata) {
-    pt_set_config_string(kCreateAgentConfigYaml);
-
-    const char* args[] = {"--worker=4"};
-    const char* libs[] = {"libbar.so"};
-    pt_agent_t agent = pt_create_agent_with_type_and_server_metadata(PT_APP_TYPE_CPP,
-                                                                     "c-api-server",
-                                                                     args,
-                                                                     1,
-                                                                     libs,
-                                                                     1);
-
-    ASSERT_NE(agent, nullptr);
-    EXPECT_NE(pt_agent_is_enabled(agent), 0);
-    pt_agent_destroy(agent);
-}
-
 // ============================================================================
 // 3. Null-handle safety — no crashes on NULL inputs
 // ============================================================================

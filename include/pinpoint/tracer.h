@@ -425,17 +425,18 @@ namespace pinpoint {
 	///        only while building the initial configuration.
 	void SetConfigEnvVarPrefix(std::string_view prefix);
 
-	/// @brief Creates an agent using the global configuration.
-	AgentPtr CreateAgent();
-	/// @brief Creates an agent and sends server metadata with AgentInfo. Args and libs are optional.
-	AgentPtr CreateAgent(std::string_view server_info,
-	                     const std::vector<std::string>& args = {},
-	                     const std::vector<std::string>& libs = {});
-	/// @brief Creates an agent overriding the default application type.
-	AgentPtr CreateAgent(int32_t app_type);
-	/// @brief Creates an agent overriding the application type and AgentInfo server metadata. Args and libs are optional.
-	AgentPtr CreateAgent(int32_t app_type,
-	                     std::string_view server_info,
+	/// @brief Default application type used by CreateAgent().
+	constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
+	/// @brief Default server metadata description used by CreateAgent().
+	constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
+
+	/// @brief Creates an agent and sends server metadata with AgentInfo.
+	///        All arguments are optional: app_type defaults to DEFAULT_APP_TYPE
+	///        and server_info to DEFAULT_SERVER_INFO.
+	///        @p args is the process command line arguments and @p libs the
+	///        loaded service libraries.
+	AgentPtr CreateAgent(int32_t app_type = DEFAULT_APP_TYPE,
+	                     std::string_view server_info = DEFAULT_SERVER_INFO,
 	                     const std::vector<std::string>& args = {},
 	                     const std::vector<std::string>& libs = {});
 	/// @brief Returns the singleton global agent instance.

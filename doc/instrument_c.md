@@ -107,10 +107,12 @@ int main(void) {
 }
 ```
 
-`pt_create_agent_with_type()` lets you supply an explicit application type constant:
+`pt_create_agent_with_server_metadata()` lets you attach AgentInfo server metadata (runtime description, args, libs):
 
 ```c
-pt_agent_t agent = pt_create_agent_with_type(PT_APP_TYPE_CPP);
+const char* args[] = {"--port=8080"};
+const char* libs[] = {"my-http-framework/1.2.3"};
+pt_agent_t agent = pt_create_agent_with_server_metadata("my-service-runtime", args, 1, libs, 1);
 ```
 
 ### Using the global agent
