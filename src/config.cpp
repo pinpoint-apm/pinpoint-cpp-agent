@@ -212,6 +212,30 @@ namespace pinpoint {
         watcher_to_join.join();
     }
 
+    // yaml-cpp resolves map keys case-sensitively. To let users write config
+    // keys in any case (e.g. "collector"/"Collector"/"COLLECTOR", "host"/"Host"),
+    // resolve each key by first trying an exact match and then falling back to a
+    // case-insensitive scan of the map's keys. Returns the matched value node, or
+    // an undefined node when `yaml` is not a map or no key matches — an undefined
+    // node is falsy, so callers keep their existing `if (node)` / default-value
+    // handling unchanged.
+    static YAML::Node find_node(const YAML::Node& yaml, std::string_view cname) {
+        if (!yaml || !yaml.IsMap()) {
+            return YAML::Node(YAML::NodeType::Undefined);
+        }
+        // Fast path: an exact match avoids scanning when the key is already
+        // cased correctly (the common case).
+        if (auto exact = yaml[std::string(cname)]) {
+            return exact;
+        }
+        for (const auto& kv : yaml) {
+            if (kv.first.IsScalar() && compare_string(kv.first.Scalar(), cname)) {
+                return kv.second;
+            }
+        }
+        return YAML::Node(YAML::NodeType::Undefined);
+    }
+
     // Each getter guards the whole lookup, not just the conversion: yaml-cpp
     // throws from the subscript itself (BadSubscript on scalar nodes) and from
     // element-level conversions (TypedBadConversion<Element> inside vector
@@ -219,8 +243,8 @@ namespace pinpoint {
     // must degrade to defaults, never throw into the embedding application.
     static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
         try {
-            if (yaml[cname]) {
-                return yaml[cname].as<bool>();
+            if (auto node = find_node(yaml, cname)) {
+                return node.as<bool>();
             }
         } catch (const YAML::Exception& e) {
             LOG_WARN("Failed to read '{}' as boolean: {}. Using default value: {}",
@@ -232,8 +256,8 @@ namespace pinpoint {
 
     static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
         try {
-            if (yaml[cname]) {
-                return yaml[cname].as<std::string>();
+            if (auto node = find_node(yaml, cname)) {
+                return node.as<std::string>();
             }
         } catch (const YAML::Exception& e) {
             LOG_WARN("Failed to read '{}' as string: {}. Using default value: '{}'",
@@ -246,8 +270,8 @@ namespace pinpoint {
     static std::vector<std::string> get_string_vector(const YAML::Node& yaml, std::string_view cname,
                                                       std::vector<std::string> default_value) {
         try {
-            if (yaml[cname]) {
-                return yaml[cname].as<std::vector<std::string>>();
+            if (auto node = find_node(yaml, cname)) {
+                return node.as<std::vector<std::string>>();
             }
         } catch (const YAML::Exception& e) {
             LOG_WARN("Failed to read '{}' as string vector: {}. Using default value",
@@ -259,8 +283,8 @@ namespace pinpoint {
 
     static int get_int(const YAML::Node& yaml, std::string_view cname, int default_value) {
         try {
-            if (yaml[cname]) {
-                return yaml[cname].as<int>();
+            if (auto node = find_node(yaml, cname)) {
+                return node.as<int>();
             }
         } catch (const YAML::Exception& e) {
             LOG_WARN("Failed to read '{}' as int: {}. Using default value: {}",
@@ -281,11 +305,11 @@ namespace pinpoint {
     }
 
     static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
-        auto& collector = yaml["Collector"];
+        auto collector = find_node(yaml, "Collector");
         if (!collector) {
             return;
         }
-        if (auto& grpc = collector["Grpc"]) {
+        if (auto grpc = find_node(collector, "Grpc")) {
             config.collector.grpc.ssl.enable = get_boolean(grpc, "SslEnable", config.collector.grpc.ssl.enable);
             config.collector.grpc.ssl.trust_cert_file_path =
                 get_string(grpc, "TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path);
@@ -298,8 +322,8 @@ namespace pinpoint {
 
     static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
         try {
-            if (yaml[cname]) {
-                return yaml[cname].as<double>();
+            if (auto node = find_node(yaml, cname)) {
+                return node.as<double>();
             }
         } catch (const YAML::Exception& e) {
             LOG_WARN("Failed to read '{}' as double: {}. Using default value: {}",
@@ -323,13 +347,13 @@ namespace pinpoint {
         config.service_name_ = get_string(yaml, "ServiceName", "");
         config.api_key_ = get_string(yaml, "ApiKey", "");
 
-        if (auto& log = yaml["Log"]) {
+        if (auto log = find_node(yaml, "Log")) {
             config.log.level = get_string(log, "Level", defaults::LOG_LEVEL);
             config.log.file_path = get_string(log, "FilePath", "");
             config.log.max_file_size = get_int(log, "MaxFileSize", defaults::LOG_MAX_FILE_SIZE_MB);
         }
 
-        if (auto& collector = yaml["Collector"]) {
+        if (auto collector = find_node(yaml, "Collector")) {
             // Host/AgentPort/SpanPort/StatPort take precedence; the deprecated
             // GrpcHost/GrpcAgentPort/GrpcSpanPort/GrpcStatPort keys are read as
             // a fallback for backward compatibility.
@@ -343,20 +367,20 @@ namespace pinpoint {
                 get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", defaults::STAT_PORT));
         }
 
-        if (auto& stat = yaml["Stat"]) {
+        if (auto stat = find_node(yaml, "Stat")) {
             config.stat.enable = get_boolean(stat, "Enable", true);
             config.stat.batch_count = get_int(stat, "BatchCount", defaults::STAT_BATCH_COUNT);
             config.stat.collect_interval = get_int(stat, "BatchInterval", defaults::STAT_INTERVAL_MS);
         }
 
-        if (auto& http = yaml["Http"]) {
+        if (auto http = find_node(yaml, "Http")) {
             config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", false);
             config.http.url_stat.limit = get_int(http, "UrlStatLimit", defaults::HTTP_URL_STAT_LIMIT);
             config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", true);
             config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", 1);
             config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", false);
 
-            if (auto& srv = http["Server"]) {
+            if (auto srv = find_node(http, "Server")) {
                 config.http.server.status_errors = get_string_vector(srv, "StatusCodeErrors", {"5xx"});
                 config.http.server.exclude_url = get_string_vector(srv, "ExcludeUrl", {});
                 config.http.server.exclude_method = get_string_vector(srv, "ExcludeMethod", {});
@@ -365,14 +389,14 @@ namespace pinpoint {
                 config.http.server.rec_response_header = get_string_vector(srv, "RecordResponseHeader", {});
             }
 
-            if (auto& cli = http["Client"]) {
+            if (auto cli = find_node(http, "Client")) {
                 config.http.client.rec_request_header = get_string_vector(cli, "RecordRequestHeader", {});
                 config.http.client.rec_request_cookie = get_string_vector(cli, "RecordRequestCookie", {});
                 config.http.client.rec_response_header = get_string_vector(cli, "RecordResponseHeader", {});
             }
         }
 
-        if (auto& sampling = yaml["Sampling"]) {
+        if (auto sampling = find_node(yaml, "Sampling")) {
             config.sampling.type = get_string(sampling, "Type", COUNTER_SAMPLING);
             config.sampling.counter_rate = get_int(sampling, "CounterRate", defaults::SAMPLING_COUNTER_RATE);
             config.sampling.percent_rate = get_double(sampling, "PercentRate", defaults::SAMPLING_PERCENT_RATE);
@@ -380,20 +404,20 @@ namespace pinpoint {
             config.sampling.cont_throughput = get_int(sampling, "ContinueThroughput", 0);
         }
 
-        if (auto& span = yaml["Span"]) {
+        if (auto span = find_node(yaml, "Span")) {
             config.span.queue_size = get_int(span, "QueueSize", defaults::SPAN_QUEUE_SIZE);
             config.span.max_event_depth = get_int(span, "MaxEventDepth", defaults::SPAN_MAX_EVENT_DEPTH);
             config.span.max_event_sequence = get_int(span, "MaxEventSequence", defaults::SPAN_MAX_EVENT_SEQUENCE);
             config.span.event_chunk_size = get_int(span, "EventChunkSize", defaults::SPAN_EVENT_CHUNK_SIZE);
         }
 
-        if (auto& collector = yaml["Collector"]) {
-            if (auto& agent_info = collector["AgentInfo"]) {
+        if (auto collector = find_node(yaml, "Collector")) {
+            if (auto agent_info = find_node(collector, "AgentInfo")) {
                 config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
                 config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
                 config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
             }
-            if (auto& span_batch = collector["SpanBatch"]) {
+            if (auto span_batch = find_node(collector, "SpanBatch")) {
                 config.collector.span_batch.size = get_int(span_batch, "Size", defaults::SPAN_BATCH_SIZE);
                 config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
                 config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
@@ -403,12 +427,12 @@ namespace pinpoint {
 
         load_grpc_yaml(yaml, config);
 
-        if (yaml["IsContainer"]) {
+        if (find_node(yaml, "IsContainer")) {
             config.is_container = get_boolean(yaml, "IsContainer", false);
             is_container_set = true;
         }
 
-        if (auto& sql = yaml["Sql"]) {
+        if (auto sql = find_node(yaml, "Sql")) {
             config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", defaults::SQL_MAX_BIND_ARGS_SIZE);
             config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", false);
         }

@@ -629,6 +629,37 @@ Collector:
         << "Collector.AgentPort should take precedence over deprecated Collector.GrpcAgentPort";
 }
 
+// Config keys must resolve regardless of case (lowercase / UPPERCASE / mixed),
+// for both section names and leaf keys.
+TEST_F(ConfigTest, CaseInsensitiveYamlKeyTest) {
+    set_config_string(R"(
+applicationname: "MyApp"
+collector:
+  host: "yaml.collector.host"
+  agentport: 7101
+GRPC: {}
+stat:
+  ENABLE: false
+  BatchCount: 42
+http:
+  server:
+    STATUSCODEERRORS: ["4xx", "5xx"]
+sampling:
+  PercentRate: 12.5
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->app_name_, "MyApp") << "top-level key should resolve case-insensitively";
+    EXPECT_EQ(config->collector.host, "yaml.collector.host") << "nested section + leaf key should resolve case-insensitively";
+    EXPECT_EQ(config->collector.agent_port, 7101) << "lowercase leaf key should resolve";
+    EXPECT_FALSE(config->stat.enable) << "uppercase leaf key should resolve";
+    EXPECT_EQ(config->stat.batch_count, 42) << "mixed-case leaf key should resolve";
+    ASSERT_EQ(config->http.server.status_errors.size(), 2u) << "uppercase vector key should resolve";
+    EXPECT_EQ(config->http.server.status_errors[0], "4xx");
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 12.5) << "mixed-case double key should resolve";
+}
+
 // Test environment variable override YAML
 TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set YAML config
