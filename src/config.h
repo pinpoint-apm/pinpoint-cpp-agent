@@ -48,7 +48,6 @@ namespace pinpoint {
         constexpr int GRPC_KEEPALIVE_TIMEOUT_MS = 60 * 1000;
         constexpr int GRPC_MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
         constexpr int GRPC_SENDER_QUEUE_SIZE = 1000;
-        constexpr int GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = 1000;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
@@ -118,7 +117,6 @@ namespace pinpoint {
         constexpr const char* GRPC_MAX_SEND_MESSAGE_SIZE = "GRPC_MAX_SEND_MESSAGE_SIZE";
         constexpr const char* GRPC_MAX_RECEIVE_MESSAGE_SIZE = "GRPC_MAX_RECEIVE_MESSAGE_SIZE";
         constexpr const char* GRPC_SENDER_QUEUE_SIZE = "GRPC_SENDER_QUEUE_SIZE";
-        constexpr const char* GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE = "GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE";
         constexpr const char* IS_CONTAINER = "IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
@@ -193,7 +191,6 @@ namespace pinpoint {
             int max_send_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
             int max_receive_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
             int sender_queue_size = defaults::GRPC_SENDER_QUEUE_SIZE;
-            int channel_executor_queue_size = defaults::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE;
         };
 
         struct {

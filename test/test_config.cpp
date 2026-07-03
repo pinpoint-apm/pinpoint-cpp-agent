@@ -83,7 +83,6 @@ private:
             full_env(env::GRPC_MAX_SEND_MESSAGE_SIZE),
             full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE),
             full_env(env::GRPC_SENDER_QUEUE_SIZE),
-            full_env(env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE),
         };
         for (const std::string& name : grpc_env_vars) {
             saved_env_vars_[name] = GetEnvVar(name);
@@ -175,7 +174,6 @@ Collector:
     MaxSendMessageSize: 5242880
     MaxReceiveMessageSize: 6291456
     SenderQueueSize: 1100
-    ChannelExecutorQueueSize: 1200
   AgentInfo:
     RefreshIntervalMs: 60000
     SendRetryIntervalMs: 25
@@ -399,8 +397,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_send_message_size, 5242880) << "gRPC max send size should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 6291456) << "gRPC max receive size should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 1100) << "gRPC sender queue size should match YAML";
-    EXPECT_EQ(config->collector.grpc.channel.channel_executor_queue_size, 1200) << "gRPC channel queue size should match YAML";
-    
+
     // Test sampling configuration
     EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
     EXPECT_EQ(config->sampling.counter_rate, 20) << "Counter rate should match YAML";

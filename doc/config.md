@@ -198,7 +198,6 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 | `Collector.Grpc.MaxSendMessageSize` | `PINPOINT_CPP_GRPC_MAX_SEND_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_SEND_MESSAGE_LENGTH`. `-1` means unlimited. |
 | `Collector.Grpc.MaxReceiveMessageSize` | `PINPOINT_CPP_GRPC_MAX_RECEIVE_MESSAGE_SIZE` | int | `4194304` | Maps to `GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH`. `-1` means unlimited. |
 | `Collector.Grpc.SenderQueueSize` | `PINPOINT_CPP_GRPC_SENDER_QUEUE_SIZE` | int | `1000` | Valid range: `1`-`65536`. Applied to metadata queue. Span still uses `Span.QueueSize`; agent/stat have no separate C++ sender queue. |
-| `Collector.Grpc.ChannelExecutorQueueSize` | `PINPOINT_CPP_GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE` | int | `1000` | Valid range: `1`-`65536`. Parsed for Java config parity. The C++ gRPC API used here does not expose the same Netty executor queue. |
 
 The same `Grpc` channel options are applied to the agent, metadata, span, and stat gRPC channels. Java-specific name resolver providers, custom interceptor injection, Netty channel type, channelz reporter wiring, retry/hedging service config, flow-control window, and write-buffer watermarks do not have a direct equivalent in the current C++ agent implementation.
 
@@ -641,7 +640,6 @@ Collector:
     MaxSendMessageSize: 4194304
     MaxReceiveMessageSize: 4194304
     SenderQueueSize: 1000
-    ChannelExecutorQueueSize: 1000
   AgentInfo:
     RefreshIntervalMs: 86400000
     SendRetryIntervalMs: 3000

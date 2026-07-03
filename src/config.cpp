@@ -278,8 +278,6 @@ namespace pinpoint {
         options.max_send_message_size = get_int(grpc, "MaxSendMessageSize", options.max_send_message_size);
         options.max_receive_message_size = get_int(grpc, "MaxReceiveMessageSize", options.max_receive_message_size);
         options.sender_queue_size = get_int(grpc, "SenderQueueSize", options.sender_queue_size);
-        options.channel_executor_queue_size =
-            get_int(grpc, "ChannelExecutorQueueSize", options.channel_executor_queue_size);
     }
 
     static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
@@ -459,8 +457,7 @@ namespace pinpoint {
                                       const char* keepalive_permit_env,
                                       const char* max_send_env,
                                       const char* max_receive_env,
-                                      const char* sender_queue_env,
-                                      const char* channel_executor_queue_env) {
+                                      const char* sender_queue_env) {
         if(auto e = get_env(keepalive_time_env)) {
             options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
         }
@@ -479,10 +476,6 @@ namespace pinpoint {
         }
         if(auto e = get_env(sender_queue_env)) {
             options.sender_queue_size = safe_env_stoi(e.name.c_str(), e.value, options.sender_queue_size);
-        }
-        if(auto e = get_env(channel_executor_queue_env)) {
-            options.channel_executor_queue_size =
-                safe_env_stoi(e.name.c_str(), e.value, options.channel_executor_queue_size);
         }
     }
 
@@ -621,8 +614,7 @@ namespace pinpoint {
                               env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
                               env::GRPC_MAX_SEND_MESSAGE_SIZE,
                               env::GRPC_MAX_RECEIVE_MESSAGE_SIZE,
-                              env::GRPC_SENDER_QUEUE_SIZE,
-                              env::GRPC_CHANNEL_EXECUTOR_QUEUE_SIZE);
+                              env::GRPC_SENDER_QUEUE_SIZE);
 
         if(auto e = get_env(env::IS_CONTAINER)) {
             config.is_container = safe_env_stob(e.name.c_str(), e.value, false);
@@ -774,13 +766,6 @@ namespace pinpoint {
             LOG_WARN("{} grpc sender queue size {} is out of range ({}-{}), using default: {}",
                      name, options.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE, defaults.sender_queue_size);
             options.sender_queue_size = defaults.sender_queue_size;
-        }
-        if (options.channel_executor_queue_size < MIN_GRPC_QUEUE_SIZE ||
-            options.channel_executor_queue_size > MAX_GRPC_QUEUE_SIZE) {
-            LOG_WARN("{} grpc channel executor queue size {} is out of range ({}-{}), using default: {}",
-                     name, options.channel_executor_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE,
-                     defaults.channel_executor_queue_size);
-            options.channel_executor_queue_size = defaults.channel_executor_queue_size;
         }
     }
 
@@ -1062,9 +1047,6 @@ namespace pinpoint {
                                default_config.collector.grpc.channel.max_receive_message_size);
         add_non_default_config(config_strings, "Collector.Grpc.SenderQueueSize", config.collector.grpc.channel.sender_queue_size,
                                default_config.collector.grpc.channel.sender_queue_size);
-        add_non_default_config(config_strings, "Collector.Grpc.ChannelExecutorQueueSize",
-                               config.collector.grpc.channel.channel_executor_queue_size,
-                               default_config.collector.grpc.channel.channel_executor_queue_size);
         add_non_default_config(config_strings, "Stat.Enable", config.stat.enable, default_config.stat.enable);
         add_non_default_config(config_strings, "Stat.BatchCount", config.stat.batch_count, default_config.stat.batch_count);
         add_non_default_config(config_strings, "Stat.BatchInterval", config.stat.collect_interval,
@@ -1176,7 +1158,6 @@ namespace pinpoint {
             emitter << YAML::Key << "MaxSendMessageSize" << YAML::Value << options.max_send_message_size;
             emitter << YAML::Key << "MaxReceiveMessageSize" << YAML::Value << options.max_receive_message_size;
             emitter << YAML::Key << "SenderQueueSize" << YAML::Value << options.sender_queue_size;
-            emitter << YAML::Key << "ChannelExecutorQueueSize" << YAML::Value << options.channel_executor_queue_size;
         };
 
         emitter << YAML::Key << "Grpc";
@@ -1342,15 +1323,13 @@ namespace pinpoint {
                         lhs.keepalive_permit_without_calls,
                         lhs.max_send_message_size,
                         lhs.max_receive_message_size,
-                        lhs.sender_queue_size,
-                        lhs.channel_executor_queue_size) ==
+                        lhs.sender_queue_size) ==
                std::tie(rhs.keepalive_time_ms,
                         rhs.keepalive_timeout_ms,
                         rhs.keepalive_permit_without_calls,
                         rhs.max_send_message_size,
                         rhs.max_receive_message_size,
-                        rhs.sender_queue_size,
-                        rhs.channel_executor_queue_size);
+                        rhs.sender_queue_size);
     }
 
     static bool same_grpc_config(const Config& lhs, const Config& rhs) {
