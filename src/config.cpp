@@ -1361,15 +1361,64 @@ namespace pinpoint {
                same_grpc_channel(lhs.collector.grpc.channel, rhs.collector.grpc.channel);
     }
 
+    // Every setting under `collector` is non-reloadable: the endpoint, gRPC
+    // transport, agent-info refresh and span-batch tuning are all wired into the
+    // running gRPC connection/streams at startup.
+    static bool same_collector_config(const Config& lhs, const Config& rhs) {
+        return std::tie(lhs.collector.host,
+                        lhs.collector.agent_port,
+                        lhs.collector.span_port,
+                        lhs.collector.stat_port,
+                        lhs.collector.agent_info.refresh_interval_ms,
+                        lhs.collector.agent_info.send_retry_interval_ms,
+                        lhs.collector.agent_info.max_try_per_attempt,
+                        lhs.collector.span_batch.size,
+                        lhs.collector.span_batch.flush_interval_ms,
+                        lhs.collector.span_batch.collect_deadline_ms,
+                        lhs.collector.span_batch.max_concurrent_requests) ==
+               std::tie(rhs.collector.host,
+                        rhs.collector.agent_port,
+                        rhs.collector.span_port,
+                        rhs.collector.stat_port,
+                        rhs.collector.agent_info.refresh_interval_ms,
+                        rhs.collector.agent_info.send_retry_interval_ms,
+                        rhs.collector.agent_info.max_try_per_attempt,
+                        rhs.collector.span_batch.size,
+                        rhs.collector.span_batch.flush_interval_ms,
+                        rhs.collector.span_batch.collect_deadline_ms,
+                        rhs.collector.span_batch.max_concurrent_requests) &&
+               same_grpc_config(lhs, rhs);
+    }
+
+    static bool same_stat_config(const Config& lhs, const Config& rhs) {
+        return std::tie(lhs.stat.enable, lhs.stat.batch_count, lhs.stat.collect_interval) ==
+               std::tie(rhs.stat.enable, rhs.stat.batch_count, rhs.stat.collect_interval);
+    }
+
+    static bool same_url_stat_config(const Config& lhs, const Config& rhs) {
+        return std::tie(lhs.http.url_stat.enable,
+                        lhs.http.url_stat.limit,
+                        lhs.http.url_stat.enable_trim_path,
+                        lhs.http.url_stat.trim_path_depth,
+                        lhs.http.url_stat.method_prefix) ==
+               std::tie(rhs.http.url_stat.enable,
+                        rhs.http.url_stat.limit,
+                        rhs.http.url_stat.enable_trim_path,
+                        rhs.http.url_stat.trim_path_depth,
+                        rhs.http.url_stat.method_prefix);
+    }
+
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
         return std::tie(app_name_, agent_id_, agent_name_,
                         uid_version_, service_name_, api_key_, object_name_version_,
-                        collector.host, collector.agent_port, collector.span_port, collector.stat_port) ==
+                        span.queue_size) ==
                std::tie(old->app_name_, old->agent_id_, old->agent_name_,
                         old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
-                        old->collector.host, old->collector.agent_port, old->collector.span_port, old->collector.stat_port) &&
-               same_grpc_config(*this, *old);
+                        old->span.queue_size) &&
+               same_collector_config(*this, *old) &&
+               same_stat_config(*this, *old) &&
+               same_url_stat_config(*this, *old);
     }
 
     void Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {
@@ -1383,8 +1432,9 @@ namespace pinpoint {
         // warn and fall through to overwrite them with the running values.
         if (!isReloadable(old)) {
             LOG_WARN("non-reloadable config fields changed at runtime "
-                     "(identity, collector endpoint or gRPC transport); "
-                     "retaining the existing values and reloading the rest");
+                     "(identity, collector, stat, http url_stat or span queue "
+                     "size); retaining the existing values and reloading the "
+                     "rest");
         }
 
         app_name_ = old->app_name_;
@@ -1398,5 +1448,8 @@ namespace pinpoint {
         // reload whose new identity failed resolution still passes check().
         identity_resolved_ = old->identity_resolved_;
         collector = old->collector;
+        stat = old->stat;
+        http.url_stat = old->http.url_stat;
+        span.queue_size = old->span.queue_size;
     }
 }

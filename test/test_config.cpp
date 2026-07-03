@@ -1897,6 +1897,72 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenGrpcChannelOptionsChangeTest) {
         << "Should not be reloadable when gRPC channel options change";
 }
 
+// Test isReloadable() returns false when stat options change
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenStatOptionsChangeTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.stat.enable = !old_config->stat.enable;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when stat options change";
+}
+
+// Test isReloadable() returns false when http url_stat options change
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenUrlStatOptionsChangeTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.http.url_stat.enable = !old_config->http.url_stat.enable;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when http url_stat options change";
+}
+
+// Test isReloadable() returns false when collector agent_info options change
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorAgentInfoChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.collector.agent_info.refresh_interval_ms += 1000;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when collector agent_info options change";
+}
+
+// Test isReloadable() returns false when collector span_batch options change
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorSpanBatchChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+
+    Config new_config = *old_config;
+    new_config.collector.span_batch.size += 5;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when collector span_batch options change";
+}
+
+// Test isReloadable() returns false when span queue size changes
+TEST_F(ConfigTest, IsReloadableReturnsFalseWhenSpanQueueSizeChangesTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+    old_config->span.queue_size = 1024;
+
+    Config new_config = *old_config;
+    new_config.span.queue_size = 2048;
+
+    EXPECT_FALSE(new_config.isReloadable(old_config))
+        << "Should not be reloadable when span queue size changes";
+}
+
 // Test isReloadable() returns true when old config is null
 TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
     Config new_config;
@@ -1988,6 +2054,69 @@ TEST_F(ConfigTest, RetainNonReloadableFromPreservesReloadableFieldsTest) {
     EXPECT_EQ(new_config.http.server.exclude_url,
               (std::vector<std::string>{"/new1", "/new2"}));
     EXPECT_EQ(new_config.collector.host, "old.host");
+}
+
+// Test retainNonReloadableFrom() reverts stat and http url_stat (non-reloadable)
+// to the running values while leaving http.server (reloadable) changes in place.
+TEST_F(ConfigTest, RetainNonReloadableFromRevertsStatAndUrlStatTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+    old_config->stat.enable = true;
+    old_config->stat.batch_count = 6;
+    old_config->stat.collect_interval = 5000;
+    old_config->http.url_stat.enable = false;
+    old_config->http.url_stat.limit = 1024;
+    old_config->http.url_stat.trim_path_depth = 1;
+
+    Config new_config = *old_config;
+    // Non-reloadable changes that must be reverted to the running values.
+    new_config.stat.enable = false;
+    new_config.stat.batch_count = 42;
+    new_config.stat.collect_interval = 12000;
+    new_config.http.url_stat.enable = true;
+    new_config.http.url_stat.limit = 4096;
+    new_config.http.url_stat.trim_path_depth = 5;
+    // Reloadable http.server change that must survive the retain.
+    new_config.http.server.exclude_url = {"/new"};
+
+    new_config.retainNonReloadableFrom(old_config);
+
+    EXPECT_TRUE(new_config.stat.enable);
+    EXPECT_EQ(new_config.stat.batch_count, 6);
+    EXPECT_EQ(new_config.stat.collect_interval, 5000);
+    EXPECT_FALSE(new_config.http.url_stat.enable);
+    EXPECT_EQ(new_config.http.url_stat.limit, 1024);
+    EXPECT_EQ(new_config.http.url_stat.trim_path_depth, 1);
+    EXPECT_EQ(new_config.http.server.exclude_url,
+              (std::vector<std::string>{"/new"}));
+
+    EXPECT_TRUE(new_config.isReloadable(old_config))
+        << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
+}
+
+// Test retainNonReloadableFrom() reverts span.queue_size (non-reloadable) to the
+// running value while leaving the other span fields (reloadable) in place.
+TEST_F(ConfigTest, RetainNonReloadableFromRevertsSpanQueueSizeTest) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "MyApp";
+    old_config->collector.host = "localhost";
+    old_config->span.queue_size = 1024;
+    old_config->span.max_event_depth = 64;
+
+    Config new_config = *old_config;
+    // Non-reloadable change that must be reverted to the running value.
+    new_config.span.queue_size = 4096;
+    // Reloadable span change that must survive the retain.
+    new_config.span.max_event_depth = 128;
+
+    new_config.retainNonReloadableFrom(old_config);
+
+    EXPECT_EQ(new_config.span.queue_size, 1024u);
+    EXPECT_EQ(new_config.span.max_event_depth, 128);
+
+    EXPECT_TRUE(new_config.isReloadable(old_config))
+        << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
 }
 
 // Test retainNonReloadableFrom(nullptr) is a no-op (initial-build path has no
