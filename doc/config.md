@@ -167,6 +167,10 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | `Collector.AgentPort` | `PINPOINT_CPP_COLLECTOR_AGENT_PORT` | int | `9991` | gRPC port for agent metadata. Valid range: `1`-`65535`. |
 | `Collector.SpanPort` | `PINPOINT_CPP_COLLECTOR_SPAN_PORT` | int | `9993` | gRPC port for span data. Valid range: `1`-`65535`. |
 | `Collector.StatPort` | `PINPOINT_CPP_COLLECTOR_STAT_PORT` | int | `9992` | gRPC port for statistics data. Valid range: `1`-`65535`. |
+| `Collector.SpanBatch.Size` | `PINPOINT_CPP_SPAN_BATCH_SIZE` | int | `20` | Min `1`. Max spans collected per send batch. |
+| `Collector.SpanBatch.FlushIntervalMs` | `PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS` | int | `1000` | Min `1`. Span batch flush interval in milliseconds. |
+| `Collector.SpanBatch.CollectDeadlineMs` | `PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS` | int | `500` | Min `0`. Deadline for collecting a batch before send. |
+| `Collector.SpanBatch.MaxConcurrentRequests` | `PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS` | int | `10` | Min `1`. Max concurrent span-send requests. |
 
 > **Deprecated aliases.** The earlier keys `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort` (env `PINPOINT_CPP_GRPC_HOST`, `PINPOINT_CPP_GRPC_AGENT_PORT`, `PINPOINT_CPP_GRPC_SPAN_PORT`, `PINPOINT_CPP_GRPC_STAT_PORT`) are still honored as a fallback for backward compatibility, but are deprecated. Prefer the `Collector.Host` / `Collector.*Port` keys above; when both are set, the preferred key wins.
 
@@ -245,10 +249,6 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. |
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
-| `Span.Batch.Size` | `PINPOINT_CPP_SPAN_BATCH_SIZE` | int | `20` | Min `1`. Max spans collected per send batch. |
-| `Span.Batch.FlushIntervalMs` | `PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS` | int | `1000` | Min `1`. Span batch flush interval in milliseconds. |
-| `Span.Batch.CollectDeadlineMs` | `PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS` | int | `500` | Min `0`. Deadline for collecting a batch before send. |
-| `Span.Batch.MaxConcurrentRequests` | `PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS` | int | `10` | Min `1`. Max concurrent span-send requests. |
 
 > Negative or invalid values are coerced to safe defaults during `make_config()`.
 
@@ -646,6 +646,11 @@ Collector:
     RefreshIntervalMs: 86400000
     SendRetryIntervalMs: 3000
     MaxTryPerAttempt: 3
+  SpanBatch:
+    Size: 20
+    FlushIntervalMs: 1000
+    CollectDeadlineMs: 500
+    MaxConcurrentRequests: 10
 
 Stat:
   Enable: true
@@ -664,11 +669,6 @@ Span:
   MaxEventDepth: 64
   MaxEventSequence: 5000
   EventChunkSize: 20
-  Batch:
-    Size: 20
-    FlushIntervalMs: 1000
-    CollectDeadlineMs: 500
-    MaxConcurrentRequests: 10
 
 Http:
   CollectUrlStat: false

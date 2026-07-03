@@ -212,6 +212,13 @@ namespace pinpoint {
                 int send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
                 int max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
             } agent_info;
+
+            struct {
+                int size = defaults::SPAN_BATCH_SIZE;
+                int flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
+                int collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
+                int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
+            } span_batch;
         } collector;
 
         struct {
@@ -233,13 +240,6 @@ namespace pinpoint {
             int max_event_depth = defaults::SPAN_MAX_EVENT_DEPTH;
             int max_event_sequence = defaults::SPAN_MAX_EVENT_SEQUENCE;
             size_t event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
-
-            struct {
-                int size = defaults::SPAN_BATCH_SIZE;
-                int flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
-                int collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
-                int max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
-            } batch;
         } span;
 
         struct {

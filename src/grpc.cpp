@@ -1349,7 +1349,7 @@ namespace pinpoint {
     GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
         set_span_stub(v1::Span::NewStub(channel_));
         inflight_ = std::make_shared<SpanBatchInflight>();
-        inflight_->max_permits = config_->span.batch.max_concurrent_requests;
+        inflight_->max_permits = config_->collector.span_batch.max_concurrent_requests;
         inflight_->permits = inflight_->max_permits;
     }
 
@@ -1410,7 +1410,7 @@ namespace pinpoint {
     }
 
     void GrpcSpan::collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer) {
-        const auto& batch_cfg = config_->span.batch;
+        const auto& batch_cfg = config_->collector.span_batch;
         const auto flush_timeout = std::chrono::milliseconds(batch_cfg.flush_interval_ms);
         const auto collect_deadline_ms = std::chrono::milliseconds(batch_cfg.collect_deadline_ms);
         const auto batch_size = static_cast<size_t>(batch_cfg.size);
@@ -1463,7 +1463,7 @@ namespace pinpoint {
         // pipeline is saturated the batch is dropped without paying the
         // (potentially large) protobuf build cost, and backpressure engages
         // one batch sooner.
-        const auto flush_timeout = std::chrono::milliseconds(config_->span.batch.flush_interval_ms);
+        const auto flush_timeout = std::chrono::milliseconds(config_->collector.span_batch.flush_interval_ms);
         if (!try_acquire_permit(flush_timeout)) {
             LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
                      flush_timeout.count());
@@ -1589,7 +1589,7 @@ namespace pinpoint {
             // the channel state directly and send only over a live connection.
             if (channel_->GetState(false) == GRPC_CHANNEL_READY) {
                 LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
-                const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->span.batch.size));
+                const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->collector.span_batch.size));
                 std::vector<std::unique_ptr<SpanChunk>> batch;
                 batch.reserve(std::min(batch_size, remaining.size()));
                 for (auto& chunk : remaining) {
@@ -1609,7 +1609,7 @@ namespace pinpoint {
     void GrpcSpan::sendSpanWorker() try {
         while (!agent_->isExiting()) {
             std::vector<std::unique_ptr<SpanChunk>> batch;
-            batch.reserve(config_->span.batch.size);
+            batch.reserve(config_->collector.span_batch.size);
 
             collect_batch(batch);
             if (batch.empty()) {

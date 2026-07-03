@@ -1725,10 +1725,10 @@ TEST_F(GrpcMockTest, GrpcCommandStopWorkerWakesReconnectDelay) {
 
 TEST_F(GrpcMockTest, GrpcSpanSendBatchSuccessTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 2;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 2;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1757,10 +1757,10 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSuccessTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanSendBatchSpanVsSpanChunkTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 2;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 2;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1788,10 +1788,10 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSpanVsSpanChunkTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1822,10 +1822,10 @@ TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1906,10 +1906,10 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1945,10 +1945,10 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 2;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 100;
-    cfg->span.batch.max_concurrent_requests = 4;
+    cfg->collector.span_batch.size = 2;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 4;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -1976,10 +1976,10 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
 TEST_F(GrpcMockTest, GrpcSpanQueueOverflowHeadDropTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->span.queue_size = 2;
-    cfg->span.batch.size = 10;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 50;
-    cfg->span.batch.max_concurrent_requests = 2;
+    cfg->collector.span_batch.size = 10;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 50;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -2012,10 +2012,10 @@ TEST_F(GrpcMockTest, GrpcSpanQueueOverflowHeadDropTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 10;
-    cfg->span.batch.max_concurrent_requests = 1;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -2055,10 +2055,10 @@ TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 10;
-    cfg->span.batch.max_concurrent_requests = 1;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();
@@ -2085,10 +2085,10 @@ TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
 
 TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
-    cfg->span.batch.size = 1;
-    cfg->span.batch.flush_interval_ms = 50;
-    cfg->span.batch.collect_deadline_ms = 10;
-    cfg->span.batch.max_concurrent_requests = 1;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
 
     TestableGrpcSpan span_client(mock_agent_service_.get());
     auto fake_stub = std::make_unique<FakeSpanStub>();

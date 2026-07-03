@@ -389,13 +389,6 @@ namespace pinpoint {
             config.span.max_event_depth = get_int(span, "MaxEventDepth", defaults::SPAN_MAX_EVENT_DEPTH);
             config.span.max_event_sequence = get_int(span, "MaxEventSequence", defaults::SPAN_MAX_EVENT_SEQUENCE);
             config.span.event_chunk_size = get_int(span, "EventChunkSize", defaults::SPAN_EVENT_CHUNK_SIZE);
-
-            if (auto& batch = span["Batch"]) {
-                config.span.batch.size = get_int(batch, "Size", defaults::SPAN_BATCH_SIZE);
-                config.span.batch.flush_interval_ms = get_int(batch, "FlushIntervalMs", defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
-                config.span.batch.collect_deadline_ms = get_int(batch, "CollectDeadlineMs", defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
-                config.span.batch.max_concurrent_requests = get_int(batch, "MaxConcurrentRequests", defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
-            }
         }
 
         if (auto& collector = yaml["Collector"]) {
@@ -403,6 +396,12 @@ namespace pinpoint {
                 config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
                 config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
                 config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            }
+            if (auto& span_batch = collector["SpanBatch"]) {
+                config.collector.span_batch.size = get_int(span_batch, "Size", defaults::SPAN_BATCH_SIZE);
+                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
             }
         }
 
@@ -586,16 +585,16 @@ namespace pinpoint {
             config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_EVENT_CHUNK_SIZE);
         }
         if(auto e = get_env(env::SPAN_BATCH_SIZE)) {
-            config.span.batch.size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_SIZE);
+            config.collector.span_batch.size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_SIZE);
         }
         if(auto e = get_env(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
-            config.span.batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+            config.collector.span_batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
         }
         if(auto e = get_env(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
-            config.span.batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+            config.collector.span_batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
         }
         if(auto e = get_env(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
-            config.span.batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+            config.collector.span_batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
         }
         if(auto e = get_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
             config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
@@ -945,25 +944,25 @@ namespace pinpoint {
             config->span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         }
 
-        if (config->span.batch.size < 1) {
+        if (config->collector.span_batch.size < 1) {
             LOG_WARN("span batch size {} is invalid, using default: {}",
-                     config->span.batch.size, defaults::SPAN_BATCH_SIZE);
-            config->span.batch.size = defaults::SPAN_BATCH_SIZE;
+                     config->collector.span_batch.size, defaults::SPAN_BATCH_SIZE);
+            config->collector.span_batch.size = defaults::SPAN_BATCH_SIZE;
         }
-        if (config->span.batch.flush_interval_ms < 1) {
+        if (config->collector.span_batch.flush_interval_ms < 1) {
             LOG_WARN("span batch flush interval {}ms is invalid, using default: {}ms",
-                     config->span.batch.flush_interval_ms, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
-            config->span.batch.flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
+                     config->collector.span_batch.flush_interval_ms, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+            config->collector.span_batch.flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
         }
-        if (config->span.batch.collect_deadline_ms < 0) {
+        if (config->collector.span_batch.collect_deadline_ms < 0) {
             LOG_WARN("span batch collect deadline {}ms is invalid, using default: {}ms",
-                     config->span.batch.collect_deadline_ms, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
-            config->span.batch.collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
+                     config->collector.span_batch.collect_deadline_ms, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+            config->collector.span_batch.collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
         }
-        if (config->span.batch.max_concurrent_requests < 1) {
+        if (config->collector.span_batch.max_concurrent_requests < 1) {
             LOG_WARN("span batch max concurrent requests {} is invalid, using default: {}",
-                     config->span.batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
-            config->span.batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
+                     config->collector.span_batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+            config->collector.span_batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
         }
         if (config->collector.agent_info.refresh_interval_ms < 1) {
             LOG_WARN("agent info refresh interval {}ms is invalid, using default: {}ms",
@@ -1086,15 +1085,15 @@ namespace pinpoint {
                                default_config.span.max_event_sequence);
         add_non_default_config(config_strings, "Span.EventChunkSize", config.span.event_chunk_size,
                                default_config.span.event_chunk_size);
-        add_non_default_config(config_strings, "Span.Batch.Size", config.span.batch.size,
-                               default_config.span.batch.size);
-        add_non_default_config(config_strings, "Span.Batch.FlushIntervalMs", config.span.batch.flush_interval_ms,
-                               default_config.span.batch.flush_interval_ms);
-        add_non_default_config(config_strings, "Span.Batch.CollectDeadlineMs", config.span.batch.collect_deadline_ms,
-                               default_config.span.batch.collect_deadline_ms);
-        add_non_default_config(config_strings, "Span.Batch.MaxConcurrentRequests",
-                               config.span.batch.max_concurrent_requests,
-                               default_config.span.batch.max_concurrent_requests);
+        add_non_default_config(config_strings, "Collector.SpanBatch.Size", config.collector.span_batch.size,
+                               default_config.collector.span_batch.size);
+        add_non_default_config(config_strings, "Collector.SpanBatch.FlushIntervalMs", config.collector.span_batch.flush_interval_ms,
+                               default_config.collector.span_batch.flush_interval_ms);
+        add_non_default_config(config_strings, "Collector.SpanBatch.CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms,
+                               default_config.collector.span_batch.collect_deadline_ms);
+        add_non_default_config(config_strings, "Collector.SpanBatch.MaxConcurrentRequests",
+                               config.collector.span_batch.max_concurrent_requests,
+                               default_config.collector.span_batch.max_concurrent_requests);
         add_non_default_config(config_strings, "Collector.AgentInfo.RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms,
                                default_config.collector.agent_info.refresh_interval_ms);
         add_non_default_config(config_strings, "Collector.AgentInfo.SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms,
@@ -1196,6 +1195,13 @@ namespace pinpoint {
         emitter << YAML::Key << "SendRetryIntervalMs" << YAML::Value << config.collector.agent_info.send_retry_interval_ms;
         emitter << YAML::Key << "MaxTryPerAttempt" << YAML::Value << config.collector.agent_info.max_try_per_attempt;
         emitter << YAML::EndMap;
+        emitter << YAML::Key << "SpanBatch";
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "Size" << YAML::Value << config.collector.span_batch.size;
+        emitter << YAML::Key << "FlushIntervalMs" << YAML::Value << config.collector.span_batch.flush_interval_ms;
+        emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.collector.span_batch.collect_deadline_ms;
+        emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.collector.span_batch.max_concurrent_requests;
+        emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Stat";
@@ -1220,13 +1226,6 @@ namespace pinpoint {
         emitter << YAML::Key << "MaxEventDepth" << YAML::Value << config.span.max_event_depth;
         emitter << YAML::Key << "MaxEventSequence" << YAML::Value << config.span.max_event_sequence;
         emitter << YAML::Key << "EventChunkSize" << YAML::Value << config.span.event_chunk_size;
-        emitter << YAML::Key << "Batch";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Size" << YAML::Value << config.span.batch.size;
-        emitter << YAML::Key << "FlushIntervalMs" << YAML::Value << config.span.batch.flush_interval_ms;
-        emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.span.batch.collect_deadline_ms;
-        emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.span.batch.max_concurrent_requests;
-        emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Http";
