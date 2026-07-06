@@ -74,6 +74,11 @@ public:
 
     bool readyChannel() override { return false; }
     pinpoint::GrpcRequestStatus registerAgent() override { return pinpoint::SEND_OK; }
+
+protected:
+    // Keep the injected mock stub; openChannel() (from Start()) would otherwise
+    // replace it with a real one.
+    void create_stub() override {}
 };
 
 class TestableGrpcMetadata : public pinpoint::GrpcMetadata {
@@ -98,6 +103,9 @@ public:
     }
 
     bool readyChannel() override { return false; }
+
+protected:
+    void create_stub() override {}
 };
 
 class TestableGrpcSpan : public pinpoint::GrpcSpan {
@@ -110,6 +118,9 @@ public:
     }
 
     bool readyChannel() override { return false; }
+
+protected:
+    void create_stub() override {}
 };
 
 class TestableGrpcStats : public pinpoint::GrpcStats {
@@ -122,6 +133,9 @@ public:
     }
 
     bool readyChannel() override { return false; }
+
+protected:
+    void create_stub() override {}
 };
 
 static std::shared_ptr<pinpoint::Config> make_test_config() {
@@ -172,12 +186,15 @@ static std::shared_ptr<pinpoint::AgentImpl> make_test_agent(
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
 
-    return std::make_shared<pinpoint::AgentImpl>(
+    auto agent = std::make_shared<pinpoint::AgentImpl>(
         cfg,
         std::move(grpc_agent),
         std::move(grpc_metadata),
         std::move(grpc_span),
         std::move(grpc_stat));
+    // CreateAgent() is cold; Start() spawns the workers (mirrors production).
+    agent->Start();
+    return agent;
 }
 
 // ============================================================================

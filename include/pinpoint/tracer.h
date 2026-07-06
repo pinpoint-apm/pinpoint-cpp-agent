@@ -406,6 +406,27 @@ namespace pinpoint {
       	 * @param reader Trace context carrier reader.
       	 */
       	virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
+      	/**
+      	 * @brief Brings the agent online in the CURRENT process.
+      	 *
+      	 * CreateAgent() is "cold": it only parses configuration and allocates the
+      	 * object — it starts no threads, opens no gRPC channel (no `grpc_init`) and
+      	 * installs no config-file watcher. Start() performs that work: it enables
+      	 * gRPC fork support, opens the gRPC channels, spawns the worker threads,
+      	 * starts the config-file watcher and (re)generates a process-unique
+      	 * agent id. It must be called before the agent will record any spans.
+      	 *
+      	 * Idempotent and non-blocking: calling Start() more than once in the same
+      	 * process is a no-op, and the collector connection is established
+      	 * asynchronously.
+      	 *
+      	 * This split enables the "initialize per worker after fork" model used by
+      	 * gunicorn/uWSGI/`multiprocessing(fork)`: the master calls CreateAgent()
+      	 * (holding no threads and no open gRPC runtime at the fork point) and each
+      	 * forked child calls Start() from its post-fork hook, obtaining a fully
+      	 * working agent with a distinct agent id.
+      	 */
+      	virtual void Start() = 0;
       	/// @brief Returns whether the agent is enabled and sampling.
       	virtual bool Enable() = 0;
       	/// @brief Initiates a graceful shutdown of the agent.
@@ -430,7 +451,11 @@ namespace pinpoint {
 	/// @brief Default server metadata description used by CreateAgent().
 	constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
 
-	/// @brief Creates an agent and sends server metadata with AgentInfo.
+	/// @brief Creates a "cold" agent: parses configuration and allocates the
+	///        object only. It starts no threads, opens no gRPC channel and
+	///        installs no config-file watcher — call Agent::Start() to bring it
+	///        online in the process that will use it. This makes the returned
+	///        agent safe to create in a master process that will later fork().
 	///        All arguments are optional: app_type defaults to DEFAULT_APP_TYPE
 	///        and server_info to DEFAULT_SERVER_INFO.
 	///        @p args is the process command line arguments and @p libs the

@@ -668,7 +668,7 @@ std::map<std::string, std::string> metadata_map(const Config& config,
                                                 unsigned long socket_id,
                                                 int32_t app_type = APP_TYPE_CPP) {
     std::map<std::string, std::string> m;
-    for (const auto& [k, v] : build_grpc_metadata(config, start_time, app_type, socket_id)) {
+    for (const auto& [k, v] : build_grpc_metadata(config, config.agent_id_, start_time, app_type, socket_id)) {
         m[k] = v;
     }
     return m;

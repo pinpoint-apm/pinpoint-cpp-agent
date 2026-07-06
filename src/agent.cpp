@@ -21,10 +21,13 @@
 #include <mutex>
 #include <optional>
 #include <vector>
+#include <cstdlib>
+#include <unistd.h>
 
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
+#include "object_name.h"
 #include "utility.h"
 
 namespace pinpoint {
@@ -86,25 +89,98 @@ namespace pinpoint {
         // and published together in one atomic store.
         apply_config(nullptr, std::move(cfg));
 
-        // Start the config-file watcher BEFORE spawning init_thread_. Both can
-        // throw (std::filesystem errors, thread-creation failure under resource
-        // pressure). If the watcher threw while init_thread_ were already
-        // joinable, the constructor's unwind would run ~std::thread on a
-        // joinable thread and call std::terminate(), crashing the host. Doing
-        // the watcher first means no joinable std::thread member exists yet, so
-        // a throw unwinds normally and surfaces to make_agent() as a failed
-        // (noop) agent.
+        // Remember the process that constructed the agent. CreateAgent() is
+        // deliberately "cold": it starts no threads, opens no gRPC channel and
+        // installs no config-file watcher here — Start() does all of that. This
+        // makes the agent safe to construct in a master process that will
+        // fork(): there is nothing live to break at the fork point. Start()
+        // later compares getpid() against create_pid_ to tell whether it is
+        // running in a forked child (and must mint a unique agent id).
+        create_pid_ = getpid();
+    }
+
+    namespace {
+        // Enable gRPC's pthread_atfork handlers before the first channel is
+        // created (i.e. before grpc_init). Equivalent to GRPC_ENABLE_FORK_SUPPORT=1,
+        // which grpcio sets the same way. The agent owns gRPC initialization, so
+        // this is the correct layer — bindings should not have to set a global
+        // env var. overwrite=0 leaves an explicit embedder-provided value intact.
+        void enable_grpc_fork_support() noexcept {
+            ::setenv("GRPC_ENABLE_FORK_SUPPORT", "1", 0);
+        }
+    }
+
+    void AgentImpl::Start() noexcept try {
+        // Idempotent: only the first Start() in the object's life brings it
+        // online. The recommended fork model is a COLD CreateAgent() in the
+        // master (started_ == false) followed by Start() in each child, so a
+        // child always takes the full path below. The discouraged "Start() in
+        // the master, then fork" case leaves an inherited started_ == true in
+        // the child; Start() there is a no-op (its inherited worker handles are
+        // dead and re-spawning over them would terminate), and teardown stays
+        // crash-free via the pid guard in do_shutdown().
+        if (started_.exchange(true)) {
+            return;
+        }
+
+        // Give forked workers a distinct identity before any channel/metadata
+        // is built (the gRPC headers read the id via getAgentId()).
+        refresh_agent_id_for_process();
+        owner_pid_ = getpid();
+
+        // Must precede the first channel build (in init_grpc_workers).
+        enable_grpc_fork_support();
+
+        // Start the config-file watcher BEFORE spawning init_thread_ so that, if
+        // thread creation throws, no joinable std::thread member exists yet and
+        // the stack unwinds without hitting a joinable-thread destructor.
         start_config_file_watcher();
 
         try {
             init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
         } catch (...) {
-            // The watcher is already running; stop it so a failed construction
-            // does not leak the watcher thread. (init_thread_ never became
-            // joinable here, so it needs no cleanup.)
             stop_config_file_watcher();
             throw;
         }
+    } catch (const std::exception& e) {
+        try { LOG_ERROR("agent start failed: exception = {}", e.what()); } catch (...) {}
+        enabled_ = false;
+    } catch (...) {
+        try { LOG_ERROR("agent start failed: unknown exception"); } catch (...) {}
+        enabled_ = false;
+    }
+
+    void AgentImpl::refresh_agent_id_for_process() {
+        // In the process that constructed the agent, keep the configured id
+        // exactly as resolved — non-fork behavior is unchanged.
+        if (create_pid_ == getpid()) {
+            return;
+        }
+
+        const auto cfg = getConfig();
+        const std::string old_id = agent_id_;
+        std::string new_id;
+        if (cfg && cfg->agent_id_pinned_) {
+            // Explicit id pinned by the user: keep it recognizable but append a
+            // pid so sibling workers differ. Cap at the max id length.
+            const std::string suffix = "-" + std::to_string(static_cast<long>(getpid()));
+            const size_t max_len = object_name::AGENT_ID_MAX_LEN;
+            std::string base = old_id;
+            if (base.size() + suffix.size() > max_len && suffix.size() < max_len) {
+                base.resize(max_len - suffix.size());
+            }
+            new_id = base + suffix;
+        } else {
+            // Auto-generated id: mint a fresh one per worker.
+            new_id = base64_encode_uuid(generate_uuid_v7());
+        }
+
+        // Only the agent id is made process-unique. agent_id is the unique
+        // instance key on the collector; agent_name is a display alias (and is
+        // still served from the captured config in the gRPC headers), so it is
+        // deliberately left untouched to keep the two consistent.
+        agent_id_ = new_id;
+        LOG_INFO("fork-safe start: agent id '{}' -> '{}'", old_id, new_id);
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
@@ -292,6 +368,17 @@ namespace pinpoint {
             grpc_command_->setAgentService(this);
         }
 
+        // Open the channels here (not at construction): this is where grpc_init
+        // and gRPC's background threads come up, kept out of the cold
+        // CreateAgent() path so a master can fork before Start().
+        grpc_agent_->openChannel();
+        grpc_metadata_->openChannel();
+        grpc_span_->openChannel();
+        grpc_stat_->openChannel();
+        if (grpc_command_) {
+            grpc_command_->openChannel();
+        }
+
         grpc_agent_->startAgentInfo();
 
         ping_thread_ = std::thread{&GrpcAgent::sendPingWorker, grpc_agent_.get()};
@@ -346,6 +433,37 @@ namespace pinpoint {
         }
 
         LOG_INFO("close grpc workers done");
+    }
+
+    void AgentImpl::detach_grpc_workers() noexcept {
+        // Abandon (never join) every worker handle. For a live thread detach()
+        // succeeds and clears the handle. For a handle inherited across fork(),
+        // the underlying thread does not exist in this child, so pthread_detach
+        // returns ESRCH and std::thread::detach() THROWS — leaving the handle
+        // still joinable. Letting such a handle reach ~std::thread would call
+        // std::terminate(). So on detach failure, move the dead handle into a
+        // heap std::thread we intentionally never destroy: the move leaves the
+        // member non-joinable (its destructor becomes a no-op) and nothing ever
+        // joins/destroys the leaked handle.
+        auto safe_detach = [](std::thread& t) noexcept {
+            if (!t.joinable()) {
+                return;
+            }
+            try {
+                t.detach();
+            } catch (...) {
+                try { new std::thread(std::move(t)); } catch (...) {}
+            }
+        };
+        safe_detach(init_thread_);
+        safe_detach(ping_thread_);
+        safe_detach(meta_thread_);
+        safe_detach(span_thread_);
+        safe_detach(stat_thread_);
+        safe_detach(command_thread_);
+        safe_detach(url_stat_add_thread_);
+        safe_detach(url_stat_send_thread_);
+        safe_detach(agent_stat_thread_);
     }
 
     void AgentImpl::wait_grpc_workers() {
@@ -423,18 +541,7 @@ namespace pinpoint {
         // destructor runs. Detach any stragglers so member destruction stays
         // benign. Detach (not join) is used because by this point the
         // process is likely on its way down and we don't want to block.
-        auto safe_detach = [](std::thread& t) noexcept {
-            try { if (t.joinable()) t.detach(); } catch (...) {}
-        };
-        safe_detach(init_thread_);
-        safe_detach(ping_thread_);
-        safe_detach(meta_thread_);
-        safe_detach(span_thread_);
-        safe_detach(stat_thread_);
-        safe_detach(command_thread_);
-        safe_detach(url_stat_add_thread_);
-        safe_detach(url_stat_send_thread_);
-        safe_detach(agent_stat_thread_);
+        detach_grpc_workers();
     }
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
@@ -526,6 +633,29 @@ namespace pinpoint {
         }
 
         enabled_ = false;
+
+        // PID-guarded teardown. When an agent that was started in a parent is
+        // torn down in a forked child (owner_pid_ != getpid()), its worker and
+        // watcher threads and its gRPC runtime do not exist in this process.
+        // Joining those dead handles would abort; touching the inherited gRPC
+        // stack is unsafe. Detach the handles and skip the normal teardown.
+        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+            try { LOG_INFO("agent shutdown in forked child: detaching inherited workers"); } catch (...) {}
+            detach_grpc_workers();
+            // The gRPC clients own their own internal threads (e.g. GrpcAgent's
+            // AgentInfo scheduler, the command dispatcher) that were started in
+            // the parent; their destructors would join those now-dead handles
+            // and abort. Intentionally leak the client objects in this forked
+            // child — the threads do not exist here, and the child either builds
+            // its own agent via Start() or is short-lived.
+            (void)grpc_agent_.release();
+            (void)grpc_metadata_.release();
+            (void)grpc_span_.release();
+            (void)grpc_stat_.release();
+            (void)grpc_command_.release();
+            return;
+        }
+
         try { LOG_INFO("agent shutdown"); } catch (...) {}
         try { stop_config_file_watcher(); } catch (...) {}
         try { close_grpc_workers(); } catch (...) {}

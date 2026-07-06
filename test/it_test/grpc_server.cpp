@@ -102,6 +102,8 @@ int main(int argc, char** argv) {
   setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "false", 0);
 
   auto agent = pinpoint::CreateAgent();
+  // CreateAgent() is cold; Start() brings the agent online in this process.
+  agent->Start();
 
   grpc_demo::HelloServiceImpl service;
 

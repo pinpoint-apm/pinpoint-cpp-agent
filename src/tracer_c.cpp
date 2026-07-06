@@ -437,6 +437,14 @@ int pt_agent_is_enabled(pt_agent_t agent) {
     });
 }
 
+void pt_agent_start(pt_agent_t agent) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(agent, [](pt_agent_t valid) {
+            valid->ptr->Start();
+        });
+    });
+}
+
 void pt_agent_shutdown(pt_agent_t agent) {
     pt_api_call(__func__, [&] {
         pt_handle_call(agent, [](pt_agent_t valid) {

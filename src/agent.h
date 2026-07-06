@@ -20,6 +20,7 @@
 #include <thread>
 #include <memory>
 #include <mutex>
+#include <unistd.h>
 
 #include "pinpoint/tracer.h"
 #include "atomic_shared_ptr.h"
@@ -101,6 +102,11 @@ namespace pinpoint {
     	 */
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
 		/// @brief Returns whether the agent is enabled for tracing.
+		/// @brief Brings the agent online in the current process: enables gRPC
+		/// fork support, opens channels, spawns workers, starts the config
+		/// watcher and regenerates a process-unique agent id for forked workers.
+		/// Idempotent (per process) and non-blocking. See Agent::Start().
+		void Start() noexcept override;
 		bool Enable() override;
 		/// @brief Initiates a graceful shutdown of the agent.
 		void Shutdown() noexcept override;
@@ -200,6 +206,15 @@ namespace pinpoint {
     	std::atomic<uint64_t> trace_id_sequence_{};
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
+    	// Fork-safe lifecycle. Start() flips started_ and records owner_pid_ (the
+    	// pid that actually brought the agent online); teardown detaches instead
+    	// of joins when it runs in a different process (a forked child inheriting
+    	// dead thread handles). create_pid_ is the pid that constructed the agent
+    	// (CreateAgent time); Start() compares against it to detect that it is
+    	// running in a forked child and must give this worker a unique agent id.
+    	std::atomic<bool> started_{false};
+    	pid_t create_pid_{};
+    	pid_t owner_pid_{};
 
     	/// @brief Builds a new AgentRuntime for cfg, rebuilding only the
     	/// components whose backing configuration changed relative to old_rt;
@@ -214,8 +229,19 @@ namespace pinpoint {
     	                  std::shared_ptr<const Config> cfg);
     	/// @brief Populates rt's HTTP header recorders for server and client.
     	static void build_header_recorders(AgentRuntime& rt, const Config& cfg);
-    	/// @brief Starts background threads responsible for gRPC communication.
+    	/// @brief Opens the gRPC channels and starts background threads
+    	/// responsible for gRPC communication. Runs on init_thread_.
     	void init_grpc_workers();
+    	/// @brief Regenerates a process-unique agent id when Start() runs in a
+    	/// forked child (create_pid_ != current pid). A pinned id gets a pid
+    	/// suffix; an auto-generated id is replaced with a fresh one. A no-op in
+    	/// the process that constructed the agent, so non-fork behavior is
+    	/// unchanged.
+    	void refresh_agent_id_for_process();
+    	/// @brief Detaches (never joins) every worker thread handle. Used when
+    	/// tearing down an agent inherited across fork(), where the handles are
+    	/// joinable but reference threads that do not exist in this process.
+    	void detach_grpc_workers() noexcept;
     	/// @brief Signals all gRPC workers to stop and joins their threads.
     	void close_grpc_workers();
     	/// @brief Waits for all gRPC workers to finish execution.

@@ -186,7 +186,18 @@ namespace pinpoint {
     GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
         : config_{std::move(config)}, client_type_(client_type) {
         client_name_ = grpc_client_name(client_type_);
+        // The channel and stub are NOT built here: doing so would trigger
+        // grpc_init (and gRPC's background threads) at CreateAgent() time.
+        // openChannel(), called from Agent::Start(), performs that work.
+    }
+
+    void GrpcClient::openChannel() {
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+        if (channel_) {
+            return;
+        }
         channel_ = build_channel(*config_, client_type_);
+        create_stub();
     }
 
     void GrpcClient::setAgentService(AgentService* agent) {
@@ -206,10 +217,11 @@ namespace pinpoint {
     const std::string METADATA_API_KEY = "apikey";
 
     std::vector<std::pair<std::string, std::string>>
-    build_grpc_metadata(const Config& config, int64_t start_time, int32_t app_type, unsigned long socket_id) {
+    build_grpc_metadata(const Config& config, std::string_view agent_id,
+                        int64_t start_time, int32_t app_type, unsigned long socket_id) {
         std::vector<std::pair<std::string, std::string>> headers;
         headers.emplace_back(METADATA_APPLICATION_NAME, config.app_name_);
-        headers.emplace_back(METADATA_AGENT_ID, config.agent_id_);
+        headers.emplace_back(METADATA_AGENT_ID, std::string(agent_id));
         headers.emplace_back(METADATA_START_TIME, std::to_string(start_time));
         headers.emplace_back(METADATA_SERVICE_TYPE, std::to_string(app_type));
         headers.emplace_back(METADATA_PROTOCOL_VERSION, std::to_string(config.protocol_version()));
@@ -231,7 +243,8 @@ namespace pinpoint {
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
-        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getStartTime(), agent_->getAppType(), socket_id)) {
+        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getAgentId(),
+                                                            agent_->getStartTime(), agent_->getAppType(), socket_id)) {
             context->AddMetadata(key, value);
         }
     }
@@ -299,7 +312,9 @@ namespace pinpoint {
 
     //GrpcMetadata
 
-    GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config) : GrpcClient(METADATA, std::move(config)) {
+    GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config) : GrpcClient(METADATA, std::move(config)) {}
+
+    void GrpcMetadata::create_stub() {
         set_meta_stub(v1::Metadata::NewStub(channel_));
     }
 
@@ -713,8 +728,11 @@ namespace pinpoint {
     };
 
     GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
-        set_command_stub(v1::ProfilerCommandService::NewStub(channel_));
         register_default_handlers();
+    }
+
+    void GrpcCommand::create_stub() {
+        set_command_stub(v1::ProfilerCommandService::NewStub(channel_));
     }
 
     GrpcCommand::~GrpcCommand() {
@@ -951,7 +969,9 @@ namespace pinpoint {
 
     //GrpcAgent
 
-    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
+    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {}
+
+    void GrpcAgent::create_stub() {
         set_agent_stub(v1::Agent::NewStub(channel_));
     }
 
@@ -1347,10 +1367,13 @@ namespace pinpoint {
     };
 
     GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
-        set_span_stub(v1::Span::NewStub(channel_));
         inflight_ = std::make_shared<SpanBatchInflight>();
         inflight_->max_permits = config_->collector.span_batch.max_concurrent_requests;
         inflight_->permits = inflight_->max_permits;
+    }
+
+    void GrpcSpan::create_stub() {
+        set_span_stub(v1::Span::NewStub(channel_));
     }
 
     bool GrpcSpan::try_acquire_permit(std::chrono::milliseconds timeout) {
@@ -1587,7 +1610,10 @@ namespace pinpoint {
         if (!remaining.empty()) {
             // readyChannel() refuses to wait once the agent is exiting, so probe
             // the channel state directly and send only over a live connection.
-            if (channel_->GetState(false) == GRPC_CHANNEL_READY) {
+            // channel_ is null if the agent was never brought online via Start()
+            // (openChannel() opens it), in which case there is nothing to flush to.
+            const auto channel = channel_;
+            if (channel && channel->GetState(false) == GRPC_CHANNEL_READY) {
                 LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
                 const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->collector.span_batch.size));
                 std::vector<std::unique_ptr<SpanChunk>> batch;
@@ -1635,7 +1661,9 @@ namespace pinpoint {
 
     //GrpcStat
 
-    GrpcStats::GrpcStats(std::shared_ptr<const Config> config) : GrpcClient(STATS, std::move(config)) {
+    GrpcStats::GrpcStats(std::shared_ptr<const Config> config) : GrpcClient(STATS, std::move(config)) {}
+
+    void GrpcStats::create_stub() {
         set_stats_stub(v1::Stat::NewStub(channel_));
     }
 

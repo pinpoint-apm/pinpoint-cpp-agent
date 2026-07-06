@@ -30,6 +30,7 @@
 #include <sstream>
 #include <algorithm>
 #include <tuple>
+#include <unistd.h>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
@@ -123,6 +124,15 @@ namespace pinpoint {
         return mutex;
     }
 
+    // pid that started the watcher thread. After a fork() the child inherits a
+    // joinable-but-dead watcher handle whose pid no longer matches; joining it
+    // would fail and terminate the process, so start/stop below detach such an
+    // inherited handle instead of joining it.
+    static pid_t& config_watcher_owner_pid() {
+        static pid_t pid = 0;
+        return pid;
+    }
+
     static void read_config_from_file(const char* config_file_path) {
         if (std::ifstream file(config_file_path); file.is_open()) {
             std::stringstream buffer;
@@ -146,9 +156,17 @@ namespace pinpoint {
 
         auto& watcher = config_watcher_thread();
         if (watcher.joinable()) {
-            return;
+            // A joinable handle from THIS process means the watcher is already
+            // running. A joinable handle inherited across fork() references a
+            // thread that does not exist in this child — detach it (never join)
+            // and fall through to start a fresh watcher for this process.
+            if (config_watcher_owner_pid() == getpid()) {
+                return;
+            }
+            watcher.detach();
         }
         config_watcher_stop().store(false);
+        config_watcher_owner_pid() = getpid();
 
         watcher = std::thread([path]() {
             // Seed with the non-throwing overload: the throwing form could
@@ -204,6 +222,12 @@ namespace pinpoint {
             std::lock_guard<std::mutex> lock(config_watcher_mutex());
             auto& watcher = config_watcher_thread();
             if (!watcher.joinable()) {
+                return;
+            }
+            // Inherited across fork(): the thread does not exist here, so
+            // detach the dead handle rather than joining it (which would abort).
+            if (config_watcher_owner_pid() != getpid()) {
+                watcher.detach();
                 return;
             }
             config_watcher_stop().store(true);
@@ -896,6 +920,13 @@ namespace pinpoint {
             in.api_key = config->api_key_;
 
             if (auto object_name = resolve_object_name(name_version, in)) {
+                // Record whether the id was pinned (explicitly provided and kept
+                // as-is) versus auto-generated. v4 always regenerates the id, so
+                // it is never pinned. Agent::Start() uses this to keep forked
+                // workers' agent ids unique.
+                config->agent_id_pinned_ = (name_version != NameVersion::kV4)
+                    && !in.agent_id.empty()
+                    && object_name->agent_id == in.agent_id;
                 config->agent_id_ = object_name->agent_id;
                 config->agent_name_ = object_name->agent_name;
                 config->app_name_ = object_name->application_name;

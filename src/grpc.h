@@ -68,9 +68,14 @@ namespace pinpoint {
      * protocol.version=100 (agentname only when present), v4 sends
      * protocol.version=400 plus agentname (always), servicename and apikey.
      * Extracted as a pure function so the per-version header set is unit-testable.
+     *
+     * @p agent_id is passed separately (rather than read from @p config) so the
+     * agent's process-unique id — which Agent::Start() may regenerate for a
+     * forked worker — is used instead of the id baked into the captured config.
      */
     std::vector<std::pair<std::string, std::string>>
-    build_grpc_metadata(const Config& config, int64_t start_time, int32_t app_type, unsigned long socket_id);
+    build_grpc_metadata(const Config& config, std::string_view agent_id,
+                        int64_t start_time, int32_t app_type, unsigned long socket_id);
 
     /**
      * @brief Exponential backoff with jitter for reconnect attempts.
@@ -114,6 +119,17 @@ namespace pinpoint {
         void setAgentService(AgentService* agent);
         virtual ~GrpcClient() = default;
         /**
+         * @brief Opens the gRPC channel and creates the client stub.
+         *
+         * Deferred out of the constructor so that CreateAgent() stays "cold":
+         * `grpc::CreateCustomChannel()` triggers `grpc_init` and starts gRPC's
+         * own background threads, which must not happen until Agent::Start() is
+         * called in the process that will actually use the agent (a master that
+         * forks must not hold a live gRPC runtime at the fork point). Idempotent:
+         * a second call while a channel already exists is a no-op.
+         */
+        void openChannel();
+        /**
          * @brief Ensures the gRPC channel is connected and ready for use.
          *
          * @return `true` if the channel is ready or successfully re-initialized.
@@ -148,6 +164,14 @@ namespace pinpoint {
          * @brief Blocks until the channel becomes ready or the delay is exceeded.
          */
         bool wait_channel_ready(std::chrono::milliseconds delay) const;
+
+        /**
+         * @brief Creates the concrete service stub from `channel_`.
+         *
+         * Called by openChannel() after the channel is built. Each derived
+         * client binds its own generated stub type here.
+         */
+        virtual void create_stub() = 0;
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
 
@@ -272,6 +296,7 @@ namespace pinpoint {
 
     protected:
         void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
+        void create_stub() override;
         /// @brief Delay before a failed metadata send is retried; overridable for tests.
         virtual std::chrono::milliseconds meta_retry_delay() const;
 
@@ -336,6 +361,7 @@ namespace pinpoint {
         void set_command_stub(std::unique_ptr<v1::ProfilerCommandService::StubInterface> stub) {
             command_stub_ = std::move(stub);
         }
+        void create_stub() override;
 
     private:
         class ActiveThreadCountStream;
@@ -408,6 +434,7 @@ namespace pinpoint {
 
     protected:
         void set_agent_stub(std::unique_ptr<v1::Agent::StubInterface> stub) { agent_stub_ = std::move(stub); }
+        void create_stub() override;
 
     private:
         struct ServerMetaData {
@@ -527,6 +554,7 @@ namespace pinpoint {
 
     protected:
         void set_span_stub(std::unique_ptr<v1::Span::StubInterface> stub) { span_stub_ = std::move(stub); }
+        void create_stub() override;
 
     private:
         std::unique_ptr<v1::Span::StubInterface> span_stub_{};
@@ -577,6 +605,7 @@ namespace pinpoint {
 
     protected:
         void set_stats_stub(std::unique_ptr<v1::Stat::StubInterface> stub) { stats_stub_ = std::move(stub); }
+        void create_stub() override;
         void on_slow_channel_recovery(std::chrono::seconds elapsed) override;
         bool empty_stats_queue_if_requested() noexcept;
 

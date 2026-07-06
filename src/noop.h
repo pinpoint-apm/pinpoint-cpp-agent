@@ -191,6 +191,7 @@ namespace pinpoint {
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method,
             TraceContextReader& reader) override { return noopSpan(); }
 
+        void Start() override {}
         bool Enable() override { return false; }
         void Shutdown() override {}
     };

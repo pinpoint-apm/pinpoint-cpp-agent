@@ -163,6 +163,12 @@ namespace pinpoint {
         // by check() so startup degrades to a noop agent (Java aborts here).
         // Defaults to true so directly-constructed Config values stay valid.
         bool identity_resolved_ = true;
+        // True when the resolved agent_id came from an explicit, user-provided
+        // value (v1/v3 only; v4 always auto-generates). Used by Agent::Start()
+        // to decide how to make the id process-unique after a fork: a pinned id
+        // gets a pid suffix, an auto id is regenerated afresh. Defaults to false
+        // so directly-constructed Config values are treated as auto-generated.
+        bool agent_id_pinned_ = false;
 
         // gRPC protocol.version header wire value (Java ProtocolVersion: V1=100, V4=400).
         int protocol_version() const { return object_name_version_ == 4 ? 400 : 100; }

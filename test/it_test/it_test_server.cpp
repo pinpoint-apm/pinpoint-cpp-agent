@@ -629,6 +629,7 @@ void on_agent_start(const httplib::Request&, httplib::Response& res) {
         return;
     }
     g_agent = pinpoint::CreateAgent();
+    g_agent->Start();
     res.status = 200;
     res.set_content("{\"status\":\"started\"}", "application/json");
 }
@@ -689,6 +690,7 @@ int main(int argc, char* argv[]) {
 
     if (auto_start) {
         g_agent = pinpoint::CreateAgent();
+        g_agent->Start();
     }
 
     httplib::Server server;

@@ -344,7 +344,13 @@ void pt_set_config_string(const char* config_string);
 /* ========================================================================== */
 
 /**
- * @brief Creates a new Pinpoint agent using the global configuration.
+ * @brief Creates a new "cold" Pinpoint agent using the global configuration.
+ *
+ * Like pinpoint::CreateAgent(), the returned agent is only allocated and
+ * configured: it starts no threads and opens no gRPC connection until
+ * pt_agent_start() is called. Call pt_agent_start() before expecting spans to
+ * be recorded. This split makes the agent safe to create in a process that will
+ * fork() and start the agent separately in each child.
  *
  * The returned handle must be released with pt_agent_destroy() after
  * pt_agent_shutdown() has been called.
@@ -388,6 +394,19 @@ pt_agent_t pt_global_agent(void);
  * @warning Do NOT call this on a handle obtained from pt_global_agent().
  */
 void pt_agent_destroy(pt_agent_t agent);
+
+/**
+ * @brief Brings the agent online in the CURRENT process.
+ *
+ * Opens the gRPC channels, spawns the worker threads, starts the config-file
+ * watcher and (re)generates a process-unique agent id. Idempotent per process
+ * and non-blocking. Call this once after pt_create_agent()/
+ * pt_create_agent_with_server_metadata(); after fork(), call it from each
+ * child so every worker gets a fully working agent with a distinct id.
+ *
+ * Mirrors pinpoint::Agent::Start().
+ */
+void pt_agent_start(pt_agent_t agent);
 
 /**
  * @brief Returns non-zero if the agent is enabled and actively sampling.

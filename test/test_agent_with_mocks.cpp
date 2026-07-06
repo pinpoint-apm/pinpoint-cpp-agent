@@ -66,6 +66,9 @@ public:
     GrpcRequestStatus registerAgent() override { return SEND_OK; }
 
 protected:
+    // openChannel() (called from Start()) would otherwise replace the injected
+    // mock stub with a real one; keep the mock in place.
+    void create_stub() override {}
     bool wait_channel_ready() const { return true; }
 
 };
@@ -92,6 +95,9 @@ public:
     }
 
     bool readyChannel() override { return false; }
+
+protected:
+    void create_stub() override {}
 };
 
 class TestableGrpcSpan : public GrpcSpan {
@@ -106,6 +112,7 @@ public:
     bool readyChannel() override { return false; }
 
 protected:
+    void create_stub() override {}
     bool wait_channel_ready() const { return true; }
 };
 
@@ -121,6 +128,7 @@ public:
     bool readyChannel() override { return false; }
 
 protected:
+    void create_stub() override {}
     bool wait_channel_ready() const { return true; }
 };
 
@@ -162,12 +170,16 @@ static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg) {
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
 
-    return std::make_shared<AgentImpl>(
+    auto agent = std::make_shared<AgentImpl>(
         cfg,
         std::move(grpc_agent),
         std::move(grpc_metadata),
         std::move(grpc_span),
         std::move(grpc_stat));
+    // CreateAgent() is cold; bring the agent online so the worker threads run
+    // (mirrors the production CreateAgent()+Start() sequence).
+    agent->Start();
+    return agent;
 }
 
 // --- Test fixture ---
