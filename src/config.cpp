@@ -114,9 +114,16 @@ namespace pinpoint {
         return *watcher;
     }
 
-    static std::atomic<bool>& config_watcher_stop() {
-        static std::atomic<bool> stop{false};
-        return stop;
+    // Stop flag for the CURRENT watcher generation. Each started watcher
+    // captures its own flag by shared_ptr, so a stop issued to one generation
+    // can never be undone by a later start: with a single shared flag, a
+    // start_config_file_watcher() racing stop_config_file_watcher() (which
+    // joins outside the lock) could reset the flag before the old watcher —
+    // possibly still in its 1-second sleep — ever observed it, leaving that
+    // watcher running forever and the stopper blocked in join().
+    static std::shared_ptr<std::atomic<bool>>& config_watcher_stop_flag() {
+        static std::shared_ptr<std::atomic<bool>> flag;
+        return flag;
     }
 
     static std::mutex& config_watcher_mutex() {
@@ -166,10 +173,11 @@ namespace pinpoint {
             }
             abandon_thread(watcher);
         }
-        config_watcher_stop().store(false);
+        auto stop_flag = std::make_shared<std::atomic<bool>>(false);
+        config_watcher_stop_flag() = stop_flag;
         config_watcher_owner_pid() = getpid();
 
-        watcher = std::thread([path]() {
+        watcher = std::thread([path, stop_flag]() {
             // Seed with the non-throwing overload: the throwing form could
             // escape this thread function (the file may have been removed
             // between the exists() check above and the thread starting), and
@@ -180,13 +188,13 @@ namespace pinpoint {
             std::error_code seed_ec;
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
-            while (!config_watcher_stop().load()) {
+            while (!stop_flag->load()) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
 
                 // Re-check after waking: a stop may have been requested during
                 // the sleep, and we must not run a reload while shutdown is in
                 // progress (or delay it by a full file-check iteration).
-                if (config_watcher_stop().load()) {
+                if (stop_flag->load()) {
                     break;
                 }
 
@@ -197,12 +205,12 @@ namespace pinpoint {
                         read_config_from_file(path.c_str());
                         const auto agent_impl =
                             std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
-                        if (agent_impl && !config_watcher_stop().load()) {
+                        if (agent_impl && !stop_flag->load()) {
                             // make_config(old) returns the final reload config:
                             // non-reloadable fields retained from the running
                             // config and the logger already reconfigured.
                             auto new_cfg = make_config(agent_impl->getConfig());
-                            if (new_cfg && !config_watcher_stop().load()) {
+                            if (new_cfg && !stop_flag->load()) {
                                 agent_impl->reloadConfig(new_cfg);
                                 LOG_INFO("agent config reloaded");
                             }
@@ -232,7 +240,9 @@ namespace pinpoint {
                 abandon_thread(watcher);
                 return;
             }
-            config_watcher_stop().store(true);
+            if (const auto& stop_flag = config_watcher_stop_flag()) {
+                stop_flag->store(true);
+            }
             watcher_to_join = std::move(watcher);
         }
         watcher_to_join.join();

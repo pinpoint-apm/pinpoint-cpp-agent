@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <future>
 #include <memory>
 #include <thread>
 #include <chrono>
@@ -274,6 +275,32 @@ TEST_F(UrlStatTest, UrlStatsWorkerStartStopTest) {
     send_worker.join();
     
     SUCCEED() << "Worker threads should start and stop cleanly";
+}
+
+TEST_F(UrlStatTest, StopWorkerAfterUrlStatDisabledByReloadTest) {
+    UrlStats url_stats(mock_agent_service_.get());
+
+    std::thread add_worker([&url_stats]() {
+        url_stats.addUrlStatsWorker();
+    });
+
+    // Give the worker time to park in its untimed wait.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Simulate a config reload turning CollectUrlStat off while the worker
+    // (started when it was on) is blocked. stopAddUrlStatsWorker must still
+    // deliver the wakeup; consulting the live config would skip it and hang
+    // shutdown forever.
+    mock_agent_service_->mutableConfig()->http.url_stat.enable = false;
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopAddUrlStatsWorker();
+
+    auto joined = std::async(std::launch::async, [&add_worker] { add_worker.join(); });
+    // On failure the worker never wakes; the process aborts on the un-joined
+    // thread, which is the intended loud signal for this regression.
+    ASSERT_EQ(joined.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "stop must wake the add worker even when url_stat was disabled by reload";
 }
 
 TEST_F(UrlStatTest, UrlStatsWithExitingAgentTest) {

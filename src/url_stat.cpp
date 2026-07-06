@@ -240,11 +240,15 @@ namespace pinpoint {
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
-        const auto config = agent_->getConfig();
-        if (!config->http.url_stat.enable) {
-            return;
-        }
-
+        // Always notify, regardless of the CURRENT config: the worker decided
+        // whether to run from the config it saw at startup, and CollectUrlStat
+        // is reloadable — consulting the live config here could skip the only
+        // wakeup for a worker parked in an untimed wait and hang shutdown.
+        // Taking the lock pairs the notify with the worker's predicate check
+        // (isExiting), so it cannot fire in the window between the worker
+        // reading the flag as false and blocking — a lost wakeup that would
+        // also hang shutdown forever.
+        std::lock_guard<std::mutex> lock(add_mutex_);
         add_cond_var_.notify_one();
     }
 
@@ -271,11 +275,10 @@ namespace pinpoint {
     }
 
     void UrlStats::stopSendUrlStatsWorker() {
-        const auto config = agent_->getConfig();
-        if (!config->http.url_stat.enable) {
-            return;
-        }
-
+        // Same rationale as stopAddUrlStatsWorker: notify unconditionally and
+        // under the lock. This worker's wait_for bounds a lost wakeup at 30s
+        // rather than forever, but shutdown should not stall at all.
+        std::lock_guard<std::mutex> lock(send_mutex_);
         send_cond_var_.notify_one();
     }
 }

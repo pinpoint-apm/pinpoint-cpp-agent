@@ -670,6 +670,17 @@ namespace pinpoint {
             {
                 std::unique_lock<std::mutex> lock(context_mutex_);
                 context_ = std::move(context);
+                // Re-check under the same mutex stop() takes: a stop that ran
+                // before context_ was published found nothing to TryCancel, so
+                // it must be honored here. Otherwise the RPC below would start
+                // uncancellable, and its deadline-less Finish() could block on
+                // an unresponsive collector while stop() hangs in join(),
+                // stalling the whole agent shutdown.
+                if (stop_requested_.load()) {
+                    context_.reset();
+                    done_ = true;
+                    return;
+                }
             }
 
             google::protobuf::Empty reply;
