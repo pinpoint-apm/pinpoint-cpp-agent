@@ -265,11 +265,20 @@ namespace pinpoint {
     	    return event_stack_.top();
     	}
 
-        /// @brief Transfers ownership of finished span events to the caller.
-        void takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out);
-        /// @brief Transfers ownership of finished span events to a new vector.
-        std::vector<std::unique_ptr<SpanEventImpl>> takeFinishedEvents() {
-            std::vector<std::unique_ptr<SpanEventImpl>> events;
+        /**
+         * @brief Drains finished span events into a chunk view.
+         *
+         * Ownership stays with this SpanData: the events move to the retired
+         * list and `out` receives borrowed pointers that remain valid for the
+         * lifetime of this SpanData. Retaining ownership here is what keeps a
+         * user-held raw SpanEventPtr safe after a mid-span chunk flush — the
+         * duplicate-EndEvent no-op documented in pinpoint/tracer.h must never
+         * touch freed memory.
+         */
+        void takeFinishedEvents(std::vector<SpanEventImpl*>& out);
+        /// @brief Drains finished span events, returning borrowed pointers.
+        std::vector<SpanEventImpl*> takeFinishedEvents() {
+            std::vector<SpanEventImpl*> events;
             takeFinishedEvents(events);
             return events;
         }
@@ -327,6 +336,13 @@ namespace pinpoint {
         // contract in pinpoint/tracer.h), so the stack and this list are only ever
         // touched by the span's owning thread.
         std::deque<std::unique_ptr<SpanEventImpl>> finished_events;
+        // Finished events already handed to a chunk. Ownership is retained
+        // here (a chunk holds borrowed pointers plus a shared_ptr to this
+        // SpanData), so raw SpanEventPtr handles held by user code stay valid
+        // until the span data itself is released: a late duplicate EndEvent
+        // after a chunk flush lands on a live object and stays the safe no-op
+        // the public headers promise, instead of a use-after-free.
+        std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
 
     	std::unique_ptr<PinpointAnnotation> annotations_;
     };
@@ -347,7 +363,7 @@ namespace pinpoint {
 		/// @brief Returns the parent span data associated with this chunk.
 		std::shared_ptr<SpanData>& getSpanData() { return span_data_; }
 		/// @brief Returns the span events contained in this chunk.
-		std::vector<std::unique_ptr<SpanEventImpl>>& getSpanEventChunk() { return event_chunk_; }
+		std::vector<SpanEventImpl*>& getSpanEventChunk() { return event_chunk_; }
 		/// @brief Timestamp used for ordering span chunks.
 		int64_t getKeyTime() const { return key_time_; }
 		/// @brief Indicates whether this chunk represents the final events of the span.
@@ -355,7 +371,8 @@ namespace pinpoint {
 
 	private:
 		std::shared_ptr<SpanData> span_data_;
-		std::vector<std::unique_ptr<SpanEventImpl>> event_chunk_;
+		// Borrowed from span_data_'s retired list; kept alive by span_data_.
+		std::vector<SpanEventImpl*> event_chunk_;
 		bool final_;
 		int64_t key_time_;
 	};
@@ -372,8 +389,8 @@ namespace pinpoint {
      *          its whole lifetime. Concurrent calls on the same instance are
      *          undefined behaviour and can crash — `exceptions_`, `url_stat_` and
      *          the `SpanData` string/annotation buffers are unsynchronized, and
-     *          `EndSpan`/`EndEvent` on one thread can free a span event still
-     *          referenced through a raw pointer on another.
+     *          releasing the span on one thread frees the span events (retained
+     *          in `SpanData`) still referenced through raw pointers on another.
      *
      *          The `finished_`/`overflow_` atomics are defensive idempotency
      *          guards (e.g. so a repeated EndSpan is a no-op), NOT a concurrency
@@ -494,6 +511,13 @@ namespace pinpoint {
 	private:
 	    friend class SpanEventImpl;
 
+            // Keeps the agent alive while user code still holds this span,
+            // the same protection UnsampledSpan::agent_ref_ provides: a span
+            // may legally outlive Shutdown()/agent-handle destruction, and
+            // EndSpan and the SpanEventImpl recorders dereference agent_.
+            // Null only for agents that are not shared_ptr-owned
+            // (stack-constructed test instances).
+            std::shared_ptr<AgentService> agent_ref_;
             AgentService *agent_;
             // Config snapshot taken once at span creation. Per-event hot paths
             // (NewSpanEvent/EndEvent and the SpanEventImpl recorders) read

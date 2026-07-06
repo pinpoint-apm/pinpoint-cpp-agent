@@ -351,8 +351,8 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     // Take finished events (moves them out, leaving the vector empty)
     auto taken = span_data->takeFinishedEvents();
     ASSERT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
-    EXPECT_EQ(taken[0].get(), event1_ptr) << "Finished events should be returned in sequence order";
-    EXPECT_EQ(taken[1].get(), event2_ptr) << "Finished events should be returned in sequence order";
+    EXPECT_EQ(taken[0], event1_ptr) << "Finished events should be returned in sequence order";
+    EXPECT_EQ(taken[1], event2_ptr) << "Finished events should be returned in sequence order";
     EXPECT_EQ(span_data->getFinishedEventsCount(), 0) << "Finished events should be cleared";
 }
 
@@ -1158,6 +1158,55 @@ TEST_F(SpanTest, SpanImplEventChunkingTest) {
         << "Last chunk should be final";
 }
 
+TEST_F(SpanTest, SpanImplDuplicateEndEventAfterChunkFlushTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 64;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 1;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    auto event = span.NewSpanEvent("flushed-event");
+    event->EndEvent();
+    ASSERT_EQ(mock_agent_service_->getRecordedSpansCount(), 1)
+        << "Ending the event should trigger an intermediate chunk flush";
+
+    // The event was handed to the chunk, but SpanData retains ownership of
+    // flushed events, so the duplicate-EndEvent no-op documented in
+    // pinpoint/tracer.h must stay safe instead of touching freed memory.
+    event->EndEvent();
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 0u)
+        << "Duplicate EndEvent must not add or re-send any event";
+}
+
+TEST_F(SpanTest, SpanImplKeepsAgentServiceAliveTest) {
+    class SharedMockAgentService : public MockAgentService,
+                                   public std::enable_shared_from_this<SharedMockAgentService> {
+    public:
+        std::shared_ptr<AgentService> selfRef() noexcept override {
+            return weak_from_this().lock();
+        }
+    };
+
+    auto service = std::make_shared<SharedMockAgentService>();
+    std::weak_ptr<AgentService> observer = service;
+
+    auto span = std::make_shared<SpanImpl>(service.get(), "test-op", "test-rpc");
+    service.reset();
+
+    EXPECT_FALSE(observer.expired())
+        << "A live span must keep the agent service alive (UnsampledSpan parity)";
+
+    span->EndSpan();
+    span.reset();
+    EXPECT_TRUE(observer.expired())
+        << "Releasing the span must release the agent keep-alive";
+}
+
 // ========== SpanImpl SetStatusCode ==========
 
 TEST_F(SpanTest, SpanImplSetStatusCodeSuccessTest) {
@@ -1322,9 +1371,9 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
 
     auto& events = chunk.getSpanEventChunk();
     ASSERT_EQ(events.size(), 3);
-    EXPECT_EQ(events[0].get(), event1_ptr) << "SpanData should drain finished events in sequence order";
-    EXPECT_EQ(events[1].get(), event2_ptr) << "SpanData should drain finished events in sequence order";
-    EXPECT_EQ(events[2].get(), event3_ptr) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[0], event1_ptr) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[1], event2_ptr) << "SpanData should drain finished events in sequence order";
+    EXPECT_EQ(events[2], event3_ptr) << "SpanData should drain finished events in sequence order";
 
     chunk.optimizeSpanEvents();
 

@@ -56,6 +56,7 @@ namespace pinpoint {
         async_sequence_{},
         event_stack_{},
         finished_events{},
+        retired_events_{},
         annotations_{std::make_unique<PinpointAnnotation>()} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
@@ -97,15 +98,17 @@ namespace pinpoint {
         finished_events.insert(pos, std::move(se));
     }
 
-    void SpanData::takeFinishedEvents(std::vector<std::unique_ptr<SpanEventImpl>>& out) {
+    void SpanData::takeFinishedEvents(std::vector<SpanEventImpl*>& out) {
         out.clear();
         if (finished_events.empty()) {
             return;
         }
 
         out.reserve(finished_events.size());
+        retired_events_.reserve(retired_events_.size() + finished_events.size());
         for (auto& event : finished_events) {
-            out.emplace_back(std::move(event));
+            out.push_back(event.get());
+            retired_events_.emplace_back(std::move(event));
         }
         finished_events.clear();
     }
@@ -214,6 +217,7 @@ namespace pinpoint {
         } while(0)
 
     SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point) :
+        agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent),
         data_(nullptr),
         overflow_(0),
