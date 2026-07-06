@@ -158,12 +158,13 @@ namespace pinpoint {
         if (watcher.joinable()) {
             // A joinable handle from THIS process means the watcher is already
             // running. A joinable handle inherited across fork() references a
-            // thread that does not exist in this child — detach it (never join)
-            // and fall through to start a fresh watcher for this process.
+            // thread that does not exist in this child — abandon it (never
+            // join; plain detach() throws ESRCH on such a handle) and fall
+            // through to start a fresh watcher for this process.
             if (config_watcher_owner_pid() == getpid()) {
                 return;
             }
-            watcher.detach();
+            abandon_thread(watcher);
         }
         config_watcher_stop().store(false);
         config_watcher_owner_pid() = getpid();
@@ -225,9 +226,10 @@ namespace pinpoint {
                 return;
             }
             // Inherited across fork(): the thread does not exist here, so
-            // detach the dead handle rather than joining it (which would abort).
+            // abandon the dead handle rather than joining it (which would
+            // abort). Plain detach() throws ESRCH on such a handle.
             if (config_watcher_owner_pid() != getpid()) {
-                watcher.detach();
+                abandon_thread(watcher);
                 return;
             }
             config_watcher_stop().store(true);

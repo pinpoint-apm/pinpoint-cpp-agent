@@ -110,6 +110,17 @@ namespace pinpoint {
         };
     }
 
+    void abandon_thread(std::thread& t) noexcept {
+        if (!t.joinable()) {
+            return;
+        }
+        try {
+            t.detach();
+        } catch (...) {
+            try { new std::thread(std::move(t)); } catch (...) {}
+        }
+    }
+
     bool compare_string(std::string_view str1, std::string_view str2) {
         if (str1.size() != str2.size()) {
             return false;

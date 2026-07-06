@@ -101,12 +101,12 @@ namespace pinpoint {
     	 * @param reader Trace context reader provided by user code.
     	 */
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
-		/// @brief Returns whether the agent is enabled for tracing.
 		/// @brief Brings the agent online in the current process: enables gRPC
 		/// fork support, opens channels, spawns workers, starts the config
 		/// watcher and regenerates a process-unique agent id for forked workers.
 		/// Idempotent (per process) and non-blocking. See Agent::Start().
 		void Start() noexcept override;
+		/// @brief Returns whether the agent is enabled for tracing.
 		bool Enable() override;
 		/// @brief Initiates a graceful shutdown of the agent.
 		void Shutdown() noexcept override;

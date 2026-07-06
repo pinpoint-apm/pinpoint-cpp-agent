@@ -145,9 +145,11 @@ namespace pinpoint {
     } catch (const std::exception& e) {
         try { LOG_ERROR("agent start failed: exception = {}", e.what()); } catch (...) {}
         enabled_ = false;
+        started_ = false;
     } catch (...) {
         try { LOG_ERROR("agent start failed: unknown exception"); } catch (...) {}
         enabled_ = false;
+        started_ = false;
     }
 
     void AgentImpl::refresh_agent_id_for_process() {
@@ -436,34 +438,17 @@ namespace pinpoint {
     }
 
     void AgentImpl::detach_grpc_workers() noexcept {
-        // Abandon (never join) every worker handle. For a live thread detach()
-        // succeeds and clears the handle. For a handle inherited across fork(),
-        // the underlying thread does not exist in this child, so pthread_detach
-        // returns ESRCH and std::thread::detach() THROWS — leaving the handle
-        // still joinable. Letting such a handle reach ~std::thread would call
-        // std::terminate(). So on detach failure, move the dead handle into a
-        // heap std::thread we intentionally never destroy: the move leaves the
-        // member non-joinable (its destructor becomes a no-op) and nothing ever
-        // joins/destroys the leaked handle.
-        auto safe_detach = [](std::thread& t) noexcept {
-            if (!t.joinable()) {
-                return;
-            }
-            try {
-                t.detach();
-            } catch (...) {
-                try { new std::thread(std::move(t)); } catch (...) {}
-            }
-        };
-        safe_detach(init_thread_);
-        safe_detach(ping_thread_);
-        safe_detach(meta_thread_);
-        safe_detach(span_thread_);
-        safe_detach(stat_thread_);
-        safe_detach(command_thread_);
-        safe_detach(url_stat_add_thread_);
-        safe_detach(url_stat_send_thread_);
-        safe_detach(agent_stat_thread_);
+        // Abandon (never join) every worker handle, including handles inherited
+        // across fork() on which detach() would throw — see abandon_thread().
+        abandon_thread(init_thread_);
+        abandon_thread(ping_thread_);
+        abandon_thread(meta_thread_);
+        abandon_thread(span_thread_);
+        abandon_thread(stat_thread_);
+        abandon_thread(command_thread_);
+        abandon_thread(url_stat_add_thread_);
+        abandon_thread(url_stat_send_thread_);
+        abandon_thread(agent_stat_thread_);
     }
 
     void AgentImpl::wait_grpc_workers() {

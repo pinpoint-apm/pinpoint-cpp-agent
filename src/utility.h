@@ -19,6 +19,7 @@
 #include <chrono>
 #include <string>
 #include <optional>
+#include <thread>
 #include <vector>
 #include <string_view>
 
@@ -61,6 +62,21 @@ namespace pinpoint {
     std::optional<double> stod_(std::string_view str);
     /// @brief Safe string-to-bool conversion returning `std::nullopt` on error.
     std::optional<bool> stob_(std::string_view str);
+
+    /**
+     * @brief Abandons a thread handle without ever joining it, tolerating
+     *        handles inherited across fork().
+     *
+     * For a live thread detach() succeeds and clears the handle. For a handle
+     * inherited across fork(), the underlying thread does not exist in the
+     * child, so pthread_detach returns ESRCH and std::thread::detach() THROWS —
+     * leaving the handle still joinable. Letting such a handle reach
+     * ~std::thread would call std::terminate(). So on detach failure, the dead
+     * handle is moved into a heap std::thread that is intentionally never
+     * destroyed: the move leaves @p t non-joinable (its destructor becomes a
+     * no-op) and nothing ever joins/destroys the leaked handle.
+     */
+    void abandon_thread(std::thread& t) noexcept;
 
     /**
      * @brief Case-insensitive string comparison helper that avoids allocation.
