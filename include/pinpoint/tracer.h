@@ -411,10 +411,10 @@ namespace pinpoint {
       	 *
       	 * CreateAgent() is "cold": it only parses configuration and allocates the
       	 * object — it starts no threads, opens no gRPC channel (no `grpc_init`) and
-      	 * installs no config-file watcher. Start() performs that work: it enables
-      	 * gRPC fork support, opens the gRPC channels, spawns the worker threads,
-      	 * starts the config-file watcher and (re)generates a process-unique
-      	 * agent id. It must be called before the agent will record any spans.
+      	 * installs no config-file watcher. Start() performs that work: it opens the
+      	 * gRPC channels, spawns the worker threads, starts the config-file watcher
+      	 * and (re)generates a process-unique agent id. It must be called before the
+      	 * agent will record any spans.
       	 *
       	 * Idempotent and non-blocking: calling Start() more than once in the same
       	 * process is a no-op, and the collector connection is established
@@ -425,6 +425,13 @@ namespace pinpoint {
       	 * (holding no threads and no open gRPC runtime at the fork point) and each
       	 * forked child calls Start() from its post-fork hook, obtaining a fully
       	 * working agent with a distinct agent id.
+      	 *
+      	 * Because the cold CreateAgent() performs no `grpc_init`, each child's
+      	 * Start() runs that child's first, fresh gRPC initialization and inherits
+      	 * no gRPC state across the fork — so GRPC_ENABLE_FORK_SUPPORT is not
+      	 * required. This holds only as long as the HOST application also refrains
+      	 * from using gRPC before forking; if it does, the host must arrange its own
+      	 * gRPC fork handling.
       	 */
       	virtual void Start() = 0;
       	/// @brief Returns whether the agent is enabled and sampling.

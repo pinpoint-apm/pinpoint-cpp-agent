@@ -21,7 +21,6 @@
 #include <mutex>
 #include <optional>
 #include <vector>
-#include <cstdlib>
 #include <unistd.h>
 
 #include "logging.h"
@@ -99,17 +98,6 @@ namespace pinpoint {
         create_pid_ = getpid();
     }
 
-    namespace {
-        // Enable gRPC's pthread_atfork handlers before the first channel is
-        // created (i.e. before grpc_init). Equivalent to GRPC_ENABLE_FORK_SUPPORT=1,
-        // which grpcio sets the same way. The agent owns gRPC initialization, so
-        // this is the correct layer — bindings should not have to set a global
-        // env var. overwrite=0 leaves an explicit embedder-provided value intact.
-        void enable_grpc_fork_support() noexcept {
-            ::setenv("GRPC_ENABLE_FORK_SUPPORT", "1", 0);
-        }
-    }
-
     void AgentImpl::Start() noexcept try {
         // Idempotent: only the first Start() in the object's life brings it
         // online. The recommended fork model is a COLD CreateAgent() in the
@@ -128,8 +116,17 @@ namespace pinpoint {
         refresh_agent_id_for_process();
         owner_pid_ = getpid();
 
-        // Must precede the first channel build (in init_grpc_workers).
-        enable_grpc_fork_support();
+        // Fork safety rests on an invariant, not on GRPC_ENABLE_FORK_SUPPORT:
+        // CreateAgent() is cold (it triggers no grpc_init — no channel, stub or
+        // credentials are built until openChannel() runs from init_grpc_workers
+        // below), so the master holds NO live gRPC runtime at the fork point.
+        // Each child's Start() then performs that child's first, fresh grpc_init,
+        // inheriting no gRPC state to recover. This is gRPC's own "instantiate
+        // gRPC objects only after fork()" pattern, which needs no pthread_atfork
+        // fork handlers. GRPC_ENABLE_FORK_SUPPORT would only matter if grpc_init
+        // had run before the fork; the cold model guarantees it did not. (This
+        // assumes the HOST application likewise does not use gRPC before forking
+        // — an env var set here, post-fork in the child, could not fix that.)
 
         // Start the config-file watcher BEFORE spawning init_thread_ so that, if
         // thread creation throws, no joinable std::thread member exists yet and
