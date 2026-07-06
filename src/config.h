@@ -242,7 +242,10 @@ namespace pinpoint {
             size_t queue_size = defaults::SPAN_QUEUE_SIZE;
             int max_event_depth = defaults::SPAN_MAX_EVENT_DEPTH;
             int max_event_sequence = defaults::SPAN_MAX_EVENT_SEQUENCE;
-            size_t event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
+            // int, not size_t: the parsers produce an int, and a negative
+            // value assigned to size_t would wrap past the minimum check in
+            // Config::check(), silently disabling span-event chunk flushing.
+            int event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
         } span;
 
         struct {

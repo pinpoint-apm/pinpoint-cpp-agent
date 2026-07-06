@@ -1248,7 +1248,22 @@ namespace pinpoint {
 
         grpc_status_ = STREAM_WRITE;
         StartWrite(&ping_);
-        stream_cv_.wait(lock, [this] { return grpc_status_ != STREAM_WRITE; });
+        constexpr auto pong_timeout = std::chrono::seconds(30);
+        if (!stream_cv_.wait_for(lock, pong_timeout,
+                                 [this] { return grpc_status_ != STREAM_WRITE; })) {
+            // The transport can stay "healthy" (an intermediary satisfies
+            // HTTP/2 keepalive) while the collector backend never answers the
+            // ping. An untimed wait would park this worker for the process
+            // lifetime — pings stop and the stream never cycles to a healthy
+            // backend. Cancel so the caller rebuilds the stream instead.
+            LOG_WARN("ping response timed out, recycling ping stream");
+            if (stream_context_ != nullptr) {
+                stream_context_->TryCancel();
+            }
+            // OnDone is guaranteed after cancellation; the reactor must not
+            // be abandoned before it arrives.
+            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        }
 
         if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
             LOG_ERROR("failed to send ping: {}, {}",

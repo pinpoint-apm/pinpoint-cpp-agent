@@ -141,7 +141,10 @@ namespace pinpoint {
     public:
         using LookupKey = typename KeyTraits::LookupKey;
 
-        explicit LruCacheImpl(size_t max_size) : max_size_(max_size) {
+        // max_size is clamped to >= 1: with a capacity of 0 the eviction in
+        // insert_or_promote() would erase the just-inserted front node and
+        // then return a reference into the freed list node — use-after-free.
+        explicit LruCacheImpl(size_t max_size) : max_size_(max_size > 0 ? max_size : 1) {
             // Reserve buckets up front so the map never rehashes while warming
             // up to capacity. +1 covers the transient over-capacity entry that
             // exists between insertion and eviction inside insert_or_promote().

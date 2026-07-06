@@ -260,7 +260,7 @@ Span:
   QueueSize: 0
   MaxEventDepth: -1
   MaxEventSequence: -1
-  EventChunkSize: 0
+  EventChunkSize: -1
 
 Http:
   UrlStatLimit: -1
@@ -734,7 +734,8 @@ TEST_F(ConfigTest, ValueValidationTest) {
     EXPECT_EQ(config->span.queue_size, 1024) << "Queue size < 1 should be corrected to default (1024)";
     EXPECT_EQ(config->span.max_event_depth, INT32_MAX) << "Max event depth -1 should be corrected to INT32_MAX";
     EXPECT_EQ(config->span.max_event_sequence, INT32_MAX) << "Max event sequence -1 should be corrected to INT32_MAX";
-    EXPECT_EQ(config->span.event_chunk_size, 20) << "Event chunk size < 1 should be corrected to default (20)";
+    EXPECT_EQ(config->span.event_chunk_size, 20)
+        << "Negative event chunk size should be corrected to default (20), not wrap to a huge unsigned value";
 
     // A negative URL stat limit would cast to a huge size_t and disable the cap.
     EXPECT_EQ(config->http.url_stat.limit, 1024) << "Negative URL stat limit should be corrected to default (1024)";

@@ -403,7 +403,7 @@ namespace pinpoint {
     class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
         SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point);
-        ~SpanImpl() override = default;
+        ~SpanImpl() override;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {
     		return NewSpanEvent(operation, defaults::SPAN_EVENT_SERVICE_TYPE);
@@ -560,7 +560,17 @@ namespace pinpoint {
             void record_chunk(bool final) const;
             void sendUrlStat();
             void sendExceptions();
-            void addException(std::unique_ptr<Exception> exception) { exceptions_.push_back(std::move(exception)); }
+            // Exceptions are only drained at EndSpan (unlike span events,
+            // which chunk-flush mid-span), so a retry loop on a long-lived
+            // span would otherwise grow this without bound — each entry
+            // carries a full string callstack. Excess exceptions are dropped.
+            static constexpr size_t kMaxBufferedExceptions = 100;
+            void addException(std::unique_ptr<Exception> exception) {
+                if (exceptions_.size() >= kMaxBufferedExceptions) {
+                    return;
+                }
+                exceptions_.push_back(std::move(exception));
+            }
             AgentService* getAgent() const { return agent_; }
             void decrEventDepth();
 	};

@@ -203,30 +203,64 @@ static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
 // heap allocation.
 // ============================================================================
 
+// Both trampolines are invoked from inside the USER's C for_each loop, so a
+// C++ exception escaping here would unwind through C stack frames — undefined
+// behaviour, and an immediate std::terminate when the C code was compiled
+// without unwind tables. The pt_* entry firewall cannot help: those C frames
+// sit in the middle of the stack. Catch everything at this boundary instead.
+
 struct ForEachCtx {
     const std::function<bool(std::string_view, std::string_view)>* cb;
+    bool failed{false};
 };
 
 static int for_each_trampoline(const char* key, const char* value, void* userdata) {
-    const auto* ctx = static_cast<const ForEachCtx*>(userdata);
+    auto* ctx = static_cast<ForEachCtx*>(userdata);
     // Return 0 to continue, non-zero to stop — mirrors the C callback contract.
-    return (*ctx->cb)(key, value) ? 0 : 1;
+    // Guard NULLs like the callstack trampoline: a user callback naturally
+    // passes NULL for a missing value, and string_view(nullptr) crashes.
+    try {
+        return (*ctx->cb)(key ? key : "", value ? value : "") ? 0 : 1;
+    } catch (...) {
+        ctx->failed = true;
+        return 1;
+    }
 }
 
 struct CallstackForEachCtx {
     const std::function<void(std::string_view, std::string_view, std::string_view, int)>* cb;
+    bool failed{false};
 };
 
 static void callstack_foreach_trampoline(const char* mod, const char* fn,
                                          const char* file, int line,
                                          void* userdata) {
-    const auto* ctx = static_cast<const CallstackForEachCtx*>(userdata);
-    (*ctx->cb)(mod ? mod : "", fn ? fn : "", file ? file : "", line);
+    auto* ctx = static_cast<CallstackForEachCtx*>(userdata);
+    // No stop channel in this C callback contract: skip remaining frames
+    // after a failure instead of throwing through the caller's C frames.
+    if (ctx->failed) {
+        return;
+    }
+    try {
+        (*ctx->cb)(mod ? mod : "", fn ? fn : "", file ? file : "", line);
+    } catch (...) {
+        ctx->failed = true;
+    }
 }
 
 // ============================================================================
 // C++ adapter classes — stack-allocated, zero-heap-overhead bridges
 // ============================================================================
+
+// Returns a NUL-terminated pointer for `sv`, copying into `storage`. Probing
+// sv.data()[sv.size()] to skip the copy would read one byte past the view —
+// out of bounds for a substring view ending exactly at the end of its buffer.
+// Keys and header values are short, so the copy usually stays in the SSO
+// buffer anyway.
+static const char* to_c_str(std::string_view sv, std::string& storage) {
+    storage.assign(sv);
+    return storage.c_str();
+}
 
 /**
  * Wraps pt_context_reader_t as a pinpoint::TraceContextReader.
@@ -237,18 +271,12 @@ public:
 
     std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        const char* k_ptr = nullptr;
         std::string k_str;
-        if (!key.empty() && key.data()[key.size()] == '\0') {
-            k_ptr = key.data();
-        } else {
-            k_str = std::string(key);
-            k_ptr = k_str.c_str();
-        }
-        // Zero-copy: pt_reader_get_fn's contract already requires the returned
-        // pointer to stay valid until the next call on the same carrier, which
-        // matches the TraceContextReader::Get view-lifetime contract exactly.
-        const char* v = r_->get(r_->userdata, k_ptr);
+        // Zero-copy result: pt_reader_get_fn's contract already requires the
+        // returned pointer to stay valid until the next call on the same
+        // carrier, which matches the TraceContextReader::Get view-lifetime
+        // contract exactly.
+        const char* v = r_->get(r_->userdata, to_c_str(key, k_str));
         return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
@@ -265,17 +293,10 @@ public:
 
     std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        const char* k_ptr = nullptr;
         std::string k_str;
-        if (!key.empty() && key.data()[key.size()] == '\0') {
-            k_ptr = key.data();
-        } else {
-            k_str = std::string(key);
-            k_ptr = k_str.c_str();
-        }
-        // Zero-copy: see CContextReader::Get — the C contract matches the
-        // TraceContextReader::Get view-lifetime contract.
-        const char* v = r_->get(r_->userdata, k_ptr);
+        // Zero-copy result: see CContextReader::Get — the C contract matches
+        // the TraceContextReader::Get view-lifetime contract.
+        const char* v = r_->get(r_->userdata, to_c_str(key, k_str));
         return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
@@ -283,6 +304,9 @@ public:
         if (!r_ || !r_->for_each) return;
         ForEachCtx ctx{&cb};
         r_->for_each(r_->userdata, for_each_trampoline, &ctx);
+        if (ctx.failed) {
+            LOG_WARN("header for_each callback aborted by exception");
+        }
     }
 
 private:
@@ -298,24 +322,9 @@ public:
 
     void Set(std::string_view key, std::string_view value) override {
         if (!w_ || !w_->set) return;
-        const char* k_ptr = nullptr;
         std::string k_str;
-        if (!key.empty() && key.data()[key.size()] == '\0') {
-            k_ptr = key.data();
-        } else {
-            k_str = std::string(key);
-            k_ptr = k_str.c_str();
-        }
-
-        const char* v_ptr = nullptr;
         std::string v_str;
-        if (!value.empty() && value.data()[value.size()] == '\0') {
-            v_ptr = value.data();
-        } else {
-            v_str = std::string(value);
-            v_ptr = v_str.c_str();
-        }
-        w_->set(w_->userdata, k_ptr, v_ptr);
+        w_->set(w_->userdata, to_c_str(key, k_str), to_c_str(value, v_str));
     }
 
 private:
@@ -334,6 +343,9 @@ public:
         if (!r_ || !r_->for_each) return;
         CallstackForEachCtx ctx{&cb};
         r_->for_each(r_->userdata, callstack_foreach_trampoline, &ctx);
+        if (ctx.failed) {
+            LOG_WARN("callstack for_each callback aborted by exception; remaining frames dropped");
+        }
     }
 
 private:

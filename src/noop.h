@@ -152,7 +152,7 @@ namespace pinpoint {
     class UnsampledSpan final : public NoopSpan {
     public:
         explicit UnsampledSpan(AgentService *agent);
-        ~UnsampledSpan() override {}
+        ~UnsampledSpan() override;
 
         // Hand out the unsampled span event so that InjectContext on the event
         // still propagates the `s0` sampling decision downstream.

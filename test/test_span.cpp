@@ -1183,6 +1183,27 @@ TEST_F(SpanTest, SpanImplDuplicateEndEventAfterChunkFlushTest) {
         << "Duplicate EndEvent must not add or re-send any event";
 }
 
+TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
+    auto& stats = mock_agent_service_->getAgentStats();
+    const int64_t now_ms = 1000000;
+
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "op", "rpc");
+        stats.addActiveSpan(span->GetSpanId(), now_ms);
+
+        int32_t counts[4] = {0, 0, 0, 0};
+        stats.collectActiveRequests(counts, now_ms);
+        EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1)
+            << "Span should be registered as active";
+        // Dropped here WITHOUT EndSpan — an early-return/exception path.
+    }
+
+    int32_t counts[4] = {0, 0, 0, 0};
+    stats.collectActiveRequests(counts, now_ms);
+    EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 0)
+        << "Destroying a span without EndSpan must still release its active-span entry";
+}
+
 TEST_F(SpanTest, SpanImplKeepsAgentServiceAliveTest) {
     class SharedMockAgentService : public MockAgentService,
                                    public std::enable_shared_from_this<SharedMockAgentService> {

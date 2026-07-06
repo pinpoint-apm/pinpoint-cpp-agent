@@ -497,16 +497,29 @@ namespace pinpoint {
             }
         }
 
-        std::thread joiner([state] {
+        std::thread joiner;
+        try {
+            joiner = std::thread([state] {
+                for (auto& worker : state->threads) {
+                    worker.join();
+                }
+                {
+                    std::lock_guard<std::mutex> l(state->m);
+                    state->finished = true;
+                }
+                state->cv.notify_one();
+            });
+        } catch (...) {
+            // Thread creation failing (EAGAIN) is precisely the resource-
+            // exhaustion case. Unwinding with joinable handles still in
+            // `state` would run ~thread on them and std::terminate the host,
+            // so join inline — losing only the slow-shutdown diagnostic.
+            try { LOG_WARN("wait grpc workers: joiner thread unavailable, joining inline"); } catch (...) {}
             for (auto& worker : state->threads) {
                 worker.join();
             }
-            {
-                std::lock_guard<std::mutex> l(state->m);
-                state->finished = true;
-            }
-            state->cv.notify_one();
-        });
+            return;
+        }
 
         bool finished;
         {

@@ -59,6 +59,18 @@ namespace pinpoint {
         }
     }
 
+    UnsampledSpan::~UnsampledSpan() {
+        // Self-heal spans dropped without EndSpan, mirroring ~SpanImpl: the
+        // active-span registration taken in the constructor must not outlive
+        // the span. agent_ stays valid via agent_ref_.
+        if (!finished_.load() && agent_ != nullptr) {
+            try {
+                agent_->getAgentStats().dropActiveSpan(span_id_);
+            } catch (...) {
+            }
+        }
+    }
+
     void UnsampledSpan::EndSpan() {
         // Atomic exchange so only the first caller proceeds: a check-then-set
         // would let two concurrent EndSpan calls both pass the guard and run

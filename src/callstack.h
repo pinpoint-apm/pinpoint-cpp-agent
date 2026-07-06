@@ -55,6 +55,12 @@ namespace pinpoint {
          * @param line Line number within the file.
          */
         void push(std::string_view module, std::string_view function, std::string_view file, int line) {
+            // Frames come from user-controlled readers with no depth limit of
+            // their own; cap them so one pathological callstack cannot pin
+            // unbounded memory in the span's exception buffer.
+            if (stack_.size() >= kMaxFrames) {
+                return;
+            }
             stack_.emplace_back(StackFrame{std::string(module), std::string(function), std::string(file), line});
         }
 
@@ -93,6 +99,8 @@ namespace pinpoint {
         }
 
     private:
+        static constexpr size_t kMaxFrames = 128;
+
         std::string error_message_;
         int64_t error_time_;
         std::vector<StackFrame> stack_;

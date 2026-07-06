@@ -113,7 +113,7 @@ namespace pinpoint {
         finished_events.clear();
     }
 
-    void SpanData::parseTraceId(std::string_view txid) noexcept {
+    void SpanData::parseTraceId(std::string_view txid) noexcept try {
         constexpr size_t kMaxAgentIdLength = 24;
         constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
 
@@ -151,6 +151,12 @@ namespace pinpoint {
             return;
         }
         trace_id_.Sequence = stoll_(sequence_str).value_or(0);
+    } catch (...) {
+        // This function allocates (AgentId copy, log formatting), so without
+        // this handler an OOM would hit the noexcept boundary and terminate
+        // the host. Degrade to the default-generated trace id instead. No
+        // logging here: formatting allocates too and a rethrow from a catch
+        // block would still terminate.
     }
 
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
@@ -215,6 +221,21 @@ namespace pinpoint {
         do { \
             if (overflow_ > 0) { return (retval); } \
         } while(0)
+
+    SpanImpl::~SpanImpl() {
+        // Self-heal spans dropped without EndSpan (early-return or exception
+        // paths in user code): release the active-span registration taken in
+        // extractContext, or the entry — and the skewed active-request stats
+        // it feeds — survives for the process lifetime. Async spans never
+        // register. agent_ is safe to dereference here because agent_ref_
+        // keeps the agent alive while this span exists.
+        if (!finished_.load() && data_ && !data_->isAsyncSpan()) {
+            try {
+                agent_->getAgentStats().dropActiveSpan(data_->getSpanId());
+            } catch (...) {
+            }
+        }
+    }
 
     SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point) :
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
@@ -309,7 +330,9 @@ namespace pinpoint {
 
         data_->finishSpanEvent();
 
-        if (data_->getFinishedEventsCount() >= config_->span.event_chunk_size) {
+        // event_chunk_size is validated to >= 1 in Config::check(), so the
+        // cast cannot produce a huge unsigned value.
+        if (data_->getFinishedEventsCount() >= static_cast<size_t>(config_->span.event_chunk_size)) {
             record_chunk(false);
         }
     }
