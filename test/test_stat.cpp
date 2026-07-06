@@ -778,6 +778,23 @@ TEST_F(StatTest, GetSnapshotsModifiableTest) {
     EXPECT_EQ(agent_stats_->getSnapshots().size(), original_size + 3);
 }
 
+// Test copySnapshots returns an independent copy of the batch
+TEST_F(StatTest, CopySnapshotsIndependentTest) {
+    auto& snapshots = agent_stats_->getSnapshots();
+    snapshots.resize(2);
+    snapshots[0].sample_time_ = 111;
+    snapshots[1].sample_time_ = 222;
+
+    auto copy = agent_stats_->copySnapshots();
+    ASSERT_EQ(copy.size(), 2u);
+    EXPECT_EQ(copy[0].sample_time_, 111);
+    EXPECT_EQ(copy[1].sample_time_, 222);
+
+    // The copy must not alias the worker's slots.
+    snapshots[0].sample_time_ = 999;
+    EXPECT_EQ(copy[0].sample_time_, 111);
+}
+
 // Test many active spans
 TEST_F(StatTest, ManyActiveSpansTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

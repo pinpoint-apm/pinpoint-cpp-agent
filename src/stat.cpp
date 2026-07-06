@@ -290,12 +290,19 @@ namespace pinpoint {
     }
 
     void AgentStats::initAgentStats() {
+        // Callers must NOT hold mutex_ (the worker calls this before taking
+        // it; GrpcStats::empty_stats_queue calls it from the gRPC stats
+        // thread on queue overflow / slow-channel recovery). Locking here
+        // keeps batch_ and the collect-time/CPU-time bookkeeping from racing
+        // the worker's collection cycle, which reads and writes the same
+        // non-atomic fields under mutex_.
+        std::lock_guard<std::mutex> lock(mutex_);
         last_sys_cpu_time_ = 0;
         last_proc_cpu_time_ = 0;
         get_cpu_time(&last_sys_cpu_time_, &last_proc_cpu_time_);
-        
+
         resetAgentStats();
-        
+
         last_collect_time_ = std::chrono::system_clock::now();
         batch_ = 0;
     }

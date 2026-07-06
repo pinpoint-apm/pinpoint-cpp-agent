@@ -405,6 +405,16 @@ namespace pinpoint {
         // it must not re-enable span recording into workers being torn down.
         if (!shutting_down_) {
             enabled_ = true;
+            // Close the check-then-store window: do_shutdown() may have run
+            // entirely between the check above and the store (setting
+            // shutting_down_ then enabled_ = false), which would leave a
+            // torn-down agent permanently enabled. In the seq_cst total
+            // order either this re-check observes shutting_down_ and rolls
+            // back, or the store above preceded do_shutdown()'s
+            // enabled_ = false — both end with the agent disabled.
+            if (shutting_down_) {
+                enabled_ = false;
+            }
         }
     }
 

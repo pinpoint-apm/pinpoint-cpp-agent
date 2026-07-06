@@ -1794,7 +1794,7 @@ namespace pinpoint {
 
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
-            msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().getSnapshots(), &arena_));
+            msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().copySnapshots(), &arena_));
         } else {
             auto snapshot = agent_->getUrlStats().takeSnapshot();
             msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));

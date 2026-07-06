@@ -77,8 +77,20 @@ namespace pinpoint {
         void incrSkipNew() { skip_new_++; }
         void incrSkipCont() { skip_cont_++; }
 
-        // Access to snapshots (for testing or global accessor)
+        // Access to snapshots (test-only: unsynchronized reference — the
+        // worker overwrites these slots under mutex_)
         std::vector<AgentStatsSnapshot>& getSnapshots() { return agent_stats_snapshots_; }
+        /**
+         * @brief Returns a copy of the snapshot batch, taken under the stats mutex.
+         *
+         * Safe to serialize on another thread (the gRPC stats stream) while the
+         * worker keeps overwriting slots for the next collection cycle — reading
+         * the vector without the mutex races those writes.
+         */
+        std::vector<AgentStatsSnapshot> copySnapshots() {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return agent_stats_snapshots_;
+        }
 
         // Singleton instance accessor (for global C-style functions)
         static AgentStats* getInstance();
