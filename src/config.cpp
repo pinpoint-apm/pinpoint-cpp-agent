@@ -231,13 +231,14 @@ namespace pinpoint {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
                         last_write_time = current;
-                        read_config_from_file(path.c_str());
                         const auto agent_impl =
                             std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
                         if (agent_impl && !stop->stop_requested()) {
                             // make_config(old) returns the final reload config:
                             // non-reloadable fields retained from the running
-                            // config and the logger already reconfigured.
+                            // config and the logger already reconfigured. It
+                            // also re-reads the config file itself (the path is
+                            // set), so no separate read is needed here.
                             auto new_cfg = make_config(agent_impl->getConfig());
                             if (new_cfg && !stop->stop_requested()) {
                                 agent_impl->reloadConfig(new_cfg);
@@ -369,11 +370,7 @@ namespace pinpoint {
         options.sender_queue_size = get_int(grpc, "SenderQueueSize", options.sender_queue_size);
     }
 
-    static void load_grpc_yaml(const YAML::Node& yaml, Config& config) {
-        auto collector = find_node(yaml, "Collector");
-        if (!collector) {
-            return;
-        }
+    static void load_grpc_yaml(const YAML::Node& collector, Config& config) {
         if (auto grpc = find_node(collector, "Grpc")) {
             config.collector.grpc.ssl.enable = get_boolean(grpc, "SslEnable", config.collector.grpc.ssl.enable);
             config.collector.grpc.ssl.trust_cert_file_path =
@@ -435,6 +432,19 @@ namespace pinpoint {
                 get_int(collector, "SpanPort", get_int(collector, "GrpcSpanPort", config.collector.span_port));
             config.collector.stat_port =
                 get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", config.collector.stat_port));
+
+            if (auto agent_info = find_node(collector, "AgentInfo")) {
+                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms);
+                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms);
+                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt);
+            }
+            if (auto span_batch = find_node(collector, "SpanBatch")) {
+                config.collector.span_batch.size = get_int(span_batch, "Size", config.collector.span_batch.size);
+                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", config.collector.span_batch.flush_interval_ms);
+                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms);
+                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", config.collector.span_batch.max_concurrent_requests);
+            }
+            load_grpc_yaml(collector, config);
         }
 
         if (auto stat = find_node(yaml, "Stat")) {
@@ -481,25 +491,16 @@ namespace pinpoint {
             config.span.event_chunk_size = get_int(span, "EventChunkSize", static_cast<int>(config.span.event_chunk_size));
         }
 
-        if (auto collector = find_node(yaml, "Collector")) {
-            if (auto agent_info = find_node(collector, "AgentInfo")) {
-                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms);
-                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms);
-                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt);
-            }
-            if (auto span_batch = find_node(collector, "SpanBatch")) {
-                config.collector.span_batch.size = get_int(span_batch, "Size", config.collector.span_batch.size);
-                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", config.collector.span_batch.flush_interval_ms);
-                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms);
-                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", config.collector.span_batch.max_concurrent_requests);
-            }
-        }
-
-        load_grpc_yaml(yaml, config);
-
-        if (find_node(yaml, "IsContainer")) {
-            config.is_container = get_boolean(yaml, "IsContainer", config.is_container);
+        if (auto is_container = find_node(yaml, "IsContainer")) {
+            // The key being present (even malformed) means the user decided
+            // containerness explicitly, so auto-detection is skipped either way.
             is_container_set = true;
+            try {
+                config.is_container = is_container.as<bool>();
+            } catch (const YAML::Exception& e) {
+                LOG_WARN("Failed to read 'IsContainer' as boolean: {}. Using default value: {}",
+                         e.what(), config.is_container);
+            }
         }
 
         if (auto sql = find_node(yaml, "Sql")) {

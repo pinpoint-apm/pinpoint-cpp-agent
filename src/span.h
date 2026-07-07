@@ -116,7 +116,9 @@ namespace pinpoint {
     	/// @brief Returns the trace identifier.
     	TraceId& getTraceId() { return trace_id_; }
     	/// @brief Sets the trace identifier.
-    	void setTraceId(const TraceId& trace_id) { trace_id_ = trace_id; }
+    	// By value so an rvalue (setTraceId(generateTraceId())) moves straight
+    	// through without copying the AgentId string a second time.
+    	void setTraceId(TraceId trace_id) { trace_id_ = std::move(trace_id); }
     	/**
     	 * @brief Parses a textual trace ID into the internal representation.
     	 *
@@ -415,7 +417,14 @@ namespace pinpoint {
      */
     class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
-        SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point);
+        // `config` is the creator's already-loaded config snapshot (e.g. the
+        // AgentRuntime generation NewSpan sampled/filtered against). Passing it
+        // skips the extra atomic runtime load agent->getConfig() would pay and
+        // keeps the span on the exact config generation of its admission
+        // decision. When omitted (tests, direct construction), the ctor loads
+        // the current config itself.
+        SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point,
+                 std::shared_ptr<const Config> config = nullptr);
         ~SpanImpl() override;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {

@@ -248,7 +248,8 @@ namespace pinpoint {
         }
     }
 
-    SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point) :
+    SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point,
+                       std::shared_ptr<const Config> config) :
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent),
         data_(nullptr),
@@ -257,7 +258,7 @@ namespace pinpoint {
         url_stat_{},
         exceptions_{} {
         assert(agent_ != nullptr);
-        config_ = agent_->getConfig();
+        config_ = config ? std::move(config) : agent_->getConfig();
         const auto app_type = agent_->getAppType();
         // Async child spans are created with an empty operation (see
         // NewAsyncSpan): skip the api-cache lookup — api_id 0 is simply not
@@ -515,7 +516,10 @@ namespace pinpoint {
             LOG_WARN("NewAsyncSpan: abnormal span - has no event");
             return noopSpan();
         }
-        auto async_span = std::make_shared<SpanImpl>(agent_, "", "");
+        // Hand down this span's config snapshot: the async child records into
+        // the same trace, so it must run under the same config generation (and
+        // it skips another atomic runtime load).
+        auto async_span = std::make_shared<SpanImpl>(agent_, "", "", config_);
 
         async_span->data_->setTraceId(data_->getTraceId());
         async_span->data_->setSpanId(data_->getSpanId());

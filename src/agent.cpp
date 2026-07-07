@@ -19,6 +19,7 @@
 #include <exception>
 #include <iterator>
 #include <utility>
+#include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -607,8 +608,10 @@ namespace pinpoint {
 
         if (my_sampling) {
             // Hand the already-read trace id to the impl-level extract so the
-            // header is not looked up twice.
-            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point);
+            // header is not looked up twice, and this runtime's config so the
+            // span skips a second atomic load and lives on the same config
+            // generation its admission was decided under.
+            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, runtime->config);
             span->extractContext(reader, tid);
             return span;
         }
