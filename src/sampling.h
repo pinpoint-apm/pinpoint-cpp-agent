@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <memory>
@@ -75,7 +76,11 @@ namespace pinpoint {
             // Round to nearest hundredth-of-a-percent instead of truncating:
             // 0.29 * 100 is 28.999999999999996 in double, so a plain cast
             // would yield 28 and silently sample 0.28% instead of 0.29%.
-            rate_ = static_cast<int>(std::lround(rate * 100));
+            // Clamp to [0, MAX_PERCENT_RATE] so the class stays well-defined
+            // (never-sample / always-sample) even for out-of-range rates that
+            // bypass the config validation.
+            rate_ = static_cast<int>(std::clamp<long>(
+                std::lround(rate * 100), 0, MAX_PERCENT_RATE));
         }
 
         /**
@@ -91,9 +96,7 @@ namespace pinpoint {
     class TraceSampler {
     public:
         explicit TraceSampler(AgentService* agent) : agent_(agent) {}
-        virtual ~TraceSampler() {
-            sampler_ = nullptr;
-        }
+        virtual ~TraceSampler() = default;
 
         /**
          * @brief Determines if a new trace should be sampled.
@@ -142,11 +145,6 @@ namespace pinpoint {
             if (continue_tps > 0) {
                 cont_limiter_ = std::make_unique<RateLimiter>(continue_tps);
             }
-        }
-
-        ~ThroughputLimitTraceSampler() override {
-            new_limiter_ = nullptr;
-            cont_limiter_ = nullptr;
         }
 
         bool isNewSampled() noexcept override;

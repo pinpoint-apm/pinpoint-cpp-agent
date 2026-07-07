@@ -143,6 +143,23 @@ TEST_F(SamplingTest, PercentSamplerFullRateTest) {
     EXPECT_GT(actual_rate, 0.95) << "Rate 100.0 should result in >95% sampling, got " << actual_rate;
 }
 
+// Out-of-range rates are clamped in the constructor: a negative rate behaves
+// as never-sample (like CounterSampler's <= 0 guard) and a rate above 100%
+// behaves as always-sample, even without the config-layer validation.
+TEST_F(SamplingTest, PercentSamplerOutOfRangeRateClampTest) {
+    PercentSampler negative_sampler(-5.0);
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FALSE(negative_sampler.isSampled())
+            << "Call " << i << " should return false with a negative rate";
+    }
+
+    PercentSampler over_sampler(250.0);
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_TRUE(over_sampler.isSampled())
+            << "Call " << i << " should return true with a rate above 100%";
+    }
+}
+
 // Regression: 0.29% must round to 29/10000, not truncate to 28.
 // 0.29 * 100 is 28.999999999999996 in double; a plain int cast would give 28.
 // The percent sampler is deterministic and gcd(29, 10000) == 1, so over exactly

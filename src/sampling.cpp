@@ -36,7 +36,9 @@ namespace pinpoint {
     }
 
     bool PercentSampler::isSampled() noexcept {
-        if (rate_ == 0) {
+        // The constructor clamps rate_ to [0, MAX_PERCENT_RATE]; <= 0 keeps
+        // the disabled-rate guard uniform with CounterSampler.
+        if (rate_ <= 0) {
             return false;
         }
 
