@@ -247,9 +247,21 @@ namespace pinpoint {
 
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
-        for (const auto& [key, value] : build_grpc_metadata(*config_, agent_->getAgentId(),
-                                                            agent_->getStartTime(), agent_->getAppType(), socket_id)) {
+        // The socket-id-independent headers are immutable once the agent is
+        // started (agent id / start time / app type are all fixed before any
+        // worker runs), and this runs for every unary request — build them
+        // once and reuse. call_once because some clients build contexts from
+        // more than one thread (GrpcAgent: ping + AgentInfo workers,
+        // GrpcCommand: command worker + active-thread-count streams).
+        std::call_once(grpc_metadata_once_, [this] {
+            grpc_metadata_cache_ = build_grpc_metadata(*config_, agent_->getAgentId(),
+                                                       agent_->getStartTime(), agent_->getAppType(), 0);
+        });
+        for (const auto& [key, value] : grpc_metadata_cache_) {
             context->AddMetadata(key, value);
+        }
+        if (socket_id > 0) {
+            context->AddMetadata(METADATA_SOCKET_ID, std::to_string(socket_id));
         }
     }
 
@@ -465,15 +477,19 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+        {
+            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-        const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
-        if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
-            meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}});
-        } else {
-            LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
+            const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
+            if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
+                meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}});
+            } else {
+                LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
+            }
         }
 
+        // Notify after releasing the lock so the woken worker does not
+        // immediately block on meta_queue_mutex_ (matches enqueueSpan).
         meta_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
@@ -486,9 +502,11 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
+        // No notify: this runs on the worker thread — the only waiter on
+        // meta_queue_cv_ — which re-examines the retry queue in
+        // pop_next_meta() right after scheduling.
         pending.available_at = std::chrono::steady_clock::now() + meta_retry_delay();
         retry_queue_.emplace(pending.available_at, std::move(pending));
-        meta_queue_cv_.notify_one();
     }
 
     bool GrpcMetadata::pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock) {
@@ -1786,42 +1804,52 @@ namespace pinpoint {
         LOG_DEBUG("write_and_await_stats_stream");
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        grpc_status_ = next_write();
-
-        if (grpc_status_ == STREAM_WRITE) {
-            StartWrite(msg_);
-        } else {
-            return grpc_status_;
-        }
-
-        if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
-                                 [this] { return grpc_status_ != STREAM_WRITE; })) {
-            // The transport can stay "healthy" (an intermediary satisfies
-            // HTTP/2 keepalive) while the collector backend stops reading,
-            // leaving the write blocked on flow control. An untimed wait
-            // would park this worker for the process lifetime and make
-            // shutdown hang on join. Cancel so the caller rebuilds the
-            // stream instead.
-            LOG_WARN("stats write timed out, recycling stats stream");
-            // Close before cancelling: unlike the ping stream (whose re-armed
-            // read always surfaces the cancellation), a write-only stream has
-            // no pending op once a racing OnWriteDone(true) slips in, so the
-            // hold must be released here or OnDone could be withheld forever.
-            close_stats_stream_locked();
-            if (stream_context_ != nullptr) {
-                stream_context_->TryCancel();
+        // Drain the queue from this worker thread: each iteration builds one
+        // message (next_write), writes it and waits for the completion. The
+        // message construction deliberately stays here — OnWriteDone only
+        // reports the outcome — so protobuf building (snapshot copies, up to
+        // a full URL-stat table) never runs on gRPC's shared callback threads.
+        while (true) {
+            grpc_status_ = next_write();
+            if (grpc_status_ != STREAM_WRITE) {
+                return grpc_status_;
             }
-            // OnDone is guaranteed after cancellation once the hold is
-            // released; the reactor must not be abandoned before it arrives.
-            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
-        }
+            StartWrite(msg_);
 
-        if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
-            LOG_ERROR("failed to send stats: {}, {}",
-                     static_cast<int>(stream_status_.error_code()), stream_status_.error_message());
-        }
+            if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
+                                     [this] { return grpc_status_ != STREAM_WRITE; })) {
+                // The transport can stay "healthy" (an intermediary satisfies
+                // HTTP/2 keepalive) while the collector backend stops reading,
+                // leaving the write blocked on flow control. An untimed wait
+                // would park this worker for the process lifetime and make
+                // shutdown hang on join. Cancel so the caller rebuilds the
+                // stream instead.
+                LOG_WARN("stats write timed out, recycling stats stream");
+                // Close before cancelling: unlike the ping stream (whose
+                // re-armed read always surfaces the cancellation), a
+                // write-only stream has no pending op once a racing
+                // OnWriteDone(true) slips in, so the hold must be released
+                // here or OnDone could be withheld forever.
+                close_stats_stream_locked();
+                if (stream_context_ != nullptr) {
+                    stream_context_->TryCancel();
+                }
+                // OnDone is guaranteed after cancellation once the hold is
+                // released; the reactor must not be abandoned before it
+                // arrives.
+                stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            }
 
-        return grpc_status_;
+            if (grpc_status_ == STREAM_DONE) {
+                if (!stream_status_.ok()) {
+                    LOG_ERROR("failed to send stats: {}, {}",
+                              static_cast<int>(stream_status_.error_code()),
+                              stream_status_.error_message());
+                }
+                return STREAM_DONE;
+            }
+            // STREAM_CONTINUE: the write completed; loop for the next payload.
+        }
     }
 
     void GrpcStats::close_stats_stream_locked() {
@@ -1872,21 +1900,17 @@ namespace pinpoint {
         arena_.Reset(); // reset arena after write completes to free all memory at once
 
         if (ok) {
+            // Only record the completion and wake the worker; the next
+            // message is built and written by the worker loop in
+            // write_and_await_stats_stream(), keeping protobuf construction
+            // off gRPC's callback threads. The guard also means a completion
+            // racing a write-timeout recycle (stream already closed) cannot
+            // clobber a later state.
             std::unique_lock<std::mutex> lock(stream_mutex_);
-            if (stats_stream_closing_) {
-                // A write-timeout recycle (or finish) already issued
-                // StartWritesDone(); starting another write would violate the
-                // callback-API ordering contract. The hold is already
-                // released, so OnDone follows and wakes the worker.
-                return;
-            }
-            grpc_status_ = next_write();
-
             if (grpc_status_ == STREAM_WRITE) {
-                StartWrite(msg_);
-            } else {
-                stream_cv_.notify_one();
+                grpc_status_ = STREAM_CONTINUE;
             }
+            stream_cv_.notify_one();
         } else {
             // The write failed: the stream is broken. Close it (at most once
             // per session) so the hold is released and OnDone can be
@@ -1945,15 +1969,19 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+        {
+            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
 
-        if (stats_queue_.size() < MAX_STATS_QUEUE_SIZE) {
-            stats_queue_.push(stats);
-        } else {
-            force_stats_queue_empty_.store(true, std::memory_order_release);
-            LOG_DEBUG("drop stats: overflow max queue size {}", MAX_STATS_QUEUE_SIZE);
+            if (stats_queue_.size() < MAX_STATS_QUEUE_SIZE) {
+                stats_queue_.push(stats);
+            } else {
+                force_stats_queue_empty_.store(true, std::memory_order_release);
+                LOG_DEBUG("drop stats: overflow max queue size {}", MAX_STATS_QUEUE_SIZE);
+            }
         }
 
+        // Notify after releasing the lock so the woken worker does not
+        // immediately block on stats_queue_mutex_ (matches enqueueSpan).
         stats_queue_cv_.notify_one();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue stats: exception = {}", e.what());

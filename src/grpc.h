@@ -152,6 +152,12 @@ namespace pinpoint {
         std::string client_name_{};
         ClientType client_type_;
 
+        // Socket-id-independent gRPC headers, built lazily on the first
+        // build_grpc_context() call and reused for every request afterwards
+        // (the underlying identity fields never change once the agent runs).
+        mutable std::once_flag grpc_metadata_once_{};
+        mutable std::vector<std::pair<std::string, std::string>> grpc_metadata_cache_{};
+
         std::unique_ptr<grpc::ClientContext> stream_context_{};
         std::mutex stream_mutex_{};
         std::condition_variable stream_cv_{};
