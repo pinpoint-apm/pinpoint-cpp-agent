@@ -15,6 +15,7 @@
  */
 
 #include <mutex>
+#include <thread>
 
 #include "logging.h"
 #include "url_stat.h"
@@ -183,25 +184,77 @@ namespace pinpoint {
         LOG_ERROR("failed to enqueue url stats: unknown exception");
     }
 
+    UrlStats::QueueShard& UrlStats::queueShard() {
+        // Hashed once per thread: each application thread sticks to one shard
+        // for its lifetime, so concurrent enqueues spread across shard mutexes
+        // instead of serializing on a single queue lock.
+        static const thread_local size_t shard_index =
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) % kQueueShardCount;
+        return queue_shards_[shard_index];
+    }
+
     void UrlStats::enqueueUrlStats(UrlStatEntry stats) noexcept try {
         const auto config = agent_->getConfig();
         if (!config->http.url_stat.enable) {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(add_mutex_);
+        auto& shard = queueShard();
+        int64_t prev_pending;
+        {
+            std::lock_guard<std::mutex> shard_lock(shard.mutex_);
+            prev_pending = pending_.load(std::memory_order_relaxed);
+            if (prev_pending >= static_cast<int64_t>(config->span.queue_size)) {
+                LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
+                return;
+            }
+            shard.queue_.push(std::move(stats));
+            pending_.fetch_add(1, std::memory_order_relaxed);
+        }
 
-        if (url_stats_.size() < config->span.queue_size) {
-            url_stats_.push(std::move(stats));
-            lock.unlock();
+        // Wake the worker only on the empty→non-empty transition; while
+        // entries are already pending the worker is awake (or will re-check
+        // its predicate before blocking), so the common case skips add_mutex_
+        // entirely. Taking the (empty) lock pairs the notify with the worker's
+        // predicate check, so it cannot fire between the worker reading
+        // pending_ == 0 and blocking — a lost wakeup that would strand the
+        // entry until the next enqueue.
+        if (prev_pending == 0) {
+            { std::lock_guard<std::mutex> lock(add_mutex_); }
             add_cond_var_.notify_one();
-        } else {
-            LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
         }
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
     } catch (...) {
         LOG_ERROR("failed to enqueue url stats: unknown exception");
+    }
+
+    void UrlStats::drainQueueShards(const Config& config) {
+        // Bound how long snapshot_mutex_ is held per acquisition: a drained
+        // batch can be as large as the whole queue limit, and each add does a
+        // key build plus a map lookup — processing it under one lock would
+        // stall takeSnapshot (the send path) for the entire batch.
+        constexpr size_t kEntriesPerSnapshotLock = 64;
+
+        for (auto& shard : queue_shards_) {
+            std::queue<UrlStatEntry> batch;
+            {
+                std::lock_guard<std::mutex> shard_lock(shard.mutex_);
+                batch.swap(shard.queue_);
+                if (!batch.empty()) {
+                    pending_.fetch_sub(static_cast<int64_t>(batch.size()), std::memory_order_relaxed);
+                }
+            }
+
+            while (!batch.empty()) {
+                std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+                for (size_t i = 0; i < kEntriesPerSnapshotLock && !batch.empty(); i++) {
+                    auto us = std::move(batch.front());
+                    batch.pop();
+                    snapshot_->add(&us, config, tick_clock_);
+                }
+            }
+        }
     }
 
     void UrlStats::addUrlStatsWorker() try {
@@ -211,25 +264,19 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(add_mutex_);
-        std::queue<UrlStatEntry> batch;
         while (!agent_->isExiting()) {
+            // Entries enqueued while draining don't re-notify (only the
+            // empty→non-empty transition does), so the predicate re-check on
+            // pending_ before blocking is what picks them up.
             add_cond_var_.wait(lock, [this] {
-                return !url_stats_.empty() || agent_->isExiting();
+                return pending_.load(std::memory_order_relaxed) > 0 || agent_->isExiting();
             });
             if (agent_->isExiting()) {
                 break;
             }
 
-            batch.swap(url_stats_);
             lock.unlock();
-            {
-                std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
-                while (!batch.empty()) {
-                    auto us = std::move(batch.front());
-                    batch.pop();
-                    snapshot_->add(&us, *config, tick_clock_);
-                }
-            }
+            drainQueueShards(*config);
             lock.lock();
         }
         LOG_INFO("add url stats worker end");

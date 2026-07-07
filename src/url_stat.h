@@ -17,6 +17,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -213,15 +215,35 @@ namespace pinpoint {
         TickClock& getTickClock() { return tick_clock_; }
 
     private:
+        static constexpr size_t kQueueShardCount = 16;
+
+        // One queue per shard: each request thread sticks to one shard
+        // (picked by thread id), so enqueues from different threads mostly
+        // take different mutexes instead of contending on one global lock.
+        struct QueueShard {
+            std::mutex mutex_;
+            std::queue<UrlStatEntry> queue_;
+        };
+
+        QueueShard& queueShard();
+        void drainQueueShards(const Config& config);
+
         // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
         // the URL-stat workers before its own destruction, so agent_ never
         // dangles. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
 
-        // Queue for incoming URL stats
+        // Queue for incoming URL stats. pending_ is the exact number of
+        // queued-but-not-drained entries across all shards: it is incremented
+        // under the same shard lock as the push and decremented under the same
+        // shard lock as the drain swap, so it can never go negative and serves
+        // both as the global size limit and the worker's wait predicate.
+        // add_mutex_ only pairs enqueue wakeups with the worker's wait — it is
+        // taken on the enqueue path solely on the empty→non-empty transition.
+        std::array<QueueShard, kQueueShardCount> queue_shards_{};
+        std::atomic<int64_t> pending_{0};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
-        std::queue<UrlStatEntry> url_stats_{};
 
         // Snapshot management
         TickClock tick_clock_;
