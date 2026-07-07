@@ -1840,7 +1840,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
 
     auto span_data = make_test_span_data_ptr(*mock_agent_service_, "annotation-op");
     auto& annotations = span_data->getAnnotations()->getAnnotations();
-    annotations.emplace_back(101, AnnotationData(ANNOTATION_TYPE_STRING, int32_t{42}));
+    annotations.emplace_back(101, AnnotationData(int32_t{42}));
     span_data->getAnnotations()->AppendLong(102, 1234567890123LL);
     span_data->getAnnotations()->AppendString(103, "string-value");
     span_data->getAnnotations()->AppendStringString(104, "left", "right");
@@ -1865,7 +1865,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
 
     EXPECT_EQ(span.annotation(0).key(), 101);
     EXPECT_EQ(span.annotation(0).value().intvalue(), 42)
-        << "A mismatched legacy constructor tag must not drive serialization";
+        << "An int annotation should serialize as intvalue";
 
     EXPECT_EQ(span.annotation(1).key(), 102);
     EXPECT_EQ(span.annotation(1).value().longvalue(), 1234567890123LL);

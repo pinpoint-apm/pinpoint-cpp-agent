@@ -733,10 +733,10 @@ TEST_F(AnnotationTest, AppendLongWithSmallValueTest) {
 }
 
 TEST_F(AnnotationTest, AnnotationDataTypeComesFromVariantValueTest) {
-    AnnotationData value(ANNOTATION_TYPE_STRING, int32_t{42});
+    AnnotationData value(int32_t{42});
 
     EXPECT_EQ(value.type(), ANNOTATION_TYPE_INT)
-        << "AnnotationData should not preserve a mismatched constructor tag";
+        << "AnnotationData type should be derived from the stored value";
     EXPECT_EQ(std::get<int32_t>(value.data), 42);
 }
 

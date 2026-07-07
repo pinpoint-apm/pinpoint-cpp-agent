@@ -62,6 +62,9 @@ namespace pinpoint {
             if (stack_.size() >= kMaxFrames) {
                 return;
             }
+            if (stack_.capacity() == 0) {
+                stack_.reserve(kInitialFrameCapacity);
+            }
             stack_.emplace_back(StackFrame{truncated(module, kMaxFrameStringLength),
                                            truncated(function, kMaxFrameStringLength),
                                            truncated(file, kMaxFrameStringLength), line});
@@ -103,6 +106,10 @@ namespace pinpoint {
 
     private:
         static constexpr size_t kMaxFrames = 128;
+        // Typical callstacks are a couple dozen frames deep; reserving up
+        // front avoids repeated reallocations on the error path without
+        // paying for kMaxFrames when stacks are shallow.
+        static constexpr size_t kInitialFrameCapacity = 16;
         static constexpr size_t kMaxFrameStringLength = 1024;
         static constexpr size_t kMaxErrorMessageLength = 4096;
 
@@ -144,16 +151,19 @@ namespace pinpoint {
         /**
          * @brief Returns the generated exception identifier.
          */
-        int32_t getId() const { return id_; }
+        int64_t getId() const { return id_; }
         /**
          * @brief Returns a reference to the captured call stack.
          */
         const CallStack& getCallStack() const { return *callstack_; }
-        
-        static std::atomic<int32_t> exception_id_gen;
 
-    private:    
-        int32_t id_;
+        // 64-bit to match the PException.exceptionId proto field: a 32-bit
+        // counter would wrap into negative/duplicate ids on long-lived,
+        // high-error-rate agents.
+        static std::atomic<int64_t> exception_id_gen;
+
+    private:
+        int64_t id_;
         std::unique_ptr<CallStack> callstack_;
     };
 

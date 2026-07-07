@@ -293,7 +293,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
     // Get the exception ID from the exception
     const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1) << "Should have one exception";
-    int32_t exception_id = exceptions[0]->getId();
+    int64_t exception_id = exceptions[0]->getId();
     
     EXPECT_GT(exception_id, 0) << "Exception ID should be positive";
     
@@ -328,8 +328,8 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
     
     // Verify different exception IDs
-    int32_t id1 = exceptions[0]->getId();
-    int32_t id2 = exceptions[1]->getId();
+    int64_t id1 = exceptions[0]->getId();
+    int64_t id2 = exceptions[1]->getId();
     EXPECT_NE(id1, id2) << "Exception IDs should be different";
 }
 

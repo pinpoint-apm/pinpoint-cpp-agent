@@ -28,7 +28,7 @@
 
 namespace pinpoint {
 
-    std::atomic<int32_t> Exception::exception_id_gen{1};
+    std::atomic<int64_t> Exception::exception_id_gen{1};
 
     SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation) :
         span_(span),
@@ -136,15 +136,13 @@ namespace pinpoint {
                 // result.parameters is dead after this call: move it into the
                 // annotation instead of copying through the string_view path.
                 ensureAnnotations()->AppendData(ANNOTATION_SQL_UID,
-                    AnnotationData(ANNOTATION_TYPE_BYTES_STRING_STRING, *sql_uid,
-                                   std::move(result.parameters), args));
+                    AnnotationData(*sql_uid, std::move(result.parameters), args));
             }
         } else {
             auto sql_id = agent_->cacheSql(result.normalized_sql);
             if (sql_id) {
                 ensureAnnotations()->AppendData(ANNOTATION_SQL_ID,
-                    AnnotationData(ANNOTATION_TYPE_INT_STRING_STRING, sql_id,
-                                   std::move(result.parameters), args));
+                    AnnotationData(sql_id, std::move(result.parameters), args));
             }
         }
     }

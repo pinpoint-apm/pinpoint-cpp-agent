@@ -239,9 +239,9 @@ TEST_F(CallStackTest, ExceptionUniqueIdTest) {
     Exception exception2(std::move(callstack2));
     Exception exception3(std::move(callstack3));
     
-    int32_t id1 = exception1.getId();
-    int32_t id2 = exception2.getId();
-    int32_t id3 = exception3.getId();
+    int64_t id1 = exception1.getId();
+    int64_t id2 = exception2.getId();
+    int64_t id3 = exception3.getId();
     
     EXPECT_NE(id1, id2) << "Exception IDs should be unique";
     EXPECT_NE(id2, id3) << "Exception IDs should be unique";
@@ -254,10 +254,10 @@ TEST_F(CallStackTest, ExceptionSequentialIdTest) {
     auto callstack2 = std::make_unique<CallStack>("Error 2");
     
     Exception exception1(std::move(callstack1));
-    int32_t id1 = exception1.getId();
+    int64_t id1 = exception1.getId();
     
     Exception exception2(std::move(callstack2));
-    int32_t id2 = exception2.getId();
+    int64_t id2 = exception2.getId();
     
     EXPECT_EQ(id2, id1 + 1) << "Exception IDs should be sequential";
 }
@@ -333,7 +333,7 @@ TEST_F(CallStackTest, ExceptionConcurrentIdGenerationTest) {
     const int num_threads = 10;
     const int exceptions_per_thread = 100;
     std::vector<std::thread> threads;
-    std::vector<int32_t> all_ids(num_threads * exceptions_per_thread);
+    std::vector<int64_t> all_ids(num_threads * exceptions_per_thread);
     
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([t, &all_ids]() {
@@ -450,7 +450,7 @@ TEST_F(CallStackTest, CompleteWorkflowTest) {
     
     // Wrap in Exception
     Exception exception(std::move(callstack));
-    int32_t exception_id = exception.getId();
+    int64_t exception_id = exception.getId();
     
     // Retrieve and verify
     const auto& retrieved = exception.getCallStack();
