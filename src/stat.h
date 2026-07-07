@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <array>
+#include <optional>
 
 #include "agent_service.h"
 
@@ -69,13 +70,15 @@ namespace pinpoint {
         void addActiveSpan(int64_t spanId, int64_t start_time);
         void dropActiveSpan(int64_t spanId);
         
-        // Counter incrementers
-        void incrSampleNew() { sample_new_++; }
-        void incrUnsampleNew() { un_sample_new_++; }
-        void incrSampleCont() { sample_cont_++; }
-        void incrUnsampleCont() { un_sample_cont_++; }
-        void incrSkipNew() { skip_new_++; }
-        void incrSkipCont() { skip_cont_++; }
+        // Counter incrementers. Called once per request, so relaxed: these are
+        // independent counters with no ordering relationship to other data —
+        // the collector just exchange()s each one for its own value.
+        void incrSampleNew() { sample_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrUnsampleNew() { un_sample_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSampleCont() { sample_cont_.fetch_add(1, std::memory_order_relaxed); }
+        void incrUnsampleCont() { un_sample_cont_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSkipNew() { skip_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSkipCont() { skip_cont_.fetch_add(1, std::memory_order_relaxed); }
 
         // Access to snapshots (test-only: unsynchronized reference — the
         // worker overwrites these slots under mutex_)
@@ -92,16 +95,12 @@ namespace pinpoint {
             return agent_stats_snapshots_;
         }
 
-        // Singleton instance accessor (for global C-style functions)
-        static AgentStats* getInstance();
-
         void initAgentStats();
         void collectAgentStat(AgentStatsSnapshot &stat);
         void collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms);
         void resetAgentStats();
 
     private:
-        int64_t getResponseTimeAvg();
         void pauseResponseTimeUpdates();
         void resumeResponseTimeUpdates();
         void collectAndResetResponseTime(int64_t& avg, int64_t& max);
@@ -119,7 +118,7 @@ namespace pinpoint {
         };
         
         // System metrics helpers
-        CpuLoad getCpuLoad(std::chrono::seconds dur);
+        CpuLoad getCpuLoad(std::chrono::milliseconds dur);
         ProcessStatus getProcessStatus();
 
     private:
@@ -154,8 +153,11 @@ namespace pinpoint {
         
         // Statistics Data
         std::chrono::system_clock::time_point last_collect_time_;
-        clock_t last_sys_cpu_time_{0};
-        clock_t last_proc_cpu_time_{0};
+        // Empty until the first successful CPU-time reading: a failed reading
+        // must not become a 0 baseline (it would make the next delta span the
+        // whole process lifetime and clamp to a bogus 100% load).
+        std::optional<clock_t> last_sys_cpu_time_{};
+        std::optional<clock_t> last_proc_cpu_time_{};
         
         std::array<ResponseTimeShard, kResponseTimeShardCount> response_time_shards_;
         std::atomic<bool> response_time_snapshotting_{false};

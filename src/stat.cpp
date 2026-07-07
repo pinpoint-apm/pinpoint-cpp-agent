@@ -60,81 +60,100 @@ namespace pinpoint {
     constexpr size_t kProcStatusBufferSize = 256;
 #endif
 
-    static void get_cpu_time(clock_t *sys_time, clock_t *proc_time) {
-        if (sys_time) {
+    // A failed reading is left empty rather than reported as 0: writing 0 into
+    // the last-sample bookkeeping would make the next cycle's delta span the
+    // whole process lifetime and clamp to a bogus 100% load spike.
+    struct CpuTimeSample {
+        std::optional<clock_t> sys_time;
+        std::optional<clock_t> proc_time;
+    };
+
+    static CpuTimeSample get_cpu_time() {
+        CpuTimeSample sample;
+
 #ifdef __APPLE__
-            // System-wide CPU ticks via Mach. Ticks are reported in CLK_TCK units
-            // (matches sysconf(_SC_CLK_TCK)) and aggregated across all CPUs, so the
-            // value is directly comparable to /proc/stat's first line on Linux.
-            host_cpu_load_info_data_t cpu_info{};
-            mach_msg_type_number_t info_count = HOST_CPU_LOAD_INFO_COUNT;
-            // mach_host_self() returns a send right that must be released, and
-            // this runs every collection interval for the life of the process.
-            // The host port is process-global and stable, so acquire it once
-            // and reuse it instead of leaking a port reference on every call.
-            static const host_t host_port = mach_host_self();
-            if (host_statistics(host_port, HOST_CPU_LOAD_INFO,
-                                reinterpret_cast<host_info_t>(&cpu_info),
-                                &info_count) == KERN_SUCCESS) {
-                *sys_time = static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_USER]) +
-                            static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_SYSTEM]) +
-                            static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_NICE]);
-            } else {
-                LOG_WARN("host_statistics(HOST_CPU_LOAD_INFO) failed");
-                *sys_time = 0;
-            }
+        // System-wide CPU ticks via Mach. Ticks are reported in CLK_TCK units
+        // (matches sysconf(_SC_CLK_TCK)) and aggregated across all CPUs, so the
+        // value is directly comparable to /proc/stat's first line on Linux.
+        host_cpu_load_info_data_t cpu_info{};
+        mach_msg_type_number_t info_count = HOST_CPU_LOAD_INFO_COUNT;
+        // mach_host_self() returns a send right that must be released, and
+        // this runs every collection interval for the life of the process.
+        // The host port is process-global and stable, so acquire it once
+        // and reuse it instead of leaking a port reference on every call.
+        static const host_t host_port = mach_host_self();
+        if (host_statistics(host_port, HOST_CPU_LOAD_INFO,
+                            reinterpret_cast<host_info_t>(&cpu_info),
+                            &info_count) == KERN_SUCCESS) {
+            sample.sys_time = static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_USER]) +
+                              static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_SYSTEM]) +
+                              static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_NICE]);
+        } else {
+            LOG_WARN("host_statistics(HOST_CPU_LOAD_INFO) failed");
+        }
 #else
-            FILE *fd = fopen("/proc/stat", "r");
-            if (fd == nullptr) {
-                return;
-            }
+        FILE *fd = fopen("/proc/stat", "r");
+        if (fd != nullptr) {
             FileCloser closer(fd);  // RAII: Automatically closes on scope exit
 
-            char buf[kProcStatBufferSize];
-            clock_t user = 0, nice = 0, system = 0;
-            memset(buf, 0, sizeof(buf));
-
-            if (fgets(buf, sizeof(buf) - 1, fd) != nullptr) {
-                if (sscanf(buf, "%*s %lu %lu %lu", &user, &nice, &system) == 3) {
-                    *sys_time = user + system + nice;
-                } else {
-                    LOG_WARN("Failed to parse /proc/stat format");
-                    *sys_time = 0;
-                }
+            char buf[kProcStatBufferSize] = {};
+            // glibc's clock_t is signed; scan into unsigned long (what %lu
+            // expects) and convert, instead of aliasing signed storage.
+            unsigned long user = 0, nice = 0, system = 0;
+            if (fgets(buf, sizeof(buf) - 1, fd) != nullptr &&
+                sscanf(buf, "%*s %lu %lu %lu", &user, &nice, &system) == 3) {
+                sample.sys_time = static_cast<clock_t>(user + nice + system);
+            } else {
+                LOG_WARN("Failed to parse /proc/stat format");
             }
+        }
 #endif
+
+        // times() is POSIX and works on both Linux and macOS; tms_utime/tms_stime
+        // are reported in clock ticks (sysconf(_SC_CLK_TCK)) for the calling process.
+        struct tms proc_time_sample{};
+        if (times(&proc_time_sample) != static_cast<clock_t>(-1)) {
+            sample.proc_time = proc_time_sample.tms_utime + proc_time_sample.tms_stime;
         }
 
-        if (proc_time) {
-            // times() is POSIX and works on both Linux and macOS; tms_utime/tms_stime
-            // are reported in clock ticks (sysconf(_SC_CLK_TCK)) for the calling process.
-            struct tms proc_time_sample{};
-            times(&proc_time_sample);
-            *proc_time = proc_time_sample.tms_utime + proc_time_sample.tms_stime;
-        }
+        return sample;
     }
 
-    AgentStats::CpuLoad AgentStats::getCpuLoad(std::chrono::seconds dur) {
-        clock_t sys_time = 0, proc_time = 0;
-        double total_cpu = static_cast<double>(dur.count() * sc_clk_tck_ * sc_nprocessors_onln_);
+    AgentStats::CpuLoad AgentStats::getCpuLoad(std::chrono::milliseconds dur) {
+        // Millisecond precision: truncating the elapsed period to whole
+        // seconds would inflate the reported load by up to ~25% when the
+        // collection timer fires just short of the interval (e.g. 4.99s → 4s).
+        double total_cpu = static_cast<double>(dur.count()) / 1000.0
+                           * static_cast<double>(sc_clk_tck_ * sc_nprocessors_onln_);
 
         if (total_cpu <= 0) total_cpu = 1; // Prevent division by zero
 
-        get_cpu_time(&sys_time, &proc_time);
+        const auto sample = get_cpu_time();
 
-        clock_t sys_cpu = sys_time - last_sys_cpu_time_;
-        double sys_load = static_cast<double>(sys_cpu) / total_cpu;
-        if (sys_load > 1.0) { sys_load = 1.0; }
-        if (sys_load < 0.0) { sys_load = 0.0; }
+        // A load is computed only when both the current reading and the
+        // previous baseline exist; otherwise 0 is reported for this cycle and
+        // the baseline is left untouched (or re-established) so a transient
+        // read failure never turns into a full-lifetime delta next cycle.
+        double sys_load = 0.0;
+        if (sample.sys_time) {
+            if (last_sys_cpu_time_) {
+                sys_load = static_cast<double>(*sample.sys_time - *last_sys_cpu_time_) / total_cpu;
+                if (sys_load > 1.0) { sys_load = 1.0; }
+                if (sys_load < 0.0) { sys_load = 0.0; }
+            }
+            last_sys_cpu_time_ = sample.sys_time;
+        }
 
-        clock_t proc_cpu = proc_time - last_proc_cpu_time_;
-        double proc_load = static_cast<double>(proc_cpu) / total_cpu;
-        if (proc_load > 1.0) { proc_load = 1.0; }
-        if (proc_load < 0.0) { proc_load = 0.0; }
+        double proc_load = 0.0;
+        if (sample.proc_time) {
+            if (last_proc_cpu_time_) {
+                proc_load = static_cast<double>(*sample.proc_time - *last_proc_cpu_time_) / total_cpu;
+                if (proc_load > 1.0) { proc_load = 1.0; }
+                if (proc_load < 0.0) { proc_load = 0.0; }
+            }
+            last_proc_cpu_time_ = sample.proc_time;
+        }
 
-        last_sys_cpu_time_ = sys_time;
-        last_proc_cpu_time_ = proc_time;
-        
         return CpuLoad{sys_load, proc_load};
     }
 
@@ -149,12 +168,12 @@ namespace pinpoint {
         const char* p = buf + prefix_len;
         const char* buf_end = buf + buf_size;
 
-        // Skip whitespace
-        while (p < buf_end && isspace(*p)) p++;
+        // Skip whitespace (cast: passing a negative char to isspace/isdigit is UB)
+        while (p < buf_end && isspace(static_cast<unsigned char>(*p))) p++;
 
         // Extract digits only (values may have trailing units like "kB")
         const char* digit_start = p;
-        while (p < buf_end && isdigit(*p)) p++;
+        while (p < buf_end && isdigit(static_cast<unsigned char>(*p))) p++;
         if (p > digit_start) {
             return stoi_(std::string_view(digit_start, p - digit_start));
         }
@@ -239,27 +258,15 @@ namespace pinpoint {
         skip_cont_.store(0, std::memory_order_relaxed);
     }
 
-    int64_t AgentStats::getResponseTimeAvg() {
-        std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
-        pauseResponseTimeUpdates();
-        int64_t request_count = 0;
-        int64_t acc_response_time = 0;
-        for (auto& shard : response_time_shards_) {
-            request_count += shard.request_count_.load(std::memory_order_relaxed);
-            acc_response_time += shard.acc_response_time_.load(std::memory_order_relaxed);
-        }
-        resumeResponseTimeUpdates();
-
-        if (request_count > 0) {
-            return acc_response_time / request_count;
-        }
-        return 0;
-    }
-
     void AgentStats::pauseResponseTimeUpdates() {
-        response_time_snapshotting_.store(true, std::memory_order_release);
+        // seq_cst pairs with the writer's fetch_add/load in collectResponseTime.
+        // Both sides write one flag and then read the other's (store-buffering
+        // pattern); with only acquire/release, this thread could read
+        // writers_ == 0 while a writer simultaneously reads snapshotting_ ==
+        // false — letting an update slip into the snapshot window.
+        response_time_snapshotting_.store(true, std::memory_order_seq_cst);
         for (auto& shard : response_time_shards_) {
-            while (shard.writers_.load(std::memory_order_acquire) != 0) {
+            while (shard.writers_.load(std::memory_order_seq_cst) != 0) {
                 std::this_thread::yield();
             }
         }
@@ -297,9 +304,11 @@ namespace pinpoint {
         // the worker's collection cycle, which reads and writes the same
         // non-atomic fields under mutex_.
         std::lock_guard<std::mutex> lock(mutex_);
-        last_sys_cpu_time_ = 0;
-        last_proc_cpu_time_ = 0;
-        get_cpu_time(&last_sys_cpu_time_, &last_proc_cpu_time_);
+        // A failed reading leaves the baseline empty; getCpuLoad then reports
+        // 0 and establishes the baseline on the first successful sample.
+        const auto cpu_sample = get_cpu_time();
+        last_sys_cpu_time_ = cpu_sample.sys_time;
+        last_proc_cpu_time_ = cpu_sample.proc_time;
 
         resetAgentStats();
 
@@ -323,8 +332,11 @@ namespace pinpoint {
                 std::this_thread::yield();
             }
 
-            shard.writers_.fetch_add(1, std::memory_order_acq_rel);
-            if (!response_time_snapshotting_.load(std::memory_order_acquire)) {
+            // seq_cst pairs with pauseResponseTimeUpdates (see comment there):
+            // the increment must be globally visible before snapshotting_ is
+            // re-read, or this writer could slip past a concurrent pause.
+            shard.writers_.fetch_add(1, std::memory_order_seq_cst);
+            if (!response_time_snapshotting_.load(std::memory_order_seq_cst)) {
                 break;
             }
             shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
@@ -385,7 +397,7 @@ namespace pinpoint {
 
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-        std::chrono::seconds period = std::chrono::duration_cast<std::chrono::seconds>(now - last_collect_time_);
+        const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_);
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);
