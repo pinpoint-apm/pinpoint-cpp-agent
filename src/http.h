@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <bitset>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -37,6 +38,8 @@ namespace pinpoint {
         constexpr int CLIENT_ERROR_MAX = 499;
         constexpr int SERVER_ERROR_MIN = 500;
         constexpr int SERVER_ERROR_MAX = 599;
+        // Size of the direct-lookup error table: covers every standard code.
+        constexpr int TABLE_SIZE = SERVER_ERROR_MAX + 1;
     }
 
     /**
@@ -135,7 +138,10 @@ namespace pinpoint {
         bool isErrorCode(int status_code) const noexcept;
 
     private:
-        std::vector<std::unique_ptr<HttpStatusCode>> errors;
+        // Configured tokens are flattened into a direct-lookup table at
+        // construction, so the per-span check is a single branch-free bit test.
+        std::bitset<http_status::TABLE_SIZE> error_codes_{};
+        std::vector<int> extra_codes_{};  // configured codes outside [0, TABLE_SIZE)
     };
 
     /**
@@ -163,7 +169,8 @@ namespace pinpoint {
      * @brief Filters URLs based on Ant-style patterns supplied via configuration.
      *
      * Uses direct string matching instead of std::regex for performance.
-     * Supports `*` (matches within a single path segment) and `**` (matches across segments).
+     * Supports `*` (matches within a single path segment), `**` (matches across
+     * segments), and `?` (matches exactly one character within a segment).
      */
     class HttpUrlFilter {
     public:
@@ -224,7 +231,7 @@ namespace pinpoint {
      */
     class HttpMethodFilter {
     public:
-        HttpMethodFilter(const std::vector<std::string>& cfg);
+        HttpMethodFilter(std::vector<std::string> cfg);
         ~HttpMethodFilter() = default;
 
         /**

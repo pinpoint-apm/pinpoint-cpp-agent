@@ -1126,6 +1126,18 @@ TEST_F(HttpTest, SetProxyHeaderAppTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
+// Test setProxyHeader with a malformed token: a token without '=' must be
+// skipped on its own instead of swallowing the following tokens
+TEST_F(HttpTest, SetProxyHeaderMalformedTokenTest) {
+    std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyApache", "garbage t=1234567890000 D=1500"}
+    };
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+
+    EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
+}
+
 // Test setProxyHeader without proxy headers
 TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
     std::map<std::string, std::string> headers = {};
@@ -1193,13 +1205,13 @@ TEST_F(HttpTest, HttpUrlFilterQuestionMarkWildcardTest) {
     EXPECT_FALSE(filter.isFiltered("/file12.txt")) << "? should not match two chars";
 }
 
-// Test HttpUrlFilter ? matches any single character including path separator
-TEST_F(HttpTest, HttpUrlFilterQuestionMarkMatchesAnyCharTest) {
+// Test HttpUrlFilter ? matches a single character but never the path separator (Ant semantics)
+TEST_F(HttpTest, HttpUrlFilterQuestionMarkDoesNotMatchSlashTest) {
     std::vector<std::string> cfg = {"/a?b"};
     HttpUrlFilter filter(cfg);
 
     EXPECT_TRUE(filter.isFiltered("/aXb")) << "? should match a regular char";
-    EXPECT_TRUE(filter.isFiltered("/a/b")) << "? matches any char including '/'";
+    EXPECT_FALSE(filter.isFiltered("/a/b")) << "? should not match the path separator";
     EXPECT_FALSE(filter.isFiltered("/ab")) << "? requires exactly one char";
     EXPECT_FALSE(filter.isFiltered("/aXXb")) << "? should not match two chars";
 }

@@ -30,32 +30,43 @@
 namespace pinpoint {
 
     HttpStatusErrors::HttpStatusErrors(const std::vector<std::string>& tokens) {
+        const auto set_range = [this](int min, int max) {
+            for (int code = min; code <= max; ++code) {
+                error_codes_.set(code);
+            }
+        };
         for (const auto& token : tokens){
             if (compare_string(token, "5xx")) {
-                errors.push_back(std::make_unique<HttpStatusServerError>());
+                set_range(http_status::SERVER_ERROR_MIN, http_status::SERVER_ERROR_MAX);
             } else if (compare_string(token, "4xx")) {
-                errors.push_back(std::make_unique<HttpStatusClientError>());
+                set_range(http_status::CLIENT_ERROR_MIN, http_status::CLIENT_ERROR_MAX);
             } else if (compare_string(token, "3xx")) {
-                errors.push_back(std::make_unique<HttpStatusRedirection>());
+                set_range(http_status::REDIRECTION_MIN, http_status::REDIRECTION_MAX);
             } else if (compare_string(token, "2xx")) {
-                errors.push_back(std::make_unique<HttpStatusSuccess>());
+                set_range(http_status::SUCCESS_MIN, http_status::SUCCESS_MAX);
             } else if (compare_string(token, "1xx")) {
-                errors.push_back(std::make_unique<HttpStatusInformational>());
+                set_range(http_status::INFORMATIONAL_MIN, http_status::INFORMATIONAL_MAX);
             } else {
                 auto result = stoi_(token);
                 if (result.has_value()) {
-                    errors.push_back(std::make_unique<HttpStatusDefault>(result.value()));
+                    const int code = result.value();
+                    if (0 <= code && code < http_status::TABLE_SIZE) {
+                        error_codes_.set(code);
+                    } else {
+                        extra_codes_.push_back(code);
+                    }
+                } else {
+                    LOG_WARN("ignoring invalid http status error token: {}", token);
                 }
-                // If parsing fails, ignore the invalid token
             }
         }
     }
 
     bool HttpStatusErrors::isErrorCode(int status_code) const noexcept {
-        return std::any_of(errors.begin(), errors.end(),
-            [status_code](const auto& code) {
-                return code->isError(status_code);
-            });
+        if (0 <= status_code && status_code < http_status::TABLE_SIZE) {
+            return error_codes_[status_code];
+        }
+        return std::find(extra_codes_.begin(), extra_codes_.end(), status_code) != extra_codes_.end();
     }
 
     HttpHeaderRecorder::HttpHeaderRecorder(int anno_key, std::vector<std::string> cfg) 
@@ -109,7 +120,9 @@ namespace pinpoint {
     }
 
     bool HttpUrlFilter::isFiltered(std::string_view url) const {
-        MatchScratch scratch;
+        // Called on every request (NewSpan): reuse the DP rows across calls so
+        // Ant-pattern matching does not heap-allocate once warmed up.
+        static thread_local MatchScratch scratch;
         for (const auto& pattern : patterns_) {
             switch (pattern.kind) {
             case PatternKind::Exact:
@@ -233,9 +246,12 @@ namespace pinpoint {
                 }
                 break;
             case TokenKind::Question:
+                // Ant semantics: '?' matches one character but never the
+                // path separator, same as '*'.
                 scratch.current[U] = 0;
                 for (size_t ui = U; ui-- > 0;) {
-                    scratch.current[ui] = scratch.next[ui + 1];
+                    scratch.current[ui] =
+                        (url[ui] != '/' && scratch.next[ui + 1]) ? 1 : 0;
                 }
                 break;
             case TokenKind::Star:
@@ -285,8 +301,8 @@ namespace pinpoint {
         return false;
     }
 
-    HttpMethodFilter::HttpMethodFilter(const std::vector<std::string>& cfg)
-        : methods_(cfg) {}
+    HttpMethodFilter::HttpMethodFilter(std::vector<std::string> cfg)
+        : methods_(std::move(cfg)) {}
 
     bool HttpMethodFilter::isFiltered(std::string_view method) const {
         return std::any_of(methods_.begin(), methods_.end(),
@@ -385,21 +401,23 @@ namespace pinpoint {
                 if (pos == std::string_view::npos) {
                     break;
                 }
-                
+
+                size_t token_end = value.find(' ', pos);
+                if (token_end == std::string_view::npos) {
+                    token_end = len;
+                }
+
+                // The '=' must belong to the current space-delimited token;
+                // otherwise a malformed token would swallow its neighbors.
                 size_t eq_pos = value.find('=', pos);
-                if (eq_pos == std::string_view::npos) {
-                    break;
+                if (eq_pos == std::string_view::npos || eq_pos >= token_end) {
+                    pos = token_end;
+                    continue;
                 }
-                
+
                 std::string_view key = value.substr(pos, eq_pos - pos);
-                
-                size_t val_end = value.find(' ', eq_pos + 1);
-                if (val_end == std::string_view::npos) {
-                    val_end = len;
-                }
-                
-                std::string_view val = value.substr(eq_pos + 1, val_end - eq_pos - 1);
-                
+                std::string_view val = value.substr(eq_pos + 1, token_end - eq_pos - 1);
+
                 if (key == "t") {
                     result.t_val = val;
                 } else if (key == "D") {
@@ -411,8 +429,8 @@ namespace pinpoint {
                 } else if (key == "app") {
                     result.app_val = val;
                 }
-                
-                pos = val_end;
+
+                pos = token_end;
             }
             return result;
         }
