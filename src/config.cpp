@@ -20,8 +20,8 @@
 #include <fstream>
 #include <random>
 #include <string>
-#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <system_error>
 #include <mutex>
@@ -114,16 +114,47 @@ namespace pinpoint {
         return *watcher;
     }
 
-    // Stop flag for the CURRENT watcher generation. Each started watcher
-    // captures its own flag by shared_ptr, so a stop issued to one generation
-    // can never be undone by a later start: with a single shared flag, a
+    // Stop signal for the CURRENT watcher generation. Each started watcher
+    // captures its own signal by shared_ptr, so a stop issued to one generation
+    // can never be undone by a later start: with a single shared signal, a
     // start_config_file_watcher() racing stop_config_file_watcher() (which
-    // joins outside the lock) could reset the flag before the old watcher —
-    // possibly still in its 1-second sleep — ever observed it, leaving that
-    // watcher running forever and the stopper blocked in join().
-    static std::shared_ptr<std::atomic<bool>>& config_watcher_stop_flag() {
-        static std::shared_ptr<std::atomic<bool>> flag;
-        return flag;
+    // joins outside the lock) could reset it before the old watcher — possibly
+    // still waiting out its poll tick — ever observed it, leaving that watcher
+    // running forever and the stopper blocked in join().
+    //
+    // A condition variable rather than a plain sleep+atomic, so a stop request
+    // wakes the watcher immediately: with an uninterruptible 1-second sleep,
+    // stop_config_file_watcher() — and therefore agent Shutdown() — would block
+    // in join() for up to a full poll tick.
+    struct ConfigWatcherStop {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool requested{false};
+
+        void request() {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                requested = true;
+            }
+            cv.notify_all();
+        }
+
+        bool stop_requested() {
+            std::lock_guard<std::mutex> lock(mutex);
+            return requested;
+        }
+
+        // Waits out one poll tick; returns true when a stop was requested
+        // (either already pending or arriving during the wait).
+        bool wait(std::chrono::seconds tick) {
+            std::unique_lock<std::mutex> lock(mutex);
+            return cv.wait_for(lock, tick, [this] { return requested; });
+        }
+    };
+
+    static std::shared_ptr<ConfigWatcherStop>& config_watcher_stop() {
+        static std::shared_ptr<ConfigWatcherStop> stop;
+        return stop;
     }
 
     static std::mutex& config_watcher_mutex() {
@@ -157,7 +188,11 @@ namespace pinpoint {
     void start_config_file_watcher() {
         std::lock_guard<std::mutex> lock(config_watcher_mutex());
         const auto path = get_config_file_path_copy();
-        if (path.empty() || !std::filesystem::exists(path)) {
+        // Non-throwing exists(): a transient filesystem error here must degrade
+        // to "no watcher", not propagate into Agent::Start()'s catch and leave
+        // the whole agent offline.
+        std::error_code exists_ec;
+        if (path.empty() || !std::filesystem::exists(path, exists_ec)) {
             return;
         }
 
@@ -173,11 +208,11 @@ namespace pinpoint {
             }
             abandon_thread(watcher);
         }
-        auto stop_flag = std::make_shared<std::atomic<bool>>(false);
-        config_watcher_stop_flag() = stop_flag;
+        auto stop = std::make_shared<ConfigWatcherStop>();
+        config_watcher_stop() = stop;
         config_watcher_owner_pid() = getpid();
 
-        watcher = std::thread([path, stop_flag]() {
+        watcher = std::thread([path, stop]() {
             // Seed with the non-throwing overload: the throwing form could
             // escape this thread function (the file may have been removed
             // between the exists() check above and the thread starting), and
@@ -188,16 +223,10 @@ namespace pinpoint {
             std::error_code seed_ec;
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
-            while (!stop_flag->load()) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-
-                // Re-check after waking: a stop may have been requested during
-                // the sleep, and we must not run a reload while shutdown is in
-                // progress (or delay it by a full file-check iteration).
-                if (stop_flag->load()) {
-                    break;
-                }
-
+            // wait() covers both a stop pending before the tick and one
+            // arriving mid-tick, so a reload can never start while shutdown is
+            // in progress (nor delay it by a full file-check iteration).
+            while (!stop->wait(std::chrono::seconds(1))) {
                 try {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
@@ -205,12 +234,12 @@ namespace pinpoint {
                         read_config_from_file(path.c_str());
                         const auto agent_impl =
                             std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
-                        if (agent_impl && !stop_flag->load()) {
+                        if (agent_impl && !stop->stop_requested()) {
                             // make_config(old) returns the final reload config:
                             // non-reloadable fields retained from the running
                             // config and the logger already reconfigured.
                             auto new_cfg = make_config(agent_impl->getConfig());
-                            if (new_cfg && !stop_flag->load()) {
+                            if (new_cfg && !stop->stop_requested()) {
                                 agent_impl->reloadConfig(new_cfg);
                                 LOG_INFO("agent config reloaded");
                             }
@@ -240,8 +269,8 @@ namespace pinpoint {
                 abandon_thread(watcher);
                 return;
             }
-            if (const auto& stop_flag = config_watcher_stop_flag()) {
-                stop_flag->store(true);
+            if (const auto& stop = config_watcher_stop()) {
+                stop->request();
             }
             watcher_to_join = std::move(watcher);
         }
@@ -542,9 +571,14 @@ namespace pinpoint {
         }
     }
 
+    // Like the yaml getters, every parse failure falls back to the CURRENT
+    // member value — which at this point carries the yaml-loaded (or default)
+    // setting — never a hardcoded default. A malformed env var must degrade to
+    // "env override ignored", not silently clobber a value the user set in the
+    // config file.
     static void load_env_config(Config& config, bool& is_container_set) {
         if(auto e = get_env(env::ENABLE)) {
-            config.enable = safe_env_stob(e.name.c_str(), e.value, true);
+            config.enable = safe_env_stob(e.name.c_str(), e.value, config.enable);
         }
         if(auto e = get_env(env::APPLICATION_NAME)) {
             config.app_name_ = std::string(e.value);
@@ -572,7 +606,7 @@ namespace pinpoint {
             config.log.file_path = std::string(e.value);
         }
         if(auto e = get_env(env::LOG_MAX_FILE_SIZE)) {
-            config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, defaults::LOG_MAX_FILE_SIZE_MB);
+            config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, config.log.max_file_size);
         }
 
         // The deprecated GRPC_* variables are read first, then the preferred
@@ -584,82 +618,82 @@ namespace pinpoint {
             config.collector.host = std::string(e.value);
         }
         if(auto e = get_env(env::GRPC_AGENT_PORT)) {
-            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_PORT);
+            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
         }
         if(auto e = get_env(env::COLLECTOR_AGENT_PORT)) {
-            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_PORT);
+            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
         }
         if(auto e = get_env(env::GRPC_SPAN_PORT)) {
-            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_PORT);
+            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
         }
         if(auto e = get_env(env::COLLECTOR_SPAN_PORT)) {
-            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_PORT);
+            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
         }
         if(auto e = get_env(env::GRPC_STAT_PORT)) {
-            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_PORT);
+            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
         }
         if(auto e = get_env(env::COLLECTOR_STAT_PORT)) {
-            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_PORT);
+            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
         }
 
         if(auto e = get_env(env::STAT_ENABLE)) {
-            config.stat.enable = safe_env_stob(e.name.c_str(), e.value, true);
+            config.stat.enable = safe_env_stob(e.name.c_str(), e.value, config.stat.enable);
         }
         if(auto e = get_env(env::STAT_BATCH_COUNT)) {
-            config.stat.batch_count = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_BATCH_COUNT);
+            config.stat.batch_count = safe_env_stoi(e.name.c_str(), e.value, config.stat.batch_count);
         }
         if(auto e = get_env(env::STAT_BATCH_INTERVAL)) {
-            config.stat.collect_interval = safe_env_stoi(e.name.c_str(), e.value, defaults::STAT_INTERVAL_MS);
+            config.stat.collect_interval = safe_env_stoi(e.name.c_str(), e.value, config.stat.collect_interval);
         }
 
         if(auto e = get_env(env::SAMPLING_TYPE)) {
             config.sampling.type = std::string(e.value);
         }
         if(auto e = get_env(env::SAMPLING_COUNTER_RATE)) {
-            config.sampling.counter_rate = safe_env_stoi(e.name.c_str(), e.value, defaults::SAMPLING_COUNTER_RATE);
+            config.sampling.counter_rate = safe_env_stoi(e.name.c_str(), e.value, config.sampling.counter_rate);
         }
         if(auto e = get_env(env::SAMPLING_PERCENT_RATE)) {
-            config.sampling.percent_rate = safe_env_stod(e.name.c_str(), e.value, defaults::SAMPLING_PERCENT_RATE);
+            config.sampling.percent_rate = safe_env_stod(e.name.c_str(), e.value, config.sampling.percent_rate);
         }
         if(auto e = get_env(env::SAMPLING_NEW_THROUGHPUT)) {
-            config.sampling.new_throughput = safe_env_stoi(e.name.c_str(), e.value, 0);
+            config.sampling.new_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.new_throughput);
         }
         if(auto e = get_env(env::SAMPLING_CONTINUE_THROUGHPUT)) {
-            config.sampling.cont_throughput = safe_env_stoi(e.name.c_str(), e.value, 0);
+            config.sampling.cont_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.cont_throughput);
         }
 
         if(auto e = get_env(env::SPAN_QUEUE_SIZE)) {
-            config.span.queue_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_QUEUE_SIZE);
+            config.span.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.span.queue_size));
         }
         if(auto e = get_env(env::SPAN_MAX_EVENT_DEPTH)) {
-            config.span.max_event_depth = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_MAX_EVENT_DEPTH);
+            config.span.max_event_depth = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_depth);
         }
         if(auto e = get_env(env::SPAN_MAX_EVENT_SEQUENCE)) {
-            config.span.max_event_sequence = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_MAX_EVENT_SEQUENCE);
+            config.span.max_event_sequence = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_sequence);
         }
         if(auto e = get_env(env::SPAN_EVENT_CHUNK_SIZE)) {
-            config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_EVENT_CHUNK_SIZE);
+            config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, config.span.event_chunk_size);
         }
         if(auto e = get_env(env::SPAN_BATCH_SIZE)) {
-            config.collector.span_batch.size = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_SIZE);
+            config.collector.span_batch.size = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.size);
         }
         if(auto e = get_env(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
-            config.collector.span_batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
+            config.collector.span_batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.flush_interval_ms);
         }
         if(auto e = get_env(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
-            config.collector.span_batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
+            config.collector.span_batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.collect_deadline_ms);
         }
         if(auto e = get_env(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
-            config.collector.span_batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
+            config.collector.span_batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.max_concurrent_requests);
         }
         if(auto e = get_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
-            config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
+            config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.refresh_interval_ms);
         }
         if(auto e = get_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
-            config.collector.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
+            config.collector.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.send_retry_interval_ms);
         }
         if(auto e = get_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
-            config.collector.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
+            config.collector.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.max_try_per_attempt);
         }
 
         if(auto e = get_env(env::GRPC_SSL_ENABLE)) {
@@ -680,62 +714,65 @@ namespace pinpoint {
                               env::GRPC_SENDER_QUEUE_SIZE);
 
         if(auto e = get_env(env::IS_CONTAINER)) {
-            config.is_container = safe_env_stob(e.name.c_str(), e.value, false);
+            config.is_container = safe_env_stob(e.name.c_str(), e.value, config.is_container);
             is_container_set = true;
         }
 
         if(auto e = get_env(env::HTTP_COLLECT_URL_STAT)) {
-            config.http.url_stat.enable = safe_env_stob(e.name.c_str(), e.value, false);
+            config.http.url_stat.enable = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable);
         }
         if(auto e = get_env(env::HTTP_URL_STAT_LIMIT)) {
-            config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, defaults::HTTP_URL_STAT_LIMIT);
+            config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.limit);
         }
         if(auto e = get_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
-            config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, true);
+            config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable_trim_path);
         }
         if(auto e = get_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
-            config.http.url_stat.trim_path_depth = safe_env_stoi(e.name.c_str(), e.value, 1);
+            config.http.url_stat.trim_path_depth = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.trim_path_depth);
         }
         if(auto e = get_env(env::HTTP_URL_STAT_METHOD_PREFIX)) {
-            config.http.url_stat.method_prefix = safe_env_stob(e.name.c_str(), e.value, false);
+            config.http.url_stat.method_prefix = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.method_prefix);
         }
 
+        // SkipEmpty keeps an empty (or all-commas) variable from producing
+        // phantom "" entries: e.g. HTTP_SERVER_EXCLUDE_URL="" must clear the
+        // list, not build a URL filter around a single empty pattern.
         if(auto e = get_env(env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
-            config.http.server.status_errors = absl::StrSplit(e.value, ',');
+            config.http.server.status_errors = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_URL)) {
-            config.http.server.exclude_url = absl::StrSplit(e.value, ',');
+            config.http.server.exclude_url = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_METHOD)) {
-            config.http.server.exclude_method = absl::StrSplit(e.value, ',');
+            config.http.server.exclude_method = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
-            config.http.server.rec_request_header = absl::StrSplit(e.value, ',');
+            config.http.server.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
-            config.http.server.rec_request_cookie = absl::StrSplit(e.value, ',');
+            config.http.server.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
-            config.http.server.rec_response_header = absl::StrSplit(e.value, ',');
+            config.http.server.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
-            config.http.client.rec_request_header = absl::StrSplit(e.value, ',');
+            config.http.client.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
-            config.http.client.rec_request_cookie = absl::StrSplit(e.value, ',');
+            config.http.client.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
         if(auto e = get_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
-            config.http.client.rec_response_header = absl::StrSplit(e.value, ',');
+            config.http.client.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
 
         if(auto e = get_env(env::SQL_MAX_BIND_ARGS_SIZE)) {
-            config.sql.max_bind_args_size = safe_env_stoi(e.name.c_str(), e.value, defaults::SQL_MAX_BIND_ARGS_SIZE);
+            config.sql.max_bind_args_size = safe_env_stoi(e.name.c_str(), e.value, config.sql.max_bind_args_size);
         }
         if(auto e = get_env(env::SQL_ENABLE_SQL_STATS)) {
-            config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, false);
+            config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_sql_stats);
         }
         if(auto e = get_env(env::ENABLE_CALLSTACK_TRACE)) {
-            config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, false);
+            config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, config.enable_callstack_trace);
         }
     }
 

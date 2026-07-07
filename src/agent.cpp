@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cassert>
 #include <string>
 #include <exception>
 #include <iterator>
@@ -34,8 +35,13 @@ namespace pinpoint {
     // Constants
     constexpr int kCacheSize = 1024;
 
-    // Global agent singleton with thread-safe access
+    // Global agent singleton with lock-free reader access
     namespace {
+        // Serializes global-agent WRITERS only (CreateAgent, Shutdown, the
+        // test helpers). Readers never take it: GlobalAgent() goes through the
+        // AtomicSharedPtr below, so per-request lookups cannot contend with a
+        // create/reload that holds this mutex across make_config()'s file I/O
+        // and YAML parsing.
         std::mutex global_agent_mutex;
 
         // The holder is intentionally heap-allocated and never destroyed so
@@ -44,8 +50,8 @@ namespace pinpoint {
         // logging through possibly-destroyed singletons) is unsafe for a
         // library embedded in a host application; teardown must only happen
         // through an explicit Shutdown() or a user-released reference.
-        std::shared_ptr<AgentImpl>& global_agent() {
-            static auto* holder = new std::shared_ptr<AgentImpl>();
+        AtomicSharedPtr<AgentImpl>& global_agent() {
+            static auto* holder = new AtomicSharedPtr<AgentImpl>();
             return *holder;
         }
     }
@@ -65,16 +71,19 @@ namespace pinpoint {
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         trace_id_sequence_(1) {
 
+        // cfg is required: build_runtime() below dereferences it, and every
+        // caller (make_agent(), the tests) hands in a validated config. A null
+        // cfg is a programming error, not a runtime condition to tolerate.
+        assert(cfg);
+
         // Snapshot the immutable identity fields once. isReloadable() guarantees
         // they never change for this agent, so the per-request getters below can
         // serve them without touching the atomic runtime_.
         app_type_ = app_type;
-        if (cfg) {
-            app_name_ = cfg->app_name_;
-            agent_id_ = cfg->agent_id_;
-            agent_name_ = cfg->agent_name_;
-            service_name_ = cfg->service_name_;
-        }
+        app_name_ = cfg->app_name_;
+        agent_id_ = cfg->agent_id_;
+        agent_name_ = cfg->agent_name_;
+        service_name_ = cfg->service_name_;
 
         agent_stats_ = std::make_unique<AgentStats>(this);
         url_stats_ = std::make_unique<UrlStats>(this);
@@ -623,10 +632,11 @@ namespace pinpoint {
         std::shared_ptr<AgentImpl> self;
         try {
             std::lock_guard<std::mutex> lock(global_agent_mutex);
-            auto& agent = global_agent();
-            if (agent.get() == this) {
-                self = std::move(agent);
-                agent.reset();
+            self = global_agent().load();
+            if (self.get() == this) {
+                global_agent().store(nullptr);
+            } else {
+                self.reset();
             }
         } catch (...) {}
         do_shutdown();
@@ -899,7 +909,7 @@ namespace pinpoint {
     static AgentPtr create_agent_helper(int32_t app_type,
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        auto& agent = global_agent();
+        auto agent = global_agent().load();
 
         // Build the config under the lock so the running-config snapshot
         // handed to make_config() cannot race with a concurrent CreateAgent()
@@ -927,6 +937,7 @@ namespace pinpoint {
         if (agent == nullptr) {
             return noopAgent();
         }
+        global_agent().store(agent);
         return agent;
     }
 
@@ -943,22 +954,24 @@ namespace pinpoint {
     }
 
     AgentPtr GlobalAgent() {
-        std::lock_guard<std::mutex> lock(global_agent_mutex);
-
-        if (global_agent() == nullptr) {
+        // Reader path: a single AtomicSharedPtr load, no global_agent_mutex.
+        // Host applications call this per request, and taking the writers'
+        // mutex here would stall every request behind a reload in progress.
+        auto agent = global_agent().load();
+        if (agent == nullptr) {
             return noopAgent();
         }
-        return global_agent();
+        return agent;
     }
 
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        global_agent() = std::move(agent);
+        global_agent().store(std::move(agent));
     }
 
     void reset_global_agent() {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
-        global_agent().reset();
+        global_agent().store(nullptr);
     }
 
 }  // namespace pinpoint
