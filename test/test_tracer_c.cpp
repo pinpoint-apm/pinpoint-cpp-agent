@@ -511,6 +511,17 @@ TEST_F(TracerCApiTest, NewSpanWithMethod) {
     pt_span_destroy(span);
 }
 
+TEST_F(TracerCApiTest, NewSpanWithMethodNullReader) {
+    // A NULL carrier must still go through the method-aware overload (via an
+    // empty reader) and yield a real root span, not drop down to the
+    // method-less path.
+    pt_span_t span = pt_agent_new_span_with_method(agent_, "op", "/rpc", "GET", nullptr);
+    ASSERT_NE(span, nullptr);
+    EXPECT_NE(pt_span_is_sampled(span), 0);
+    pt_span_end(span);
+    pt_span_destroy(span);
+}
+
 // ============================================================================
 // 5. Span metadata setters
 // ============================================================================
@@ -1173,4 +1184,42 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     pt_span_t s3 = pt_agent_new_span(pt_global_agent(), "op", "/rpc");
     EXPECT_EQ(s3, s1);
     pt_span_destroy(s3);
+}
+
+// An unsampled span (inbound `Pinpoint-Sampled: s0`) hands out one singleton
+// span event. The C wrapper must collapse it onto its own static sentinel —
+// no per-event allocation on the unsampled hot path — while still propagating
+// the s0 decision downstream on inject.
+TEST_F(TracerCApiTest, UnsampledSpanEventsCollapseToSentinel) {
+    HeaderMap inbound{{PT_HEADER_SAMPLED, "s0"}};
+    pt_context_reader_t reader{&inbound, hmap_get};
+
+    pt_span_t span = pt_agent_new_span_with_reader(agent_, "op", "/rpc", &reader);
+    ASSERT_NE(span, nullptr);
+    EXPECT_EQ(pt_span_is_sampled(span), 0);
+    EXPECT_NE(pt_span_get_span_id(span), 0);  // real per-request span, not the noop sentinel
+
+    pt_span_event_t e1 = pt_span_new_event(span, "a");
+    pt_span_event_t e2 = pt_span_new_event(span, "b");
+    pt_span_event_t e3 = pt_span_get_event(span);
+    ASSERT_NE(e1, nullptr);
+    EXPECT_EQ(e1, e2);  // same static sentinel — no allocation
+    EXPECT_EQ(e1, e3);
+
+    // The unsampled event still propagates the s0 decision downstream.
+    HeaderMap outbound;
+    pt_context_writer_t writer{&outbound, hmap_set};
+    pt_span_event_inject_context(e1, &writer);
+    EXPECT_EQ(outbound[PT_HEADER_SAMPLED], "s0");
+
+    // The sentinel is never owned: destroy is a safe no-op, even repeated,
+    // and the sentinel is handed out again afterwards.
+    pt_span_event_end(e1);
+    pt_span_event_destroy(e1);
+    pt_span_event_destroy(e2);
+    pt_span_event_destroy(e3);
+    EXPECT_EQ(pt_span_new_event(span, "c"), e1);
+
+    pt_span_end(span);
+    pt_span_destroy(span);
 }

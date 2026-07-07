@@ -34,6 +34,7 @@
 #include "logging.h"
 #include "noop.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -159,6 +160,16 @@ static pt_span_event_s* noop_span_event_sentinel() {
     return &sentinel;
 }
 
+// Unsampled spans hand out one process-lifetime singleton event (it still
+// propagates the `s0` decision on InjectContext, so it must not collapse to
+// the plain noop event). Give it its own sentinel: with low sampling rates
+// the unsampled path is the dominant one, and this keeps its per-event
+// handle allocation/free off the hot path.
+static pt_span_event_s* unsampled_span_event_sentinel() {
+    static pt_span_event_s sentinel{pinpoint::unsampledSpanEvent()};
+    return &sentinel;
+}
+
 static pt_annotation_s* noop_annotation_sentinel() {
     static pt_annotation_s sentinel{pinpoint::noopAnnotation()};
     return &sentinel;
@@ -185,6 +196,7 @@ static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
 static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr == noop_span_event_sentinel()->ptr) return noop_span_event_sentinel();
+    if (ptr == unsampled_span_event_sentinel()->ptr) return unsampled_span_event_sentinel();
     return new pt_span_event_s{ptr};
 }
 
@@ -255,8 +267,8 @@ static void callstack_foreach_trampoline(const char* mod, const char* fn,
 // Returns a NUL-terminated pointer for `sv`, copying into `storage`. Probing
 // sv.data()[sv.size()] to skip the copy would read one byte past the view —
 // out of bounds for a substring view ending exactly at the end of its buffer.
-// Keys and header values are short, so the copy usually stays in the SSO
-// buffer anyway.
+// Callers pass an adapter member buffer, so the retained capacity makes the
+// copy allocation-free after the first call on each adapter.
 static const char* to_c_str(std::string_view sv, std::string& storage) {
     storage.assign(sv);
     return storage.c_str();
@@ -271,17 +283,19 @@ public:
 
     std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        std::string k_str;
         // Zero-copy result: pt_reader_get_fn's contract already requires the
         // returned pointer to stay valid until the next call on the same
         // carrier, which matches the TraceContextReader::Get view-lifetime
         // contract exactly.
-        const char* v = r_->get(r_->userdata, to_c_str(key, k_str));
+        const char* v = r_->get(r_->userdata, to_c_str(key, key_buf_));
         return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
 private:
     const pt_context_reader_t* r_;
+    // Reused across Get calls: context extraction looks up ~9 Pinpoint header
+    // keys per span, several of which exceed the SSO buffer.
+    mutable std::string key_buf_;
 };
 
 /**
@@ -293,10 +307,9 @@ public:
 
     std::optional<std::string_view> Get(std::string_view key) const override {
         if (!r_ || !r_->get) return std::nullopt;
-        std::string k_str;
         // Zero-copy result: see CContextReader::Get — the C contract matches
         // the TraceContextReader::Get view-lifetime contract.
-        const char* v = r_->get(r_->userdata, to_c_str(key, k_str));
+        const char* v = r_->get(r_->userdata, to_c_str(key, key_buf_));
         return v ? std::optional<std::string_view>(v) : std::nullopt;
     }
 
@@ -311,6 +324,8 @@ public:
 
 private:
     const pt_header_reader_t* r_;
+    // Reused across Get calls; see CContextReader::key_buf_.
+    mutable std::string key_buf_;
 };
 
 /**
@@ -322,13 +337,16 @@ public:
 
     void Set(std::string_view key, std::string_view value) override {
         if (!w_ || !w_->set) return;
-        std::string k_str;
-        std::string v_str;
-        w_->set(w_->userdata, to_c_str(key, k_str), to_c_str(value, v_str));
+        w_->set(w_->userdata, to_c_str(key, key_buf_), to_c_str(value, val_buf_));
     }
 
 private:
     pt_context_writer_t* w_;
+    // Reused across Set calls: InjectContext/SetLogging write ~9 headers per
+    // outbound call, and values like the serialized trace id exceed the SSO
+    // buffer.
+    std::string key_buf_;
+    std::string val_buf_;
 };
 
 /**
@@ -360,9 +378,13 @@ static inline std::chrono::system_clock::time_point ms_to_time_point(int64_t ms)
     return std::chrono::system_clock::time_point(std::chrono::milliseconds(ms));
 }
 
-static inline void fill_trace_id(pt_trace_id_t* out, pinpoint::TraceId& tid) {
-    std::strncpy(out->agent_id, tid.AgentId.c_str(), PT_AGENT_ID_MAX - 1);
-    out->agent_id[PT_AGENT_ID_MAX - 1] = '\0';
+static inline void fill_trace_id(pt_trace_id_t* out, const pinpoint::TraceId& tid) {
+    // memcpy of the actual length instead of strncpy: strncpy would zero-fill
+    // the remainder of the 256-byte buffer on every call.
+    const std::size_t len = std::min(tid.AgentId.size(),
+                                     static_cast<std::size_t>(PT_AGENT_ID_MAX - 1));
+    std::memcpy(out->agent_id, tid.AgentId.data(), len);
+    out->agent_id[len] = '\0';
     out->start_time = tid.StartTime;
     out->sequence   = tid.Sequence;
 }
@@ -523,8 +545,13 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
                                           method     ? method     : "",
                                           cpt_reader);
             } else {
+                // The C++ API only accepts a method together with a reader;
+                // use an empty reader so a NULL carrier doesn't drop the method.
+                pinpoint::NoopTraceContextReader noop_reader;
                 ptr = valid->ptr->NewSpan(operation ? operation : "",
-                                          rpc_point  ? rpc_point  : "");
+                                          rpc_point  ? rpc_point  : "",
+                                          method     ? method     : "",
+                                          noop_reader);
             }
             return make_span_handle(std::move(ptr));
         });
@@ -742,6 +769,7 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span) {
 
 void pt_span_event_destroy(pt_span_event_t se) {
     pt_api_call(__func__, [&] {
+        if (se == unsampled_span_event_sentinel()) return;  // static sentinel — never owned
         destroy_handle(se, noop_span_event_sentinel());
     });
 }

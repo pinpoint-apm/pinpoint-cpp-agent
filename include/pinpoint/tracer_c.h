@@ -380,18 +380,22 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
 /**
  * @brief Returns a handle to the singleton global agent.
  *
- * The returned handle must NOT be passed to pt_agent_destroy() — its lifetime
- * is managed internally.  Returns NULL if no global agent exists.
+ * Each call returns a distinct handle that must be released with
+ * pt_agent_destroy() when no longer needed. Destroying the handle only
+ * releases the C wrapper; the global agent itself stays alive — its lifetime
+ * is managed internally. If no global agent exists, a handle to a disabled
+ * (noop) agent is returned, never NULL.
  *
  * Mirrors pinpoint::GlobalAgent().
  */
 pt_agent_t pt_global_agent(void);
 
 /**
- * @brief Releases an agent handle created by pt_create_agent() or
- *        pt_create_agent_with_server_metadata().
+ * @brief Releases an agent handle obtained from pt_create_agent(),
+ *        pt_create_agent_with_server_metadata(), or pt_global_agent().
  *
- * @warning Do NOT call this on a handle obtained from pt_global_agent().
+ * For handles from pt_global_agent() this only frees the C wrapper; the
+ * global agent itself is unaffected.
  */
 void pt_agent_destroy(pt_agent_t agent);
 
