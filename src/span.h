@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <memory>
@@ -244,7 +245,9 @@ namespace pinpoint {
     	/// @brief Captures the end time and computes the elapsed duration.
     	void setEndTime() {
 	        end_time_ = std::chrono::system_clock::now();
-        	elapsed_ = to_milli_seconds(end_time_) - start_time_;
+    	    // system_clock can step backwards (NTP); never report a negative
+    	    // elapsed time.
+        	elapsed_ = static_cast<int32_t>(std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
         }
         std::chrono::system_clock::time_point getEndTime() const { return end_time_; }
         /// @brief Returns the elapsed duration in milliseconds.
@@ -260,6 +263,16 @@ namespace pinpoint {
     	 * @brief Finalizes the top span event and moves it into the finished list.
     	 */
     	void finishSpanEvent();
+    	/**
+    	 * @brief Finalizes every span event still on the stack (LIFO order).
+    	 *
+    	 * Called at EndSpan so events user code failed to end — plus the async
+    	 * root event, which stays open until EndSpan by design — are recorded
+    	 * in the final chunk instead of being silently dropped.
+    	 *
+    	 * @return Number of events that were still open.
+    	 */
+    	size_t finishOpenSpanEvents();
     	/// @brief Returns the current active span event, or nullptr if the stack is empty.
     	SpanEventImpl* topSpanEvent() {
     	    return event_stack_.top();
@@ -565,11 +578,15 @@ namespace pinpoint {
             // span would otherwise grow this without bound — each entry
             // carries a full string callstack. Excess exceptions are dropped.
             static constexpr size_t kMaxBufferedExceptions = 100;
-            void addException(std::unique_ptr<Exception> exception) {
+            // Returns false when the buffer is full and the exception is
+            // dropped, so the caller can skip the ANNOTATION_EXCEPTION_ID
+            // annotation that would otherwise reference a never-sent id.
+            bool addException(std::unique_ptr<Exception> exception) {
                 if (exceptions_.size() >= kMaxBufferedExceptions) {
-                    return;
+                    return false;
                 }
                 exceptions_.push_back(std::move(exception));
+                return true;
             }
             AgentService* getAgent() const { return agent_; }
             void decrEventDepth();

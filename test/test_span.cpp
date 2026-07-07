@@ -525,11 +525,109 @@ TEST_F(SpanTest, SpanEventEndEventTest) {
 
 TEST_F(SpanTest, SpanImplEndSpanTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-    
+
     // End the span
     span.EndSpan();
-    
+
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Span should be recorded";
+}
+
+// Events user code failed to end must be finished implicitly at EndSpan and
+// still land in the final chunk instead of being silently dropped.
+TEST_F(SpanTest, EndSpanFinishesOpenSpanEventsTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    auto outer = span.NewSpanEvent("outer");
+    auto inner = span.NewSpanEvent("inner");
+    (void)outer;
+    (void)inner;
+
+    span.EndSpan(); // neither event was ended
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 2u)
+        << "Unended events must be finished implicitly and recorded";
+}
+
+// An async span's root event stays open until EndSpan by design. A leftover
+// (unended) child event must not be finished IN PLACE OF the root: both are
+// drained and recorded.
+TEST_F(SpanTest, AsyncSpanEndSpanFinishesLeftoverChildEventsTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-operation", "parent-rpc");
+
+    auto prepare_event = parent.NewSpanEvent("prepare-async");
+    auto async_span = parent.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+
+    auto child = async_span->NewSpanEvent("async-child");
+    (void)child; // never ended by user code
+
+    async_span->EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 2u)
+        << "Async root event and its leftover child must both be recorded";
+
+    prepare_event->EndEvent();
+    parent.EndSpan();
+}
+
+// When the per-span exception buffer is full, the dropped exception must not
+// leave behind an ANNOTATION_EXCEPTION_ID referencing an id that is never sent.
+TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    MockCallStackReader reader;
+    reader.AddFrame("module", "function", "file.cpp", 42);
+
+    span.NewSpanEvent("failing-event");
+    auto* se = span.getSpanData()->topSpanEvent();
+    ASSERT_NE(se, nullptr);
+
+    const auto count_exception_ids = [se] {
+        size_t count = 0;
+        for (const auto& [key, data] : se->getAnnotations()->getAnnotations()) {
+            if (key == ANNOTATION_EXCEPTION_ID) {
+                count++;
+            }
+        }
+        return count;
+    };
+
+    // Fill the buffer to its cap (SpanImpl::kMaxBufferedExceptions).
+    constexpr size_t kMaxBufferedExceptions = 100;
+    for (size_t i = 0; i < kMaxBufferedExceptions; i++) {
+        se->SetError("Error", "boom", reader);
+    }
+    EXPECT_EQ(count_exception_ids(), kMaxBufferedExceptions);
+
+    se->SetError("Error", "one-too-many", reader); // dropped: buffer is full
+    EXPECT_EQ(count_exception_ids(), kMaxBufferedExceptions)
+        << "A dropped exception must not add an exception-id annotation";
+
+    se->EndEvent();
+    span.EndSpan();
+}
+
+// system_clock can step backwards (NTP); elapsed must be clamped, never
+// negative. Simulated by forcing a start time in the future.
+TEST_F(SpanTest, ElapsedClampedToNonNegativeTest) {
+    const auto future = std::chrono::system_clock::now() + std::chrono::seconds(10);
+
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    span.SetStartTime(future);
+
+    auto event = span.NewSpanEvent("test-event");
+    event->SetStartTime(future);
+    event->EndEvent();
+    span.EndSpan();
+
+    EXPECT_EQ(span.getSpanData()->getElapsed(), 0)
+        << "Span elapsed must be clamped to zero when the clock steps backwards";
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    const auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0]->getEndElapsed(), 0)
+        << "Event elapsed must be clamped to zero when the clock steps backwards";
 }
 
 TEST_F(SpanTest, SpanImplSettersTest) {

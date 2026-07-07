@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 
 #include "logging.h"
 #include "noop.h"
@@ -77,6 +78,16 @@ namespace pinpoint {
         } else {
             LOG_WARN("finishSpanEvent: abnormal span - has no event");
         }
+    }
+
+    size_t SpanData::finishOpenSpanEvents() {
+        size_t count = 0;
+        while (auto se = event_stack_.pop()) {
+            se->finish();
+            storeFinishedEvent(std::move(se));
+            ++count;
+        }
+        return count;
     }
 
     void SpanData::storeFinishedEvent(std::unique_ptr<SpanEventImpl> se) {
@@ -248,7 +259,10 @@ namespace pinpoint {
         assert(agent_ != nullptr);
         config_ = agent_->getConfig();
         const auto app_type = agent_->getAppType();
-        const auto api_id = agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
+        // Async child spans are created with an empty operation (see
+        // NewAsyncSpan): skip the api-cache lookup — api_id 0 is simply not
+        // serialized (grpc_builders guards on api_id > 0).
+        const auto api_id = operation.empty() ? 0 : agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
         data_ = std::make_shared<SpanData>(operation, app_type, api_id);
         data_->setRpcName(rpc_point);
     }
@@ -364,8 +378,22 @@ namespace pinpoint {
 
         data_->setEndTime();
 
+        // Drain every event still on the stack. An async span legitimately
+        // has one (its root event stays open until EndSpan); anything beyond
+        // that is a missed user-level EndEvent. Finishing them here keeps
+        // them in the final chunk — and, for async spans, prevents a leftover
+        // child from being finished in place of the async root.
+        const auto open_events = data_->finishOpenSpanEvents();
+        const auto expected_open = data_->isAsyncSpan() ? size_t{1} : size_t{0};
+        if (open_events > expected_open) {
+            LOG_WARN("EndSpan: {} span event(s) not ended by user code; finished implicitly",
+                     open_events - expected_open);
+        }
+
         if (data_->isAsyncSpan()) {
-            data_->finishSpanEvent(); //async span event
+            if (open_events == 0) {
+                LOG_WARN("EndSpan: abnormal async span - has no event");
+            }
         } else {
             auto& stats = agent_->getAgentStats();
             stats.dropActiveSpan(data_->getSpanId());
@@ -389,12 +417,23 @@ namespace pinpoint {
 
         const auto& trace_id = data_->getTraceId();
 
+        // Runs on every outbound call: format the numeric headers into a
+        // stack buffer instead of allocating std::to_string temporaries.
+        // Reusing one buffer across Set calls matches the temporaries'
+        // lifetime — Set may only reference the value during the call.
+        char buf[32];
+        const auto num = [&buf](auto value) -> std::string_view {
+            const auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+            (void)ec; // int64/int32 always fits in 32 chars
+            return {buf, static_cast<size_t>(ptr - buf)};
+        };
+
         writer.Set(HEADER_TRACE_ID, trace_id.ToString());
-        writer.Set(HEADER_SPAN_ID, std::to_string(next_span_id));
-        writer.Set(HEADER_PARENT_SPAN_ID, std::to_string(data_->getSpanId()));
-        writer.Set(HEADER_FLAG, std::to_string(data_->getFlags()));
+        writer.Set(HEADER_SPAN_ID, num(next_span_id));
+        writer.Set(HEADER_PARENT_SPAN_ID, num(data_->getSpanId()));
+        writer.Set(HEADER_FLAG, num(data_->getFlags()));
         writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
-        writer.Set(HEADER_PARENT_APP_TYPE, std::to_string(agent_->getAppType()));
+        writer.Set(HEADER_PARENT_APP_TYPE, num(agent_->getAppType()));
         // The agent's own service name is sent only when present, which (per
         // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
         // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,

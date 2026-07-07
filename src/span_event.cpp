@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
@@ -78,7 +79,10 @@ namespace pinpoint {
         // later user-level EndEvent on this event is rejected by the guard.
         finished_.store(true);
         span_->decrEventDepth();
-        elapsed_ = to_milli_seconds(std::chrono::system_clock::now()) - start_time_;
+        // system_clock can step backwards (NTP); never report a negative
+        // elapsed time.
+        elapsed_ = static_cast<int32_t>(
+            std::max<int64_t>(to_milli_seconds(std::chrono::system_clock::now()) - start_time_, 0));
     }
 
     int64_t SpanEventImpl::generateNextSpanId() {
@@ -111,8 +115,10 @@ namespace pinpoint {
             });
 
             auto exception = std::make_unique<Exception>(std::move(callstack));
-            ensureAnnotations()->AppendLong(ANNOTATION_EXCEPTION_ID, exception->getId());
-            span_->addException(std::move(exception));
+            const auto exception_id = exception->getId();
+            if (span_->addException(std::move(exception))) {
+                ensureAnnotations()->AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
+            }
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
