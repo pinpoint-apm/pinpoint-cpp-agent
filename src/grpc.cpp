@@ -136,6 +136,10 @@ namespace pinpoint {
         // escalating to TryCancel.
         constexpr auto STREAM_FINISH_TIMEOUT = std::chrono::seconds(3);
 
+        // Bounded wait for a stream write to complete (for the ping stream:
+        // write + server pong) before the stream is cancelled and recycled.
+        constexpr auto STREAM_WRITE_TIMEOUT = std::chrono::seconds(5);
+
         static void set_request_deadline(grpc::ClientContext& ctx) {
             auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(GRPC_REQUEST_TIMEOUT_MS);
             ctx.set_deadline(deadline);
@@ -326,8 +330,12 @@ namespace pinpoint {
 
         v1::PResult reply;
         grpc::ClientContext ctx;
-        std::unique_lock<std::mutex> lock(channel_mutex_);
 
+        // Deliberately NOT under channel_mutex_: meta_stub_ is created by
+        // openChannel() before this worker starts and gRPC stubs are
+        // thread-safe, while holding the mutex across a blocking unary call
+        // would serialize it against readyChannel()'s (potentially long)
+        // backoff loop for no benefit.
         build_grpc_context(&ctx, 0);
         set_request_deadline(ctx);
 
@@ -1037,7 +1045,13 @@ namespace pinpoint {
         grpc::ClientContext ctx;
         v1::PResult reply;
 
-        std::unique_lock<std::mutex> lock(channel_mutex_);
+        // Deliberately NOT under channel_mutex_: agent_stub_ is created by
+        // openChannel() before the AgentInfo worker starts and gRPC stubs are
+        // thread-safe. Holding the mutex across this blocking unary call would
+        // stall the ping worker's readyChannel() for up to the request
+        // deadline — and conversely readyChannel()'s unbounded backoff loop
+        // would park this thread on the mutex for a whole collector outage,
+        // uninterruptible by stopAgentInfo().
         build_grpc_context(&ctx, 0);
 
         google::protobuf::Arena arena;
@@ -1181,14 +1195,21 @@ namespace pinpoint {
             return false;
         }
 
+        // Build the context fully before publishing it: everything that can
+        // throw runs while stream_context_/grpc_status_ still describe the
+        // previous (finished) stream, so an exception here never leaves the
+        // "live call" state (context set, status != STREAM_DONE) without an
+        // actual call — drain_ping_stream_on_error() relies on that invariant.
+        auto context = std::make_unique<grpc::ClientContext>();
+        build_grpc_context(context.get(), ++socket_id_);
+
         {
             // Publish the new context under stream_mutex_ so stopPingWorker()
             // never observes a context mid-replacement when it cancels it.
             std::unique_lock<std::mutex> lock(stream_mutex_);
-            stream_context_ = std::make_unique<grpc::ClientContext>();
+            stream_context_ = std::move(context);
             grpc_status_ = STREAM_CONTINUE;
         }
-        build_grpc_context(stream_context_.get(), ++socket_id_);
         agent_stub_->async()->PingSession(stream_context_.get(), this);
 
         ping_stream_closing_ = false;
@@ -1234,6 +1255,25 @@ namespace pinpoint {
         }
     }
 
+    void GrpcAgent::drain_ping_stream_on_error() noexcept try {
+        // Last-resort cleanup when sendPingWorker() unwinds via an exception
+        // with a ping stream possibly still live. This object IS the stream's
+        // reactor, so a call left in flight would deliver OnDone into a
+        // destroyed GrpcAgent once the client is torn down. Close and cancel
+        // the call, then wait for OnDone before the worker exits.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (stream_context_ == nullptr || grpc_status_ == STREAM_DONE) {
+            // No call in flight: either no stream was ever started, or the
+            // last one already delivered OnDone (start_ping_stream() publishes
+            // the live-call state only after the call cannot fail to start).
+            return;
+        }
+        close_ping_stream_locked();
+        stream_context_->TryCancel();
+        stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+    } catch (...) {
+    }
+
     GrpcStreamStatus GrpcAgent::write_and_await_ping_stream() {
         LOG_DEBUG("write_and_await_ping_stream");
         std::unique_lock<std::mutex> lock(stream_mutex_);
@@ -1248,8 +1288,7 @@ namespace pinpoint {
 
         grpc_status_ = STREAM_WRITE;
         StartWrite(&ping_);
-        constexpr auto pong_timeout = std::chrono::seconds(30);
-        if (!stream_cv_.wait_for(lock, pong_timeout,
+        if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
                                  [this] { return grpc_status_ != STREAM_WRITE; })) {
             // The transport can stay "healthy" (an intermediary satisfies
             // HTTP/2 keepalive) while the collector backend never answers the
@@ -1335,8 +1374,10 @@ namespace pinpoint {
         LOG_INFO("grpc ping worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc ping worker exception = {}", e.what());
+        drain_ping_stream_on_error();
     } catch (...) {
         LOG_ERROR("grpc ping worker unknown exception");
+        drain_ping_stream_on_error();
     }
 
     void GrpcAgent::stopPingWorker() {
@@ -1670,6 +1711,16 @@ namespace pinpoint {
 
             if (readyChannel()) {
                 send_batch_async(batch);
+            } else if (agent_->isExiting()) {
+                // readyChannel() refuses to wait once the agent is exiting,
+                // but these chunks were already collected out of the queue.
+                // Hand them back so flush_remaining() can still send them
+                // over an already-connected channel instead of silently
+                // dropping up to a full batch at shutdown.
+                std::unique_lock<std::mutex> lock(span_queue_mutex_);
+                for (auto& chunk : batch) {
+                    span_queue_.push(std::move(chunk));
+                }
             }
         }
         flush_remaining();
@@ -1704,17 +1755,27 @@ namespace pinpoint {
             return false;
         }
 
-        stream_context_ = std::make_unique<grpc::ClientContext>();
-        build_grpc_context(stream_context_.get(), 0);
+        // Build the context fully before publishing it: everything that can
+        // throw runs while stream_context_/grpc_status_ still describe the
+        // previous (finished) stream, so an exception here never leaves the
+        // "live call" state (context set, status != STREAM_DONE) without an
+        // actual call — drain_stats_stream_on_error() relies on that invariant.
+        auto context = std::make_unique<grpc::ClientContext>();
+        build_grpc_context(context.get(), 0);
 
         {
-            // Clear a stale STREAM_DONE left by the previous session so
+            // Publish the new context under stream_mutex_ so stopStatsWorker()
+            // never observes a context mid-replacement when it cancels it.
+            // Also clears a stale STREAM_DONE left by the previous session so
             // finish_stats_stream() waits for this stream's own OnDone.
             std::unique_lock<std::mutex> lock(stream_mutex_);
+            stream_context_ = std::move(context);
             grpc_status_ = STREAM_CONTINUE;
         }
 
         stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
+
+        stats_stream_closing_ = false;
 
         AddHold();
         StartCall();
@@ -1733,9 +1794,27 @@ namespace pinpoint {
             return grpc_status_;
         }
 
-        stream_cv_.wait(lock, [this] {
-            return grpc_status_ != STREAM_WRITE;
-        });
+        if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
+                                 [this] { return grpc_status_ != STREAM_WRITE; })) {
+            // The transport can stay "healthy" (an intermediary satisfies
+            // HTTP/2 keepalive) while the collector backend stops reading,
+            // leaving the write blocked on flow control. An untimed wait
+            // would park this worker for the process lifetime and make
+            // shutdown hang on join. Cancel so the caller rebuilds the
+            // stream instead.
+            LOG_WARN("stats write timed out, recycling stats stream");
+            // Close before cancelling: unlike the ping stream (whose re-armed
+            // read always surfaces the cancellation), a write-only stream has
+            // no pending op once a racing OnWriteDone(true) slips in, so the
+            // hold must be released here or OnDone could be withheld forever.
+            close_stats_stream_locked();
+            if (stream_context_ != nullptr) {
+                stream_context_->TryCancel();
+            }
+            // OnDone is guaranteed after cancellation once the hold is
+            // released; the reactor must not be abandoned before it arrives.
+            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        }
 
         if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
             LOG_ERROR("failed to send stats: {}, {}",
@@ -1745,12 +1824,21 @@ namespace pinpoint {
         return grpc_status_;
     }
 
+    void GrpcStats::close_stats_stream_locked() {
+        // Mirrors close_ping_stream_locked(): whichever of the write-failure /
+        // finish paths runs first performs the single allowed
+        // StartWritesDone()/RemoveHold() pair for this stream session.
+        if (!stats_stream_closing_.exchange(true)) {
+            StartWritesDone();
+            RemoveHold();
+        }
+    }
+
     void GrpcStats::finish_stats_stream() {
         LOG_DEBUG("finish_stats_stream");
-        StartWritesDone();
-        RemoveHold();
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
+        close_stats_stream_locked();
         if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
                                  [this] { return grpc_status_ == STREAM_DONE; })) {
             LOG_INFO("stats stream did not finish in time, cancelling");
@@ -1763,12 +1851,35 @@ namespace pinpoint {
         }
     }
 
+    void GrpcStats::drain_stats_stream_on_error() noexcept try {
+        // Last-resort cleanup when sendStatsWorker() unwinds via an exception
+        // with a stats stream possibly still live. This object IS the stream's
+        // reactor, so a call left in flight would deliver OnDone into a
+        // destroyed GrpcStats once the client is torn down. Close and cancel
+        // the call, then wait for OnDone before the worker exits.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (stream_context_ == nullptr || grpc_status_ == STREAM_DONE) {
+            return;
+        }
+        close_stats_stream_locked();
+        stream_context_->TryCancel();
+        stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+    } catch (...) {
+    }
+
     void GrpcStats::OnWriteDone(bool ok) {
         LOG_DEBUG("stats - OnWriteDone: {}", ok);
         arena_.Reset(); // reset arena after write completes to free all memory at once
 
         if (ok) {
             std::unique_lock<std::mutex> lock(stream_mutex_);
+            if (stats_stream_closing_) {
+                // A write-timeout recycle (or finish) already issued
+                // StartWritesDone(); starting another write would violate the
+                // callback-API ordering contract. The hold is already
+                // released, so OnDone follows and wakes the worker.
+                return;
+            }
             grpc_status_ = next_write();
 
             if (grpc_status_ == STREAM_WRITE) {
@@ -1777,8 +1888,13 @@ namespace pinpoint {
                 stream_cv_.notify_one();
             }
         } else {
-            StartWritesDone();
-            RemoveHold();
+            // The write failed: the stream is broken. Close it (at most once
+            // per session) so the hold is released and OnDone can be
+            // delivered. stream_mutex_ keeps this mutually exclusive with the
+            // worker's StartWrite, upholding the gRPC callback-API ordering
+            // contract (no StartWrite after StartWritesDone).
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            close_stats_stream_locked();
         }
     }
 
@@ -1915,8 +2031,10 @@ namespace pinpoint {
         LOG_INFO("grpc stats worker end");
     } catch (const std::exception& e) {
         LOG_ERROR("grpc stats worker: exception = {}", e.what());
+        drain_stats_stream_on_error();
     } catch (...) {
         LOG_ERROR("grpc stats worker: unknown exception");
+        drain_stats_stream_on_error();
     }
 
     void GrpcStats::stopStatsWorker() {
@@ -1925,8 +2043,22 @@ namespace pinpoint {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-        stats_stop_requested_ = true;
-        stats_queue_cv_.notify_one();
+        {
+            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+            stats_stop_requested_ = true;
+            stats_queue_cv_.notify_one();
+        }
+        // The worker may be blocked in write_and_await_stats_stream() waiting
+        // for a write completion that a stalled collector never delivers; only
+        // stream activity can wake that wait. Cancelling the active stream
+        // forces the pending write (and then OnDone) through, so the stop is
+        // deterministic — mirrors stopPingWorker(). Taken after releasing
+        // stats_queue_mutex_: the worker acquires stats_queue_mutex_ while
+        // holding stream_mutex_ (next_write), so nesting them here in the
+        // opposite order would risk deadlock.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (stream_context_ != nullptr && grpc_status_ != STREAM_DONE) {
+            stream_context_->TryCancel();
+        }
     }
 }

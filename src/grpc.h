@@ -468,6 +468,7 @@ namespace pinpoint {
         void close_ping_stream();
         void close_ping_stream_locked();
         void finish_ping_stream();
+        void drain_ping_stream_on_error() noexcept;
         GrpcStreamStatus write_and_await_ping_stream();
 
         void agent_info_worker();
@@ -620,10 +621,17 @@ namespace pinpoint {
         std::condition_variable stats_queue_cv_{};
         bool stats_stop_requested_{false};
         std::atomic<bool> force_stats_queue_empty_{false};
+        // Set once per stats stream session when the stream starts shutting
+        // down, so StartWritesDone()/RemoveHold() run exactly once no matter
+        // which of the write-failure / write-timeout / finish paths fires
+        // first (mirrors GrpcAgent::ping_stream_closing_).
+        std::atomic<bool> stats_stream_closing_{false};
 
         bool start_stats_stream();
         GrpcStreamStatus write_and_await_stats_stream();
         void finish_stats_stream();
+        void close_stats_stream_locked();
+        void drain_stats_stream_on_error() noexcept;
 
         GrpcStreamStatus next_write();
         void empty_stats_queue() noexcept;
