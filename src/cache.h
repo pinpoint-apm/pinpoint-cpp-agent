@@ -129,9 +129,11 @@ namespace pinpoint {
      * Combines a std::list (LRU ordering) with a std::unordered_map keyed by
      * a non-owning map key from KeyTraits (O(1) lookup, no allocation on the hit path).
      * Access is guarded by a std::shared_mutex: lookups take a shared lock so
-     * cache hits run concurrently. LRU reordering is performed lazily — only once
-     * the cache has reached max_size — because no eviction can occur before then,
-     * which makes the ordering irrelevant while the cache is still filling up.
+     * cache hits run concurrently. LRU reordering is performed lazily — while the
+     * cache is below max_size no eviction can occur, so ordering is irrelevant;
+     * once full, an entry is promoted only after it has aged past half the
+     * capacity's churn (see get()), so most hits remain pure shared-lock reads
+     * instead of serializing on the exclusive lock the splice needs.
      *
      * @tparam ValueType Type of values stored in the cache.
      * @tparam KeyTraits Converts lookup keys into owned storage and map keys.
@@ -144,7 +146,9 @@ namespace pinpoint {
         // max_size is clamped to >= 1: with a capacity of 0 the eviction in
         // insert_or_promote() would erase the just-inserted front node and
         // then return a reference into the freed list node — use-after-free.
-        explicit LruCacheImpl(size_t max_size) : max_size_(max_size > 0 ? max_size : 1) {
+        explicit LruCacheImpl(size_t max_size)
+            : max_size_(max_size > 0 ? max_size : 1),
+              promote_age_threshold_(max_size_ / 2 > 0 ? max_size_ / 2 : 1) {
             // Reserve buckets up front so the map never rehashes while warming
             // up to capacity. +1 covers the transient over-capacity entry that
             // exists between insertion and eviction inside insert_or_promote().
@@ -164,9 +168,13 @@ namespace pinpoint {
          * Lookups take a shared lock, so cache hits run concurrently. While the
          * cache has not reached capacity no entry can be evicted, so LRU ordering
          * is irrelevant and the splice is skipped entirely — a hit is then a pure
-         * shared-lock read. Reordering (and the exclusive lock it needs) only kicks
-         * in once the cache is full. On a miss the generator runs OUTSIDE any lock,
-         * so an expensive generator does not serialize other threads' lookups.
+         * shared-lock read. Once full, promoting on every hit would serialize all
+         * lookups on the exclusive lock the splice needs, so promotion is aged:
+         * an entry promoted within the last promote_age_threshold_ insert/promote
+         * operations is still far from the eviction end and its hit stays a pure
+         * shared-lock read; only entries past that age pay for the splice. On a
+         * miss the generator runs OUTSIDE any lock, so an expensive generator
+         * does not serialize other threads' lookups.
          *
          * @param key The key to look up (no allocation on hit).
          * @param generator Function to generate a new value if key not found.
@@ -184,23 +192,34 @@ namespace pinpoint {
                     if (cache_map_.size() < max_size_) {
                         // Below capacity: nothing can be evicted, so LRU order does
                         // not matter — skip the splice and keep this a pure read.
-                        return LruCacheResult<ValueType>{it->second->second, true};
+                        return LruCacheResult<ValueType>{it->second->value, true};
+                    }
+                    // A stale op_seq_ read races benignly with concurrent
+                    // promotions: worst case the age is overestimated and the
+                    // entry takes one unnecessary trip through the slow path.
+                    const auto age = op_seq_.load(std::memory_order_relaxed) -
+                                     it->second->last_promoted.load(std::memory_order_relaxed);
+                    if (age < promote_age_threshold_) {
+                        // Promoted recently: still in the newer half of the LRU
+                        // list, so eviction is not imminent — skip the splice.
+                        return LruCacheResult<ValueType>{it->second->value, true};
                     }
                     hit_while_full = true;
                 }
             }
 
             if (hit_while_full) {
-                // Cache is full: promote the entry so it survives the next eviction.
-                // Splicing mutates the list and needs an exclusive lock (a shared
-                // lock cannot be upgraded). The entry may have been evicted between
-                // the two locks, so re-resolve; if it is gone, fall through to
-                // regenerate it below.
+                // Cache is full and the entry has aged: promote it so it survives
+                // the next evictions. Splicing mutates the list and needs an
+                // exclusive lock (a shared lock cannot be upgraded). The entry may
+                // have been evicted between the two locks, so re-resolve; if it is
+                // gone, fall through to regenerate it below.
                 std::unique_lock<std::shared_mutex> lock(mutex_);
                 const auto it = cache_map_.find(map_key);
                 if (it != cache_map_.end()) {
                     cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-                    return LruCacheResult<ValueType>{it->second->second, true};
+                    it->second->last_promoted.store(next_op_seq(), std::memory_order_relaxed);
+                    return LruCacheResult<ValueType>{it->second->value, true};
                 }
             }
 
@@ -244,14 +263,16 @@ namespace pinpoint {
          * @param value The freshly generated value (moved).
          */
         LruCacheResult<ValueType> insert_or_promote(LookupKey key, ValueType&& value) {
+            const auto seq = next_op_seq();
+
             // Speculatively create the list node first so the map key can be a
             // view into the node's owned key storage (single key allocation).
-            cache_list_.emplace_front(KeyTraits::store(key), std::move(value));
+            cache_list_.emplace_front(KeyTraits::store(key), std::move(value), seq);
             const auto list_it = cache_list_.begin();
 
             std::pair<typename MapType::iterator, bool> inserted;
             try {
-                inserted = cache_map_.try_emplace(KeyTraits::map_key(list_it->first), list_it);
+                inserted = cache_map_.try_emplace(KeyTraits::map_key(list_it->key), list_it);
             } catch (...) {
                 cache_list_.pop_front();  // Rollback the speculative node
                 throw;
@@ -262,25 +283,47 @@ namespace pinpoint {
                 // our node and promote the existing entry to most-recently-used.
                 cache_list_.pop_front();
                 cache_list_.splice(cache_list_.begin(), cache_list_, inserted.first->second);
-                return LruCacheResult<ValueType>{inserted.first->second->second, true};
+                inserted.first->second->last_promoted.store(seq, std::memory_order_relaxed);
+                return LruCacheResult<ValueType>{inserted.first->second->value, true};
             }
 
             // Evict least recently used entry if over capacity
             if (cache_map_.size() > max_size_) {
-                cache_map_.erase(KeyTraits::map_key(cache_list_.back().first));
+                cache_map_.erase(KeyTraits::map_key(cache_list_.back().key));
                 cache_list_.pop_back();
             }
-            return LruCacheResult<ValueType>{list_it->second, false};
+            return LruCacheResult<ValueType>{list_it->value, false};
         }
 
-        using KeyValuePair = std::pair<typename KeyTraits::StoredKey, ValueType>;
+        uint64_t next_op_seq() noexcept {
+            return op_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+
+        struct Node {
+            typename KeyTraits::StoredKey key;
+            ValueType value;
+            // Op sequence at insert / last promotion. Written under the exclusive
+            // lock but read under shared locks, hence atomic (relaxed suffices —
+            // a stale read only mis-estimates the age; see get()).
+            std::atomic<uint64_t> last_promoted;
+
+            Node(typename KeyTraits::StoredKey&& k, ValueType&& v, uint64_t seq)
+                : key(std::move(k)), value(std::move(v)), last_promoted(seq) {}
+        };
+
         using MapType = std::unordered_map<typename KeyTraits::MapKey,
-                                          typename std::list<KeyValuePair>::iterator,
+                                          typename std::list<Node>::iterator,
                                           typename KeyTraits::Hash,
                                           typename KeyTraits::Equal>;
-        std::list<KeyValuePair> cache_list_{};
+        std::list<Node> cache_list_{};
         MapType cache_map_{};
         const size_t max_size_{};
+        // A full-cache hit is promoted only once the entry has aged past this
+        // many insert/promotion operations; younger entries are still far from
+        // the eviction end, so their hits stay pure shared-lock reads.
+        const uint64_t promote_age_threshold_{};
+        // Counts inserts and promotions; entry age is measured against it.
+        std::atomic<uint64_t> op_seq_{0};
         mutable std::shared_mutex mutex_{};
     };
 

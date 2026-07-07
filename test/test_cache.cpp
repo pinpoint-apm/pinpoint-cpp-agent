@@ -167,6 +167,39 @@ TEST_F(CacheTest, LRUOrderingTest) {
     EXPECT_FALSE(result2_check.found) << "Evicted key should be cache miss";
 }
 
+// Test aged promotion: a full-cache hit on a recently inserted entry skips the
+// splice (pure shared-lock read), while a hit on an aged entry promotes it so
+// it survives subsequent evictions
+TEST_F(CacheTest, AgedPromotionTest) {
+    IdCache cache(4);  // promotion age threshold = 2 ops
+
+    cache.get("key1"); // op 1
+    cache.get("key2"); // op 2
+    cache.get("key3"); // op 3
+    cache.get("key4"); // op 4, cache now full
+
+    // key4 is age 0 (< threshold): hit returns without promotion
+    auto r4 = cache.get("key4");
+    EXPECT_TRUE(r4.found);
+    EXPECT_EQ(r4.value, 4);
+
+    // key1 is age 3 (>= threshold): hit promotes it to MRU (op 5)
+    auto r1 = cache.get("key1");
+    EXPECT_TRUE(r1.found);
+    EXPECT_EQ(r1.value, 1);
+
+    // Two inserts evict the two oldest entries: key2, then key3
+    cache.get("key5"); // op 6, evicts key2
+    cache.get("key6"); // op 7, evicts key3
+
+    // key1 survived thanks to the promotion; key2 and key3 are gone
+    auto r1_check = cache.get("key1");
+    EXPECT_TRUE(r1_check.found) << "Promoted aged entry should survive eviction";
+    EXPECT_EQ(r1_check.value, 1);
+    EXPECT_FALSE(cache.get("key2").found) << "Oldest unpromoted entry should be evicted";
+    EXPECT_FALSE(cache.get("key3").found) << "Second-oldest unpromoted entry should be evicted";
+}
+
 // Remove functionality tests
 
 // Test basic remove operation
