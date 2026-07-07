@@ -27,7 +27,10 @@ namespace pinpoint {
             return false;
         }
 
-        const auto count = sampling_count_.fetch_add(1) + 1;
+        // Pure counter with no cross-thread ordering requirement: relaxed
+        // avoids the full barrier the default seq_cst RMW costs on every
+        // sampling decision (this runs once per incoming request).
+        const auto count = sampling_count_.fetch_add(1, std::memory_order_relaxed) + 1;
         const uint64_t r = count % rate_;
         return r == 0;
     }
@@ -37,7 +40,9 @@ namespace pinpoint {
             return false;
         }
 
-        const auto count = sampling_count_.fetch_add(rate_) + rate_;
+        // Relaxed for the same reason as CounterSampler: only the counter
+        // value itself matters, not its ordering against other memory.
+        const auto count = sampling_count_.fetch_add(rate_, std::memory_order_relaxed) + rate_;
         const uint64_t r = count % MAX_PERCENT_RATE;
         return static_cast<int>(r) < rate_;
     }

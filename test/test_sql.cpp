@@ -207,6 +207,28 @@ TEST_F(SqlTest, CommentsWithParametersTest) {
     EXPECT_EQ(result.parameters, "456");
 }
 
+// Removing a comment must not merge the tokens around it: a single space is
+// spliced in when both neighbors are non-space, and a digit right after the
+// removed comment starts a numeric literal.
+TEST_F(SqlTest, CommentRemovalTokenSeparationTest) {
+    auto result = normalizer_->normalize("SELECT/*c*/1 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT 0# FROM t");
+    EXPECT_EQ(result.parameters, "1");
+
+    result = normalizer_->normalize("SELECT a FROM t WHERE a=1--c\nAND b=2");
+    EXPECT_EQ(result.normalized_sql, "SELECT a FROM t WHERE a=0# AND b=1#");
+    EXPECT_EQ(result.parameters, "1,2");
+
+    result = normalizer_->normalize("SELECT col1/*c*/2 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT col1 0# FROM t");
+    EXPECT_EQ(result.parameters, "2");
+
+    // No space is spliced in when whitespace already separates the tokens.
+    result = normalizer_->normalize("SELECT * /*c*/ FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT *  FROM t");
+    EXPECT_EQ(result.parameters, "");
+}
+
 // ========== Whitespace Preservation Tests ==========
 
 // Test basic SQL with preserved whitespace
@@ -236,7 +258,9 @@ TEST_F(SqlTest, StringLiteralHandlingTest) {
 // Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
+    // The trailing quote opens an unterminated (empty) literal, which still
+    // gets its placeholder (1$) so the parameter list stays index-aligned.
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'1$");
     EXPECT_EQ(result.parameters, "John\\,");
 }
 
@@ -311,6 +335,20 @@ TEST_F(SqlTest, MalformedQuotesTest) {
     // Should still work even with malformed quotes
     EXPECT_FALSE(result.normalized_sql.empty());
     EXPECT_TRUE(result.normalized_sql.find("SELECT * FROM users") != std::string::npos);
+}
+
+// An unterminated string literal (e.g. SQL truncated at max_sql_length in the
+// middle of a string) still emits its placeholder, so the extracted parameter
+// list stays index-aligned with the normalized SQL.
+TEST_F(SqlTest, UnterminatedStringLiteralPlaceholderTest) {
+    auto result = normalizer_->normalize("SELECT * FROM t WHERE a = 'x' AND b = 'unclosed");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a = '0$' AND b = '1$");
+    EXPECT_EQ(result.parameters, "x,unclosed");
+
+    SqlNormalizer short_normalizer(20);
+    result = short_normalizer.normalize("SELECT 'long literal cut off by the length limit'");
+    EXPECT_EQ(result.normalized_sql, "SELECT '0$");
+    EXPECT_EQ(result.parameters, "long literal");
 }
 
 // ========== One-Pass Integration Tests ==========

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+
 #include "logging.h"
 #include "stat.h"
 #include "utility.h"
@@ -87,7 +89,11 @@ namespace pinpoint {
         }
 
         auto end_time_ = std::chrono::system_clock::now();
-        auto elapsed_ = static_cast<int32_t>(to_milli_seconds(end_time_) - start_time_);
+        // system_clock is not monotonic (NTP can step it backwards); clamp to
+        // zero like SpanData::setEndTime so a negative duration never skews
+        // the response-time stats.
+        auto elapsed_ = static_cast<int32_t>(
+            std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
 
         auto& stats = agent_->getAgentStats();
         stats.collectResponseTime(elapsed_);
