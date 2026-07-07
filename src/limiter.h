@@ -23,6 +23,11 @@ namespace pinpoint {
 
     /**
      * @brief Fixed-window rate limiter used for sampling throughput limits.
+     *
+     * The window second and the remaining tokens are packed into a single
+     * 64-bit atomic, so refill-and-consume is one CAS: there is no
+     * reset-in-progress flag for other threads to spin on, and a refill can
+     * never race with an in-flight token decrement.
      */
     class RateLimiter {
     public:
@@ -36,15 +41,12 @@ namespace pinpoint {
         bool allow();
 
     private:
-        static constexpr uint64_t kResetInProgress = 1;
-
         static uint64_t current_second();
-        static uint64_t epoch_state(uint64_t second);
-        static uint64_t epoch_second(uint64_t state);
-        static bool is_resetting(uint64_t state);
+        static uint64_t pack(uint64_t second, uint32_t tokens);
+        static uint64_t state_second(uint64_t state);
+        static uint32_t state_tokens(uint64_t state);
 
-        const uint64_t token_;
-        std::atomic<uint64_t> epoch_;
-        std::atomic<uint64_t> bucket_;
+        const uint32_t token_;
+        std::atomic<uint64_t> state_;
     };
 }

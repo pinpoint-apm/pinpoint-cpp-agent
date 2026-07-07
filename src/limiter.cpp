@@ -15,31 +15,38 @@
  */
 
 #include "limiter.h"
+#include <algorithm>
 #include <chrono>
 
 namespace pinpoint {
 
+    namespace {
+        constexpr uint64_t kSecondMask = 0xFFFFFFFFull;
+    }
+
     RateLimiter::RateLimiter(uint64_t tps)
-        : token_(tps),
-          epoch_(epoch_state(current_second())),
-          bucket_(tps) {
+        : token_(static_cast<uint32_t>(std::min(tps, kSecondMask))),
+          state_(pack(current_second(), token_)) {
     }
 
     uint64_t RateLimiter::current_second() {
+        // Truncated to 32 bits by pack(). steady_clock counts from boot, so a
+        // wrap takes ~136 years; window changes are detected by inequality,
+        // which stays correct across a wrap.
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::steady_clock::now().time_since_epoch()).count());
     }
 
-    uint64_t RateLimiter::epoch_state(uint64_t second) {
-        return second << 1;
+    uint64_t RateLimiter::pack(uint64_t second, uint32_t tokens) {
+        return ((second & kSecondMask) << 32) | tokens;
     }
 
-    uint64_t RateLimiter::epoch_second(uint64_t state) {
-        return state >> 1;
+    uint64_t RateLimiter::state_second(uint64_t state) {
+        return state >> 32;
     }
 
-    bool RateLimiter::is_resetting(uint64_t state) {
-        return (state & kResetInProgress) != 0;
+    uint32_t RateLimiter::state_tokens(uint64_t state) {
+        return static_cast<uint32_t>(state);
     }
 
     bool RateLimiter::allow() {
@@ -47,37 +54,30 @@ namespace pinpoint {
             return false;
         }
 
-        const auto now = current_second();
-        auto epoch = epoch_.load(std::memory_order_acquire);
+        const auto now = current_second() & kSecondMask;
+        // No data is published through state_; it is a self-contained
+        // counter, so relaxed ordering is sufficient everywhere.
+        auto state = state_.load(std::memory_order_relaxed);
 
         for (;;) {
-            if (is_resetting(epoch)) {
-                epoch = epoch_.load(std::memory_order_acquire);
+            if (state_second(state) != now) {
+                // New window: refill and consume one token in a single CAS.
+                if (state_.compare_exchange_weak(state, pack(now, token_ - 1),
+                                                 std::memory_order_relaxed)) {
+                    return true;
+                }
                 continue;
             }
 
-            if (now <= epoch_second(epoch)) {
-                break;
+            const auto tokens = state_tokens(state);
+            if (tokens == 0) {
+                return false;
             }
 
-            if (epoch_.compare_exchange_weak(epoch, epoch | kResetInProgress,
-                                             std::memory_order_acq_rel,
-                                             std::memory_order_acquire)) {
-                bucket_.store(token_, std::memory_order_relaxed);
-                epoch_.store(epoch_state(now), std::memory_order_release);
-                break;
-            }
-        }
-
-        auto bucket = bucket_.load(std::memory_order_relaxed);
-        while (bucket > 0) {
-            if (bucket_.compare_exchange_weak(bucket, bucket - 1,
-                                             std::memory_order_relaxed,
+            if (state_.compare_exchange_weak(state, pack(now, tokens - 1),
                                              std::memory_order_relaxed)) {
                 return true;
             }
         }
-
-        return false;
     }
 }

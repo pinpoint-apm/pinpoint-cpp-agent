@@ -462,5 +462,67 @@ TEST_F(CallStackTest, CompleteWorkflowTest) {
     EXPECT_GT(exception_id, 0) << "Exception ID should be valid";
 }
 
+// ========== String Length Cap Tests ==========
+
+// Oversized error messages are truncated to a fixed cap
+TEST_F(CallStackTest, ErrorMessageTruncationTest) {
+    const std::string long_message(100 * 1024, 'x');
+    CallStack callstack(long_message);
+
+    EXPECT_EQ(callstack.getErrorMessage().size(), 4096u)
+        << "Error message should be truncated to the cap";
+    EXPECT_EQ(callstack.getErrorMessage(), long_message.substr(0, 4096))
+        << "Truncated error message should be a prefix of the original";
+}
+
+// Error messages within the cap are stored unchanged
+TEST_F(CallStackTest, ErrorMessageWithinCapNotTruncatedTest) {
+    const std::string message(4096, 'y');
+    CallStack callstack(message);
+
+    EXPECT_EQ(callstack.getErrorMessage(), message)
+        << "Message at exactly the cap should not be modified";
+}
+
+// Oversized frame strings are truncated per field
+TEST_F(CallStackTest, FrameStringTruncationTest) {
+    CallStack callstack("Frame truncation test");
+
+    const std::string long_str(10 * 1024, 'z');
+    callstack.push(long_str, long_str, long_str, 1);
+
+    const auto& frame = callstack.getStack()[0];
+    EXPECT_EQ(frame.module.size(), 1024u) << "Module should be truncated to the cap";
+    EXPECT_EQ(frame.function.size(), 1024u) << "Function should be truncated to the cap";
+    EXPECT_EQ(frame.file.size(), 1024u) << "File should be truncated to the cap";
+    EXPECT_EQ(frame.module, long_str.substr(0, 1024))
+        << "Truncated string should be a prefix of the original";
+}
+
+// Truncation must not split a multi-byte UTF-8 character
+TEST_F(CallStackTest, TruncationKeepsValidUtf8Test) {
+    // 4095 ASCII bytes followed by a 3-byte character ("가", 0xEA 0xB0 0x80):
+    // a byte-wise cut at 4096 would keep only the lead byte.
+    std::string message(4095, 'a');
+    message += "\xEA\xB0\x80";
+    CallStack callstack(message);
+
+    EXPECT_EQ(callstack.getErrorMessage().size(), 4095u)
+        << "The split multi-byte character should be dropped entirely";
+    EXPECT_EQ(callstack.getErrorMessage().back(), 'a')
+        << "No partial UTF-8 sequence should remain at the end";
+
+    // A multi-byte character that fits exactly at the boundary is kept whole.
+    std::string exact(4093, 'b');
+    exact += "\xEA\xB0\x80";  // ends exactly at byte 4096
+    exact += "tail beyond the cap";
+    CallStack exact_callstack(exact);
+
+    EXPECT_EQ(exact_callstack.getErrorMessage().size(), 4096u)
+        << "A complete character ending at the cap should be kept";
+    EXPECT_EQ(exact_callstack.getErrorMessage().substr(4093), "\xEA\xB0\x80")
+        << "The complete trailing character should be intact";
+}
+
 } // namespace pinpoint
 

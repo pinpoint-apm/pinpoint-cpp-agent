@@ -41,7 +41,7 @@ namespace pinpoint {
      */
     class CallStack {
     public:
-        CallStack(std::string_view error_message) : error_message_(error_message),
+        CallStack(std::string_view error_message) : error_message_(truncated(error_message, kMaxErrorMessageLength)),
                                                error_time_{to_milli_seconds(std::chrono::system_clock::now())},
                                                stack_{} {}
         //~CallStack() = default;
@@ -56,12 +56,15 @@ namespace pinpoint {
          */
         void push(std::string_view module, std::string_view function, std::string_view file, int line) {
             // Frames come from user-controlled readers with no depth limit of
-            // their own; cap them so one pathological callstack cannot pin
-            // unbounded memory in the span's exception buffer.
+            // their own; cap both the frame count and the per-field string
+            // length so one pathological callstack cannot pin unbounded
+            // memory in the span's exception buffer.
             if (stack_.size() >= kMaxFrames) {
                 return;
             }
-            stack_.emplace_back(StackFrame{std::string(module), std::string(function), std::string(file), line});
+            stack_.emplace_back(StackFrame{truncated(module, kMaxFrameStringLength),
+                                           truncated(function, kMaxFrameStringLength),
+                                           truncated(file, kMaxFrameStringLength), line});
         }
 
         /**
@@ -100,6 +103,30 @@ namespace pinpoint {
 
     private:
         static constexpr size_t kMaxFrames = 128;
+        static constexpr size_t kMaxFrameStringLength = 1024;
+        static constexpr size_t kMaxErrorMessageLength = 4096;
+
+        static std::string truncated(std::string_view s, size_t max_length) {
+            if (s.size() > max_length) {
+                s = s.substr(0, max_length);
+                // The strings end up in protobuf string fields, which require
+                // valid UTF-8: if the cut split a multi-byte sequence, drop
+                // the incomplete trailing character.
+                size_t tail = 0;
+                while (tail < s.size() && tail < 3 &&
+                       (static_cast<unsigned char>(s[s.size() - 1 - tail]) & 0xC0) == 0x80) {
+                    ++tail;
+                }
+                if (tail < s.size()) {
+                    const auto lead = static_cast<unsigned char>(s[s.size() - 1 - tail]);
+                    const size_t expected = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+                    if (expected > tail + 1) {
+                        s.remove_suffix(tail + 1);
+                    }
+                }
+            }
+            return std::string(s);
+        }
 
         std::string error_message_;
         int64_t error_time_;
