@@ -1145,7 +1145,8 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     EXPECT_EQ(pt_span_is_sampled(s1), 0);
     EXPECT_EQ(pt_span_get_span_id(s1), 0);
 
-    // ...as do their events and annotations.
+    // ...as do their events and annotations. These handles are pointer casts
+    // of the shared noop singletons, so they too are one stable value each.
     pt_span_event_t e1 = pt_span_new_event(s1, "child");
     pt_span_event_t e2 = pt_span_get_event(s1);
     ASSERT_NE(e1, nullptr);
@@ -1160,18 +1161,20 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     pt_span_t async = pt_span_new_async_span(s1, "bg");
     EXPECT_EQ(async, s1);
 
-    // Distinct types must not collapse onto the same sentinel object.
+    // Distinct types must not share a handle value: the span sentinel wrapper
+    // and the two singleton pointees are three different addresses.
     EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(e1));
     EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(an1));
     EXPECT_NE(static_cast<const void*>(e1), static_cast<const void*>(an1));
 
-    // No-op recording on sentinels must not crash.
+    // No-op recording on these handles must not crash.
     EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(an1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_error(s1, "ignored"));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_end(e1));
     EXPECT_NO_FATAL_FAILURE(pt_span_end(s1));
 
-    // Every handle is a sentinel: destroy is a safe no-op, even for duplicates.
+    // Destroy is a safe no-op on every handle, even for duplicates: span
+    // sentinels are never owned, event/annotation handles own nothing.
     pt_annotation_destroy(an1);
     pt_annotation_destroy(an2);
     pt_span_event_destroy(e1);
@@ -1187,10 +1190,10 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
 }
 
 // An unsampled span (inbound `Pinpoint-Sampled: s0`) hands out one singleton
-// span event. The C wrapper must collapse it onto its own static sentinel —
-// no per-event allocation on the unsampled hot path — while still propagating
-// the s0 decision downstream on inject.
-TEST_F(TracerCApiTest, UnsampledSpanEventsCollapseToSentinel) {
+// span event. Because event handles are pointer casts, every event handle from
+// such a span is the same value — no per-event allocation on the unsampled hot
+// path — while still propagating the s0 decision downstream on inject.
+TEST_F(TracerCApiTest, UnsampledSpanEventsShareOneHandle) {
     HeaderMap inbound{{PT_HEADER_SAMPLED, "s0"}};
     pt_context_reader_t reader{&inbound, hmap_get};
 
@@ -1203,7 +1206,7 @@ TEST_F(TracerCApiTest, UnsampledSpanEventsCollapseToSentinel) {
     pt_span_event_t e2 = pt_span_new_event(span, "b");
     pt_span_event_t e3 = pt_span_get_event(span);
     ASSERT_NE(e1, nullptr);
-    EXPECT_EQ(e1, e2);  // same static sentinel — no allocation
+    EXPECT_EQ(e1, e2);  // same singleton pointee — no allocation
     EXPECT_EQ(e1, e3);
 
     // The unsampled event still propagates the s0 decision downstream.
@@ -1212,8 +1215,8 @@ TEST_F(TracerCApiTest, UnsampledSpanEventsCollapseToSentinel) {
     pt_span_event_inject_context(e1, &writer);
     EXPECT_EQ(outbound[PT_HEADER_SAMPLED], "s0");
 
-    // The sentinel is never owned: destroy is a safe no-op, even repeated,
-    // and the sentinel is handed out again afterwards.
+    // The handle owns nothing: destroy is a safe no-op, even repeated, and the
+    // same handle is handed out again afterwards.
     pt_span_event_end(e1);
     pt_span_event_destroy(e1);
     pt_span_event_destroy(e2);

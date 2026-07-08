@@ -51,8 +51,10 @@
  *   pt_agent_destroy(agent);
  * @endcode
  *
- * Span-event and annotation handles are non-owning views. Use them only while
- * the parent span/span event is alive and active; do not store them for work
+ * Span-event and annotation handles are non-owning views that hold no
+ * resources of their own: pt_span_event_destroy() and pt_annotation_destroy()
+ * are safe no-ops kept for API symmetry. Use these handles only while the
+ * parent span/span event is alive and active; do not store them for work
  * that can run after pt_span_event_end(), pt_span_end(), or pt_span_destroy().
  */
 

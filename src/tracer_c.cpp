@@ -18,9 +18,11 @@
  * @file tracer_c.cpp
  * @brief C++ implementation of the pure-C public API declared in tracer_c.h.
  *
- * Agent and span handles wrap C++ shared_ptr instances. Span-event and
- * annotation handles are non-owning: their pointees are owned by the parent
- * span/span event and must not be used after that owner is ended or destroyed.
+ * Agent and span handles are heap-allocated wrappers owning a C++ shared_ptr.
+ * Span-event and annotation handles are non-owning raw pointers cast directly
+ * to the opaque handle type — creating one allocates nothing and destroying
+ * one is a no-op. Their pointees are owned by the parent span/span event and
+ * must not be used after that owner is ended or destroyed.
  *
  * Adapter classes (CContextReader, CHeaderReader, CContextWriter,
  * CCallstackReader) bridge the C callback structs to the corresponding
@@ -124,20 +126,63 @@ static void destroy_handle(Handle handle, Handle noop_handle) {
 
 // ============================================================================
 // Opaque handle definitions
+//
+// Agent and span handles carry a shared_ptr, so they are allocated wrappers.
+//
+// Span-event and annotation handles wrap non-owning raw pointers: the handle
+// IS the pointer, reinterpret_cast to the opaque handle type. pt_span_event_s
+// and pt_annotation_s are never defined — the cast is only ever reversed,
+// never dereferenced through the handle type. This keeps per-event and
+// per-annotation handle traffic allocation-free (including the per-span
+// disabled event, which cannot be a static sentinel), makes destroy a no-op,
+// and collapses the shared noop/unsampled singletons to one handle value per
+// pointee without any sentinel bookkeeping. A null pointer maps to a null
+// handle.
 // ============================================================================
 
-struct pt_agent_s      { pinpoint::AgentPtr      ptr; };
-struct pt_span_s       { pinpoint::SpanPtr        ptr; };
-struct pt_span_event_s { pinpoint::SpanEventPtr   ptr; };
-struct pt_annotation_s { pinpoint::AnnotationPtr  ptr; };
+struct pt_agent_s { pinpoint::AgentPtr ptr; };
+struct pt_span_s  { pinpoint::SpanPtr  ptr; };
+
+static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
+    return reinterpret_cast<pt_span_event_t>(ptr);
+}
+
+static pinpoint::SpanEventPtr span_event_of(pt_span_event_t handle) {
+    return reinterpret_cast<pinpoint::SpanEventPtr>(handle);
+}
+
+static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
+    return reinterpret_cast<pt_annotation_t>(ptr);
+}
+
+static pinpoint::AnnotationPtr annotation_of(pt_annotation_t handle) {
+    return reinterpret_cast<pinpoint::AnnotationPtr>(handle);
+}
+
+// pt_handle_call overloads for the pointer-cast handles: unwrap and
+// null-check, then hand the lambda the C++ pointer itself.
+template <typename F>
+static void pt_handle_call(pt_span_event_t handle, F&& fn) {
+    if (auto* se = span_event_of(handle)) {
+        std::forward<F>(fn)(se);
+    }
+}
+
+template <typename F>
+static void pt_handle_call(pt_annotation_t handle, F&& fn) {
+    if (auto* anno = annotation_of(handle)) {
+        std::forward<F>(fn)(anno);
+    }
+}
 
 // ============================================================================
-// Static noop sentinel handles
+// Static noop sentinel handles (agent and span only)
 //
 // The C++ layer treats noop work as free. To preserve that at the C boundary we
-// hand back one static sentinel handle per noop type so hot disabled paths skip
-// handle allocation/free. Agent/span sentinels keep the shared noop owners; the
-// event/annotation sentinels hold process-lifetime raw pointers owned by Noop.
+// hand back one static sentinel handle per noop owner type so hot disabled
+// paths skip handle allocation/free and refcount churn on the shared noop
+// singletons. Event/annotation handles need no sentinels — they are pointer
+// casts, so singleton pointees collapse to one handle value by construction.
 //
 // Lazy function-local statics give thread-safe initialization (C++11) and the
 // correct teardown order: each sentinel is constructed after the noop singleton
@@ -152,26 +197,6 @@ static pt_agent_s* noop_agent_sentinel() {
 
 static pt_span_s* noop_span_sentinel() {
     static pt_span_s sentinel{pinpoint::noopSpan()};
-    return &sentinel;
-}
-
-static pt_span_event_s* noop_span_event_sentinel() {
-    static pt_span_event_s sentinel{pinpoint::noopSpanEvent()};
-    return &sentinel;
-}
-
-// Unsampled spans hand out one process-lifetime singleton event (it still
-// propagates the `s0` decision on InjectContext, so it must not collapse to
-// the plain noop event). Give it its own sentinel: with low sampling rates
-// the unsampled path is the dominant one, and this keeps its per-event
-// handle allocation/free off the hot path.
-static pt_span_event_s* unsampled_span_event_sentinel() {
-    static pt_span_event_s sentinel{pinpoint::unsampledSpanEvent()};
-    return &sentinel;
-}
-
-static pt_annotation_s* noop_annotation_sentinel() {
-    static pt_annotation_s sentinel{pinpoint::noopAnnotation()};
     return &sentinel;
 }
 
@@ -191,19 +216,6 @@ static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_span_sentinel()->ptr.get()) return noop_span_sentinel();
     return new pt_span_s{std::move(ptr)};
-}
-
-static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
-    if (!ptr) return nullptr;
-    if (ptr == noop_span_event_sentinel()->ptr) return noop_span_event_sentinel();
-    if (ptr == unsampled_span_event_sentinel()->ptr) return unsampled_span_event_sentinel();
-    return new pt_span_event_s{ptr};
-}
-
-static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
-    if (!ptr) return nullptr;
-    if (ptr == noop_annotation_sentinel()->ptr) return noop_annotation_sentinel();
-    return new pt_annotation_s{ptr};
 }
 
 // ============================================================================
@@ -568,12 +580,14 @@ void pt_span_destroy(pt_span_t span) {
     });
 }
 
+// Event handles are pointer casts, so unlike span creation there is no noop
+// shortcut here: the virtual call on the (stateless) noop span is already
+// allocation-free and its singleton result collapses to one handle value.
+
 pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation) {
     return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(span, noop_span_sentinel(),
-                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
-                                      static_cast<pt_span_event_t>(nullptr),
-                                      [&](pt_span_t valid) {
+        return pt_handle_call(span, static_cast<pt_span_event_t>(nullptr),
+                              [&](pt_span_t valid) {
             return make_span_event_handle(
                 valid->ptr->NewSpanEvent(operation ? operation : ""));
         });
@@ -583,10 +597,8 @@ pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation) {
 pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operation,
                                             int32_t service_type) {
     return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(span, noop_span_sentinel(),
-                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
-                                      static_cast<pt_span_event_t>(nullptr),
-                                      [&](pt_span_t valid) {
+        return pt_handle_call(span, static_cast<pt_span_event_t>(nullptr),
+                              [&](pt_span_t valid) {
             return make_span_event_handle(
                 valid->ptr->NewSpanEvent(operation ? operation : "", service_type));
         });
@@ -595,10 +607,8 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
 
 pt_span_event_t pt_span_get_event(pt_span_t span) {
     return pt_api_call(__func__, static_cast<pt_span_event_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(span, noop_span_sentinel(),
-                                      static_cast<pt_span_event_t>(noop_span_event_sentinel()),
-                                      static_cast<pt_span_event_t>(nullptr),
-                                      [](pt_span_t valid) {
+        return pt_handle_call(span, static_cast<pt_span_event_t>(nullptr),
+                              [](pt_span_t valid) {
             return make_span_event_handle(valid->ptr->GetSpanEvent());
         });
     });
@@ -754,10 +764,8 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
 
 pt_annotation_t pt_span_get_annotations(pt_span_t span) {
     return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(span, noop_span_sentinel(),
-                                      static_cast<pt_annotation_t>(noop_annotation_sentinel()),
-                                      static_cast<pt_annotation_t>(nullptr),
-                                      [](pt_span_t valid) {
+        return pt_handle_call(span, static_cast<pt_annotation_t>(nullptr),
+                              [](pt_span_t valid) {
             return make_annotation_handle(valid->ptr->GetAnnotations());
         });
     });
@@ -768,24 +776,23 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span) {
 // ============================================================================
 
 void pt_span_event_destroy(pt_span_event_t se) {
-    pt_api_call(__func__, [&] {
-        if (se == unsampled_span_event_sentinel()) return;  // static sentinel — never owned
-        destroy_handle(se, noop_span_event_sentinel());
-    });
+    // Span-event handles are non-owning pointer casts; there is nothing to
+    // free. Kept as a safe no-op so existing callers remain valid.
+    (void)se;
 }
 
 void pt_span_event_end(pt_span_event_t se) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(se, [](pt_span_event_t valid) {
-            valid->ptr->EndEvent();
+        pt_handle_call(se, [](pinpoint::SpanEventPtr ev) {
+            ev->EndEvent();
         });
     });
 }
 
 void pt_span_event_set_service_type(pt_span_event_t se, int32_t service_type) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetServiceType(service_type);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetServiceType(service_type);
         });
     });
 }
@@ -793,16 +800,16 @@ void pt_span_event_set_service_type(pt_span_event_t se, int32_t service_type) {
 void pt_span_event_set_operation_name(pt_span_event_t se, const char* operation) {
     pt_api_call(__func__, [&] {
         if (!operation) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetOperationName(operation);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetOperationName(operation);
         });
     });
 }
 
 void pt_span_event_set_start_time_ms(pt_span_event_t se, int64_t ms_since_epoch) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetStartTime(ms_to_time_point(ms_since_epoch));
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetStartTime(ms_to_time_point(ms_since_epoch));
         });
     });
 }
@@ -810,8 +817,8 @@ void pt_span_event_set_start_time_ms(pt_span_event_t se, int64_t ms_since_epoch)
 void pt_span_event_set_destination(pt_span_event_t se, const char* dest) {
     pt_api_call(__func__, [&] {
         if (!dest) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetDestination(dest);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetDestination(dest);
         });
     });
 }
@@ -819,8 +826,8 @@ void pt_span_event_set_destination(pt_span_event_t se, const char* dest) {
 void pt_span_event_set_end_point(pt_span_event_t se, const char* end_point) {
     pt_api_call(__func__, [&] {
         if (!end_point) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetEndPoint(end_point);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetEndPoint(end_point);
         });
     });
 }
@@ -828,8 +835,8 @@ void pt_span_event_set_end_point(pt_span_event_t se, const char* end_point) {
 void pt_span_event_set_error(pt_span_event_t se, const char* error_message) {
     pt_api_call(__func__, [&] {
         if (!error_message) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetError(error_message);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetError(error_message);
         });
     });
 }
@@ -838,8 +845,8 @@ void pt_span_event_set_error_named(pt_span_event_t se, const char* error_name,
                                    const char* error_message) {
     pt_api_call(__func__, [&] {
         if (!error_name || !error_message) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetError(error_name, error_message);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetError(error_name, error_message);
         });
     });
 }
@@ -849,14 +856,14 @@ void pt_span_event_set_error_with_callstack(pt_span_event_t se,
                                             const char* error_message,
                                             const pt_callstack_reader_t* reader) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             const char* name = error_name    ? error_name    : "";
             const char* msg  = error_message ? error_message : "";
             if (reader) {
                 CCallstackReader cpt_reader(reader);
-                valid->ptr->SetError(name, msg, cpt_reader);
+                ev->SetError(name, msg, cpt_reader);
             } else {
-                valid->ptr->SetError(name, msg);
+                ev->SetError(name, msg);
             }
         });
     });
@@ -865,9 +872,9 @@ void pt_span_event_set_error_with_callstack(pt_span_event_t se,
 void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
                                  const char* args) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(se, [&](pt_span_event_t valid) {
-            valid->ptr->SetSqlQuery(sql_query ? sql_query : "",
-                                    args      ? args      : "");
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetSqlQuery(sql_query ? sql_query : "",
+                            args      ? args      : "");
         });
     });
 }
@@ -875,9 +882,9 @@ void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
 void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* writer) {
     pt_api_call(__func__, [&] {
         if (!writer) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             CContextWriter cpt_writer(writer);
-            valid->ptr->InjectContext(cpt_writer);
+            ev->InjectContext(cpt_writer);
         });
     });
 }
@@ -886,21 +893,18 @@ void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
                                  const pt_header_reader_t* reader) {
     pt_api_call(__func__, [&] {
         if (!reader) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             CHeaderReader cpt_reader(reader);
-            valid->ptr->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
+            ev->RecordHeader(static_cast<pinpoint::HeaderType>(which), cpt_reader);
         });
     });
 }
 
 pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) {
     return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(se, noop_span_event_sentinel(),
-                                      static_cast<pt_annotation_t>(noop_annotation_sentinel()),
-                                      static_cast<pt_annotation_t>(nullptr),
-                                      [](pt_span_event_t valid) {
-            return make_annotation_handle(valid->ptr->GetAnnotations());
-        });
+        auto* ev = span_event_of(se);
+        return ev ? make_annotation_handle(ev->GetAnnotations())
+                  : static_cast<pt_annotation_t>(nullptr);
     });
 }
 
@@ -909,23 +913,23 @@ pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) {
 // ============================================================================
 
 void pt_annotation_destroy(pt_annotation_t anno) {
-    pt_api_call(__func__, [&] {
-        destroy_handle(anno, noop_annotation_sentinel());
-    });
+    // Annotation handles are non-owning pointer casts; there is nothing to
+    // free. Kept as a safe no-op so existing callers remain valid.
+    (void)anno;
 }
 
 void pt_annotation_append_int(pt_annotation_t anno, int32_t key, int32_t value) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendInt(key, value);
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendInt(key, value);
         });
     });
 }
 
 void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendLong(key, value);
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendLong(key, value);
         });
     });
 }
@@ -933,8 +937,8 @@ void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value)
 void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* value) {
     pt_api_call(__func__, [&] {
         if (!value) return;
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendString(key, value);
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendString(key, value);
         });
     });
 }
@@ -942,8 +946,8 @@ void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* 
 void pt_annotation_append_string_string(pt_annotation_t anno, int32_t key,
                                         const char* s1, const char* s2) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendStringString(key, s1 ? s1 : "", s2 ? s2 : "");
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendStringString(key, s1 ? s1 : "", s2 ? s2 : "");
         });
     });
 }
@@ -951,8 +955,8 @@ void pt_annotation_append_string_string(pt_annotation_t anno, int32_t key,
 void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
                                             int i, const char* s1, const char* s2) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendIntStringString(key, i, s1 ? s1 : "", s2 ? s2 : "");
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendIntStringString(key, i, s1 ? s1 : "", s2 ? s2 : "");
         });
     });
 }
@@ -962,13 +966,13 @@ void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t ke
                                               const char* s1, const char* s2) {
     pt_api_call(__func__, [&] {
         if (!uid || uid_len <= 0) return;
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
             pinpoint::SqlUid sql_uid{};
             // Only a fixed-size SQL UID is supported; reject any other length.
             if (static_cast<size_t>(uid_len) != sql_uid.size()) return;
             std::memcpy(sql_uid.data(), uid, sql_uid.size());
-            valid->ptr->AppendSqlUidStringString(key, sql_uid,
-                                                 s1 ? s1 : "", s2 ? s2 : "");
+            an->AppendSqlUidStringString(key, sql_uid,
+                                         s1 ? s1 : "", s2 ? s2 : "");
         });
     });
 }
@@ -980,9 +984,9 @@ void pt_annotation_append_long_int_int_byte_byte_string(pt_annotation_t anno,
                                                         int32_t b1, int32_t b2,
                                                         const char* s) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pt_annotation_t valid) {
-            valid->ptr->AppendLongIntIntByteByteString(key, l, i1, i2, b1, b2,
-                                                       s ? s : "");
+        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
+            an->AppendLongIntIntByteByteString(key, l, i1, i2, b1, b2,
+                                               s ? s : "");
         });
     });
 }
@@ -1049,9 +1053,9 @@ void pt_trace_http_client_request(pt_span_event_t se,
                                   const pt_header_reader_t* request_reader) {
     pt_api_call(__func__, [&] {
         if (!request_reader) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             CHeaderReader cpt_req(request_reader);
-            pinpoint::helper::TraceHttpClientRequest(valid->ptr,
+            pinpoint::helper::TraceHttpClientRequest(ev,
                                                      host ? host : "",
                                                      url  ? url  : "",
                                                      cpt_req);
@@ -1066,10 +1070,10 @@ void pt_trace_http_client_request_with_cookie(pt_span_event_t se,
                                               const pt_header_reader_t* cookie_reader) {
     pt_api_call(__func__, [&] {
         if (!request_reader || !cookie_reader) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             CHeaderReader cpt_req(request_reader);
             CHeaderReader cpt_cookie(cookie_reader);
-            pinpoint::helper::TraceHttpClientRequest(valid->ptr,
+            pinpoint::helper::TraceHttpClientRequest(ev,
                                                      host ? host : "",
                                                      url  ? url  : "",
                                                      cpt_req, cpt_cookie);
@@ -1082,9 +1086,9 @@ void pt_trace_http_client_response(pt_span_event_t se,
                                    const pt_header_reader_t* response_reader) {
     pt_api_call(__func__, [&] {
         if (!response_reader) return;
-        pt_handle_call(se, [&](pt_span_event_t valid) {
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
             CHeaderReader cpt_resp(response_reader);
-            pinpoint::helper::TraceHttpClientResponse(valid->ptr, status_code, cpt_resp);
+            pinpoint::helper::TraceHttpClientResponse(ev, status_code, cpt_resp);
         });
     });
 }
