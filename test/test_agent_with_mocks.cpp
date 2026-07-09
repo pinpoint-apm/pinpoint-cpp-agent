@@ -239,8 +239,8 @@ TEST_F(AgentImplTest, GenerateTraceIdIncrementsSequence) {
     auto tid1 = agent_->generateTraceId();
     auto tid2 = agent_->generateTraceId();
 
-    EXPECT_EQ(tid1.AgentId, "test-agent-id");
-    EXPECT_EQ(tid2.AgentId, "test-agent-id");
+    EXPECT_EQ(tid1.agentId(), "test-agent-id");
+    EXPECT_EQ(tid2.agentId(), "test-agent-id");
     EXPECT_EQ(tid1.StartTime, tid2.StartTime);
     EXPECT_LT(tid1.Sequence, tid2.Sequence);
 }
@@ -260,6 +260,27 @@ TEST_F(AgentImplTest, NewSpanWithMethodReturnsValidSpan) {
     NoopTraceContextReader reader;
     auto span = agent_->NewSpan("test-op", "/test/rpc", "GET", reader);
     ASSERT_NE(span, nullptr);
+}
+
+TEST_F(AgentImplTest, NewSpanWithValidTraceIdHeaderIsSampled) {
+    // counter_rate=1 → the request is sampled; a well-formed inbound trace id
+    // parses, so the continued trace is recorded as a real (sampled) span.
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "upstream-agent^1700000000^7");
+    auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
+}
+
+TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderReturnsNoop) {
+    // Same sampling decision, but the malformed inbound trace id fails to parse.
+    // NewSpan must fall back to a non-sampled noop span instead of recording a
+    // trace with no agent id.
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "this-is-not-a-valid-trace-id");
+    auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+    ASSERT_NE(span, nullptr);
+    EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
 }
 
 TEST_F(AgentImplTest, RecordSpanDoesNotCrash) {

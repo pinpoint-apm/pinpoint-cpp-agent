@@ -116,7 +116,7 @@ namespace pinpoint {
      */
     class NoopSpan : public Span {
     public:
-        NoopSpan() : empty_trace_id{} {}
+        NoopSpan() = default;
         ~NoopSpan() override {}
 
         SpanEventPtr NewSpanEvent(std::string_view operation) override { return noopSpanEvent(); }
@@ -137,13 +137,10 @@ namespace pinpoint {
         void SetLogging(TraceContextWriter& writer) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
 
-        TraceId& GetTraceId() override { return empty_trace_id; }
+        std::string GetTraceId() override { return {}; }
         int64_t GetSpanId() override { return 0; }
         bool IsSampled() override { return false; }
         AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
-
-    protected:
-        TraceId empty_trace_id;
     };
 
     /**

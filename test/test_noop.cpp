@@ -212,7 +212,7 @@ TEST_F(NoopTest, UnsampledSpanInheritedNoopBehaviorTest) {
     EXPECT_EQ(writer.Get(HEADER_SAMPLED), "s0");
 
     auto trace_id = span.GetTraceId();
-    EXPECT_NE(&trace_id, nullptr) << "GetTraceId should return a valid reference";
+    EXPECT_TRUE(trace_id.empty()) << "GetTraceId should return an empty wire id for a non-sampled span";
 
     auto annotations = span.GetAnnotations();
     EXPECT_NE(annotations, nullptr) << "GetAnnotations should return a valid Annotation";
@@ -227,7 +227,7 @@ TEST_F(NoopTest, NoopSpanBasicBehaviorTest) {
     EXPECT_FALSE(span.IsSampled()) << "NoopSpan should not be sampled";
 
     auto trace_id = span.GetTraceId();
-    EXPECT_NE(&trace_id, nullptr) << "GetTraceId should return a valid reference";
+    EXPECT_TRUE(trace_id.empty()) << "GetTraceId should return an empty wire id for a non-sampled span";
 
     auto annotations = span.GetAnnotations();
     EXPECT_NE(annotations, nullptr) << "GetAnnotations should return a valid Annotation";
@@ -400,10 +400,8 @@ TEST_F(NoopTest, NoopSpanNewAsyncSpanReturnsNoopTest) {
 TEST_F(NoopTest, NoopSpanEmptyTraceIdTest) {
     NoopSpan span;
 
-    auto& trace_id = span.GetTraceId();
-    EXPECT_TRUE(trace_id.AgentId.empty()) << "NoopSpan TraceId AgentId should be empty";
-    EXPECT_EQ(trace_id.StartTime, 0) << "NoopSpan TraceId StartTime should be 0";
-    EXPECT_EQ(trace_id.Sequence, 0) << "NoopSpan TraceId Sequence should be 0";
+    auto trace_id = span.GetTraceId();
+    EXPECT_TRUE(trace_id.empty()) << "NoopSpan should have an empty wire trace id";
 }
 
 // NoopAgent additional tests

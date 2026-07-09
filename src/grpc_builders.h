@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "pinpoint/tracer.h"
+#include "agent_service.h"  // pinpoint::TraceId
 
 namespace google::protobuf {
     class Arena;

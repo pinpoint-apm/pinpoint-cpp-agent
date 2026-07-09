@@ -29,12 +29,21 @@
 
 namespace pinpoint {
 
+// The by-value factory is used only for in-place SpanData unit tests that never
+// serialize, and SpanData is non-movable (atomic members) so it cannot set a
+// trace id post-construction and still return by value (guaranteed prvalue
+// elision) — its spans intentionally carry a default trace id.
 inline SpanData make_test_span_data(AgentService& agent, std::string_view operation) {
     return SpanData(operation, agent.getAppType(), agent.cacheApi(operation, API_TYPE_WEB_REQUEST));
 }
 
+// The pointer factory seeds a valid trace id: its spans get serialized, and
+// build_grpc_transaction_id asserts a non-empty trace id — mirroring production
+// where NewSpan always resolves one before the span records anything.
 inline std::shared_ptr<SpanData> make_test_span_data_ptr(AgentService& agent, std::string_view operation) {
-    return std::make_shared<SpanData>(operation, agent.getAppType(), agent.cacheApi(operation, API_TYPE_WEB_REQUEST));
+    auto data = std::make_shared<SpanData>(operation, agent.getAppType(), agent.cacheApi(operation, API_TYPE_WEB_REQUEST));
+    data->setTraceId(agent.generateTraceId());
+    return data;
 }
 
 inline SpanEventImpl make_test_span_event(SpanImpl& span, std::string_view operation) {

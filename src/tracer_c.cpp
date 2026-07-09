@@ -390,17 +390,6 @@ static inline std::chrono::system_clock::time_point ms_to_time_point(int64_t ms)
     return std::chrono::system_clock::time_point(std::chrono::milliseconds(ms));
 }
 
-static inline void fill_trace_id(pt_trace_id_t* out, const pinpoint::TraceId& tid) {
-    // memcpy of the actual length instead of strncpy: strncpy would zero-fill
-    // the remainder of the 256-byte buffer on every call.
-    const std::size_t len = std::min(tid.AgentId.size(),
-                                     static_cast<std::size_t>(PT_AGENT_ID_MAX - 1));
-    std::memcpy(out->agent_id, tid.AgentId.data(), len);
-    out->agent_id[len] = '\0';
-    out->start_time = tid.StartTime;
-    out->sequence   = tid.Sequence;
-}
-
 static std::vector<std::string> to_string_vector(const char* const* values, int count) {
     std::vector<std::string> out;
     if (!values || count <= 0) {
@@ -634,12 +623,24 @@ pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) {
     });
 }
 
-pt_trace_id_t pt_span_get_trace_id(pt_span_t span) {
-    return pt_api_call(__func__, pt_trace_id_t{}, [&] {
-        return pt_handle_call(span, pt_trace_id_t{}, [](pt_span_t valid) {
-            pt_trace_id_t result{};
-            fill_trace_id(&result, valid->ptr->GetTraceId());
-            return result;
+size_t pt_span_get_trace_id(pt_span_t span, char* buf, size_t buf_size) {
+    // Guarantee a valid empty C string on every early-return/error path (null
+    // span, exception) where the lambda below never runs.
+    if (buf && buf_size > 0) {
+        buf[0] = '\0';
+    }
+    return pt_api_call(__func__, size_t{0}, [&] {
+        return pt_handle_call(span, size_t{0}, [&](pt_span_t valid) {
+            const std::string tid = valid->ptr->GetTraceId();
+            if (buf && buf_size > 0) {
+                // snprintf semantics: copy up to buf_size-1 bytes, always NUL-
+                // terminate, and report the full length so the caller can detect
+                // truncation (return >= buf_size).
+                const size_t n = std::min(tid.size(), buf_size - 1);
+                std::memcpy(buf, tid.data(), n);
+                buf[n] = '\0';
+            }
+            return tid.size();
         });
     });
 }

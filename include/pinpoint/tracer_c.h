@@ -62,6 +62,7 @@
 #ifndef PINPOINT_TRACER_C_H
 #define PINPOINT_TRACER_C_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -145,20 +146,13 @@ typedef struct pt_annotation_s* pt_annotation_t;
 /* Trace identifier                                                             */
 /* ========================================================================== */
 
-/** Maximum length (including NUL terminator) of the agent-id string. */
-#define PT_AGENT_ID_MAX 256
-
 /**
- * @brief Distributed trace identifier.
- *
- * Mirrors pinpoint::TraceId.  The wire representation is
- * `"<agent_id>^<start_time>^<sequence>"`.
+ * Buffer size that always holds a full trace id (wire form
+ * `"<agent_id>^<start_time>^<sequence>"`) including its NUL terminator:
+ * agent id (<= 24) + '^' + int64 (<= 20) + '^' + int64 (<= 20), rounded up.
+ * Use it to size the buffer passed to pt_span_get_trace_id().
  */
-typedef struct {
-    char    agent_id[PT_AGENT_ID_MAX]; /**< NUL-terminated agent identifier. */
-    int64_t start_time;                /**< Agent start time (milliseconds since epoch). */
-    int64_t sequence;                  /**< Per-agent sequence number. */
-} pt_trace_id_t;
+#define PT_TRACE_ID_MAX 128
 
 /* ========================================================================== */
 /* Header type                                                                  */
@@ -526,14 +520,24 @@ void pt_span_end(pt_span_t span);
 pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation);
 
 /**
- * @brief Returns the distributed trace identifier for this span.
+ * @brief Writes the span's distributed trace identifier, in its wire form
+ *        `"<agent_id>^<start_time>^<sequence>"`, into the caller's buffer.
  *
- * The returned structure is a value copy and is valid independently of the
- * span's lifetime.
+ * Follows snprintf() conventions: when @p buf_size > 0 at most
+ * @p buf_size - 1 bytes are copied followed by a NUL terminator, and the
+ * return value is the full trace-id length excluding the NUL. A return value
+ * >= @p buf_size therefore means the output was truncated. Passing
+ * @p buf_size == 0 (or @p buf == NULL) writes nothing and only reports the
+ * length needed, so callers can size a buffer with a first zero-length call.
+ * PT_TRACE_ID_MAX is a buffer size that never truncates.
+ *
+ * @return Length of the trace id in bytes, excluding the NUL terminator; 0 for
+ *         a span that carries no trace (e.g. a noop/unsampled span). On such a
+ *         result the buffer is set to an empty string when @p buf_size > 0.
  *
  * Mirrors pinpoint::Span::GetTraceId().
  */
-pt_trace_id_t pt_span_get_trace_id(pt_span_t span);
+size_t pt_span_get_trace_id(pt_span_t span, char* buf, size_t buf_size);
 
 /**
  * @brief Returns the numeric span identifier.

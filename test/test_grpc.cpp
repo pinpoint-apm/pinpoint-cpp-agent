@@ -404,7 +404,7 @@ TEST_F(GrpcTest, ExceptionMetaTest) {
 
     ExceptionMeta meta(txid, 9999, "/api/test", std::move(exceptions));
 
-    EXPECT_EQ(meta.txid_.AgentId, "test-agent");
+    EXPECT_EQ(meta.txid_.agentId(), "test-agent");
     EXPECT_EQ(meta.txid_.StartTime, 12345);
     EXPECT_EQ(meta.txid_.Sequence, 1);
     EXPECT_EQ(meta.span_id_, 9999);
@@ -462,7 +462,7 @@ TEST_F(GrpcTest, MetaDataExceptionTest) {
 
     EXPECT_EQ(meta_data.meta_type_, META_EXCEPTION);
     const auto& exc_meta = std::get<ExceptionMeta>(meta_data.value_);
-    EXPECT_EQ(exc_meta.txid_.AgentId, "agent");
+    EXPECT_EQ(exc_meta.txid_.agentId(), "agent");
     EXPECT_EQ(exc_meta.span_id_, 42);
     EXPECT_EQ(exc_meta.url_template_, "/api/v1/resource");
     EXPECT_EQ(exc_meta.exceptions_.size(), 1u);

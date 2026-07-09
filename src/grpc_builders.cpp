@@ -16,6 +16,7 @@
 
 #include "grpc_builders.h"
 
+#include <cassert>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -267,7 +268,11 @@ namespace pinpoint {
     v1::PTransactionId* build_grpc_transaction_id(const TraceId& tid, google::protobuf::Arena* arena) {
         auto* ptid = google::protobuf::Arena::Create<v1::PTransactionId>(arena);
 
-        ptid->set_agentid(tid.AgentId);
+        // Empty/invalid trace ids never reach serialization: NewSpan turns a
+        // failed parseTraceId()/generateTraceId() into a noop span that is never
+        // recorded, so any tid arriving here has a valid (non-null) agent id.
+        assert(!tid.empty() && "build_grpc_transaction_id requires a valid trace id");
+        ptid->set_agentid(*tid.AgentId);
         ptid->set_agentstarttime(tid.StartTime);
         ptid->set_sequence(tid.Sequence);
 

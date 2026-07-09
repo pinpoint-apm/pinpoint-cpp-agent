@@ -607,12 +607,20 @@ namespace pinpoint {
                                                  : sampler->isNewSampled();
 
         if (my_sampling) {
-            // Hand the already-read trace id to the impl-level extract so the
-            // header is not looked up twice, and this runtime's config so the
-            // span skips a second atomic load and lives on the same config
-            // generation its admission was decided under.
+            // Resolve the trace id up front: parse the inbound header (continued
+            // trace) or mint a fresh one. Either can fail (malformed header /
+            // bad_alloc) and return an empty trace id — in that case drop to a
+            // noop span rather than record a trace with no agent id.
+            TraceId trace_id = tid.has_value() ? TraceId::parseTraceId(tid.value())
+                                               : generateTraceId();
+            if (trace_id.empty()) {
+                return noopSpan();
+            }
+            // Pass this runtime's config so the span skips a second atomic load
+            // and lives on the same config generation its admission was decided
+            // under, and hand the resolved trace id to the impl-level extract.
             auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, runtime->config);
-            span->extractContext(reader, tid);
+            span->extractContext(reader, std::move(trace_id));
             return span;
         }
         return std::make_shared<UnsampledSpan>(this);
@@ -680,13 +688,72 @@ namespace pinpoint {
         try { shutdown_logger(); } catch (...) {}
     }
 
-    TraceId AgentImpl::generateTraceId() {
-        TraceId tid;
+    TraceId TraceId::parseTraceId(std::string_view txid) noexcept try {
+        constexpr size_t kMaxAgentIdLength = 24;
+        constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
 
-        tid.AgentId = agent_id_;
-        tid.StartTime = start_time_;
-        tid.Sequence = trace_id_sequence_.fetch_add(1);
+        const std::string_view sv = txid;
+
+        // Validate the structure before building anything: any malformation
+        // yields an empty TraceId so the caller drops to a noop span.
+        // AgentId (first field before '^')
+        const auto pos1 = sv.find('^');
+        if (pos1 == std::string_view::npos) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            return {};
+        }
+        if (pos1 > kMaxAgentIdLength) {
+            LOG_WARN("parsing Txid: AgentId too long (length={}, max={})", pos1, kMaxAgentIdLength);
+            return {};
+        }
+        // StartTime (second field)
+        const auto pos2 = sv.find('^', pos1 + 1);
+        if (pos2 == std::string_view::npos) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            return {};
+        }
+        const auto start_time_len = pos2 - pos1 - 1;
+        if (start_time_len > kMaxInt64StringLength) {
+            LOG_WARN("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
+            return {};
+        }
+        // Sequence (third field)
+        const auto sequence_str = sv.substr(pos2 + 1);
+        if (sequence_str.length() > kMaxInt64StringLength) {
+            LOG_WARN("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
+            return {};
+        }
+
+        TraceId tid;
+        tid.AgentId = std::make_shared<const std::string>(sv.substr(0, pos1));
+        tid.StartTime = stoll_(sv.substr(pos1 + 1, start_time_len)).value_or(0);
+        tid.Sequence = stoll_(sequence_str).value_or(0);
         return tid;
+    } catch (...) {
+        // This function allocates (AgentId copy, log formatting); without this
+        // handler an OOM would hit the noexcept boundary and terminate the host.
+        // Degrade to an empty trace id (caller drops to a noop span) instead. No
+        // logging here: formatting allocates too, and a throw escaping a catch
+        // block would still terminate.
+        return {};
+    }
+
+    TraceId AgentImpl::generateTraceId() {
+        // One allocation per new trace to seed the shared agent-id string; every
+        // downstream copy of the returned TraceId (async child span, queued
+        // ExceptionMeta) then only bumps the refcount. agent_id_ can change once
+        // at fork-safe Start(), so it is read here rather than cached.
+        try {
+            auto agent_id = std::make_shared<const std::string>(agent_id_);
+            return TraceId{std::move(agent_id),
+                           start_time_,
+                           static_cast<int64_t>(trace_id_sequence_.fetch_add(1))};
+        } catch (const std::bad_alloc&) {
+            // Out of memory: return an empty trace id so NewSpan drops to a noop
+            // span instead of recording a trace with no agent id.
+            LOG_ERROR("generateTraceId: agent id allocation failed");
+            return {};
+        }
     }
 
     void AgentImpl::recordSpan(std::unique_ptr<SpanChunk> span) const {

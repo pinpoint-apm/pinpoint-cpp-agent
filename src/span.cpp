@@ -124,52 +124,6 @@ namespace pinpoint {
         finished_events.clear();
     }
 
-    void SpanData::parseTraceId(std::string_view txid) noexcept try {
-        constexpr size_t kMaxAgentIdLength = 24;
-        constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
-
-        const std::string_view sv = txid;
-
-        // Parse AgentId (first field before '^')
-        const auto pos1 = sv.find('^');
-        if (pos1 == std::string_view::npos) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
-            return;
-        }
-        if (pos1 > kMaxAgentIdLength) {
-            LOG_WARN("parsing Txid: AgentId too long (length={}, max={})", pos1, kMaxAgentIdLength);
-            return;
-        }
-        trace_id_.AgentId = std::string(sv.substr(0, pos1));
-
-        // Parse StartTime (second field)
-        const auto pos2 = sv.find('^', pos1 + 1);
-        if (pos2 == std::string_view::npos) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
-            return;
-        }
-        const auto start_time_len = pos2 - pos1 - 1;
-        if (start_time_len > kMaxInt64StringLength) {
-            LOG_WARN("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
-            return;
-        }
-        trace_id_.StartTime = stoll_(sv.substr(pos1 + 1, start_time_len)).value_or(0);
-
-        // Parse Sequence (third field)
-        const auto sequence_str = sv.substr(pos2 + 1);
-        if (sequence_str.length() > kMaxInt64StringLength) {
-            LOG_WARN("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
-            return;
-        }
-        trace_id_.Sequence = stoll_(sequence_str).value_or(0);
-    } catch (...) {
-        // This function allocates (AgentId copy, log formatting), so without
-        // this handler an OOM would hit the noexcept boundary and terminate
-        // the host. Degrade to the default-generated trace id instead. No
-        // logging here: formatting allocates too and a rethrow from a catch
-        // block would still terminate.
-    }
-
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
                          span_data_(span_data),
                          event_chunk_{},
@@ -429,7 +383,7 @@ namespace pinpoint {
             return {buf, static_cast<size_t>(ptr - buf)};
         };
 
-        writer.Set(HEADER_TRACE_ID, trace_id.ToString());
+        writer.Set(HEADER_TRACE_ID, trace_id.toString());
         writer.Set(HEADER_SPAN_ID, num(next_span_id));
         writer.Set(HEADER_PARENT_SPAN_ID, num(data_->getSpanId()));
         writer.Set(HEADER_FLAG, num(data_->getFlags()));
@@ -446,14 +400,13 @@ namespace pinpoint {
         writer.Set(HEADER_HOST, host);
     }
 
-    void SpanImpl::extractContext(TraceContextReader& reader, std::optional<std::string_view> tid) {
+    void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id) {
         CHECK_FINISHED();
 
-        if (!tid.has_value()) {
-            data_->setTraceId(agent_->generateTraceId());
-        } else {
-            data_->parseTraceId(tid.value());
-        }
+        // The trace id is resolved by NewSpan (parsed or generated) before this
+        // call; an empty/failed one never reaches here — NewSpan hands back a
+        // noop span in that case.
+        data_->setTraceId(std::move(trace_id));
 
         if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
             data_->setSpanId(generate_span_id());
@@ -634,7 +587,7 @@ namespace pinpoint {
 
         data_->setLoggingFlag();
 
-        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceId().ToString());
+        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceId().toString());
         writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
     }
 

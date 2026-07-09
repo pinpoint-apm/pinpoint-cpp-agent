@@ -1918,6 +1918,9 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
 
     auto span_parent = std::make_shared<SpanImpl>(mock_agent_service_.get(), "event-annotation-op", "test-rpc");
     auto span_data = span_parent->getSpanData();
+    // Directly-constructed SpanImpl bypasses NewSpan/extractContext, so seed a
+    // trace id the way production would before this span is serialized.
+    span_data->setTraceId(mock_agent_service_->generateTraceId());
     auto span_event = make_test_span_event_unique(*span_parent, "child-op");
     span_event->GetAnnotations()->AppendString(201, "event-annotation");
     span_data->addSpanEvent(std::move(span_event));

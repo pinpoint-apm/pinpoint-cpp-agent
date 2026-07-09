@@ -53,6 +53,14 @@ protected:
     std::unique_ptr<MockAgentService> mock_agent_service_;
 };
 
+// Resolves a span's trace id the way AgentImpl::NewSpan does — parse the inbound
+// HEADER_TRACE_ID when present, otherwise generate a fresh one — so tests can
+// drive SpanImpl::extractContext(), which now takes the already-resolved id.
+static TraceId make_extract_trace_id(AgentService& agent, TraceContextReader& reader) {
+    const auto hdr = reader.Get(HEADER_TRACE_ID);
+    return hdr.has_value() ? TraceId::parseTraceId(hdr.value()) : agent.generateTraceId();
+}
+
 // ========== EventStack Tests ==========
 
 TEST_F(SpanTest, EventStackBasicOperationsTest) {
@@ -357,15 +365,12 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
 }
 
 TEST_F(SpanTest, SpanDataTraceIdParsingTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
-    
-    // Test valid trace ID parsing
-    std::string valid_tid = "test-agent-001^1234567890^42";
-    span_data.parseTraceId(valid_tid);
-    
-    // The exact values depend on the parsing implementation
-    // but we can verify the trace ID was set
-    EXPECT_TRUE(true) << "TraceId parsing should not crash";
+    // A well-formed trace id parses into a populated, non-empty() TraceId.
+    const TraceId tid = TraceId::parseTraceId("test-agent-001^1234567890^42");
+    EXPECT_FALSE(tid.empty());
+    EXPECT_EQ(tid.agentId(), "test-agent-001");
+    EXPECT_EQ(tid.StartTime, 1234567890);
+    EXPECT_EQ(tid.Sequence, 42);
 }
 
 TEST_F(SpanTest, SpanImplUrlStatTest) {
@@ -754,15 +759,18 @@ TEST_F(SpanTest, SpanImplExtractContextTest) {
     reader.SetContext(HEADER_PARENT_APP_NAME, expected_parent_app_name);
     reader.SetContext(HEADER_PARENT_APP_TYPE, std::to_string(expected_parent_app_type));
     
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
     
     // Verify context was extracted with correct values
     EXPECT_EQ(span.GetSpanId(), expected_span_id) << "Span ID should match the value from context";
     
-    // Verify trace ID was parsed correctly
-    TraceId& trace_id = span.GetTraceId();
+    // Verify trace ID was parsed correctly. GetTraceId() now returns the wire
+    // string, so inspect the decomposed fields through the internal SpanData.
+    const TraceId& trace_id = span.getSpanData()->getTraceId();
     EXPECT_EQ(trace_id.StartTime, 1234567890) << "Trace ID start time should be parsed correctly";
     EXPECT_EQ(trace_id.Sequence, 42) << "Trace ID sequence should be parsed correctly";
+    EXPECT_EQ(span.GetTraceId(), "test-agent-001^1234567890^42")
+        << "GetTraceId should return the wire-form trace id";
 }
 
 TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
@@ -773,7 +781,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
     // Create a span event first for context (required by NewAsyncSpan).
     auto base_event = span.NewSpanEvent("base-event");
@@ -783,7 +791,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     // A real (non-noop) async span inherits the parent's span id and trace id.
     EXPECT_EQ(async_span->GetSpanId(), span.GetSpanId())
         << "Async child should inherit the parent span id";
-    EXPECT_EQ(async_span->GetTraceId().Sequence, span.GetTraceId().Sequence)
+    EXPECT_EQ(async_span->GetTraceId(), span.GetTraceId())
         << "Async child should inherit the parent trace id";
 
     async_span->EndSpan();
@@ -840,7 +848,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
     MockTraceContextReader parent_reader;
     parent_reader.SetContext(HEADER_TRACE_ID, "test-agent-001^1234567890^1");
     parent_reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent_span.extractContext(parent_reader, parent_reader.Get(HEADER_TRACE_ID));
+    parent_span.extractContext(parent_reader, make_extract_trace_id(*mock_agent_service_, parent_reader));
 
     // Create span event and inject context
     auto parent_se = parent_span.NewSpanEvent("external-call");
@@ -861,7 +869,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
         reader.SetContext(HEADER_PARENT_SPAN_ID, parent_span_id.value());
     }
     
-    child_span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    child_span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
     
     // Both spans should have valid IDs (after context extraction)
     EXPECT_NE(parent_span.GetSpanId(), 0) << "Parent span should have non-zero ID";
@@ -920,7 +928,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^7");
     reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    parent.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
     // Created on the owning thread (needs a live span event for context).
     auto prepare_event = parent.NewSpanEvent("prepare-async");
@@ -943,7 +951,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
         << "Async span should record its own chunk from the worker thread";
     EXPECT_EQ(async_span->GetSpanId(), parent.GetSpanId())
         << "Async child should inherit the parent span id";
-    EXPECT_EQ(async_span->GetTraceId().Sequence, parent.GetTraceId().Sequence)
+    EXPECT_EQ(async_span->GetTraceId(), parent.GetTraceId())
         << "Async child should inherit the parent trace id";
 
     prepare_event->EndEvent();
@@ -962,51 +970,38 @@ TEST_F(SpanTest, EventStackTopOnEmptyReturnsNullptrTest) {
     EXPECT_EQ(stack.top(), nullptr) << "Top on empty stack should return nullptr";
 }
 
-// ========== SpanData parseTraceId Edge Case Tests ==========
+// ========== parseTraceId Edge Case Tests ==========
+//
+// parseTraceId() returns an empty() TraceId on any structural failure; NewSpan
+// then hands back a noop span rather than recording a trace with no agent id.
 
-TEST_F(SpanTest, SpanDataParseTraceIdMissingSeparatorTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
-
-    // No '^' at all — should not crash, trace_id fields remain default
-    std::string invalid = "no-separator-here";
-    span_data.parseTraceId(invalid);
-
-    EXPECT_TRUE(span_data.getTraceId().AgentId.empty())
-        << "AgentId should remain empty on invalid input";
+TEST_F(SpanTest, ParseTraceIdMissingSeparatorTest) {
+    // No '^' at all — parse fails and yields an empty trace id.
+    const TraceId tid = TraceId::parseTraceId("no-separator-here");
+    EXPECT_TRUE(tid.empty()) << "a trace id with no separator should parse to empty";
 }
 
-TEST_F(SpanTest, SpanDataParseTraceIdOnlyOneSeparatorTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
-
-    // Only one '^' — second field parse should fail gracefully
-    std::string partial = "agent^12345";
-    span_data.parseTraceId(partial);
-
-    EXPECT_EQ(span_data.getTraceId().AgentId, "agent");
-    // Sequence should not be set (stays 0)
-    EXPECT_EQ(span_data.getTraceId().Sequence, 0);
+TEST_F(SpanTest, ParseTraceIdOnlyOneSeparatorTest) {
+    // Only one '^' — the sequence field is missing, so the parse fails.
+    const TraceId tid = TraceId::parseTraceId("agent^12345");
+    EXPECT_TRUE(tid.empty()) << "a trace id missing the sequence field should parse to empty";
 }
 
-TEST_F(SpanTest, SpanDataParseTraceIdAgentIdTooLongTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
-
-    // AgentId exceeds kMaxAgentIdLength (24)
-    std::string long_agent = "this-agent-id-is-way-too-long^1234567890^1";
-    span_data.parseTraceId(long_agent);
-
-    EXPECT_TRUE(span_data.getTraceId().AgentId.empty())
-        << "AgentId should remain empty when too long";
+TEST_F(SpanTest, ParseTraceIdAgentIdTooLongTest) {
+    // AgentId exceeds kMaxAgentIdLength (24) — parse fails.
+    const TraceId tid = TraceId::parseTraceId("this-agent-id-is-way-too-long^1234567890^1");
+    EXPECT_TRUE(tid.empty()) << "a trace id with an over-long agent id should parse to empty";
 }
 
-TEST_F(SpanTest, SpanDataParseTraceIdEmptyFieldsTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
-
-    std::string empty_fields = "^^";
-    span_data.parseTraceId(empty_fields);
-
-    EXPECT_TRUE(span_data.getTraceId().AgentId.empty());
-    EXPECT_EQ(span_data.getTraceId().StartTime, 0);
-    EXPECT_EQ(span_data.getTraceId().Sequence, 0);
+TEST_F(SpanTest, ParseTraceIdEmptyFieldsTest) {
+    // "^^" is structurally valid: all separators present with empty fields. It
+    // parses to a present (non-empty()) trace id with an empty agent id and
+    // zeroed times.
+    const TraceId tid = TraceId::parseTraceId("^^");
+    EXPECT_FALSE(tid.empty()) << "a structurally valid trace id should not be empty()";
+    EXPECT_TRUE(tid.agentId().empty());
+    EXPECT_EQ(tid.StartTime, 0);
+    EXPECT_EQ(tid.Sequence, 0);
 }
 
 // ========== SpanData finishSpanEvent on Empty Stack ==========
@@ -1191,7 +1186,7 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
     auto real = span.NewSpanEvent("real-event");
     auto overflowed = span.NewSpanEvent("overflowed-event"); // depth 2 >= max 2
@@ -1360,9 +1355,9 @@ TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
     MockTraceContextReader reader;
 
     // No HEADER_TRACE_ID set — should generate a new trace ID
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
-    TraceId& tid = span.GetTraceId();
+    const TraceId& tid = span.getSpanData()->getTraceId();
     EXPECT_EQ(tid.StartTime, mock_agent_service_->getStartTime())
         << "Generated trace ID should use agent start time";
 }
@@ -1375,7 +1370,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
 
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
     span.EndSpan();
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1393,7 +1388,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_FLAG, "5");
 
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1410,7 +1405,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
     reader.SetContext(HEADER_PARENT_APP_NAMESPACE, "ParentNamespace");
     reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
 
-    span.extractContext(reader, reader.Get(HEADER_TRACE_ID));
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());

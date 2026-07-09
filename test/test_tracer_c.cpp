@@ -558,13 +558,32 @@ TEST_F(TracerCApiTest, GetSpanIdReturnsNonZero) {
     pt_span_destroy(span);
 }
 
-TEST_F(TracerCApiTest, GetTraceIdFillsStruct) {
+TEST_F(TracerCApiTest, GetTraceIdWritesWireForm) {
     pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
     ASSERT_NE(span, nullptr);
 
-    pt_trace_id_t tid = pt_span_get_trace_id(span);
-    EXPECT_STRNE(tid.agent_id, "");
-    EXPECT_NE(tid.start_time, 0);
+    char buf[PT_TRACE_ID_MAX];
+    const size_t len = pt_span_get_trace_id(span, buf, sizeof(buf));
+    ASSERT_GT(len, 0u);
+    EXPECT_LT(len, sizeof(buf)) << "trace id should fit without truncation";
+
+    // Wire form: "<agent_id>^<start_time>^<sequence>".
+    const std::string tid(buf, len);
+    const auto sep1 = tid.find('^');
+    const auto sep2 = tid.rfind('^');
+    ASSERT_NE(sep1, std::string::npos);
+    ASSERT_NE(sep2, sep1) << "expected two '^' separators";
+    EXPECT_GT(sep1, 0u) << "agent id should be non-empty";
+    EXPECT_NE(tid.substr(sep1 + 1, sep2 - sep1 - 1), "0") << "start time should be set";
+
+    // A zero-length probe reports the required length without writing.
+    EXPECT_EQ(pt_span_get_trace_id(span, nullptr, 0), len);
+
+    // Truncation still NUL-terminates and reports the full length.
+    char small[4];
+    EXPECT_EQ(pt_span_get_trace_id(span, small, sizeof(small)), len);
+    EXPECT_EQ(small[3], '\0');
+    EXPECT_EQ(std::string(small), tid.substr(0, 3));
 
     pt_span_end(span);
     pt_span_destroy(span);
@@ -618,11 +637,11 @@ TEST_F(TracerCApiTest, ExtractContextFromInjectedHeaders) {
     ASSERT_NE(child, nullptr);
 
     // Child must share the same trace-id as the parent.
-    pt_trace_id_t parent_tid = pt_span_get_trace_id(parent);
-    pt_trace_id_t child_tid  = pt_span_get_trace_id(child);
-    EXPECT_STREQ(parent_tid.agent_id, child_tid.agent_id);
-    EXPECT_EQ(parent_tid.start_time, child_tid.start_time);
-    EXPECT_EQ(parent_tid.sequence, child_tid.sequence);
+    char parent_tid[PT_TRACE_ID_MAX];
+    char child_tid[PT_TRACE_ID_MAX];
+    ASSERT_GT(pt_span_get_trace_id(parent, parent_tid, sizeof(parent_tid)), 0u);
+    ASSERT_GT(pt_span_get_trace_id(child, child_tid, sizeof(child_tid)), 0u);
+    EXPECT_STREQ(parent_tid, child_tid);
 
     pt_span_end(child);
     pt_span_destroy(child);

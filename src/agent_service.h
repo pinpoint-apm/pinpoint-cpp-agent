@@ -16,9 +16,11 @@
 
 #pragma once
 
+#include <charconv>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include "pinpoint/tracer.h"
 #include "utility.h"
  
@@ -38,7 +40,77 @@
     * @brief Identifies the type of statistics pushed to the collector.
     */
    enum StatsType {AGENT_STATS, URL_STATS};
- 
+
+   /**
+    * @brief Internal distributed trace identifier: agent id, start time and sequence.
+    *
+    * Internal-only — not part of the public API. Application code observes a
+    * trace id through Span::GetTraceId(), which returns the serialized wire
+    * form (`agentId^startTime^sequence`) as a std::string.
+    */
+   struct TraceId {
+      // Held by shared_ptr so copying a TraceId — which happens when SpanData
+      // stores it, when NewAsyncSpan clones the parent's, and when it is queued
+      // in an ExceptionMeta — never re-copies the agent-id bytes.
+      // generateTraceId hands out the agent's id; parseTraceId owns the id it
+      // decodes from an inbound header. May be null (default/unset).
+      std::shared_ptr<const std::string> AgentId;
+      /// Epoch time (milliseconds) when the agent started.
+      int64_t StartTime = 0;
+      /// Sequence number that disambiguates traces created at the same start time.
+      int64_t Sequence = 0;
+
+      TraceId() = default;
+      TraceId(std::shared_ptr<const std::string> agent_id, int64_t start_time, int64_t sequence)
+         : AgentId(std::move(agent_id)), StartTime(start_time), Sequence(sequence) {}
+      // Convenience for call sites that hold the id by value/view (tests, mocks,
+      // parseTraceId): copies the bytes into a fresh shared string.
+      TraceId(std::string_view agent_id, int64_t start_time, int64_t sequence)
+         : AgentId(std::make_shared<const std::string>(agent_id)),
+           StartTime(start_time), Sequence(sequence) {}
+
+      /**
+       * @brief Parses a wire-form trace id (`agentId^startTime^sequence`).
+       *
+       * @param txid Inbound HEADER_TRACE_ID value.
+       * @return The parsed TraceId, or an empty one (empty()) when @p txid is
+       *         malformed or an allocation fails. Never throws.
+       */
+      static TraceId parseTraceId(std::string_view txid) noexcept;
+
+      /// @brief Agent-id bytes, or an empty view when unset.
+      std::string_view agentId() const noexcept {
+         return AgentId ? std::string_view(*AgentId) : std::string_view{};
+      }
+
+      /// @brief True when this is an empty/invalid trace id (no agent id set).
+      ///        generateTraceId()/parseTraceId() return such a value on failure,
+      ///        and NewSpan turns it into a noop span instead of recording it.
+      bool empty() const noexcept { return AgentId == nullptr; }
+
+      /**
+       * @brief Serializes the trace identifier to the wire format (`agentId^startTime^sequence`).
+       */
+      std::string toString() const {
+         // Built with to_chars + a single reserved string instead of an
+         // ostringstream: this runs on every InjectContext()/SetLogging()
+         // (i.e. every outbound call on a traced request), and ostringstream
+         // pays for locale, a virtual streambuf and multiple allocations.
+         const std::string_view agent = agentId();
+         char num[20];  // widest int64_t is 20 chars incl. sign
+         std::string out;
+         out.reserve(agent.size() + 2 + 2 * sizeof(num));
+         out.append(agent);
+         out.push_back('^');
+         auto st = std::to_chars(num, num + sizeof(num), StartTime);
+         out.append(num, st.ptr);
+         out.push_back('^');
+         auto sq = std::to_chars(num, num + sizeof(num), Sequence);
+         out.append(num, sq.ptr);
+         return out;
+      }
+   };
+
    /**
     * @brief Abstract service boundary used by collectors and workers to report data.
     *

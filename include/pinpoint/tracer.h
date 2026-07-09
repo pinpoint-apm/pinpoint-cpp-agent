@@ -18,7 +18,6 @@
 #define PINPOINT_TRACER_H
 
 #include <array>
-#include <charconv>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -84,39 +83,6 @@ namespace pinpoint {
 	constexpr int32_t API_TYPE_INVOCATION = 200;
 
 	constexpr int32_t NONE_ASYNC_ID = 0;
-
-	/**
-	 * @brief Represents a distributed trace identifier consisting of agent, start time and sequence.
-	 */
-	struct TraceId {
-		/// Agent identifier that issued the trace.
-		std::string AgentId;
-		/// Epoch time (milliseconds) when the agent started.
-		int64_t StartTime;
-		/// Sequence number that disambiguates traces created at the same start time.
-		int64_t Sequence;
-
-		/**
-		 * @brief Serializes the trace identifier to the wire format (`agentId^startTime^sequence`).
-		 */
-		std::string ToString() const {
-			// Built with to_chars + a single reserved string instead of an
-			// ostringstream: this runs on every InjectContext()/SetLogging()
-			// (i.e. every outbound call on a traced request), and ostringstream
-			// pays for locale, a virtual streambuf and multiple allocations.
-			char num[20];  // widest int64_t is 20 chars incl. sign
-			std::string out;
-			out.reserve(AgentId.size() + 2 + 2 * sizeof(num));
-			out.append(AgentId);
-			out.push_back('^');
-			auto st = std::to_chars(num, num + sizeof(num), StartTime);
-			out.append(num, st.ptr);
-			out.push_back('^');
-			auto sq = std::to_chars(num, num + sizeof(num), Sequence);
-			out.append(num, sq.ptr);
-			return out;
-		}
-	};
 
 	/**
 	 * @brief Read-only accessor for inbound propagation carriers.
@@ -341,8 +307,10 @@ namespace pinpoint {
 		/// contract above.
 		virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
 
-		/// @brief Returns the trace identifier for the span.
-		virtual TraceId& GetTraceId() = 0;
+		/// @brief Returns the distributed trace identifier for the span in its
+		///        wire form (`agentId^startTime^sequence`), or an empty string
+		///        when the span carries no trace (e.g. a noop/unsampled span).
+		virtual std::string GetTraceId() = 0;
 		/// @brief Returns the span identifier.
 		virtual int64_t GetSpanId() = 0;
 		/// @brief Indicates whether the span is sampled.
