@@ -106,6 +106,7 @@ Set the configuration file path in your application:
 int main() {
     pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // Your application code
 
@@ -147,6 +148,7 @@ int main() {
 
     pinpoint::SetConfigString(config);
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // Your application code
 
@@ -163,7 +165,7 @@ For a complete list of configuration options, see the [Configuration Guide](conf
 
 The typical workflow follows five steps:
 
-1. **Initialize** — set configuration and create an agent at application startup.
+1. **Initialize** — set configuration, create an agent, and call `Start()` at application startup.
 2. **Trace** — use `Agent::NewSpan` to start tracing a transaction.
 3. **Record work** — create span events and annotations for sub-operations.
 4. **End** — call `EndSpan()` when the transaction completes.
@@ -177,6 +179,7 @@ The typical workflow follows five steps:
 int main() {
     pinpoint::SetConfigFilePath("pinpoint-config.yaml");
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // Check if agent is enabled
     if (!agent->Enable()) {
@@ -288,8 +291,9 @@ int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "my-first-app", 0);
     setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 0);
 
-    // Create agent
+    // Create and start agent
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     if (!agent->Enable()) {
         std::cerr << "Failed to enable agent" << std::endl;
@@ -363,6 +367,7 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 int main() {
     pinpoint::SetConfigFilePath("pinpoint-config.yaml");
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     httplib::Server server;
     server.Get("/users", handle_users);

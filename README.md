@@ -96,6 +96,7 @@ int main() {
     // Initialize agent
     pinpoint::SetConfigFilePath("pinpoint-config.yaml");
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // Create a span for an incoming request
     auto span = agent->NewSpan("C++ Server", "/api/endpoint");

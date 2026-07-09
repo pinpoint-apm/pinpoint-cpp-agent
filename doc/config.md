@@ -47,6 +47,7 @@ Create a `pinpoint-config.yaml` file and set its path:
 int main() {
     pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
     // ...
 }
 ```
@@ -75,6 +76,7 @@ int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
     // ...
 }
 ```
@@ -88,6 +90,7 @@ pinpoint::SetConfigEnvVarPrefix("MYAPP");   // read MYAPP_* instead of PINPOINT_
 setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
 setenv("MYAPP_COLLECTOR_HOST", "localhost", 1);
 auto agent = pinpoint::CreateAgent();
+agent->Start();
 ```
 
 Because environment variables are read only while building the initial configuration, the prefix must be set before the agent is created; it has no effect on a running agent.
@@ -109,6 +112,7 @@ int main() {
 
     pinpoint::SetConfigString(config);
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
     // ...
 }
 ```

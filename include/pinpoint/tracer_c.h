@@ -30,6 +30,7 @@
  *   pt_set_config_file_path("/etc/pinpoint/agent.yaml");
  *
  *   pt_agent_t agent = pt_create_agent();
+ *   pt_agent_start(agent);
  *
  *   // --- incoming request ---
  *   pt_context_reader_t reader = { &my_headers, my_header_get };

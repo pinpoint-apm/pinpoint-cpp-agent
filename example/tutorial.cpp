@@ -10,6 +10,7 @@ int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-tutorial", 0);
 
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     httplib::Server svr;

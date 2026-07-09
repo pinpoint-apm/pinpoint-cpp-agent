@@ -79,6 +79,7 @@ int main() {
 
     // Or use SetConfigString(...) / environment variables instead.
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // To override the configured application type:
     // auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP);
@@ -103,6 +104,7 @@ std::vector<std::string> libs = {"my-http-framework/1.2.3"};
 
 auto agent = pinpoint::CreateAgent(pinpoint::APP_TYPE_CPP,
                                    "my-service-runtime", args, libs);
+agent->Start();
 ```
 
 ### Using the Global Agent
@@ -122,6 +124,7 @@ void someFunction() {
 
 ```cpp
 auto agent = pinpoint::CreateAgent();
+agent->Start();
 if (!agent->Enable()) {
     std::cerr << "Agent failed to start - check configuration" << std::endl;
     // Continue without tracing or exit
@@ -138,14 +141,16 @@ setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-demo", 0);
 setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
 
 auto agent = pinpoint::CreateAgent();
+agent->Start();
 ```
 
 ### Startup Checklist
 
 1. Set configuration (file or string) *before* calling `CreateAgent()`.
 2. Configure additional features using environment variables (e.g., HTTP/SQL stats).
-3. Hold the `AgentPtr` for the lifetime of the process.
-4. Call `Shutdown()` on application exit (see [§10](#10-asynchronous-and-background-work)).
+3. Call `Start()` before creating spans.
+4. Hold the `AgentPtr` for the lifetime of the process.
+5. Call `Shutdown()` on application exit (see [§10](#10-asynchronous-and-background-work)).
 
 ---
 
@@ -599,6 +604,7 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-server", 0);
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     httplib::Server server;
     server.Get("/users", wrap_handler(handle_users));
@@ -1320,7 +1326,7 @@ For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shoot
 
 ## 15. Checklist for New Instrumentation
 
-1. **Initialize the agent** — configure via YAML and/or environment variables, then call `CreateAgent()`.
+1. **Initialize the agent** — configure via YAML and/or environment variables, then call `CreateAgent()` and `Start()`.
 2. **Create a span** — on each incoming request or logical unit of work, call `NewSpan(...)`.
 3. **Record metadata** — set remote address, endpoint, service type, and critical attributes.
 4. **Add span events** — wrap key internal operations (DB, HTTP client, cache, business logic).

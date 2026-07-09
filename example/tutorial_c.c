@@ -223,6 +223,7 @@ int main(void) {
         fprintf(stderr, "failed to create pinpoint agent\n");
         return 1;
     }
+    pt_agent_start(agent);
 
     /* Give the agent a moment to come up — matches the C++ tutorial. */
     sleep_sec(5);

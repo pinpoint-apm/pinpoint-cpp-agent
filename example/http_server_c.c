@@ -228,6 +228,7 @@ int main(void) {
         fprintf(stderr, "failed to create pinpoint agent\n");
         return 1;
     }
+    pt_agent_start(agent);
 
     hlc_server_t server = hlc_server_create();
     if (!server) {

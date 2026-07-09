@@ -45,6 +45,7 @@ int main() {
     setenv("PINPOINT_CPP_ENABLE", "false", 1);
 
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
     // Agent will be disabled — no tracing data is collected
 
     // Your application code
@@ -64,6 +65,7 @@ You can stop the agent at runtime by calling `Agent::Shutdown()`. There is no ne
 
 int main() {
     auto agent = pinpoint::CreateAgent();
+    agent->Start();
 
     // Your application code
 
@@ -98,6 +100,9 @@ void handle_new_agent(const httplib::Request& req, httplib::Response& res) {
 
         pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
         global_agent = pinpoint::CreateAgent();
+        if (global_agent) {
+            global_agent->Start();
+        }
 
         if (global_agent && global_agent->Enable()) {
             res.status = 200;
@@ -267,6 +272,7 @@ EnableCallstackTrace: true
 
 ```cpp
 auto agent = pinpoint::CreateAgent();
+agent->Start();
 if (!agent->Enable()) {
     std::cerr << "Agent failed to start" << std::endl;
     // Check logs for details
