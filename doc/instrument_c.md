@@ -45,24 +45,24 @@ Pinpoint models each transaction as a tree of **spans**.
 | Topic | C++ API (`tracer.h`) | C API (`tracer_c.h`) |
 |---|---|---|
 | Handle types | Smart pointers (`SpanPtr`) | Opaque pointers (`pt_span_t`) |
-| Memory management | RAII / destructors | Manual `_destroy()` calls |
+| Memory management | RAII / destructors | Owning handles use `_destroy()`; view handles are non-owning |
 | Propagation carriers | Virtual base classes | Callback structs (`pt_context_reader_t`, etc.) |
-| Span event lifecycle | `ScopedSpanEvent` helper available | Manual `pt_span_event_end(se)` + `pt_span_event_destroy(se)` |
+| Span event lifecycle | `ScopedSpanEvent` helper available | Manual `pt_span_event_end(se)`; `pt_span_event_destroy(se)` is an optional no-op |
 | Error handling | C++ exceptions | Return values / `pt_span_set_error()` |
 | Header file | `include/pinpoint/tracer.h` | `include/pinpoint/tracer_c.h` |
 
 ### Handle lifetime rules
 
-Every handle obtained from a `pt_*_new_*`, `pt_*_get_*`, `pt_create_agent*()`, or `pt_global_agent()` function **must** be released with its matching `_destroy()` function:
+Agent and span handles own C wrapper storage and must be destroyed when you are done with them:
 
 ```c
 pt_agent_t      → pt_agent_destroy()
 pt_span_t       → pt_span_destroy()        (call pt_span_end() first)
-pt_span_event_t → pt_span_event_destroy()  (call pt_span_event_end() first)
-pt_annotation_t → pt_annotation_destroy()
 ```
 
 `pt_agent_destroy()` releases the C handle wrapper. It does not shut down tracing by itself; call `pt_agent_shutdown()` only for an agent you intend to stop.
+
+Span-event and annotation handles are non-owning views. They allocate no resources, and `pt_span_event_destroy()` / `pt_annotation_destroy()` are safe no-ops kept for API symmetry and compatibility. Use these handles only while their parent span/span event is alive and active; do not read, mutate, or store them for work that can run after `pt_span_event_end()`, `pt_span_end()`, or `pt_span_destroy()`.
 
 ---
 
@@ -301,10 +301,10 @@ pt_span_event_t se = pt_span_new_event(span, "db_query");
 /* ... perform the operation ... */
 
 pt_span_event_end(se);        /* finalize the event — called on the EVENT handle */
-pt_span_event_destroy(se);    /* release the handle */
+pt_span_event_destroy(se);    /* optional compatibility no-op */
 ```
 
-> `pt_span_event_end()` is called on the **event handle**, not on the parent span. The event handle may still be read after `pt_span_event_end()` but must be released with `pt_span_event_destroy()`.
+> `pt_span_event_end()` is called on the **event handle**, not on the parent span. After it returns, do not read or mutate the event handle or annotation handles derived from it. `pt_span_event_destroy()` is optional and does not extend the event lifetime.
 
 ### Creating an event with an explicit service type
 
@@ -368,7 +368,7 @@ pt_annotation_t anno = pt_span_get_annotations(span);
 pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "/api/users/123");
 pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, 200);
 
-pt_annotation_destroy(anno);  /* always destroy when done */
+pt_annotation_destroy(anno);  /* optional compatibility no-op */
 ```
 
 ### Adding annotations to a span event
@@ -379,7 +379,7 @@ pt_annotation_t anno = pt_span_event_get_annotations(se);
 pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "http://downstream/foo");
 pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, status);
 
-pt_annotation_destroy(anno);
+pt_annotation_destroy(anno);  /* optional compatibility no-op */
 ```
 
 ### Annotation value types
@@ -757,7 +757,7 @@ Each `pt_span_new_event()` pushes an event; each `pt_span_event_end(se)` pops th
 pt_span_event_t e = pt_span_new_event(span, "op");
 /* ... */
 pt_span_event_end(e);       /* pop   */
-pt_span_event_destroy(e);   /* free  */
+pt_span_event_destroy(e);   /* optional no-op */
 ```
 
 ### Sanitize sensitive data
@@ -770,14 +770,14 @@ pt_span_event_destroy(e);   /* free  */
 pt_span_event_set_sql_query(se, sql, "[REDACTED]");
 ```
 
-### Release annotation handles promptly
+### Keep annotation handles short-lived
 
-`pt_annotation_t` handles are lightweight wrappers but must be destroyed to avoid leaks:
+`pt_annotation_t` handles are non-owning views. They do not leak if `pt_annotation_destroy()` is omitted, but keeping their scope short avoids accidental use after the parent span or span event is finished:
 
 ```c
 pt_annotation_t anno = pt_span_event_get_annotations(se);
 pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, url);
-pt_annotation_destroy(anno);   /* always destroy */
+pt_annotation_destroy(anno);   /* optional no-op */
 ```
 
 ### Shut down cleanly

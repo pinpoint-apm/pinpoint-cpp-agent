@@ -481,9 +481,9 @@ void pt_span_destroy(pt_span_t span);
 /**
  * @brief Creates a new child span event and pushes it onto the event stack.
  *
- * The returned handle must be used only while the parent span is alive and the
- * event is active. Release the handle with pt_span_event_destroy(); this only
- * frees the C wrapper and does not extend the event lifetime.
+ * The returned non-owning handle must be used only while the parent span is
+ * alive and the event is active. pt_span_event_destroy() may be called when
+ * done, but it is a compatibility no-op and does not extend the event lifetime.
  * Call pt_span_event_end() on the event handle to pop and finalize the event.
  *
  * Mirrors pinpoint::Span::NewSpanEvent(operation).
@@ -501,8 +501,9 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
 /**
  * @brief Returns the current (top-of-stack) span event.
  *
- * The returned non-owning handle must be released with
- * pt_span_event_destroy(). Returns NULL if there is no active event.
+ * The returned non-owning handle is valid only while that event remains active.
+ * pt_span_event_destroy() may be called when done, but it is a compatibility
+ * no-op. Returns NULL if there is no active event.
  *
  * Mirrors pinpoint::Span::GetSpanEvent().
  */
@@ -594,8 +595,10 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
 /**
  * @brief Returns the annotation container for this span.
  *
- * The returned non-owning handle must be released with pt_annotation_destroy()
- * when no longer needed. Do not use it after the span ends or is destroyed.
+ * The returned non-owning handle is valid only while the span is alive and
+ * active. pt_annotation_destroy() may be called when done, but it is a
+ * compatibility no-op. Do not use the handle after the span ends or is
+ * destroyed.
  *
  * Mirrors pinpoint::Span::GetAnnotations().
  */
@@ -606,10 +609,10 @@ pt_annotation_t pt_span_get_annotations(pt_span_t span);
 /* ========================================================================== */
 
 /**
- * @brief Releases a span event handle.
+ * @brief Compatibility no-op for a span event view handle.
  *
- * Does NOT end/finalize the event or destroy the underlying event — call
- * pt_span_event_end() first.
+ * Span-event handles are non-owning pointer views. This function does not
+ * end/finalize the event, free memory, or extend the event lifetime.
  */
 void pt_span_event_destroy(pt_span_event_t se);
 
@@ -618,8 +621,8 @@ void pt_span_event_destroy(pt_span_event_t se);
  *
  * Records the elapsed time and removes the event from the parent span's event
  * stack. Ending an already-ended event is a warning no-op. Do not use the
- * event or its annotation handles after this call (release them with
- * pt_span_event_destroy() / pt_annotation_destroy()).
+ * event or its annotation handles after this call; their destroy functions are
+ * optional compatibility no-ops.
  *
  * Mirrors pinpoint::SpanEvent::EndEvent().
  */
@@ -684,8 +687,10 @@ void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* write
 /**
  * @brief Returns the annotation container for this span event.
  *
- * The returned non-owning handle must be released with pt_annotation_destroy().
- * Do not use it after the span event is ended or the parent span is destroyed.
+ * The returned non-owning handle is valid only while the span event is active.
+ * pt_annotation_destroy() may be called when done, but it is a compatibility
+ * no-op. Do not use the handle after the span event is ended or the parent span
+ * is destroyed.
  *
  * Mirrors pinpoint::SpanEvent::GetAnnotations().
  */
@@ -696,8 +701,10 @@ pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se);
 /* ========================================================================== */
 
 /**
- * @brief Releases an annotation handle obtained from pt_span_get_annotations()
- *        or pt_span_event_get_annotations().
+ * @brief Compatibility no-op for an annotation view handle.
+ *
+ * Annotation handles are non-owning pointer views. This function does not free
+ * memory or extend the parent span/span-event lifetime.
  */
 void pt_annotation_destroy(pt_annotation_t anno);
 
