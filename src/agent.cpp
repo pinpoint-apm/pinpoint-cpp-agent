@@ -82,7 +82,7 @@ namespace pinpoint {
         // serve them without touching the atomic runtime_.
         app_type_ = app_type;
         app_name_ = cfg->app_name_;
-        agent_id_ = cfg->agent_id_;
+        agent_id_ = std::make_shared<const std::string>(cfg->agent_id_);
         agent_name_ = cfg->agent_name_;
         service_name_ = cfg->service_name_;
 
@@ -167,7 +167,7 @@ namespace pinpoint {
         }
 
         const auto cfg = getConfig();
-        const std::string old_id = agent_id_;
+        const std::string old_id = *agent_id_;
         std::string new_id;
         if (cfg && cfg->agent_id_pinned_) {
             // Explicit id pinned by the user: keep it recognizable but append a
@@ -188,7 +188,7 @@ namespace pinpoint {
         // instance key on the collector; agent_name is a display alias (and is
         // still served from the captured config in the gRPC headers), so it is
         // deliberately left untouched to keep the two consistent.
-        agent_id_ = new_id;
+        agent_id_ = std::make_shared<const std::string>(new_id);
         LOG_INFO("fork-safe start: agent id '{}' -> '{}'", old_id, new_id);
     }
 
@@ -208,7 +208,7 @@ namespace pinpoint {
     }
 
     const std::string& AgentImpl::getAgentId() const {
-        return agent_id_;
+        return *agent_id_;
     }
 
     const std::string& AgentImpl::getAgentName() const {
@@ -608,7 +608,7 @@ namespace pinpoint {
 
         if (my_sampling) {
             // Resolve the trace id up front: parse the inbound header (continued
-            // trace) or mint a fresh one. Either can fail (malformed header /
+            // trace) or mint a fresh one. Parsing can fail (malformed header /
             // bad_alloc) and return an empty trace id — in that case drop to a
             // noop span rather than record a trace with no agent id.
             TraceId trace_id = tid.has_value() ? TraceId::parseTraceId(tid.value())
@@ -739,21 +739,12 @@ namespace pinpoint {
     }
 
     TraceId AgentImpl::generateTraceId() {
-        // One allocation per new trace to seed the shared agent-id string; every
-        // downstream copy of the returned TraceId (async child span, queued
-        // ExceptionMeta) then only bumps the refcount. agent_id_ can change once
-        // at fork-safe Start(), so it is read here rather than cached.
-        try {
-            auto agent_id = std::make_shared<const std::string>(agent_id_);
-            return TraceId{std::move(agent_id),
-                           start_time_,
-                           static_cast<int64_t>(trace_id_sequence_.fetch_add(1))};
-        } catch (const std::bad_alloc&) {
-            // Out of memory: return an empty trace id so NewSpan drops to a noop
-            // span instead of recording a trace with no agent id.
-            LOG_ERROR("generateTraceId: agent id allocation failed");
-            return {};
-        }
+        // Allocation-free: agent_id_ is already a shared string that is
+        // immutable once spans can be created (see its declaration), so every
+        // TraceId minted here — and every downstream copy (async child span,
+        // queued ExceptionMeta) — only bumps its refcount.
+        return TraceId{agent_id_, start_time_,
+                       static_cast<int64_t>(trace_id_sequence_.fetch_add(1))};
     }
 
     void AgentImpl::recordSpan(std::unique_ptr<SpanChunk> span) const {

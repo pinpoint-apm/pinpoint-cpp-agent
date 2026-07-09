@@ -370,8 +370,6 @@ namespace pinpoint {
     void SpanImpl::injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host) {
         CHECK_FINISHED();
 
-        const auto& trace_id = data_->getTraceId();
-
         // Runs on every outbound call: format the numeric headers into a
         // stack buffer instead of allocating std::to_string temporaries.
         // Reusing one buffer across Set calls matches the temporaries'
@@ -383,7 +381,7 @@ namespace pinpoint {
             return {buf, static_cast<size_t>(ptr - buf)};
         };
 
-        writer.Set(HEADER_TRACE_ID, trace_id.toString());
+        writer.Set(HEADER_TRACE_ID, data_->getTraceIdWire());
         writer.Set(HEADER_SPAN_ID, num(next_span_id));
         writer.Set(HEADER_PARENT_SPAN_ID, num(data_->getSpanId()));
         writer.Set(HEADER_FLAG, num(data_->getFlags()));
@@ -587,7 +585,7 @@ namespace pinpoint {
 
         data_->setLoggingFlag();
 
-        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceId().toString());
+        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceIdWire());
         writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
     }
 

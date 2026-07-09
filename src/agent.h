@@ -167,7 +167,12 @@ namespace pinpoint {
     	// SpanData ctor, generateTraceId).
     	std::string app_name_;
     	int32_t app_type_{};
-    	std::string agent_id_;
+    	// Held as a shared string so generateTraceId() can seed every new
+    	// TraceId with a refcount bump instead of a per-trace allocation.
+    	// Written only by the ctor and refresh_agent_id_for_process() (early in
+    	// Start(), before the init thread that can flip enabled_ exists), so it
+    	// is immutable by the time NewSpan can mint a sampled span. Never null.
+    	std::shared_ptr<const std::string> agent_id_;
     	std::string agent_name_;
     	std::string service_name_;
 

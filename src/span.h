@@ -118,7 +118,21 @@ namespace pinpoint {
     	/// @brief Sets the trace identifier.
     	// By value so an rvalue (setTraceId(generateTraceId())) moves straight
     	// through without copying the AgentId string a second time.
-    	void setTraceId(TraceId trace_id) { trace_id_ = std::move(trace_id); }
+    	void setTraceId(TraceId trace_id) {
+    		trace_id_ = std::move(trace_id);
+    		trace_id_wire_.clear();
+    	}
+    	/// @brief Returns the wire form (`agentId^startTime^sequence`) of the
+    	/// trace id, serialized once and cached: the trace id is immutable for
+    	/// the span's lifetime, while injectContext() resends it on every
+    	/// outbound call. Called only from the span-owning thread (inject /
+    	/// SetLogging / GetTraceId); the gRPC workers read trace_id_ directly.
+    	const std::string& getTraceIdWire() {
+    		if (trace_id_wire_.empty() && !trace_id_.empty()) {
+    			trace_id_wire_ = trace_id_.toString();
+    		}
+    		return trace_id_wire_;
+    	}
 
     	/// @brief Stores the numeric span identifier.
     	void setSpanId(int64_t span_id) { span_id_ = span_id; }
@@ -303,6 +317,8 @@ namespace pinpoint {
         void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
 
     	TraceId trace_id_;
+    	// Lazily-built toString() cache; see getTraceIdWire().
+    	std::string trace_id_wire_;
     	int64_t span_id_;
 
     	int64_t parent_span_id_;
@@ -487,7 +503,7 @@ namespace pinpoint {
     	 */
     	void endDisabledSpanEvent();
 
-        std::string GetTraceId() override { return data_->getTraceId().toString(); }
+        std::string GetTraceId() override { return data_->getTraceIdWire(); }
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
         AnnotationPtr GetAnnotations() const override { return data_->getAnnotations(); }

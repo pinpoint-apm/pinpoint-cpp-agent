@@ -84,8 +84,8 @@
       }
 
       /// @brief True when this is an empty/invalid trace id (no agent id set).
-      ///        generateTraceId()/parseTraceId() return such a value on failure,
-      ///        and NewSpan turns it into a noop span instead of recording it.
+      ///        parseTraceId() returns such a value on failure, and NewSpan
+      ///        turns it into a noop span instead of recording it.
       bool empty() const noexcept { return AgentId == nullptr; }
 
       /**
