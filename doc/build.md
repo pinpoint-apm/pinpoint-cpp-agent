@@ -17,6 +17,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
   - [Compiler Cache (ccache)](#compiler-cache-ccache)
 - [Build Options](#build-options)
 - [Running Tests](#running-tests)
+  - [LLVM Coverage](#llvm-coverage-cmake)
 - [Integration Test](#integration-test)
 - [Troubleshooting](#troubleshooting)
 
@@ -312,7 +313,7 @@ The following CMake options are available:
 | `BUILD_EXAMPLES` | ON | Build example applications |
 | `BUILD_SHARED_LIBS` | ON | Build as a shared library (.so / .dylib) |
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
-| `BUILD_COVERAGE` | OFF | Enable code coverage (GCC only) |
+| `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
 | `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
 
 Example:
@@ -352,6 +353,43 @@ ctest --preset default -R test_sampling
 ```
 
 Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run against a different build directory.
+
+### LLVM Coverage (CMake)
+
+The `coverage` preset selects Clang, enables source-based coverage
+instrumentation, builds all CTest binaries, runs the tests, merges every raw
+profile with `llvm-profdata`, and generates text and HTML reports with
+`llvm-cov`:
+
+```bash
+cmake --preset coverage
+cmake --build --preset coverage
+```
+
+The second command runs the `coverage` target, so a separate `ctest` command is
+not needed. Reports are recreated on every run:
+
+| Output | Path |
+|---|---|
+| Text summary | `build/coverage/coverage/coverage.txt` |
+| HTML report | `build/coverage/coverage/html/index.html` |
+| Merged profile | `build/coverage/coverage/coverage.profdata` |
+
+Clang, `llvm-profdata`, and `llvm-cov` must be installed. CMake first looks for
+the LLVM tools beside the selected compiler and then searches `PATH`. Override
+`LLVM_COV_EXECUTABLE` or `LLVM_PROFDATA_EXECUTABLE` at configure time when the
+tools are installed elsewhere.
+
+Without presets, the equivalent workflow is:
+
+```bash
+cmake -S . -B build/coverage -G Ninja \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_COVERAGE=ON
+cmake --build build/coverage --target coverage
+```
 
 ### Available unit tests
 

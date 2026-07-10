@@ -26,7 +26,7 @@ option(BUILD_TESTING      "Build tests"                ON)
 option(BUILD_EXAMPLES     "Build examples"             ON)
 option(BUILD_SHARED_LIBS  "Build as a shared library"  ON)
 option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
-option(BUILD_COVERAGE     "Enable coverage (GCC only)" OFF)
+option(BUILD_COVERAGE     "Enable coverage instrumentation (Clang/LLVM or GCC)" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -190,8 +190,78 @@ if(DEFINED grpc_SOURCE_DIR)
   list(APPEND PP_PROTOBUF_IMPORT_DIRS ${grpc_SOURCE_DIR}/third_party/protobuf/src)
 endif()
 
+set(PINPOINT_LLVM_COVERAGE_ENABLED OFF)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Wthread-safety -Wno-unused-parameter -Wno-gcc-compat -Wno-gnu-zero-variadic-macro-arguments")
+
+  if(BUILD_COVERAGE)
+    if(NOT BUILD_TESTING)
+      message(FATAL_ERROR "BUILD_COVERAGE requires BUILD_TESTING=ON")
+    endif()
+
+    # Ask Clang where its companion tools live first. This also resolves the
+    # Xcode toolchain behind macOS /usr/bin compiler shims. PATH remains a
+    # fallback and both cache entries can be overridden explicitly.
+    get_filename_component(_llvm_toolchain_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" --print-prog-name=llvm-cov
+      OUTPUT_VARIABLE _llvm_cov_from_compiler
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" --print-prog-name=llvm-profdata
+      OUTPUT_VARIABLE _llvm_profdata_from_compiler
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+
+    set(_llvm_tool_hints "${_llvm_toolchain_bin}")
+    if(EXISTS "${_llvm_cov_from_compiler}")
+      get_filename_component(_llvm_cov_bin "${_llvm_cov_from_compiler}" DIRECTORY)
+      list(APPEND _llvm_tool_hints "${_llvm_cov_bin}")
+    endif()
+    if(EXISTS "${_llvm_profdata_from_compiler}")
+      get_filename_component(_llvm_profdata_bin
+        "${_llvm_profdata_from_compiler}" DIRECTORY)
+      list(APPEND _llvm_tool_hints "${_llvm_profdata_bin}")
+    endif()
+    list(REMOVE_DUPLICATES _llvm_tool_hints)
+
+    string(REGEX MATCH "^[0-9]+" _llvm_tool_major
+           "${CMAKE_CXX_COMPILER_VERSION}")
+    set(_llvm_cov_names llvm-cov)
+    set(_llvm_profdata_names llvm-profdata)
+    if(NOT "${_llvm_tool_major}" STREQUAL "")
+      # Debian-style LLVM packages may expose only version-suffixed binaries.
+      list(PREPEND _llvm_cov_names "llvm-cov-${_llvm_tool_major}")
+      list(PREPEND _llvm_profdata_names "llvm-profdata-${_llvm_tool_major}")
+    endif()
+
+    find_program(LLVM_COV_EXECUTABLE
+      NAMES ${_llvm_cov_names}
+      HINTS ${_llvm_tool_hints}
+      DOC "Path to llvm-cov")
+    find_program(LLVM_PROFDATA_EXECUTABLE
+      NAMES ${_llvm_profdata_names}
+      HINTS ${_llvm_tool_hints}
+      DOC "Path to llvm-profdata")
+
+    if(NOT LLVM_COV_EXECUTABLE OR NOT LLVM_PROFDATA_EXECUTABLE)
+      message(FATAL_ERROR
+        "BUILD_COVERAGE with Clang requires llvm-cov and llvm-profdata. "
+        "Install the matching LLVM tools or set LLVM_COV_EXECUTABLE and "
+        "LLVM_PROFDATA_EXECUTABLE explicitly.")
+    endif()
+
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+    set(PINPOINT_LLVM_COVERAGE_ENABLED ON)
+
+    mark_as_advanced(LLVM_COV_EXECUTABLE LLVM_PROFDATA_EXECUTABLE)
+    message(STATUS "LLVM coverage enabled")
+    message(STATUS "  llvm-cov: ${LLVM_COV_EXECUTABLE}")
+    message(STATUS "  llvm-profdata: ${LLVM_PROFDATA_EXECUTABLE}")
+  endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-unused-parameter -pthread -Wl,--no-as-needed")
 
@@ -288,4 +358,73 @@ endif()
 
 if (BUILD_EXAMPLES)
   add_subdirectory(example)
+endif()
+
+# LLVM source-based coverage target. It builds every in-tree test executable,
+# runs CTest with a collision-safe profile filename, merges the raw profiles,
+# and writes both a text summary and an HTML report.
+if(PINPOINT_LLVM_COVERAGE_ENABLED)
+  if(BUILD_SHARED_LIBS)
+    set(_pinpoint_coverage_binary_target pinpoint_cpp)
+  elseif(BUILD_STATIC_LIBS)
+    set(_pinpoint_coverage_binary_target pinpoint_cpp-static)
+  else()
+    message(FATAL_ERROR
+      "BUILD_COVERAGE requires BUILD_SHARED_LIBS or BUILD_STATIC_LIBS")
+  endif()
+
+  set(LLVM_COVERAGE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/coverage" CACHE PATH
+      "Directory for llvm-cov profiles and reports")
+
+  # A custom target does not implicitly build CTest executables. Collect the
+  # in-tree targets whose names match registered CTest tests. Link dependencies
+  # are then built normally, while opt-in live test applications stay excluded.
+  function(_pinpoint_collect_test_targets directory result)
+    set(_collected_targets)
+
+    get_property(_directory_tests DIRECTORY "${directory}" PROPERTY TESTS)
+    foreach(_test IN LISTS _directory_tests)
+      if(TARGET "${_test}")
+        get_target_property(_target_source_dir "${_test}" SOURCE_DIR)
+        file(TO_CMAKE_PATH "${_target_source_dir}/" _target_source_dir)
+        file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}/test/" _test_source_dir)
+        string(FIND "${_target_source_dir}" "${_test_source_dir}" _test_prefix)
+
+        if(_test_prefix EQUAL 0)
+          list(APPEND _collected_targets "${_test}")
+        endif()
+      endif()
+    endforeach()
+
+    get_property(_subdirectories DIRECTORY "${directory}"
+                 PROPERTY SUBDIRECTORIES)
+    foreach(_subdirectory IN LISTS _subdirectories)
+      _pinpoint_collect_test_targets("${_subdirectory}" _subdirectory_targets)
+      list(APPEND _collected_targets ${_subdirectory_targets})
+    endforeach()
+
+    list(REMOVE_DUPLICATES _collected_targets)
+    set(${result} "${_collected_targets}" PARENT_SCOPE)
+  endfunction()
+
+  _pinpoint_collect_test_targets("${PROJECT_SOURCE_DIR}/test"
+                                  _pinpoint_test_targets)
+
+  add_custom_target(coverage
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}"
+      "-DLLVM_COV_EXECUTABLE=${LLVM_COV_EXECUTABLE}"
+      "-DLLVM_PROFDATA_EXECUTABLE=${LLVM_PROFDATA_EXECUTABLE}"
+      "-DCOVERAGE_BINARY=$<TARGET_FILE:${_pinpoint_coverage_binary_target}>"
+      "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+      "-DOUTPUT_DIR=${LLVM_COVERAGE_OUTPUT_DIR}"
+      "-DCOVERAGE_CONFIG=$<CONFIG>"
+      "-DCOVERAGE_IGNORE_REGEX=(^|/)(test|3rd_party|build|_deps)(/|$)"
+      -P "${PROJECT_SOURCE_DIR}/cmake/RunLlvmCoverage.cmake"
+    USES_TERMINAL
+    VERBATIM)
+
+  add_dependencies(coverage
+    ${_pinpoint_coverage_binary_target}
+    ${_pinpoint_test_targets})
 endif()

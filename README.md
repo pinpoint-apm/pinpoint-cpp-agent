@@ -138,6 +138,16 @@ cd build && ctest --verbose
 bazel test //test/...
 ```
 
+To run the CMake tests with Clang source-based instrumentation and generate
+`llvm-cov` text and HTML reports:
+
+```bash
+cmake --preset coverage
+cmake --build --preset coverage
+```
+
+The HTML report is written to `build/coverage/coverage/html/index.html`.
+
 See the [Build Guide](doc/build.md) for detailed instructions including vcpkg integration, build options, and integration tests.
 
 ## Documentation

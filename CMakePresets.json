@@ -52,6 +52,21 @@
             "cacheVariables": {
                 "FETCHCONTENT_BASE_DIR": "$env{HOME}/.cache/cmake-fetchcontent"
             }
+        },
+        {
+            "name": "coverage",
+            "inherits": "default",
+            "displayName": "LLVM coverage (Clang)",
+            "description": "Build tests with Clang source-based coverage instrumentation and generate llvm-cov reports.",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "BUILD_COVERAGE": "ON",
+                "BUILD_EXAMPLES": "OFF",
+                "BUILD_SHARED_LIBS": "ON",
+                "BUILD_STATIC_LIBS": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -74,6 +89,13 @@
         {
             "name": "debug-cached",
             "configurePreset": "debug-cached"
+        },
+        {
+            "name": "coverage",
+            "configurePreset": "coverage",
+            "targets": [
+                "coverage"
+            ]
         }
     ],
     "testPresets": [
