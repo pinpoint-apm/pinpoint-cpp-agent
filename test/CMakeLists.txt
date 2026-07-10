@@ -239,4 +239,4 @@ set_target_properties(test_tracer_c PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_tracer_c COMMAND test_tracer_c)
 
 # Integration test
-add_subdirectory(it_test)
+add_subdirectory(e2e)

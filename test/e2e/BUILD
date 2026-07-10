@@ -26,8 +26,8 @@ cc_grpc_library(
 )
 
 _PROTO_COPTS = [
-    "-Itest/it_test",
-    "-I$(GENDIR)/test/it_test",
+    "-Itest/e2e",
+    "-I$(GENDIR)/test/e2e",
 ]
 
 # gRPC server (standalone)
@@ -35,7 +35,7 @@ cc_binary(
     name = "grpc_server",
     srcs = [
         "grpc_server.cpp",
-        "it_test_common.h",
+        "e2e_common.h",
         "pinpoint_grpc_context.h",
         "pinpoint_grpc_interceptors.h",
     ],
@@ -53,7 +53,7 @@ cc_binary(
     name = "http_downstream_server",
     srcs = [
         "http_downstream_server.cpp",
-        "it_test_common.h",
+        "e2e_common.h",
     ],
     deps = [
         "//:pinpoint-cpp",
@@ -66,8 +66,8 @@ cc_binary(
 cc_binary(
     name = "it_test_server",
     srcs = [
-        "it_test_server.cpp",
-        "it_test_common.h",
+        "e2e_server.cpp",
+        "e2e_common.h",
         "pinpoint_grpc_context.h",
         "pinpoint_grpc_interceptors.h",
     ],
@@ -93,7 +93,7 @@ cc_binary(
     name = "fork_scenario",
     srcs = [
         "fork_scenario.cpp",
-        "it_test_common.h",
+        "e2e_common.h",
     ],
     linkopts = ["-pthread"],
     deps = ["//:pinpoint-cpp"],
@@ -105,20 +105,20 @@ _LIVE_IT_DATA = [
     ":grpc_server",
     ":http_downstream_server",
     ":it_test_server",
-    "it_test.sh",
+    "e2e.sh",
     "pinpoint-config.yaml",
     "smoke_test.sh",
 ]
 
 sh_binary(
     name = "run_it_test",
-    srcs = ["run_it_test.sh"],
+    srcs = ["run_e2e.sh"],
     data = _LIVE_IT_DATA,
 )
 
 sh_test(
     name = "live_integration_test",
-    srcs = ["run_it_test.sh"],
+    srcs = ["run_e2e.sh"],
     data = _LIVE_IT_DATA,
     tags = [
         "exclusive",

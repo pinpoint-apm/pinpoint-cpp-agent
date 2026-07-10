@@ -6,7 +6,7 @@ This directory contains two complementary suites:
   registration, the public C++ and C APIs, HTTP/gRPC propagation, all four gRPC
   RPC shapes, annotations, SQL metadata, call-stack errors, async spans,
   sampling reload, limits, and lifecycle restart.
-- `it_test.sh` is the longer-running traffic/RSS suite. It is useful for stress,
+- `e2e.sh` is the longer-running traffic/RSS suite. It is useful for stress,
   ASan, and Valgrind runs after the correctness suite passes.
 
 The correctness stack uses separate processes because a Pinpoint agent is a
@@ -44,8 +44,8 @@ cmake --build --preset default --target \
   it_test_server http_downstream_server grpc_server \
   c_api_scenario fork_scenario
 
-./test/it_test/run_it_test.sh \
-  --build-dir ./build/default/test/it_test
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e
 ```
 
 Or use the custom build target:
@@ -65,11 +65,11 @@ ctest --test-dir build/default -L live --output-on-failure
 ## Build and run with Bazel
 
 ```bash
-bazel build //test/it_test/...
-bazel run //test/it_test:run_it_test
+bazel build //test/e2e/...
+bazel run //test/e2e:run_it_test
 ```
 
-`//test/it_test:live_integration_test` is tagged `manual`,
+`//test/e2e:live_integration_test` is tagged `manual`,
 `requires-network`, and `exclusive`.
 
 ## Correctness assertions
@@ -105,15 +105,15 @@ query the unique agent IDs and validate the stored payload fields.
 Append a load mode to the orchestrated run:
 
 ```bash
-./test/it_test/run_it_test.sh \
-  --build-dir ./build/default/test/it_test \
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e \
   --load-mode full --load-duration 120 --load-concurrency 20
 ```
 
 Or run the load generator against an already-started stack:
 
 ```bash
-HOST=127.0.0.1 PORT=8090 ./test/it_test/it_test.sh \
+HOST=127.0.0.1 PORT=8090 ./test/e2e/e2e.sh \
   --mode grpc-all --duration 60 --concurrency 10
 ```
 

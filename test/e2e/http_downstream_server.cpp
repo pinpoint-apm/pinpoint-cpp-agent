@@ -6,7 +6,7 @@
 #include "http_trace_context.h"
 #include "pinpoint/tracer.h"
 
-#include "it_test_common.h"
+#include "e2e_common.h"
 
 namespace {
 

@@ -9,7 +9,7 @@
 #include <string>
 #include <thread>
 
-#include "it_test_common.h"
+#include "e2e_common.h"
 #include "pinpoint/tracer.h"
 
 namespace {

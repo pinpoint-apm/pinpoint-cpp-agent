@@ -63,7 +63,7 @@ set_target_properties(http_downstream_server PROPERTIES
 # =============================================================================
 # it_test_server (HTTP + gRPC client + SQL tracing)
 # =============================================================================
-add_executable(it_test_server it_test_server.cpp)
+add_executable(it_test_server e2e_server.cpp)
 target_include_directories(it_test_server PRIVATE
     ${CMAKE_SOURCE_DIR}/example
     ${CMAKE_SOURCE_DIR}/3rd_party
@@ -109,7 +109,7 @@ if(BASH_PROGRAM AND UNIX)
         fork_scenario
     )
     add_custom_target(run_it_test
-        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/run_it_test.sh
+        COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e.sh
                 --build-dir $<TARGET_FILE_DIR:it_test_server>
         DEPENDS ${IT_TEST_DEPENDS}
         USES_TERMINAL
@@ -121,7 +121,7 @@ if(BASH_PROGRAM AND UNIX)
     if(PINPOINT_REGISTER_LIVE_IT_TEST)
         add_test(
             NAME live_integration_test
-            COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/run_it_test.sh
+            COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e.sh
                     --build-dir $<TARGET_FILE_DIR:it_test_server>
         )
         set_tests_properties(live_integration_test PROPERTIES

@@ -93,7 +93,7 @@ fi
 if [[ "$REQUIRE_AGENT" == "true" ]] && \
    ! curl -sf --max-time 5 "${BASE_URL}/ready" > /dev/null 2>&1; then
     echo "ERROR: Agent is not registered with collector $PINPOINT_CPP_COLLECTOR_HOST"
-    echo "Wait for /ready or run through run_it_test.sh."
+    echo "Wait for /ready or run through run_e2e.sh."
     exit 1
 fi
 

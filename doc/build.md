@@ -96,7 +96,7 @@ pinpoint-cpp-agent/
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
 ├── example/             # Example applications
 ├── test/                # Unit tests
-│   └── it_test/         # Integration test (HTTP + gRPC + SQL tracing)
+│   └── e2e/             # Integration test (HTTP + gRPC + SQL tracing)
 └── scripts/             # Valgrind helper scripts
 ```
 
@@ -127,7 +127,7 @@ bazel build //example/...
 ### Build integration test binaries
 
 ```bash
-bazel build //test/it_test/...
+bazel build //test/e2e/...
 ```
 
 ### Bazel dependencies
@@ -379,18 +379,18 @@ Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run ag
 
 ## Integration Test
 
-The integration test (`test/it_test/`) runs a multi-process HTTP + gRPC stack
+The integration test (`test/e2e/`) runs a multi-process HTTP + gRPC stack
 against the configured collector. A deterministic smoke suite verifies
 distributed context, the public C++/C APIs, lifecycle, sampling, SQL metadata,
 async work and limits; the existing load/RSS suite remains available for longer
-stress runs. See [`test/it_test/README.md`](../test/it_test/README.md) for the
+stress runs. See [`test/e2e/README.md`](../test/e2e/README.md) for the
 coverage matrix and troubleshooting details.
 
 ### Build
 
 ```bash
 # Bazel
-bazel build //test/it_test/...
+bazel build //test/e2e/...
 
 # CMake
 cmake --build --preset default --target \
@@ -403,34 +403,34 @@ cmake --build --preset default --target \
 ```bash
 # The runner starts and stops every app, assigns unique agent ids, points all
 # agents at the dev collector, executes assertions, and checks transport logs.
-./test/it_test/run_it_test.sh \
-  --build-dir ./build/default/test/it_test
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e
 
 # Override only when a different collector is intentional.
 PINPOINT_CPP_COLLECTOR_HOST=collector.example.com \
-  ./test/it_test/run_it_test.sh \
-  --build-dir ./build/default/test/it_test
+  ./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e
 ```
 
 The test script supports several modes and options:
 
 ```bash
 # Run correctness checks followed by 120 seconds of mixed load
-./test/it_test/run_it_test.sh \
-  --build-dir ./build/default/test/it_test \
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e \
   --load-mode mixed --load-duration 120 --load-concurrency 20
 
 # Stress test with 50 concurrent workers
-./test/it_test/it_test.sh -m stress -d 300
+./test/e2e/e2e.sh -m stress -d 300
 
 # Test SQL tracing endpoints only
-./test/it_test/it_test.sh -m db-all -d 60 -c 5
+./test/e2e/e2e.sh -m db-all -d 60 -c 5
 
 # Test gRPC endpoints only
-./test/it_test/it_test.sh -m grpc-all -d 60 -c 10
+./test/e2e/e2e.sh -m grpc-all -d 60 -c 10
 
 # Full test (HTTP + gRPC + SQL)
-./test/it_test/it_test.sh -m full -d 180 -c 15
+./test/e2e/e2e.sh -m full -d 180 -c 15
 ```
 
 ---

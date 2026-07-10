@@ -20,7 +20,7 @@
 #include "httplib.h"
 #include "http_trace_context.h"
 
-#include "it_test_common.h"
+#include "e2e_common.h"
 #include "pinpoint_grpc_context.h"
 #include "pinpoint_grpc_interceptors.h"
 #include "testapp.grpc.pb.h"

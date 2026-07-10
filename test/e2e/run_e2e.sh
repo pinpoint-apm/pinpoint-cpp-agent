@@ -23,7 +23,7 @@ Usage: $0 [OPTIONS]
 Build and run the live-collector integration suite.
 
 Options:
-  -b, --build-dir DIR       Directory containing it_test binaries
+  -b, --build-dir DIR       Directory containing e2e binaries
       --host HOST           HTTP bind/check host (default: $HOST)
       --port PORT           Upstream HTTP port (default: $PORT)
       --downstream-port N   Downstream HTTP port (default: $DOWNSTREAM_PORT)
@@ -66,9 +66,9 @@ find_build_dir() {
     local candidate
     for candidate in \
         "$SCRIPT_DIR" \
-        "$PROJECT_DIR/build/default/test/it_test" \
-        "$PROJECT_DIR/build/test/it_test" \
-        "$PROJECT_DIR/bazel-bin/test/it_test"; do
+        "$PROJECT_DIR/build/default/test/e2e" \
+        "$PROJECT_DIR/build/test/e2e" \
+        "$PROJECT_DIR/bazel-bin/test/e2e"; do
         if [[ -x "$candidate/it_test_server" ]]; then
             printf '%s\n' "$candidate"
             return 0
@@ -206,7 +206,7 @@ if [[ -n "$LOAD_MODE" ]]; then
     echo ""
     echo "Running load/RSS mode: $LOAD_MODE"
     set +e
-    HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/it_test.sh" \
+    HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \
         --mode "$LOAD_MODE" --duration "$LOAD_DURATION" \
         --concurrency "$LOAD_CONCURRENCY"
     LOAD_RESULT=$?

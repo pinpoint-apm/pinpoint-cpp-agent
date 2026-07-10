@@ -9,9 +9,9 @@
 # Options:
 #   -b, --build-dir DIR    CMake build directory (default: ./build)
 #   -o, --output-dir DIR   Valgrind report directory (default: ./valgrind-reports)
-#   -m, --mode MODE        it_test.sh mode (default: mixed)
-#   -d, --duration SEC     it_test.sh duration (default: 30)
-#   -c, --concurrency N    it_test.sh concurrency (default: 5)
+#   -m, --mode MODE        e2e.sh mode (default: mixed)
+#   -d, --duration SEC     e2e.sh duration (default: 30)
+#   -c, --concurrency N    e2e.sh concurrency (default: 5)
 #   --no-grpc              Skip grpc_server
 #   -h, --help             Show this help
 
@@ -47,13 +47,13 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
-IT_TEST_DIR="$BUILD_DIR/test/it_test"
+IT_TEST_DIR="$BUILD_DIR/test/e2e"
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 IT_TEST_SERVER="$IT_TEST_DIR/it_test_server"
 GRPC_SERVER="$IT_TEST_DIR/grpc_server"
-IT_TEST_SH="$PROJECT_DIR/test/it_test/it_test.sh"
+IT_TEST_SH="$PROJECT_DIR/test/e2e/e2e.sh"
 
 if ! command -v valgrind &>/dev/null; then
     echo "ERROR: valgrind is not installed." >&2
@@ -174,7 +174,7 @@ fi
 echo ""
 
 # --- Run integration test ---
-echo "[TEST] Running it_test.sh (mode=$MODE, duration=${DURATION}s, concurrency=$CONCURRENCY)..."
+echo "[TEST] Running e2e.sh (mode=$MODE, duration=${DURATION}s, concurrency=$CONCURRENCY)..."
 echo ""
 
 HOST=localhost PORT=$PORT bash "$IT_TEST_SH" \
