@@ -454,9 +454,10 @@ namespace pinpoint {
         LOG_INFO("close grpc workers done");
     }
 
-    void AgentImpl::detach_grpc_workers() noexcept {
-        // Abandon (never join) every worker handle, including handles inherited
-        // across fork() on which detach() would throw — see abandon_thread().
+    void AgentImpl::abandon_grpc_workers() noexcept {
+        // Abandon (never join or detach) every worker handle, including
+        // handles inherited across fork(), on which even pthread_detach is
+        // unsafe — see abandon_thread().
         abandon_thread(init_thread_);
         abandon_thread(ping_thread_);
         abandon_thread(meta_thread_);
@@ -539,7 +540,7 @@ namespace pinpoint {
         }
 
         if (!finished) {
-            // Do NOT detach: the workers still reference `this` and the gRPC
+            // Do NOT abandon them: the workers still reference `this` and the gRPC
             // client members, which ~AgentImpl is about to destroy. Keep
             // waiting — their blocking points are bounded, so this returns
             // shortly; we only note that shutdown ran long.
@@ -553,10 +554,10 @@ namespace pinpoint {
 
         // Belt-and-braces: if do_shutdown() bailed out early for any reason,
         // a joinable std::thread member would call std::terminate() when its
-        // destructor runs. Detach any stragglers so member destruction stays
-        // benign. Detach (not join) is used because by this point the
+        // destructor runs. Abandon any stragglers so member destruction stays
+        // benign. Abandon (not join) is used because by this point the
         // process is likely on its way down and we don't want to block.
-        detach_grpc_workers();
+        abandon_grpc_workers();
     }
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
@@ -664,10 +665,10 @@ namespace pinpoint {
         // torn down in a forked child (owner_pid_ != getpid()), its worker and
         // watcher threads and its gRPC runtime do not exist in this process.
         // Joining those dead handles would abort; touching the inherited gRPC
-        // stack is unsafe. Detach the handles and skip the normal teardown.
+        // stack is unsafe. Abandon the handles and skip the normal teardown.
         if (owner_pid_ != 0 && owner_pid_ != getpid()) {
-            try { LOG_INFO("agent shutdown in forked child: detaching inherited workers"); } catch (...) {}
-            detach_grpc_workers();
+            try { LOG_INFO("agent shutdown in forked child: abandoning inherited workers"); } catch (...) {}
+            abandon_grpc_workers();
             // The gRPC clients own their own internal threads (e.g. GrpcAgent's
             // AgentInfo scheduler, the command dispatcher) that were started in
             // the parent; their destructors would join those now-dead handles
