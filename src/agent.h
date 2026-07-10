@@ -213,9 +213,9 @@ namespace pinpoint {
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
     	// Fork-safe lifecycle. Start() flips started_ and records owner_pid_ (the
-    	// pid that actually brought the agent online); teardown detaches instead
-    	// of joins when it runs in a different process (a forked child inheriting
-    	// dead thread handles). create_pid_ is the pid that constructed the agent
+    	// pid that actually brought the agent online); teardown abandons the
+    	// handles instead of joining when it runs in a different process (a
+    	// forked child inheriting dead thread handles). create_pid_ is the pid that constructed the agent
     	// (CreateAgent time); Start() compares against it to detect that it is
     	// running in a forked child and must give this worker a unique agent id.
     	std::atomic<bool> started_{false};
@@ -244,10 +244,11 @@ namespace pinpoint {
     	/// the process that constructed the agent, so non-fork behavior is
     	/// unchanged.
     	void refresh_agent_id_for_process();
-    	/// @brief Detaches (never joins) every worker thread handle. Used when
-    	/// tearing down an agent inherited across fork(), where the handles are
-    	/// joinable but reference threads that do not exist in this process.
-    	void detach_grpc_workers() noexcept;
+    	/// @brief Abandons (never joins or detaches — see abandon_thread())
+    	/// every worker thread handle. Used when tearing down an agent inherited
+    	/// across fork(), where the handles are joinable but reference threads
+    	/// that do not exist in this process.
+    	void abandon_grpc_workers() noexcept;
     	/// @brief Signals all gRPC workers to stop and joins their threads.
     	void close_grpc_workers();
     	/// @brief Waits for all gRPC workers to finish execution.

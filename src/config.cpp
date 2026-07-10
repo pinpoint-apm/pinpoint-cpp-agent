@@ -164,8 +164,8 @@ namespace pinpoint {
 
     // pid that started the watcher thread. After a fork() the child inherits a
     // joinable-but-dead watcher handle whose pid no longer matches; joining it
-    // would fail and terminate the process, so start/stop below detach such an
-    // inherited handle instead of joining it.
+    // would fail and terminate the process, so start/stop below abandon such
+    // an inherited handle instead of joining it.
     static pid_t& config_watcher_owner_pid() {
         static pid_t pid = 0;
         return pid;
@@ -201,8 +201,8 @@ namespace pinpoint {
             // A joinable handle from THIS process means the watcher is already
             // running. A joinable handle inherited across fork() references a
             // thread that does not exist in this child — abandon it (never
-            // join; plain detach() throws ESRCH on such a handle) and fall
-            // through to start a fresh watcher for this process.
+            // join or detach; see abandon_thread()) and fall through to start
+            // a fresh watcher for this process.
             if (config_watcher_owner_pid() == getpid()) {
                 return;
             }
@@ -265,7 +265,8 @@ namespace pinpoint {
             }
             // Inherited across fork(): the thread does not exist here, so
             // abandon the dead handle rather than joining it (which would
-            // abort). Plain detach() throws ESRCH on such a handle.
+            // abort) or detaching it (which segfaults on glibc — see
+            // abandon_thread()).
             if (config_watcher_owner_pid() != getpid()) {
                 abandon_thread(watcher);
                 return;

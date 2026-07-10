@@ -205,7 +205,7 @@ TEST(ForkLifecycleTest, ChildStartYieldsWorkingAgentWithUniqueId) {
 
 // Safety net: an agent that was STARTED in the master is inherited by a child
 // and torn down there. The child's worker threads do not exist, so teardown
-// must detach (never join) — the child must not abort.
+// must abandon the handles (never join or detach) — the child must not abort.
 TEST(ForkLifecycleTest, TeardownOfInheritedStartedAgentDoesNotAbort) {
     auto cfg = make_fork_config();
     auto agent = make_cold_agent(cfg);
