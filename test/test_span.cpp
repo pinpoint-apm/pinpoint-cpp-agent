@@ -17,6 +17,8 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <thread>
 #include <functional>
@@ -691,6 +693,41 @@ TEST_F(SpanTest, SpanImplSetLoggingTest) {
     EXPECT_TRUE(pspan_id.has_value()) << "PspanId should be injected";
 }
 
+// GetTraceId(), a span event's InjectContext() and SetLogging() all read the
+// same cached wire form (getTraceIdWire()); a continued trace must surface
+// identically on all three. Regression guard for routing them through the one
+// cache: the trace id is constant across a distributed trace, so the outbound
+// header must carry the parent's exact id (only the span id changes downstream).
+TEST_F(SpanTest, TraceIdWireConsistentAcrossSurfacesTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "consistent-agent^1700000000^99");
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    const std::string expected = "consistent-agent^1700000000^99";
+
+    // 1) GetTraceId()
+    EXPECT_EQ(span.GetTraceId(), expected) << "GetTraceId should return the wire form";
+
+    // 2) Outbound InjectContext() through a span event.
+    MockTraceContextWriter inject_writer;
+    auto se = span.NewSpanEvent("outbound-call");
+    se->InjectContext(inject_writer);
+    ASSERT_TRUE(inject_writer.Get(HEADER_TRACE_ID).has_value());
+    EXPECT_EQ(inject_writer.Get(HEADER_TRACE_ID).value(), expected)
+        << "InjectContext must emit the same wire trace id";
+
+    // 3) SetLogging() writes the same wire id under the log MDC key.
+    MockTraceContextWriter log_writer;
+    span.SetLogging(log_writer);
+    ASSERT_TRUE(log_writer.Get("PtxId").has_value());
+    EXPECT_EQ(log_writer.Get("PtxId").value(), expected)
+        << "SetLogging must emit the same wire trace id";
+
+    se->EndEvent();
+    span.EndSpan();
+}
+
 TEST_F(SpanTest, SpanEventInjectContextTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextWriter writer;
@@ -1002,6 +1039,80 @@ TEST_F(SpanTest, ParseTraceIdEmptyFieldsTest) {
     EXPECT_TRUE(tid.agentId().empty());
     EXPECT_EQ(tid.StartTime, 0);
     EXPECT_EQ(tid.Sequence, 0);
+}
+
+// ========== TraceId::toString Tests ==========
+//
+// toString() serializes the trace id to its wire form with to_chars into a fixed
+// stack buffer (no ostringstream); it runs on every outbound InjectContext() /
+// SetLogging(), so its edge cases are worth pinning directly.
+
+TEST_F(SpanTest, TraceIdToStringRoundTripTest) {
+    // toString() is the inverse of parseTraceId() for a canonical wire id.
+    const std::string wire = "round-trip-agent^1234567890^42";
+    EXPECT_EQ(TraceId::parseTraceId(wire).toString(), wire)
+        << "parseTraceId then toString should round-trip a canonical id";
+}
+
+TEST_F(SpanTest, TraceIdToStringEmptyAgentIdTest) {
+    // A structurally valid but field-empty trace id ("^^") carries a present but
+    // empty agent id; toString() renders the empty leading field, not a dropped
+    // separator.
+    const TraceId tid = TraceId::parseTraceId("^^");
+    ASSERT_FALSE(tid.empty());
+    EXPECT_EQ(tid.toString(), "^0^0");
+}
+
+TEST_F(SpanTest, TraceIdToStringHandlesInt64ExtremesTest) {
+    // Guards toString()'s fixed `char num[20]` stack buffer: the widest int64_t
+    // (INT64_MIN is 20 chars including the sign) must serialize without
+    // truncation. A parseable-but-negative inbound header can reach here.
+    const TraceId tid("x", std::numeric_limits<int64_t>::max(),
+                           std::numeric_limits<int64_t>::min());
+    EXPECT_EQ(tid.toString(), "x^9223372036854775807^-9223372036854775808")
+        << "toString must serialize int64 extremes without truncation";
+}
+
+// ========== SpanData getTraceIdWire (wire-form cache) Tests ==========
+//
+// getTraceIdWire() lazily serializes the trace id to its wire form and caches
+// the result; setTraceId() invalidates that cache. injectContext(), SetLogging()
+// and GetTraceId() all read this one cached string on the span-owning thread.
+
+TEST_F(SpanTest, GetTraceIdWireSerializesTraceIdTest) {
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
+    span_data.setTraceId(TraceId("wire-agent", 1700000000, 7));
+
+    EXPECT_EQ(span_data.getTraceIdWire(), "wire-agent^1700000000^7")
+        << "wire form should be agentId^startTime^sequence";
+    // A second read returns the cached value; it must still equal a fresh
+    // toString() of the same trace id.
+    EXPECT_EQ(span_data.getTraceIdWire(), span_data.getTraceId().toString())
+        << "cached wire form must equal a direct toString()";
+}
+
+TEST_F(SpanTest, GetTraceIdWireEmptyForDefaultTraceIdTest) {
+    // make_test_span_data leaves the trace id default (empty()); the wire form
+    // must stay an empty string rather than serialize a bogus "^0^0".
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
+    ASSERT_TRUE(span_data.getTraceId().empty()) << "precondition: default trace id is empty";
+    EXPECT_TRUE(span_data.getTraceIdWire().empty())
+        << "wire form of an empty trace id should be an empty string";
+}
+
+TEST_F(SpanTest, GetTraceIdWireInvalidatedOnSetTraceIdTest) {
+    // The cache-invalidation contract: reading the wire form caches it, and a
+    // later setTraceId() must serve the NEW id, not the stale cached string.
+    // Every other test sets the trace id exactly once, so this is the only guard
+    // on setTraceId()'s trace_id_wire_.clear().
+    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
+
+    span_data.setTraceId(TraceId("agent-a", 100, 1));
+    EXPECT_EQ(span_data.getTraceIdWire(), "agent-a^100^1");  // caches "agent-a^100^1"
+
+    span_data.setTraceId(TraceId("agent-b", 200, 2));
+    EXPECT_EQ(span_data.getTraceIdWire(), "agent-b^200^2")
+        << "setTraceId must invalidate the cached wire form";
 }
 
 // ========== SpanData finishSpanEvent on Empty Stack ==========
