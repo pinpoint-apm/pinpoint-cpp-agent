@@ -38,8 +38,7 @@ Options:
   -h, --help                Show this help
 
 Environment:
-  PINPOINT_CPP_COLLECTOR_HOST defaults to
-    dev.collector.pinpoint.navercorp.com
+  PINPOINT_CPP_COLLECTOR_HOST must be set to the collector host.
 EOF
 }
 
@@ -61,6 +60,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ -z "${PINPOINT_CPP_COLLECTOR_HOST:-}" ]]; then
+    echo "PINPOINT_CPP_COLLECTOR_HOST must be set." >&2
+    exit 2
+fi
 
 find_build_dir() {
     local candidate
@@ -116,7 +120,7 @@ else
     AUTO_LOG_DIR=false
 fi
 
-export PINPOINT_CPP_COLLECTOR_HOST="${PINPOINT_CPP_COLLECTOR_HOST:-dev.collector.pinpoint.navercorp.com}"
+export PINPOINT_CPP_COLLECTOR_HOST
 export PINPOINT_CPP_CONFIG_FILE="${PINPOINT_CPP_CONFIG_FILE:-$SCRIPT_DIR/pinpoint-config.yaml}"
 export PINPOINT_CPP_LOG_LEVEL="${PINPOINT_CPP_LOG_LEVEL:-debug}"
 export PINPOINT_CPP_LOG_FILE_PATH=""

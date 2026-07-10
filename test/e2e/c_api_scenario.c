@@ -121,8 +121,11 @@ int main(void) {
     async_work_t async_work;
     char default_agent_id[25];
 
-    set_default_env("PINPOINT_CPP_COLLECTOR_HOST",
-                    "dev.collector.pinpoint.navercorp.com");
+    if (getenv("PINPOINT_CPP_COLLECTOR_HOST") == NULL ||
+        getenv("PINPOINT_CPP_COLLECTOR_HOST")[0] == '\0') {
+        fprintf(stderr, "C API scenario: PINPOINT_CPP_COLLECTOR_HOST must be set\n");
+        return 2;
+    }
     set_default_env("PINPOINT_CPP_APPLICATION_NAME", "cpp-it-c-api");
     snprintf(default_agent_id, sizeof(default_agent_id), "cpp-it-c-%ld",
              (long)getpid());

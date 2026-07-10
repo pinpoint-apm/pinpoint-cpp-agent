@@ -12,8 +12,8 @@ EnableCallstackTrace: true
 
 # --- Collector (gRPC) ---
 # Host is intentionally supplied through PINPOINT_CPP_COLLECTOR_HOST by the
-# runner (default: dev.collector.pinpoint.navercorp.com). Keeping it out of the
-# file makes an accidental localhost/noop run immediately visible.
+# runner. Keeping it out of the file makes the collector an explicit runtime
+# setting.
 Collector:
   AgentPort: 9991
   SpanPort: 9993

@@ -4,7 +4,6 @@ set -euo pipefail
 HOST="${HOST:-localhost}"
 PORT="${PORT:-8090}"
 BASE_URL="http://${HOST}:${PORT}"
-export PINPOINT_CPP_COLLECTOR_HOST="${PINPOINT_CPP_COLLECTOR_HOST:-dev.collector.pinpoint.navercorp.com}"
 REQUIRE_AGENT="${REQUIRE_AGENT:-true}"
 
 # Defaults
@@ -55,7 +54,7 @@ Environment:
   HOST    Server host (default: localhost)
   PORT    Server port (default: 8090)
   PINPOINT_CPP_COLLECTOR_HOST
-          Collector host (default: dev.collector.pinpoint.navercorp.com)
+          Collector host (required)
 
 Examples:
   $0 -d 120 -c 20 -m mixed
@@ -78,6 +77,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; usage ;;
     esac
 done
+
+if [[ -z "${PINPOINT_CPP_COLLECTOR_HOST:-}" ]]; then
+    echo "ERROR: PINPOINT_CPP_COLLECTOR_HOST must be set." >&2
+    exit 2
+fi
 
 if [[ "$MODE" == "stress" ]]; then
     CONCURRENCY=50

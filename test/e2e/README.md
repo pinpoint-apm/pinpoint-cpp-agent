@@ -23,14 +23,13 @@ fork_scenario   (cold CreateAgent -> fork -> Start per child)
 
 ## Collector configuration
 
-The runner always supplies the collector as an environment variable:
+Set the collector explicitly before running the suite:
 
 ```bash
-PINPOINT_CPP_COLLECTOR_HOST=${PINPOINT_CPP_COLLECTOR_HOST:-dev.collector.pinpoint.navercorp.com}
+export PINPOINT_CPP_COLLECTOR_HOST="your-collector-host"
 ```
 
-`pinpoint-config.yaml` intentionally has no `Collector.Host`. This prevents a
-missing environment setup from silently tracing to localhost. Each process also
+`pinpoint-config.yaml` intentionally has no `Collector.Host`. Each process also
 gets a unique `PINPOINT_CPP_AGENT_ID`, so concurrent test runs are distinguishable
 under the stable applications `cpp-it-http-upstream`,
 `cpp-it-http-downstream`, `cpp-it-grpc-downstream`, `cpp-it-c-api`, and
