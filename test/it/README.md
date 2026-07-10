@@ -16,6 +16,24 @@ Every received protobuf and its client metadata are copied into a thread-safe
 types, batched root/chunk/async spans, propagation and annotations, agent/URL
 statistics, and profiler echo/active-thread commands.
 
+## Agent feature coverage
+
+The suite also exercises the SDK-facing features through a running agent and
+asserts their collector wire representation:
+
+- span lifecycle, scoped and implicitly finalized events, duplicate completion,
+  async spans, propagation, SQL/errors, annotations, and event chunking
+- periodic agent statistics, including sampling decisions, response time, CPU,
+  memory, thread count, and active-request histograms
+- URL-stat normalization, method prefixes, aggregation, latency histograms, and
+  failed-request histograms
+- counter sampling, upstream sampling decisions, and new/continuation throughput
+  limits, including their transaction-stat counters
+- API, error, SQL, and SQL-UID cache hits, type separation, invalidation, and
+  metadata re-publication
+- HTTP server/client helpers, proxy address/header handling, configured header
+  and cookie recording, HTTP status handling, and client endpoint serialization
+
 ## Failure injection
 
 `MockCollector` also provides deterministic transport failure controls:

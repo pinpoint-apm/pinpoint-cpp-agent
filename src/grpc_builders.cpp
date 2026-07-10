@@ -162,6 +162,7 @@ namespace pinpoint {
                 auto* message_event = google::protobuf::Arena::Create<v1::PMessageEvent>(arena);
 
                 message_event->set_nextspanid(se->getNextSpanId());
+                message_event->set_endpoint(se->getEndPoint());
                 message_event->set_destinationid(se->getDestinationId());
                 next_event->unsafe_arena_set_allocated_messageevent(message_event);
                 span_event->unsafe_arena_set_allocated_nextevent(next_event);
