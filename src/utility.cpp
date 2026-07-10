@@ -114,11 +114,14 @@ namespace pinpoint {
         if (!t.joinable()) {
             return;
         }
-        try {
-            t.detach();
-        } catch (...) {
-            try { new std::thread(std::move(t)); } catch (...) {}
-        }
+        // Never detach(): for a handle inherited across fork(), glibc's
+        // pthread_detach unconditionally dereferences the thread descriptor,
+        // which the child's fork() has already reclaimed (__reclaim_stacks) —
+        // it segfaults instead of returning ESRCH as macOS does. The leak-move
+        // makes no pthread call at all: it only transfers the handle into a
+        // heap std::thread that is intentionally never destroyed, leaving t
+        // non-joinable.
+        try { new std::thread(std::move(t)); } catch (...) {}
     }
 
     bool compare_string(std::string_view str1, std::string_view str2) {
