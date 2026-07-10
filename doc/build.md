@@ -379,7 +379,12 @@ Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run ag
 
 ## Integration Test
 
-The integration test (`test/it_test/`) runs a full HTTP + gRPC server stack with the agent enabled, then sends traffic to verify correctness and detect memory leaks.
+The integration test (`test/it_test/`) runs a multi-process HTTP + gRPC stack
+against the configured collector. A deterministic smoke suite verifies
+distributed context, the public C++/C APIs, lifecycle, sampling, SQL metadata,
+async work and limits; the existing load/RSS suite remains available for longer
+stress runs. See [`test/it_test/README.md`](../test/it_test/README.md) for the
+coverage matrix and troubleshooting details.
 
 ### Build
 
@@ -388,39 +393,44 @@ The integration test (`test/it_test/`) runs a full HTTP + gRPC server stack with
 bazel build //test/it_test/...
 
 # CMake
-cmake --build --preset default --target grpc_server it_test_server
+cmake --build --preset default --target \
+  grpc_server http_downstream_server it_test_server \
+  c_api_scenario fork_scenario
 ```
 
 ### Run
 
 ```bash
-# 1. Start the gRPC backend server
-./grpc_server &
+# The runner starts and stops every app, assigns unique agent ids, points all
+# agents at the dev collector, executes assertions, and checks transport logs.
+./test/it_test/run_it_test.sh \
+  --build-dir ./build/default/test/it_test
 
-# 2. Start the HTTP test server (connects to gRPC server)
-./it_test_server &
-
-# 3. Run the integration test script
-./test/it_test/it_test.sh
+# Override only when a different collector is intentional.
+PINPOINT_CPP_COLLECTOR_HOST=collector.example.com \
+  ./test/it_test/run_it_test.sh \
+  --build-dir ./build/default/test/it_test
 ```
 
 The test script supports several modes and options:
 
 ```bash
-# Run for 120 seconds with 20 concurrent workers in mixed mode
-./it_test.sh -d 120 -c 20 -m mixed
+# Run correctness checks followed by 120 seconds of mixed load
+./test/it_test/run_it_test.sh \
+  --build-dir ./build/default/test/it_test \
+  --load-mode mixed --load-duration 120 --load-concurrency 20
 
 # Stress test with 50 concurrent workers
-./it_test.sh -m stress -d 300
+./test/it_test/it_test.sh -m stress -d 300
 
 # Test SQL tracing endpoints only
-./it_test.sh -m db-all -d 60 -c 5
+./test/it_test/it_test.sh -m db-all -d 60 -c 5
 
 # Test gRPC endpoints only
-./it_test.sh -m grpc-all -d 60 -c 10
+./test/it_test/it_test.sh -m grpc-all -d 60 -c 10
 
 # Full test (HTTP + gRPC + SQL)
-./it_test.sh -m full -d 180 -c 15
+./test/it_test/it_test.sh -m full -d 180 -c 15
 ```
 
 ---

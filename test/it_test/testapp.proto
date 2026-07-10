@@ -11,6 +11,8 @@ service Hello {
 
 message Greeting {
     string msg = 1;
+    string trace_id = 2;
+    int64 span_id = 3;
+    bool sampled = 4;
 }
-
 

@@ -19,9 +19,11 @@ public:
     }
 
     void ForEach(std::function<bool(std::string_view, std::string_view)> callback) const override {
-        std::for_each(headers_.begin(), headers_.end(), [callback](const auto& pair) {
-          callback(pair.first, pair.second);
-        });
+        for (const auto& pair : headers_) {
+            if (!callback(pair.first, pair.second)) {
+                break;
+            }
+        }
     }
 
 private:
@@ -43,9 +45,11 @@ public:
     }
 
     void ForEach(std::function<bool(std::string_view, std::string_view)> callback) const override {
-        std::for_each(headers_.begin(), headers_.end(), [callback](const auto& pair) {
-          callback(pair.first, pair.second);
-        });
+        for (const auto& pair : headers_) {
+            if (!callback(pair.first, pair.second)) {
+                break;
+            }
+        }
     }
 
     void Set(std::string_view key, std::string_view value) override {

@@ -11,33 +11,40 @@ IsContainer: true
 EnableCallstackTrace: true
 
 # --- Collector (gRPC) ---
+# Host is intentionally supplied through PINPOINT_CPP_COLLECTOR_HOST by the
+# runner (default: dev.collector.pinpoint.navercorp.com). Keeping it out of the
+# file makes an accidental localhost/noop run immediately visible.
 Collector:
-  Host: "localhost"
   AgentPort: 9991
   SpanPort: 9993
   StatPort: 9992
+  SpanBatch:
+    Size: 8
+    FlushIntervalMs: 500
+    CollectDeadlineMs: 1000
+    MaxConcurrentRequests: 4
 
 # --- Logging ---
 Log:
   Level: "info"          # debug / info / warn / error
-  FilePath: "/tmp"
+  FilePath: ""           # stdout/stderr; runner captures one file per process
   MaxFileSize: 50        # MB
 
 # --- Sampling ---
 # CounterRate=1 means sample every request (100%).
 Sampling:
-  Type: "COUNTING"       # COUNTING or PERCENT
+  Type: "COUNTER"        # COUNTER or PERCENT
   CounterRate: 1         # sample every Nth request
   PercentRate: 100.0     # or sample N% of requests
-  NewThroughput: -1      # unlimited new trace throughput
-  ContinueThroughput: -1 # unlimited continue throughput
+  NewThroughput: 0       # unlimited new trace throughput
+  ContinueThroughput: 0  # unlimited continue throughput
 
 # --- Span ---
 Span:
   QueueSize: 4096        # larger queue for stress tests
-  MaxEventDepth: 64
-  MaxEventSequence: 5000
-  EventChunkSize: 128
+  MaxEventDepth: 16      # /deep?depth=32 verifies depth overflow safely
+  MaxEventSequence: 128  # /wide?width=256 verifies sequence overflow safely
+  EventChunkSize: 8      # force multiple PSpanChunk sends in smoke tests
 
 # --- HTTP ---
 Http:
@@ -48,7 +55,7 @@ Http:
   UrlStatMethodPrefix: true
 
   Server:
-    StatusCodeErrors: ["5xx"]
+    StatusCodeErrors: ["4xx", "5xx"]
     RecordRequestHeader:
       - "User-Agent"
       - "Content-Type"
@@ -69,8 +76,11 @@ Http:
       - "User-Agent"
       - "Content-Type"
       - "Host"
+      - "X-Request-ID"
     RecordResponseHeader:
       - "Content-Type"
+      - "X-It-Trace-Id"
+      - "X-It-Span-Id"
 
 # --- SQL ---
 Sql:

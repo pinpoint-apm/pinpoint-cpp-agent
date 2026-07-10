@@ -4,6 +4,8 @@ set -euo pipefail
 HOST="${HOST:-localhost}"
 PORT="${PORT:-8090}"
 BASE_URL="http://${HOST}:${PORT}"
+export PINPOINT_CPP_COLLECTOR_HOST="${PINPOINT_CPP_COLLECTOR_HOST:-dev.collector.pinpoint.navercorp.com}"
+REQUIRE_AGENT="${REQUIRE_AGENT:-true}"
 
 # Defaults
 DURATION=60
@@ -33,6 +35,9 @@ Test Modes:
   deep        Deeply nested spans only
   wide        Many sequential spans only
   annotated   Annotation-heavy spans only
+  features    Deterministic public C++ API feature endpoint
+  http        Real HTTP downstream context propagation
+  limits      Span-event depth/sequence overflow paths
   mixed       Rotate through all HTTP endpoints
   stress      High concurrency (50) mixed workload
   db-crud     SQL trace CRUD operations (no actual DB)
@@ -41,6 +46,7 @@ Test Modes:
   db-all      All SQL-traced endpoints combined
   grpc-unary  gRPC unary calls
   grpc-stream gRPC server-streaming calls
+  grpc-client-stream gRPC client-streaming calls
   grpc-bidi   gRPC bidirectional streaming calls
   grpc-all    All gRPC methods combined
   full        All endpoints (HTTP + gRPC + SQL trace)
@@ -48,6 +54,8 @@ Test Modes:
 Environment:
   HOST    Server host (default: localhost)
   PORT    Server port (default: 8090)
+  PINPOINT_CPP_COLLECTOR_HOST
+          Collector host (default: dev.collector.pinpoint.navercorp.com)
 
 Examples:
   $0 -d 120 -c 20 -m mixed
@@ -82,6 +90,13 @@ if ! curl -sf "${BASE_URL}/stats" > /dev/null 2>&1; then
     exit 1
 fi
 
+if [[ "$REQUIRE_AGENT" == "true" ]] && \
+   ! curl -sf --max-time 5 "${BASE_URL}/ready" > /dev/null 2>&1; then
+    echo "ERROR: Agent is not registered with collector $PINPOINT_CPP_COLLECTOR_HOST"
+    echo "Wait for /ready or run through run_it_test.sh."
+    exit 1
+fi
+
 # Build URL list based on mode
 build_urls() {
     case $MODE in
@@ -100,6 +115,17 @@ build_urls() {
             ;;
         annotated)
             echo "${BASE_URL}/annotated"
+            ;;
+        features)
+            echo "${BASE_URL}/features"
+            ;;
+        http)
+            echo "${BASE_URL}/http-client"
+            echo "${BASE_URL}/http-client?error=1"
+            ;;
+        limits)
+            echo "${BASE_URL}/deep?depth=32"
+            echo "${BASE_URL}/wide?width=256"
             ;;
         db-crud)
             echo "${BASE_URL}/db-crud"
@@ -124,6 +150,9 @@ build_urls() {
         grpc-stream)
             echo "${BASE_URL}/grpc-stream"
             ;;
+        grpc-client-stream)
+            echo "${BASE_URL}/grpc-client-stream?count=5"
+            ;;
         grpc-bidi)
             echo "${BASE_URL}/grpc-bidi?count=3"
             echo "${BASE_URL}/grpc-bidi?count=10"
@@ -131,6 +160,7 @@ build_urls() {
         grpc-all)
             echo "${BASE_URL}/grpc-unary"
             echo "${BASE_URL}/grpc-stream"
+            echo "${BASE_URL}/grpc-client-stream?count=5"
             echo "${BASE_URL}/grpc-bidi?count=3"
             echo "${BASE_URL}/grpc-all"
             ;;
@@ -141,6 +171,7 @@ build_urls() {
             echo "${BASE_URL}/wide?width=20"
             echo "${BASE_URL}/wide?width=100"
             echo "${BASE_URL}/annotated"
+            echo "${BASE_URL}/features"
             echo "${BASE_URL}/mixed"
             echo "${BASE_URL}/error"
             ;;
@@ -151,10 +182,13 @@ build_urls() {
             echo "${BASE_URL}/wide?width=20"
             echo "${BASE_URL}/wide?width=100"
             echo "${BASE_URL}/annotated"
+            echo "${BASE_URL}/features"
             echo "${BASE_URL}/mixed"
             echo "${BASE_URL}/error"
+            echo "${BASE_URL}/http-client"
             echo "${BASE_URL}/grpc-unary"
             echo "${BASE_URL}/grpc-stream"
+            echo "${BASE_URL}/grpc-client-stream?count=5"
             echo "${BASE_URL}/grpc-bidi?count=3"
             echo "${BASE_URL}/grpc-all"
             echo "${BASE_URL}/db-crud"
@@ -182,8 +216,8 @@ check_endpoint() {
 
 echo "Pre-flight checks..."
 check_endpoint "HTTP"  "${BASE_URL}/simple" || { echo "ERROR: HTTP endpoints failed."; exit 1; }
-check_endpoint "gRPC"  "${BASE_URL}/grpc-unary" || echo "WARNING: gRPC endpoints not available. Start grpc_server first."
-check_endpoint "SQL"   "${BASE_URL}/db-crud" || echo "WARNING: SQL-traced endpoints not available."
+check_endpoint "gRPC"  "${BASE_URL}/grpc-unary" || { echo "ERROR: gRPC endpoints failed."; exit 1; }
+check_endpoint "SQL"   "${BASE_URL}/db-crud" || { echo "ERROR: SQL endpoints failed."; exit 1; }
 echo ""
 
 URLS=()
@@ -201,7 +235,10 @@ worker() {
 
     while [[ $(date +%s) -lt $end_time ]]; do
         local url="${URLS[$((RANDOM % URL_COUNT))]}"
-        if curl -sf --max-time 30 "$url" > /dev/null 2>&1; then
+        local status
+        status=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null) || status="000"
+        if [[ "$status" =~ ^2[0-9][0-9]$ ]] || \
+           [[ "$url" == *"/error"* && "$status" == "500" ]]; then
             count=$((count + 1))
         else
             errors=$((errors + 1))
@@ -231,6 +268,7 @@ echo "============================================"
 echo "  Pinpoint C++ Agent - Integration Test"
 echo "============================================"
 echo "Server:      ${BASE_URL}"
+echo "Collector:   ${PINPOINT_CPP_COLLECTOR_HOST}"
 echo "Mode:        ${MODE}"
 echo "Duration:    ${DURATION}s"
 echo "Concurrency: ${CONCURRENCY}"
@@ -316,6 +354,11 @@ if [[ "$INITIAL_RSS" -gt 0 && "$FINAL_RSS" -gt 0 ]]; then
         PCT=$(awk "BEGIN{printf \"%.1f\", ($DIFF/$INITIAL_RSS)*100}")
         echo "  Growth:            ${PCT}%"
     fi
+fi
+
+if [[ "$TOTAL_ERRORS" -gt 0 ]]; then
+    echo "ERROR: ${TOTAL_ERRORS} requests failed."
+    exit 1
 fi
 echo "============================================"
 

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -9,12 +10,23 @@
 
 #include "pinpoint/tracer.h"
 
+#include "it_test_common.h"
 #include "pinpoint_grpc_context.h"
 #include "pinpoint_grpc_interceptors.h"
 
 #include "testapp.grpc.pb.h"
 
 namespace grpc_demo {
+
+void FillTraceMetadata(grpcdemo::Greeting* response) {
+  auto span = GetCurrentSpan();
+  if (!span || !response) {
+    return;
+  }
+  response->set_trace_id(span->GetTraceId());
+  response->set_span_id(span->GetSpanId());
+  response->set_sampled(span->IsSampled());
+}
 
 class HelloServiceImpl final : public grpcdemo::Hello::Service {
  public:
@@ -28,7 +40,14 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
                                             "UnaryCallUnaryReturn");
 
+    if (request->msg() == "force-error") {
+      scoped->SetError("ForcedGrpcError", "forced integration-test error");
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "forced integration-test error");
+    }
+
     response->set_msg("Unary response: " + request->msg());
+    FillTraceMetadata(response);
     return grpc::Status::OK;
   }
 
@@ -45,6 +64,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     for (int i = 0; i < 3; ++i) {
       grpcdemo::Greeting resp;
       resp.set_msg("Stream response " + std::to_string(i) + ": " + request->msg());
+      FillTraceMetadata(&resp);
       writer->Write(resp);
     }
     return grpc::Status::OK;
@@ -66,6 +86,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
       combined.append(msg.msg()).append(" ");
     }
     response->set_msg("Unary response: " + combined);
+    FillTraceMetadata(response);
     return grpc::Status::OK;
   }
 
@@ -83,6 +104,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
     while (stream->Read(&request)) {
       grpcdemo::Greeting resp;
       resp.set_msg("Echo: " + request.msg());
+      FillTraceMetadata(&resp);
       stream->Write(resp);
     }
     return grpc::Status::OK;
@@ -97,11 +119,13 @@ int main(int argc, char** argv) {
     port = std::atoi(argv[1]);
   }
 
-  setenv("PINPOINT_CPP_APPLICATION_NAME", "it-test-grpc-server", 0);
-  setenv("PINPOINT_CPP_CONFIG_FILE", "/tmp/pinpoint-config.yaml", 0);
+  it_test::ConfigureAgentEnvironment("cpp-it-grpc-downstream",
+                                     "cpp-it-grpc-down");
   setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "false", 0);
 
-  auto agent = pinpoint::CreateAgent();
+  auto agent = pinpoint::CreateAgent(
+      pinpoint::APP_TYPE_CPP, "cpp-it-grpc-downstream",
+      {"--port=" + std::to_string(port)}, {"grpc"});
   // CreateAgent() is cold; Start() brings the agent online in this process.
   agent->Start();
 
@@ -127,7 +151,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::cout << "gRPC server started on " << listen_addr << std::endl;
+  std::cout << "gRPC server started on " << listen_addr
+            << " (collector=" << it_test::CollectorHost() << ")" << std::endl;
   std::cout << "Methods:" << std::endl;
   std::cout << "  UnaryCallUnaryReturn" << std::endl;
   std::cout << "  UnaryCallStreamReturn" << std::endl;
