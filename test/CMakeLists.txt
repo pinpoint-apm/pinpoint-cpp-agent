@@ -238,5 +238,8 @@ target_link_libraries(test_tracer_c
 set_target_properties(test_tracer_c PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_tracer_c COMMAND test_tracer_c)
 
-# Integration test
+# Hermetic mock-collector integration test
+add_subdirectory(it)
+
+# Live collector integration test
 add_subdirectory(e2e)

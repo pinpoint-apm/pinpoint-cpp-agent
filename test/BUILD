@@ -195,5 +195,6 @@ test_suite(
         ":test_stat",
         ":test_tracer_c",
         ":test_url_stat",
+        "//test/it:agent_integration_test",
     ],
 )
