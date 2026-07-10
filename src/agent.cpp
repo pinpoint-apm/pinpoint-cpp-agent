@@ -717,8 +717,18 @@ namespace pinpoint {
             LOG_WARN("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
             return {};
         }
-        // Sequence (third field)
+        // Sequence (third and final field). The wire form is exactly
+        // agentId^startTime^sequence, so any further '^' means extra fields or a
+        // trailing separator. Reject it structurally: otherwise the surplus is
+        // absorbed into the Sequence field, fails to parse, and silently
+        // degrades to sequence 0 via value_or(0) below — recording a bogus live
+        // trace on which every distinct malformed header collides at
+        // (agentId, startTime, 0).
         const auto sequence_str = sv.substr(pos2 + 1);
+        if (sequence_str.find('^') != std::string_view::npos) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            return {};
+        }
         if (sequence_str.length() > kMaxInt64StringLength) {
             LOG_WARN("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
             return {};

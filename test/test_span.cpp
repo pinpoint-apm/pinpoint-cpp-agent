@@ -1055,6 +1055,20 @@ TEST_F(SpanTest, ParseTraceIdSequenceTooLongTest) {
     EXPECT_TRUE(tid.empty()) << "an over-long Sequence field should parse to empty";
 }
 
+TEST_F(SpanTest, ParseTraceIdExtraFieldsRejectedTest) {
+    // The wire form is exactly agentId^startTime^sequence (two separators). A
+    // header with a further '^' — extra fields or a trailing separator — is
+    // rejected structurally, mirroring the missing-separator guard. Without this
+    // the surplus is absorbed into the Sequence field, fails to parse, and
+    // degrades to sequence 0, recording a bogus trace on which every distinct
+    // malformed header collides at (agentId, startTime, 0).
+    const TraceId extra = TraceId::parseTraceId("a^1^2^3");
+    EXPECT_TRUE(extra.empty()) << "a trace id with more than two separators should parse to empty";
+
+    const TraceId trailing = TraceId::parseTraceId("a^1^2^");
+    EXPECT_TRUE(trailing.empty()) << "a trace id with a trailing separator should parse to empty";
+}
+
 TEST_F(SpanTest, ParseTraceIdAgentIdLengthBoundaryTest) {
     // kMaxAgentIdLength is 24 and the guard is a strict `pos1 > 24`, so an agent
     // id of exactly 24 chars is accepted while 25 is rejected. Pins the exact
