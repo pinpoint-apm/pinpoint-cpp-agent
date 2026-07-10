@@ -179,6 +179,43 @@ TEST_F(SamplingTest, PercentSamplerRoundsFractionalRateTest) {
         << " (rounded), not 28 (truncated)";
 }
 
+// The rounding boundary cuts both ways: a positive, in-range rate small enough to
+// round to zero hundredths-of-a-percent is SILENTLY disabled. lround(0.004*100)=0,
+// so rate_ becomes 0 and the <= 0 guard makes it never sample — a trap that plain
+// [0,100] config validation does not catch. Just above the boundary it re-enables:
+// lround(0.006*100)=1.
+TEST_F(SamplingTest, PercentSamplerTinyRateRoundsToDisabledTest) {
+    PercentSampler rounds_to_zero(0.004);  // 0.4 hundredths -> rounds to 0
+    for (int i = 0; i < 200; ++i) {
+        EXPECT_FALSE(rounds_to_zero.isSampled())
+            << "Call " << i << ": a rate rounding to 0 must never sample";
+    }
+
+    // 0.006% rounds up to 1 hundredth-of-a-percent and samples exactly once per
+    // MAX_PERCENT_RATE (the sampler is deterministic, gcd(1, MAX)==1).
+    PercentSampler smallest_enabled(0.006);
+    int true_count = 0;
+    for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
+        if (smallest_enabled.isSampled()) {
+            true_count++;
+        }
+    }
+    EXPECT_EQ(true_count, 1)
+        << "0.006% should round up to 1/" << MAX_PERCENT_RATE << " and stay enabled";
+}
+
+// The upper rounding edge turns a sub-100% rate into unconditional sampling:
+// lround(99.999*100)=10000=MAX_PERCENT_RATE, which the constructor clamp accepts as
+// the always-sample value (count % MAX is always < MAX). Distinct from the clamp
+// branch, which only fires for clearly out-of-range inputs (e.g. 250.0).
+TEST_F(SamplingTest, PercentSamplerNearFullRateRoundsUpToAlwaysSampleTest) {
+    PercentSampler sampler(99.999);
+    for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
+        EXPECT_TRUE(sampler.isSampled())
+            << "Call " << i << ": 99.999% must round up to deterministic always-sample";
+    }
+}
+
 // Test PercentSampler with various rates
 TEST_F(SamplingTest, PercentSamplerVariousRatesTest) {
     // In this implementation, rate is percentage (1.0 = 1%, 5.0 = 5%, etc.)

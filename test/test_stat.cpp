@@ -74,6 +74,32 @@ TEST_F(StatTest, CollectAgentStatTest) {
     EXPECT_GE(snapshot.num_threads_, 0) << "Number of threads should be non-negative";
 }
 
+// The CPU-load rewrite computes a load only when a prior baseline exists and
+// clamps the result to [0,1]; the fix prevents a transient read glitch (or the
+// old ms-vs-s period bug) from reporting a bogus > 100% spike. CollectAgentStatTest
+// asserts only the lower bound (>= 0 or NaN); this pins the upper clamp, and does
+// two sequential collects so the second exercises the baseline/delta path.
+TEST_F(StatTest, CpuLoadStaysBoundedAcrossSequentialCollectsTest) {
+    auto in_unit_range = [](double v) { return std::isnan(v) || (v >= 0.0 && v <= 1.0); };
+
+    AgentStatsSnapshot first;
+    agent_stats_->collectAgentStat(first);
+    EXPECT_TRUE(in_unit_range(first.system_cpu_time_)) << "system cpu load must be in [0,1] or NaN";
+    EXPECT_TRUE(in_unit_range(first.process_cpu_time_)) << "process cpu load must be in [0,1] or NaN";
+
+    // A little work so the second collect sees a non-trivial delta over a baseline.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    AgentStatsSnapshot second;
+    agent_stats_->collectAgentStat(second);
+    EXPECT_TRUE(in_unit_range(second.system_cpu_time_))
+        << "system cpu load must stay clamped to [0,1] on the delta path, got "
+        << second.system_cpu_time_;
+    EXPECT_TRUE(in_unit_range(second.process_cpu_time_))
+        << "process cpu load must stay clamped to [0,1] on the delta path, got "
+        << second.process_cpu_time_;
+}
+
 TEST_F(StatTest, CollectResponseTimeTest) {
     // Test response time collection
     agent_stats_->collectResponseTime(100);

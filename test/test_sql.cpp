@@ -229,6 +229,23 @@ TEST_F(SqlTest, CommentRemovalTokenSeparationTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
+// The '//' line-comment branch shares the same token-separation splice as '/* */'
+// and '--' (src/sql.cpp), but the existing '//' removal test has whitespace before
+// the comment, so its splice branch never fires. Cover the no-surrounding-space
+// case directly: without the splice, "SELECT//c\n1" would merge to "SELECT1" and
+// the digit would not be re-detected as a numeric literal.
+TEST_F(SqlTest, SlashSlashCommentRemovalTokenSeparationTest) {
+    auto result = normalizer_->normalize("SELECT//c\n1 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT 0# FROM t");
+    EXPECT_EQ(result.parameters, "1");
+
+    // When the character following the removed '//' comment is already
+    // whitespace, no extra space is spliced in (no double space).
+    result = normalizer_->normalize("SELECT//c\n FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT FROM t");
+    EXPECT_EQ(result.parameters, "");
+}
+
 // ========== Whitespace Preservation Tests ==========
 
 // Test basic SQL with preserved whitespace

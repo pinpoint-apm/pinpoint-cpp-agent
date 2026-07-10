@@ -783,6 +783,42 @@ TEST_F(UrlStatTest, SnapshotLimitEnforcementTest) {
     EXPECT_LE(stats.size(), 3u) << "Should not exceed configured limit of 3";
 }
 
+// The limit boundary at the add() cast: config validation only rejects a negative
+// limit, so limit == 0 is reachable and must keep nothing (size() >= 0 is always
+// true), while limit == 1 keeps exactly one. Guards the `size() >= (size_t)limit`
+// comparison and the `limit > 0` reserve guard against an off-by-one or a
+// reintroduced signed/unsigned bug.
+TEST_F(UrlStatTest, SnapshotLimitZeroAndOneBoundaryTest) {
+    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    const auto now = std::chrono::system_clock::now();
+    auto add_n = [&](UrlStatSnapshot& snapshot, const Config& config, int n) {
+        for (int i = 0; i < n; i++) {
+            UrlStatEntry stat("/api/url" + std::to_string(i), "GET", 200);
+            stat.elapsed_ = 100;
+            stat.end_time_ = now;
+            snapshot.add(&stat, config, tick_clock);
+        }
+    };
+
+    // limit == 0: nothing is ever stored.
+    {
+        UrlStatSnapshot snapshot;
+        Config config;
+        config.http.url_stat.limit = 0;
+        add_n(snapshot, config, 4);
+        EXPECT_EQ(snapshot.getEachStats().size(), 0u) << "limit 0 must keep no entries";
+    }
+
+    // limit == 1: exactly one entry is kept.
+    {
+        UrlStatSnapshot snapshot;
+        Config config;
+        config.http.url_stat.limit = 1;
+        add_n(snapshot, config, 4);
+        EXPECT_EQ(snapshot.getEachStats().size(), 1u) << "limit 1 must keep exactly one entry";
+    }
+}
+
 // Test snapshot with method_prefix enabled
 TEST_F(UrlStatTest, SnapshotMethodPrefixTest) {
     UrlStatSnapshot snapshot;

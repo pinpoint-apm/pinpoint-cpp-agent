@@ -345,6 +345,19 @@ TEST_F(AgentImplTest, CacheSqlUidReturnsNonEmpty) {
     EXPECT_EQ(uid->size(), 16u);
 }
 
+// cacheSqlUid returns std::optional and yields nullopt when the agent is disabled
+// (guarded before touching the cache). SpanEvent recording gates the SQL-UID
+// annotation on this optional, so a disabled agent must not hand out a UID that
+// would produce an annotation referencing metadata that was never sent.
+TEST_F(AgentImplTest, CacheSqlUidReturnsNulloptWhenDisabled) {
+    ASSERT_TRUE(agent_->cacheSqlUid("SELECT 1").has_value()) << "enabled agent returns a UID";
+
+    agent_->Shutdown();
+    ASSERT_FALSE(agent_->Enable());
+    EXPECT_FALSE(agent_->cacheSqlUid("SELECT 1").has_value())
+        << "a disabled agent must return nullopt, not a UID";
+}
+
 TEST_F(AgentImplTest, ShutdownDisablesAgent) {
     EXPECT_TRUE(agent_->Enable());
     agent_->Shutdown();

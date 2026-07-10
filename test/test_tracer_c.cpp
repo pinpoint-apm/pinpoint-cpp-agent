@@ -589,6 +589,79 @@ TEST_F(TracerCApiTest, GetTraceIdWritesWireForm) {
     pt_span_destroy(span);
 }
 
+// snprintf-style boundary cases for the trace-id copy. The existing test covers
+// only "fits comfortably" and "deep truncation (4 bytes)"; the off-by-one at the
+// exact buffer edge is where the min(tid.size(), buf_size-1) formula lives.
+TEST_F(TracerCApiTest, GetTraceIdBufferBoundaryTruncation) {
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+
+    char full[PT_TRACE_ID_MAX];
+    const size_t len = pt_span_get_trace_id(span, full, sizeof(full));
+    ASSERT_GT(len, 0u);
+    const std::string expected(full, len);
+
+    // Exact fit: a len+1 buffer holds the id plus its NUL with no truncation.
+    std::vector<char> exact(len + 1, 'x');
+    EXPECT_EQ(pt_span_get_trace_id(span, exact.data(), exact.size()), len);
+    EXPECT_EQ(exact[len], '\0');
+    EXPECT_EQ(std::string(exact.data()), expected) << "a len+1 buffer must not truncate";
+
+    // One byte short: buf_size == len truncates by exactly one character, still
+    // NUL-terminates (at index len-1) and still reports the full length.
+    std::vector<char> tight(len, 'x');
+    EXPECT_EQ(pt_span_get_trace_id(span, tight.data(), tight.size()), len);
+    EXPECT_EQ(tight[len - 1], '\0');
+    EXPECT_EQ(std::string(tight.data()), expected.substr(0, len - 1))
+        << "a len-sized buffer truncates exactly the last character";
+
+    pt_span_end(span);
+    pt_span_destroy(span);
+}
+
+// Firewall: a null span handle and a null buffer must both be safe. This is the
+// buffer-clear-on-early-return and null-buf guard added when the signature became
+// (char* buf, size_t buf_size).
+TEST_F(TracerCApiTest, GetTraceIdNullHandleAndNullBufferAreSafe) {
+    // Null span: returns 0 and still empties the caller's buffer (the pre-clear
+    // runs before the handle is ever dereferenced).
+    char buf[PT_TRACE_ID_MAX];
+    buf[0] = 'x';
+    EXPECT_EQ(pt_span_get_trace_id(nullptr, buf, sizeof(buf)), 0u);
+    EXPECT_EQ(buf[0], '\0') << "a null span must still empty the buffer";
+
+    // Null buffer with a positive size on a valid span: reports the length
+    // without writing anywhere.
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+    EXPECT_GT(pt_span_get_trace_id(span, nullptr, 64), 0u)
+        << "a null buffer still reports the required length";
+    pt_span_end(span);
+    pt_span_destroy(span);
+}
+
+// An unsampled span (inbound `Pinpoint-Sampled: s0`) has a real, non-zero span id
+// but carries no trace id: get_trace_id must report length 0 and write an empty
+// string, the same contract as the noop span but on a live per-request span.
+TEST_F(TracerCApiTest, GetTraceIdEmptyForUnsampledSpan) {
+    HeaderMap inbound{{PT_HEADER_SAMPLED, "s0"}};
+    pt_context_reader_t reader{&inbound, hmap_get};
+
+    pt_span_t span = pt_agent_new_span_with_reader(agent_, "op", "/rpc", &reader);
+    ASSERT_NE(span, nullptr);
+    EXPECT_EQ(pt_span_is_sampled(span), 0);
+    EXPECT_NE(pt_span_get_span_id(span), 0) << "an unsampled span still has a real span id";
+
+    char buf[PT_TRACE_ID_MAX];
+    buf[0] = 'x';
+    EXPECT_EQ(pt_span_get_trace_id(span, buf, sizeof(buf)), 0u)
+        << "an unsampled span carries no trace id";
+    EXPECT_EQ(buf[0], '\0');
+
+    pt_span_end(span);
+    pt_span_destroy(span);
+}
+
 // ============================================================================
 // 7. Context injection / extraction
 // ============================================================================
@@ -1206,6 +1279,21 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     pt_span_t s3 = pt_agent_new_span(pt_global_agent(), "op", "/rpc");
     EXPECT_EQ(s3, s1);
     pt_span_destroy(s3);
+}
+
+// The noop span carries no trace: get_trace_id must report length 0 and write an
+// empty C string into a caller buffer, clearing whatever was there before.
+TEST_F(TracerCNoopPathTest, GetTraceIdEmptyForNoopSpan) {
+    pt_span_t span = pt_agent_new_span(pt_global_agent(), "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+
+    char buf[PT_TRACE_ID_MAX];
+    buf[0] = 'x';  // pre-fill so we can prove the early-return path clears it
+    EXPECT_EQ(pt_span_get_trace_id(span, buf, sizeof(buf)), 0u)
+        << "a noop span has no trace id, so the reported length is 0";
+    EXPECT_EQ(buf[0], '\0') << "the buffer must be emptied for a no-trace span";
+
+    pt_span_destroy(span);
 }
 
 // An unsampled span (inbound `Pinpoint-Sampled: s0`) hands out one singleton

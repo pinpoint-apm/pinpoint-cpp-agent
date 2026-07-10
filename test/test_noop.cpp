@@ -498,6 +498,31 @@ TEST_F(NoopTest, UnsampledSpanWithFailStatusUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 500);
 }
 
+// ~UnsampledSpan self-heals a span dropped without EndSpan (mirrors ~SpanImpl):
+// the active-span registration taken in the constructor must not outlive the
+// span, but the destructor must NOT record a url-stat or response-time (only
+// EndSpan does). Without the self-heal the active-request gauge would leak.
+TEST_F(NoopTest, UnsampledSpanDestructorDropsActiveSpanWithoutEndSpanTest) {
+    AgentStatsSnapshot snapshot;
+    auto active_count = [&]() {
+        mock_agent_service_->getAgentStats().collectAgentStat(snapshot);
+        return snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+               snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    };
+
+    {
+        UnsampledSpan span(mock_agent_service_.get());
+        EXPECT_EQ(active_count(), 1) << "constructor should register one active span";
+        span.SetUrlStat("/api/dropped", "GET", 200);
+        // Deliberately do NOT call EndSpan(): the destructor must clean up.
+    }
+
+    EXPECT_EQ(active_count(), 0)
+        << "destructor should drop the active span left open without EndSpan";
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "destructor self-heal must not record a url stat (only EndSpan does)";
+}
+
 TEST_F(NoopTest, UnsampledSpanEventInjectContextDoesNotSetOtherHeadersTest) {
     UnsampledSpan span(mock_agent_service_.get());
     MockTraceContextWriter writer;

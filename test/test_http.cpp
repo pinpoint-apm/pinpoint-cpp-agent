@@ -1356,4 +1356,103 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllEmptyHeadersTest) {
         << "HEADERS-ALL with no headers should record nothing";
 }
 
+// ========== ant_match DP: within-segment '*' / '?' ==========
+//
+// Patterns with an interior wildcard (not a trailing '*'/'**') compile to
+// PatternKind::Ant and run the two-row suffix DP. The existing single-'*' tests
+// are all bounded immediately by '/', so they never exercise true backtracking or
+// wildcard adjacency — a broken DP would still pass them. These pin the DP.
+TEST_F(HttpTest, HttpUrlFilterAntStarBacktrackingTest) {
+    // '*' must be able to extend past a first candidate match ("bc" then "bc").
+    HttpUrlFilter backtrack({"/a*bc"});
+    EXPECT_TRUE(backtrack.isFiltered("/abcbc")) << "'*' must backtrack past the first 'bc'";
+
+    // Two '*' in one segment, each matching a variable run (incl. empty).
+    HttpUrlFilter two_star({"/x*y*z"});
+    EXPECT_TRUE(two_star.isFiltered("/xayaz"));
+    EXPECT_TRUE(two_star.isFiltered("/xyz")) << "both stars may match the empty string";
+
+    // Adjacent '*' and '?': '*' matches zero+, '?' matches exactly one non-'/'.
+    HttpUrlFilter star_q({"/a*?b"});
+    EXPECT_TRUE(star_q.isFiltered("/axb"));
+    EXPECT_TRUE(star_q.isFiltered("/axyb"));
+    EXPECT_FALSE(star_q.isFiltered("/ab")) << "'?' requires at least one character";
+
+    // '*' never crosses '/': the second segment's '*' cannot absorb "a/bar".
+    HttpUrlFilter per_segment({"/p*/*.txt"});
+    EXPECT_TRUE(per_segment.isFiltered("/pfoo/bar.txt"));
+    EXPECT_FALSE(per_segment.isFiltered("/pfoo/a/bar.txt")) << "'*' must not span '/'";
+
+    // Leading '*' (no literal prefix) still cannot cross '/'.
+    HttpUrlFilter leading({"*.js"});
+    EXPECT_TRUE(leading.isFiltered("app.js"));
+    EXPECT_FALSE(leading.isFiltered("/app.js")) << "leading '*' must not match the leading '/'";
+    HttpUrlFilter leading_slash({"/*.js"});
+    EXPECT_FALSE(leading_slash.isFiltered("/a/b.js")) << "'*' after '/' stays within one segment";
+}
+
+// ========== ant_match DP: mid-pattern '**' cross-segment ==========
+//
+// A trailing '**' compiles to PatternKind::Prefix and skips the DP entirely, so
+// every existing '**' test bypasses the cross-segment logic. A '**' with anything
+// after it stays in the DP; these cover the "'**/' matches zero segments" edge and
+// the multi-'**' amplifier pattern the DP rewrite was built to handle.
+TEST_F(HttpTest, HttpUrlFilterAntDoubleStarCrossSegmentTest) {
+    HttpUrlFilter foo_bar({"/foo/**/bar"});
+    EXPECT_TRUE(foo_bar.isFiltered("/foo/bar")) << "'**/' must match zero intermediate segments";
+    EXPECT_TRUE(foo_bar.isFiltered("/foo/x/y/bar"));
+
+    HttpUrlFilter lead({"/**/x"});
+    EXPECT_TRUE(lead.isFiltered("/x"));
+    EXPECT_TRUE(lead.isFiltered("/a/b/x"));
+
+    HttpUrlFilter two_double({"/**/internal/**/x"});
+    EXPECT_TRUE(two_double.isFiltered("/a/internal/b/c/x"));
+    EXPECT_FALSE(two_double.isFiltered("/a/nope/b/x")) << "the required 'internal' segment is absent";
+
+    // '**' glued to literals still crosses '/'.
+    HttpUrlFilter glued({"/a**b"});
+    EXPECT_TRUE(glued.isFiltered("/ax/xb"));
+}
+
+// ========== HttpStatusErrors: out-of-table codes ==========
+//
+// Codes in [0, TABLE_SIZE=600) live in the bitset; a configured code >= 600 falls
+// into the extra_codes_ fallback vector added by the bitset rewrite. That branch
+// has no coverage — all existing tests configure codes <= 599.
+TEST_F(HttpTest, HttpStatusErrorsOutOfTableCodeTest) {
+    HttpStatusErrors errors({"600", "999"});
+    EXPECT_TRUE(errors.isErrorCode(600)) << "600 == TABLE_SIZE, the first out-of-table code";
+    EXPECT_TRUE(errors.isErrorCode(999));
+    EXPECT_FALSE(errors.isErrorCode(599)) << "in-table code, not configured";
+    EXPECT_FALSE(errors.isErrorCode(601)) << "out-of-table code, not configured";
+    EXPECT_FALSE(errors.isErrorCode(500));
+
+    // Out-of-table specific codes coexist with an in-table category.
+    HttpStatusErrors mixed({"5xx", "600"});
+    EXPECT_TRUE(mixed.isErrorCode(503)) << "5xx category (bitset)";
+    EXPECT_TRUE(mixed.isErrorCode(600)) << "specific out-of-table code (extra_codes_)";
+    EXPECT_FALSE(mixed.isErrorCode(404));
+}
+
+// ========== helper::TraceHttp* null-handle guards ==========
+//
+// Each public HTTP helper early-returns on a null span/span-event handle. Removing
+// any guard turns a caller passing an empty handle into a host-process crash. No
+// existing test drives these with a null handle (the C wrapper tests always pass a
+// valid one).
+TEST_F(HttpTest, TraceHttpHelpersNullHandlesAreSafeTest) {
+    std::map<std::string, std::string> headers{{"X-Forwarded-For", "1.2.3.4"}};
+    MockHeaderReader reader(headers);
+    MockHeaderReader cookie(headers);
+
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpServerRequest(SpanPtr{}, "1.2.3.4", "/ep", reader));
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpServerRequest(SpanPtr{}, "1.2.3.4", "/ep", reader, cookie));
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpServerResponse(SpanPtr{}, "/ep", "GET", 200, reader));
+
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpClientRequest(SpanEventPtr{}, "host:8080", "/url", reader));
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpClientRequest(SpanEventPtr{}, "host:8080", "/url", reader, cookie));
+    EXPECT_NO_FATAL_FAILURE(helper::TraceHttpClientResponse(SpanEventPtr{}, 200, reader));
+}
+
 } // namespace pinpoint

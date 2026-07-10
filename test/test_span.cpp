@@ -1041,6 +1041,46 @@ TEST_F(SpanTest, ParseTraceIdEmptyFieldsTest) {
     EXPECT_EQ(tid.Sequence, 0);
 }
 
+TEST_F(SpanTest, ParseTraceIdStartTimeTooLongTest) {
+    // The StartTime field is bounded to kMaxInt64StringLength (20). A 21-char
+    // field is rejected outright (separate guard from the agent-id length check),
+    // yielding an empty trace id so NewSpan drops to a noop span.
+    const TraceId tid = TraceId::parseTraceId("agent^123456789012345678901^1");
+    EXPECT_TRUE(tid.empty()) << "an over-long StartTime field should parse to empty";
+}
+
+TEST_F(SpanTest, ParseTraceIdSequenceTooLongTest) {
+    // The Sequence field has its own length guard (kMaxInt64StringLength = 20).
+    const TraceId tid = TraceId::parseTraceId("agent^123^123456789012345678901");
+    EXPECT_TRUE(tid.empty()) << "an over-long Sequence field should parse to empty";
+}
+
+TEST_F(SpanTest, ParseTraceIdAgentIdLengthBoundaryTest) {
+    // kMaxAgentIdLength is 24 and the guard is a strict `pos1 > 24`, so an agent
+    // id of exactly 24 chars is accepted while 25 is rejected. Pins the exact
+    // off-by-one contract that the existing (29-char) too-long test cannot.
+    const std::string id24(24, 'a');
+    const TraceId at_limit = TraceId::parseTraceId(id24 + "^100^1");
+    EXPECT_FALSE(at_limit.empty()) << "a 24-char agent id is at the limit and valid";
+    EXPECT_EQ(at_limit.agentId(), id24);
+
+    const std::string id25(25, 'a');
+    const TraceId over_limit = TraceId::parseTraceId(id25 + "^100^1");
+    EXPECT_TRUE(over_limit.empty()) << "a 25-char agent id exceeds the limit and is rejected";
+}
+
+TEST_F(SpanTest, ParseTraceIdNumericOverflowDegradesToZeroTest) {
+    // A numeric field that is within the length guard (<= 20 chars) but overflows
+    // int64 is not rejected: stoll_ (absl::SimpleAtoi) fails on overflow and the
+    // field degrades to 0 via value_or(0), while the trace id stays present. This
+    // documents the length guard as necessary-but-not-sufficient — the parse still
+    // degrades gracefully rather than recording garbage.
+    const TraceId tid = TraceId::parseTraceId("agent^99999999999999999999^7");
+    ASSERT_FALSE(tid.empty()) << "a length-valid field keeps the trace id present";
+    EXPECT_EQ(tid.StartTime, 0) << "an int64-overflowing StartTime degrades to 0";
+    EXPECT_EQ(tid.Sequence, 7) << "the well-formed Sequence field is still parsed";
+}
+
 // ========== TraceId::toString Tests ==========
 //
 // toString() serializes the trace id to its wire form with to_chars into a fixed
@@ -1325,6 +1365,51 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     real->EndEvent();
     span.EndSpan();
 
+    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+// The single shared DisabledSpanEvent per span has no per-instance finished_
+// flag; the overflow_ counter is the ONLY guard against a duplicate/extra end.
+// endDisabledSpanEvent() must (a) count multiple overflows, (b) balance them one
+// per end, and (c) treat an end beyond the outstanding overflows as a warned
+// no-op that never falls through to pop a real event off the stack.
+TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
+    auto config = std::make_shared<Config>();
+    // A fresh span starts at event depth 1, so max_event_depth=2 admits exactly
+    // one real event; the next NewSpanEvent overflows.
+    config->span.max_event_depth = 2;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    auto* real = span.NewSpanEvent("real-event");           // depth 1 < 2 -> real, depth -> 2
+    auto* overflow1 = span.NewSpanEvent("overflow-1");       // depth 2 >= 2 -> overflow_=1
+    auto* overflow2 = span.NewSpanEvent("overflow-2");       // still overflowed -> overflow_=2
+    EXPECT_EQ(overflow1, overflow2)
+        << "overflowed events reuse the one shared DisabledSpanEvent instance";
+    EXPECT_NE(overflow1, real);
+
+    // Two outstanding overflows: the disabled event is handed out until both end.
+    EXPECT_EQ(span.GetSpanEvent(), overflow1) << "still overflowed after zero ends";
+    overflow2->EndEvent();                                   // overflow_ 2 -> 1
+    EXPECT_EQ(span.GetSpanEvent(), overflow1) << "still overflowed with one end left";
+    overflow1->EndEvent();                                   // overflow_ 1 -> 0
+    EXPECT_EQ(span.GetSpanEvent(), real)
+        << "both overflows balanced: the real top event is active again";
+
+    // Over-end: end the disabled event more times than it overflowed. Each extra
+    // call must be a no-op guarded by overflow_ == 0, NOT a pop of the real event.
+    overflow1->EndEvent();
+    overflow1->EndEvent();
+    EXPECT_EQ(span.GetSpanEvent(), real)
+        << "over-ending the disabled event must not pop the still-active real event";
+
+    real->EndEvent();
+    span.EndSpan();
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 

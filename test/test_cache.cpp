@@ -200,6 +200,70 @@ TEST_F(CacheTest, AgedPromotionTest) {
     EXPECT_FALSE(cache.get("key3").found) << "Second-oldest unpromoted entry should be evicted";
 }
 
+// Guards the aged-promotion optimization against a silent revert to strict LRU.
+// AgedPromotionTest above only checks that a young full-cache hit returns without
+// an immediate reorder AND that an aged hit survives — both of which also hold
+// under strict "promote on every full-cache hit". The distinguishing behavior is
+// that a hit on a still-young entry does NOT protect it: because the splice is
+// skipped, later insertions evict it in its original LRU position. A revert to
+// strict LRU would promote it on the hit and let it survive, failing this test.
+TEST_F(CacheTest, AgedPromotionYoungHitDoesNotProtectEntryTest) {
+    IdCache cache(4);  // promote_age_threshold_ = 4/2 = 2 ops
+
+    cache.get("key1"); // op 1
+    cache.get("key2"); // op 2
+    cache.get("key3"); // op 3
+    cache.get("key4"); // op 4, cache now full; order MRU..LRU: key4,key3,key2,key1
+
+    // Hit key3 while it is young: age = op_seq(4) - key3.last_promoted(3) = 1,
+    // which is < threshold(2), so the hit is a pure read and does NOT promote it.
+    auto r3 = cache.get("key3");
+    EXPECT_TRUE(r3.found) << "the hit itself still resolves from cache";
+    EXPECT_EQ(r3.value, 3);
+
+    // Three inserts evict the three LRU entries in order: key1, key2, then key3.
+    // Because the hit above did not promote key3, it is still in eviction range.
+    cache.get("key5"); // op 5, evicts key1
+    cache.get("key6"); // op 6, evicts key2
+    cache.get("key7"); // op 7, evicts key3
+
+    EXPECT_FALSE(cache.get("key3").found)
+        << "a young (unpromoted) entry must remain evictable; under strict LRU the "
+           "earlier hit would have promoted key3 and it would have survived";
+    // key4, hit by nobody but inserted last of the originals, was also not
+    // promoted, so it too is gone by now; key5/key6 survive as the newest.
+    EXPECT_TRUE(cache.get("key6").found) << "recent insert should still be cached";
+}
+
+// A capacity of 0 is clamped to 1 (see LruCacheImpl ctor). Without the clamp,
+// insert_or_promote() would erase the just-inserted front node and then return a
+// reference into the freed list node — a use-after-free. This exercises every
+// cache flavor at capacity 0; under a sanitizer it also catches a dropped clamp.
+TEST_F(CacheTest, ZeroCapacityIsClampedToOneTest) {
+    IdCache id_cache(0);
+    auto a = id_cache.get("a");
+    EXPECT_FALSE(a.found) << "first lookup is a miss";
+    EXPECT_NE(a.value, 0) << "a valid id is still assigned at capacity 0";
+    // A second distinct key evicts the first (capacity is effectively 1) but must
+    // not crash or corrupt the cache.
+    auto b = id_cache.get("b");
+    EXPECT_FALSE(b.found);
+    auto a_again = id_cache.get("a");
+    EXPECT_FALSE(a_again.found) << "capacity-1 cache evicted the first key";
+
+    ApiIdCache api_cache(0);
+    auto p = api_cache.get(ApiCacheKey{"op", 100});
+    EXPECT_FALSE(p.found);
+    EXPECT_NE(p.value, 0);
+    EXPECT_FALSE(api_cache.get(ApiCacheKey{"op", 200}).found);
+
+    SqlUidCache uid_cache(0);
+    auto u = uid_cache.get("SELECT 1");
+    EXPECT_EQ(u.value.size(), 16u);
+    EXPECT_FALSE(u.found);
+    EXPECT_FALSE(uid_cache.get("SELECT 2").found);
+}
+
 // Remove functionality tests
 
 // Test basic remove operation

@@ -917,6 +917,67 @@ Collector:
     EXPECT_EQ(config2->object_name_version_, 1);
 }
 
+// An unrecognized UidVersion (anything not v1/v4) resolves as v3: object_name_
+// version_ becomes VERSION_V1 (1) exactly like an explicit v3, identity still
+// resolves, and the raw string is preserved (isReloadable compares the raw
+// uid_version_, not the resolved version). Guards the schema-drift / parse
+// fallback at the config integration level, beyond the parse_name_version unit test.
+TEST_F(ConfigTest, UidVersionInvalidValueFallsBackToV3Test) {
+    set_config_string(R"(
+ApplicationName: "UidInvalidApp"
+UidVersion: v2
+Collector:
+  GrpcHost: localhost
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_TRUE(config->identity_resolved_)
+        << "an invalid uid version must still resolve identity as v3";
+    EXPECT_EQ(config->uid_version_, "v2") << "the raw uid version string is preserved";
+    EXPECT_EQ(config->object_name_version_, 1)
+        << "an unknown uid version maps to VERSION_V1 (v3 behavior)";
+}
+
+// A well-formed YAML document whose section key carries the WRONG node shape
+// (scalar or sequence where a map is expected) must degrade to defaults, never
+// throw into the embedding application. find_node() guards non-map parents and
+// make_config() wraps the load in a try/catch for anything a per-key getter misses.
+TEST_F(ConfigTest, MalformedSectionShapeDegradesToDefaultsTest) {
+    // Scalar where a map is expected.
+    set_config_string(R"(
+ApplicationName: "MalformedApp"
+Sampling: "not-a-map"
+Collector:
+  GrpcHost: localhost
+)");
+    auto scalar_cfg = make_config();
+    ASSERT_NE(scalar_cfg, nullptr) << "a scalar-shaped section must not crash make_config";
+    EXPECT_EQ(scalar_cfg->sampling.type, "COUNTER") << "sampling degrades to its default type";
+    EXPECT_EQ(scalar_cfg->sampling.counter_rate, 1) << "sampling degrades to its default rate";
+
+    // Sequence where a map is expected.
+    set_config_string(R"(
+ApplicationName: "MalformedApp2"
+Sampling:
+  - 1
+  - 2
+Collector:
+  GrpcHost: localhost
+)");
+    auto seq_cfg = make_config();
+    ASSERT_NE(seq_cfg, nullptr) << "a sequence-shaped section must not crash make_config";
+    EXPECT_EQ(seq_cfg->sampling.type, "COUNTER");
+
+    // A whole top-level section reduced to a bare scalar degrades without throwing.
+    set_config_string(R"(
+ApplicationName: "MalformedApp3"
+Collector: "localhost"
+)");
+    auto collector_cfg = make_config();
+    ASSERT_NE(collector_cfg, nullptr) << "a scalar Collector section must not crash make_config";
+    EXPECT_EQ(collector_cfg->collector.agent_port, 9991) << "collector fields degrade to defaults";
+}
+
 TEST_F(ConfigTest, UidVersionV4ConfigurationToStringMasksApiKeyTest) {
     set_config_string(R"(
 ApplicationName: "UidV4App"
