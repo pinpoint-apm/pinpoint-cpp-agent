@@ -22,9 +22,10 @@
 #include <functional>
 #include <future>
 #include <mutex>
-#include <thread>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../src/grpc.h"
@@ -371,6 +372,26 @@ private:
     bool ready_channel_{true};
 };
 
+class ThrowingReadyGrpcAgent : public GrpcAgent {
+public:
+    explicit ThrowingReadyGrpcAgent(std::shared_ptr<const Config> config)
+        : GrpcAgent(std::move(config)) {}
+
+    bool readyChannel() override {
+        throw std::runtime_error("injected ping channel setup failure");
+    }
+};
+
+class ThrowingReadyGrpcStats : public GrpcStats {
+public:
+    explicit ThrowingReadyGrpcStats(std::shared_ptr<const Config> config)
+        : GrpcStats(std::move(config)) {}
+
+    bool readyChannel() override {
+        throw std::runtime_error("injected stats channel setup failure");
+    }
+};
+
 class TestableGrpcCommand : public GrpcCommand {
 public:
     explicit TestableGrpcCommand(AgentService* agent) : GrpcCommand(agent->getConfig()) {
@@ -643,6 +664,14 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerTest) {
     SUCCEED() << "Ping worker should start/stop cleanly even without successful gRPC connection";
 }
 
+TEST_F(GrpcMockTest, GrpcAgentPingWorkerContainsChannelSetupException) {
+    ThrowingReadyGrpcAgent agent(mock_agent_service_->getConfig());
+    agent.setAgentService(mock_agent_service_.get());
+
+    EXPECT_NO_THROW(agent.sendPingWorker());
+    EXPECT_FALSE(mock_agent_service_->isExiting());
+}
+
 TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
     
@@ -838,6 +867,14 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
     }
     
     SUCCEED() << "Stats worker should start/stop cleanly and process queue even without successful gRPC connection";
+}
+
+TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
+    ThrowingReadyGrpcStats stats_client(mock_agent_service_->getConfig());
+    stats_client.setAgentService(mock_agent_service_.get());
+
+    EXPECT_NO_THROW(stats_client.sendStatsWorker());
+    EXPECT_FALSE(mock_agent_service_->isExiting());
 }
 
 // Integration Tests
@@ -1166,6 +1203,89 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 1);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataEvictsErrorCacheAfterRetryExhaustion) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
+        .Times(4)
+        .WillRepeatedly(Return(
+            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        META_STRING, 2, "error.exhaust", STRING_META_ERROR));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_error_count_.load() >= 1; },
+        std::chrono::seconds(10)));
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_error_count_.load(), 1);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlCacheAfterRetryExhaustion) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
+        .Times(4)
+        .WillRepeatedly(Return(
+            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        META_STRING, 3, "SELECT exhaust", STRING_META_SQL));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_sql_count_.load() >= 1; },
+        std::chrono::seconds(10)));
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_sql_count_.load(), 1);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
+        .Times(4)
+        .WillRepeatedly(Return(
+            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    const SqlUid uid{0, 1, 2, 3, 4, 5, 6, 7,
+                     8, 9, 10, 11, 12, 13, 14, 15};
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        META_SQL_UID, uid, "SELECT uid_exhaust"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_sql_uid_count_.load() >= 1; },
+        std::chrono::seconds(10)));
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_.load(), 1);
 }
 
 // ============================================================

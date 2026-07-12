@@ -2289,6 +2289,61 @@ Collector:
     EXPECT_EQ(config->collector.stat_port, 80) << "Port 80 should be valid";
 }
 
+// Invalid channel values must not reach gRPC. Negative keepalive values,
+// message sizes below gRPC's -1 (unlimited) sentinel, and queue sizes outside
+// the bounded producer queue all fall back to the documented defaults.
+TEST_F(ConfigTest, GrpcChannelInvalidValuesFallBackToDefaults) {
+    set_config_string(R"(
+Collector:
+  Grpc:
+    KeepAliveTimeMs: -1
+    KeepAliveTimeoutMs: -1
+    MaxSendMessageSize: -2
+    MaxReceiveMessageSize: -2
+    SenderQueueSize: 0
+)");
+
+    const auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    const auto& channel = config->collector.grpc.channel;
+    EXPECT_EQ(channel.keepalive_time_ms, defaults::GRPC_KEEPALIVE_TIME_MS);
+    EXPECT_EQ(channel.keepalive_timeout_ms, defaults::GRPC_KEEPALIVE_TIMEOUT_MS);
+    EXPECT_EQ(channel.max_send_message_size, defaults::GRPC_MAX_MESSAGE_SIZE);
+    EXPECT_EQ(channel.max_receive_message_size, defaults::GRPC_MAX_MESSAGE_SIZE);
+    EXPECT_EQ(channel.sender_queue_size, defaults::GRPC_SENDER_QUEUE_SIZE);
+}
+
+// Zero is valid for gRPC keepalive controls, -1 means an unlimited message
+// size, and both ends of the sender-queue range are accepted unchanged.
+TEST_F(ConfigTest, GrpcChannelBoundaryValuesAreAccepted) {
+    set_config_string(R"(
+Collector:
+  Grpc:
+    KeepAliveTimeMs: 0
+    KeepAliveTimeoutMs: 0
+    MaxSendMessageSize: -1
+    MaxReceiveMessageSize: -1
+    SenderQueueSize: 1
+)");
+
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->collector.grpc.channel.keepalive_time_ms, 0);
+    EXPECT_EQ(config->collector.grpc.channel.keepalive_timeout_ms, 0);
+    EXPECT_EQ(config->collector.grpc.channel.max_send_message_size, -1);
+    EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, -1);
+    EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 1);
+
+    set_config_string(R"(
+Collector:
+  Grpc:
+    SenderQueueSize: 65536
+)");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 65536);
+}
+
 // ========== Stat Validation Tests ==========
 
 // Test stat batch_count out of range

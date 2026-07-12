@@ -566,11 +566,16 @@ protected:
         // Ensure clean global state
         reset_global_agent();
         set_config_string("");
+        set_config_file_path("");
         const auto* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
         log_file_ = std::filesystem::temp_directory_path() /
                     (std::string("test_pinpoint_") + test_info->test_suite_name() +
                      "_" + test_info->name() + ".log");
+        watcher_config_file_ = std::filesystem::temp_directory_path() /
+                    (std::string("test_pinpoint_") + test_info->test_suite_name() +
+                     "_" + test_info->name() + ".yaml");
         cleanup_log_file();
+        cleanup_watcher_config_file();
     }
 
     void TearDown() override {
@@ -582,9 +587,11 @@ protected:
         }
         reset_global_agent();
         set_config_string("");
+        set_config_file_path("");
         Logger::getInstance().shutdown();
         Logger::getInstance().setLogLevel("info");
         cleanup_log_file();
+        cleanup_watcher_config_file();
     }
 
     // Install a mock-based agent as the global agent with the given config
@@ -629,7 +636,37 @@ protected:
         std::filesystem::remove(log_file_.string() + ".1", ec);
     }
 
+    void write_watcher_config(int counter_rate, std::string_view application_name,
+                              bool exclude_test_url) const {
+        std::ofstream config_file(watcher_config_file_);
+        ASSERT_TRUE(config_file.is_open());
+        config_file
+            << "ApplicationName: " << application_name << "\n"
+            << "AgentId: test-agent-id\n"
+            << "AgentName: test-agent-name\n"
+            << "Enable: true\n"
+            << "Collector:\n"
+            << "  GrpcHost: 127.0.0.1\n"
+            << "  GrpcAgentPort: 9991\n"
+            << "  GrpcSpanPort: 9993\n"
+            << "  GrpcStatPort: 9992\n"
+            << "Sampling:\n"
+            << "  Type: COUNTER\n"
+            << "  CounterRate: " << counter_rate << "\n"
+            << "Http:\n"
+            << "  Server:\n"
+            << "    ExcludeUrl: "
+            << (exclude_test_url ? "[/watcher-excluded]" : "[]") << "\n";
+        ASSERT_TRUE(config_file.good());
+    }
+
+    void cleanup_watcher_config_file() {
+        std::error_code ec;
+        std::filesystem::remove(watcher_config_file_, ec);
+    }
+
     std::filesystem::path log_file_;
+    std::filesystem::path watcher_config_file_;
 
     static constexpr const char* kBaseConfigYaml = R"(
 ApplicationName: test-app
@@ -683,6 +720,59 @@ Sampling:
     // 5. Verify: config was reloaded with new sampling rate
     auto reloaded_cfg = returned_impl->getConfig();
     EXPECT_EQ(reloaded_cfg->sampling.counter_rate, 50);
+}
+
+TEST_F(CreateAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
+    write_watcher_config(1, "test-app", false);
+    set_config_file_path(watcher_config_file_.string());
+
+    auto initial_config = make_config();
+    ASSERT_NE(initial_config, nullptr);
+    auto agent = install_mock_agent(initial_config);
+    ASSERT_TRUE(agent->Enable());
+    ASSERT_EQ(agent->getConfig()->sampling.counter_rate, 1);
+
+    // Let the watcher seed its initial mtime and complete one polling tick.
+    // The later explicit mtime change keeps this deterministic even on file
+    // systems with coarse timestamp resolution.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    std::error_code ec;
+    const auto previous_mtime =
+        std::filesystem::last_write_time(watcher_config_file_, ec);
+    ASSERT_FALSE(ec);
+
+    write_watcher_config(50, "attempted-app-name-change", true);
+    std::filesystem::last_write_time(
+        watcher_config_file_, previous_mtime + std::chrono::seconds(5), ec);
+    ASSERT_FALSE(ec);
+
+    const auto reload_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    while (agent->getConfig()->sampling.counter_rate != 50 &&
+           std::chrono::steady_clock::now() < reload_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    const auto reloaded = agent->getConfig();
+    ASSERT_EQ(reloaded->sampling.counter_rate, 50);
+    EXPECT_EQ(reloaded->app_name_, "test-app")
+        << "non-reloadable identity must be retained";
+    auto excluded = agent->NewSpan("watcher.test", "/watcher-excluded");
+    ASSERT_NE(excluded, nullptr);
+    EXPECT_FALSE(excluded->IsSampled());
+    excluded->EndSpan();
+
+    // The watcher just completed a reload and entered a fresh one-second wait.
+    // Its stop signal must wake that wait instead of blocking for a full tick.
+    // Measure the watcher directly so unrelated worker shutdown scheduling
+    // cannot make this timing assertion flaky on a loaded test host.
+    const auto stop_started = std::chrono::steady_clock::now();
+    stop_config_file_watcher();
+    const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
+    EXPECT_LT(stop_elapsed, std::chrono::milliseconds(900));
+
+    agent->Shutdown();
+    EXPECT_FALSE(agent->Enable());
 }
 
 TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsInfoWhenReloadable) {

@@ -286,6 +286,21 @@ const v1::PAnnotation* find_annotation(const Annotations& annotations, int32_t k
     return it == annotations.end() ? nullptr : &*it;
 }
 
+template <typename Annotations>
+bool has_string_pair_annotation(const Annotations& annotations, int32_t key,
+                                std::string_view first,
+                                std::string_view second) {
+    return std::any_of(annotations.begin(), annotations.end(),
+        [key, first, second](const auto& annotation) {
+            if (annotation.key() != key) {
+                return false;
+            }
+            const auto& pair = annotation.value().stringstringvalue();
+            return pair.stringvalue1().value() == first &&
+                   pair.stringvalue2().value() == second;
+        });
+}
+
 bool has_uri_stat(const CollectorSnapshot& snapshot, std::string_view uri) {
     for (const auto& received : snapshot.stats) {
         if (!received.message.has_agenturistat()) {
@@ -449,7 +464,7 @@ protected:
             << "    StatusCodeErrors: [4xx, 5xx]\n"
             << "    ExcludeUrl: " << ServerExcludeUrls() << "\n"
             << "    ExcludeMethod: [OPTIONS]\n"
-            << "    RecordRequestHeader: [x-request-id]\n"
+            << "    RecordRequestHeader: " << ServerRecordRequestHeaders() << "\n"
             << "    RecordRequestCookie: [session_id]\n"
             << "    RecordResponseHeader: [x-response-id]\n"
             << "  Client:\n"
@@ -473,6 +488,9 @@ protected:
     virtual int MaxEventDepth() const { return 16; }
     virtual int MaxEventSequence() const { return 128; }
     virtual bool EnableSqlStats() const { return true; }
+    virtual std::string_view ServerRecordRequestHeaders() const {
+        return "[x-request-id]";
+    }
     virtual std::string_view ServerExcludeUrls() const {
         return server_exclude_urls_;
     }
@@ -538,6 +556,20 @@ protected:
                             grpc::StatusCode::UNAVAILABLE,
                             "first ping stream disconnected",
                             1);
+    }
+};
+
+class PingTimeoutIntegrationTest : public AgentIntegrationTest {
+protected:
+    void ConfigureBeforeAgentStart() override {
+        collector_.TimeoutNext(CollectorRpc::PingSession);
+    }
+};
+
+class CApiIntegrationTest : public AgentIntegrationTest {
+protected:
+    std::string_view ServerRecordRequestHeaders() const override {
+        return "[HEADERS-ALL]";
     }
 };
 
@@ -638,6 +670,15 @@ TEST_F(PingFailureIntegrationTest, ReconnectsPingStreamAfterResponseError) {
                has_result(snapshot, CollectorRpc::PingSession,
                           grpc::StatusCode::UNAVAILABLE, false);
     }, kWaitTimeout));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(PingTimeoutIntegrationTest, RecyclesPingStreamWhenCollectorNeverResponds) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return snapshot.ping_streams.size() >= 2 &&
+               has_result(snapshot, CollectorRpc::PingSession,
+                          grpc::StatusCode::DEADLINE_EXCEEDED, false);
+    }, std::chrono::seconds(15)));
     EXPECT_TRUE(agent_->Enable());
 }
 
@@ -1598,6 +1639,32 @@ TEST_F(AgentIntegrationTest, ReconnectsStatStreamAfterServerError) {
     EXPECT_TRUE(agent_->Enable());
 }
 
+TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutStatStream) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.stat_streams.empty();
+    }, kWaitTimeout));
+    const auto stats_before = collector_.snapshot().stats.size();
+
+    // The already-open stream accepts this message, then deliberately stops
+    // completing the RPC until the client cancels it.
+    collector_.TimeoutNext(CollectorRpc::SendAgentStat);
+    impl_->recordStats(AGENT_STATS);
+    ASSERT_TRUE(collector_.WaitFor([stats_before](const auto& snapshot) {
+        return snapshot.stats.size() > stats_before;
+    }, kWaitTimeout));
+
+    const auto started = std::chrono::steady_clock::now();
+    agent_->Shutdown();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    EXPECT_LT(elapsed, std::chrono::seconds(8));
+    EXPECT_FALSE(agent_->Enable());
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_result(snapshot, CollectorRpc::SendAgentStat,
+                          grpc::StatusCode::DEADLINE_EXCEEDED, false);
+    }, 2s));
+}
+
 TEST_F(AgentInfoRetryIntegrationTest, RetriesAgentRegistrationAfterInitialFailure) {
     // SetUp already blocked until registration succeeded and the agent came
     // online, so by now the failed first attempt and its retry are on record.
@@ -2049,7 +2116,17 @@ TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
     EXPECT_EQ(value.bytevalue2(), 12);
 }
 
-TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
+TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
+    // Exercise the standalone lifecycle entry points against the already
+    // installed singleton. CreateAgent returns another owning handle and
+    // Start is intentionally idempotent.
+    pt_set_config_file_path("");
+    pt_agent_t created = pt_create_agent();
+    ASSERT_NE(created, nullptr);
+    pt_agent_start(created);
+    EXPECT_NE(pt_agent_is_enabled(created), 0);
+    pt_agent_destroy(created);
+
     pt_agent_t agent = pt_global_agent();
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
@@ -2063,8 +2140,17 @@ TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
     const int64_t span_id = pt_span_get_span_id(span);
     ASSERT_NE(span_id, 0);
     pt_span_set_remote_address(span, "198.51.100.5");
+    pt_span_set_acceptor_host(span, "c-api-root.example.test:8080");
     pt_span_set_status_code(span, 200);
     pt_span_set_url_stat(span, "/c-api/{id}", "GET", 200);
+
+    c_api::HeaderMap request_headers{
+        {"x-c-api-first", "first-value"},
+        {"x-c-api-second", "second-value"},
+    };
+    pt_header_reader_t request_header_reader{
+        &request_headers, c_api::map_get, c_api::map_for_each};
+    pt_span_record_header(span, PT_HTTP_REQUEST, &request_header_reader);
 
     pt_span_event_t event = pt_span_new_event_with_type(
         span, "c.api.client", PT_SERVICE_TYPE_CPP_HTTP_CLIENT);
@@ -2099,6 +2185,7 @@ TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
         agent, "c.api.continued", "/c-api-continued", &reader);
     ASSERT_NE(continued, nullptr);
     EXPECT_NE(pt_span_is_sampled(continued), 0);
+    pt_span_set_acceptor_host(continued, "c-api.acceptor.example.test:8080");
     pt_span_end(continued);
     pt_span_destroy(continued);
 
@@ -2122,6 +2209,18 @@ TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
                                          ANNOTATION_HTTP_STATUS_CODE);
     ASSERT_NE(status, nullptr);
     EXPECT_EQ(status->value().intvalue(), 200);
+    EXPECT_TRUE(has_string_pair_annotation(
+        wire->annotation(), ANNOTATION_HTTP_REQUEST_HEADER,
+        "x-c-api-first", "first-value"));
+    EXPECT_TRUE(has_string_pair_annotation(
+        wire->annotation(), ANNOTATION_HTTP_REQUEST_HEADER,
+        "x-c-api-second", "second-value"));
+
+    const auto continued_wire = find_span_by_rpc(snapshot, "/c-api-continued");
+    ASSERT_TRUE(continued_wire.has_value());
+    ASSERT_TRUE(continued_wire->acceptevent().has_parentinfo());
+    EXPECT_EQ(continued_wire->acceptevent().parentinfo().acceptorhost(),
+              "c-api.acceptor.example.test:8080");
 
     const auto events = events_for_span(snapshot, span_id);
     ASSERT_EQ(events.size(), 1U);

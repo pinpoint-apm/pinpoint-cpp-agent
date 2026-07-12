@@ -17,9 +17,12 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <chrono>
-#include <thread>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <unistd.h>
 
 #include "../src/grpc.h"
 #include "../src/agent_service.h"
@@ -68,13 +71,32 @@ protected:
         mock_agent_service_->setAppType(1300);
         mock_agent_service_->setAgentId("test-agent-id");
         mock_agent_service_->setAgentName("test-agent-name");
+
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        certificate_path_ = std::filesystem::temp_directory_path() /
+            (std::string("pinpoint-grpc-") + std::to_string(getpid()) + "-" +
+             info->name() + ".pem");
+        std::error_code ec;
+        std::filesystem::remove(certificate_path_, ec);
     }
 
     void TearDown() override {
         mock_agent_service_.reset();
+        std::error_code ec;
+        std::filesystem::remove(certificate_path_, ec);
+    }
+
+    void WriteCertificateFile() const {
+        std::ofstream certificate(certificate_path_, std::ios::binary);
+        ASSERT_TRUE(certificate.is_open());
+        // Channel construction only needs to prove that the selected file is
+        // read. Certificate validation happens when a TLS handshake is made.
+        certificate << "test-only certificate contents\n";
+        ASSERT_TRUE(certificate.good());
     }
 
     std::unique_ptr<MockAgentService> mock_agent_service_;
+    std::filesystem::path certificate_path_;
 };
 
 TEST(ExponentialBackoffTest, DelayIncreasesAndCapsWithoutJitter) {
@@ -124,6 +146,58 @@ TEST_F(GrpcTest, GrpcClientChannelTest) {
     client.closeChannel();
     
     SUCCEED() << "Channel operations should complete without exceptions";
+}
+
+TEST_F(GrpcTest, GrpcClientTlsMissingSelectedCertificateThrows) {
+    auto& ssl = mock_agent_service_->mutableConfig()->collector.grpc.ssl;
+    ssl.enable = true;
+    ssl.trust_cert_file_path = certificate_path_.string();
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+
+    EXPECT_THROW(client.openChannel(), std::runtime_error);
+}
+
+TEST_F(GrpcTest, GrpcClientTlsPrefersTrustCertificateOverRootCertificate) {
+    WriteCertificateFile();
+    auto& ssl = mock_agent_service_->mutableConfig()->collector.grpc.ssl;
+    ssl.enable = true;
+    ssl.trust_cert_file_path = certificate_path_.string();
+    ssl.root_cert_file_path = certificate_path_.string() + ".missing-root";
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+
+    EXPECT_NO_THROW(client.openChannel());
+    client.closeChannel();
+}
+
+TEST_F(GrpcTest, GrpcClientTlsFallsBackToRootCertificate) {
+    WriteCertificateFile();
+    auto& ssl = mock_agent_service_->mutableConfig()->collector.grpc.ssl;
+    ssl.enable = true;
+    ssl.trust_cert_file_path.clear();
+    ssl.root_cert_file_path = certificate_path_.string();
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+
+    EXPECT_NO_THROW(client.openChannel());
+    client.closeChannel();
+}
+
+TEST_F(GrpcTest, GrpcClientTlsUsesDefaultRootsWhenNoCertificatePathIsSet) {
+    auto& ssl = mock_agent_service_->mutableConfig()->collector.grpc.ssl;
+    ssl.enable = true;
+    ssl.trust_cert_file_path.clear();
+    ssl.root_cert_file_path.clear();
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+
+    EXPECT_NO_THROW(client.openChannel());
+    client.closeChannel();
 }
 
 // GrpcAgent Tests
