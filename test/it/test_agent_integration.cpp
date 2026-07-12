@@ -31,7 +31,9 @@
 #include <vector>
 
 #include "pinpoint/tracer.h"
+#include "pinpoint/tracer_c.h"
 #include "src/agent.h"
+#include "test/c_api_test_helpers.h"
 #include "test/it/mock_collector.h"
 
 namespace pinpoint::test {
@@ -248,14 +250,16 @@ std::optional<v1::PSpan> find_span_by_rpc(const CollectorSnapshot& snapshot,
     return std::nullopt;
 }
 
-bool has_async_chunk(const CollectorSnapshot& snapshot, int64_t span_id) {
+std::vector<v1::PSpanChunk> async_chunks_for(const CollectorSnapshot& snapshot,
+                                             int64_t span_id) {
+    std::vector<v1::PSpanChunk> result;
     for (const auto& message : all_span_messages(snapshot)) {
         if (message.has_spanchunk() && message.spanchunk().spanid() == span_id &&
             message.spanchunk().has_localasyncid()) {
-            return true;
+            result.push_back(message.spanchunk());
         }
     }
-    return false;
+    return result;
 }
 
 std::vector<v1::PSpanEvent> events_for_span(const CollectorSnapshot& snapshot,
@@ -315,6 +319,30 @@ bool has_result(const CollectorSnapshot& snapshot,
             return result.rpc == rpc && result.status_code == code &&
                    (!response_success.has_value() ||
                     result.response_success == *response_success);
+        });
+}
+
+size_t count_active_thread_responses(
+    const CollectorSnapshot& snapshot, int32_t response_id,
+    std::optional<int32_t> sequence_id = std::nullopt) {
+    return static_cast<size_t>(std::count_if(
+        snapshot.active_thread_count_responses.begin(),
+        snapshot.active_thread_count_responses.end(),
+        [response_id, sequence_id](const auto& response) {
+            const auto& common = response.message.commonstreamresponse();
+            return common.responseid() == response_id &&
+                   (!sequence_id.has_value() ||
+                    common.sequenceid() == *sequence_id);
+        }));
+}
+
+bool has_api_metadata(const CollectorSnapshot& snapshot,
+                      std::string_view api_info, int32_t type) {
+    return std::any_of(snapshot.api_metadata.begin(),
+                       snapshot.api_metadata.end(),
+        [api_info, type](const auto& received) {
+            return std::string_view(received.message.apiinfo()) == api_info &&
+                   received.message.type() == type;
         });
 }
 
@@ -407,8 +435,8 @@ protected:
             << "  ContinueThroughput: " << SamplingContinueThroughput() << "\n"
             << "Span:\n"
             << "  QueueSize: 128\n"
-            << "  MaxEventDepth: 16\n"
-            << "  MaxEventSequence: 128\n"
+            << "  MaxEventDepth: " << MaxEventDepth() << "\n"
+            << "  MaxEventSequence: " << MaxEventSequence() << "\n"
             << "  EventChunkSize: 2\n"
             << "Http:\n"
             << "  CollectUrlStat: true\n"
@@ -419,7 +447,7 @@ protected:
             << (UrlStatMethodPrefix() ? "true" : "false") << "\n"
             << "  Server:\n"
             << "    StatusCodeErrors: [4xx, 5xx]\n"
-            << "    ExcludeUrl: [/excluded/**]\n"
+            << "    ExcludeUrl: " << ServerExcludeUrls() << "\n"
             << "    ExcludeMethod: [OPTIONS]\n"
             << "    RecordRequestHeader: [x-request-id]\n"
             << "    RecordRequestCookie: [session_id]\n"
@@ -429,7 +457,7 @@ protected:
             << "    RecordRequestCookie: [client_session]\n"
             << "    RecordResponseHeader: [x-client-response]\n"
             << "Sql:\n"
-            << "  EnableSqlStats: true\n"
+            << "  EnableSqlStats: " << (EnableSqlStats() ? "true" : "false") << "\n"
             << "  MaxBindArgsSize: 2048\n";
         return yaml.str();
     }
@@ -442,6 +470,12 @@ protected:
     virtual bool UrlStatEnableTrimPath() const { return false; }
     virtual int UrlStatTrimPathDepth() const { return 1; }
     virtual bool UrlStatMethodPrefix() const { return true; }
+    virtual int MaxEventDepth() const { return 16; }
+    virtual int MaxEventSequence() const { return 128; }
+    virtual bool EnableSqlStats() const { return true; }
+    virtual std::string_view ServerExcludeUrls() const {
+        return server_exclude_urls_;
+    }
 
     bool FlushUrlStatsUntil(std::string_view uri, int64_t expected_count) {
         const std::string expected_uri(uri);
@@ -458,8 +492,40 @@ protected:
         return false;
     }
 
+    template <size_t N>
+    std::string DriveSamplingPattern(std::string_view operation,
+                                     std::string_view rpc_prefix,
+                                     const std::array<bool, N>& expected,
+                                     MapCarrier* parent = nullptr) {
+        std::string first_sampled_trace_id;
+        for (size_t i = 0; i < expected.size(); ++i) {
+            const auto rpc = std::string(rpc_prefix) + std::to_string(i);
+            auto span = parent == nullptr
+                ? agent_->NewSpan(operation, rpc)
+                : agent_->NewSpan(operation, rpc, *parent);
+            EXPECT_EQ(span->IsSampled(), expected[i]) << rpc;
+            if (span->IsSampled() && first_sampled_trace_id.empty()) {
+                first_sampled_trace_id = span->GetTraceId();
+            }
+            span->EndSpan();
+        }
+        return first_sampled_trace_id;
+    }
+
+    template <size_t N>
+    void ExpectSamplingPattern(const CollectorSnapshot& snapshot,
+                               std::string_view rpc_prefix,
+                               const std::array<bool, N>& expected) {
+        for (size_t i = 0; i < expected.size(); ++i) {
+            const auto rpc = std::string(rpc_prefix) + std::to_string(i);
+            EXPECT_EQ(count_spans_by_rpc(snapshot, rpc),
+                      expected[i] ? 1U : 0U) << rpc;
+        }
+    }
+
     virtual void ConfigureBeforeAgentStart() {}
 
+    std::string server_exclude_urls_{"[/excluded/**]"};
     MockCollector collector_;
     AgentPtr agent_;
     std::shared_ptr<AgentImpl> impl_;
@@ -490,6 +556,42 @@ class UrlStatNormalizationIntegrationTest : public AgentIntegrationTest {
 protected:
     bool UrlStatEnableTrimPath() const override { return true; }
     int UrlStatTrimPathDepth() const override { return 2; }
+};
+
+class AgentInfoRetryIntegrationTest : public AgentIntegrationTest {
+protected:
+    void ConfigureBeforeAgentStart() override {
+        collector_.FailNext(CollectorRpc::AgentInfo,
+                            grpc::StatusCode::UNAVAILABLE,
+                            "first registration attempt rejected");
+    }
+};
+
+class PercentSamplingIntegrationTest : public AgentIntegrationTest {
+protected:
+    std::string_view SamplingType() const override { return "PERCENT"; }
+    double SamplingPercentRate() const override { return 50.0; }
+};
+
+// Uses the smallest limits Config accepts (depth >= 2, sequence >= 4) so the
+// overflow paths are reachable with a handful of events.
+class EventLimitIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        AgentIntegrationTest::SetUp();
+        ASSERT_NE(impl_, nullptr);
+        ASSERT_EQ(impl_->getConfig()->span.max_event_depth, MaxEventDepth());
+        ASSERT_EQ(impl_->getConfig()->span.max_event_sequence,
+                  MaxEventSequence());
+    }
+
+    int MaxEventDepth() const override { return 2; }
+    int MaxEventSequence() const override { return 4; }
+};
+
+class SqlIdModeIntegrationTest : public AgentIntegrationTest {
+protected:
+    bool EnableSqlStats() const override { return false; }
 };
 
 TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
@@ -580,13 +682,6 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     outbound->SetEndPoint("db.example.test:3306");
     outbound->SetSqlQuery("SELECT * FROM orders WHERE id = 42", "42");
 
-    // SQL-stat mode naturally emits the UID form. Exercise the legacy SQL-id
-    // metadata RPC too, then attach its id exactly as a non-stat SQL event does.
-    const auto sql_id = impl_->cacheSql("SELECT status FROM orders WHERE id=?");
-    ASSERT_GT(sql_id, 0);
-    outbound->GetAnnotations()->AppendIntStringString(
-        ANNOTATION_SQL_ID, sql_id, "42", "bind=42");
-
     MapCarrier client_headers;
     client_headers.Set("x-client-request", "client-request-456");
     outbound->RecordHeader(HTTP_REQUEST, client_headers);
@@ -645,10 +740,9 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     ASSERT_TRUE(collector_.WaitFor([root_span_id](const auto& snapshot) {
         return find_span_by_rpc(snapshot, "/orders/42").has_value() &&
                find_span_by_rpc(snapshot, "/downstream").has_value() &&
-               has_async_chunk(snapshot, root_span_id) &&
+               !async_chunks_for(snapshot, root_span_id).empty() &&
                !snapshot.api_metadata.empty() &&
                !snapshot.string_metadata.empty() &&
-               !snapshot.sql_metadata.empty() &&
                !snapshot.sql_uid_metadata.empty() &&
                !snapshot.exception_metadata.empty();
     }, kWaitTimeout));
@@ -710,15 +804,11 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
         return event.servicetype() == SERVICE_TYPE_MYSQL_QUERY;
     });
     ASSERT_NE(database_event, events.end());
-    EXPECT_NE(find_annotation(database_event->annotation(), ANNOTATION_SQL_ID), nullptr);
     EXPECT_NE(find_annotation(database_event->annotation(), ANNOTATION_SQL_UID), nullptr);
     EXPECT_NE(find_annotation(database_event->annotation(), ANNOTATION_EXCEPTION_ID), nullptr);
     EXPECT_NE(find_annotation(database_event->annotation(),
                               ANNOTATION_HTTP_REQUEST_HEADER), nullptr);
 
-    ASSERT_FALSE(snapshot.sql_metadata.empty());
-    EXPECT_EQ(snapshot.sql_metadata.front().message.sql(),
-              "SELECT status FROM orders WHERE id=?");
     ASSERT_FALSE(snapshot.sql_uid_metadata.empty());
     EXPECT_EQ(snapshot.sql_uid_metadata.front().message.sqluid().size(), 16U);
     ASSERT_FALSE(snapshot.exception_metadata.empty());
@@ -1152,16 +1242,8 @@ TEST_F(CounterSamplingIntegrationTest,
 
     const std::array<bool, 6> expected{false, false, true,
                                       false, false, true};
-    std::string sampled_trace_id;
-    for (size_t i = 0; i < expected.size(); ++i) {
-        const auto rpc = "/sampling/counter/" + std::to_string(i);
-        auto span = agent_->NewSpan("sampling.counter", rpc);
-        EXPECT_EQ(span->IsSampled(), expected[i]);
-        if (span->IsSampled() && sampled_trace_id.empty()) {
-            sampled_trace_id = span->GetTraceId();
-        }
-        span->EndSpan();
-    }
+    const auto sampled_trace_id = DriveSamplingPattern(
+        "sampling.counter", "/sampling/counter/", expected);
     ASSERT_FALSE(sampled_trace_id.empty());
 
     MapCarrier continued_context;
@@ -1196,10 +1278,7 @@ TEST_F(CounterSamplingIntegrationTest,
     EXPECT_EQ(totals.unsampled_continuation, 1);
     EXPECT_EQ(totals.skipped_new, 0);
     EXPECT_EQ(totals.skipped_continuation, 0);
-    for (size_t i = 0; i < expected.size(); ++i) {
-        const auto rpc = "/sampling/counter/" + std::to_string(i);
-        EXPECT_EQ(count_spans_by_rpc(snapshot, rpc), expected[i] ? 1U : 0U);
-    }
+    ExpectSamplingPattern(snapshot, "/sampling/counter/", expected);
     EXPECT_EQ(count_spans_by_rpc(snapshot, "/sampling/continued"), 1U);
     EXPECT_EQ(count_spans_by_rpc(snapshot, "/sampling/parent-denied"), 0U);
 }
@@ -1213,29 +1292,16 @@ TEST_F(ThroughputSamplingIntegrationTest,
     wait_for_fresh_rate_limit_window();
 
     const std::array<bool, 4> expected_new{true, true, false, false};
-    std::string parent_trace_id;
-    for (size_t i = 0; i < expected_new.size(); ++i) {
-        const auto rpc = "/sampling/throughput/new/" + std::to_string(i);
-        auto span = agent_->NewSpan("sampling.throughput.new", rpc);
-        EXPECT_EQ(span->IsSampled(), expected_new[i]);
-        if (i == 0) {
-            parent_trace_id = span->GetTraceId();
-        }
-        span->EndSpan();
-    }
+    const auto parent_trace_id = DriveSamplingPattern(
+        "sampling.throughput.new", "/sampling/throughput/new/", expected_new);
     ASSERT_FALSE(parent_trace_id.empty());
 
     const std::array<bool, 3> expected_continuation{true, false, false};
-    for (size_t i = 0; i < expected_continuation.size(); ++i) {
-        MapCarrier context;
-        context.Set(HEADER_TRACE_ID, parent_trace_id);
-        const auto rpc = "/sampling/throughput/continued/" +
-                         std::to_string(i);
-        auto span = agent_->NewSpan("sampling.throughput.continued", rpc,
-                                    context);
-        EXPECT_EQ(span->IsSampled(), expected_continuation[i]);
-        span->EndSpan();
-    }
+    MapCarrier context;
+    context.Set(HEADER_TRACE_ID, parent_trace_id);
+    DriveSamplingPattern("sampling.throughput.continued",
+                         "/sampling/throughput/continued/",
+                         expected_continuation, &context);
 
     ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
         const auto totals = transaction_totals_after(snapshot, baseline);
@@ -1253,17 +1319,9 @@ TEST_F(ThroughputSamplingIntegrationTest,
     EXPECT_EQ(totals.unsampled_new, 0);
     EXPECT_EQ(totals.sampled_continuation, 1);
     EXPECT_EQ(totals.skipped_continuation, 2);
-    for (size_t i = 0; i < expected_new.size(); ++i) {
-        const auto rpc = "/sampling/throughput/new/" + std::to_string(i);
-        EXPECT_EQ(count_spans_by_rpc(snapshot, rpc),
-                  expected_new[i] ? 1U : 0U);
-    }
-    for (size_t i = 0; i < expected_continuation.size(); ++i) {
-        const auto rpc = "/sampling/throughput/continued/" +
-                         std::to_string(i);
-        EXPECT_EQ(count_spans_by_rpc(snapshot, rpc),
-                  expected_continuation[i] ? 1U : 0U);
-    }
+    ExpectSamplingPattern(snapshot, "/sampling/throughput/new/", expected_new);
+    ExpectSamplingPattern(snapshot, "/sampling/throughput/continued/",
+                          expected_continuation);
 }
 
 TEST_F(UrlStatNormalizationIntegrationTest,
@@ -1315,11 +1373,7 @@ TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
     ASSERT_TRUE(active->IsSampled());
     collector_.SendActiveThreadCountCommand(102);
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-        return std::any_of(snapshot.active_thread_count_responses.begin(),
-                           snapshot.active_thread_count_responses.end(),
-            [](const auto& response) {
-                return response.message.commonstreamresponse().responseid() == 102;
-            });
+        return count_active_thread_responses(snapshot, 102) >= 1;
     }, kWaitTimeout));
 
     // Dump commands are intentionally unsupported by the C++ agent. Sending
@@ -1542,6 +1596,561 @@ TEST_F(AgentIntegrationTest, ReconnectsStatStreamAfterServerError) {
         return snapshot.stats.size() > received_before_healthy_write;
     }, kWaitTimeout));
     EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentInfoRetryIntegrationTest, RetriesAgentRegistrationAfterInitialFailure) {
+    // SetUp already blocked until registration succeeded and the agent came
+    // online, so by now the failed first attempt and its retry are on record.
+    const auto snapshot = collector_.snapshot();
+    ASSERT_GE(snapshot.agent_infos.size(), 2U);
+    EXPECT_EQ(snapshot.agent_infos[0].message.agentversion(),
+              snapshot.agent_infos[1].message.agentversion());
+
+    const auto results = results_for(snapshot, CollectorRpc::AgentInfo);
+    ASSERT_GE(results.size(), 2U);
+    EXPECT_EQ(results[0].status_code, grpc::StatusCode::UNAVAILABLE);
+    EXPECT_FALSE(results[0].response_success);
+    EXPECT_EQ(results[1].status_code, grpc::StatusCode::OK);
+    EXPECT_TRUE(results[1].response_success);
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
+    const auto infos_before = collector_.snapshot().agent_infos.size();
+    ASSERT_GE(infos_before, 1U);
+    {
+        auto probe = agent_->NewSpan("reload.probe", "/reloaded/before");
+        EXPECT_TRUE(probe->IsSampled());
+        probe->EndSpan();
+    }
+
+    // CreateAgent() on a live agent is the reload path: it must return the
+    // same instance with the new configuration applied.
+    server_exclude_urls_ = "[/excluded/**, /reloaded/**]";
+    SetConfigString(config());
+    const auto reloaded = CreateAgent(kApplicationType,
+                                      "mock-collector integration server");
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(reloaded), impl_);
+
+    // Applying a config refreshes the agent info registration.
+    ASSERT_TRUE(collector_.WaitFor([infos_before](const auto& snapshot) {
+        return snapshot.agent_infos.size() >= infos_before + 1;
+    }, kWaitTimeout));
+
+    // The reloaded URL filter must reject new spans while everything else
+    // keeps tracing.
+    EXPECT_FALSE(agent_->NewSpan("reload.probe", "/reloaded/after")->IsSampled());
+    auto sampled = agent_->NewSpan("reload.probe", "/sampled-after-reload");
+    ASSERT_TRUE(sampled->IsSampled());
+    sampled->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/sampled-after-reload").has_value();
+    }, kWaitTimeout));
+    const auto snapshot = collector_.snapshot();
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/reloaded/before"), 1U);
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/reloaded/after"), 0U);
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentIntegrationTest, RecordsUrlStatsForUnsampledSpan) {
+    MapCarrier inbound;
+    inbound.Set(HEADER_SAMPLED, "s0");
+    auto span = agent_->NewSpan("unsampled.server", "/unsampled-propagation", inbound);
+    EXPECT_FALSE(span->IsSampled());
+    span->SetUrlStat("/unsampled/{id}", "GET", 200);
+    span->EndSpan();
+
+    ASSERT_TRUE(FlushUrlStatsUntil("GET /unsampled/{id}", 1));
+    const auto totals = uri_stat_totals(collector_.snapshot(),
+                                        "GET /unsampled/{id}");
+    EXPECT_EQ(totals.total_count, 1);
+    EXPECT_EQ(totals.failed_count, 0);
+}
+
+TEST_F(EventLimitIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
+    auto span = agent_->NewSpan("overflow.depth", "/overflow-depth");
+    ASSERT_TRUE(span->IsSampled());
+    const auto trace_id = span->GetTraceId();
+    const auto span_id = span->GetSpanId();
+
+    auto* real_event = span->NewSpanEvent("depth.level1");
+    ASSERT_NE(real_event, nullptr);
+    real_event->SetDestination("depth-destination");
+
+    // MaxEventDepth is 2, so this nested event overflows into the shared
+    // disabled event that records nothing.
+    auto* overflowed = span->NewSpanEvent("depth.level2.discarded");
+    ASSERT_NE(overflowed, nullptr);
+    overflowed->SetDestination("discarded-destination");
+    EXPECT_EQ(span->GetSpanEvent(), overflowed);
+    EXPECT_FALSE(span->NewAsyncSpan("overflow.async")->IsSampled());
+
+    // A depth overflow is a profiling limit, not a sampling decision: the
+    // discarded event still propagates the complete trace context so the
+    // distributed trace is not cut here.
+    MapCarrier outbound;
+    overflowed->InjectContext(outbound);
+    EXPECT_EQ(outbound.Get(HEADER_TRACE_ID).value_or(""), trace_id);
+    EXPECT_EQ(outbound.Get(HEADER_PARENT_SPAN_ID).value_or(""),
+              std::to_string(span_id));
+    EXPECT_EQ(outbound.Get(HEADER_HOST).value_or(""), "discarded-destination");
+    ASSERT_TRUE(outbound.Get(HEADER_SPAN_ID).has_value());
+
+    auto continued = agent_->NewSpan("overflow.continued",
+                                     "/overflow-continued", outbound);
+    ASSERT_TRUE(continued->IsSampled());
+    EXPECT_EQ(continued->GetTraceId(), trace_id);
+    continued->EndSpan();
+
+    // Ending the overflowed placeholder must not desync the event stack.
+    overflowed->EndEvent();
+    real_event->EndEvent();
+    span->EndSpan();
+
+    // MaxEventSequence is 4: a fifth event on one span is discarded even
+    // when the depth stays flat.
+    auto sequence_span = agent_->NewSpan("overflow.sequence", "/overflow-sequence");
+    ASSERT_TRUE(sequence_span->IsSampled());
+    const auto sequence_span_id = sequence_span->GetSpanId();
+    for (int i = 0; i < 4; ++i) {
+        auto* event = sequence_span->NewSpanEvent("seq.event." + std::to_string(i));
+        ASSERT_NE(event, nullptr);
+        event->EndEvent();
+    }
+    auto* beyond = sequence_span->NewSpanEvent("seq.event.discarded");
+    ASSERT_NE(beyond, nullptr);
+    beyond->EndEvent();
+    sequence_span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id, sequence_span_id](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/overflow-depth").has_value() &&
+               find_span_by_rpc(snapshot, "/overflow-continued").has_value() &&
+               find_span_by_rpc(snapshot, "/overflow-sequence").has_value() &&
+               events_for_span(snapshot, span_id).size() >= 1 &&
+               events_for_span(snapshot, sequence_span_id).size() >= 4;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto depth_events = events_for_span(snapshot, span_id);
+    ASSERT_EQ(depth_events.size(), 1U);
+    ASSERT_TRUE(depth_events[0].has_nextevent());
+    EXPECT_EQ(depth_events[0].nextevent().messageevent().destinationid(),
+              "depth-destination");
+
+    EXPECT_EQ(events_for_span(snapshot, sequence_span_id).size(), 4U);
+}
+
+TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeignContext) {
+    const std::array<std::string_view, 5> malformed{
+        "missing-separators",
+        "agent-only^123",
+        "agent^123^7^extra",
+        "agent-id-way-too-long-over-24-chars^123^7",
+        "agent^123^123456789012345678901",
+    };
+    for (size_t i = 0; i < malformed.size(); ++i) {
+        MapCarrier carrier;
+        carrier.Set(HEADER_TRACE_ID, malformed[i]);
+        auto span = agent_->NewSpan("malformed.context",
+                                    "/malformed/" + std::to_string(i), carrier);
+        EXPECT_FALSE(span->IsSampled()) << malformed[i];
+        EXPECT_TRUE(span->GetTraceId().empty()) << malformed[i];
+        EXPECT_EQ(span->GetSpanId(), 0) << malformed[i];
+        span->EndSpan();
+    }
+
+    // A well-formed context from a foreign agent is adopted verbatim, and
+    // every parent-describing header must reach the wire.
+    MapCarrier carrier;
+    carrier.Set(HEADER_TRACE_ID, "java-agent-7^1700000000000^42");
+    carrier.Set(HEADER_SPAN_ID, "77777");
+    carrier.Set(HEADER_PARENT_SPAN_ID, "88888");
+    carrier.Set(HEADER_PARENT_APP_NAME, "upstream-app");
+    carrier.Set(HEADER_PARENT_APP_TYPE, "1010");
+    carrier.Set(HEADER_PARENT_SERVICE_NAME, "upstream-svc");
+    carrier.Set(HEADER_HOST, "gateway.example.test");
+    carrier.Set(HEADER_FLAG, "1");
+    auto continued = agent_->NewSpan("foreign.continued", "/foreign-continued",
+                                     carrier);
+    ASSERT_TRUE(continued->IsSampled());
+    EXPECT_EQ(continued->GetTraceId(), "java-agent-7^1700000000000^42");
+    EXPECT_EQ(continued->GetSpanId(), 77777);
+    continued->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/foreign-continued").has_value();
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    for (size_t i = 0; i < malformed.size(); ++i) {
+        EXPECT_EQ(count_spans_by_rpc(snapshot, "/malformed/" + std::to_string(i)),
+                  0U) << malformed[i];
+    }
+    const auto wire = find_span_by_rpc(snapshot, "/foreign-continued");
+    ASSERT_TRUE(wire.has_value());
+    EXPECT_EQ(wire->transactionid().agentid(), "java-agent-7");
+    EXPECT_EQ(wire->transactionid().agentstarttime(), INT64_C(1700000000000));
+    EXPECT_EQ(wire->transactionid().sequence(), 42);
+    EXPECT_EQ(wire->spanid(), 77777);
+    EXPECT_EQ(wire->parentspanid(), 88888);
+    EXPECT_EQ(wire->flag(), 1);
+    EXPECT_EQ(wire->acceptevent().endpoint(), "gateway.example.test");
+    EXPECT_EQ(wire->acceptevent().remoteaddr(), "gateway.example.test");
+    ASSERT_TRUE(wire->acceptevent().has_parentinfo());
+    const auto& parent_info = wire->acceptevent().parentinfo();
+    EXPECT_EQ(parent_info.parentapplicationname(), "upstream-app");
+    EXPECT_EQ(parent_info.parentapplicationtype(), 1010);
+    EXPECT_EQ(parent_info.acceptorhost(), "gateway.example.test");
+    EXPECT_EQ(parent_info.parentservicename(), "upstream-svc");
+}
+
+TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
+    constexpr std::string_view raw_sql =
+        "SELECT * FROM orders WHERE id = 42 AND status = 'ready'";
+    constexpr std::string_view normalized_sql =
+        "SELECT * FROM orders WHERE id = 0# AND status = '1$'";
+
+    auto span = agent_->NewSpan("sql.uid", "/sql-uid");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+
+    auto* first = span->NewSpanEvent("sql.first", SERVICE_TYPE_MYSQL_QUERY);
+    ASSERT_NE(first, nullptr);
+    first->SetSqlQuery(raw_sql, "bind-one");
+    first->EndEvent();
+
+    auto* second = span->NewSpanEvent("sql.second", SERVICE_TYPE_MYSQL_QUERY);
+    ASSERT_NE(second, nullptr);
+    second->SetSqlQuery(raw_sql, "bind-two");
+    second->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id, normalized_sql](const auto& snapshot) {
+        return events_for_span(snapshot, span_id).size() >= 2 &&
+               std::any_of(snapshot.sql_uid_metadata.begin(),
+                           snapshot.sql_uid_metadata.end(),
+                           [normalized_sql](const auto& received) {
+                               return received.message.sql() == normalized_sql;
+                           });
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto metadata = std::find_if(
+        snapshot.sql_uid_metadata.begin(), snapshot.sql_uid_metadata.end(),
+        [normalized_sql](const auto& received) {
+            return received.message.sql() == normalized_sql;
+        });
+    ASSERT_NE(metadata, snapshot.sql_uid_metadata.end());
+
+    const auto events = events_for_span(snapshot, span_id);
+    ASSERT_EQ(events.size(), 2U);
+    std::vector<std::string> bind_args;
+    for (const auto& event : events) {
+        const auto* uid_annotation = find_annotation(event.annotation(),
+                                                     ANNOTATION_SQL_UID);
+        ASSERT_NE(uid_annotation, nullptr);
+        const auto& value = uid_annotation->value().bytesstringstringvalue();
+        EXPECT_EQ(value.bytesvalue(), metadata->message.sqluid());
+        EXPECT_EQ(value.stringvalue1().value(), "42,ready");
+        bind_args.push_back(value.stringvalue2().value());
+        EXPECT_EQ(find_annotation(event.annotation(), ANNOTATION_SQL_ID), nullptr);
+    }
+    std::sort(bind_args.begin(), bind_args.end());
+    EXPECT_EQ(bind_args, (std::vector<std::string>{"bind-one", "bind-two"}));
+}
+
+TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
+    constexpr std::string_view raw_sql =
+        "UPDATE inventory SET count = 7 WHERE sku = 'ABC-1'";
+    constexpr std::string_view normalized_sql =
+        "UPDATE inventory SET count = 0# WHERE sku = '1$'";
+
+    auto span = agent_->NewSpan("sql.id", "/sql-id");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+
+    auto* event = span->NewSpanEvent("sql.update", SERVICE_TYPE_PGSQL_QUERY);
+    ASSERT_NE(event, nullptr);
+    event->SetSqlQuery(raw_sql, "7");
+    event->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id, normalized_sql](const auto& snapshot) {
+        return !events_for_span(snapshot, span_id).empty() &&
+               std::any_of(snapshot.sql_metadata.begin(),
+                           snapshot.sql_metadata.end(),
+                           [normalized_sql](const auto& received) {
+                               return received.message.sql() == normalized_sql;
+                           });
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto metadata = std::find_if(
+        snapshot.sql_metadata.begin(), snapshot.sql_metadata.end(),
+        [normalized_sql](const auto& received) {
+            return received.message.sql() == normalized_sql;
+        });
+    ASSERT_NE(metadata, snapshot.sql_metadata.end());
+    EXPECT_GT(metadata->message.sqlid(), 0);
+
+    const auto events = events_for_span(snapshot, span_id);
+    ASSERT_EQ(events.size(), 1U);
+    const auto* sql_annotation = find_annotation(events[0].annotation(),
+                                                 ANNOTATION_SQL_ID);
+    ASSERT_NE(sql_annotation, nullptr);
+    const auto& value = sql_annotation->value().intstringstringvalue();
+    EXPECT_EQ(value.intvalue(), metadata->message.sqlid());
+    EXPECT_EQ(value.stringvalue1().value(), "7,ABC-1");
+    EXPECT_EQ(value.stringvalue2().value(), "7");
+    EXPECT_EQ(find_annotation(events[0].annotation(), ANNOTATION_SQL_UID), nullptr);
+
+    // SQL-id mode never registers UID metadata.
+    EXPECT_TRUE(std::none_of(snapshot.sql_uid_metadata.begin(),
+                             snapshot.sql_uid_metadata.end(),
+                             [normalized_sql](const auto& received) {
+                                 return received.message.sql() == normalized_sql;
+                             }));
+}
+
+TEST_F(PercentSamplingIntegrationTest, AppliesPercentSamplingPattern) {
+    const auto baseline = agent_stat_count(collector_.snapshot());
+
+    // PercentSampler accumulates rate (50% == 5000/10000) per request, so
+    // admission alternates deterministically: skip, sample, skip, sample.
+    const std::array<bool, 4> expected{false, true, false, true};
+    DriveSamplingPattern("sampling.percent", "/sampling/percent/", expected);
+
+    ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
+        const auto totals = transaction_totals_after(snapshot, baseline);
+        return totals.sampled_new >= 2 && totals.unsampled_new >= 2;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto totals = transaction_totals_after(snapshot, baseline);
+    EXPECT_EQ(totals.sampled_new, 2);
+    EXPECT_EQ(totals.unsampled_new, 2);
+    EXPECT_EQ(totals.skipped_new, 0);
+    ExpectSamplingPattern(snapshot, "/sampling/percent/", expected);
+}
+
+TEST_F(AgentIntegrationTest, SharesAsyncIdAcrossAsyncSpansFromOneEvent) {
+    auto span = agent_->NewSpan("async.parent", "/async-parent");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+    const auto trace_id = span->GetTraceId();
+
+    auto* spawner = span->NewSpanEvent("async.spawner");
+    ASSERT_NE(spawner, nullptr);
+
+    // Every async span forked from the same event shares its async id and
+    // takes the next sequence number; all of them stay on the parent trace.
+    auto first = span->NewAsyncSpan("async.worker.first");
+    auto second = span->NewAsyncSpan("async.worker.second");
+    ASSERT_TRUE(first->IsSampled());
+    ASSERT_TRUE(second->IsSampled());
+    EXPECT_EQ(first->GetTraceId(), trace_id);
+    EXPECT_EQ(second->GetTraceId(), trace_id);
+    EXPECT_EQ(first->GetSpanId(), span_id);
+    EXPECT_EQ(second->GetSpanId(), span_id);
+
+    first->EndSpan();
+    second->EndSpan();
+    spawner->EndEvent();
+    span->EndSpan();
+
+    // Span chunks and API metadata use independent workers, so wait for both
+    // pipelines before taking the snapshot used below.
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/async-parent").has_value() &&
+               async_chunks_for(snapshot, span_id).size() >= 2 &&
+               has_api_metadata(snapshot, "async.worker.first",
+                                API_TYPE_INVOCATION);
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto chunks = async_chunks_for(snapshot, span_id);
+    ASSERT_EQ(chunks.size(), 2U);
+    EXPECT_EQ(chunks[0].localasyncid().asyncid(),
+              chunks[1].localasyncid().asyncid());
+    std::vector<int32_t> sequences{chunks[0].localasyncid().sequence(),
+                                   chunks[1].localasyncid().sequence()};
+    std::sort(sequences.begin(), sequences.end());
+    EXPECT_EQ(sequences, (std::vector<int32_t>{1, 2}));
+    const auto async_id = chunks[0].localasyncid().asyncid();
+
+    // Each async chunk starts with the async root event.
+    for (const auto& chunk : chunks) {
+        ASSERT_GE(chunk.spanevent_size(), 1);
+        EXPECT_EQ(chunk.spanevent(0).servicetype(), SERVICE_TYPE_ASYNC);
+    }
+
+    // The spawning event carries the async id so the collector can stitch the
+    // async chunks under it.
+    const auto events = events_for_span(snapshot, span_id);
+    EXPECT_TRUE(std::any_of(events.begin(), events.end(),
+        [async_id](const auto& event) {
+            return event.servicetype() != SERVICE_TYPE_ASYNC &&
+                   event.asyncevent() == async_id;
+        }));
+}
+
+TEST_F(AgentIntegrationTest, RestartsActiveThreadCountStreamForDuplicateRequest) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.command_streams_v2.empty();
+    }, kWaitTimeout));
+
+    // Every new stream emits sequence 1 immediately.
+    collector_.SendActiveThreadCountCommand(501);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return count_active_thread_responses(snapshot, 501, 1) >= 1;
+    }, kWaitTimeout));
+
+    // Re-issuing the same request id (collector reconnect behavior) must
+    // replace the old stream: a fresh stream starts over at sequence 1.
+    collector_.SendActiveThreadCountCommand(501);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return count_active_thread_responses(snapshot, 501, 1) >= 2;
+    }, kWaitTimeout));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
+    auto span = agent_->NewSpan("http.proxy.apache", "/proxy-apache");
+    ASSERT_TRUE(span->IsSampled());
+
+    MapCarrier request;
+    request.Set("X-Real-Ip", "203.0.113.99");
+    request.Set("Pinpoint-ProxyApache", "t=1710000001000000 D=250 i=7 b=12");
+    helper::TraceHttpServerRequest(span, "192.0.2.1:8080",
+                                   "apache.example.test:80", request);
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/proxy-apache").has_value();
+    }, kWaitTimeout));
+
+    const auto wire = find_span_by_rpc(collector_.snapshot(), "/proxy-apache");
+    ASSERT_TRUE(wire.has_value());
+    // X-Real-Ip wins over the socket address when no X-Forwarded-For exists.
+    EXPECT_EQ(wire->acceptevent().remoteaddr(), "203.0.113.99");
+    EXPECT_EQ(wire->acceptevent().endpoint(), "apache.example.test:80");
+
+    const auto* proxy = find_annotation(wire->annotation(),
+                                        ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(proxy, nullptr);
+    const auto& value = proxy->value().longintintbytebytestringvalue();
+    // Apache reports microseconds; the agent converts to milliseconds and
+    // tags the annotation with code 3 plus duration/idle/busy.
+    EXPECT_EQ(value.longvalue(), INT64_C(1710000001000));
+    EXPECT_EQ(value.intvalue1(), 3);
+    EXPECT_EQ(value.intvalue2(), 250);
+    EXPECT_EQ(value.bytevalue1(), 7);
+    EXPECT_EQ(value.bytevalue2(), 12);
+}
+
+TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
+    pt_agent_t agent = pt_global_agent();
+    ASSERT_NE(agent, nullptr);
+    EXPECT_NE(pt_agent_is_enabled(agent), 0);
+
+    pt_span_t span = pt_agent_new_span_with_method(agent, "c.api.server",
+                                                   "/c-api", "GET", nullptr);
+    ASSERT_NE(span, nullptr);
+    ASSERT_NE(pt_span_is_sampled(span), 0);
+    char trace_id[PT_TRACE_ID_MAX];
+    ASSERT_GT(pt_span_get_trace_id(span, trace_id, sizeof trace_id), 0U);
+    const int64_t span_id = pt_span_get_span_id(span);
+    ASSERT_NE(span_id, 0);
+    pt_span_set_remote_address(span, "198.51.100.5");
+    pt_span_set_status_code(span, 200);
+    pt_span_set_url_stat(span, "/c-api/{id}", "GET", 200);
+
+    pt_span_event_t event = pt_span_new_event_with_type(
+        span, "c.api.client", PT_SERVICE_TYPE_CPP_HTTP_CLIENT);
+    ASSERT_NE(event, nullptr);
+    pt_span_event_set_destination(event, "c-api-backend");
+    pt_span_event_set_end_point(event, "backend.example.test:8080");
+
+    c_api::HeaderMap outbound;
+    pt_context_writer_t writer{&outbound, c_api::map_set};
+    pt_span_event_inject_context(event, &writer);
+    const auto trace_header = outbound.find(std::string(HEADER_TRACE_ID));
+    ASSERT_NE(trace_header, outbound.end());
+    EXPECT_EQ(trace_header->second, trace_id);
+    const auto parent_span_header = outbound.find(
+        std::string(HEADER_PARENT_SPAN_ID));
+    ASSERT_NE(parent_span_header, outbound.end());
+    EXPECT_EQ(parent_span_header->second, std::to_string(span_id));
+
+    c_api::TwoFrameCallStack callstack_frames{{
+        {"c_orders", "c_load_order", "orders.c", 42},
+        {"c_database", "c_execute", "database.c", 7},
+    }};
+    pt_callstack_reader_t callstack{&callstack_frames,
+                                    c_api::emit_two_frame_callstack};
+    pt_span_event_set_error_with_callstack(event, "CApiError", "c call failed",
+                                           &callstack);
+    pt_span_event_end(event);
+
+    // Continue the trace downstream through the C reader carrier.
+    pt_context_reader_t reader{&outbound, c_api::map_get};
+    pt_span_t continued = pt_agent_new_span_with_reader(
+        agent, "c.api.continued", "/c-api-continued", &reader);
+    ASSERT_NE(continued, nullptr);
+    EXPECT_NE(pt_span_is_sampled(continued), 0);
+    pt_span_end(continued);
+    pt_span_destroy(continued);
+
+    pt_span_end(span);
+    pt_span_destroy(span);
+    pt_agent_destroy(agent);
+
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/c-api").has_value() &&
+               find_span_by_rpc(snapshot, "/c-api-continued").has_value() &&
+               !events_for_span(snapshot, span_id).empty() &&
+               !snapshot.exception_metadata.empty();
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto wire = find_span_by_rpc(snapshot, "/c-api");
+    ASSERT_TRUE(wire.has_value());
+    EXPECT_EQ(wire->spanid(), span_id);
+    EXPECT_EQ(wire->acceptevent().remoteaddr(), "198.51.100.5");
+    const auto* status = find_annotation(wire->annotation(),
+                                         ANNOTATION_HTTP_STATUS_CODE);
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(status->value().intvalue(), 200);
+
+    const auto events = events_for_span(snapshot, span_id);
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].servicetype(), SERVICE_TYPE_CPP_HTTP_CLIENT);
+    ASSERT_TRUE(events[0].has_nextevent());
+    EXPECT_EQ(events[0].nextevent().messageevent().destinationid(),
+              "c-api-backend");
+    ASSERT_TRUE(events[0].has_exceptioninfo());
+    EXPECT_EQ(events[0].exceptioninfo().stringvalue().value(), "c call failed");
+
+    // The C callstack reader feeds the exception metadata frame by frame.
+    const auto exception = std::find_if(
+        snapshot.exception_metadata.begin(), snapshot.exception_metadata.end(),
+        [span_id](const auto& received) {
+            return received.message.spanid() == span_id;
+        });
+    ASSERT_NE(exception, snapshot.exception_metadata.end());
+    EXPECT_EQ(exception->message.uritemplate(), "/c-api/{id}");
+    ASSERT_EQ(exception->message.exceptions_size(), 1);
+    const auto& frames = exception->message.exceptions(0);
+    EXPECT_EQ(frames.exceptionmessage(), "c call failed");
+    ASSERT_EQ(frames.stacktraceelement_size(), 2);
+    EXPECT_EQ(frames.stacktraceelement(0).classname(), "c_orders");
+    EXPECT_EQ(frames.stacktraceelement(0).methodname(), "c_load_order");
+    EXPECT_EQ(frames.stacktraceelement(1).filename(), "database.c");
+    EXPECT_EQ(frames.stacktraceelement(1).linenumber(), 7);
+
+    ASSERT_TRUE(FlushUrlStatsUntil("GET /c-api/{id}", 1));
+    EXPECT_EQ(uri_stat_totals(collector_.snapshot(), "GET /c-api/{id}").total_count, 1);
 }
 
 TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutSpanRequest) {

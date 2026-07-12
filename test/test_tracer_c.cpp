@@ -32,7 +32,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -46,6 +45,7 @@
 #include "../src/config.h"
 #include "../src/grpc.h"
 #include "../src/noop.h"
+#include "c_api_test_helpers.h"
 #include "v1/Service_mock.grpc.pb.h"
 
 using ::testing::_;
@@ -204,23 +204,10 @@ static std::shared_ptr<pinpoint::AgentImpl> make_test_agent(
 // interfaces using std::map<std::string,std::string> as the backing store.
 // ============================================================================
 
-using HeaderMap = std::map<std::string, std::string>;
-
-static const char* hmap_get(void* ud, const char* key) {
-    auto* m = static_cast<HeaderMap*>(ud);
-    auto  it = m->find(key);
-    return it != m->end() ? it->second.c_str() : nullptr;
-}
-
-static void hmap_set(void* ud, const char* key, const char* value) {
-    (*static_cast<HeaderMap*>(ud))[key] = value;
-}
-
-static void hmap_foreach(void* ud, pt_header_foreach_cb cb, void* cb_ud) {
-    for (const auto& kv : *static_cast<HeaderMap*>(ud)) {
-        if (cb(kv.first.c_str(), kv.second.c_str(), cb_ud) != 0) break;
-    }
-}
+using pinpoint::test::c_api::HeaderMap;
+static constexpr auto hmap_foreach = pinpoint::test::c_api::map_for_each;
+static constexpr auto hmap_get = pinpoint::test::c_api::map_get;
+static constexpr auto hmap_set = pinpoint::test::c_api::map_set;
 
 static const char* throwing_get(void*, const char*) {
     throw std::runtime_error("reader failure");
@@ -231,17 +218,15 @@ static void throwing_set(void*, const char*, const char*) {
 }
 
 // Callstack data for testing.
-struct Frame { const char* mod; const char* fn; const char* file; int line; };
-static const Frame kTestFrames[] = {
-    { "libfoo", "foo::bar()",  "foo.cpp", 42 },
-    { "libfoo", "foo::entry()", "foo.cpp", 10 },
-};
+static pinpoint::test::c_api::TwoFrameCallStack kTestCallStack{{
+    {"libfoo", "foo::bar()", "foo.cpp", 42},
+    {"libfoo", "foo::entry()", "foo.cpp", 10},
+}};
 
-static void callstack_foreach(void* ud, pt_callstack_frame_cb cb, void* cb_ud) {
-    const auto* frames = static_cast<const Frame*>(ud);
-    for (int i = 0; i < 2; ++i) {
-        cb(frames[i].mod, frames[i].fn, frames[i].file, frames[i].line, cb_ud);
-    }
+static void callstack_foreach(void* userdata, pt_callstack_frame_cb callback,
+                              void* callback_userdata) {
+    pinpoint::test::c_api::emit_two_frame_callstack(
+        userdata, callback, callback_userdata);
 }
 
 // ============================================================================
@@ -813,7 +798,7 @@ TEST_F(TracerCApiTest, SpanEventSetError) {
     pt_span_event_set_error_named(se, "IOError", "connection refused");
 
     pt_callstack_reader_t cs_reader;
-    cs_reader.userdata  = const_cast<Frame*>(kTestFrames);
+    cs_reader.userdata  = &kTestCallStack;
     cs_reader.for_each  = callstack_foreach;
     pt_span_event_set_error_with_callstack(se, "IOError", "connection refused", &cs_reader);
 
@@ -984,7 +969,7 @@ TEST_F(TracerCApiTest, CallstackReaderIteratesFrames) {
     Ctx ctx;
 
     pt_callstack_reader_t cs_reader;
-    cs_reader.userdata = const_cast<Frame*>(kTestFrames);
+    cs_reader.userdata = &kTestCallStack;
     cs_reader.for_each = callstack_foreach;
 
     // Drive the iteration manually to verify the callback receives correct data.
