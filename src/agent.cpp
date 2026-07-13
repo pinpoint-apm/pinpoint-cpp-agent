@@ -558,6 +558,22 @@ namespace pinpoint {
         // benign. Abandon (not join) is used because by this point the
         // process is likely on its way down and we don't want to block.
         abandon_grpc_workers();
+
+        // Destroying in a forked child gRPC clients created in the parent is
+        // unsafe: they own internal threads (e.g. GrpcAgent's AgentInfo
+        // scheduler, the command dispatcher) that do not exist in this
+        // process, and their destructors would join the dead handles and
+        // abort. Intentionally leak the client objects instead — the child
+        // either builds its own agent via Start() or is short-lived. Done
+        // here rather than in do_shutdown() so the pointers stay valid while
+        // the object is alive (see the forked-child branch there).
+        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+            (void)grpc_agent_.release();
+            (void)grpc_metadata_.release();
+            (void)grpc_span_.release();
+            (void)grpc_stat_.release();
+            (void)grpc_command_.release();
+        }
     }
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
@@ -669,17 +685,13 @@ namespace pinpoint {
         if (owner_pid_ != 0 && owner_pid_ != getpid()) {
             try { LOG_INFO("agent shutdown in forked child: abandoning inherited workers"); } catch (...) {}
             abandon_grpc_workers();
-            // The gRPC clients own their own internal threads (e.g. GrpcAgent's
-            // AgentInfo scheduler, the command dispatcher) that were started in
-            // the parent; their destructors would join those now-dead handles
-            // and abort. Intentionally leak the client objects in this forked
-            // child — the threads do not exist here, and the child either builds
-            // its own agent via Start() or is short-lived.
-            (void)grpc_agent_.release();
-            (void)grpc_metadata_.release();
-            (void)grpc_span_.release();
-            (void)grpc_stat_.release();
-            (void)grpc_command_.release();
+            // The gRPC clients inherited from the parent are intentionally
+            // leaked, but not here: releasing the unique_ptrs would null them
+            // while a racing thread that loaded enabled_ == true just before
+            // the store above may still be about to dereference grpc_span_ /
+            // grpc_metadata_ (recordSpan, cacheApi, ...) — a null operator->
+            // crash in the host. The release is deferred to ~AgentImpl, so
+            // the pointers stay valid for the whole lifetime of this object.
             return;
         }
 

@@ -325,6 +325,10 @@ namespace pinpoint {
 
     constexpr int METADATA_RETRY_MAX_ATTEMPTS = 3;
     constexpr auto METADATA_RETRY_DELAY = std::chrono::milliseconds(1000);
+    // Pause before a worker loop is restarted after an unexpected exception,
+    // so a persistent failure (e.g. allocation pressure) cannot turn the
+    // supervisor loops into a hot spin.
+    constexpr auto WORKER_RESTART_DELAY = std::chrono::milliseconds(1000);
 
     //GrpcMetadata
 
@@ -541,7 +545,33 @@ namespace pinpoint {
         }
     }
 
-    void GrpcMetadata::sendMetaWorker() try {
+    void GrpcMetadata::sendMetaWorker() {
+        // Supervise the loop body: a transient exception (e.g. bad_alloc
+        // while building a protobuf message) drops the item being processed
+        // but must not kill the worker for the process lifetime — there is no
+        // other mechanism that would ever bring metadata upload back. Only a
+        // stop request or agent exit ends the worker.
+        while (true) {
+            try {
+                run_meta_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("failed to send grpc meta: unknown exception");
+            }
+
+            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+            if (meta_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+                    return meta_stop_requested_ || agent_->isExiting();
+                })) {
+                break;
+            }
+        }
+        LOG_INFO("send meta worker end");
+    }
+
+    void GrpcMetadata::run_meta_worker() {
         while (true) {
             PendingMeta pending;
             {
@@ -570,11 +600,6 @@ namespace pinpoint {
                 release_failed_cache(*pending.meta);
             }
         }
-        LOG_INFO("send meta worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to send grpc meta: unknown exception");
     }
 
     void GrpcMetadata::stopMetaWorker() {
@@ -925,7 +950,30 @@ namespace pinpoint {
         });
     }
 
-    void GrpcCommand::commandWorker() try {
+    void GrpcCommand::commandWorker() {
+        // Supervise the loop body: a transient exception (e.g. one escaping a
+        // command handler) must not kill the worker for the process lifetime —
+        // the collector could never reach this agent again. Only agent exit
+        // ends the worker.
+        while (!agent_->isExiting()) {
+            try {
+                run_command_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("grpc command worker exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("grpc command worker unknown exception");
+            }
+
+            if (wait_reconnect_delay(WORKER_RESTART_DELAY)) {
+                break;
+            }
+        }
+        stop_active_thread_count_streams();
+        LOG_INFO("grpc command worker end");
+    }
+
+    void GrpcCommand::run_command_worker() {
         // Clears command_stream_context_ before the stack-allocated context it
         // points to is destroyed — including when the loop unwinds via an
         // exception — so cancel_command_stream() never calls TryCancel() on a
@@ -989,14 +1037,6 @@ namespace pinpoint {
                 break;
             }
         }
-        stop_active_thread_count_streams();
-        LOG_INFO("grpc command worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("grpc command worker exception = {}", e.what());
-        stop_active_thread_count_streams();
-    } catch (...) {
-        LOG_ERROR("grpc command worker unknown exception");
-        stop_active_thread_count_streams();
     }
 
     void GrpcCommand::stopCommandWorker() {
@@ -1366,7 +1406,35 @@ namespace pinpoint {
         stream_cv_.notify_one();
     }
 
-    void GrpcAgent::sendPingWorker() try {
+    void GrpcAgent::sendPingWorker() {
+        // Supervise the loop body: a transient exception must not kill the
+        // worker for the process lifetime — without pings the collector marks
+        // the agent dead. The stream is drained on error and a fresh one is
+        // started on restart. Only a stop request or agent exit ends the
+        // worker.
+        while (true) {
+            try {
+                run_ping_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("grpc ping worker exception = {}", e.what());
+                drain_ping_stream_on_error();
+            } catch (...) {
+                LOG_ERROR("grpc ping worker unknown exception");
+                drain_ping_stream_on_error();
+            }
+
+            std::unique_lock<std::mutex> lock(ping_worker_mutex_);
+            if (ping_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+                    return ping_stop_requested_ || agent_->isExiting();
+                })) {
+                break;
+            }
+        }
+        LOG_INFO("grpc ping worker end");
+    }
+
+    void GrpcAgent::run_ping_worker() {
         if (!start_ping_stream()) {
             return;
         }
@@ -1389,13 +1457,6 @@ namespace pinpoint {
                 break;
             }
         }
-        LOG_INFO("grpc ping worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("grpc ping worker exception = {}", e.what());
-        drain_ping_stream_on_error();
-    } catch (...) {
-        LOG_ERROR("grpc ping worker unknown exception");
-        drain_ping_stream_on_error();
     }
 
     void GrpcAgent::stopPingWorker() {
@@ -1581,8 +1642,26 @@ namespace pinpoint {
 
         // The permit is now held. Every path from here until the async call is
         // launched must release it; once launched, the completion callback owns
-        // the release.
+        // the release. The catch below must be catch-all: a non-std exception
+        // escaping this window would leak the permit permanently, shrinking
+        // the in-flight pipeline for the rest of the process lifetime.
         std::shared_ptr<PendingSpanBatch> pending;
+        const auto release_unlaunched = [this, &batch, &pending]() {
+            batch.clear();
+            // The call was never launched: drop it from the registry (it may or
+            // may not have been registered yet) and hand the permit back.
+            {
+                std::lock_guard<std::mutex> lock(inflight_->mutex);
+                if (pending) {
+                    auto& pending_calls = inflight_->pending;
+                    pending_calls.erase(
+                        std::remove(pending_calls.begin(), pending_calls.end(), pending),
+                        pending_calls.end());
+                }
+                ++inflight_->permits;
+            }
+            inflight_->cv.notify_one();
+        };
         try {
             pending = std::make_shared<PendingSpanBatch>();
             pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
@@ -1637,24 +1716,16 @@ namespace pinpoint {
                     }
                 });
         } catch (const std::exception& e) {
-            batch.clear();
             LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
-            // The call was never launched: drop it from the registry (it may or
-            // may not have been registered yet) and hand the permit back.
-            {
-                std::lock_guard<std::mutex> lock(inflight_->mutex);
-                if (pending) {
-                    auto& pending_calls = inflight_->pending;
-                    pending_calls.erase(
-                        std::remove(pending_calls.begin(), pending_calls.end(), pending),
-                        pending_calls.end());
-                }
-                ++inflight_->permits;
-            }
-            inflight_->cv.notify_one();
+            release_unlaunched();
+        } catch (...) {
+            LOG_INFO("SendSpanBatch failed synchronously: unknown exception");
+            release_unlaunched();
         }
     } catch (const std::exception& e) {
         LOG_ERROR("failed to build span batch: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to build span batch: unknown exception");
     }
 
     void GrpcSpan::await_in_flight_requests() {
@@ -1717,7 +1788,40 @@ namespace pinpoint {
         await_in_flight_requests();
     }
 
-    void GrpcSpan::sendSpanWorker() try {
+    void GrpcSpan::sendSpanWorker() {
+        // Supervise the loop body: a transient exception (e.g. bad_alloc
+        // while serializing a batch) drops that batch but must not kill the
+        // worker for the process lifetime — no spans would ever be reported
+        // again. Only agent exit ends the worker, and the shutdown flush runs
+        // on every path, including exception unwinds that previously skipped
+        // it and silently dropped the queued chunks.
+        while (!agent_->isExiting()) {
+            try {
+                run_span_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("grpc span worker exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("grpc span worker unknown exception");
+            }
+
+            std::unique_lock<std::mutex> lock(span_queue_mutex_);
+            span_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+                return agent_->isExiting();
+            });
+        }
+
+        try {
+            flush_remaining();
+        } catch (const std::exception& e) {
+            LOG_ERROR("grpc span worker flush exception = {}", e.what());
+        } catch (...) {
+            LOG_ERROR("grpc span worker flush unknown exception");
+        }
+        LOG_INFO("grpc span worker end");
+    }
+
+    void GrpcSpan::run_span_worker() {
         while (!agent_->isExiting()) {
             std::vector<std::unique_ptr<SpanChunk>> batch;
             batch.reserve(config_->collector.span_batch.size);
@@ -1741,12 +1845,6 @@ namespace pinpoint {
                 }
             }
         }
-        flush_remaining();
-        LOG_INFO("grpc span worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("grpc span worker exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("grpc span worker unknown exception");
     }
 
     void GrpcSpan::stopSpanWorker() {
@@ -2020,12 +2118,41 @@ namespace pinpoint {
         return false;
     }
 
-    void GrpcStats::sendStatsWorker() try {
+    void GrpcStats::sendStatsWorker() {
         const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
             return;
         }
 
+        // Supervise the loop body: a transient exception (e.g. bad_alloc
+        // while building a stats message) must not kill the worker for the
+        // process lifetime — stats would never be reported again. The stream
+        // is drained on error and a fresh one is started on restart. Only a
+        // stop request or agent exit ends the worker.
+        while (true) {
+            try {
+                run_stats_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("grpc stats worker: exception = {}", e.what());
+                drain_stats_stream_on_error();
+            } catch (...) {
+                LOG_ERROR("grpc stats worker: unknown exception");
+                drain_stats_stream_on_error();
+            }
+
+            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
+            if (stats_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+                    return stats_stop_requested_ || agent_->isExiting();
+                })) {
+                break;
+            }
+        }
+
+        LOG_INFO("grpc stats worker end");
+    }
+
+    void GrpcStats::run_stats_worker() {
         if (!start_stats_stream()) {
             return;
         }
@@ -2055,14 +2182,6 @@ namespace pinpoint {
 
             lock.lock();
         }
-
-        LOG_INFO("grpc stats worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("grpc stats worker: exception = {}", e.what());
-        drain_stats_stream_on_error();
-    } catch (...) {
-        LOG_ERROR("grpc stats worker: unknown exception");
-        drain_stats_stream_on_error();
     }
 
     void GrpcStats::stopStatsWorker() {

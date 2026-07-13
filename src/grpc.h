@@ -332,6 +332,9 @@ namespace pinpoint {
         void release_failed_cache(const MetaData& meta) const;
         void schedule_retry(PendingMeta&& pending);
         bool pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock);
+        // Worker loop body; sendMetaWorker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_meta_worker();
     };
 
     /**
@@ -400,6 +403,9 @@ namespace pinpoint {
                                 std::string_view message) const;
         void cancel_command_stream();
         bool wait_reconnect_delay(std::chrono::milliseconds delay);
+        // Worker loop body; commandWorker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_command_worker();
     };
 
     /**
@@ -476,6 +482,9 @@ namespace pinpoint {
         void finish_ping_stream();
         void drain_ping_stream_on_error() noexcept;
         GrpcStreamStatus write_and_await_ping_stream();
+        // Worker loop body; sendPingWorker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_ping_worker();
 
         void agent_info_worker();
         bool send_agent_info_once();
@@ -583,6 +592,9 @@ namespace pinpoint {
         void release_permit();
         void await_in_flight_requests();
         void flush_remaining();
+        // Worker loop body; sendSpanWorker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_span_worker();
     };
 
     /**
@@ -641,5 +653,8 @@ namespace pinpoint {
 
         GrpcStreamStatus next_write();
         void empty_stats_queue() noexcept;
+        // Worker loop body; sendStatsWorker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_stats_worker();
     };
 }  // namespace pinpoint

@@ -668,7 +668,14 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerContainsChannelSetupException) {
     ThrowingReadyGrpcAgent agent(mock_agent_service_->getConfig());
     agent.setAgentService(mock_agent_service_.get());
 
-    EXPECT_NO_THROW(agent.sendPingWorker());
+    // The worker must contain the exception and keep retrying (supervised
+    // restart) instead of dying — so it only returns once stopped.
+    std::thread ping_worker([&agent]() {
+        EXPECT_NO_THROW(agent.sendPingWorker());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    agent.stopPingWorker();
+    ping_worker.join();
     EXPECT_FALSE(mock_agent_service_->isExiting());
 }
 
@@ -873,7 +880,14 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
     ThrowingReadyGrpcStats stats_client(mock_agent_service_->getConfig());
     stats_client.setAgentService(mock_agent_service_.get());
 
-    EXPECT_NO_THROW(stats_client.sendStatsWorker());
+    // The worker must contain the exception and keep retrying (supervised
+    // restart) instead of dying — so it only returns once stopped.
+    std::thread stats_worker([&stats_client]() {
+        EXPECT_NO_THROW(stats_client.sendStatsWorker());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stats_client.stopStatsWorker();
+    stats_worker.join();
     EXPECT_FALSE(mock_agent_service_->isExiting());
 }
 

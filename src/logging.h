@@ -120,18 +120,29 @@ namespace pinpoint {
             kError = 3,
         };
 
+        // Must never throw: LOG_* is called from the catch handlers of the
+        // worker threads, where an escaping exception (e.g. bad_alloc while
+        // formatting or writing the message) would leave the thread function
+        // through a handler and std::terminate() the host process. The outer
+        // catch-all covers write() and the fallback fmt::format itself, both
+        // of which allocate.
         template <typename... Args>
-        void log(LogLevel level, std::string_view file, int line, fmt::string_view format, Args&&... args) {
+        void log(LogLevel level, std::string_view file, int line, fmt::string_view format, Args&&... args) noexcept {
             if (!shouldLog(level)) {
                 return;
             }
-            std::string message;
             try {
-                message = fmt::vformat(format, fmt::make_format_args(args...));
-            } catch (const std::exception& e) {
-                message = fmt::format("log format error: {}", e.what());
+                std::string message;
+                try {
+                    message = fmt::vformat(format, fmt::make_format_args(args...));
+                } catch (const std::exception& e) {
+                    message = fmt::format("log format error: {}", e.what());
+                }
+                write(level, file, line, message);
+            } catch (...) {
+                // Drop the message: logging failure must stay invisible to
+                // the host application.
             }
-            write(level, file, line, message);
         }
 
         bool shouldLog(LogLevel level) const {
