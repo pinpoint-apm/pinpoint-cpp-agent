@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -157,7 +158,12 @@ namespace pinpoint {
         static_assert(SqlUid{}.size() == kMurmurHashOutputSize,
                       "SqlUid size must match MurmurHash3_x64_128 output");
         SqlUid result{};
-        MurmurHash3_x64_128(sql.data(), static_cast<int>(sql.length()), kMurmurHashSeed, result.data());
+        // MurmurHash3 takes an int length; clamp so a >2 GiB input (never
+        // produced by the normalizer, which caps SQL length, but this is a
+        // public utility) cannot go negative in the cast.
+        const auto length = static_cast<int>(std::min<size_t>(
+            sql.length(), static_cast<size_t>(std::numeric_limits<int>::max())));
+        MurmurHash3_x64_128(sql.data(), length, kMurmurHashSeed, result.data());
         return result;
     }
 

@@ -273,20 +273,24 @@ namespace pinpoint {
 
         LOG_INFO("wait {} grpc channel ready: state = {}", client_name_, static_cast<int>(state));
 
-        const auto deadline = std::chrono::system_clock::now() + delay;
+        // Elapsed-time math on steady_clock: a wall-clock step (NTP) must not
+        // stretch or truncate the retry window. gRPC's WaitForStateChange only
+        // accepts a system_clock deadline, so that one call converts the
+        // bounded slice back to wall time.
+        const auto deadline = std::chrono::steady_clock::now() + delay;
         while (state != GRPC_CHANNEL_READY) {
-            if (agent_->isExiting()) {
+            if (stopping()) {
                 return false;
             }
 
-            const auto now = std::chrono::system_clock::now();
+            const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
                 break;
             }
 
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto wait_for = std::min(remaining, BACKOFF_SLEEP_SLICE);
-            channel_->WaitForStateChange(state, now + wait_for);
+            channel_->WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
             state = channel_->GetState(false);
         }
 
@@ -295,14 +299,14 @@ namespace pinpoint {
 
     bool GrpcClient::readyChannel() {
         std::unique_lock<std::mutex> lock(channel_mutex_);
-        if (agent_->isExiting()) {
+        if (stopping()) {
             return false;
         }
 
-        auto now = std::chrono::system_clock::now();
+        const auto wait_start = std::chrono::steady_clock::now();
         if (channel_->GetState(false) != GRPC_CHANNEL_READY) {
             while (true) {
-                if (agent_->isExiting()) {
+                if (stopping()) {
                     return false;
                 }
                 const auto delay = channel_ready_backoff_.next_delay();
@@ -316,7 +320,7 @@ namespace pinpoint {
             channel_ready_backoff_.reset();
         }
 
-        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - now);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - wait_start);
         if (elapsed.count() >= 5) {
             on_slow_channel_recovery(elapsed);
         }
@@ -591,18 +595,23 @@ namespace pinpoint {
                 break;
             }
 
-            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
             if (pending.retry_count <= METADATA_RETRY_MAX_ATTEMPTS) {
                 LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, METADATA_RETRY_MAX_ATTEMPTS);
+                std::unique_lock<std::mutex> lock(meta_queue_mutex_);
                 schedule_retry(std::move(pending));
             } else {
                 LOG_INFO("drop metadata after retry exhaustion: retryCount={}", pending.retry_count);
+                // Outside meta_queue_mutex_: removeCache* takes the agent
+                // caches' internal locks, and nesting those under the queue
+                // mutex extends enqueueMeta contention on application threads
+                // and is a latent lock-order hazard.
                 release_failed_cache(*pending.meta);
             }
         }
     }
 
     void GrpcMetadata::stopMetaWorker() {
+        request_stop();
         std::unique_lock<std::mutex> lock(meta_queue_mutex_);
         meta_stop_requested_ = true;
         meta_queue_cv_.notify_all();
@@ -774,6 +783,13 @@ namespace pinpoint {
         } catch (const std::exception& e) {
             {
                 std::unique_lock<std::mutex> lock(context_mutex_);
+                if (context_) {
+                    // The sync ClientWriter was destroyed by the unwind
+                    // without WritesDone()/Finish(); cancel the still-active
+                    // RPC before releasing its context so gRPC tears the
+                    // call down cleanly.
+                    context_->TryCancel();
+                }
                 context_.reset();
             }
             LOG_ERROR("active thread count stream exception = {}", e.what());
@@ -781,6 +797,9 @@ namespace pinpoint {
         } catch (...) {
             {
                 std::unique_lock<std::mutex> lock(context_mutex_);
+                if (context_) {
+                    context_->TryCancel();
+                }
                 context_.reset();
             }
             LOG_ERROR("active thread count stream unknown exception");
@@ -945,16 +964,16 @@ namespace pinpoint {
     bool GrpcCommand::wait_reconnect_delay(std::chrono::milliseconds delay) {
         std::unique_lock<std::mutex> lock(command_worker_mutex_);
         return command_worker_cv_.wait_for(lock, delay, [this] {
-            return agent_->isExiting();
+            return stopping();
         });
     }
 
     void GrpcCommand::commandWorker() {
         // Supervise the loop body: a transient exception (e.g. one escaping a
         // command handler) must not kill the worker for the process lifetime —
-        // the collector could never reach this agent again. Only agent exit
-        // ends the worker.
-        while (!agent_->isExiting()) {
+        // the collector could never reach this agent again. Only a stop
+        // request or agent exit ends the worker.
+        while (!stopping()) {
             try {
                 run_command_worker();
                 break;
@@ -998,7 +1017,7 @@ namespace pinpoint {
         // once the stream demonstrably works (a command is read).
         ExponentialBackoff reconnect_backoff{};
 
-        while (!agent_->isExiting()) {
+        while (!stopping()) {
             if (!readyChannel()) {
                 break;
             }
@@ -1016,7 +1035,7 @@ namespace pinpoint {
                 LOG_WARN("failed to connect to command service stream: stream is null");
             } else {
                 v1::PCmdRequest request;
-                while (!agent_->isExiting() && stream->Read(&request)) {
+                while (!stopping() && stream->Read(&request)) {
                     // The stream demonstrably works: reconnect promptly if it
                     // later drops (e.g. collector restart).
                     reconnect_backoff.reset();
@@ -1031,7 +1050,7 @@ namespace pinpoint {
                 }
                 stream->WritesDone();
                 const auto status = stream->Finish();
-                if (!status.ok() && !agent_->isExiting()) {
+                if (!status.ok() && !stopping()) {
                     LOG_INFO("command service stream closed: {}, {}",
                              static_cast<int>(status.error_code()), status.error_message());
                 } else {
@@ -1044,13 +1063,20 @@ namespace pinpoint {
                 cleanup_active_thread_count_streams();
             }
 
-            if (agent_->isExiting() || wait_reconnect_delay(reconnect_backoff.next_delay())) {
+            if (stopping() || wait_reconnect_delay(reconnect_backoff.next_delay())) {
                 break;
             }
         }
     }
 
     void GrpcCommand::stopCommandWorker() {
+        request_stop();
+        {
+            // Pairs the stop with wait_reconnect_delay()'s predicate so a
+            // worker sleeping out a reconnect delay wakes immediately.
+            std::unique_lock<std::mutex> lock(command_worker_mutex_);
+            command_worker_cv_.notify_all();
+        }
         cancel_command_stream();
         stop_active_thread_count_streams();
     }
@@ -1471,6 +1497,7 @@ namespace pinpoint {
     }
 
     void GrpcAgent::stopPingWorker() {
+        request_stop();
         {
             std::unique_lock<std::mutex> lock(ping_worker_mutex_);
             ping_stop_requested_ = true;
@@ -1558,7 +1585,9 @@ namespace pinpoint {
     }
 
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
-        if (agent_ != nullptr && agent_->isExiting()) {
+        // Null guard mirrors enqueueMeta: a null chunk would pass through the
+        // queue and crash the worker at getSpanData().
+        if (span == nullptr || (agent_ != nullptr && agent_->isExiting())) {
             return;
         }
 
@@ -1599,7 +1628,7 @@ namespace pinpoint {
 
         // Block (with timeout) until the first item arrives or the worker is asked to stop.
         if (!span_queue_cv_.wait_for(lock, flush_timeout, [this]{
-                return !span_queue_.empty() || agent_->isExiting();
+                return !span_queue_.empty() || stopping();
             })) {
             return;
         }
@@ -1620,7 +1649,7 @@ namespace pinpoint {
             }
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             if (!span_queue_cv_.wait_for(lock, remaining, [this]{
-                    return !span_queue_.empty() || agent_->isExiting();
+                    return !span_queue_.empty() || stopping();
                 })) {
                 break;
             }
@@ -1806,7 +1835,7 @@ namespace pinpoint {
         // again. Only agent exit ends the worker, and the shutdown flush runs
         // on every path, including exception unwinds that previously skipped
         // it and silently dropped the queued chunks.
-        while (!agent_->isExiting()) {
+        while (!stopping()) {
             try {
                 run_span_worker();
                 break;
@@ -1818,7 +1847,7 @@ namespace pinpoint {
 
             std::unique_lock<std::mutex> lock(span_queue_mutex_);
             span_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
-                return agent_->isExiting();
+                return stopping();
             });
         }
 
@@ -1833,7 +1862,7 @@ namespace pinpoint {
     }
 
     void GrpcSpan::run_span_worker() {
-        while (!agent_->isExiting()) {
+        while (!stopping()) {
             std::vector<std::unique_ptr<SpanChunk>> batch;
             batch.reserve(config_->collector.span_batch.size);
 
@@ -1844,7 +1873,7 @@ namespace pinpoint {
 
             if (readyChannel()) {
                 send_batch_async(batch);
-            } else if (agent_->isExiting()) {
+            } else if (stopping()) {
                 // readyChannel() refuses to wait once the agent is exiting,
                 // but these chunks were already collected out of the queue.
                 // Hand them back so flush_remaining() can still send them
@@ -1859,6 +1888,7 @@ namespace pinpoint {
     }
 
     void GrpcSpan::stopSpanWorker() {
+        request_stop();
         std::unique_lock<std::mutex> lock(span_queue_mutex_);
         span_queue_cv_.notify_all();
     }
@@ -2201,6 +2231,7 @@ namespace pinpoint {
             return;
         }
 
+        request_stop();
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
             stats_stop_requested_ = true;

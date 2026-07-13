@@ -734,6 +734,10 @@ namespace pinpoint {
             LOG_WARN("parsing Txid: invalid txid format = {}", sv);
             return {};
         }
+        if (pos1 == 0) {
+            LOG_WARN("parsing Txid: empty AgentId = {}", sv);
+            return {};
+        }
         if (pos1 > kMaxAgentIdLength) {
             LOG_WARN("parsing Txid: AgentId too long (length={}, max={})", pos1, kMaxAgentIdLength);
             return {};
@@ -766,10 +770,20 @@ namespace pinpoint {
             return {};
         }
 
+        // Non-numeric fields are rejected structurally like the malformations
+        // above: absorbing them as 0 via value_or would record a live trace on
+        // which every distinct malformed header collides at (agentId, 0, 0).
+        const auto start_time = stoll_(sv.substr(pos1 + 1, start_time_len));
+        const auto sequence = stoll_(sequence_str);
+        if (!start_time || !sequence) {
+            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            return {};
+        }
+
         TraceId tid;
         tid.AgentId = std::make_shared<const std::string>(sv.substr(0, pos1));
-        tid.StartTime = stoll_(sv.substr(pos1 + 1, start_time_len)).value_or(0);
-        tid.Sequence = stoll_(sequence_str).value_or(0);
+        tid.StartTime = *start_time;
+        tid.Sequence = *sequence;
         return tid;
     } catch (...) {
         // This function allocates (AgentId copy, log formatting); without this
@@ -829,10 +843,18 @@ namespace pinpoint {
         return 0;
     }
 
-    void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const {
+    // The removeCache* functions carry the same exception boundary as their
+    // cache* siblings: they build allocating keys, and their caller is the
+    // meta worker loop — an escaping exception would trip its supervisor
+    // restart for what is only a best-effort cache eviction.
+    void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const try {
         if (enabled_) {
             api_cache_->remove(ApiCacheKey{api_meta.api_str_, api_meta.type_});
         }
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to remove cached api meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to remove cached api meta: unknown exception");
     }
 
     int32_t AgentImpl::cacheError(std::string_view error_name) const try {
@@ -857,10 +879,14 @@ namespace pinpoint {
         return 0;
     }
 
-    void AgentImpl::removeCacheError(const StringMeta& error_meta) const {
+    void AgentImpl::removeCacheError(const StringMeta& error_meta) const try {
         if (enabled_) {
             error_cache_->remove(error_meta.str_val_);
         }
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to remove cached error meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to remove cached error meta: unknown exception");
     }
 
     int32_t AgentImpl::cacheSql(std::string_view sql_query) const try {
@@ -885,10 +911,14 @@ namespace pinpoint {
         return 0;
     }
 
-    void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const {
+    void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const try {
         if (enabled_) {
             sql_cache_->remove(sql_meta.str_val_);
         }
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to remove cached sql meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to remove cached sql meta: unknown exception");
     }
 
     std::optional<SqlUid> AgentImpl::cacheSqlUid(std::string_view sql) const try {
@@ -914,10 +944,14 @@ namespace pinpoint {
         return std::nullopt;
     }
 
-    void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const {
+    void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
         if (enabled_) {
             sql_uid_cache_->remove(sql_uid_meta.sql_);
         }
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to remove cached sql uid meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to remove cached sql uid meta: unknown exception");
     }
 
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
@@ -932,32 +966,39 @@ namespace pinpoint {
         grpc_metadata_->enqueueMeta(std::move(meta));
     }
 
+    // These check enabled_ before runtime_.load(): the load is a
+    // shared-lock + shared_ptr copy on platforms without the C++20 atomic
+    // shared_ptr (see AtomicSharedPtr), so ordering the cheap flag first
+    // makes the disabled-agent path free.
     bool AgentImpl::isStatusFail(const int status) const {
+        if (!enabled_) {
+            return false;
+        }
         const auto runtime = runtime_.load();
-        if (enabled_ && runtime->http_status_errors) {
+        if (runtime->http_status_errors) {
             return runtime->http_status_errors->isErrorCode(status);
         }
         return false;
     }
 
     void AgentImpl::recordServerHeader(const HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const {
-        if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
+        if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
         const auto runtime = runtime_.load();
         const auto& recorder = runtime->http_srv_header_recorder[which];
-        if (enabled_ && recorder) {
+        if (recorder) {
             recorder->recordHeader(reader, annotation);
         }
     }
 
     void AgentImpl::recordClientHeader(const HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const {
-        if (which < HTTP_REQUEST || which > HTTP_COOKIE) {
+        if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
         const auto runtime = runtime_.load();
         const auto& recorder = runtime->http_cli_header_recorder[which];
-        if (enabled_ && recorder) {
+        if (recorder) {
             recorder->recordHeader(reader, annotation);
         }
     }

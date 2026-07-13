@@ -72,7 +72,7 @@ namespace pinpoint {
 
 	constexpr int32_t SERVICE_TYPE_MEMCACHED = 8050;
 	constexpr int32_t SERVICE_TYPE_REDIS = 8203;
-	constexpr int32_t SERVICE_TYPE_KFAKA = 8660;
+	constexpr int32_t SERVICE_TYPE_KAFKA = 8660;
 	constexpr int32_t SERVICE_TYPE_HBASE = 8800;
 
 	constexpr int32_t SERVICE_TYPE_GRPC_CLIENT = 9160;

@@ -620,8 +620,13 @@ namespace pinpoint {
 
         data_->setLoggingFlag();
 
+        // Stack to_chars buffer instead of std::to_string, matching
+        // injectContext(): this runs per traced request.
+        char span_id[32];
+        const auto res = std::to_chars(span_id, span_id + sizeof(span_id), data_->getSpanId());
+
         writer.Set(LOG_TRACE_ID_KEY, data_->getTraceIdWire());
-        writer.Set(LOG_SPAN_ID_KEY, std::to_string(data_->getSpanId()));
+        writer.Set(LOG_SPAN_ID_KEY, std::string_view(span_id, static_cast<size_t>(res.ptr - span_id)));
     }
 
 }  // namespace pinpoint

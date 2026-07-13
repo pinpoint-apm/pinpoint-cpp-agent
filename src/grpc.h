@@ -166,6 +166,22 @@ namespace pinpoint {
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
         ExponentialBackoff channel_ready_backoff_{};
 
+        // Per-client stop, set by this client's stopXWorker(). Today
+        // do_shutdown() always sets the agent-wide exiting flag before the
+        // stop methods run, so the workers terminate either way — but the
+        // wait loops (readyChannel's unbounded retry, the reconnect delays)
+        // must not depend on that call-ordering contract: honoring the
+        // per-client flag keeps a lone stopXWorker() call from joining a
+        // thread that can block indefinitely during a collector outage.
+        // Never reset: a stopped client is terminal, like agent shutdown.
+        std::atomic<bool> stop_requested_{false};
+
+        void request_stop() { stop_requested_.store(true, std::memory_order_relaxed); }
+        /// @brief True once this client was stopped or the agent is exiting.
+        bool stopping() const {
+            return stop_requested_.load(std::memory_order_relaxed) || agent_->isExiting();
+        }
+
         /**
          * @brief Blocks until the channel becomes ready or the delay is exceeded.
          */

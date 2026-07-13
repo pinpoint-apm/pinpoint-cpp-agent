@@ -1073,14 +1073,11 @@ TEST_F(SpanTest, ParseTraceIdAgentIdTooLongTest) {
 }
 
 TEST_F(SpanTest, ParseTraceIdEmptyFieldsTest) {
-    // "^^" is structurally valid: all separators present with empty fields. It
-    // parses to a present (non-empty()) trace id with an empty agent id and
-    // zeroed times.
+    // "^^" has all separators but every field empty. Accepting it would
+    // record a live trace at ("", 0, 0) on which every such malformed header
+    // collides, so it is rejected like the other malformations.
     const TraceId tid = TraceId::parseTraceId("^^");
-    EXPECT_FALSE(tid.empty()) << "a structurally valid trace id should not be empty()";
-    EXPECT_TRUE(tid.agentId().empty());
-    EXPECT_EQ(tid.StartTime, 0);
-    EXPECT_EQ(tid.Sequence, 0);
+    EXPECT_TRUE(tid.empty()) << "empty fields should parse to an empty trace id";
 }
 
 TEST_F(SpanTest, ParseTraceIdStartTimeTooLongTest) {
@@ -1125,16 +1122,13 @@ TEST_F(SpanTest, ParseTraceIdAgentIdLengthBoundaryTest) {
     EXPECT_TRUE(over_limit.empty()) << "a 25-char agent id exceeds the limit and is rejected";
 }
 
-TEST_F(SpanTest, ParseTraceIdNumericOverflowDegradesToZeroTest) {
-    // A numeric field that is within the length guard (<= 20 chars) but overflows
-    // int64 is not rejected: stoll_ (absl::SimpleAtoi) fails on overflow and the
-    // field degrades to 0 via value_or(0), while the trace id stays present. This
-    // documents the length guard as necessary-but-not-sufficient — the parse still
-    // degrades gracefully rather than recording garbage.
+TEST_F(SpanTest, ParseTraceIdNumericOverflowRejectedTest) {
+    // A numeric field that is within the length guard (<= 20 chars) but
+    // overflows int64 fails stoll_ and is rejected structurally: absorbing it
+    // as 0 would record a live trace at (agent, 0, seq) on which every such
+    // header collides.
     const TraceId tid = TraceId::parseTraceId("agent^99999999999999999999^7");
-    ASSERT_FALSE(tid.empty()) << "a length-valid field keeps the trace id present";
-    EXPECT_EQ(tid.StartTime, 0) << "an int64-overflowing StartTime degrades to 0";
-    EXPECT_EQ(tid.Sequence, 7) << "the well-formed Sequence field is still parsed";
+    EXPECT_TRUE(tid.empty()) << "an int64-overflowing StartTime should parse to empty";
 }
 
 // ========== TraceId::toString Tests ==========
@@ -1151,10 +1145,10 @@ TEST_F(SpanTest, TraceIdToStringRoundTripTest) {
 }
 
 TEST_F(SpanTest, TraceIdToStringEmptyAgentIdTest) {
-    // A structurally valid but field-empty trace id ("^^") carries a present but
-    // empty agent id; toString() renders the empty leading field, not a dropped
-    // separator.
-    const TraceId tid = TraceId::parseTraceId("^^");
+    // A present-but-empty agent id (no longer producible via parseTraceId,
+    // which rejects "^^"; constructed directly here) renders the empty
+    // leading field, not a dropped separator.
+    const TraceId tid("", 0, 0);
     ASSERT_FALSE(tid.empty());
     EXPECT_EQ(tid.toString(), "^0^0");
 }

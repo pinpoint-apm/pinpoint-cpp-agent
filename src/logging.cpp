@@ -132,16 +132,33 @@ namespace pinpoint {
         file_stream_->flush();
         file_stream_->close();
 
-        std::error_code ec;
+        std::error_code remove_ec;
+        std::error_code rename_ec;
         const auto rotated_path = file_path_ + ".1";
-        std::filesystem::remove(rotated_path, ec);
-        std::filesystem::rename(file_path_, rotated_path, ec);
+        std::filesystem::remove(rotated_path, remove_ec);
+        std::filesystem::rename(file_path_, rotated_path, rename_ec);
 
         file_stream_ = std::make_unique<std::ofstream>(file_path_, std::ios::out | std::ios::app);
-        current_file_size_ = 0;
         if (!file_stream_->is_open()) {
             file_enabled_ = false;
             file_stream_.reset();
+            return;
         }
+
+        if (rename_ec) {
+            // The rename failed (e.g. no directory write permission, ".1" on
+            // another filesystem), so the stream reopened the SAME unrenamed
+            // file. Resetting the size counter to 0 would grow that file by
+            // another max_file_size_ on every "rotation" forever; disable
+            // rotation instead and say so once, so the size cap degrades to
+            // a single over-full file rather than unbounded growth.
+            max_file_size_ = 0;
+            const std::string msg =
+                "log rotation disabled: rename to " + rotated_path +
+                " failed: " + rename_ec.message() + "\n";
+            file_stream_->write(msg.data(), static_cast<std::streamsize>(msg.size()));
+            return;
+        }
+        current_file_size_ = 0;
     }
 }

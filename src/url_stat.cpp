@@ -205,7 +205,11 @@ namespace pinpoint {
             std::lock_guard<std::mutex> shard_lock(shard.mutex_);
             // The limit check uses its own relaxed load; concurrent enqueues
             // on other shards can overshoot it by at most kQueueShardCount
-            // entries, which is harmless for a drop threshold.
+            // entries, which is harmless for a drop threshold. The limit
+            // deliberately reuses span.queue_size (there is no dedicated
+            // url_stat queue knob; url_stat.limit bounds distinct URL keys,
+            // not this buffer) — both queues buffer per-request records, so
+            // one sizing intent covers both.
             if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config->span.queue_size)) {
                 LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
                 return;

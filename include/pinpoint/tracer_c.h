@@ -81,6 +81,7 @@ extern "C" {
 #define PT_HEADER_PARENT_APP_NAME      "Pinpoint-pAppName"
 #define PT_HEADER_PARENT_APP_TYPE      "Pinpoint-pAppType"
 #define PT_HEADER_PARENT_APP_NAMESPACE "Pinpoint-pAppNamespace"
+#define PT_HEADER_PARENT_SERVICE_NAME  "Pinpoint-pServiceName"
 #define PT_HEADER_HOST                 "Pinpoint-Host"
 
 /* ========================================================================== */

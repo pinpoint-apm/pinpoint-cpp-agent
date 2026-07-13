@@ -272,8 +272,13 @@ namespace pinpoint {
         // Empty/invalid trace ids never reach serialization: NewSpan turns a
         // failed parseTraceId()/generateTraceId() into a noop span that is never
         // recorded, so any tid arriving here has a valid (non-null) agent id.
+        // The runtime guard backs the assert up in release builds (NDEBUG
+        // strips it), where a violated invariant must degrade to an empty
+        // agent id on one span rather than a null deref inside the host.
         assert(!tid.empty() && "build_grpc_transaction_id requires a valid trace id");
-        ptid->set_agentid(*tid.AgentId);
+        if (tid.AgentId) {
+            ptid->set_agentid(*tid.AgentId);
+        }
         ptid->set_agentstarttime(tid.StartTime);
         ptid->set_sequence(tid.Sequence);
 
