@@ -473,6 +473,30 @@ TEST_F(TracerCApiTest, DoubleDestroyIsSafe) {
     }
 }
 
+// A destroyed handle must never be recycled as the identity of a later live
+// handle. Otherwise a stale second destroy is indistinguishable from destroying
+// the replacement and recreates the heap-corruption bug the registry prevents.
+TEST_F(TracerCApiTest, DestroyedHandleTokenIsNotReused) {
+    pt_span_t stale = pt_agent_new_span(agent_, "old-op", "/old");
+    ASSERT_NE(stale, nullptr);
+    pt_span_end(stale);
+    pt_span_destroy(stale);
+
+    pt_span_t replacement = pt_agent_new_span(agent_, "new-op", "/new");
+    ASSERT_NE(replacement, nullptr);
+    ASSERT_NE(replacement, stale)
+        << "An opaque handle token must not be reused after destroy";
+    const auto replacement_id = pt_span_get_span_id(replacement);
+
+    // The stale token is unknown and must not erase the replacement's entry.
+    EXPECT_NO_FATAL_FAILURE(pt_span_destroy(stale));
+    EXPECT_EQ(pt_span_get_span_id(replacement), replacement_id);
+    EXPECT_EQ(pt_span_is_sampled(replacement), 1);
+
+    pt_span_end(replacement);
+    pt_span_destroy(replacement);
+}
+
 // ============================================================================
 // 4. Span creation
 // ============================================================================

@@ -37,16 +37,20 @@
 #include "noop.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -95,105 +99,204 @@ static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
     }
 }
 
-template <typename Handle, typename F>
-static void pt_handle_call(Handle handle, F&& fn) {
-    if (handle && handle->ptr) {
-        std::forward<F>(fn)(handle);
-    }
-}
-
-template <typename Handle, typename R, typename F>
-static R pt_handle_call(Handle handle, R fallback, F&& fn) {
-    if (!handle || !handle->ptr) {
-        return fallback;
-    }
-    return std::forward<F>(fn)(handle);
-}
-
-template <typename Handle, typename R, typename F>
-static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result,
-                                R fallback, F&& fn) {
-    return pt_handle_call(handle, fallback, [&](Handle valid) {
-        if (valid == noop_handle) {
-            return noop_result;
-        }
-        return std::forward<F>(fn)(valid);
-    });
-}
-
 // ============================================================================
 // Owned-handle registry
 //
 // Agent and span handles are the only heap-owned handles, and the classic C
 // misuse — destroying one twice — would be a double delete (heap corruption
-// inside the host application). Every other misuse path here is guarded, so
-// track the live owned handles in a small sharded set: create registers,
-// destroy unregisters-then-deletes, and a handle that is not registered
-// (double destroy, or a pointer this library never allocated) is a warning
-// no-op instead of heap corruption. Sharded by pointer bits to keep the
-// per-request span create/destroy from serializing on one mutex.
+// inside the host application). Tracking raw wrapper addresses is insufficient:
+// after one is deleted, the allocator can reuse that address for a new handle,
+// and a stale second destroy would then delete the new live handle (ABA).
+//
+// Expose monotonically-generated, never-reused odd pointer tokens instead.
+// They are opaque identity values and are never dereferenced; the registry maps
+// each token to a shared wrapper. A lookup copies that shared_ptr under the
+// shard lock, so a concurrent destroy can remove the token without freeing the
+// wrapper out from under a call already in progress. Odd values cannot collide
+// with the aligned addresses of the two static noop sentinels.
 // ============================================================================
 
+struct pt_agent_s { pinpoint::AgentPtr ptr; };
+struct pt_span_s  { pinpoint::SpanPtr  ptr; };
+static_assert(alignof(pt_agent_s) > 1 && alignof(pt_span_s) > 1,
+              "noop sentinel addresses must not use the odd token tag");
+
+static pt_agent_s* noop_agent_sentinel() {
+    static pt_agent_s sentinel{pinpoint::noopAgent()};
+    return &sentinel;
+}
+
+static pt_span_s* noop_span_sentinel() {
+    static pt_span_s sentinel{pinpoint::noopSpan()};
+    return &sentinel;
+}
+
 namespace {
+std::atomic<uintptr_t>& next_owned_handle_id() {
+    // Heap-allocated for the same shutdown-order reason as the registries:
+    // C handles may be created from a host global destructor.
+    static auto* next = new std::atomic<uintptr_t>{1};
+    return *next;
+}
+
+template <typename Handle>
+Handle make_owned_handle_token() {
+    constexpr auto kMaxId = std::numeric_limits<uintptr_t>::max() >> 1;
+    auto& next = next_owned_handle_id();
+    auto id = next.load(std::memory_order_relaxed);
+    while (true) {
+        if (id > kMaxId) {
+            throw std::overflow_error("C handle token space exhausted");
+        }
+        if (next.compare_exchange_weak(id, id + 1,
+                                       std::memory_order_relaxed,
+                                       std::memory_order_relaxed)) {
+            return reinterpret_cast<Handle>((id << 1) | uintptr_t{1});
+        }
+    }
+}
+
+template <typename Handle, typename Wrapper>
 class OwnedHandleRegistry {
 public:
-    void insert(const void* handle) {
+    using Entry = std::shared_ptr<Wrapper>;
+
+    Handle insert(Entry entry) {
+        const auto handle = make_owned_handle_token<Handle>();
         auto& shard = shard_for(handle);
         std::lock_guard<std::mutex> lock(shard.mutex);
-        shard.live.insert(handle);
+        const auto [pos, inserted] = shard.live.emplace(handle, std::move(entry));
+        (void)pos;
+        if (!inserted) {
+            throw std::logic_error("duplicate C handle token");
+        }
+        return handle;
     }
 
-    // Removes the handle; false when it was not live (double destroy or a
-    // foreign pointer).
-    bool erase(const void* handle) {
+    Entry find(Handle handle) {
         auto& shard = shard_for(handle);
         std::lock_guard<std::mutex> lock(shard.mutex);
-        return shard.live.erase(handle) > 0;
+        const auto found = shard.live.find(handle);
+        return found == shard.live.end() ? Entry{} : found->second;
+    }
+
+    // Removes and returns the shared wrapper. Moving it out before erasing
+    // ensures destruction happens after the shard mutex is released.
+    Entry erase(Handle handle) {
+        auto& shard = shard_for(handle);
+        Entry removed;
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            const auto found = shard.live.find(handle);
+            if (found == shard.live.end()) {
+                return {};
+            }
+            removed = std::move(found->second);
+            shard.live.erase(found);
+        }
+        return removed;
     }
 
 private:
     struct Shard {
         std::mutex mutex;
-        std::unordered_set<const void*> live;
+        std::unordered_map<Handle, Entry> live;
     };
     static constexpr size_t kShardCount = 8;
 
-    Shard& shard_for(const void* handle) {
-        // Low bits are allocator-aligned zeros; shift them out first.
-        return shards_[(reinterpret_cast<uintptr_t>(handle) >> 4) % kShardCount];
+    Shard& shard_for(Handle handle) {
+        return shards_[(reinterpret_cast<uintptr_t>(handle) >> 1) % kShardCount];
     }
 
     Shard shards_[kShardCount];
 };
 
-OwnedHandleRegistry& owned_handle_registry() {
-    // Heap-allocated and leaked (same rationale as the Logger): handles may
-    // be destroyed from host teardown paths running after static destruction.
-    static auto* registry = new OwnedHandleRegistry();
+using AgentHandleRegistry = OwnedHandleRegistry<pt_agent_t, pt_agent_s>;
+using SpanHandleRegistry = OwnedHandleRegistry<pt_span_t, pt_span_s>;
+
+AgentHandleRegistry& agent_handle_registry() {
+    static auto* registry = new AgentHandleRegistry();
+    return *registry;
+}
+
+SpanHandleRegistry& span_handle_registry() {
+    static auto* registry = new SpanHandleRegistry();
     return *registry;
 }
 }  // namespace
 
-template <typename Handle>
-static Handle register_handle(Handle handle) {
-    owned_handle_registry().insert(handle);
-    return handle;
-}
-
-template <typename Handle>
-static void destroy_handle(Handle handle, Handle noop_handle) {
-    if (handle == nullptr || handle == noop_handle) return;  // static sentinel — never owned
-    if (!owned_handle_registry().erase(handle)) {
-        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
+template <typename F>
+static void pt_handle_call(pt_agent_t handle, F&& fn) {
+    if (handle == nullptr) return;
+    if (handle == noop_agent_sentinel()) {
+        std::forward<F>(fn)(handle);
         return;
     }
-    delete handle;
+    if (auto owned = agent_handle_registry().find(handle); owned && owned->ptr) {
+        std::forward<F>(fn)(owned.get());
+    }
+}
+
+template <typename R, typename F>
+static R pt_handle_call(pt_agent_t handle, R fallback, F&& fn) {
+    if (handle == nullptr) return fallback;
+    if (handle == noop_agent_sentinel()) {
+        return std::forward<F>(fn)(handle);
+    }
+    auto owned = agent_handle_registry().find(handle);
+    return owned && owned->ptr ? std::forward<F>(fn)(owned.get()) : fallback;
+}
+
+template <typename F>
+static void pt_handle_call(pt_span_t handle, F&& fn) {
+    if (handle == nullptr) return;
+    if (handle == noop_span_sentinel()) {
+        std::forward<F>(fn)(handle);
+        return;
+    }
+    if (auto owned = span_handle_registry().find(handle); owned && owned->ptr) {
+        std::forward<F>(fn)(owned.get());
+    }
+}
+
+template <typename R, typename F>
+static R pt_handle_call(pt_span_t handle, R fallback, F&& fn) {
+    if (handle == nullptr) return fallback;
+    if (handle == noop_span_sentinel()) {
+        return std::forward<F>(fn)(handle);
+    }
+    auto owned = span_handle_registry().find(handle);
+    return owned && owned->ptr ? std::forward<F>(fn)(owned.get()) : fallback;
+}
+
+template <typename Handle, typename R, typename F>
+static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result,
+                                R fallback, F&& fn) {
+    if (handle == noop_handle) {
+        return noop_result;
+    }
+    return pt_handle_call(handle, fallback, std::forward<F>(fn));
+}
+
+static void destroy_handle(pt_agent_t handle, pt_agent_t noop_handle) {
+    if (handle == nullptr || handle == noop_handle) return;
+    if (!agent_handle_registry().erase(handle)) {
+        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
+    }
+}
+
+static void destroy_handle(pt_span_t handle, pt_span_t noop_handle) {
+    if (handle == nullptr || handle == noop_handle) return;
+    if (!span_handle_registry().erase(handle)) {
+        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
+    }
 }
 
 // ============================================================================
 // Opaque handle definitions
 //
-// Agent and span handles carry a shared_ptr, so they are allocated wrappers.
+// Agent and span handle values are the registry tokens described above; their
+// registry-owned wrappers carry the shared_ptr that keeps the C++ object alive.
 //
 // Span-event and annotation handles wrap non-owning raw pointers: the handle
 // IS the pointer, reinterpret_cast to the opaque handle type. pt_span_event_s
@@ -205,9 +308,6 @@ static void destroy_handle(Handle handle, Handle noop_handle) {
 // pointee without any sentinel bookkeeping. A null pointer maps to a null
 // handle.
 // ============================================================================
-
-struct pt_agent_s { pinpoint::AgentPtr ptr; };
-struct pt_span_s  { pinpoint::SpanPtr  ptr; };
 
 static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
     return reinterpret_cast<pt_span_event_t>(ptr);
@@ -256,32 +356,24 @@ static void pt_handle_call(pt_annotation_t handle, F&& fn) {
 // destroyed first and its reference keeps the singleton alive until then.
 // ============================================================================
 
-static pt_agent_s* noop_agent_sentinel() {
-    static pt_agent_s sentinel{pinpoint::noopAgent()};
-    return &sentinel;
-}
-
-static pt_span_s* noop_span_sentinel() {
-    static pt_span_s sentinel{pinpoint::noopSpan()};
-    return &sentinel;
-}
-
-// Wrap a C++ result in a freshly allocated handle, unless it is the shared noop
+// Wrap a C++ result in a fresh registry token, unless it is the shared noop
 // singleton — in which case hand back the static sentinel and let the local
-// reference drop. A null result maps to a null handle. The pointer comparison
+// reference drop. A null result maps to a null handle. The pointee comparison
 // is exact: a real (live) object can never share an address with the live noop
 // singleton, so this never misclassifies a span that should record.
 
 static pt_agent_t make_agent_handle(pinpoint::AgentPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_agent_sentinel()->ptr.get()) return noop_agent_sentinel();
-    return register_handle(new pt_agent_s{std::move(ptr)});
+    return agent_handle_registry().insert(
+        std::make_shared<pt_agent_s>(pt_agent_s{std::move(ptr)}));
 }
 
 static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_span_sentinel()->ptr.get()) return noop_span_sentinel();
-    return register_handle(new pt_span_s{std::move(ptr)});
+    return span_handle_registry().insert(
+        std::make_shared<pt_span_s>(pt_span_s{std::move(ptr)}));
 }
 
 // ============================================================================
