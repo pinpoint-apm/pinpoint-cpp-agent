@@ -1173,6 +1173,37 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
 }
 
+TEST_F(GrpcMockTest, GrpcMetadataRetriesItemWhenSendThrows) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    std::atomic<int> attempts{0};
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
+        .WillOnce(Invoke([&attempts](grpc::ClientContext*,
+                                    const v1::PApiMetaData&,
+                                    v1::PResult*) -> grpc::Status {
+            ++attempts;
+            throw std::runtime_error("transient metadata send failure");
+        }))
+        .WillOnce(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
+                        SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.throw.retry"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [&attempts] { return attempts.load() >= 2; }, std::chrono::seconds(5)));
+
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(attempts.load(), 2);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
+}
+
 TEST_F(GrpcMockTest, GrpcMetadataSkipsRpcWhenChannelNotReady) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setReadyChannel(false);

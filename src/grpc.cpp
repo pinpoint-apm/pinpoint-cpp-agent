@@ -550,11 +550,11 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::sendMetaWorker() {
-        // Supervise the loop body: a transient exception (e.g. bad_alloc
-        // while building a protobuf message) drops the item being processed
-        // but must not kill the worker for the process lifetime — there is no
-        // other mechanism that would ever bring metadata upload back. Only a
-        // stop request or agent exit ends the worker.
+        // Supervise the loop body so an unexpected exception cannot kill
+        // metadata upload for the process lifetime. Exceptions from an
+        // individual send are contained by run_meta_worker() and converted to
+        // SEND_FAIL, preserving the popped item for the normal retry path.
+        // Only a stop request or agent exit ends the worker.
         while (true) {
             try {
                 run_meta_worker();
@@ -585,7 +585,21 @@ namespace pinpoint {
                 }
             }
 
-            const auto sent = send_meta(*pending.meta) == SEND_OK;
+            auto send_status = SEND_FAIL;
+            try {
+                send_status = send_meta(*pending.meta);
+            } catch (const std::exception& e) {
+                // The item has already been removed from the queue. Treat a
+                // thrown send/build exception like any other failed RPC so it
+                // is retried and, after exhaustion, its cache entry is
+                // released. Letting it reach the outer supervisor would
+                // destroy `pending` and permanently suppress re-publication.
+                LOG_ERROR("metadata send threw an exception: {}", e.what());
+            } catch (...) {
+                LOG_ERROR("metadata send threw an unknown exception");
+            }
+
+            const auto sent = send_status == SEND_OK;
             if (sent) {
                 continue;
             }
