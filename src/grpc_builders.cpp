@@ -340,7 +340,10 @@ namespace pinpoint {
 
         grpc_span->set_spanid(span->getSpanId());
         grpc_span->set_keytime(chunk->getKeyTime());
-        grpc_span->set_endpoint(span->getEndPoint());
+        // The chunk's snapshot, not span->getEndPoint(): the span is still
+        // live here and its endpoint_ may be mutated concurrently by the
+        // owning thread (see SpanChunk::endpoint_).
+        grpc_span->set_endpoint(chunk->getEndPoint());
         grpc_span->set_applicationservicetype(span->getAppType());
 
         if (span->isAsyncSpan()) {

@@ -421,6 +421,23 @@ TEST_F(SpanTest, SpanChunkWithEventsTest) {
     EXPECT_GT(chunk.getSpanEventChunk().size(), 0) << "Should have span events";
 }
 
+TEST_F(SpanTest, SpanChunkEndPointSnapshotTest) {
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
+    span_data->setEndPoint("host-a:8080");
+
+    // A non-final chunk is serialized on the gRPC worker while the span is
+    // still live, so it must carry its own endpoint snapshot: a later
+    // SetEndPoint on the owning thread must not affect (or race with) the
+    // chunk being serialized.
+    SpanChunk chunk(span_data, false);
+    span_data->setEndPoint("host-b:9090");
+
+    EXPECT_EQ(chunk.getEndPoint(), "host-a:8080")
+        << "Chunk should keep the endpoint snapshot taken at creation";
+    EXPECT_EQ(span_data->getEndPoint(), "host-b:9090")
+        << "Span data should hold the updated endpoint";
+}
+
 TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
     auto span_data = span->getSpanData();

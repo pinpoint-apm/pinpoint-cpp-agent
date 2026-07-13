@@ -127,7 +127,8 @@ namespace pinpoint {
     SpanChunk::SpanChunk(const std::shared_ptr<SpanData>& span_data, const bool final) :
                          span_data_(span_data),
                          event_chunk_{},
-                         final_(final), key_time_(0) {
+                         final_(final), key_time_(0),
+                         endpoint_(span_data->getEndPoint()) {
         span_data_->takeFinishedEvents(event_chunk_);
     }
 

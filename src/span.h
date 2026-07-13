@@ -393,6 +393,8 @@ namespace pinpoint {
 		int64_t getKeyTime() const { return key_time_; }
 		/// @brief Indicates whether this chunk represents the final events of the span.
 		bool isFinal() const { return final_; }
+		/// @brief Returns the endpoint snapshot taken when the chunk was created.
+		const std::string& getEndPoint() const { return endpoint_; }
 
 	private:
 		std::shared_ptr<SpanData> span_data_;
@@ -400,6 +402,13 @@ namespace pinpoint {
 		std::vector<SpanEventImpl*> event_chunk_;
 		bool final_;
 		int64_t key_time_;
+		// Copied from span_data_ at construction (on the span-owning thread).
+		// A non-final chunk is serialized on the gRPC span worker while the
+		// span is still live, and SetEndPoint() is the one mutator that stays
+		// legal in that window — the worker must read this snapshot, never
+		// span_data_'s endpoint_, or it races the owning thread's write to a
+		// plain std::string.
+		std::string endpoint_;
 	};
 
     /**

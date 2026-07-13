@@ -203,22 +203,29 @@ namespace pinpoint {
         int64_t prev_pending;
         {
             std::lock_guard<std::mutex> shard_lock(shard.mutex_);
-            prev_pending = pending_.load(std::memory_order_relaxed);
-            if (prev_pending >= static_cast<int64_t>(config->span.queue_size)) {
+            // The limit check uses its own relaxed load; concurrent enqueues
+            // on other shards can overshoot it by at most kQueueShardCount
+            // entries, which is harmless for a drop threshold.
+            if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config->span.queue_size)) {
                 LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
                 return;
             }
             shard.queue_.push(std::move(stats));
-            pending_.fetch_add(1, std::memory_order_relaxed);
+            prev_pending = pending_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        // Wake the worker only on the empty→non-empty transition; while
-        // entries are already pending the worker is awake (or will re-check
-        // its predicate before blocking), so the common case skips add_mutex_
-        // entirely. Taking the (empty) lock pairs the notify with the worker's
-        // predicate check, so it cannot fire between the worker reading
-        // pending_ == 0 and blocking — a lost wakeup that would strand the
-        // entry until the next enqueue.
+        // Wake the worker only on the empty→non-empty transition, decided by
+        // the fetch_add return value: it is atomic with the increment, so the
+        // transition cannot be missed. (A pending_ value loaded before the
+        // push could go stale — the worker drains to zero and blocks between
+        // the load and the push — and then no enqueue would ever notify
+        // again, stranding the worker forever.) While entries are already
+        // pending the worker is awake (or will re-check its predicate before
+        // blocking), so the common case skips add_mutex_ entirely. Taking the
+        // (empty) lock pairs the notify with the worker's predicate check, so
+        // it cannot fire between the worker reading pending_ == 0 and
+        // blocking — a lost wakeup that would strand the entry until the next
+        // enqueue.
         if (prev_pending == 0) {
             { std::lock_guard<std::mutex> lock(add_mutex_); }
             add_cond_var_.notify_one();
