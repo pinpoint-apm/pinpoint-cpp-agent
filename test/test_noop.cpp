@@ -111,6 +111,31 @@ TEST_F(NoopTest, UnsampledSpanSetUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0) << "URL stat should not be recorded until EndSpan is called";
 }
 
+// A failed unsampled request must count as failed in URL stats: unsampled
+// spans are the majority when sampling is on, so missing the failed flag
+// here would skew the failure rate toward zero.
+TEST_F(NoopTest, UnsampledSpanEndSpanMarksFailedUrlStatTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+
+    span.SetUrlStat("/api/users", "GET", 500);
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "HTTP 500 should be recorded as a failed URL stat (default status_errors is 5xx)";
+}
+
+// SetUrlStat after EndSpan must be ignored: the entry could never be sent
+// (EndSpan already consumed the pending stat).
+TEST_F(NoopTest, UnsampledSpanSetUrlStatAfterEndIsIgnoredTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+
+    span.EndSpan();
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0);
+}
+
 TEST_F(NoopTest, UnsampledSpanEndSpanWithoutUrlStatTest) {
     UnsampledSpan span(mock_agent_service_.get());
 

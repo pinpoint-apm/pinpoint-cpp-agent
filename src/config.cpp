@@ -44,34 +44,42 @@
 
 namespace pinpoint {
 
+    // These function-local statics are intentionally heap-allocated and never
+    // destroyed (same treatment as Logger::getInstance() and the config
+    // watcher thread handle): the watcher thread outlives main() when the
+    // host exits without calling Shutdown(), and a config-file change
+    // observed in that window walks make_config() -> get_env() /
+    // get_config_file_path_copy() through these mutexes and strings. Plain
+    // statics would already be destroyed then — locking a destroyed mutex or
+    // reading a destroyed string is undefined behavior during host shutdown.
     static std::string& global_agent_config_str() {
-        static std::string cfg_str;
-        return cfg_str;
+        static auto* cfg_str = new std::string();
+        return *cfg_str;
     }
 
     static std::mutex& config_str_mutex() {
-        static std::mutex mutex;
-        return mutex;
+        static auto* mutex = new std::mutex();
+        return *mutex;
     }
 
     static std::string& global_agent_config_file_path() {
-        static std::string file_path;
-        return file_path;
+        static auto* file_path = new std::string();
+        return *file_path;
     }
 
     static std::mutex& config_file_path_mutex() {
-        static std::mutex mutex;
-        return mutex;
+        static auto* mutex = new std::mutex();
+        return *mutex;
     }
 
     static std::string& env_prefix() {
-        static std::string prefix = env::DEFAULT_PREFIX;
-        return prefix;
+        static auto* prefix = new std::string(env::DEFAULT_PREFIX);
+        return *prefix;
     }
 
     static std::mutex& env_prefix_mutex() {
-        static std::mutex mutex;
-        return mutex;
+        static auto* mutex = new std::mutex();
+        return *mutex;
     }
 
     static std::string get_env_prefix_copy() {
@@ -152,14 +160,19 @@ namespace pinpoint {
         }
     };
 
+    // Heap-allocated and leaked like the statics above: Shutdown() can run
+    // from a host atexit/global-destructor path, where a destroyed static
+    // here would be use-after-destruction. (The watcher itself only uses its
+    // captured shared_ptr copy, so the ConfigWatcherStop object is safe
+    // either way.)
     static std::shared_ptr<ConfigWatcherStop>& config_watcher_stop() {
-        static std::shared_ptr<ConfigWatcherStop> stop;
-        return stop;
+        static auto* stop = new std::shared_ptr<ConfigWatcherStop>();
+        return *stop;
     }
 
     static std::mutex& config_watcher_mutex() {
-        static std::mutex mutex;
-        return mutex;
+        static auto* mutex = new std::mutex();
+        return *mutex;
     }
 
     // pid that started the watcher thread. After a fork() the child inherits a

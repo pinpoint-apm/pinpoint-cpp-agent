@@ -517,6 +517,31 @@ TEST_F(SpanTest, SpanEventEndEventDuplicateGuardTest) {
         << "Both events should be recorded exactly once";
 }
 
+// Ending a parent event while its child is still open must not finish the
+// child with the parent's end call and strand the parent on the stack: the
+// stack is unwound down to the event actually being ended, and a later
+// EndEvent on the implicitly-finished child stays a no-op.
+TEST_F(SpanTest, SpanEventEndEventOutOfOrderUnwindsTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    auto outer = span.NewSpanEvent("outer");
+    auto inner = span.NewSpanEvent("inner");
+    (void)inner;
+
+    outer->EndEvent(); // out of order: implicitly finishes "inner" too
+
+    EXPECT_EQ(span.getSpanData()->topSpanEvent(), nullptr)
+        << "Both events should be off the stack after the out-of-order end";
+
+    inner->EndEvent(); // already implicitly finished: must be a no-op
+
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 2u)
+        << "Both events should be recorded exactly once";
+}
+
 TEST_F(SpanTest, SpanEventEndEventUsesParentSpanTest) {
     SpanPtr span = std::make_shared<SpanImpl>(
         mock_agent_service_.get(), "test-operation", "test-rpc");

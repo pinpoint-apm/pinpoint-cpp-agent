@@ -31,6 +31,41 @@ namespace pinpoint {
             return index < sql.length() ? sql[index] : '\0';
         }
 
+        // Returns the largest length <= max_len that does not split a
+        // multibyte UTF-8 sequence. A byte-count cut landing mid-character
+        // would produce invalid UTF-8, which flows into protobuf string
+        // fields (SQL metadata) that require valid UTF-8 — the collector may
+        // reject or mangle such metadata. Walks back over at most 3
+        // continuation bytes; if the lead byte's sequence runs past the cut,
+        // the whole partial character is dropped. Malformed input (stray
+        // continuation bytes) is trimmed conservatively, never extended.
+        size_t utf8SafeCutLength(std::string_view sql, size_t max_len) {
+            if (sql.length() <= max_len) {
+                return sql.length();
+            }
+            size_t back = 0;
+            while (back < 3 && back < max_len &&
+                   (static_cast<unsigned char>(sql[max_len - 1 - back]) & 0xC0) == 0x80) {
+                ++back;
+            }
+            if (back >= max_len) {
+                return max_len;
+            }
+            const auto lead = static_cast<unsigned char>(sql[max_len - 1 - back]);
+            size_t expected = 1;
+            if ((lead & 0xF8) == 0xF0) {
+                expected = 4;
+            } else if ((lead & 0xF0) == 0xE0) {
+                expected = 3;
+            } else if ((lead & 0xE0) == 0xC0) {
+                expected = 2;
+            }
+            if (expected > back + 1) {
+                return max_len - (back + 1);
+            }
+            return max_len;
+        }
+
         bool isDigit(char c) {
             return std::isdigit(static_cast<unsigned char>(c)) != 0;
         }
@@ -94,8 +129,12 @@ namespace pinpoint {
             return result;
         }
         
-        // Limit SQL length to prevent memory issues.
-        sql = sql.substr(0, std::min(sql.length(), max_sql_length_));
+        // Limit SQL length to prevent memory issues. The cut is UTF-8 aware
+        // so a truncated query never ends in a partial multibyte character.
+        sql = sql.substr(0, utf8SafeCutLength(sql, max_sql_length_));
+        if (sql.empty()) {
+            return result;
+        }
         const size_t sql_length = sql.length();
         result.normalized_sql.reserve(sql_length);
         result.parameters.reserve(64);
@@ -307,6 +346,13 @@ namespace pinpoint {
             if (in_quotes) {
                 if ((ch == '\'' || ch == '"') && ch == quote_char) {
                     if (lookAhead1(sql, i) == quote_char) {
+                        // Both quotes of a doubled-quote escape are consumed
+                        // but only one is emitted ('it''s' becomes 'it's').
+                        // That corrupts the escape in the displayed SQL, but
+                        // it is what the Java agent's DefaultSqlParser does
+                        // and the output must stay byte-compatible with it
+                        // (see JavaCombineBindValuesCases); do not "fix" this
+                        // without the Java side changing first.
                         result += ch;
                         ++i;
                         continue;
@@ -338,6 +384,9 @@ namespace pinpoint {
                 result += ch;
             } else if (ch == '?') {
                 if (bind_index < bind_values.size()) {
+                    // The value is interpolated verbatim — quotes inside it
+                    // are not escaped, matching the Java agent byte-for-byte
+                    // (display-only string; it is never re-parsed here).
                     result += '\'';
                     result += bind_values[bind_index++];
                     result += '\'';

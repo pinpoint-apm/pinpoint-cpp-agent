@@ -54,7 +54,10 @@ namespace pinpoint {
         /// by this event (trace id, generated child span id, parent app info)
         /// into an outbound propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
-        AnnotationPtr GetAnnotations() const override { return ensureAnnotations(); }
+        // Out-of-line: returns the noop annotation once the event is
+        // finished, since a finished event's annotation list may already be
+        // under serialization on the gRPC worker thread.
+        AnnotationPtr GetAnnotations() const override;
         /// @brief Finalizes this event through the parent span. Guarded so a
         /// duplicate call is a warning no-op instead of popping (and thereby
         /// corrupting) another event from the span's event stack.

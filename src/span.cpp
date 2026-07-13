@@ -80,6 +80,30 @@ namespace pinpoint {
         }
     }
 
+    void SpanData::finishSpanEvent(SpanEventImpl* expected) {
+        if (expected == nullptr) {
+            finishSpanEvent();
+            return;
+        }
+        if (event_stack_.top() != expected) {
+            LOG_WARN("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
+        }
+        // `expected` is always on the stack when this is reached: every pop
+        // path marks the event finished, and EndEvent's finished_ exchange
+        // rejects an already-popped event before delegating here. So this
+        // loop is a single pop in the well-nested case and stops at
+        // `expected` when unwinding out-of-order ends.
+        while (auto se = event_stack_.pop()) {
+            const bool found = se.get() == expected;
+            se->finish();
+            storeFinishedEvent(std::move(se));
+            if (found) {
+                return;
+            }
+        }
+        LOG_WARN("finishSpanEvent: abnormal span - ended event not on stack");
+    }
+
     size_t SpanData::finishOpenSpanEvents() {
         size_t count = 0;
         while (auto se = event_stack_.pop()) {
@@ -287,6 +311,16 @@ namespace pinpoint {
         return se;
     }
 
+    AnnotationPtr SpanImpl::GetAnnotations() const {
+        // A finished span's annotation list may already be under
+        // serialization on the gRPC worker thread; handing out the live
+        // container would let user code append concurrently with the
+        // worker's iteration. Every other accessor degrades to a safe no-op
+        // after EndSpan — so does this.
+        CHECK_FINISHED_WITH_RETURN(noopAnnotation());
+        return data_->getAnnotations();
+    }
+
     void SpanImpl::record_chunk(bool final) const try {
         auto chunk = std::make_unique<SpanChunk>(data_, final);
         chunk->optimizeSpanEvents();
@@ -295,10 +329,10 @@ namespace pinpoint {
         LOG_ERROR("record span chunk exception = {}", e.what());
     }
 
-    void SpanImpl::endSpanEvent() {
+    void SpanImpl::endSpanEvent(SpanEventImpl* se) {
         CHECK_FINISHED();
 
-        data_->finishSpanEvent();
+        data_->finishSpanEvent(se);
 
         // event_chunk_size is validated to >= 1 in Config::check(), so the
         // cast cannot produce a huge unsigned value.

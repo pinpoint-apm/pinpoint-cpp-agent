@@ -393,6 +393,10 @@ pt_agent_t pt_global_agent(void);
  *
  * For handles from pt_global_agent() this only frees the C wrapper; the
  * global agent itself is unaffected.
+ *
+ * Destroying the same handle twice (or a pointer that was never returned by
+ * this library) is detected and ignored with a warning log; other calls on a
+ * destroyed handle remain undefined behavior.
  */
 void pt_agent_destroy(pt_agent_t agent);
 
@@ -469,6 +473,10 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
  * @brief Releases a span handle.
  *
  * Call pt_span_end() first to flush the span data, then destroy the handle.
+ *
+ * Destroying the same handle twice (or a pointer that was never returned by
+ * this library) is detected and ignored with a warning log; other calls on a
+ * destroyed handle remain undefined behavior.
  */
 void pt_span_destroy(pt_span_t span);
 

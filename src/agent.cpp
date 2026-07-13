@@ -109,6 +109,17 @@ namespace pinpoint {
     }
 
     void AgentImpl::Start() noexcept try {
+        // Serialized against do_shutdown() (see lifecycle_mutex_): a
+        // concurrent Shutdown() waits for the writes to owner_pid_ and
+        // init_thread_ below to be published before tearing down, and a
+        // Start() arriving after (or during) shutdown refuses instead of
+        // spawning workers nobody will ever join.
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+        if (shutting_down_) {
+            LOG_WARN("agent start rejected: agent is shut down");
+            return;
+        }
+
         // Idempotent: only the first Start() in the object's life brings it
         // online. The recommended fork model is a COLD CreateAgent() in the
         // master (started_ == false) followed by Start() in each child, so a
@@ -674,6 +685,14 @@ namespace pinpoint {
         if (shutting_down_.exchange(true)) {
             return;
         }
+
+        // Wait for an in-flight Start() to finish publishing owner_pid_ and
+        // init_thread_ before reading them below; Start() calls arriving
+        // after this point observe shutting_down_ under the same lock and
+        // refuse. try/catch keeps the noexcept contract if locking ever
+        // fails — proceeding unserialized then matches the old behavior.
+        std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::defer_lock);
+        try { lifecycle_lock.lock(); } catch (...) {}
 
         enabled_ = false;
 

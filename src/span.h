@@ -274,6 +274,17 @@ namespace pinpoint {
     	 */
     	void finishSpanEvent();
     	/**
+    	 * @brief Finalizes span events down to and including `expected`.
+    	 *
+    	 * A well-nested trace always has `expected` on top, so this is a
+    	 * single pop. When user code ends events out of order (parent before
+    	 * child), the events above `expected` are implicitly finished — like
+    	 * EndSpan does for unended events — instead of silently finishing a
+    	 * different event with `expected`'s end time and leaving `expected`
+    	 * stranded on the stack. Logged so misuse is detectable.
+    	 */
+    	void finishSpanEvent(SpanEventImpl* expected);
+    	/**
     	 * @brief Finalizes every span event still on the stack (LIFO order).
     	 *
     	 * Called at EndSpan so events user code failed to end — plus the async
@@ -495,13 +506,15 @@ namespace pinpoint {
     	 */
     	void injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host);
     	/**
-    	 * @brief Pops and finalizes the top span event of this span's stack.
+    	 * @brief Pops and finalizes span events down to `se` (top of stack
+    	 * when the trace is well nested; see SpanData::finishSpanEvent).
     	 *
     	 * Impl-level only (no public Span counterpart): called by
     	 * SpanEventImpl::EndEvent — user code ends an event through the event
     	 * handle, which guards against duplicate ends before delegating here.
+    	 * A null `se` keeps the plain pop-top behavior.
     	 */
-    	void endSpanEvent();
+    	void endSpanEvent(SpanEventImpl* se = nullptr);
     	/**
     	 * @brief Consumes one pending overflow placeholder.
     	 *
@@ -515,7 +528,10 @@ namespace pinpoint {
         std::string GetTraceId() override { return data_->getTraceIdWire(); }
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
-        AnnotationPtr GetAnnotations() const override { return data_->getAnnotations(); }
+        // Out-of-line: returns the noop annotation once the span is finished,
+        // since a finished span's annotation list may already be under
+        // serialization on the gRPC worker thread.
+        AnnotationPtr GetAnnotations() const override;
         const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }

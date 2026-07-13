@@ -63,6 +63,18 @@ namespace pinpoint {
         return annotations_.get();
     }
 
+    AnnotationPtr SpanEventImpl::GetAnnotations() const {
+        // A finished event may already sit in a chunk being serialized on the
+        // gRPC worker thread; handing out the live container would let user
+        // code append concurrently with the worker's iteration. Every other
+        // accessor degrades to a safe no-op after EndEvent — so does this.
+        if (finished_) {
+            LOG_WARN("span event is already finished");
+            return noopAnnotation();
+        }
+        return ensureAnnotations();
+    }
+
     void SpanEventImpl::EndEvent() {
         // Atomic exchange so only the first end proceeds: ending an event
         // twice would pop a DIFFERENT (still-active) event from the span's
@@ -71,7 +83,9 @@ namespace pinpoint {
             LOG_WARN("span event is already finished");
             return;
         }
-        span_->endSpanEvent();
+        // Pass the identity so the span can detect (and unwind) out-of-order
+        // ends instead of finishing whatever event happens to be on top.
+        span_->endSpanEvent(this);
     }
 
     void SpanEventImpl::finish() {

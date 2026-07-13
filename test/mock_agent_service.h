@@ -68,6 +68,7 @@ public:
         last_url_stat_url_ = stat.url_pattern_;
         last_url_stat_method_ = stat.method_;
         last_url_stat_status_code_ = stat.status_code_;
+        last_url_stat_failed_ = stat.failed_;
     }
 
     void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
@@ -201,6 +202,7 @@ public:
     mutable std::string last_url_stat_url_;
     mutable std::string last_url_stat_method_;
     mutable int last_url_stat_status_code_ = 0;
+    mutable bool last_url_stat_failed_ = false;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;

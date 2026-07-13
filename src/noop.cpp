@@ -102,12 +102,23 @@ namespace pinpoint {
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
+            // Mirror SpanImpl::sendUrlStat: unsampled requests are the
+            // majority when sampling is on, so missing this here would skew
+            // the URL-stat failure rate toward zero.
+            url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
             agent_->recordUrlStat(std::move(*url_stat_));
             url_stat_.reset();
         }
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        // Same guard as SpanImpl::SetUrlStat: after EndSpan the entry would
+        // never be sent (EndSpan already consumed url_stat_), and writing it
+        // would race a concurrent EndSpan's std::move on misuse.
+        if (finished_) {
+            LOG_WARN("span is already finished");
+            return;
+        }
         url_stat_.emplace(url_pattern, method, status_code);
     } catch (const std::exception& e) {
         LOG_ERROR("set url stat exception = {}", e.what());

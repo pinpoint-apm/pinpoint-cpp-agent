@@ -354,6 +354,32 @@ TEST_F(SqlTest, MalformedQuotesTest) {
     EXPECT_TRUE(result.normalized_sql.find("SELECT * FROM users") != std::string::npos);
 }
 
+// The max_sql_length cut must never split a multibyte UTF-8 character: the
+// normalized SQL and parameters flow into protobuf string fields that require
+// valid UTF-8, and a partial character would make the collector reject or
+// mangle the SQL metadata.
+TEST_F(SqlTest, Utf8SafeTruncationTest) {
+    // "SELECT '" is 8 bytes; each "가" (U+AC00) is 3 bytes (EA B0 80), so
+    // the first spans bytes 8-10 and the second bytes 11-13. A limit of 12
+    // lands after the first byte of the second "가" — the whole partial
+    // character must be dropped, keeping 11 bytes.
+    SqlNormalizer cut_mid_char(12);
+    auto result = cut_mid_char.normalize("SELECT '\xEA\xB0\x80\xEA\xB0\x80'");
+    EXPECT_EQ(result.parameters, "\xEA\xB0\x80");
+    EXPECT_EQ(result.normalized_sql, "SELECT '0$");
+
+    // A limit landing exactly on a character boundary keeps every byte.
+    SqlNormalizer cut_on_boundary(14);
+    result = cut_on_boundary.normalize("SELECT '\xEA\xB0\x80\xEA\xB0\x80'");
+    EXPECT_EQ(result.parameters, "\xEA\xB0\x80\xEA\xB0\x80");
+
+    // Pure ASCII truncation is unaffected.
+    SqlNormalizer ascii_cut(8);
+    result = ascii_cut.normalize("SELECT 123456");
+    EXPECT_EQ(result.normalized_sql, "SELECT 0#");
+    EXPECT_EQ(result.parameters, "1");
+}
+
 // An unterminated string literal (e.g. SQL truncated at max_sql_length in the
 // middle of a string) still emits its placeholder, so the extracted parameter
 // list stays index-aligned with the normalized SQL.

@@ -612,7 +612,6 @@ namespace pinpoint {
 
     namespace {
         constexpr int ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
-        constexpr auto COMMAND_RECONNECT_DELAY = std::chrono::milliseconds(1000);
         constexpr auto ACTIVE_THREAD_COUNT_FLUSH_DELAY = std::chrono::milliseconds(1000);
         // Each stream owns a dedicated thread, so cap how many the collector
         // can open at once.
@@ -990,6 +989,15 @@ namespace pinpoint {
             GrpcCommand* self_;
         };
 
+        // readyChannel() backs off only while the channel itself is down. A
+        // fixed short delay here would churn once a second forever when the
+        // channel is READY but the collector terminates the stream
+        // immediately (auth/api-key rejection, version mismatch, port
+        // pointing at a non-command service) — two INFO lines per second for
+        // the process lifetime. Back off exponentially instead, resetting
+        // once the stream demonstrably works (a command is read).
+        ExponentialBackoff reconnect_backoff{};
+
         while (!agent_->isExiting()) {
             if (!readyChannel()) {
                 break;
@@ -1009,6 +1017,9 @@ namespace pinpoint {
             } else {
                 v1::PCmdRequest request;
                 while (!agent_->isExiting() && stream->Read(&request)) {
+                    // The stream demonstrably works: reconnect promptly if it
+                    // later drops (e.g. collector restart).
+                    reconnect_backoff.reset();
                     LOG_DEBUG("received command request: requestId={}, commandCode={}",
                               request.requestid(), command_code(request));
                     const auto handled = dispatcher_.handle(request, stream.get());
@@ -1033,7 +1044,7 @@ namespace pinpoint {
                 cleanup_active_thread_count_streams();
             }
 
-            if (agent_->isExiting() || wait_reconnect_delay(COMMAND_RECONNECT_DELAY)) {
+            if (agent_->isExiting() || wait_reconnect_delay(reconnect_backoff.next_delay())) {
                 break;
             }
         }

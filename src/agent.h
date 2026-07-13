@@ -222,6 +222,14 @@ namespace pinpoint {
     	pid_t create_pid_{};
     	pid_t owner_pid_{};
 
+    	// Serializes Start() against do_shutdown(). Without it a concurrent
+    	// Shutdown() races Start()'s writes to owner_pid_ and init_thread_
+    	// (both plain members), or completes teardown first — after which the
+    	// init thread and workers Start() spawns would never be joined and
+    	// would dereference a destroyed agent. Start() checks shutting_down_
+    	// under this lock and refuses to bring a torn-down agent back up.
+    	std::mutex lifecycle_mutex_;
+
     	/// @brief Builds a new AgentRuntime for cfg, rebuilding only the
     	/// components whose backing configuration changed relative to old_rt;
     	/// unchanged components are shared with the previous runtime so their

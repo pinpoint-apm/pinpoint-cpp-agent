@@ -456,6 +456,23 @@ TEST_F(TracerCApiTest, ExceptionFirewallSwallowsCallbackExceptions) {
     pt_span_destroy(span);
 }
 
+// Destroying an owned handle twice (or destroying a foreign pointer) is the
+// one classic-C misuse the wrapper could not survive before: the registry
+// makes it a warning no-op instead of a double delete corrupting the heap.
+TEST_F(TracerCApiTest, DoubleDestroyIsSafe) {
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+    pt_span_end(span);
+    pt_span_destroy(span);
+    EXPECT_NO_FATAL_FAILURE(pt_span_destroy(span));
+
+    pt_agent_t global = pt_global_agent();
+    if (global) {
+        pt_agent_destroy(global);
+        EXPECT_NO_FATAL_FAILURE(pt_agent_destroy(global));
+    }
+}
+
 // ============================================================================
 // 4. Span creation
 // ============================================================================

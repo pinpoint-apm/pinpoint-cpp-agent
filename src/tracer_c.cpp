@@ -39,11 +39,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -118,9 +121,72 @@ static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result
     });
 }
 
+// ============================================================================
+// Owned-handle registry
+//
+// Agent and span handles are the only heap-owned handles, and the classic C
+// misuse — destroying one twice — would be a double delete (heap corruption
+// inside the host application). Every other misuse path here is guarded, so
+// track the live owned handles in a small sharded set: create registers,
+// destroy unregisters-then-deletes, and a handle that is not registered
+// (double destroy, or a pointer this library never allocated) is a warning
+// no-op instead of heap corruption. Sharded by pointer bits to keep the
+// per-request span create/destroy from serializing on one mutex.
+// ============================================================================
+
+namespace {
+class OwnedHandleRegistry {
+public:
+    void insert(const void* handle) {
+        auto& shard = shard_for(handle);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        shard.live.insert(handle);
+    }
+
+    // Removes the handle; false when it was not live (double destroy or a
+    // foreign pointer).
+    bool erase(const void* handle) {
+        auto& shard = shard_for(handle);
+        std::lock_guard<std::mutex> lock(shard.mutex);
+        return shard.live.erase(handle) > 0;
+    }
+
+private:
+    struct Shard {
+        std::mutex mutex;
+        std::unordered_set<const void*> live;
+    };
+    static constexpr size_t kShardCount = 8;
+
+    Shard& shard_for(const void* handle) {
+        // Low bits are allocator-aligned zeros; shift them out first.
+        return shards_[(reinterpret_cast<uintptr_t>(handle) >> 4) % kShardCount];
+    }
+
+    Shard shards_[kShardCount];
+};
+
+OwnedHandleRegistry& owned_handle_registry() {
+    // Heap-allocated and leaked (same rationale as the Logger): handles may
+    // be destroyed from host teardown paths running after static destruction.
+    static auto* registry = new OwnedHandleRegistry();
+    return *registry;
+}
+}  // namespace
+
+template <typename Handle>
+static Handle register_handle(Handle handle) {
+    owned_handle_registry().insert(handle);
+    return handle;
+}
+
 template <typename Handle>
 static void destroy_handle(Handle handle, Handle noop_handle) {
-    if (handle == noop_handle) return;  // static sentinel — never owned
+    if (handle == nullptr || handle == noop_handle) return;  // static sentinel — never owned
+    if (!owned_handle_registry().erase(handle)) {
+        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
+        return;
+    }
     delete handle;
 }
 
@@ -209,13 +275,13 @@ static pt_span_s* noop_span_sentinel() {
 static pt_agent_t make_agent_handle(pinpoint::AgentPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_agent_sentinel()->ptr.get()) return noop_agent_sentinel();
-    return new pt_agent_s{std::move(ptr)};
+    return register_handle(new pt_agent_s{std::move(ptr)});
 }
 
 static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_span_sentinel()->ptr.get()) return noop_span_sentinel();
-    return new pt_span_s{std::move(ptr)};
+    return register_handle(new pt_span_s{std::move(ptr)});
 }
 
 // ============================================================================
