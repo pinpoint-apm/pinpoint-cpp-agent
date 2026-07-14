@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <functional>
 #include <memory>
@@ -45,6 +46,7 @@
 
 #include "agent_service.h"
 #include "callstack.h"
+#include "sharded_bounded_queue.h"
 #include "span.h"
 
 namespace pinpoint {
@@ -542,9 +544,14 @@ namespace pinpoint {
      *   dropped and the event is logged at INFO.
      *
      * ### Queue overflow policy
-     * - When the queue is full, @c enqueueSpan discards the *oldest* chunk
-     *   to make room for the new one (head-drop). This matches Java's
-     *   @c LinkedBlockingQueue.poll() then offer() behavior.
+     * - The configured capacity is assigned to producer shards as transferable
+     *   quotas. When a shard's quota is full, @c enqueueSpan replaces that
+     *   shard's *oldest* chunk (head-drop), matching Java's preference for
+     *   retaining the newest telemetry without returning to a process-wide
+     *   lock. FIFO order is preserved per shard; cross-shard order is
+     *   intentionally unspecified.
+     * - Once per minute, the worker logs the cumulative oldest-drop count at
+     *   INFO only when it has increased since the previous report.
      *
      * ### partial_success handling
      * - Successful responses with @c rejected_spans > 0 are logged at WARN.
@@ -573,8 +580,8 @@ namespace pinpoint {
         /**
          * @brief Adds a span chunk to the outbound queue.
          *
-         * On overflow the oldest queued chunk is dropped to make room
-         * (head-drop), matching the Java sender behavior.
+         * On overflow the oldest chunk in the producer's shard is dropped to
+         * make room (head-drop), retaining the newest telemetry.
          *
          * @param span Span chunk payload (ownership transferred).
          */
@@ -591,9 +598,18 @@ namespace pinpoint {
     private:
         std::unique_ptr<v1::Span::StubInterface> span_stub_{};
 
-        std::queue<std::unique_ptr<SpanChunk>> span_queue_{};
-        std::mutex span_queue_mutex_{};
+        ShardedBoundedQueue<std::unique_ptr<SpanChunk>> span_queue_;
+
+        // Queue operations never take this wait mutex. It only closes the race
+        // between the single consumer checking all shards and sleeping.
+        // Producers touch it only while the consumer is actually waiting; the
+        // queue's short-held locks are independent per producer shard.
+        std::mutex span_wait_mutex_{};
         std::condition_variable span_queue_cv_{};
+        std::atomic<bool> span_consumer_waiting_{false};
+        std::chrono::steady_clock::time_point next_span_queue_drop_log_at_{};
+        uint64_t last_logged_span_queue_drops_{0};
+        bool span_queue_drop_log_pending_{false};
 
         // Permit-based semaphore that caps the number of concurrently in-flight
         // SendSpanBatch RPCs, plus a registry of the in-flight call contexts so
@@ -602,15 +618,19 @@ namespace pinpoint {
         std::shared_ptr<SpanBatchInflight> inflight_{};
 
         void collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer);
+        void maybe_log_span_queue_drops();
+        bool wait_dequeue_until(std::unique_ptr<SpanChunk>& span,
+                                std::chrono::steady_clock::time_point deadline);
+        void notify_span_worker();
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
         bool try_acquire_permit(std::chrono::milliseconds timeout);
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
         void release_permit();
         void await_in_flight_requests();
-        void flush_remaining();
+        void flush_remaining(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);
         // Worker loop body; sendSpanWorker() supervises it and restarts it
         // after a transient exception instead of letting the worker die.
-        void run_span_worker();
+        void run_span_worker(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);
     };
 
     /**

@@ -35,6 +35,16 @@ target_link_libraries(test_limiter
 set_target_properties(test_limiter PROPERTIES CXX_STANDARD 17)
 add_test(NAME test_limiter COMMAND test_limiter)
 
+# Sharded bounded span queue tests
+add_executable(test_sharded_bounded_queue test_sharded_bounded_queue.cpp)
+target_include_directories(test_sharded_bounded_queue PRIVATE ../src)
+target_link_libraries(test_sharded_bounded_queue
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_sharded_bounded_queue PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_sharded_bounded_queue COMMAND test_sharded_bounded_queue)
+
 # Sampling tests
 add_executable(test_sampling test_sampling.cpp)
 target_include_directories(test_sampling PRIVATE ../src)

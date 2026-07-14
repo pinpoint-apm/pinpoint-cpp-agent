@@ -333,6 +333,9 @@ namespace pinpoint {
     // so a persistent failure (e.g. allocation pressure) cannot turn the
     // supervisor loops into a hot spin.
     constexpr auto WORKER_RESTART_DELAY = std::chrono::milliseconds(1000);
+    // Queue drops are cumulative. The span worker reports them periodically so
+    // a long-lived, overloaded agent exposes telemetry loss while it happens.
+    constexpr auto SPAN_QUEUE_DROP_LOG_INTERVAL = std::chrono::seconds(60);
 
     //GrpcMetadata
 
@@ -1564,7 +1567,8 @@ namespace pinpoint {
         }
     };
 
-    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config) : GrpcClient(SPAN, std::move(config)) {
+    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config)
+        : GrpcClient(SPAN, config), span_queue_(config->span.queue_size) {
         inflight_ = std::make_shared<SpanBatchInflight>();
         inflight_->max_permits = config_->collector.span_batch.max_concurrent_requests;
         inflight_->permits = inflight_->max_permits;
@@ -1601,35 +1605,61 @@ namespace pinpoint {
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
         // Null guard mirrors enqueueMeta: a null chunk would pass through the
         // queue and crash the worker at getSpanData().
-        if (span == nullptr || (agent_ != nullptr && agent_->isExiting())) {
+        if (span == nullptr || stop_requested_.load(std::memory_order_relaxed) ||
+                (agent_ != nullptr && agent_->isExiting())) {
             return;
         }
 
-        {
-            std::unique_lock<std::mutex> lock(span_queue_mutex_);
-
-            const auto& config = config_;
-            if (span_queue_.size() < config->span.queue_size) {
-                span_queue_.push(std::move(span));
-                LOG_DEBUG("enqueueSpan: queue_size={}", span_queue_.size());
-            } else {
-                // Head-drop: discard the oldest queued span and enqueue the new one.
-                // Matches Java SpanBatchGrpcDataSender.send().
-                span_queue_.pop();
-                span_queue_.push(std::move(span));
-                LOG_DEBUG("discard oldest span: overflow max queue size {}", config->span.queue_size);
-            }
-        }
-
-        // Notify after releasing the lock: every span completion on every
-        // application thread passes through here, and notifying while still
-        // holding span_queue_mutex_ makes the woken worker immediately block on
-        // the same mutex ("hurry up and wait").
-        span_queue_cv_.notify_one();
+        // Each service thread is mapped to a stable shard. Head-drop and insert
+        // complete in one short shard-local critical section with no allocation
+        // and no process-wide counter write on the hot path.
+        span_queue_.enqueue(span);
+        notify_span_worker();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue span: exception = {}", e.what());
     } catch (...) {
         LOG_ERROR("failed to enqueue span: unknown exception");
+    }
+
+    void GrpcSpan::notify_span_worker() {
+        // The fast path never takes the wait mutex. If the worker has announced
+        // that it is about to sleep, pairing the notify with the same mutex used
+        // by wait_dequeue_until closes the empty-check / sleep lost-wakeup gap.
+        if (!span_consumer_waiting_.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(span_wait_mutex_);
+        if (span_consumer_waiting_.load(std::memory_order_relaxed)) {
+            span_queue_cv_.notify_one();
+        }
+    }
+
+    bool GrpcSpan::wait_dequeue_until(
+            std::unique_ptr<SpanChunk>& span,
+            std::chrono::steady_clock::time_point deadline) {
+        if (span_queue_.try_dequeue(span)) {
+            return true;
+        }
+
+        std::unique_lock<std::mutex> lock(span_wait_mutex_);
+        span_consumer_waiting_.store(true, std::memory_order_release);
+        struct WaitingFlagReset {
+            std::atomic<bool>& flag;
+            ~WaitingFlagReset() { flag.store(false, std::memory_order_release); }
+        } reset{span_consumer_waiting_};
+
+        while (true) {
+            // Double-check after publishing the waiting flag while holding the
+            // wait mutex. An enqueue that raced the first empty check either is
+            // visible here or must take this mutex before notifying.
+            if (span_queue_.try_dequeue(span)) {
+                return true;
+            }
+            if (stopping() || std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            span_queue_cv_.wait_until(lock, deadline);
+        }
     }
 
     void GrpcSpan::collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer) {
@@ -1638,43 +1668,60 @@ namespace pinpoint {
         const auto collect_deadline_ms = std::chrono::milliseconds(batch_cfg.collect_deadline_ms);
         const auto batch_size = static_cast<size_t>(batch_cfg.size);
 
-        std::unique_lock<std::mutex> lock(span_queue_mutex_);
-
-        // Block (with timeout) until the first item arrives or the worker is asked to stop.
-        if (!span_queue_cv_.wait_for(lock, flush_timeout, [this]{
-                return !span_queue_.empty() || stopping();
-            })) {
+        std::unique_ptr<SpanChunk> span;
+        auto first_wait_deadline = std::chrono::steady_clock::now() + flush_timeout;
+        if (span_queue_drop_log_pending_) {
+            first_wait_deadline = std::min(
+                first_wait_deadline, next_span_queue_drop_log_at_);
+        }
+        if (!wait_dequeue_until(span, first_wait_deadline)) {
             return;
         }
-        if (span_queue_.empty()) {
-            return;
-        }
-
-        buffer.push_back(std::move(span_queue_.front()));
-        span_queue_.pop();
+        buffer.push_back(std::move(span));
 
         // Gather more items until either the batch is full or the collect
         // deadline elapses. Matches Java SpanBatchGrpcDataSender.collectBatch.
-        const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
-        while (buffer.size() < batch_size) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= deadline) {
-                break;
-            }
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-            if (!span_queue_cv_.wait_for(lock, remaining, [this]{
-                    return !span_queue_.empty() || stopping();
-                })) {
-                break;
-            }
-            if (span_queue_.empty()) {
-                break;
-            }
-            buffer.push_back(std::move(span_queue_.front()));
-            span_queue_.pop();
+        auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
+        if (span_queue_drop_log_pending_) {
+            deadline = std::min(deadline, next_span_queue_drop_log_at_);
         }
-        LOG_DEBUG("collect_batch: collected={} batch_size_limit={} remaining_queue={}",
-                  buffer.size(), batch_size, span_queue_.size());
+        while (buffer.size() < batch_size) {
+            // Drain everything that is already published before paying the
+            // cost of another sleep/wakeup round trip.
+            while (buffer.size() < batch_size && span_queue_.try_dequeue(span)) {
+                buffer.push_back(std::move(span));
+            }
+            if (buffer.size() >= batch_size || stopping() ||
+                    std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+            if (!wait_dequeue_until(span, deadline)) {
+                break;
+            }
+            buffer.push_back(std::move(span));
+        }
+        LOG_DEBUG("collect_batch: collected={} batch_size_limit={}", buffer.size(), batch_size);
+    }
+
+    void GrpcSpan::maybe_log_span_queue_drops() {
+        const auto dropped_oldest = span_queue_.dropped_oldest();
+        if (dropped_oldest <= last_logged_span_queue_drops_) {
+            span_queue_drop_log_pending_ = false;
+            return;
+        }
+        span_queue_drop_log_pending_ = true;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_span_queue_drop_log_at_) {
+            return;
+        }
+        next_span_queue_drop_log_at_ = now + SPAN_QUEUE_DROP_LOG_INTERVAL;
+
+        if (Logger::getInstance().infoEnabled()) {
+            LOG_INFO("span queue drops: oldest={}", dropped_oldest);
+            last_logged_span_queue_drops_ = dropped_oldest;
+            span_queue_drop_log_pending_ = false;
+        }
     }
 
     void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch) try {
@@ -1808,14 +1855,13 @@ namespace pinpoint {
         }
     }
 
-    void GrpcSpan::flush_remaining() {
-        std::vector<std::unique_ptr<SpanChunk>> remaining;
-        {
-            std::unique_lock<std::mutex> lock(span_queue_mutex_);
-            while (!span_queue_.empty()) {
-                remaining.push_back(std::move(span_queue_.front()));
-                span_queue_.pop();
-            }
+    void GrpcSpan::flush_remaining(std::vector<std::unique_ptr<SpanChunk>>& remaining) {
+        // Reserve before removing anything so an allocation failure leaves the
+        // queue intact instead of losing a chunk between dequeue and push_back.
+        remaining.reserve(remaining.size() + span_queue_.capacity());
+        std::unique_ptr<SpanChunk> span;
+        while (span_queue_.try_dequeue_after_stop(span)) {
+            remaining.push_back(std::move(span));
         }
         if (!remaining.empty()) {
             // readyChannel() refuses to wait once the agent is exiting, so probe
@@ -1838,6 +1884,7 @@ namespace pinpoint {
             } else {
                 LOG_INFO("drop {} remaining spans on shutdown: channel not ready", remaining.size());
             }
+            remaining.clear();
         }
         await_in_flight_requests();
     }
@@ -1849,9 +1896,14 @@ namespace pinpoint {
         // again. Only agent exit ends the worker, and the shutdown flush runs
         // on every path, including exception unwinds that previously skipped
         // it and silently dropped the queued chunks.
+        std::vector<std::unique_ptr<SpanChunk>> pending_batch;
+        last_logged_span_queue_drops_ = 0;
+        span_queue_drop_log_pending_ = false;
+        next_span_queue_drop_log_at_ =
+            std::chrono::steady_clock::now() + SPAN_QUEUE_DROP_LOG_INTERVAL;
         while (!stopping()) {
             try {
-                run_span_worker();
+                run_span_worker(pending_batch);
                 break;
             } catch (const std::exception& e) {
                 LOG_ERROR("grpc span worker exception = {}", e.what());
@@ -1859,14 +1911,19 @@ namespace pinpoint {
                 LOG_ERROR("grpc span worker unknown exception");
             }
 
-            std::unique_lock<std::mutex> lock(span_queue_mutex_);
+            if (!stopping()) {
+                // run_span_worker previously owned its batch as a local, so an
+                // exception dropped those chunks before the supervisor restart.
+                pending_batch.clear();
+            }
+            std::unique_lock<std::mutex> lock(span_wait_mutex_);
             span_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
                 return stopping();
             });
         }
 
         try {
-            flush_remaining();
+            flush_remaining(pending_batch);
         } catch (const std::exception& e) {
             LOG_ERROR("grpc span worker flush exception = {}", e.what());
         } catch (...) {
@@ -1875,12 +1932,13 @@ namespace pinpoint {
         LOG_INFO("grpc span worker end");
     }
 
-    void GrpcSpan::run_span_worker() {
+    void GrpcSpan::run_span_worker(std::vector<std::unique_ptr<SpanChunk>>& batch) {
+        batch.reserve(static_cast<size_t>(config_->collector.span_batch.size));
         while (!stopping()) {
-            std::vector<std::unique_ptr<SpanChunk>> batch;
-            batch.reserve(config_->collector.span_batch.size);
+            batch.clear();
 
             collect_batch(batch);
+            maybe_log_span_queue_drops();
             if (batch.empty()) {
                 continue;
             }
@@ -1890,20 +1948,21 @@ namespace pinpoint {
             } else if (stopping()) {
                 // readyChannel() refuses to wait once the agent is exiting,
                 // but these chunks were already collected out of the queue.
-                // Hand them back so flush_remaining() can still send them
-                // over an already-connected channel instead of silently
-                // dropping up to a full batch at shutdown.
-                std::unique_lock<std::mutex> lock(span_queue_mutex_);
-                for (auto& chunk : batch) {
-                    span_queue_.push(std::move(chunk));
-                }
+                // Keep the worker-owned batch out of the bounded queue and pass
+                // it directly to flush_remaining(). Re-enqueueing can fail if
+                // producers filled the freed slots during channel shutdown.
+                return;
+            } else {
+                // Preserve the existing outage policy: a batch collected while
+                // the channel cannot become ready is not retried indefinitely.
+                batch.clear();
             }
         }
     }
 
     void GrpcSpan::stopSpanWorker() {
         request_stop();
-        std::unique_lock<std::mutex> lock(span_queue_mutex_);
+        std::lock_guard<std::mutex> lock(span_wait_mutex_);
         span_queue_cv_.notify_all();
     }
 

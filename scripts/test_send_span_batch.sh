@@ -188,7 +188,7 @@ fi
 
 echo
 echo "--- totals ---"
-echo "  enqueueSpan calls:    $(grep -c 'enqueueSpan: queue_size' "$LOG_FILE" || true)"
+echo "  enqueueSpan calls:    (hot-path logging disabled)"
 echo "  collect_batch sum:    $(grep 'collect_batch:' "$LOG_FILE" | awk -F'collected=' '{print $2}' | awk '{sum+=$1} END {print sum+0}')"
 echo "  SendSpanBatch sends:  $(grep -c 'SendSpanBatch sending' "$LOG_FILE" || true)"
 echo "  SendSpanBatch oks:    $(grep -c 'SendSpanBatch success' "$LOG_FILE" || true)"
