@@ -333,6 +333,9 @@ namespace pinpoint {
     // so a persistent failure (e.g. allocation pressure) cannot turn the
     // supervisor loops into a hot spin.
     constexpr auto WORKER_RESTART_DELAY = std::chrono::milliseconds(1000);
+    // Queue drops are cumulative. The span worker reports them periodically so
+    // a long-lived, overloaded agent exposes telemetry loss while it happens.
+    constexpr auto SPAN_QUEUE_DROP_LOG_INTERVAL = std::chrono::seconds(60);
 
     //GrpcMetadata
 
@@ -1666,14 +1669,22 @@ namespace pinpoint {
         const auto batch_size = static_cast<size_t>(batch_cfg.size);
 
         std::unique_ptr<SpanChunk> span;
-        if (!wait_dequeue_until(span, std::chrono::steady_clock::now() + flush_timeout)) {
+        auto first_wait_deadline = std::chrono::steady_clock::now() + flush_timeout;
+        if (span_queue_drop_log_pending_) {
+            first_wait_deadline = std::min(
+                first_wait_deadline, next_span_queue_drop_log_at_);
+        }
+        if (!wait_dequeue_until(span, first_wait_deadline)) {
             return;
         }
         buffer.push_back(std::move(span));
 
         // Gather more items until either the batch is full or the collect
         // deadline elapses. Matches Java SpanBatchGrpcDataSender.collectBatch.
-        const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
+        auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
+        if (span_queue_drop_log_pending_) {
+            deadline = std::min(deadline, next_span_queue_drop_log_at_);
+        }
         while (buffer.size() < batch_size) {
             // Drain everything that is already published before paying the
             // cost of another sleep/wakeup round trip.
@@ -1690,6 +1701,27 @@ namespace pinpoint {
             buffer.push_back(std::move(span));
         }
         LOG_DEBUG("collect_batch: collected={} batch_size_limit={}", buffer.size(), batch_size);
+    }
+
+    void GrpcSpan::maybe_log_span_queue_drops() {
+        const auto dropped_oldest = span_queue_.dropped_oldest();
+        if (dropped_oldest <= last_logged_span_queue_drops_) {
+            span_queue_drop_log_pending_ = false;
+            return;
+        }
+        span_queue_drop_log_pending_ = true;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_span_queue_drop_log_at_) {
+            return;
+        }
+        next_span_queue_drop_log_at_ = now + SPAN_QUEUE_DROP_LOG_INTERVAL;
+
+        if (Logger::getInstance().infoEnabled()) {
+            LOG_INFO("span queue drops: oldest={}", dropped_oldest);
+            last_logged_span_queue_drops_ = dropped_oldest;
+            span_queue_drop_log_pending_ = false;
+        }
     }
 
     void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch) try {
@@ -1855,11 +1887,6 @@ namespace pinpoint {
             remaining.clear();
         }
         await_in_flight_requests();
-
-        const auto dropped_oldest = span_queue_.dropped_oldest();
-        if (dropped_oldest > 0) {
-            LOG_INFO("span queue drops: oldest={}", dropped_oldest);
-        }
     }
 
     void GrpcSpan::sendSpanWorker() {
@@ -1870,6 +1897,10 @@ namespace pinpoint {
         // on every path, including exception unwinds that previously skipped
         // it and silently dropped the queued chunks.
         std::vector<std::unique_ptr<SpanChunk>> pending_batch;
+        last_logged_span_queue_drops_ = 0;
+        span_queue_drop_log_pending_ = false;
+        next_span_queue_drop_log_at_ =
+            std::chrono::steady_clock::now() + SPAN_QUEUE_DROP_LOG_INTERVAL;
         while (!stopping()) {
             try {
                 run_span_worker(pending_batch);
@@ -1907,6 +1938,7 @@ namespace pinpoint {
             batch.clear();
 
             collect_batch(batch);
+            maybe_log_span_queue_drops();
             if (batch.empty()) {
                 continue;
             }

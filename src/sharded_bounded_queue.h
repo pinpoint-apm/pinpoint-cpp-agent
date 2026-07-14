@@ -132,7 +132,7 @@ namespace pinpoint {
         size_t capacity() const noexcept { return capacity_; }
         size_t shard_count() const noexcept { return shard_count_; }
 
-        uint64_t dropped_oldest() const {
+        uint64_t dropped_oldest() const noexcept {
             uint64_t total = 0;
             for (const auto& shard : shards_) {
                 total += shard->dropped_oldest();
@@ -177,7 +177,7 @@ namespace pinpoint {
                 cells_[tail_] = std::move(value);
                 tail_ = next(tail_);
                 head_ = next(head_);
-                ++dropped_oldest_;
+                record_drop();
             }
 
             bool try_dequeue(T& value) {
@@ -215,7 +215,7 @@ namespace pinpoint {
                     cells_[head_] = T{};
                     head_ = next(head_);
                     --size_;
-                    ++dropped_oldest_;
+                    record_drop();
                 }
                 return transferred;
             }
@@ -225,9 +225,8 @@ namespace pinpoint {
                 quota_ += amount;
             }
 
-            uint64_t dropped_oldest() const {
-                std::lock_guard<std::mutex> lock(mutex_);
-                return dropped_oldest_;
+            uint64_t dropped_oldest() const noexcept {
+                return dropped_oldest_.load(std::memory_order_relaxed);
             }
 
         private:
@@ -248,6 +247,15 @@ namespace pinpoint {
                 return position == cells_.size() ? 0 : position;
             }
 
+            void record_drop() noexcept {
+                // All writers already hold mutex_, so a relaxed load/store is
+                // sufficient and avoids a locked atomic read-modify-write. The
+                // atomic representation lets the worker read drop snapshots
+                // without taking every producer shard mutex.
+                const auto current = dropped_oldest_.load(std::memory_order_relaxed);
+                dropped_oldest_.store(current + 1, std::memory_order_relaxed);
+            }
+
             std::vector<T> cells_;
             mutable std::mutex mutex_;
             std::atomic<bool> active_{false};
@@ -255,7 +263,7 @@ namespace pinpoint {
             size_t head_{0};
             size_t tail_{0};
             size_t size_{0};
-            uint64_t dropped_oldest_{0};
+            std::atomic<uint64_t> dropped_oldest_{0};
         };
 
         void ensure_active(size_t home) {
