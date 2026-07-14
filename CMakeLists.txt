@@ -27,6 +27,7 @@ option(BUILD_EXAMPLES     "Build examples"             ON)
 option(BUILD_SHARED_LIBS  "Build as a shared library"  ON)
 option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
 option(BUILD_COVERAGE     "Enable coverage instrumentation (Clang/LLVM or GCC)" OFF)
+option(BUILD_BENCHMARKS   "Build standalone microbenchmarks" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -358,6 +359,10 @@ endif()
 
 if (BUILD_EXAMPLES)
   add_subdirectory(example)
+endif()
+
+if (BUILD_BENCHMARKS)
+  add_subdirectory(benchmark)
 endif()
 
 # LLVM source-based coverage target. It builds every in-tree test executable,
