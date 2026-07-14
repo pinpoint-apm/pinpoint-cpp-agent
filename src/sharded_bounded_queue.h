@@ -42,6 +42,11 @@ namespace pinpoint {
      * Quota transfers are rare setup/expansion operations protected by a
      * separate mutex, while steady-state enqueue and head-drop touch only the
      * producer's shard. Cross-shard dequeue order is intentionally unspecified.
+     *
+     * To keep quota borrowing and every enqueue allocation-free, each shard
+     * preallocates a physical ring with QueueSize cells. Physical cell storage
+     * is therefore shard_count * QueueSize, even though the global logical
+     * retention bound remains QueueSize.
      */
     template <typename T>
     class ShardedBoundedQueue final {
@@ -71,9 +76,11 @@ namespace pinpoint {
             for (size_t shard = 0; shard < shard_count_; ++shard) {
                 const size_t quota = base_capacity + (shard < extra_cells ? 1 : 0);
                 // A shard can borrow every other quota when it is the only
-                // active producer. Preallocating the maximum physical ring is
-                // what keeps all later enqueues allocation-free; the sum of
-                // logical quotas, and therefore retained values, stays capacity_.
+                // active producer. Each shard therefore preallocates capacity_
+                // physical cells: total physical cells are
+                // shard_count_ * capacity_. This keeps all later enqueues
+                // allocation-free, while the sum of logical quotas and retained
+                // values remains capacity_.
                 shards_.push_back(std::make_unique<Shard>(capacity_, quota));
                 base_quotas_.push_back(quota);
             }

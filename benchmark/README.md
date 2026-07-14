@@ -6,6 +6,23 @@ throughput and sampled enqueue p50/p99/max latency without allocating a payload 
 The move-only benchmark token has the same ownership-transfer shape and size as
 a `std::unique_ptr`.
 
+## Memory trade-off
+
+`QueueSize` is the global logical retention bound, but it is not the number of
+physically allocated cells. To let any one producer shard borrow the entire
+logical capacity without allocating on the enqueue path, every shard
+preallocates a `QueueSize`-cell ring:
+
+```text
+physical cell count = shard_count * QueueSize
+approximate cell storage = shard_count * QueueSize * sizeof(queue value)
+```
+
+With the defaults (`QueueSize=1024`, 32 shards, and an 8-byte pointer-sized
+value), this is 32,768 physical cells, or approximately 256 KiB, excluding shard
+metadata and allocator overhead. At most `QueueSize` values are logically
+retained across all shards.
+
 The benchmark target is always compiled with optimization, including when the
 rest of the project uses the `debug-cached` preset:
 
