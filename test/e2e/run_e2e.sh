@@ -12,6 +12,7 @@ LOAD_MODE=""
 LOAD_DURATION=30
 LOAD_CONCURRENCY=5
 LOAD_RPS=""
+LOAD_MAX_THROUGHPUT=false
 RUN_C_API=true
 RUN_FORK=true
 KEEP_LOGS=false
@@ -34,6 +35,7 @@ Options:
       --load-concurrency N  Load workers, or fixed-RPS max in-flight requests
                             (default: $LOAD_CONCURRENCY)
       --load-rps RPS        Use constant-arrival-rate load at this target RPS
+      --load-max-throughput Use the unthrottled connection-reusing load test
       --skip-c-api          Skip the pure-C API scenario
       --skip-fork           Skip the cold-create/fork scenario
       --log-dir DIR         Store process logs in DIR
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --load-duration) LOAD_DURATION=$2; shift 2 ;;
         --load-concurrency) LOAD_CONCURRENCY=$2; shift 2 ;;
         --load-rps) LOAD_RPS=$2; shift 2 ;;
+        --load-max-throughput) LOAD_MAX_THROUGHPUT=true; shift ;;
         --skip-c-api) RUN_C_API=false; shift ;;
         --skip-fork) RUN_FORK=false; shift ;;
         --log-dir) LOG_DIR=$2; shift 2 ;;
@@ -65,7 +68,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -n "$LOAD_RPS" && -z "$LOAD_MODE" ]]; then
+if [[ -n "$LOAD_RPS" ]] && $LOAD_MAX_THROUGHPUT; then
+    echo "--load-rps and --load-max-throughput cannot be used together." >&2
+    exit 2
+fi
+if { [[ -n "$LOAD_RPS" ]] || $LOAD_MAX_THROUGHPUT; } && [[ -z "$LOAD_MODE" ]]; then
     LOAD_MODE="mixed"
 fi
 
@@ -223,6 +230,11 @@ if [[ -n "$LOAD_MODE" ]]; then
             --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
             --duration "$LOAD_DURATION" --rps "$LOAD_RPS" \
             --max-in-flight "$LOAD_CONCURRENCY"
+    elif $LOAD_MAX_THROUGHPUT; then
+        echo "Running maximum-throughput load mode: $LOAD_MODE"
+        python3 "$SCRIPT_DIR/max_throughput_test.py" \
+            --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
+            --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY"
     else
         echo "Running legacy load/RSS mode: $LOAD_MODE"
         HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \

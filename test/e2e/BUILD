@@ -107,6 +107,7 @@ _LIVE_IT_DATA = [
     ":it_test_server",
     "e2e.sh",
     "fixed_rps_test.py",
+    "max_throughput_test.py",
     "pinpoint-config.yaml",
     "smoke_test.sh",
 ]

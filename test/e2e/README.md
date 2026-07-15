@@ -1,6 +1,6 @@
 # Pinpoint C++ Agent live integration tests
 
-This directory contains three complementary suites:
+This directory contains four complementary suites:
 
 - `smoke_test.sh` is a deterministic correctness suite. It checks agent
   registration, the public C++ and C APIs, HTTP/gRPC propagation, all four gRPC
@@ -11,6 +11,8 @@ This directory contains three complementary suites:
 - `fixed_rps_test.py` is a constant-arrival-rate load test. It schedules request
   starts at monotonic-clock deadlines, reports latency and scheduling lag, and
   fails when errors or dropped arrivals exceed the configured thresholds.
+- `max_throughput_test.py` is an unthrottled saturation test. Its workers reuse
+  HTTP connections and issue the next request immediately after each response.
 
 The correctness stack uses separate processes because a Pinpoint agent is a
 process-global singleton:
@@ -119,6 +121,28 @@ HOST=127.0.0.1 PORT=8090 ./test/e2e/e2e.sh \
   --mode grpc-all --duration 60 --concurrency 10
 ```
 
+For maximum throughput without an RPS limit, run the connection-reusing
+generator. `--concurrency` is the number of workers continuously kept busy:
+
+```bash
+python3 ./test/e2e/max_throughput_test.py \
+  --base-url http://127.0.0.1:8090 \
+  --mode mixed --duration 60 --concurrency 100
+```
+
+The default two-second warm-up is excluded from throughput and latency results.
+Use `--warmup 0` to disable it, `--max-error-rate` to permit expected errors, or
+`--min-rps` to enforce a performance-regression threshold. The agent must be
+ready unless `--no-require-agent` is supplied. The orchestrated stack can run
+this generator after smoke checks with:
+
+```bash
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e \
+  --load-mode mixed --load-max-throughput \
+  --load-duration 60 --load-concurrency 100
+```
+
 For a fixed request rate, run the dedicated generator directly:
 
 ```bash
@@ -145,7 +169,9 @@ The orchestrated stack can run the same fixed-RPS pass after smoke checks:
 ```
 
 With `--load-rps`, `--load-concurrency` is the maximum number of in-flight
-requests. Without it, the existing concurrency-driven `e2e.sh` pass is used.
+requests; with `--load-max-throughput`, it is the continuously busy worker
+count. With neither option, the existing concurrency-driven `e2e.sh` pass is
+used.
 
 The SQL endpoints intentionally exercise `SetSqlQuery` and collector metadata;
 they do not require a database. `init.sql` remains only as optional seed data

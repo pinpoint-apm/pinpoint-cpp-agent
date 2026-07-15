@@ -154,9 +154,15 @@ def parse_server_address(base_url: str) -> ServerAddress:
 class HttpClient:
     """One reusable HTTP connection per worker thread."""
 
-    def __init__(self, server: ServerAddress, timeout: float) -> None:
+    def __init__(
+        self,
+        server: ServerAddress,
+        timeout: float,
+        user_agent: str = "pinpoint-e2e-load-test/1.0",
+    ) -> None:
         self.server = server
         self.timeout = timeout
+        self.user_agent = user_agent
         self.local = threading.local()
 
     def _new_connection(self) -> http.client.HTTPConnection:
@@ -180,7 +186,7 @@ class HttpClient:
             connection.request(
                 "GET",
                 self.server.target(path),
-                headers={"User-Agent": "pinpoint-fixed-rps-test/1.0"},
+                headers={"User-Agent": self.user_agent},
             )
             response = connection.getresponse()
             response.read()
@@ -206,7 +212,7 @@ def get_json(server: ServerAddress, path: str, timeout: float) -> dict:
         connection.request(
             "GET",
             server.target(path),
-            headers={"User-Agent": "pinpoint-fixed-rps-test/1.0"},
+            headers={"User-Agent": "pinpoint-e2e-load-test/1.0"},
         )
         response = connection.getresponse()
         body = response.read().decode("utf-8", errors="replace")
