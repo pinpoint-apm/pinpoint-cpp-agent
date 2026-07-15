@@ -151,9 +151,19 @@ cc_proto_library(
 )
 
 cc_grpc_library(
-    name = "service_grpc_cc",
+    name = "service_grpc_cc_generated",
     srcs = [":service_proto"],
     generate_mocks = True,
     grpc_only = True,
+    visibility = ["//visibility:private"],
     deps = [":service_proto_cc"],
+)
+
+# grpc's cc_grpc_library does not propagate the virtual import root created by
+# strip_import_prefix. Keep the generated target private and expose an adapter
+# so consumers can include the generated headers as "v1/Service.grpc.pb.h".
+cc_library(
+    name = "service_grpc_cc",
+    includes = ["_virtual_imports/service_proto"],
+    deps = [":service_grpc_cc_generated"],
 )

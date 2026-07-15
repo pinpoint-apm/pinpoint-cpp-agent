@@ -39,6 +39,13 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "c_api_test_helpers",
+    testonly = True,
+    hdrs = ["c_api_test_helpers.h"],
+    deps = ["//:pinpoint-cpp"],
+)
+
 # Rate Limiter tests
 cc_test(
     name = "test_limiter",
@@ -172,7 +179,10 @@ cc_test(
     name = "test_tracer_c",
     size = "small",
     srcs = ["test_tracer_c.cpp"],
-    deps = [":test_gmock"],
+    deps = [
+        ":c_api_test_helpers",
+        ":test_gmock",
+    ],
 )
 
 # Test suite for all tests

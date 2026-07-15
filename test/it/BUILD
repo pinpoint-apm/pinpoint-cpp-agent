@@ -23,6 +23,7 @@ cc_test(
     deps = [
         ":mock_collector",
         "//:pinpoint-cpp",
+        "//test:c_api_test_helpers",
         "@googletest//:gtest_main",
     ],
 )
