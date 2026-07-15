@@ -109,6 +109,7 @@ _LIVE_IT_DATA = [
     "fixed_rps_test.py",
     "max_throughput_test.py",
     "pinpoint-config.yaml",
+    "profile_load.sh",
     "smoke_test.sh",
 ]
 

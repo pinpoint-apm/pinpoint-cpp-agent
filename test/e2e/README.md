@@ -173,6 +173,48 @@ requests; with `--load-max-throughput`, it is the continuously busy worker
 count. With neither option, the existing concurrency-driven `e2e.sh` pass is
 used.
 
+## Performance profiling
+
+Build the integration servers with optimized code, debug symbols, and frame
+pointers preserved:
+
+```bash
+cmake --preset profiling
+cmake --build --preset profiling
+```
+
+Add `--profile` to either Python load mode. `run_e2e.sh` attaches to the
+`it_test_server` PID and selects the platform profiler automatically: xctrace's
+Time Profiler on macOS, or `perf record -F 99 --call-graph dwarf` on Linux.
+
+```bash
+# Fixed 50 RPS, profiled
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/profiling/test/e2e \
+  --load-mode mixed --load-rps 50 --load-duration 60 \
+  --load-concurrency 100 --profile --keep-logs
+
+# Unthrottled maximum throughput, profiled
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/profiling/test/e2e \
+  --load-mode mixed --load-max-throughput --load-duration 60 \
+  --load-concurrency 100 --profile --keep-logs
+```
+
+By default the profile is stored under the run's log directory, which is kept
+automatically. Use `--profile-output PATH` to select another location and
+`--profile-frequency N` to change the Linux sampling frequency. macOS produces
+a `.trace` bundle for Instruments; Linux produces a `perf.data`-compatible file.
+
+To profile either generator against an already-running server, use the common
+wrapper directly:
+
+```bash
+./test/e2e/profile_load.sh --pid SERVER_PID --output ./profile -- \
+  python3 ./test/e2e/fixed_rps_test.py \
+    --base-url http://127.0.0.1:8090 --mode mixed --rps 50 --duration 60
+```
+
 The SQL endpoints intentionally exercise `SetSqlQuery` and collector metadata;
 they do not require a database. `init.sql` remains only as optional seed data
 for developers who attach a real MySQL instrumentation sample.

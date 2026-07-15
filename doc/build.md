@@ -85,7 +85,7 @@ pinpoint-cpp-agent/
 ├── BUILD.bazel          # Bazel: main library target
 ├── MODULE.bazel         # Bazel: module dependencies (bzlmod)
 ├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
-├── CMakePresets.json    # CMake: presets (default / vcpkg / conan / debug / debug-cached)
+├── CMakePresets.json    # CMake: standard, debug, coverage, and profiling presets
 ├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
 ├── conanfile.txt        # Conan 2 requirements (used by the `conan` preset)
 ├── include/             # Public headers
@@ -167,6 +167,7 @@ cmake --list-presets
 | `conan` | Conan 2 toolchain (requires `conan install` first) |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
 | `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
+| `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
 
 Configure + build + test using a preset:
 
@@ -314,12 +315,30 @@ The following CMake options are available:
 | `BUILD_SHARED_LIBS` | ON | Build as a shared library (.so / .dylib) |
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
 | `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
+| `BUILD_PROFILING` | OFF | Preserve symbols and reliable call stacks for sampling profilers |
 | `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
 
 Example:
 
 ```bash
 cmake --preset default -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF
+```
+
+For a production-like optimized build suitable for macOS `xctrace` or Linux
+`perf`, use the profiling preset:
+
+```bash
+cmake --preset profiling
+cmake --build --preset profiling
+```
+
+The equivalent manual option is `-DBUILD_PROFILING=ON` with a `Release` or
+`RelWithDebInfo` build. It retains debug symbols and frame pointers and disables
+sibling-call optimization. Coverage and profiling instrumentation cannot be
+enabled together. Bazel users can build the same configuration with:
+
+```bash
+bazel build --config=profiling //test/e2e/...
 ```
 
 ---

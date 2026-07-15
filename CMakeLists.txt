@@ -28,6 +28,7 @@ option(BUILD_SHARED_LIBS  "Build as a shared library"  ON)
 option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
 option(BUILD_COVERAGE     "Enable coverage instrumentation (Clang/LLVM or GCC)" OFF)
 option(BUILD_BENCHMARKS   "Build standalone microbenchmarks" OFF)
+option(BUILD_PROFILING    "Build with symbols and reliable sampling-profiler stacks" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -192,6 +193,30 @@ if(DEFINED grpc_SOURCE_DIR)
 endif()
 
 set(PINPOINT_LLVM_COVERAGE_ENABLED OFF)
+
+if(BUILD_PROFILING)
+  if(BUILD_COVERAGE)
+    message(FATAL_ERROR
+      "BUILD_PROFILING and BUILD_COVERAGE cannot be enabled together")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    message(FATAL_ERROR
+      "BUILD_PROFILING currently supports Clang/AppleClang and GCC")
+  endif()
+
+  # Keep production-like optimization while preserving symbolized, complete
+  # call stacks for xctrace Time Profiler and Linux perf.
+  add_compile_options(-g -fno-omit-frame-pointer -fno-optimize-sibling-calls)
+
+  if(NOT CMAKE_CONFIGURATION_TYPES AND
+     NOT CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+    message(WARNING
+      "BUILD_PROFILING is intended for Release or RelWithDebInfo builds; "
+      "current CMAKE_BUILD_TYPE is '${CMAKE_BUILD_TYPE}'")
+  endif()
+  message(STATUS
+    "Sampling-profiler build enabled: debug symbols and frame pointers retained")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Wthread-safety -Wno-unused-parameter -Wno-gcc-compat -Wno-gnu-zero-variadic-macro-arguments")

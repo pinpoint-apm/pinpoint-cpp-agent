@@ -13,6 +13,9 @@ LOAD_DURATION=30
 LOAD_CONCURRENCY=5
 LOAD_RPS=""
 LOAD_MAX_THROUGHPUT=false
+PROFILE=false
+PROFILE_OUTPUT=""
+PROFILE_FREQUENCY=99
 RUN_C_API=true
 RUN_FORK=true
 KEEP_LOGS=false
@@ -36,6 +39,9 @@ Options:
                             (default: $LOAD_CONCURRENCY)
       --load-rps RPS        Use constant-arrival-rate load at this target RPS
       --load-max-throughput Use the unthrottled connection-reusing load test
+      --profile             Profile it_test_server during either Python load test
+      --profile-output PATH Profile output (.trace on macOS, perf.data on Linux)
+      --profile-frequency N Linux perf sampling frequency (default: $PROFILE_FREQUENCY)
       --skip-c-api          Skip the pure-C API scenario
       --skip-fork           Skip the cold-create/fork scenario
       --log-dir DIR         Store process logs in DIR
@@ -59,6 +65,9 @@ while [[ $# -gt 0 ]]; do
         --load-concurrency) LOAD_CONCURRENCY=$2; shift 2 ;;
         --load-rps) LOAD_RPS=$2; shift 2 ;;
         --load-max-throughput) LOAD_MAX_THROUGHPUT=true; shift ;;
+        --profile) PROFILE=true; shift ;;
+        --profile-output) PROFILE_OUTPUT=$2; shift 2 ;;
+        --profile-frequency) PROFILE_FREQUENCY=$2; shift 2 ;;
         --skip-c-api) RUN_C_API=false; shift ;;
         --skip-fork) RUN_FORK=false; shift ;;
         --log-dir) LOG_DIR=$2; shift 2 ;;
@@ -70,6 +79,14 @@ done
 
 if [[ -n "$LOAD_RPS" ]] && $LOAD_MAX_THROUGHPUT; then
     echo "--load-rps and --load-max-throughput cannot be used together." >&2
+    exit 2
+fi
+if $PROFILE && [[ -z "$LOAD_RPS" ]] && ! $LOAD_MAX_THROUGHPUT; then
+    echo "--profile requires --load-rps or --load-max-throughput." >&2
+    exit 2
+fi
+if ! $PROFILE && [[ -n "$PROFILE_OUTPUT" ]]; then
+    echo "--profile-output requires --profile." >&2
     exit 2
 fi
 if { [[ -n "$LOAD_RPS" ]] || $LOAD_MAX_THROUGHPUT; } && [[ -z "$LOAD_MODE" ]]; then
@@ -224,24 +241,45 @@ set -e
 if [[ -n "$LOAD_MODE" ]]; then
     echo ""
     set +e
+    LOAD_COMMAND=()
+    LOAD_KIND=""
     if [[ -n "$LOAD_RPS" ]]; then
         echo "Running fixed-RPS load mode: $LOAD_MODE at $LOAD_RPS RPS"
-        python3 "$SCRIPT_DIR/fixed_rps_test.py" \
+        LOAD_KIND="fixed-rps"
+        LOAD_COMMAND=(python3 "$SCRIPT_DIR/fixed_rps_test.py" \
             --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
             --duration "$LOAD_DURATION" --rps "$LOAD_RPS" \
-            --max-in-flight "$LOAD_CONCURRENCY"
+            --max-in-flight "$LOAD_CONCURRENCY")
     elif $LOAD_MAX_THROUGHPUT; then
         echo "Running maximum-throughput load mode: $LOAD_MODE"
-        python3 "$SCRIPT_DIR/max_throughput_test.py" \
+        LOAD_KIND="max-throughput"
+        LOAD_COMMAND=(python3 "$SCRIPT_DIR/max_throughput_test.py" \
             --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
-            --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY"
+            --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY")
     else
         echo "Running legacy load/RSS mode: $LOAD_MODE"
         HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \
             --mode "$LOAD_MODE" --duration "$LOAD_DURATION" \
             --concurrency "$LOAD_CONCURRENCY"
+        LOAD_RESULT=$?
     fi
-    LOAD_RESULT=$?
+
+    if [[ ${#LOAD_COMMAND[@]} -gt 0 ]]; then
+        if $PROFILE; then
+            if [[ -z "$PROFILE_OUTPUT" ]]; then
+                PROFILE_OUTPUT="$LOG_DIR/profiles/${LOAD_KIND}-${RUN_SUFFIX}"
+                KEEP_LOGS=true
+            fi
+            bash "$SCRIPT_DIR/profile_load.sh" \
+                --pid "$UPSTREAM_PID" \
+                --output "$PROFILE_OUTPUT" \
+                --frequency "$PROFILE_FREQUENCY" \
+                -- "${LOAD_COMMAND[@]}"
+        else
+            "${LOAD_COMMAND[@]}"
+        fi
+        LOAD_RESULT=$?
+    fi
     set -e
     if [[ $LOAD_RESULT -ne 0 ]]; then
         RESULT=$LOAD_RESULT

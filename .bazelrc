@@ -1,0 +1,6 @@
+# Optimized build with symbolized, reliable call stacks for sampling profilers.
+build:profiling --compilation_mode=opt
+build:profiling --strip=never
+build:profiling --copt=-g
+build:profiling --copt=-fno-omit-frame-pointer
+build:profiling --copt=-fno-optimize-sibling-calls

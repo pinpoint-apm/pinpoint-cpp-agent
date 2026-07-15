@@ -67,6 +67,19 @@
                 "BUILD_SHARED_LIBS": "ON",
                 "BUILD_STATIC_LIBS": "OFF"
             }
+        },
+        {
+            "name": "profiling",
+            "inherits": "default",
+            "displayName": "Optimized sampling-profiler build",
+            "description": "RelWithDebInfo build with frame pointers for macOS xctrace and Linux perf.",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "BUILD_PROFILING": "ON",
+                "BUILD_EXAMPLES": "OFF",
+                "BUILD_SHARED_LIBS": "ON",
+                "BUILD_STATIC_LIBS": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -95,6 +108,17 @@
             "configurePreset": "coverage",
             "targets": [
                 "coverage"
+            ]
+        },
+        {
+            "name": "profiling",
+            "configurePreset": "profiling",
+            "targets": [
+                "it_test_server",
+                "http_downstream_server",
+                "grpc_server",
+                "c_api_scenario",
+                "fork_scenario"
             ]
         }
     ],
