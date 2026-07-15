@@ -741,6 +741,7 @@ TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
     
     span_event1.SetSqlQuery(same_sql, "");
     int32_t first_call_counter = mock_agent_service_->getSqlIdCounter();
+    const auto first_normalize_count = mock_agent_service_->getSqlNormalizeCount();
 
     span_event2.SetSqlQuery(same_sql, "");
     int32_t second_call_counter = mock_agent_service_->getSqlIdCounter();
@@ -748,6 +749,37 @@ TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
     // Same SQL is deduplicated in the cache, so counter stays the same
     // This tests that the method can be called multiple times without error
     EXPECT_EQ(second_call_counter, first_call_counter) << "Same SQL should be deduplicated in cache";
+    EXPECT_EQ(mock_agent_service_->getSqlNormalizeCount(), first_normalize_count)
+        << "raw SQL cache hit must skip normalization";
+}
+
+TEST_F(SpanEventTest, SetSqlQueryRawVariantsShareCanonicalIdAndKeepOwnParameters) {
+    auto first = make_test_span_event(*test_span_, "test-op1");
+    auto second = make_test_span_event(*test_span_, "test-op2");
+
+    first.SetSqlQuery("SELECT * FROM users WHERE id = 41", "bind-a");
+    second.SetSqlQuery("SELECT * FROM users WHERE id = 42", "bind-b");
+
+    EXPECT_EQ(mock_agent_service_->getSqlNormalizeCount(), 2U);
+    EXPECT_GT(mock_agent_service_->getCachedSqlId(
+        "SELECT * FROM users WHERE id = 0#"), 0);
+
+    auto& first_annotations = first.getAnnotations()->getAnnotations();
+    auto& second_annotations = second.getAnnotations()->getAnnotations();
+    ASSERT_EQ(first_annotations.size(), 1U);
+    ASSERT_EQ(second_annotations.size(), 1U);
+
+    const auto& first_sql = std::get<IntStringStringValue>(
+        first_annotations.front().second.data);
+    const auto& second_sql = std::get<IntStringStringValue>(
+        second_annotations.front().second.data);
+    EXPECT_EQ(first_sql.intValue, second_sql.intValue);
+    EXPECT_EQ(first_sql.stringValue1View(), "41");
+    EXPECT_EQ(second_sql.stringValue1View(), "42");
+    EXPECT_NE(first_sql.sharedStringValue1, nullptr);
+    EXPECT_NE(second_sql.sharedStringValue1, nullptr);
+    EXPECT_EQ(first_sql.stringValue2, "bind-a");
+    EXPECT_EQ(second_sql.stringValue2, "bind-b");
 }
 
 TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {

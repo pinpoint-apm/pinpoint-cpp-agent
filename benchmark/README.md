@@ -1,4 +1,6 @@
-# Span queue microbenchmark
+# Microbenchmarks
+
+## Span queue
 
 This benchmark compares the former single-`std::mutex` span queue with the
 preallocated sharded bounded queue used by `GrpcSpan`. It measures producer
@@ -55,3 +57,21 @@ The completion gates use the `drain` results:
 Run on an otherwise idle machine and compare medians from multiple repetitions.
 Latency includes the two clock reads on sampled operations equally for both
 implementations.
+
+## Raw SQL prepared cache
+
+`raw_sql_cache_benchmark` compares the former per-call SQL normalization plus
+canonical ID lookup with a warmed `RawSqlCache` hit. It also intercepts
+`operator new`/`operator new[]` during the measured loop and fails if a cache
+hit allocates or invokes the preparation factory. An eight-thread pass checks
+the shared-lock hit path under contention.
+
+```sh
+cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug-cached --target raw_sql_cache_benchmark
+./build/debug-cached/benchmark/raw_sql_cache_benchmark 500000
+```
+
+The optional argument is the total operation count used by both the
+single-thread and parallel comparisons. Run several times on an otherwise idle
+machine and compare the median `ns/op` and speedup values.

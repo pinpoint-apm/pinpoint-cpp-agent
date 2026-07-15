@@ -30,6 +30,8 @@
    struct ApiMeta;
    struct StringMeta;
    struct SqlUidMeta;
+   struct PreparedSql;
+   enum class SqlMetaMode : uint8_t;
    class Exception;
    class SpanChunk;
    struct UrlStatEntry;
@@ -224,6 +226,14 @@
        * @return Numeric identifier for the SQL string.
        */
       virtual int32_t cacheSql(std::string_view sql_query) const = 0;
+      /**
+       * Resolves a raw SQL statement to its normalized form, extracted literal
+       * parameters, and collector identity. Implementations may cache by the
+       * raw statement; returned shared ownership keeps cached strings alive for
+       * asynchronous span serialization.
+       */
+      virtual std::optional<std::shared_ptr<const PreparedSql>> prepareSql(
+          std::string_view raw_sql, SqlMetaMode mode) const = 0;
       /// @brief Removes a previously cached SQL string.
       virtual void removeCacheSql(const StringMeta& sql_meta) const = 0;
       /**

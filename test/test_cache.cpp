@@ -36,6 +36,121 @@ protected:
     }
 };
 
+namespace {
+    PreparedSqlRef prepared_sql(std::string normalized,
+                                std::string parameters,
+                                int32_t id,
+                                uint64_t epoch) {
+        return std::make_shared<const PreparedSql>(PreparedSql{
+            std::move(normalized), std::move(parameters), SqlIdentity{id}, epoch});
+    }
+}
+
+TEST_F(CacheTest, RawSqlCacheHitSkipsGeneratorAndReturnsSameImmutableEntry) {
+    RawSqlCache cache(16, 4);
+    int generator_calls = 0;
+    auto generator = [&] {
+        ++generator_calls;
+        return prepared_sql("SELECT * FROM users WHERE id = 0#", "42", 7, 0);
+    };
+
+    auto first = cache.get("SELECT * FROM users WHERE id = 42", 0, generator);
+    auto second = cache.get("SELECT * FROM users WHERE id = 42", 0, generator);
+
+    ASSERT_NE(first.value, nullptr);
+    EXPECT_FALSE(first.found);
+    EXPECT_TRUE(second.found);
+    EXPECT_EQ(generator_calls, 1);
+    EXPECT_EQ(first.value, second.value);
+    EXPECT_EQ(second.value->parameters, "42");
+    EXPECT_EQ(std::get<int32_t>(second.value->identity), 7);
+}
+
+TEST_F(CacheTest, RawSqlCacheMetadataEpochInvalidatesStaleIdentity) {
+    RawSqlCache cache(16, 4);
+    int generator_calls = 0;
+    auto generator = [&](uint64_t epoch) {
+        return [&, epoch] {
+            ++generator_calls;
+            return prepared_sql("SELECT 0#", "1", 100 + generator_calls, epoch);
+        };
+    };
+
+    auto epoch_zero = cache.get("SELECT 1", 0, generator(0));
+    auto epoch_one = cache.get("SELECT 1", 1, generator(1));
+    auto epoch_one_hit = cache.get("SELECT 1", 1, generator(1));
+
+    ASSERT_NE(epoch_zero.value, nullptr);
+    ASSERT_NE(epoch_one.value, nullptr);
+    EXPECT_FALSE(epoch_zero.found);
+    EXPECT_FALSE(epoch_one.found);
+    EXPECT_TRUE(epoch_one_hit.found);
+    EXPECT_EQ(generator_calls, 2);
+    EXPECT_NE(epoch_zero.value, epoch_one.value);
+    EXPECT_EQ(epoch_one.value, epoch_one_hit.value);
+}
+
+TEST_F(CacheTest, RawSqlCacheReferenceSurvivesEviction) {
+    RawSqlCache cache(1, 1);
+    auto retained = cache.get("SELECT 1", 0, [] {
+        return prepared_sql("SELECT 0#", "1", 1, 0);
+    }).value;
+    std::weak_ptr<const PreparedSql> weak = retained;
+
+    cache.get("SELECT 2", 0, [] {
+        return prepared_sql("SELECT 0#", "2", 1, 0);
+    });
+
+    ASSERT_NE(retained, nullptr);
+    EXPECT_EQ(retained->parameters, "1");
+    EXPECT_FALSE(weak.expired());
+    retained.reset();
+    EXPECT_TRUE(weak.expired());
+}
+
+TEST_F(CacheTest, RawSqlCacheOversizedStatementBypassesStorage) {
+    RawSqlCache cache(16, 4, 8);
+    int generator_calls = 0;
+    auto generator = [&] {
+        ++generator_calls;
+        return prepared_sql("SELECT 0#", "123456789", 1, 0);
+    };
+
+    auto first = cache.get("SELECT 123456789", 0, generator);
+    auto second = cache.get("SELECT 123456789", 0, generator);
+
+    EXPECT_FALSE(first.found);
+    EXPECT_FALSE(second.found);
+    EXPECT_EQ(generator_calls, 2);
+}
+
+TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
+    RawSqlCache cache(64, 8);
+    std::atomic<int> generator_calls{0};
+    std::vector<std::future<PreparedSqlRef>> futures;
+
+    for (int i = 0; i < 16; ++i) {
+        futures.push_back(std::async(std::launch::async, [&] {
+            return cache.get("SELECT * FROM concurrent WHERE id = 7", 0, [&] {
+                generator_calls.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::yield();
+                return prepared_sql("SELECT * FROM concurrent WHERE id = 0#", "7", 9, 0);
+            }).value;
+        }));
+    }
+
+    std::vector<PreparedSqlRef> results;
+    for (auto& future : futures) {
+        results.push_back(future.get());
+    }
+
+    ASSERT_NE(results.front(), nullptr);
+    for (const auto& result : results) {
+        EXPECT_EQ(result, results.front());
+    }
+    EXPECT_GE(generator_calls.load(std::memory_order_relaxed), 1);
+}
+
 // Basic functionality tests
 
 // Test basic get operation with cache miss
