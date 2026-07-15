@@ -782,6 +782,26 @@ TEST_F(SpanEventTest, SetSqlQueryRawVariantsShareCanonicalIdAndKeepOwnParameters
     EXPECT_EQ(second_sql.stringValue2, "bind-b");
 }
 
+TEST_F(SpanEventTest, SetSqlQuerySkipsAnnotationWhenSqlIdUnavailable) {
+    // cacheSql reports an invalid id, so prepareSql's guard throws inside the
+    // generator and returns nullopt; SetSqlQuery must then append nothing.
+    mock_agent_service_->setForceSqlIdFailure(true);
+    auto failed = make_test_span_event(*test_span_, "test-op");
+    failed.SetSqlQuery("SELECT * FROM users WHERE id = 77", "bind");
+    EXPECT_TRUE(failed.getAnnotations()->getAnnotations().empty())
+        << "an unavailable SQL id must not append a SQL annotation";
+
+    // The failed lookup must not poison the raw cache: once the id is available
+    // the same raw SQL resolves and a single annotation is appended.
+    mock_agent_service_->setForceSqlIdFailure(false);
+    auto ok = make_test_span_event(*test_span_, "test-op");
+    ok.SetSqlQuery("SELECT * FROM users WHERE id = 77", "bind");
+    auto& annotations = ok.getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1U);
+    EXPECT_GT(std::get<IntStringStringValue>(
+        annotations.front().second.data).intValue, 0);
+}
+
 TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     

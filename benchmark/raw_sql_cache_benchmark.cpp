@@ -42,9 +42,12 @@ namespace {
     }
 }
 
+// operator new must return a distinct non-null pointer for a zero-sized
+// request, but std::malloc(0) is allowed to return nullptr on some platforms.
+// Request at least one byte so a zero-sized allocation cannot spuriously throw.
 void* operator new(std::size_t size) {
     record_allocation();
-    if (void* memory = std::malloc(size)) {
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
         return memory;
     }
     throw std::bad_alloc();
@@ -52,7 +55,7 @@ void* operator new(std::size_t size) {
 
 void* operator new[](std::size_t size) {
     record_allocation();
-    if (void* memory = std::malloc(size)) {
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
         return memory;
     }
     throw std::bad_alloc();
@@ -204,6 +207,47 @@ int main(int argc, char** argv) {
                    result.value->parameters.size();
         });
 
+    // Miss-heavy scenario: a pool of distinct raw statements larger than the
+    // cache, so every raw lookup misses and pays the hash + insert + eviction
+    // churn on top of normalization. They all normalize to one canonical SQL,
+    // so the canonical lookup still hits and only the raw-cache overhead is
+    // isolated. This is the worst case for workloads that inline literals
+    // instead of using bind parameters, where the raw-cache hit rate is ~0 and
+    // the front cache is pure overhead rather than a speedup.
+    constexpr size_t miss_pool_size = 4096;
+    std::vector<std::string> miss_pool;
+    miss_pool.reserve(miss_pool_size);
+    for (size_t i = 0; i < miss_pool_size; ++i) {
+        miss_pool.push_back(
+            "SELECT o.id FROM orders o WHERE o.customer_id = " +
+            std::to_string(i));
+    }
+
+    size_t miss_index = 0;
+    auto baseline_miss = run(iterations, [&] {
+        const auto& raw = miss_pool[miss_index++ % miss_pool.size()];
+        auto normalized = normalizer.normalize(raw);
+        const auto id = canonical_cache.get(normalized.normalized_sql).value;
+        return static_cast<uint64_t>(id) + normalized.parameters.size();
+    });
+
+    miss_index = 0;
+    auto cached_miss = run(iterations, [&] {
+        const auto& raw = miss_pool[miss_index++ % miss_pool.size()];
+        auto result = raw_cache.get(raw, 0, [&]() -> PreparedSqlRef {
+            auto normalized = normalizer.normalize(raw);
+            const auto id = canonical_cache.get(normalized.normalized_sql).value;
+            return std::make_shared<const PreparedSql>(PreparedSql{
+                std::move(normalized.normalized_sql),
+                std::move(normalized.parameters),
+                SqlIdentity{id}});
+        });
+        return static_cast<uint64_t>(std::get<int32_t>(result.value->identity)) +
+               result.value->parameters.size();
+    });
+    const auto miss_overhead = cached_miss.nanoseconds_per_operation /
+                               baseline_miss.nanoseconds_per_operation;
+
     const auto speedup = baseline.nanoseconds_per_operation /
                          cached.nanoseconds_per_operation;
     const auto parser_calls_on_hit = factory_calls.load(std::memory_order_relaxed);
@@ -222,12 +266,21 @@ int main(int argc, char** argv) {
               << baseline_parallel.nanoseconds_per_operation << '\n'
               << "parallel(" << parallel_threads << " threads) raw-hit: ns/op="
               << cached_parallel.nanoseconds_per_operation
-              << " speedup=" << parallel_speedup << "x\n";
+              << " speedup=" << parallel_speedup << "x\n"
+              << "miss (distinct raw) legacy:   ns/op="
+              << baseline_miss.nanoseconds_per_operation
+              << " allocations/op=" << baseline_miss.allocations_per_operation << '\n'
+              << "miss (distinct raw) raw-cache: ns/op="
+              << cached_miss.nanoseconds_per_operation
+              << " allocations/op=" << cached_miss.allocations_per_operation
+              << " overhead=" << miss_overhead << "x (>1 means the front cache"
+              << " costs more than it saves on this workload)\n";
 
     // Keep both loops observable under optimization and turn the benchmark
     // into an automated verification of the two hard hot-path requirements.
     if (baseline.checksum != cached.checksum ||
         baseline_parallel.checksum != cached_parallel.checksum ||
+        baseline_miss.checksum != cached_miss.checksum ||
         cached.allocations_per_operation != 0.0 ||
         parser_calls_on_hit != 0) {
         std::cerr << "raw SQL cache verification failed\n";

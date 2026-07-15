@@ -75,3 +75,13 @@ cmake --build --preset debug-cached --target raw_sql_cache_benchmark
 The optional argument is the total operation count used by both the
 single-thread and parallel comparisons. Run several times on an otherwise idle
 machine and compare the median `ns/op` and speedup values.
+
+The `speedup` figures describe the **cache-hit** path only, i.e. workloads that
+repeat the same raw SQL text (prepared statements or drivers that reuse query
+strings with bind parameters). The final `miss (distinct raw)` lines report the
+opposite extreme: a pool of distinct statements larger than the cache, so every
+lookup misses and pays the hash, insert, and eviction churn on top of
+normalization. Its `overhead` value is `raw-cache ns/op ÷ legacy ns/op`; a value
+above `1.0` means that for workloads which inline literals instead of binding
+parameters (hit rate ≈ 0), the front cache costs more than it saves. Weigh both
+numbers against the expected raw-SQL repetition of the target application.

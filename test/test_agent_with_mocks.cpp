@@ -414,6 +414,20 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
     EXPECT_EQ(*id_entry, *id_hit);
 }
 
+TEST_F(AgentImplTest, PrepareSqlReturnsNulloptWhenAgentDisabled) {
+    // Shutdown() clears enabled_; prepareSql must then short-circuit to nullopt
+    // for both namespaces instead of normalizing or touching the caches.
+    agent_->Shutdown();
+    ASSERT_FALSE(agent_->Enable());
+
+    EXPECT_FALSE(
+        agent_->prepareSql("SELECT * FROM users WHERE id = 42", SqlMetaMode::Id)
+            .has_value());
+    EXPECT_FALSE(
+        agent_->prepareSql("SELECT * FROM users WHERE id = 42", SqlMetaMode::Uid)
+            .has_value());
+}
+
 TEST_F(AgentImplTest, CacheSqlUidReturnsNonEmpty) {
     auto uid = agent_->cacheSqlUid("SELECT 1");
     ASSERT_TRUE(uid.has_value());

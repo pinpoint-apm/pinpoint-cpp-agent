@@ -109,6 +109,11 @@ public:
     }
 
     int32_t cacheSql(std::string_view sql_query) const override {
+        // Test hook: emulate the collector rejecting a SQL id so prepareSql's
+        // invalid-id guard can be exercised without touching cached_sqls_.
+        if (force_sql_id_failure_.load(std::memory_order_relaxed)) {
+            return 0;
+        }
         auto key = std::string(sql_query);
         if (cached_sqls_.find(key) == cached_sqls_.end()) {
             cached_sqls_[key] = sql_id_counter_++;
@@ -117,7 +122,7 @@ public:
     }
 
     std::optional<PreparedSqlRef> prepareSql(
-            std::string_view raw_sql, SqlMetaMode mode) const override {
+            std::string_view raw_sql, SqlMetaMode mode) const override try {
         static const SqlNormalizer normalizer(64 * 1024);
 
         if (mode == SqlMetaMode::Id) {
@@ -126,6 +131,11 @@ public:
                 sql_normalize_count_.fetch_add(1, std::memory_order_relaxed);
                 auto normalized = normalizer.normalize(raw_sql);
                 const auto id = cacheSql(normalized.normalized_sql);
+                if (id <= 0) {
+                    // Mirror AgentImpl::prepareSql: throwing keeps the invalid
+                    // id out of the cache instead of poisoning later hits.
+                    throw std::runtime_error("mock SQL ID unavailable");
+                }
                 return std::make_shared<const PreparedSql>(PreparedSql{
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
@@ -146,6 +156,11 @@ public:
                 std::move(normalized.parameters),
                 SqlIdentity{*uid}});
         }).value;
+    } catch (const std::exception&) {
+        // AgentImpl::prepareSql swallows preparation failures and returns
+        // nullopt; the mock honors the same contract so callers observe
+        // identical behavior instead of an escaping exception.
+        return std::nullopt;
     }
 
     void removeCacheSql(const StringMeta& sql_meta) const override {
@@ -226,6 +241,9 @@ public:
     uint64_t getSqlNormalizeCount() const {
         return sql_normalize_count_.load(std::memory_order_relaxed);
     }
+    void setForceSqlIdFailure(bool fail) {
+        force_sql_id_failure_.store(fail, std::memory_order_relaxed);
+    }
     size_t getRecordedSpansCount() const { return recorded_spans_.size(); }
     const SpanChunk* getLastRecordedSpan() const {
         return recorded_spans_.empty() ? nullptr : recorded_spans_.back().get();
@@ -259,6 +277,7 @@ public:
     mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
     mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
     mutable std::atomic<uint64_t> sql_normalize_count_{0};
+    mutable std::atomic<bool> force_sql_id_failure_{false};
 
 private:
     bool is_exiting_;

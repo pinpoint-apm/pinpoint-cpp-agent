@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <memory>
