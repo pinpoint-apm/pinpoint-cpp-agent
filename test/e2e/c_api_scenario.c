@@ -132,6 +132,7 @@ int main(void) {
     set_default_env("PINPOINT_CPP_AGENT_ID", default_agent_id);
     set_default_env("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
     set_default_env("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true");
+    set_default_env("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");
     set_default_env("PINPOINT_CPP_ENABLE_CALLSTACK_TRACE", "true");
 
     pt_agent_t agent = pt_create_agent_with_server_metadata(

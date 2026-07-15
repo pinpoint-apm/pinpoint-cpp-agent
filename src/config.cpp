@@ -520,6 +520,7 @@ namespace pinpoint {
         if (auto sql = find_node(yaml, "Sql")) {
             config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", config.sql.max_bind_args_size);
             config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", config.sql.enable_sql_stats);
+            config.sql.trace_bind_value = get_boolean(sql, "TraceBindValue", config.sql.trace_bind_value);
         }
 
         config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", config.enable_callstack_trace);
@@ -785,6 +786,9 @@ namespace pinpoint {
         }
         if(auto e = get_env(env::SQL_ENABLE_SQL_STATS)) {
             config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_sql_stats);
+        }
+        if(auto e = get_env(env::SQL_TRACE_BIND_VALUE)) {
+            config.sql.trace_bind_value = safe_env_stob(e.name.c_str(), e.value, config.sql.trace_bind_value);
         }
         if(auto e = get_env(env::ENABLE_CALLSTACK_TRACE)) {
             config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, config.enable_callstack_trace);
@@ -1275,6 +1279,8 @@ namespace pinpoint {
                                default_config.sql.max_bind_args_size);
         add_non_default_config(config_strings, "Sql.EnableSqlStats", config.sql.enable_sql_stats,
                                default_config.sql.enable_sql_stats);
+        add_non_default_config(config_strings, "Sql.TraceBindValue", config.sql.trace_bind_value,
+                               default_config.sql.trace_bind_value);
         add_non_default_config(config_strings, "EnableCallstackTrace", config.enable_callstack_trace,
                                default_config.enable_callstack_trace);
 
@@ -1444,6 +1450,7 @@ namespace pinpoint {
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "MaxBindArgsSize" << YAML::Value << config.sql.max_bind_args_size;
         emitter << YAML::Key << "EnableSqlStats" << YAML::Value << config.sql.enable_sql_stats;
+        emitter << YAML::Key << "TraceBindValue" << YAML::Value << config.sql.trace_bind_value;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "EnableCallstackTrace" << YAML::Value << config.enable_callstack_trace;

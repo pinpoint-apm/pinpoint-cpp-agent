@@ -473,6 +473,7 @@ protected:
             << "    RecordResponseHeader: [x-client-response]\n"
             << "Sql:\n"
             << "  EnableSqlStats: " << (EnableSqlStats() ? "true" : "false") << "\n"
+            << "  TraceBindValue: true\n"
             << "  MaxBindArgsSize: 2048\n";
         return yaml.str();
     }
@@ -721,7 +722,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     ASSERT_NE(outbound, nullptr);
     outbound->SetDestination("mysql-primary");
     outbound->SetEndPoint("db.example.test:3306");
-    outbound->SetSqlQuery("SELECT * FROM orders WHERE id = 42", "42");
+    outbound->SetSqlQuery("SELECT * FROM orders WHERE id = 42", {"42"});
 
     MapCarrier client_headers;
     client_headers.Set("x-client-request", "client-request-456");
@@ -1884,12 +1885,12 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
 
     auto* first = span->NewSpanEvent("sql.first", SERVICE_TYPE_MYSQL_QUERY);
     ASSERT_NE(first, nullptr);
-    first->SetSqlQuery(raw_sql, "bind-one");
+    first->SetSqlQuery(raw_sql, {"bind-one"});
     first->EndEvent();
 
     auto* second = span->NewSpanEvent("sql.second", SERVICE_TYPE_MYSQL_QUERY);
     ASSERT_NE(second, nullptr);
-    second->SetSqlQuery(raw_sql, "bind-two");
+    second->SetSqlQuery(raw_sql, {"bind-two"});
     second->EndEvent();
     span->EndSpan();
 
@@ -1939,7 +1940,7 @@ TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
 
     auto* event = span->NewSpanEvent("sql.update", SERVICE_TYPE_PGSQL_QUERY);
     ASSERT_NE(event, nullptr);
-    event->SetSqlQuery(raw_sql, "7");
+    event->SetSqlQuery(raw_sql, {"7"});
     event->EndEvent();
     span->EndSpan();
 

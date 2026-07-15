@@ -396,7 +396,7 @@ void trace_db_op(pinpoint::SpanPtr span,
     se->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
     se->SetEndPoint("localhost:33060");
     se->SetDestination("test_db");
-    se->SetSqlQuery(query, "");  // Record the query string (sanitize in production)
+    se->SetSqlQuery(query, {});  // Record the query string (sanitize in production)
 
     try {
         func();  // Execute actual DB operation

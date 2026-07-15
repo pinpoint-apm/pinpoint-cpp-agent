@@ -85,6 +85,7 @@ Http:
 # --- SQL ---
 Sql:
   EnableSqlStats: true
+  TraceBindValue: true
   MaxBindArgsSize: 2048
 
 # --- Stat ---

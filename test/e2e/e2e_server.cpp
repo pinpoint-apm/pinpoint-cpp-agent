@@ -195,7 +195,7 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
         ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
         ev->SetEndPoint("localhost:3306");
         ev->SetDestination("test");
-        ev->SetSqlQuery("SELECT * FROM users WHERE id = ?", "42");
+        ev->SetSqlQuery("SELECT * FROM users WHERE id = ?", {"42"});
     }
     span->NewSpanEvent("db_parse")->EndEvent();
     ev->EndEvent();
@@ -329,7 +329,7 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
     sql_event->SetEndPoint("127.0.0.1:3306");
     sql_event->SetSqlQuery(
         "SELECT name FROM users WHERE id = 17 AND role = 'admin' /* it */",
-        "17,admin");
+        {"17,admin"});
     sql_event->EndEvent();
 
     IntegrationCallStack callstack;
@@ -481,7 +481,7 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
         ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
         ev->SetEndPoint("localhost:33060");
         ev->SetDestination("test");
-        ev->SetSqlQuery(sql, params);
+        ev->SetSqlQuery(sql, {params});
     }
 
     static thread_local std::mt19937 rng{std::random_device{}()};

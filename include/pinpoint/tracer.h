@@ -241,8 +241,9 @@ namespace pinpoint {
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
 		/// @brief Stores an error message along with call stack details.
         virtual void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) = 0;
-		/// @brief Records a SQL query and bound parameters.
-		virtual void SetSqlQuery(std::string_view sql_query, std::string_view args) = 0;
+		/// @brief Records a SQL query and comma-separated bound parameters.
+		virtual void SetSqlQuery(std::string_view sql_query,
+		                         const std::vector<std::string_view>& args) = 0;
 		/// @brief Records HTTP headers into the event.
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 		/// @brief Injects the trace context for the outbound call represented

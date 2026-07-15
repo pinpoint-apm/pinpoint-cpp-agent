@@ -48,7 +48,8 @@ namespace pinpoint {
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
-        void SetSqlQuery(std::string_view sql_query, std::string_view args) override;
+        void SetSqlQuery(std::string_view sql_query,
+                         const std::vector<std::string_view>& args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
         /// @brief Injects the trace context for the outbound call represented
         /// by this event (trace id, generated child span id, parent app info)
@@ -195,7 +196,8 @@ namespace pinpoint {
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
-        void SetSqlQuery(std::string_view sql_query, std::string_view args) override {}
+        void SetSqlQuery(std::string_view sql_query,
+                         const std::vector<std::string_view>& args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override;
 

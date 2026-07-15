@@ -739,7 +739,7 @@ void executeQuery(pinpoint::SpanPtr span, const std::string& sql) {
 
     try {
         auto result = database->execute(sql);
-        db_event->SetSqlQuery(sql, "");  // record SQL without sensitive data
+        db_event->SetSqlQuery(sql, {});  // record SQL without sensitive data
 
     } catch (const std::exception& e) {
         db_event->SetError("SQL_ERROR", e.what());
@@ -761,20 +761,16 @@ void executeParameterizedQuery(pinpoint::SpanPtr span,
     db_event->SetDestination("test_db");
 
     try {
-        // Format parameters (avoid logging sensitive data)
-        std::stringstream param_str;
-        for (size_t i = 0; i < params.size(); i++) {
-            if (i > 0) param_str << ", ";
-            param_str << params[i];
-        }
-
         auto stmt = session->sql(sql);
         for (const auto& param : params) {
             stmt.bind(param);
         }
         auto result = stmt.execute();
 
-        db_event->SetSqlQuery(sql, param_str.str());
+        // When Sql.TraceBindValue is true, SetSqlQuery joins these views with commas.
+        // Sanitize sensitive data before recording it.
+        std::vector<std::string_view> param_views(params.begin(), params.end());
+        db_event->SetSqlQuery(sql, param_views);
 
     } catch (const std::exception& e) {
         db_event->SetError("DB_ERROR", e.what());
@@ -1253,10 +1249,10 @@ Never log sensitive information in SQL, annotations, or headers:
 
 ```cpp
 // DON'T: Record sensitive data
-// span_event->SetSqlQuery(sql, password);
+// span_event->SetSqlQuery(sql, {password});
 
 // DO: Sanitize or omit sensitive data
-span_event->SetSqlQuery(sql, "[REDACTED]");
+span_event->SetSqlQuery(sql, {"[REDACTED]"});
 ```
 
 ### Use Appropriate Service Types

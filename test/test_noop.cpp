@@ -309,7 +309,7 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     span_event.SetEndPoint("http://api.example.com");
     span_event.SetError("Test error");
     span_event.SetError("TestError", "Test error message");
-    span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", "1");
+    span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1"});
 
     MockHeaderReader reader;
     span_event.RecordHeader(HTTP_REQUEST, reader);

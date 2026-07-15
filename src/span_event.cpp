@@ -138,8 +138,34 @@ namespace pinpoint {
         }
     }
 
-    void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
+    void SpanEventImpl::SetSqlQuery(
+        std::string_view sql_query,
+        const std::vector<std::string_view>& args) {
         const auto& config = span_->config_;
+        std::string joined_args;
+        if (config->sql.trace_bind_value) {
+            const int configured_max_size = config->sql.max_bind_args_size;
+            const std::size_t max_size = configured_max_size > 0
+                ? static_cast<std::size_t>(configured_max_size)
+                : 0;
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                const std::size_t separator_size = i == 0 ? 0 : 1;
+                const std::size_t remaining_size = max_size - joined_args.size();
+                if (separator_size > remaining_size ||
+                    args[i].size() > remaining_size - separator_size) {
+                    joined_args.append("...(");
+                    joined_args.append(std::to_string(configured_max_size));
+                    joined_args.push_back(')');
+                    break;
+                }
+
+                if (i != 0) {
+                    joined_args.push_back(',');
+                }
+                joined_args.append(args[i]);
+            }
+        }
+
         const auto mode = config->sql.enable_sql_stats
             ? SqlMetaMode::Uid
             : SqlMetaMode::Id;
@@ -159,7 +185,7 @@ namespace pinpoint {
             if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
                 ensureAnnotations()->AppendData(
                     ANNOTATION_SQL_UID,
-                    AnnotationData(*uid, std::move(parameters), args));
+                    AnnotationData(*uid, std::move(parameters), joined_args));
             }
             return;
         }
@@ -167,7 +193,7 @@ namespace pinpoint {
         if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
             ensureAnnotations()->AppendData(
                 ANNOTATION_SQL_ID,
-                AnnotationData(*sql_id, std::move(parameters), args));
+                AnnotationData(*sql_id, std::move(parameters), joined_args));
         }
     }
 

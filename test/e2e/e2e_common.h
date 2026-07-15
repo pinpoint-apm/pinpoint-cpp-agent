@@ -17,6 +17,7 @@ inline void configure_agent_env(const char* application, const char* agent_id) {
     set_default_env("PINPOINT_CPP_AGENT_ID", agent_id);
     set_default_env("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
     set_default_env("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true");
+    set_default_env("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");
     set_default_env("PINPOINT_CPP_ENABLE_CALLSTACK_TRACE", "true");
 }
 

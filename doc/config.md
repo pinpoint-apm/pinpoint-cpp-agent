@@ -308,8 +308,9 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. |
+| `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. An argument that would exceed the limit is omitted and the value ends with `...(N)`. |
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Aggregate execution counts even for unsampled traces. |
+| `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
 
 ---
 
@@ -345,6 +346,7 @@ Not all configuration options can be changed at runtime. Options that define the
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
+| SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue` | **Yes** |
 
 The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect. (Non-reloadable fields still require an application restart to actually change.)
 
@@ -358,7 +360,7 @@ On reload, each of the following internal components is rebuilt **only if its ba
 - **HTTP status error codes** — rebuilt when `Http.Server.StatusCodeErrors` changes.
 - **HTTP header recorders** — rebuilt when any server- or client-side header/cookie recording list changes.
 
-All rebuilt components are published together in a **single atomic swap** (thread-safe), so in-flight requests are not affected and can never observe a half-applied reload. Each span also snapshots the configuration once at creation, so reloadable per-span options (e.g. `Span.MaxEventDepth`, `Span.EventChunkSize`, `Sql.EnableSqlStats`) take effect for spans **created after** the reload; a span that is already open keeps the values it started with.
+All rebuilt components are published together in a **single atomic swap** (thread-safe), so in-flight requests are not affected and can never observe a half-applied reload. Each span also snapshots the configuration once at creation, so reloadable per-span options (e.g. `Span.MaxEventDepth`, `Span.EventChunkSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue`) take effect for spans **created after** the reload; a span that is already open keeps the values it started with.
 
 ### Requirements
 
@@ -425,6 +427,7 @@ Http:
 
 Sql:
   EnableSqlStats: true
+  TraceBindValue: true
 
 EnableCallstackTrace: true
 ```
@@ -515,6 +518,7 @@ Http:
 Sql:
   MaxBindArgsSize: 512
   EnableSqlStats: false
+  TraceBindValue: false
 
 EnableCallstackTrace: false
 ```
@@ -550,6 +554,7 @@ export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent"
 
 # SQL
 export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
+export PINPOINT_CPP_SQL_TRACE_BIND_VALUE="true"
 
 ./my_application
 ```
@@ -582,6 +587,7 @@ export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
 
 ### Security
 - Never record sensitive headers unless absolutely necessary.
+- Disable `Sql.TraceBindValue` when bind values are not required for diagnostics.
 - Limit `Sql.MaxBindArgsSize` to avoid capturing large payloads.
 - Audit recorded headers and cookies regularly.
 
@@ -691,6 +697,7 @@ Http:
 Sql:
   MaxBindArgsSize: 1024
   EnableSqlStats: false
+  TraceBindValue: true
 
 EnableCallstackTrace: false
 ```

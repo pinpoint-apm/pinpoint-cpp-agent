@@ -1032,8 +1032,10 @@ void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
                                  const char* args) {
     pt_api_call(__func__, [&] {
         pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            const std::vector<std::string_view> sql_args{
+                args ? args : ""};
             ev->SetSqlQuery(sql_query ? sql_query : "",
-                            args      ? args      : "");
+                            sql_args);
         });
     });
 }

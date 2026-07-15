@@ -397,6 +397,7 @@ if (!agent->Enable()) {
 
    Sql:
      EnableSqlStats: false
+     TraceBindValue: false
 
    Stat:
      Enable: false
