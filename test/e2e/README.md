@@ -1,6 +1,6 @@
 # Pinpoint C++ Agent live integration tests
 
-This directory contains two complementary suites:
+This directory contains three complementary suites:
 
 - `smoke_test.sh` is a deterministic correctness suite. It checks agent
   registration, the public C++ and C APIs, HTTP/gRPC propagation, all four gRPC
@@ -8,6 +8,9 @@ This directory contains two complementary suites:
   sampling reload, limits, and lifecycle restart.
 - `e2e.sh` is the longer-running traffic/RSS suite. It is useful for stress,
   ASan, and Valgrind runs after the correctness suite passes.
+- `fixed_rps_test.py` is a constant-arrival-rate load test. It schedules request
+  starts at monotonic-clock deadlines, reports latency and scheduling lag, and
+  fails when errors or dropped arrivals exceed the configured thresholds.
 
 The correctness stack uses separate processes because a Pinpoint agent is a
 process-global singleton:
@@ -99,7 +102,7 @@ transport-log assertions prove that data reached the configured collector. If
 a Pinpoint Web/API endpoint becomes available, a future test can additionally
 query the unique agent IDs and validate the stored payload fields.
 
-## Optional load/RSS pass
+## Optional load passes
 
 Append a load mode to the orchestrated run:
 
@@ -115,6 +118,34 @@ Or run the load generator against an already-started stack:
 HOST=127.0.0.1 PORT=8090 ./test/e2e/e2e.sh \
   --mode grpc-all --duration 60 --concurrency 10
 ```
+
+For a fixed request rate, run the dedicated generator directly:
+
+```bash
+python3 ./test/e2e/fixed_rps_test.py \
+  --base-url http://127.0.0.1:8090 \
+  --mode mixed --rps 50 --duration 60 --max-in-flight 100
+```
+
+It rotates deterministically through the endpoints in the selected mode. The
+`/error` endpoint's intentional HTTP 500 is treated as success. Arrivals are
+dropped rather than queued or emitted as catch-up bursts when the client falls
+behind or reaches `--max-in-flight`; the default pass criteria allow up to 5%
+dropped arrivals and no unexpected response errors. Use `--rps-tolerance` and
+`--max-error-rate` to change those thresholds. The agent must be ready unless
+`--no-require-agent` is supplied.
+
+The orchestrated stack can run the same fixed-RPS pass after smoke checks:
+
+```bash
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e \
+  --load-mode full --load-rps 25 --load-duration 120 \
+  --load-concurrency 100
+```
+
+With `--load-rps`, `--load-concurrency` is the maximum number of in-flight
+requests. Without it, the existing concurrency-driven `e2e.sh` pass is used.
 
 The SQL endpoints intentionally exercise `SetSqlQuery` and collector metadata;
 they do not require a database. `init.sql` remains only as optional seed data

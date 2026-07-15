@@ -11,6 +11,7 @@ GRPC_PORT=50051
 LOAD_MODE=""
 LOAD_DURATION=30
 LOAD_CONCURRENCY=5
+LOAD_RPS=""
 RUN_C_API=true
 RUN_FORK=true
 KEEP_LOGS=false
@@ -28,9 +29,11 @@ Options:
       --port PORT           Upstream HTTP port (default: $PORT)
       --downstream-port N   Downstream HTTP port (default: $DOWNSTREAM_PORT)
       --grpc-port N         gRPC port (default: $GRPC_PORT)
-      --load-mode MODE      Run the legacy load/RSS test after smoke checks
+      --load-mode MODE      Load workload to run after smoke checks
       --load-duration SEC   Load duration (default: $LOAD_DURATION)
-      --load-concurrency N  Load workers (default: $LOAD_CONCURRENCY)
+      --load-concurrency N  Load workers, or fixed-RPS max in-flight requests
+                            (default: $LOAD_CONCURRENCY)
+      --load-rps RPS        Use constant-arrival-rate load at this target RPS
       --skip-c-api          Skip the pure-C API scenario
       --skip-fork           Skip the cold-create/fork scenario
       --log-dir DIR         Store process logs in DIR
@@ -52,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --load-mode) LOAD_MODE=$2; shift 2 ;;
         --load-duration) LOAD_DURATION=$2; shift 2 ;;
         --load-concurrency) LOAD_CONCURRENCY=$2; shift 2 ;;
+        --load-rps) LOAD_RPS=$2; shift 2 ;;
         --skip-c-api) RUN_C_API=false; shift ;;
         --skip-fork) RUN_FORK=false; shift ;;
         --log-dir) LOG_DIR=$2; shift 2 ;;
@@ -60,6 +64,10 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ -n "$LOAD_RPS" && -z "$LOAD_MODE" ]]; then
+    LOAD_MODE="mixed"
+fi
 
 if [[ -z "${PINPOINT_CPP_COLLECTOR_HOST:-}" ]]; then
     echo "PINPOINT_CPP_COLLECTOR_HOST must be set." >&2
@@ -208,11 +216,19 @@ set -e
 
 if [[ -n "$LOAD_MODE" ]]; then
     echo ""
-    echo "Running load/RSS mode: $LOAD_MODE"
     set +e
-    HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \
-        --mode "$LOAD_MODE" --duration "$LOAD_DURATION" \
-        --concurrency "$LOAD_CONCURRENCY"
+    if [[ -n "$LOAD_RPS" ]]; then
+        echo "Running fixed-RPS load mode: $LOAD_MODE at $LOAD_RPS RPS"
+        python3 "$SCRIPT_DIR/fixed_rps_test.py" \
+            --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
+            --duration "$LOAD_DURATION" --rps "$LOAD_RPS" \
+            --max-in-flight "$LOAD_CONCURRENCY"
+    else
+        echo "Running legacy load/RSS mode: $LOAD_MODE"
+        HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \
+            --mode "$LOAD_MODE" --duration "$LOAD_DURATION" \
+            --concurrency "$LOAD_CONCURRENCY"
+    fi
     LOAD_RESULT=$?
     set -e
     if [[ $LOAD_RESULT -ne 0 ]]; then

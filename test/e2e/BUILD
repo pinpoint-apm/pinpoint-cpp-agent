@@ -106,6 +106,7 @@ _LIVE_IT_DATA = [
     ":http_downstream_server",
     ":it_test_server",
     "e2e.sh",
+    "fixed_rps_test.py",
     "pinpoint-config.yaml",
     "smoke_test.sh",
 ]
