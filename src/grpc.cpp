@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <unistd.h>
 #include <grpcpp/client_context.h>
 
@@ -1555,13 +1556,22 @@ namespace pinpoint {
         std::condition_variable cv;
         int permits{0};
         int max_permits{0};
-        std::vector<std::shared_ptr<PendingSpanBatch>> pending;
+        // Completion order is not observed. Key by call identity so callbacks
+        // can remove their registry entry without a linear scan or shifts.
+        std::unordered_set<std::shared_ptr<PendingSpanBatch>> pending;
 
         void completeCall(const std::shared_ptr<PendingSpanBatch>& call) {
+            bool released = false;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending.erase(std::remove(pending.begin(), pending.end(), call), pending.end());
-                ++permits;
+                released = pending.erase(call) == 1;
+                if (released) {
+                    ++permits;
+                }
+            }
+            if (!released) {
+                LOG_WARN("SendSpanBatch completion ignored: call is not registered as in-flight");
+                return;
             }
             cv.notify_one();
         }
@@ -1754,10 +1764,7 @@ namespace pinpoint {
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
                 if (pending) {
-                    auto& pending_calls = inflight_->pending;
-                    pending_calls.erase(
-                        std::remove(pending_calls.begin(), pending_calls.end(), pending),
-                        pending_calls.end());
+                    inflight_->pending.erase(pending);
                 }
                 ++inflight_->permits;
             }
@@ -1784,7 +1791,7 @@ namespace pinpoint {
             const int batch_count = pending->request->span_size();
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
-                inflight_->pending.push_back(pending);
+                inflight_->pending.insert(pending);
                 LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
                           batch_count, inflight_->max_permits - inflight_->permits, inflight_->max_permits);
             }
@@ -1840,7 +1847,7 @@ namespace pinpoint {
         std::vector<std::shared_ptr<PendingSpanBatch>> stragglers;
         {
             std::lock_guard<std::mutex> lock(inflight_->mutex);
-            stragglers = inflight_->pending;
+            stragglers.assign(inflight_->pending.begin(), inflight_->pending.end());
         }
         LOG_WARN("timed out waiting for in-flight span requests; cancelling {} request(s)",
                  stragglers.size());

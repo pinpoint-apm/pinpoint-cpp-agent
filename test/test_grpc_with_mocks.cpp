@@ -114,7 +114,13 @@ public:
 // tests capture requests and control when each RPC's completion callback runs.
 class FakeSpanStub : public v1::Span::StubInterface {
 public:
-    enum class ReplyMode { OK_EMPTY, OK_PARTIAL_SUCCESS, ERROR_STATUS, HOLD };
+    enum class ReplyMode {
+        OK_EMPTY,
+        OK_PARTIAL_SUCCESS,
+        ERROR_STATUS,
+        HOLD,
+        THROW_BEFORE_CALLBACK
+    };
 
     FakeSpanStub() : fake_async_(this) {}
 
@@ -156,6 +162,20 @@ public:
         }
     }
 
+    bool releaseHeldCallback(size_t index, const grpc::Status& status) {
+        std::function<void(grpc::Status)> held;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (index >= held_.size()) {
+                return false;
+            }
+            held = std::move(held_[index]);
+            held_.erase(held_.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+        held(status);
+        return true;
+    }
+
 private:
     class FakeAsync : public v1::Span::StubInterface::async_interface {
     public:
@@ -178,6 +198,7 @@ private:
                              std::function<void(grpc::Status)> on_done) {
         std::function<void(grpc::Status)> to_invoke;
         grpc::Status status = grpc::Status::OK;
+        bool throw_before_callback = false;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             requests_.push_back(*request);
@@ -200,9 +221,15 @@ private:
                 case ReplyMode::HOLD:
                     held_.push_back(std::move(on_done));
                     break;
+                case ReplyMode::THROW_BEFORE_CALLBACK:
+                    throw_before_callback = true;
+                    break;
             }
         }
         cv_.notify_all();
+        if (throw_before_callback) {
+            throw std::runtime_error("fake async SendSpanBatch launch failure");
+        }
         if (to_invoke) {
             to_invoke(status);
         }
@@ -2219,6 +2246,70 @@ TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
     if (worker.joinable()) worker.join();
 
     EXPECT_EQ(fake->batchCount(), 2u);
+}
+
+TEST_F(GrpcMockTest, GrpcSpanOutOfOrderCompletionReleasesPermitTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 3;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    for (int i = 0; i < 3; ++i) {
+        auto span_data = make_test_span_data_ptr(
+            *mock_agent_service_, "out-of-order-op-" + std::to_string(i));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+    ASSERT_TRUE(fake->waitForBatchCount(3, std::chrono::seconds(2)));
+
+    ASSERT_TRUE(fake->releaseHeldCallback(1, grpc::Status::OK));
+    auto next_span_data = make_test_span_data_ptr(*mock_agent_service_, "out-of-order-op-next");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(next_span_data, true));
+    ASSERT_TRUE(fake->waitForBatchCount(4, std::chrono::seconds(2)))
+        << "Completing a non-front in-flight call should release one permit";
+
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+}
+
+TEST_F(GrpcMockTest, GrpcSpanSynchronousLaunchFailureReleasesPermitTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    fake->setReplyMode(FakeSpanStub::ReplyMode::THROW_BEFORE_CALLBACK);
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    auto failed_span_data = make_test_span_data_ptr(*mock_agent_service_, "launch-failure-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(failed_span_data, true));
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
+
+    fake->setReplyMode(FakeSpanStub::ReplyMode::OK_EMPTY);
+    auto next_span_data = make_test_span_data_ptr(*mock_agent_service_, "launch-recovery-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(next_span_data, true));
+    ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
+        << "A synchronous launch failure should remove its registry entry and return the permit";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
 }
 
 TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
