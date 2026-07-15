@@ -16,20 +16,44 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "utility.h"
 
 namespace pinpoint {
+
+    enum class SqlMetaMode : uint8_t {
+        Id,
+        Uid,
+    };
+
+    using SqlIdentity = std::variant<int32_t, SqlUid>;
+
+    /**
+     * Immutable result of preparing one raw SQL statement. RawSqlCache returns
+     * shared ownership so annotations can refer to the extracted parameters
+     * without copying them, even after the cache entry itself is evicted.
+     */
+    struct PreparedSql {
+        std::string normalized_sql;
+        std::string parameters;
+        SqlIdentity identity;
+    };
+
+    using PreparedSqlRef = std::shared_ptr<const PreparedSql>;
 
     /**
      * @brief Generic LRU cache result structure.
@@ -325,6 +349,117 @@ namespace pinpoint {
         // Counts inserts and promotions; entry age is measured against it.
         std::atomic<uint64_t> op_seq_{0};
         mutable std::shared_mutex mutex_{};
+    };
+
+    struct RawSqlCacheKey {
+        std::string_view raw_sql;
+        uint64_t metadata_epoch;
+        size_t hash;
+    };
+
+    struct RawSqlCacheStoredKey {
+        std::string raw_sql;
+        uint64_t metadata_epoch;
+        size_t hash;
+    };
+
+    struct RawSqlCacheKeyHash {
+        size_t operator()(const RawSqlCacheKey& key) const noexcept {
+            return key.hash;
+        }
+    };
+
+    struct RawSqlCacheKeyEqual {
+        bool operator()(const RawSqlCacheKey& lhs, const RawSqlCacheKey& rhs) const noexcept {
+            return lhs.metadata_epoch == rhs.metadata_epoch && lhs.raw_sql == rhs.raw_sql;
+        }
+    };
+
+    struct RawSqlCacheKeyTraits {
+        using LookupKey = RawSqlCacheKey;
+        using StoredKey = RawSqlCacheStoredKey;
+        using MapKey = RawSqlCacheKey;
+        using Hash = RawSqlCacheKeyHash;
+        using Equal = RawSqlCacheKeyEqual;
+
+        static MapKey lookup_key(LookupKey key) noexcept {
+            return key;
+        }
+
+        static StoredKey store(LookupKey key) {
+            return RawSqlCacheStoredKey{
+                std::string(key.raw_sql), key.metadata_epoch, key.hash};
+        }
+
+        static MapKey map_key(const StoredKey& key) noexcept {
+            return RawSqlCacheKey{
+                key.raw_sql, key.metadata_epoch, key.hash};
+        }
+    };
+
+    using RawSqlCacheResult = LruCacheResult<PreparedSqlRef>;
+
+    /**
+     * Front cache keyed by raw SQL. The cache is sharded so unrelated hot SQL
+     * statements do not contend on one shared_mutex. A hash is computed once
+     * per lookup and carried in the heterogeneous key, avoiding a second scan
+     * of the SQL text inside unordered_map.
+     */
+    class RawSqlCache {
+    public:
+        explicit RawSqlCache(size_t max_size,
+                             size_t shard_count = 16,
+                             size_t max_cacheable_length = 64 * 1024)
+            : max_cacheable_length_(max_cacheable_length) {
+            const size_t entry_count = max_size > 0 ? max_size : 1;
+            const size_t requested_shards = shard_count > 0 ? shard_count : 1;
+            const size_t actual_shards = std::min(requested_shards, entry_count);
+            const size_t base_size = entry_count / actual_shards;
+            const size_t remainder = entry_count % actual_shards;
+
+            shards_.reserve(actual_shards);
+            for (size_t i = 0; i < actual_shards; ++i) {
+                const size_t capacity = base_size + (i < remainder ? 1 : 0);
+                shards_.emplace_back(std::make_unique<Shard>(capacity));
+            }
+        }
+
+        RawSqlCache(const RawSqlCache&) = delete;
+        RawSqlCache& operator=(const RawSqlCache&) = delete;
+        RawSqlCache(RawSqlCache&&) = delete;
+        RawSqlCache& operator=(RawSqlCache&&) = delete;
+
+        template<typename Generator>
+        RawSqlCacheResult get(std::string_view raw_sql,
+                              uint64_t metadata_epoch,
+                              Generator&& generator) {
+            // Very large statements remain correct but bypass the cache so one
+            // pathological key cannot pin an excessive amount of memory.
+            if (raw_sql.size() > max_cacheable_length_) {
+                return RawSqlCacheResult{generator(), false};
+            }
+
+            size_t hash = std::hash<std::string_view>{}(raw_sql);
+            hash ^= std::hash<uint64_t>{}(metadata_epoch) + 0x9e3779b9 +
+                    (hash << 6) + (hash >> 2);
+            auto& shard = *shards_[hash % shards_.size()];
+            return shard.cache.get(
+                RawSqlCacheKey{raw_sql, metadata_epoch, hash},
+                std::forward<Generator>(generator));
+        }
+
+        size_t shardCount() const noexcept {
+            return shards_.size();
+        }
+
+    private:
+        struct Shard {
+            explicit Shard(size_t capacity) : cache(capacity) {}
+            LruCacheImpl<PreparedSqlRef, RawSqlCacheKeyTraits> cache;
+        };
+
+        std::vector<std::unique_ptr<Shard>> shards_;
+        const size_t max_cacheable_length_;
     };
 
     /**

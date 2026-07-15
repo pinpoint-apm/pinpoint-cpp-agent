@@ -15,6 +15,7 @@
  */
 
 #include "../src/annotation.h"
+#include "../src/cache.h"
 #include <gtest/gtest.h>
 #include <string>
 #include <list>
@@ -825,6 +826,27 @@ TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
 
     ++it;
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).intValue, INT32_MIN);
+}
+
+TEST_F(AnnotationTest, CachedSqlParameterAliasKeepsPreparedEntryAlive) {
+    auto prepared = std::make_shared<const PreparedSql>(PreparedSql{
+        "SELECT 0#", "42", SqlIdentity{7}});
+    std::weak_ptr<const PreparedSql> weak = prepared;
+
+    {
+        auto parameters = std::shared_ptr<const std::string>(
+            prepared, &prepared->parameters);
+        AnnotationData data(7, std::move(parameters), "bind");
+        prepared.reset();
+
+        EXPECT_FALSE(weak.expired());
+        const auto& sql = std::get<IntStringStringValue>(data.data);
+        EXPECT_EQ(sql.stringValue1View(), "42");
+        EXPECT_EQ(sql.stringValue2, "bind");
+        EXPECT_NE(sql.sharedStringValue1, nullptr);
+    }
+
+    EXPECT_TRUE(weak.expired());
 }
 
 } // namespace pinpoint

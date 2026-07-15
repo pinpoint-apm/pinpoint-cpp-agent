@@ -18,12 +18,12 @@
 #include <cassert>
 #include <utility>
 
+#include "cache.h"
 #include "callstack.h"
 #include "logging.h"
 #include "noop.h"
 #include "span.h"
 #include "span_event.h"
-#include "sql.h"
 #include "utility.h"
 
 namespace pinpoint {
@@ -139,25 +139,35 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::SetSqlQuery(std::string_view sql_query, std::string_view args) {
-        // Use a thread-local or static instance since SqlNormalizer is now stateless/thread-safe for normalize()
-        static const SqlNormalizer normalizer(64*1024);
-        SqlNormalizeResult result = normalizer.normalize(sql_query);
-
         const auto& config = span_->config_;
-        if (config->sql.enable_sql_stats) {
-            auto sql_uid = agent_->cacheSqlUid(result.normalized_sql);
-            if (sql_uid) {
-                // result.parameters is dead after this call: move it into the
-                // annotation instead of copying through the string_view path.
-                ensureAnnotations()->AppendData(ANNOTATION_SQL_UID,
-                    AnnotationData(*sql_uid, std::move(result.parameters), args));
+        const auto mode = config->sql.enable_sql_stats
+            ? SqlMetaMode::Uid
+            : SqlMetaMode::Id;
+        auto prepared = agent_->prepareSql(sql_query, mode);
+        if (!prepared || !*prepared) {
+            return;
+        }
+
+        const auto& value = **prepared;
+        // Aliasing shares PreparedSql's existing control block; no allocation
+        // or parameter-string copy occurs on a raw-cache hit. It also protects
+        // the bytes until asynchronous span serialization completes.
+        auto parameters = std::shared_ptr<const std::string>(
+            *prepared, &value.parameters);
+
+        if (mode == SqlMetaMode::Uid) {
+            if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
+                ensureAnnotations()->AppendData(
+                    ANNOTATION_SQL_UID,
+                    AnnotationData(*uid, std::move(parameters), args));
             }
-        } else {
-            auto sql_id = agent_->cacheSql(result.normalized_sql);
-            if (sql_id) {
-                ensureAnnotations()->AppendData(ANNOTATION_SQL_ID,
-                    AnnotationData(sql_id, std::move(result.parameters), args));
-            }
+            return;
+        }
+
+        if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
+            ensureAnnotations()->AppendData(
+                ANNOTATION_SQL_ID,
+                AnnotationData(*sql_id, std::move(parameters), args));
         }
     }
 

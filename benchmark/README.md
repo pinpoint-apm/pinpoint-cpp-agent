@@ -1,4 +1,6 @@
-# Span queue microbenchmark
+# Microbenchmarks
+
+## Span queue
 
 This benchmark compares the former single-`std::mutex` span queue with the
 preallocated sharded bounded queue used by `GrpcSpan`. It measures producer
@@ -55,3 +57,31 @@ The completion gates use the `drain` results:
 Run on an otherwise idle machine and compare medians from multiple repetitions.
 Latency includes the two clock reads on sampled operations equally for both
 implementations.
+
+## Raw SQL prepared cache
+
+`raw_sql_cache_benchmark` compares the former per-call SQL normalization plus
+canonical ID lookup with a warmed `RawSqlCache` hit. It also intercepts
+`operator new`/`operator new[]` during the measured loop and fails if a cache
+hit allocates or invokes the preparation factory. An eight-thread pass checks
+the shared-lock hit path under contention.
+
+```sh
+cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug-cached --target raw_sql_cache_benchmark
+./build/debug-cached/benchmark/raw_sql_cache_benchmark 500000
+```
+
+The optional argument is the total operation count used by both the
+single-thread and parallel comparisons. Run several times on an otherwise idle
+machine and compare the median `ns/op` and speedup values.
+
+The `speedup` figures describe the **cache-hit** path only, i.e. workloads that
+repeat the same raw SQL text (prepared statements or drivers that reuse query
+strings with bind parameters). The final `miss (distinct raw)` lines report the
+opposite extreme: a pool of distinct statements larger than the cache, so every
+lookup misses and pays the hash, insert, and eviction churn on top of
+normalization. Its `overhead` value is `raw-cache ns/op ÷ legacy ns/op`; a value
+above `1.0` means that for workloads which inline literals instead of binding
+parameters (hit rate ≈ 0), the front cache costs more than it saves. Weigh both
+numbers against the expected raw-SQL repetition of the target application.

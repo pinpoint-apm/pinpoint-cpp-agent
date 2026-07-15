@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 #include <unistd.h>
 
@@ -29,12 +30,14 @@
 #include "noop.h"
 #include "agent.h"
 #include "object_name.h"
+#include "sql.h"
 #include "utility.h"
 
 namespace pinpoint {
 
     // Constants
     constexpr int kCacheSize = 1024;
+    constexpr int kRawSqlCacheShards = 16;
 
     // Global agent singleton with lock-free reader access
     namespace {
@@ -93,6 +96,8 @@ namespace pinpoint {
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
+        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(kCacheSize, kRawSqlCacheShards);
+        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(kCacheSize, kRawSqlCacheShards);
 
         // Initial build: no previous runtime, so every component is created
         // and published together in one atomic store.
@@ -911,9 +916,66 @@ namespace pinpoint {
         return 0;
     }
 
+    std::optional<PreparedSqlRef> AgentImpl::prepareSql(
+            std::string_view raw_sql, SqlMetaMode mode) const try {
+        if (!enabled_) {
+            return std::nullopt;
+        }
+
+        // SqlNormalizer has immutable configuration and normalize() keeps all
+        // state local, so one process-wide instance is safe for concurrent use.
+        static const SqlNormalizer normalizer(64 * 1024);
+
+        if (mode == SqlMetaMode::Id) {
+            const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
+            auto cached = raw_sql_id_cache_->get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+                auto normalized = normalizer.normalize(raw_sql);
+                const auto id = cacheSql(normalized.normalized_sql);
+                if (id <= 0) {
+                    // Throwing prevents LruCacheImpl from inserting an invalid
+                    // value; cacheSql() already logged the underlying failure.
+                    throw std::runtime_error("SQL ID unavailable");
+                }
+                return std::make_shared<const PreparedSql>(PreparedSql{
+                    std::move(normalized.normalized_sql),
+                    std::move(normalized.parameters),
+                    SqlIdentity{id}});
+            });
+            return cached.value;
+        }
+
+        if (mode == SqlMetaMode::Uid) {
+            const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
+            auto cached = raw_sql_uid_cache_->get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+                auto normalized = normalizer.normalize(raw_sql);
+                auto uid = cacheSqlUid(normalized.normalized_sql);
+                if (!uid) {
+                    throw std::runtime_error("SQL UID unavailable");
+                }
+                return std::make_shared<const PreparedSql>(PreparedSql{
+                    std::move(normalized.normalized_sql),
+                    std::move(normalized.parameters),
+                    SqlIdentity{*uid}});
+            });
+            return cached.value;
+        }
+
+        return std::nullopt;
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to prepare raw sql: exception = {}", e.what());
+        return std::nullopt;
+    } catch (...) {
+        LOG_ERROR("failed to prepare raw sql: unknown exception");
+        return std::nullopt;
+    }
+
     void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const try {
         if (enabled_) {
             sql_cache_->remove(sql_meta.str_val_);
+            // Raw entries cache the assigned ID. Advancing the epoch makes all
+            // of them unreachable after metadata retry exhaustion, without a
+            // reverse index from normalized SQL to every raw variant.
+            sql_id_metadata_epoch_.fetch_add(1, std::memory_order_release);
         }
     } catch (const std::exception &e) {
         LOG_ERROR("failed to remove cached sql meta: exception = {}", e.what());
@@ -947,6 +1009,7 @@ namespace pinpoint {
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
         if (enabled_) {
             sql_uid_cache_->remove(sql_uid_meta.sql_);
+            sql_uid_metadata_epoch_.fetch_add(1, std::memory_order_release);
         }
     } catch (const std::exception &e) {
         LOG_ERROR("failed to remove cached sql uid meta: exception = {}", e.what());

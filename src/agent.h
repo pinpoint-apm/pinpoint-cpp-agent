@@ -142,6 +142,7 @@ namespace pinpoint {
     	int32_t cacheError(std::string_view error_name) const override;
     	void removeCacheError(const StringMeta& error_meta) const override;
     	int32_t cacheSql(std::string_view sql_query) const override;
+		std::optional<PreparedSqlRef> prepareSql(std::string_view raw_sql, SqlMetaMode mode) const override;
     	void removeCacheSql(const StringMeta& sql_meta) const override;
     	std::optional<SqlUid> cacheSqlUid(std::string_view sql) const override;
     	void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override;
@@ -180,6 +181,10 @@ namespace pinpoint {
     	std::unique_ptr<IdCache> error_cache_{};
     	std::unique_ptr<IdCache> sql_cache_{};
     	std::unique_ptr<SqlUidCache> sql_uid_cache_{};
+		std::unique_ptr<RawSqlCache> raw_sql_id_cache_{};
+		std::unique_ptr<RawSqlCache> raw_sql_uid_cache_{};
+		mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
+		mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
 
     	std::unique_ptr<GrpcAgent> grpc_agent_{};
     	std::unique_ptr<GrpcMetadata> grpc_metadata_{};

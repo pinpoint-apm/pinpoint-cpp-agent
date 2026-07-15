@@ -95,7 +95,8 @@ namespace pinpoint {
                     issv->set_intvalue(v.intValue);
 
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s1->set_value(v.stringValue1);
+                    const auto string_value1 = v.stringValue1View();
+                    s1->set_value(string_value1.data(), string_value1.size());
                     issv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
@@ -124,7 +125,8 @@ namespace pinpoint {
                     bssv->set_bytesvalue(reinterpret_cast<const char*>(v.bytesValue.data()), v.bytesValue.size());
 
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s1->set_value(v.stringValue1);
+                    const auto string_value1 = v.stringValue1View();
+                    s1->set_value(string_value1.data(), string_value1.size());
                     bssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
