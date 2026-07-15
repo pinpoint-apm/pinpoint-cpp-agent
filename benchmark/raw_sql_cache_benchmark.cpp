@@ -177,8 +177,7 @@ int main(int argc, char** argv) {
         return std::make_shared<const PreparedSql>(PreparedSql{
             std::move(normalized.normalized_sql),
             std::move(normalized.parameters),
-            SqlIdentity{id},
-            0});
+            SqlIdentity{id}});
     };
     raw_cache.get(kRawSql, 0, factory);
     factory_calls.store(0, std::memory_order_relaxed);

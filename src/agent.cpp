@@ -939,8 +939,7 @@ namespace pinpoint {
                 return std::make_shared<const PreparedSql>(PreparedSql{
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
-                    SqlIdentity{id},
-                    epoch});
+                    SqlIdentity{id}});
             });
             return cached.value;
         }
@@ -956,8 +955,7 @@ namespace pinpoint {
                 return std::make_shared<const PreparedSql>(PreparedSql{
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
-                    SqlIdentity{*uid},
-                    epoch});
+                    SqlIdentity{*uid}});
             });
             return cached.value;
         }

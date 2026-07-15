@@ -50,7 +50,6 @@ namespace pinpoint {
         std::string normalized_sql;
         std::string parameters;
         SqlIdentity identity;
-        uint64_t metadata_epoch;
     };
 
     using PreparedSqlRef = std::shared_ptr<const PreparedSql>;
