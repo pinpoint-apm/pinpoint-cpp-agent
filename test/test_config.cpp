@@ -1287,6 +1287,15 @@ Sql:
 
 // Test SQL configuration edge cases
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
+    // Test negative bind args size
+    set_config_string(R"(
+Sql:
+  MaxBindArgsSize: -1
+)");
+    auto negative_config = make_config();
+    EXPECT_EQ(negative_config->sql.max_bind_args_size, 0)
+        << "Negative bind args size should be clamped to zero";
+
     // Test zero bind args size
     set_config_string(R"(
 Sql:
@@ -1306,6 +1315,13 @@ Sql:
     auto config2 = make_config();
     EXPECT_EQ(config2->sql.max_bind_args_size, 1048576) << "Large bind args size should be allowed";
     EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled";
+
+    // Test negative bind args size from the environment
+    set_config_string("");
+    setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "-1", 1);
+    auto negative_env_config = make_config();
+    EXPECT_EQ(negative_env_config->sql.max_bind_args_size, 0)
+        << "Negative bind args size from the environment should be clamped to zero";
 }
 
 // Test SQL configuration string generation

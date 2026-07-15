@@ -820,6 +820,22 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
               "...(4)");
 }
 
+TEST_F(SpanEventTest, SetSqlQueryDoesNotTraceBindValueWhenLimitIsZero) {
+    auto config = std::make_shared<Config>();
+    config->sql.trace_bind_value = true;
+    config->sql.max_bind_args_size = 0;
+    mock_agent_service_->reloadConfig(config);
+
+    auto span_event = make_test_span_event(*test_span_, "zero-limit");
+    span_event.SetSqlQuery("SELECT * FROM users WHERE id = 1", {"1234"});
+
+    auto& annotations = span_event.getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1U);
+    EXPECT_TRUE(std::get<IntStringStringValue>(
+                    annotations.front().second.data).stringValue2.empty())
+        << "Bind values should be omitted when MaxBindArgsSize is zero";
+}
+
 TEST_F(SpanEventTest, SetSqlQuerySkipsAnnotationWhenSqlIdUnavailable) {
     // cacheSql reports an invalid id, so prepareSql's guard throws inside the
     // generator and returns nullopt; SetSqlQuery must then append nothing.

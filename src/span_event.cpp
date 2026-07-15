@@ -143,11 +143,9 @@ namespace pinpoint {
         const std::vector<std::string_view>& args) {
         const auto& config = span_->config_;
         std::string joined_args;
-        if (config->sql.trace_bind_value) {
+        if (config->sql.trace_bind_value && config->sql.max_bind_args_size > 0) {
             const int configured_max_size = config->sql.max_bind_args_size;
-            const std::size_t max_size = configured_max_size > 0
-                ? static_cast<std::size_t>(configured_max_size)
-                : 0;
+            const auto max_size = static_cast<std::size_t>(configured_max_size);
             for (std::size_t i = 0; i < args.size(); ++i) {
                 const std::size_t separator_size = i == 0 ? 0 : 1;
                 const std::size_t remaining_size = max_size - joined_args.size();

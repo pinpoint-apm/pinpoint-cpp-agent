@@ -1120,6 +1120,12 @@ namespace pinpoint {
             config->collector.agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
         }
 
+        if (config->sql.max_bind_args_size < 0) {
+            LOG_WARN("sql max bind args size {} is invalid, clamping to 0",
+                     config->sql.max_bind_args_size);
+            config->sql.max_bind_args_size = 0;
+        }
+
         // A negative limit would cast to a huge size_t at the use site
         // (UrlStatSnapshot::add), disabling the cap and letting the URL map grow
         // unbounded with cardinality. Reject it.
