@@ -878,6 +878,39 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     span.EndSpan();
 }
 
+// Regression: exceptions captured on an async span must be flushed when the
+// async span ends. EndSpan's async branch previously skipped sendExceptions(),
+// so a span event's ANNOTATION_EXCEPTION_ID referenced exception metadata that
+// was never sent to the collector, losing the captured call stack.
+TEST_F(SpanTest, AsyncSpanFlushesExceptionsOnEndTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    auto base_event = span.NewSpanEvent("base-event");
+    auto async_span = span.NewAsyncSpan("async-operation");
+    ASSERT_NE(async_span, nullptr);
+
+    // Capture an exception (with call stack) on the async span.
+    auto async_event = async_span->NewSpanEvent("async-child");
+    ASSERT_NE(async_event, nullptr);
+    MockCallStackReader callstack_reader;
+    callstack_reader.AddFrame("/usr/lib/libmyapp.so", "handler", "/src/async.cpp", 7);
+    async_event->SetError("AsyncError", "boom", callstack_reader);
+    async_event->EndEvent();
+
+    const int before = mock_agent_service_->recorded_exceptions_;
+    async_span->EndSpan();  // must flush the async span's captured exceptions
+    EXPECT_EQ(mock_agent_service_->recorded_exceptions_, before + 1)
+        << "Async span EndSpan must send captured exceptions";
+
+    base_event->EndEvent();
+    span.EndSpan();
+}
+
 // ========== Integration Tests ==========
 
 TEST_F(SpanTest, CompleteSpanWorkflowTest) {

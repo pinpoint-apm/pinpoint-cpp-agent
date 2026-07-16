@@ -384,10 +384,19 @@ namespace pinpoint {
             if (open_events == 0) {
                 LOG_WARN("EndSpan: abnormal async span - has no event");
             }
+            // Exceptions can be captured on async spans too: SetError on an
+            // async span event routes to that span's own exception list. Flush
+            // them here since the non-async branch below is skipped — otherwise
+            // the span event's ANNOTATION_EXCEPTION_ID references exception
+            // metadata that is never sent, and the captured call stack is lost.
+            sendExceptions();
         } else {
             auto& stats = agent_->getAgentStats();
             stats.dropActiveSpan(data_->getSpanId());
             stats.collectResponseTime(data_->getElapsed());
+            // sendExceptions() must precede sendUrlStat(): the latter resets
+            // url_stat_, which getUrlTemplate() reads to tag the exception with
+            // its uri template.
             sendExceptions();
             sendUrlStat();
         }
