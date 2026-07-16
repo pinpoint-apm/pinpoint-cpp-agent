@@ -113,7 +113,7 @@ static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
 // each token to a shared wrapper. A lookup copies that shared_ptr under the
 // shard lock, so a concurrent destroy can remove the token without freeing the
 // wrapper out from under a call already in progress. Odd values cannot collide
-// with the aligned addresses of the two static noop sentinels.
+// with the aligned addresses of the two leaked noop sentinels.
 // ============================================================================
 
 struct pt_agent_s { pinpoint::AgentPtr ptr; };
@@ -122,13 +122,17 @@ static_assert(alignof(pt_agent_s) > 1 && alignof(pt_span_s) > 1,
               "noop sentinel addresses must not use the odd token tag");
 
 static pt_agent_s* noop_agent_sentinel() {
-    static pt_agent_s sentinel{pinpoint::noopAgent()};
-    return &sentinel;
+    // Heap-allocated and leaked for the same shutdown-order reason as the
+    // handle registries and id counter below: a host may operate on a noop
+    // handle from a global destructor / atexit during process exit. A value
+    // static would be destroyed first, turning that into use-after-destruction.
+    static pt_agent_s* sentinel = new pt_agent_s{pinpoint::noopAgent()};
+    return sentinel;
 }
 
 static pt_span_s* noop_span_sentinel() {
-    static pt_span_s sentinel{pinpoint::noopSpan()};
-    return &sentinel;
+    static pt_span_s* sentinel = new pt_span_s{pinpoint::noopSpan()};
+    return sentinel;
 }
 
 namespace {
