@@ -126,8 +126,7 @@ public:
         static const SqlNormalizer normalizer(64 * 1024);
 
         if (mode == SqlMetaMode::Id) {
-            const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
-            return raw_sql_id_cache_.get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+            auto prepare = [&]() -> PreparedSqlRef {
                 sql_normalize_count_.fetch_add(1, std::memory_order_relaxed);
                 auto normalized = normalizer.normalize(raw_sql);
                 const auto id = cacheSql(normalized.normalized_sql);
@@ -140,11 +139,15 @@ public:
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
-            }).value;
+            };
+            if (config_->sql.enable_rawsql_cache) {
+                const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
+                return raw_sql_id_cache_.get(raw_sql, epoch, prepare).value;
+            }
+            return prepare();
         }
 
-        const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
-        return raw_sql_uid_cache_.get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+        auto prepare = [&]() -> PreparedSqlRef {
             sql_normalize_count_.fetch_add(1, std::memory_order_relaxed);
             auto normalized = normalizer.normalize(raw_sql);
             auto uid = cacheSqlUid(normalized.normalized_sql);
@@ -155,7 +158,12 @@ public:
                 std::move(normalized.normalized_sql),
                 std::move(normalized.parameters),
                 SqlIdentity{*uid}});
-        }).value;
+        };
+        if (config_->sql.enable_rawsql_cache) {
+            const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
+            return raw_sql_uid_cache_.get(raw_sql, epoch, prepare).value;
+        }
+        return prepare();
     } catch (const std::exception&) {
         // AgentImpl::prepareSql swallows preparation failures and returns
         // nullopt; the mock honors the same contract so callers observe

@@ -310,6 +310,7 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 |---|---|---|---|---|
 | `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. Bind values are recorded only when this is greater than `0`; negative values are clamped to `0`. An argument that would exceed a positive limit is omitted and the value ends with `...(N)`. |
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Aggregate execution counts even for unsampled traces. |
+| `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAWSQL_CACHE` | bool | `false` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
 
 ---
@@ -346,7 +347,7 @@ Not all configuration options can be changed at runtime. Options that define the
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
-| SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue` | **Yes** |
+| SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue` | **Yes** |
 
 The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect. (Non-reloadable fields still require an application restart to actually change.)
 
@@ -697,6 +698,7 @@ Http:
 Sql:
   MaxBindArgsSize: 1024
   EnableSqlStats: false
+  EnableRawSqlCache: false
   TraceBindValue: true
 
 EnableCallstackTrace: false

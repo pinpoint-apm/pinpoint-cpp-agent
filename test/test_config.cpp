@@ -95,6 +95,7 @@ private:
         saved_env_vars_[full_env(env::CONFIG_FILE)] = GetEnvVar(full_env(env::CONFIG_FILE));
         saved_env_vars_[full_env(env::SQL_MAX_BIND_ARGS_SIZE)] = GetEnvVar(full_env(env::SQL_MAX_BIND_ARGS_SIZE));
         saved_env_vars_[full_env(env::SQL_ENABLE_SQL_STATS)] = GetEnvVar(full_env(env::SQL_ENABLE_SQL_STATS));
+        saved_env_vars_[full_env(env::SQL_ENABLE_RAWSQL_CACHE)] = GetEnvVar(full_env(env::SQL_ENABLE_RAWSQL_CACHE));
         saved_env_vars_[full_env(env::SQL_TRACE_BIND_VALUE)] = GetEnvVar(full_env(env::SQL_TRACE_BIND_VALUE));
         saved_env_vars_[full_env(env::ENABLE_CALLSTACK_TRACE)] = GetEnvVar(full_env(env::ENABLE_CALLSTACK_TRACE));
         saved_env_vars_[full_env(env::HTTP_COLLECT_URL_STAT)] = GetEnvVar(full_env(env::HTTP_COLLECT_URL_STAT));
@@ -222,6 +223,7 @@ Http:
 Sql:
   MaxBindArgsSize: 2048
   EnableSqlStats: true
+  EnableRawSqlCache: true
   TraceBindValue: true
 )";
 
@@ -348,6 +350,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     // Test SQL defaults
     EXPECT_EQ(config->sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
     EXPECT_FALSE(config->sql.enable_sql_stats) << "SQL stats should be disabled by default";
+    EXPECT_FALSE(config->sql.enable_rawsql_cache) << "Raw SQL cache should be disabled by default";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled by default";
     
     // Test CallStack trace default
@@ -468,6 +471,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     // Test SQL configuration
     EXPECT_EQ(config->sql.max_bind_args_size, 2048) << "Max bind args size should match YAML";
     EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
+    EXPECT_TRUE(config->sql.enable_rawsql_cache) << "Raw SQL cache should be enabled as per YAML";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled as per YAML";
 }
 
@@ -525,6 +529,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(full_env(env::IS_CONTAINER).c_str(), "true", 1);
     setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "4096", 1);
     setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
+    setenv(full_env(env::SQL_ENABLE_RAWSQL_CACHE).c_str(), "true", 1);
     setenv(full_env(env::SQL_TRACE_BIND_VALUE).c_str(), "true", 1);
     setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
     setenv(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS).c_str(), "120000", 1);
@@ -552,6 +557,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Test SQL environment variable values
     EXPECT_EQ(config->sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
     EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
+    EXPECT_TRUE(config->sql.enable_rawsql_cache) << "Raw SQL cache should be enabled as per environment variable";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled as per environment variable";
     
     // Test HTTP environment variable values
@@ -1020,11 +1026,12 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
     config.span.max_event_depth = 32;
     config.http.url_stat.enable = true;
     config.sql.enable_sql_stats = true;
+    config.sql.enable_rawsql_cache = true;
     config.sql.trace_bind_value = false;
     config.uid_version_ = "v4";
 
     const auto config_strings = to_non_default_config_strings(config);
-    EXPECT_EQ(config_strings.size(), 6);
+    EXPECT_EQ(config_strings.size(), 7);
 
     auto contains_config = [&config_strings](const std::string& expected) {
         for (const auto& config_string : config_strings) {
@@ -1040,6 +1047,7 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
     EXPECT_TRUE(contains_config("Span.MaxEventDepth=32"));
     EXPECT_TRUE(contains_config("Http.CollectUrlStat=true"));
     EXPECT_TRUE(contains_config("Sql.EnableSqlStats=true"));
+    EXPECT_TRUE(contains_config("Sql.EnableRawSqlCache=true"));
     EXPECT_TRUE(contains_config("Sql.TraceBindValue=false"));
 }
 
@@ -1285,6 +1293,26 @@ Sql:
         << "SQL bind value tracing should be disabled by environment variable";
 }
 
+TEST_F(ConfigTest, SqlRawSqlCacheEnableTest) {
+    auto default_config = make_config();
+    EXPECT_FALSE(default_config->sql.enable_rawsql_cache)
+        << "Raw SQL cache should be disabled by default";
+
+    set_config_string(R"(
+Sql:
+  EnableRawSqlCache: true
+)");
+    auto yaml_config = make_config();
+    EXPECT_TRUE(yaml_config->sql.enable_rawsql_cache)
+        << "Raw SQL cache should be enabled by YAML";
+
+    set_config_string("");
+    setenv(full_env(env::SQL_ENABLE_RAWSQL_CACHE).c_str(), "true", 1);
+    auto env_config = make_config();
+    EXPECT_TRUE(env_config->sql.enable_rawsql_cache)
+        << "Raw SQL cache should be enabled by environment variable";
+}
+
 // Test SQL configuration edge cases
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
     // Test negative bind args size
@@ -1330,6 +1358,7 @@ TEST_F(ConfigTest, SqlConfigurationToStringTest) {
 Sql:
   MaxBindArgsSize: 2048
   EnableSqlStats: true
+  EnableRawSqlCache: true
   TraceBindValue: true
 )");
     auto config = make_config();
@@ -1341,6 +1370,8 @@ Sql:
         << "Config string should contain SQL max bind args size";
     EXPECT_TRUE(config_string.find("EnableSqlStats: true") != std::string::npos) 
         << "Config string should contain SQL stats enable setting";
+    EXPECT_TRUE(config_string.find("EnableRawSqlCache: true") != std::string::npos)
+        << "Config string should contain raw SQL cache enable setting";
     EXPECT_TRUE(config_string.find("TraceBindValue: true") != std::string::npos)
         << "Config string should contain SQL bind value tracing setting";
 }
@@ -1352,6 +1383,7 @@ ApplicationName: "SqlTestApp"
 Sql:
   MaxBindArgsSize: 3072
   EnableSqlStats: true
+  EnableRawSqlCache: true
   TraceBindValue: true
 )";
     
@@ -1369,6 +1401,8 @@ Sql:
         << "Max bind args size should match after round-trip";
     EXPECT_EQ(config1->sql.enable_sql_stats, config2->sql.enable_sql_stats) 
         << "SQL stats enable should match after round-trip";
+    EXPECT_EQ(config1->sql.enable_rawsql_cache, config2->sql.enable_rawsql_cache)
+        << "Raw SQL cache enable should match after round-trip";
     EXPECT_EQ(config1->sql.trace_bind_value, config2->sql.trace_bind_value)
         << "SQL bind value tracing should match after round-trip";
 }

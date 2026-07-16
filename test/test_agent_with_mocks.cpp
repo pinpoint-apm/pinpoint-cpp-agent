@@ -154,6 +154,7 @@ static std::shared_ptr<Config> make_test_config() {
     cfg->http.url_stat.trim_path_depth = 3;
     cfg->sampling.type = "counter";
     cfg->sampling.counter_rate = 1;
+    cfg->sql.enable_rawsql_cache = true;
     return cfg;
 }
 
@@ -354,6 +355,27 @@ TEST_F(AgentImplTest, PrepareSqlCachesCompleteRawResult) {
               "SELECT * FROM users WHERE id = 0# AND state = '1$'");
     EXPECT_EQ((*first)->parameters, "42,READY");
     EXPECT_GT(std::get<int32_t>((*first)->identity), 0);
+}
+
+TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
+    auto config = std::make_shared<Config>(*agent_->getConfig());
+    config->sql.enable_rawsql_cache = false;
+    agent_->reloadConfig(config);
+
+    constexpr std::string_view raw_sql =
+        "SELECT * FROM users WHERE id = 42 AND state = 'READY'";
+    auto first = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
+    auto second = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    ASSERT_NE(*first, nullptr);
+    ASSERT_NE(*second, nullptr);
+    EXPECT_NE(*first, *second);
+    EXPECT_EQ((*first)->normalized_sql, (*second)->normalized_sql);
+    EXPECT_EQ((*first)->parameters, (*second)->parameters);
+    EXPECT_EQ(std::get<int32_t>((*first)->identity),
+              std::get<int32_t>((*second)->identity));
 }
 
 TEST_F(AgentImplTest, PrepareSqlRawVariantsShareCanonicalIdentity) {

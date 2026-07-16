@@ -925,10 +925,10 @@ namespace pinpoint {
         // SqlNormalizer has immutable configuration and normalize() keeps all
         // state local, so one process-wide instance is safe for concurrent use.
         static const SqlNormalizer normalizer(64 * 1024);
+        const bool enable_rawsql_cache = getConfig()->sql.enable_rawsql_cache;
 
         if (mode == SqlMetaMode::Id) {
-            const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
-            auto cached = raw_sql_id_cache_->get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+            auto prepare = [&]() -> PreparedSqlRef {
                 auto normalized = normalizer.normalize(raw_sql);
                 const auto id = cacheSql(normalized.normalized_sql);
                 if (id <= 0) {
@@ -940,13 +940,16 @@ namespace pinpoint {
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
-            });
-            return cached.value;
+            };
+            if (enable_rawsql_cache) {
+                const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
+                return raw_sql_id_cache_->get(raw_sql, epoch, prepare).value;
+            }
+            return prepare();
         }
 
         if (mode == SqlMetaMode::Uid) {
-            const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
-            auto cached = raw_sql_uid_cache_->get(raw_sql, epoch, [&]() -> PreparedSqlRef {
+            auto prepare = [&]() -> PreparedSqlRef {
                 auto normalized = normalizer.normalize(raw_sql);
                 auto uid = cacheSqlUid(normalized.normalized_sql);
                 if (!uid) {
@@ -956,8 +959,12 @@ namespace pinpoint {
                     std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{*uid}});
-            });
-            return cached.value;
+            };
+            if (enable_rawsql_cache) {
+                const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
+                return raw_sql_uid_cache_->get(raw_sql, epoch, prepare).value;
+            }
+            return prepare();
         }
 
         return std::nullopt;

@@ -520,6 +520,7 @@ namespace pinpoint {
         if (auto sql = find_node(yaml, "Sql")) {
             config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", config.sql.max_bind_args_size);
             config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", config.sql.enable_sql_stats);
+            config.sql.enable_rawsql_cache = get_boolean(sql, "EnableRawSqlCache", config.sql.enable_rawsql_cache);
             config.sql.trace_bind_value = get_boolean(sql, "TraceBindValue", config.sql.trace_bind_value);
         }
 
@@ -786,6 +787,9 @@ namespace pinpoint {
         }
         if(auto e = get_env(env::SQL_ENABLE_SQL_STATS)) {
             config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_sql_stats);
+        }
+        if(auto e = get_env(env::SQL_ENABLE_RAWSQL_CACHE)) {
+            config.sql.enable_rawsql_cache = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_rawsql_cache);
         }
         if(auto e = get_env(env::SQL_TRACE_BIND_VALUE)) {
             config.sql.trace_bind_value = safe_env_stob(e.name.c_str(), e.value, config.sql.trace_bind_value);
@@ -1285,6 +1289,8 @@ namespace pinpoint {
                                default_config.sql.max_bind_args_size);
         add_non_default_config(config_strings, "Sql.EnableSqlStats", config.sql.enable_sql_stats,
                                default_config.sql.enable_sql_stats);
+        add_non_default_config(config_strings, "Sql.EnableRawSqlCache", config.sql.enable_rawsql_cache,
+                               default_config.sql.enable_rawsql_cache);
         add_non_default_config(config_strings, "Sql.TraceBindValue", config.sql.trace_bind_value,
                                default_config.sql.trace_bind_value);
         add_non_default_config(config_strings, "EnableCallstackTrace", config.enable_callstack_trace,
@@ -1456,6 +1462,7 @@ namespace pinpoint {
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "MaxBindArgsSize" << YAML::Value << config.sql.max_bind_args_size;
         emitter << YAML::Key << "EnableSqlStats" << YAML::Value << config.sql.enable_sql_stats;
+        emitter << YAML::Key << "EnableRawSqlCache" << YAML::Value << config.sql.enable_rawsql_cache;
         emitter << YAML::Key << "TraceBindValue" << YAML::Value << config.sql.trace_bind_value;
         emitter << YAML::EndMap;
 

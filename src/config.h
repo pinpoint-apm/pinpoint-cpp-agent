@@ -134,6 +134,7 @@ namespace pinpoint {
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
         constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
+        constexpr const char* SQL_ENABLE_RAWSQL_CACHE = "SQL_ENABLE_RAWSQL_CACHE";
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
         constexpr const char* CONFIG_FILE = "CONFIG_FILE";
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
@@ -277,6 +278,7 @@ namespace pinpoint {
         struct {
             int max_bind_args_size = defaults::SQL_MAX_BIND_ARGS_SIZE;
             bool enable_sql_stats = false;
+            bool enable_rawsql_cache = false;
             bool trace_bind_value = true;
         } sql;
 
