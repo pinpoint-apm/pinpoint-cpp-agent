@@ -1550,8 +1550,12 @@ namespace pinpoint {
         // worker.
         while (true) {
             try {
-                run_ping_worker();
-                break;
+                if (run_ping_worker()) {
+                    break;
+                }
+                // A stream start failed without a stop request: fall through
+                // to the restart delay and retry with a fresh stream, exactly
+                // like the exception path below.
             } catch (const std::exception& e) {
                 LOG_ERROR("grpc ping worker exception = {}", e.what());
                 drain_ping_stream_on_error();
@@ -1570,9 +1574,9 @@ namespace pinpoint {
         LOG_INFO("grpc ping worker end");
     }
 
-    void GrpcAgent::run_ping_worker() {
+    bool GrpcAgent::run_ping_worker() {
         if (!start_ping_stream()) {
-            return;
+            return false;
         }
 
         constexpr auto timeout = std::chrono::seconds(60);
@@ -1582,7 +1586,7 @@ namespace pinpoint {
             lock.unlock();
             if (write_and_await_ping_stream() == STREAM_DONE) {
                 if (!start_ping_stream()) {
-                    break;
+                    return false;
                 }
             }
 
@@ -1590,7 +1594,7 @@ namespace pinpoint {
             if (ping_cv_.wait_for(lock, timeout, [this]{ return ping_stop_requested_ || agent_->isExiting(); })) {
                 lock.unlock();
                 finish_ping_stream();
-                break;
+                return true;
             }
         }
     }
@@ -2362,8 +2366,12 @@ namespace pinpoint {
         // stop request or agent exit ends the worker.
         while (true) {
             try {
-                run_stats_worker();
-                break;
+                if (run_stats_worker()) {
+                    break;
+                }
+                // A stream start failed without a stop request: fall through
+                // to the restart delay and retry with a fresh stream, exactly
+                // like the exception path below.
             } catch (const std::exception& e) {
                 LOG_ERROR("grpc stats worker: exception = {}", e.what());
                 drain_stats_stream_on_error();
@@ -2383,9 +2391,9 @@ namespace pinpoint {
         LOG_INFO("grpc stats worker end");
     }
 
-    void GrpcStats::run_stats_worker() {
+    bool GrpcStats::run_stats_worker() {
         if (!start_stats_stream()) {
-            return;
+            return false;
         }
 
         std::unique_lock<std::mutex> lock(stats_queue_mutex_);
@@ -2398,12 +2406,12 @@ namespace pinpoint {
 
             if (stopping) {
                 finish_stats_stream();
-                break;
+                return true;
             }
 
             if (write_and_await_stats_stream() == STREAM_DONE) {
                 if (!start_stats_stream()) {
-                    break;
+                    return false;
                 }
             }
             // The staleness flag is also set by a queue overflow while the

@@ -561,6 +561,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     const auto baseline_annotations = span_event.getAnnotations()->getAnnotations().size();
     const auto baseline_exceptions = test_span_->getExceptions().size();
     const auto baseline_headers = mock_agent_service_->recorded_client_headers_;
+    const auto baseline_next_span_id = span_event.getNextSpanId();
 
     span_event.finish();  // finished_ is now set.
 
@@ -576,6 +577,8 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     MockHeaderReader header_reader;
     header_reader.SetHeader("X-After", "v");
     span_event.RecordHeader(HTTP_REQUEST, header_reader);
+    MockTraceContextWriter context_writer;
+    span_event.InjectContext(context_writer);
 
     // Scalar / string fields keep their pre-finish values.
     EXPECT_EQ(span_event.getServiceType(), 1234) << "SetServiceType must no-op after finish";
@@ -592,6 +595,10 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
         << "SetError must not add exceptions after finish";
     EXPECT_EQ(mock_agent_service_->recorded_client_headers_, baseline_headers)
         << "RecordHeader must no-op after finish";
+    EXPECT_FALSE(context_writer.Get(HEADER_TRACE_ID).has_value())
+        << "InjectContext must not write propagation headers after finish";
+    EXPECT_EQ(span_event.getNextSpanId(), baseline_next_span_id)
+        << "InjectContext must not generate a next span id after finish";
 
     // The public accessor still degrades to a non-null noop after finish.
     EXPECT_NE(span_event.GetAnnotations(), nullptr);

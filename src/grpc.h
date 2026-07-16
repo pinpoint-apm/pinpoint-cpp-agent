@@ -502,7 +502,9 @@ namespace pinpoint {
         GrpcStreamStatus write_and_await_ping_stream();
         // Worker loop body; sendPingWorker() supervises it and restarts it
         // after a transient exception instead of letting the worker die.
-        void run_ping_worker();
+        // Returns true when it ended on a stop request; false when a stream
+        // start failed, so the supervisor retries with a fresh stream.
+        bool run_ping_worker();
 
         void agent_info_worker();
         // Worker loop body; agent_info_worker() supervises it and restarts it
@@ -694,6 +696,8 @@ namespace pinpoint {
         void empty_stats_queue() noexcept;
         // Worker loop body; sendStatsWorker() supervises it and restarts it
         // after a transient exception instead of letting the worker die.
-        void run_stats_worker();
+        // Returns true when it ended on a stop request; false when a stream
+        // start failed, so the supervisor retries with a fresh stream.
+        bool run_stats_worker();
     };
 }  // namespace pinpoint
