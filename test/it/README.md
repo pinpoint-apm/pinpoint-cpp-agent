@@ -23,16 +23,27 @@ asserts their collector wire representation:
 
 - span lifecycle, scoped and implicitly finalized events, duplicate completion,
   async spans, propagation, SQL/errors, annotations, and event chunking
+- exception metadata for errors captured on async spans, including the literal
+  `NULL` URI-template fallback
 - periodic agent statistics, including sampling decisions, response time, CPU,
-  memory, thread count, and active-request histograms
+  memory, thread count, and active-request histograms, plus the
+  `Stat.Enable: false` gate that must suppress all agent-stat batches
 - URL-stat normalization, method prefixes, aggregation, latency histograms, and
   failed-request histograms
-- counter sampling, upstream sampling decisions, and new/continuation throughput
+- counter, percent, and zero-rate sampling, upstream sampling decisions,
+  unsampled `s0` downstream propagation, and new/continuation throughput
   limits, including their transaction-stat counters
-- API, error, SQL, and SQL-UID cache hits, type separation, invalidation, and
-  metadata re-publication
-- HTTP server/client helpers, proxy address/header handling, configured header
-  and cookie recording, HTTP status handling, and client endpoint serialization
+- API, error, SQL, and SQL-UID cache hits, type separation, invalidation,
+  metadata re-publication, and cache release with a fresh id after metadata
+  retry exhaustion
+- HTTP server/client helpers, proxy address/header handling for the Apache,
+  Nginx, and App proxy headers (priority order, out-of-range timestamp
+  rejection), configured header and cookie recording, HTTP status handling,
+  and client endpoint serialization
+- SQL bind-value join truncation at `Sql.MaxBindArgsSize`
+- the active-thread-count stream limit and ping-stream socket-id increments on
+  reconnect
+- the noop agent produced by `Enable: false`, and C API double-destroy safety
 
 ## Failure injection
 

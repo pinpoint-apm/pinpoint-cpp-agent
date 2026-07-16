@@ -439,7 +439,7 @@ protected:
             << "    CollectDeadlineMs: 20\n"
             << "    MaxConcurrentRequests: 2\n"
             << "Stat:\n"
-            << "  Enable: true\n"
+            << "  Enable: " << (StatEnable() ? "true" : "false") << "\n"
             << "  BatchCount: 1\n"
             << "  BatchInterval: 1000\n"
             << "Sampling:\n"
@@ -474,7 +474,7 @@ protected:
             << "Sql:\n"
             << "  EnableSqlStats: " << (EnableSqlStats() ? "true" : "false") << "\n"
             << "  TraceBindValue: true\n"
-            << "  MaxBindArgsSize: 2048\n";
+            << "  MaxBindArgsSize: " << MaxBindArgsSize() << "\n";
         return yaml.str();
     }
 
@@ -489,6 +489,8 @@ protected:
     virtual int MaxEventDepth() const { return 16; }
     virtual int MaxEventSequence() const { return 128; }
     virtual bool EnableSqlStats() const { return true; }
+    virtual bool StatEnable() const { return true; }
+    virtual int MaxBindArgsSize() const { return 2048; }
     virtual std::string_view ServerRecordRequestHeaders() const {
         return "[x-request-id]";
     }
@@ -627,6 +629,24 @@ protected:
     bool EnableSqlStats() const override { return false; }
 };
 
+// CounterRate 0 means "never sample a new trace"; continued traces bypass the
+// base sampler entirely, so they must still be recorded.
+class ZeroCounterSamplingIntegrationTest : public AgentIntegrationTest {
+protected:
+    int SamplingCounterRate() const override { return 0; }
+};
+
+class StatDisabledIntegrationTest : public AgentIntegrationTest {
+protected:
+    bool StatEnable() const override { return false; }
+};
+
+// Small enough that a handful of short bind values overflows the join limit.
+class SqlBindLimitIntegrationTest : public AgentIntegrationTest {
+protected:
+    int MaxBindArgsSize() const override { return 20; }
+};
+
 TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.pings.empty() && !snapshot.command_streams_v2.empty();
@@ -671,6 +691,16 @@ TEST_F(PingFailureIntegrationTest, ReconnectsPingStreamAfterResponseError) {
                has_result(snapshot, CollectorRpc::PingSession,
                           grpc::StatusCode::UNAVAILABLE, false);
     }, kWaitTimeout));
+
+    // Each ping stream carries a fresh socket id so the collector can tell a
+    // reconnect from a duplicate registration.
+    const auto snapshot = collector_.snapshot();
+    ASSERT_GE(snapshot.ping_streams.size(), 2U);
+    const auto first_socket = snapshot.ping_streams[0].value("socketid").value_or("");
+    const auto second_socket = snapshot.ping_streams[1].value("socketid").value_or("");
+    ASSERT_FALSE(first_socket.empty());
+    ASSERT_FALSE(second_socket.empty());
+    EXPECT_EQ(std::stoll(second_socket), std::stoll(first_socket) + 1);
     EXPECT_TRUE(agent_->Enable());
 }
 
@@ -2191,6 +2221,11 @@ TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
     pt_span_destroy(span);
     pt_agent_destroy(agent);
 
+    // Destroying an already-destroyed handle must be a warn-and-ignore no-op;
+    // the token registry protects against double free from C callers.
+    pt_span_destroy(span);
+    pt_agent_destroy(agent);
+
     ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
         return find_span_by_rpc(snapshot, "/c-api").has_value() &&
                find_span_by_rpc(snapshot, "/c-api-continued").has_value() &&
@@ -2248,6 +2283,388 @@ TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
 
     ASSERT_TRUE(FlushUrlStatsUntil("GET /c-api/{id}", 1));
     EXPECT_EQ(uri_stat_totals(collector_.snapshot(), "GET /c-api/{id}").total_count, 1);
+}
+
+TEST_F(AgentIntegrationTest, FlushesExceptionMetadataForAsyncSpans) {
+    auto span = agent_->NewSpan("async.exception.parent", "/async-exception");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+
+    // NewAsyncSpan attaches the async id to the currently open span event.
+    auto* spawner = span->NewSpanEvent("async.exception.spawner");
+    ASSERT_NE(spawner, nullptr);
+    auto async = span->NewAsyncSpan("async.exception.worker");
+    ASSERT_TRUE(async->IsSampled());
+    auto* async_event = async->GetSpanEvent();
+    ASSERT_NE(async_event, nullptr);
+
+    // The exception is captured on the async span itself, whose EndSpan runs
+    // the async branch: it must flush exception metadata even though the
+    // non-async statistics path is skipped there.
+    TestCallStack call_stack;
+    call_stack.Add("worker", "run_job", "worker.cpp", 21);
+    async_event->SetError("AsyncJobError", "async job failed", call_stack);
+    async->EndSpan();
+    spawner->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return !async_chunks_for(snapshot, span_id).empty() &&
+               std::any_of(snapshot.exception_metadata.begin(),
+                           snapshot.exception_metadata.end(),
+                   [span_id](const auto& received) {
+                       return received.message.spanid() == span_id;
+                   });
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto chunks = async_chunks_for(snapshot, span_id);
+    ASSERT_EQ(chunks.size(), 1U);
+    ASSERT_GE(chunks[0].spanevent_size(), 1);
+    const auto& async_root = chunks[0].spanevent(0);
+    ASSERT_TRUE(async_root.has_exceptioninfo());
+    EXPECT_EQ(async_root.exceptioninfo().stringvalue().value(), "async job failed");
+    EXPECT_NE(find_annotation(async_root.annotation(), ANNOTATION_EXCEPTION_ID),
+              nullptr);
+
+    const auto exception = std::find_if(
+        snapshot.exception_metadata.begin(), snapshot.exception_metadata.end(),
+        [span_id](const auto& received) {
+            return received.message.spanid() == span_id;
+        });
+    ASSERT_NE(exception, snapshot.exception_metadata.end());
+    // Async spans never carry a URL stat, so the template is the literal
+    // fallback value.
+    EXPECT_EQ(exception->message.uritemplate(), "NULL");
+    ASSERT_EQ(exception->message.exceptions_size(), 1);
+    EXPECT_EQ(exception->message.exceptions(0).exceptionclassname(), "worker");
+    EXPECT_EQ(exception->message.exceptions(0).exceptionmessage(),
+              "async job failed");
+    ASSERT_EQ(exception->message.exceptions(0).stacktraceelement_size(), 1);
+    EXPECT_EQ(exception->message.exceptions(0).stacktraceelement(0).methodname(),
+              "run_job");
+}
+
+TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) {
+    auto app_span = agent_->NewSpan("http.proxy.app", "/proxy-app");
+    ASSERT_TRUE(app_span->IsSampled());
+    MapCarrier app_request;
+    app_request.Set("Pinpoint-ProxyApp", "t=1712345678123 app=edge-proxy");
+    helper::TraceHttpServerRequest(app_span, "192.0.2.30:9000",
+                                   "app.example.test:80", app_request);
+    app_span->EndSpan();
+
+    // 1e300 * 1000 does not fit into int64: the untrusted timestamp must be
+    // rejected before the cast, while the annotation itself is still recorded.
+    auto nginx_span = agent_->NewSpan("http.proxy.nginx.range",
+                                      "/proxy-nginx-range");
+    ASSERT_TRUE(nginx_span->IsSampled());
+    MapCarrier nginx_request;
+    nginx_request.Set("Pinpoint-ProxyNginx", "t=1e300 D=25");
+    helper::TraceHttpServerRequest(nginx_span, "192.0.2.31:9000",
+                                   "nginx.example.test:80", nginx_request);
+    nginx_span->EndSpan();
+
+    // When several proxy headers are present, Apache wins over Nginx and App.
+    auto priority_span = agent_->NewSpan("http.proxy.priority", "/proxy-priority");
+    ASSERT_TRUE(priority_span->IsSampled());
+    MapCarrier priority_request;
+    priority_request.Set("Pinpoint-ProxyApache", "t=1710000002000000 D=9");
+    priority_request.Set("Pinpoint-ProxyNginx", "t=1710000003.5");
+    priority_request.Set("Pinpoint-ProxyApp", "t=1710000004000 app=ignored");
+    helper::TraceHttpServerRequest(priority_span, "192.0.2.32:9000",
+                                   "priority.example.test:80", priority_request);
+    priority_span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/proxy-app").has_value() &&
+               find_span_by_rpc(snapshot, "/proxy-nginx-range").has_value() &&
+               find_span_by_rpc(snapshot, "/proxy-priority").has_value();
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto app_wire = find_span_by_rpc(snapshot, "/proxy-app");
+    ASSERT_TRUE(app_wire.has_value());
+    const auto* app_proxy = find_annotation(app_wire->annotation(),
+                                            ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(app_proxy, nullptr);
+    const auto& app_value = app_proxy->value().longintintbytebytestringvalue();
+    EXPECT_EQ(app_value.longvalue(), INT64_C(1712345678123));
+    EXPECT_EQ(app_value.intvalue1(), 1);
+    EXPECT_EQ(app_value.stringvalue().value(), "edge-proxy");
+
+    const auto nginx_wire = find_span_by_rpc(snapshot, "/proxy-nginx-range");
+    ASSERT_TRUE(nginx_wire.has_value());
+    const auto* nginx_proxy = find_annotation(nginx_wire->annotation(),
+                                              ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(nginx_proxy, nullptr);
+    const auto& nginx_value = nginx_proxy->value().longintintbytebytestringvalue();
+    EXPECT_EQ(nginx_value.longvalue(), 0);
+    EXPECT_EQ(nginx_value.intvalue1(), 2);
+    EXPECT_EQ(nginx_value.intvalue2(), 25);
+
+    const auto priority_wire = find_span_by_rpc(snapshot, "/proxy-priority");
+    ASSERT_TRUE(priority_wire.has_value());
+    const auto* priority_proxy = find_annotation(priority_wire->annotation(),
+                                                 ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_NE(priority_proxy, nullptr);
+    const auto& priority_value =
+        priority_proxy->value().longintintbytebytestringvalue();
+    EXPECT_EQ(priority_value.longvalue(), INT64_C(1710000002000));
+    EXPECT_EQ(priority_value.intvalue1(), 3);
+    EXPECT_EQ(priority_value.intvalue2(), 9);
+}
+
+TEST_F(AgentIntegrationTest, ReRegistersMetadataAfterRetryExhaustion) {
+    // One initial attempt plus METADATA_RETRY_MAX_ATTEMPTS (3) retries: all
+    // four must fail before the sender gives up on this metadata.
+    for (int i = 0; i < 4; ++i) {
+        collector_.FailNext(CollectorRpc::ApiMetadata,
+                            grpc::StatusCode::UNAVAILABLE,
+                            "metadata attempt " + std::to_string(i) + " rejected");
+    }
+    const auto first_id = impl_->cacheApi("retry.exhausted.api", API_TYPE_DEFAULT);
+    ASSERT_GT(first_id, 0);
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return results_for(snapshot, CollectorRpc::ApiMetadata).size() >= 4;
+    }, kWaitTimeout));
+    const auto failed = results_for(collector_.snapshot(),
+                                    CollectorRpc::ApiMetadata);
+    ASSERT_GE(failed.size(), 4U);
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(failed[i].status_code, grpc::StatusCode::UNAVAILABLE) << i;
+    }
+
+    // Exhaustion must release the cache entry so the same API string is
+    // re-cached under a fresh id and re-published. The release runs on the
+    // sender worker shortly after the last failure, hence the poll.
+    int32_t second_id = 0;
+    ASSERT_TRUE(wait_until([&] {
+        second_id = impl_->cacheApi("retry.exhausted.api", API_TYPE_DEFAULT);
+        return second_id != first_id;
+    }));
+    ASSERT_TRUE(collector_.WaitFor([second_id](const auto& snapshot) {
+        return std::any_of(snapshot.api_metadata.begin(),
+                           snapshot.api_metadata.end(),
+                   [second_id](const auto& received) {
+                       return received.message.apiinfo() == "retry.exhausted.api" &&
+                              received.message.apiid() == second_id;
+                   }) &&
+               has_result(snapshot, CollectorRpc::ApiMetadata,
+                          grpc::StatusCode::OK, true);
+    }, kWaitTimeout));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(SqlBindLimitIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
+    auto span = agent_->NewSpan("sql.bind.limit", "/sql-bind-limit");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+
+    auto* event = span->NewSpanEvent("sql.bind", SERVICE_TYPE_MYSQL_QUERY);
+    ASSERT_NE(event, nullptr);
+    event->SetSqlQuery("SELECT * FROM items WHERE a = ? AND b = ? AND c = ?",
+                       {std::string_view{"0123456789"},
+                        std::string_view{"abcdefgh"},
+                        std::string_view{"xyz"}});
+    event->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return !events_for_span(snapshot, span_id).empty();
+    }, kWaitTimeout));
+
+    const auto events = events_for_span(collector_.snapshot(), span_id);
+    ASSERT_EQ(events.size(), 1U);
+    const auto* uid_annotation = find_annotation(events[0].annotation(),
+                                                 ANNOTATION_SQL_UID);
+    ASSERT_NE(uid_annotation, nullptr);
+    // "0123456789,abcdefgh" fills 19 of the 20 allowed bytes; the third value
+    // no longer fits, so the join stops and appends the truncation marker.
+    EXPECT_EQ(uid_annotation->value().bytesstringstringvalue()
+                  .stringvalue2().value(),
+              "0123456789,abcdefgh...(20)");
+}
+
+TEST_F(ZeroCounterSamplingIntegrationTest,
+       SamplesOnlyContinuedTracesWhenCounterRateIsZero) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return agent_stat_count(snapshot) >= 1;
+    }, kWaitTimeout));
+    const auto baseline = agent_stat_count(collector_.snapshot());
+
+    const std::array<bool, 3> expected_new{false, false, false};
+    DriveSamplingPattern("sampling.zero", "/sampling/zero/", expected_new);
+
+    // Continued traces bypass the new-trace sampler entirely: even a rate
+    // that never samples locally must not cut a distributed trace.
+    MapCarrier context;
+    context.Set(HEADER_TRACE_ID, "java-agent-7^1700000000000^99");
+    auto continued = agent_->NewSpan("sampling.zero.continued",
+                                     "/sampling/zero/continued", context);
+    EXPECT_TRUE(continued->IsSampled());
+    continued->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
+        const auto totals = transaction_totals_after(snapshot, baseline);
+        return totals.unsampled_new >= 3 && totals.sampled_continuation >= 1 &&
+               count_spans_by_rpc(snapshot, "/sampling/zero/continued") == 1;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto totals = transaction_totals_after(snapshot, baseline);
+    EXPECT_EQ(totals.sampled_new, 0);
+    EXPECT_EQ(totals.unsampled_new, 3);
+    EXPECT_EQ(totals.sampled_continuation, 1);
+    ExpectSamplingPattern(snapshot, "/sampling/zero/", expected_new);
+    const auto wire = find_span_by_rpc(snapshot, "/sampling/zero/continued");
+    ASSERT_TRUE(wire.has_value());
+    EXPECT_EQ(wire->transactionid().agentid(), "java-agent-7");
+}
+
+TEST_F(AgentIntegrationTest, PropagatesUnsampledDecisionDownstream) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return agent_stat_count(snapshot) >= 1;
+    }, kWaitTimeout));
+    const auto baseline = agent_stat_count(collector_.snapshot());
+
+    MapCarrier inbound;
+    inbound.Set(HEADER_SAMPLED, "s0");
+    auto span = agent_->NewSpan("unsampled.origin", "/unsampled-origin", inbound);
+    EXPECT_FALSE(span->IsSampled());
+    EXPECT_TRUE(span->GetTraceId().empty());
+    // Unlike a plain noop span, an unsampled span keeps a real span id so it
+    // still feeds active-request and response-time statistics.
+    EXPECT_NE(span->GetSpanId(), 0);
+
+    // The outbound carrier must tell downstream services to skip sampling,
+    // and must not leak any trace identifiers for the untraced request.
+    auto* event = span->NewSpanEvent("unsampled.client");
+    ASSERT_NE(event, nullptr);
+    MapCarrier outbound;
+    event->InjectContext(outbound);
+    EXPECT_EQ(outbound.Get(HEADER_SAMPLED).value_or(""), "s0");
+    EXPECT_FALSE(outbound.Get(HEADER_TRACE_ID).has_value());
+    EXPECT_FALSE(outbound.Get(HEADER_SPAN_ID).has_value());
+    event->EndEvent();
+    span->EndSpan();
+
+    auto downstream = agent_->NewSpan("unsampled.downstream",
+                                      "/unsampled-downstream", outbound);
+    EXPECT_FALSE(downstream->IsSampled());
+    downstream->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
+        return transaction_totals_after(snapshot, baseline)
+                   .unsampled_continuation >= 2;
+    }, kWaitTimeout));
+    const auto snapshot = collector_.snapshot();
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/unsampled-origin"), 0U);
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/unsampled-downstream"), 0U);
+    const auto totals = transaction_totals_after(snapshot, baseline);
+    EXPECT_EQ(totals.unsampled_continuation, 2);
+    EXPECT_EQ(totals.sampled_new, 0);
+}
+
+TEST_F(StatDisabledIntegrationTest, SendsNoAgentStatsWhenDisabled) {
+    // Tracing must be unaffected by the disabled statistics worker.
+    auto span = agent_->NewSpan("stat.disabled", "/stat-disabled");
+    ASSERT_TRUE(span->IsSampled());
+    span->EndSpan();
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/stat-disabled").has_value();
+    }, kWaitTimeout));
+
+    // Two full batch intervals are enough for an enabled worker to have
+    // shipped at least one agent-stat batch; the disabled worker exits before
+    // its collection loop, so nothing may arrive.
+    std::this_thread::sleep_for(2500ms);
+    EXPECT_EQ(agent_stat_count(collector_.snapshot()), 0U);
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentIntegrationTest, RejectsActiveThreadCountStreamsBeyondLimit) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.command_streams_v2.empty();
+    }, kWaitTimeout));
+
+    constexpr int32_t kFirstId = 601;
+    constexpr int kMaxStreams = 10;
+    for (int i = 0; i < kMaxStreams; ++i) {
+        collector_.SendActiveThreadCountCommand(kFirstId + i);
+    }
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        for (int i = 0; i < kMaxStreams; ++i) {
+            if (count_active_thread_responses(snapshot, kFirstId + i) < 1) {
+                return false;
+            }
+        }
+        return true;
+    }, kWaitTimeout));
+
+    // The eleventh concurrent stream request must be refused with a fail
+    // message instead of silently starting another responder thread.
+    constexpr int32_t kRejectedId = kFirstId + kMaxStreams;
+    collector_.SendActiveThreadCountCommand(kRejectedId);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return std::any_of(snapshot.command_stream_messages.begin(),
+                           snapshot.command_stream_messages.end(),
+            [](const auto& response) {
+                return response.message.has_failmessage() &&
+                       response.message.failmessage().responseid() == kRejectedId;
+            });
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto failure = std::find_if(snapshot.command_stream_messages.begin(),
+                                      snapshot.command_stream_messages.end(),
+        [](const auto& response) {
+            return response.message.has_failmessage() &&
+                   response.message.failmessage().responseid() == kRejectedId;
+        });
+    ASSERT_NE(failure, snapshot.command_stream_messages.end());
+    EXPECT_EQ(failure->message.failmessage().message().value(),
+              "too many active thread count streams");
+    EXPECT_EQ(count_active_thread_responses(snapshot, kRejectedId), 0U);
+    EXPECT_TRUE(agent_->Enable());
+}
+
+// Runs without the fixture: a disabled configuration must yield a noop agent
+// that needs no collector and never registers itself as the global agent.
+TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
+    SetConfigEnvVarPrefix("PINPOINT_CPP_AGENT_IT_ISOLATED");
+    SetConfigFilePath("");
+    SetConfigString("Enable: false\nApplicationName: noop-agent-it\n");
+
+    auto agent = CreateAgent(kApplicationType, "disabled agent");
+    ASSERT_NE(agent, nullptr);
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(agent), nullptr);
+    EXPECT_FALSE(agent->Enable());
+
+    auto span = agent->NewSpan("noop.operation", "/noop");
+    ASSERT_NE(span, nullptr);
+    EXPECT_FALSE(span->IsSampled());
+    EXPECT_TRUE(span->GetTraceId().empty());
+    EXPECT_EQ(span->GetSpanId(), 0);
+
+    auto* event = span->NewSpanEvent("noop.event");
+    ASSERT_NE(event, nullptr);
+    MapCarrier outbound;
+    event->InjectContext(outbound);
+    EXPECT_FALSE(outbound.Get(HEADER_TRACE_ID).has_value());
+    EXPECT_FALSE(outbound.Get(HEADER_SAMPLED).has_value());
+    event->EndEvent();
+    span->EndSpan();
+    span->EndSpan();
+
+    // The noop agent's lifecycle entry points must be inert and safe.
+    agent->Start();
+    EXPECT_FALSE(agent->Enable());
+    agent->Shutdown();
+
+    SetConfigString("");
+    SetConfigEnvVarPrefix("");
 }
 
 TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutSpanRequest) {
