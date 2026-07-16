@@ -36,15 +36,15 @@ namespace pinpoint {
         ~SpanEventImpl() override {}
 
         /// @brief Sets the service type for this event.
-        void SetServiceType(int32_t type) override { service_type_ = type; }
+        void SetServiceType(int32_t type) override { if (warnIfFinished()) return; service_type_ = type; }
         /// @brief Sets the logical operation name.
-        void SetOperationName(std::string_view operationName) override { operation_ = operationName; }
+        void SetOperationName(std::string_view operationName) override { if (warnIfFinished()) return; operation_ = operationName; }
         /// @brief Records the absolute start time.
-        void SetStartTime(std::chrono::system_clock::time_point start_time) override { start_time_ = to_milli_seconds(start_time); }
+        void SetStartTime(std::chrono::system_clock::time_point start_time) override { if (warnIfFinished()) return; start_time_ = to_milli_seconds(start_time); }
         /// @brief Records the destination identifier.
-        void SetDestination(std::string_view dest) override {destination_id_ = dest; }
+        void SetDestination(std::string_view dest) override { if (warnIfFinished()) return; destination_id_ = dest; }
         /// @brief Records the remote endpoint.
-        void SetEndPoint(std::string_view endpoint) override { endpoint_ = endpoint; }
+        void SetEndPoint(std::string_view endpoint) override { if (warnIfFinished()) return; endpoint_ = endpoint; }
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
@@ -134,6 +134,14 @@ namespace pinpoint {
         /// rely on a non-null result. Kept const (with a mutable backing field)
         /// so the const GetAnnotations() override can materialize it on demand.
         PinpointAnnotation* ensureAnnotations() const;
+
+        /// @brief Returns true (after logging a warning) once the event has been
+        /// finished, signalling that a recording accessor or mutator must
+        /// no-op. A finished event may already sit in a chunk under
+        /// serialization on the gRPC worker thread, so mutating a field the
+        /// worker reads (string reassignment, annotation-list growth) would be
+        /// a data race. Mirrors the guard used by GetAnnotations()/EndEvent().
+        bool warnIfFinished() const;
 
         // Non-owning by design. SpanData owns SpanEventImpl instances and keeps
         // them within the parent span's lifetime, while this pointer lets hot

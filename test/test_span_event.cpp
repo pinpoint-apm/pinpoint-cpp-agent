@@ -540,6 +540,63 @@ TEST_F(SpanEventTest, FinishCalculatesElapsedTimeTest) {
     EXPECT_LE(span_event.getEndElapsed(), 200) << "Elapsed time should be reasonable (< 200ms)";
 }
 
+// Regression: a finished event may already be under serialization on the gRPC
+// worker thread, so every recording mutator must degrade to a no-op once the
+// event is finished — symmetric with GetAnnotations(). A post-finish mutation
+// would otherwise race the worker's read of the same fields. See
+// SpanEventImpl::warnIfFinished().
+TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+    MockCallStackReader callstack_reader;
+    callstack_reader.AddFrame("/usr/lib/libmyapp.so", "main", "/src/main.cpp", 42);
+
+    // Baseline recorded while the event is still active.
+    span_event.SetServiceType(1234);
+    span_event.SetOperationName("before");
+    span_event.SetEndPoint("ep-before");
+    span_event.SetDestination("dest-before");
+    span_event.SetError("RuntimeError", "err-before", callstack_reader);
+
+    const auto baseline_start = span_event.getStartTime();
+    const auto baseline_annotations = span_event.getAnnotations()->getAnnotations().size();
+    const auto baseline_exceptions = test_span_->getExceptions().size();
+    const auto baseline_headers = mock_agent_service_->recorded_client_headers_;
+
+    span_event.finish();  // finished_ is now set.
+
+    // Every recording mutator issued after finish must be ignored.
+    span_event.SetServiceType(5678);
+    span_event.SetOperationName("after");
+    span_event.SetStartTime(std::chrono::system_clock::now() + std::chrono::hours(1));
+    span_event.SetEndPoint("ep-after");
+    span_event.SetDestination("dest-after");
+    span_event.SetError("after-only");                                   // 1-arg -> 2-arg
+    span_event.SetError("AfterError", "err-after", callstack_reader);    // 3-arg + callstack
+    span_event.SetSqlQuery("SELECT * FROM t WHERE id = 1", {});
+    MockHeaderReader header_reader;
+    header_reader.SetHeader("X-After", "v");
+    span_event.RecordHeader(HTTP_REQUEST, header_reader);
+
+    // Scalar / string fields keep their pre-finish values.
+    EXPECT_EQ(span_event.getServiceType(), 1234) << "SetServiceType must no-op after finish";
+    EXPECT_EQ(span_event.getOperationName(), "before") << "SetOperationName must no-op after finish";
+    EXPECT_EQ(span_event.getStartTime(), baseline_start) << "SetStartTime must no-op after finish";
+    EXPECT_EQ(span_event.getEndPoint(), "ep-before") << "SetEndPoint must no-op after finish";
+    EXPECT_EQ(span_event.getDestinationId(), "dest-before") << "SetDestination must no-op after finish";
+    EXPECT_EQ(span_event.getErrorString(), "err-before") << "SetError must no-op after finish";
+
+    // No annotations / exceptions / headers were appended after finish.
+    EXPECT_EQ(span_event.getAnnotations()->getAnnotations().size(), baseline_annotations)
+        << "SetSqlQuery / SetError must not append annotations after finish";
+    EXPECT_EQ(test_span_->getExceptions().size(), baseline_exceptions)
+        << "SetError must not add exceptions after finish";
+    EXPECT_EQ(mock_agent_service_->recorded_client_headers_, baseline_headers)
+        << "RecordHeader must no-op after finish";
+
+    // The public accessor still degrades to a non-null noop after finish.
+    EXPECT_NE(span_event.GetAnnotations(), nullptr);
+}
+
 // ========== Annotations Tests ==========
 
 TEST_F(SpanEventTest, GetAnnotationsTest) {

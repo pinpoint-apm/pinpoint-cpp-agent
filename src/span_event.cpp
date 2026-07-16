@@ -116,13 +116,21 @@ namespace pinpoint {
         return annotations_.get();
     }
 
-    AnnotationPtr SpanEventImpl::GetAnnotations() const {
+    bool SpanEventImpl::warnIfFinished() const {
         // A finished event may already sit in a chunk being serialized on the
-        // gRPC worker thread; handing out the live container would let user
-        // code append concurrently with the worker's iteration. Every other
-        // accessor degrades to a safe no-op after EndEvent — so does this.
+        // gRPC worker thread; handing out the live annotation container, or
+        // mutating any field the worker reads, would race that iteration. So
+        // every recording accessor and mutator degrades to a safe no-op after
+        // the event is finished, mirroring EndEvent()/EndSpan().
         if (finished_) {
             LOG_WARN("span event is already finished");
+            return true;
+        }
+        return false;
+    }
+
+    AnnotationPtr SpanEventImpl::GetAnnotations() const {
+        if (warnIfFinished()) {
             return noopAnnotation();
         }
         return ensureAnnotations();
@@ -162,11 +170,13 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
+        if (warnIfFinished()) return;
         error_func_id_ = agent_->cacheError(error_name);
         error_string_ = error_message;
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
+        if (warnIfFinished()) return;
         SetError(error_name, error_message);
 
         const auto& cfg = span_->config_;
@@ -194,6 +204,7 @@ namespace pinpoint {
     void SpanEventImpl::SetSqlQuery(
         std::string_view sql_query,
         const std::vector<SqlBindValue>& bind_args) {
+        if (warnIfFinished()) return;
         const auto& config = span_->config_;
         const auto mode = config->sql.enable_sql_stats
             ? SqlMetaMode::Uid
@@ -233,6 +244,7 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
+        if (warnIfFinished()) return;
         agent_->recordClientHeader(which, reader, ensureAnnotations());
     }
 
