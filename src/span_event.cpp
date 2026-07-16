@@ -16,7 +16,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <type_traits>
 #include <utility>
+
+#include <fmt/format.h>
 
 #include "cache.h"
 #include "callstack.h"
@@ -27,6 +30,56 @@
 #include "utility.h"
 
 namespace pinpoint {
+
+    namespace {
+        std::string_view sqlBindValueView(
+            const SqlBindValue& value,
+            std::string& formatted_value) {
+            return std::visit([&formatted_value](const auto& bind_value) -> std::string_view {
+                using Value = std::decay_t<decltype(bind_value)>;
+                if constexpr (std::is_same_v<Value, std::nullptr_t>) {
+                    return "null";
+                } else if constexpr (std::is_same_v<Value, bool>) {
+                    return bind_value ? "true" : "false";
+                } else if constexpr (std::is_same_v<Value, std::string_view>) {
+                    return bind_value;
+                } else {
+                    formatted_value = fmt::format("{}", bind_value);
+                    return formatted_value;
+                }
+            }, value);
+        }
+
+        std::string joinSqlBindValues(
+            const std::vector<SqlBindValue>& bind_args,
+            int max_bind_args_size) {
+            std::string joined_bind_args;
+            if (max_bind_args_size <= 0) {
+                return joined_bind_args;
+            }
+
+            const auto max_size = static_cast<std::size_t>(max_bind_args_size);
+            for (std::size_t i = 0; i < bind_args.size(); ++i) {
+                std::string formatted_arg;
+                const auto arg = sqlBindValueView(bind_args[i], formatted_arg);
+                const std::size_t separator_size = i == 0 ? 0 : 1;
+                const std::size_t remaining_size = max_size - joined_bind_args.size();
+                if (separator_size > remaining_size ||
+                    arg.size() > remaining_size - separator_size) {
+                    joined_bind_args.append("...(");
+                    joined_bind_args.append(std::to_string(max_bind_args_size));
+                    joined_bind_args.push_back(')');
+                    break;
+                }
+
+                if (i != 0) {
+                    joined_bind_args.push_back(',');
+                }
+                joined_bind_args.append(arg);
+            }
+            return joined_bind_args;
+        }
+    }
 
     std::atomic<int64_t> Exception::exception_id_gen{1};
 
@@ -140,36 +193,20 @@ namespace pinpoint {
 
     void SpanEventImpl::SetSqlQuery(
         std::string_view sql_query,
-        const std::vector<std::string_view>& args) {
+        const std::vector<SqlBindValue>& bind_args) {
         const auto& config = span_->config_;
-        std::string joined_args;
-        if (config->sql.trace_bind_value && config->sql.max_bind_args_size > 0) {
-            const int configured_max_size = config->sql.max_bind_args_size;
-            const auto max_size = static_cast<std::size_t>(configured_max_size);
-            for (std::size_t i = 0; i < args.size(); ++i) {
-                const std::size_t separator_size = i == 0 ? 0 : 1;
-                const std::size_t remaining_size = max_size - joined_args.size();
-                if (separator_size > remaining_size ||
-                    args[i].size() > remaining_size - separator_size) {
-                    joined_args.append("...(");
-                    joined_args.append(std::to_string(configured_max_size));
-                    joined_args.push_back(')');
-                    break;
-                }
-
-                if (i != 0) {
-                    joined_args.push_back(',');
-                }
-                joined_args.append(args[i]);
-            }
-        }
-
         const auto mode = config->sql.enable_sql_stats
             ? SqlMetaMode::Uid
             : SqlMetaMode::Id;
         auto prepared = agent_->prepareSql(sql_query, mode);
         if (!prepared || !*prepared) {
             return;
+        }
+
+        std::string joined_bind_args;
+        if (config->sql.trace_bind_value) {
+            joined_bind_args = joinSqlBindValues(
+                bind_args, config->sql.max_bind_args_size);
         }
 
         const auto& value = **prepared;
@@ -183,7 +220,7 @@ namespace pinpoint {
             if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
                 ensureAnnotations()->AppendData(
                     ANNOTATION_SQL_UID,
-                    AnnotationData(*uid, std::move(parameters), joined_args));
+                    AnnotationData(*uid, std::move(parameters), joined_bind_args));
             }
             return;
         }
@@ -191,7 +228,7 @@ namespace pinpoint {
         if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
             ensureAnnotations()->AppendData(
                 ANNOTATION_SQL_ID,
-                AnnotationData(*sql_id, std::move(parameters), joined_args));
+                AnnotationData(*sql_id, std::move(parameters), joined_bind_args));
         }
     }
 

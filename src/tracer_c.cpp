@@ -1029,11 +1029,20 @@ void pt_span_event_set_error_with_callstack(pt_span_event_t se,
 }
 
 void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
-                                 const char* args) {
+                                 const char* const* args, size_t args_count) {
     pt_api_call(__func__, [&] {
         pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
-            const std::vector<std::string_view> sql_args{
-                args ? args : ""};
+            std::vector<pinpoint::SqlBindValue> sql_args;
+            if (args) {
+                sql_args.reserve(args_count);
+                for (size_t i = 0; i < args_count; ++i) {
+                    if (args[i]) {
+                        sql_args.emplace_back(std::string_view{args[i]});
+                    } else {
+                        sql_args.emplace_back(nullptr);
+                    }
+                }
+            }
             ev->SetSqlQuery(sql_query ? sql_query : "",
                             sql_args);
         });

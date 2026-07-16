@@ -237,8 +237,10 @@ int main(void) {
 
     event = pt_span_new_event(span, "c-api-sql");
     pt_span_event_set_service_type(event, PT_SERVICE_TYPE_MYSQL_QUERY);
+    const char* sql_args[] = {"17", "admin"};
     pt_span_event_set_sql_query(
-        event, "SELECT name FROM users WHERE id=17 AND role='admin'", "17,admin");
+        event, "SELECT name FROM users WHERE id = ? AND role = ?",
+        sql_args, 2);
     pt_span_event_end(event);
     pt_span_event_destroy(event);
 

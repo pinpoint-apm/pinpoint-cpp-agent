@@ -88,7 +88,7 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
         void SetSqlQuery(std::string_view sql_query,
-                         const std::vector<std::string_view>& args) override {}
+                         const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override {}
 

@@ -328,8 +328,8 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
     sql_event->SetDestination("feature-db");
     sql_event->SetEndPoint("127.0.0.1:3306");
     sql_event->SetSqlQuery(
-        "SELECT name FROM users WHERE id = 17 AND role = 'admin' /* it */",
-        {"17,admin"});
+        "SELECT name FROM users WHERE id = ? AND role = ? /* it */",
+        {17, "admin"});
     sql_event->EndEvent();
 
     IntegrationCallStack callstack;
@@ -481,7 +481,11 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
         ev->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
         ev->SetEndPoint("localhost:33060");
         ev->SetDestination("test");
-        ev->SetSqlQuery(sql, {params});
+        if (params.empty()) {
+            ev->SetSqlQuery(sql, {});
+        } else {
+            ev->SetSqlQuery(sql, {params});
+        }
     }
 
     static thread_local std::mt19937 rng{std::random_device{}()};

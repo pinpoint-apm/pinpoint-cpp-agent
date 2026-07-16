@@ -681,9 +681,18 @@ void pt_span_event_set_error_with_callstack(pt_span_event_t se,
                                             const char* error_message,
                                             const pt_callstack_reader_t* reader);
 
-/** Mirrors pinpoint::SpanEvent::SetSqlQuery(). */
+/**
+ * @brief Records a SQL query and its bound parameters.
+ *
+ * @param args        Array of null-terminated parameter strings. May be NULL
+ *                    when args_count is 0. A NULL array element is recorded
+ *                    as the SQL null value.
+ * @param args_count  Number of entries in args.
+ *
+ * Mirrors pinpoint::SpanEvent::SetSqlQuery().
+ */
 void pt_span_event_set_sql_query(pt_span_event_t se, const char* sql_query,
-                                 const char* args);
+                                 const char* const* args, size_t args_count);
 
 /** Mirrors pinpoint::SpanEvent::RecordHeader(). */
 void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,

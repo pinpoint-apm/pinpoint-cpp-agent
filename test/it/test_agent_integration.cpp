@@ -722,7 +722,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     ASSERT_NE(outbound, nullptr);
     outbound->SetDestination("mysql-primary");
     outbound->SetEndPoint("db.example.test:3306");
-    outbound->SetSqlQuery("SELECT * FROM orders WHERE id = 42", {"42"});
+    outbound->SetSqlQuery("SELECT * FROM orders WHERE id = ?", {42});
 
     MapCarrier client_headers;
     client_headers.Set("x-client-request", "client-request-456");
@@ -1885,12 +1885,12 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
 
     auto* first = span->NewSpanEvent("sql.first", SERVICE_TYPE_MYSQL_QUERY);
     ASSERT_NE(first, nullptr);
-    first->SetSqlQuery(raw_sql, {"bind-one"});
+    first->SetSqlQuery(raw_sql, {});
     first->EndEvent();
 
     auto* second = span->NewSpanEvent("sql.second", SERVICE_TYPE_MYSQL_QUERY);
     ASSERT_NE(second, nullptr);
-    second->SetSqlQuery(raw_sql, {"bind-two"});
+    second->SetSqlQuery(raw_sql, {});
     second->EndEvent();
     span->EndSpan();
 
@@ -1913,7 +1913,6 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
 
     const auto events = events_for_span(snapshot, span_id);
     ASSERT_EQ(events.size(), 2U);
-    std::vector<std::string> bind_args;
     for (const auto& event : events) {
         const auto* uid_annotation = find_annotation(event.annotation(),
                                                      ANNOTATION_SQL_UID);
@@ -1921,11 +1920,9 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
         const auto& value = uid_annotation->value().bytesstringstringvalue();
         EXPECT_EQ(value.bytesvalue(), metadata->message.sqluid());
         EXPECT_EQ(value.stringvalue1().value(), "42,ready");
-        bind_args.push_back(value.stringvalue2().value());
+        EXPECT_TRUE(value.stringvalue2().value().empty());
         EXPECT_EQ(find_annotation(event.annotation(), ANNOTATION_SQL_ID), nullptr);
     }
-    std::sort(bind_args.begin(), bind_args.end());
-    EXPECT_EQ(bind_args, (std::vector<std::string>{"bind-one", "bind-two"}));
 }
 
 TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
@@ -1940,7 +1937,7 @@ TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
 
     auto* event = span->NewSpanEvent("sql.update", SERVICE_TYPE_PGSQL_QUERY);
     ASSERT_NE(event, nullptr);
-    event->SetSqlQuery(raw_sql, {"7"});
+    event->SetSqlQuery(raw_sql, {});
     event->EndEvent();
     span->EndSpan();
 
@@ -1970,7 +1967,7 @@ TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
     const auto& value = sql_annotation->value().intstringstringvalue();
     EXPECT_EQ(value.intvalue(), metadata->message.sqlid());
     EXPECT_EQ(value.stringvalue1().value(), "7,ABC-1");
-    EXPECT_EQ(value.stringvalue2().value(), "7");
+    EXPECT_TRUE(value.stringvalue2().value().empty());
     EXPECT_EQ(find_annotation(events[0].annotation(), ANNOTATION_SQL_UID), nullptr);
 
     // SQL-id mode never registers UID metadata.

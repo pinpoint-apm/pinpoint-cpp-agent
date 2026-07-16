@@ -413,7 +413,8 @@ TEST(TracerCNullSafetyTest, NullSpanEventCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_error(nullptr, "err"));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_error_named(nullptr, "n", "m"));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_set_error_with_callstack(nullptr, "n", "m", nullptr));
-    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_sql_query(nullptr, "SELECT 1", ""));
+    EXPECT_NO_FATAL_FAILURE(
+        pt_span_event_set_sql_query(nullptr, "SELECT 1", nullptr, 0));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(nullptr, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_end(nullptr));
@@ -765,7 +766,10 @@ TEST_F(TracerCApiTest, SpanEventLifecycle) {
     pt_span_event_set_operation_name(se, "SELECT users");
     pt_span_event_set_destination(se, "mydb");
     pt_span_event_set_end_point(se, "db-host:3306");
-    pt_span_event_set_sql_query(se, "SELECT * FROM users WHERE id = ?", "42");
+    const char* sql_args[] = {"42", nullptr, "admin"};
+    pt_span_event_set_sql_query(
+        se, "SELECT * FROM users WHERE id = ? AND deleted_at IS ? AND role = ?",
+        sql_args, 3);
 
     pt_span_event_end(se);
     pt_span_event_destroy(se);

@@ -767,10 +767,11 @@ void executeParameterizedQuery(pinpoint::SpanPtr span,
         }
         auto result = stmt.execute();
 
-        // When Sql.TraceBindValue is true, SetSqlQuery joins these views with commas.
+        // When Sql.TraceBindValue is true, SetSqlQuery formats and joins these values.
         // Sanitize sensitive data before recording it.
-        std::vector<std::string_view> param_views(params.begin(), params.end());
-        db_event->SetSqlQuery(sql, param_views);
+        std::vector<pinpoint::SqlBindValue> bind_values(
+            params.begin(), params.end());
+        db_event->SetSqlQuery(sql, bind_values);
 
     } catch (const std::exception& e) {
         db_event->SetError("DB_ERROR", e.what());
@@ -779,6 +780,10 @@ void executeParameterizedQuery(pinpoint::SpanPtr span,
     db_event->EndEvent();
 }
 ```
+
+`SqlBindValue` accepts null, boolean, signed and unsigned integer, floating-point,
+and `std::string_view` values. Values are converted to text and joined with commas
+before the configured bind-value size limit is applied.
 
 ### Supported Database Service Types
 

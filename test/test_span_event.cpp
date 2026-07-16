@@ -655,7 +655,7 @@ TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string sql_query = "SELECT * FROM users WHERE id = ?";
-    std::vector<std::string_view> args{"123"};
+    std::vector<SqlBindValue> args{"123"};
     
     span_event.SetSqlQuery(sql_query, args);
     
@@ -676,13 +676,12 @@ TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
-    std::string sql_query = "INSERT INTO products (name, price) VALUES ('iPhone', 999.99)";
-    std::vector<std::string_view> args{"name=iPhone, price=999.99"};
+    std::string sql_query = "INSERT INTO products (name, price) VALUES (?, ?)";
+    std::vector<SqlBindValue> args{"iPhone", 999.99};
     
     span_event.SetSqlQuery(sql_query, args);
     
-    // Verify SQL was cached - the normalizer should convert literals to ?
-    // The exact normalized form depends on SqlNormalizer implementation
+    // Verify the prepared SQL was cached without changing its placeholders.
     std::string expected_normalized = "INSERT INTO products (name, price) VALUES (?, ?)";
     (void)mock_agent_service_->getCachedSqlId(expected_normalized);  // Check if cached (suppress unused warning)
     
@@ -696,11 +695,40 @@ TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
         << "Bind values should be omitted when TraceBindValue is disabled";
 }
 
+TEST_F(SpanEventTest, SetSqlQueryFormatsVariantParameters) {
+    auto config = std::make_shared<Config>();
+    config->sql.trace_bind_value = true;
+    config->sql.max_bind_args_size = 1024;
+    mock_agent_service_->reloadConfig(config);
+
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+    const std::vector<SqlBindValue> args{
+        int32_t{-7},
+        uint32_t{42},
+        int64_t{-9000000000},
+        uint64_t{18000000000},
+        3.5F,
+        2.25,
+        true,
+        false,
+        nullptr,
+        "hello"};
+
+    span_event.SetSqlQuery(
+        "INSERT INTO test_values VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", args);
+
+    auto& annotations = span_event.getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  annotations.front().second.data).stringValue2,
+              "-7,42,-9000000000,18000000000,3.5,2.25,true,false,null,hello");
+}
+
 TEST_F(SpanEventTest, SetSqlQueryEmptyTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string empty_sql = "";
-    std::vector<std::string_view> args;
+    std::vector<SqlBindValue> args;
     
     span_event.SetSqlQuery(empty_sql, args);
     
@@ -720,8 +748,7 @@ TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
         ORDER BY p.published_at DESC 
         LIMIT 10
     )";
-    std::vector<std::string_view> args{
-        "active=1, published_at=2023-01-01, limit=10"};
+    std::vector<SqlBindValue> args;
     
     span_event.SetSqlQuery(complex_sql, args);
     
@@ -772,12 +799,14 @@ TEST_F(SpanEventTest, SetSqlQueryRawVariantsShareCanonicalIdAndKeepOwnParameters
     auto first = make_test_span_event(*test_span_, "test-op1");
     auto second = make_test_span_event(*test_span_, "test-op2");
 
-    first.SetSqlQuery("SELECT * FROM users WHERE id = 41", {"bind-a"});
-    second.SetSqlQuery("SELECT * FROM users WHERE id = 42", {"bind-b"});
+    first.SetSqlQuery(
+        "SELECT * FROM users WHERE id = 41 AND role = ?", {"bind-a"});
+    second.SetSqlQuery(
+        "SELECT * FROM users WHERE id = 42 AND role = ?", {"bind-b"});
 
     EXPECT_EQ(mock_agent_service_->getSqlNormalizeCount(), 2U);
     EXPECT_GT(mock_agent_service_->getCachedSqlId(
-        "SELECT * FROM users WHERE id = 0#"), 0);
+        "SELECT * FROM users WHERE id = 0# AND role = ?"), 0);
 
     auto& first_annotations = first.getAnnotations()->getAnnotations();
     auto& second_annotations = second.getAnnotations()->getAnnotations();
@@ -804,7 +833,7 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
     mock_agent_service_->reloadConfig(config);
 
     auto at_limit = make_test_span_event(*test_span_, "at-limit");
-    at_limit.SetSqlQuery("SELECT * FROM users WHERE id = 1", {"1234"});
+    at_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1234"});
     auto& at_limit_annotations = at_limit.getAnnotations()->getAnnotations();
     ASSERT_EQ(at_limit_annotations.size(), 1U);
     EXPECT_EQ(std::get<IntStringStringValue>(
@@ -812,7 +841,7 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
               "1234");
 
     auto over_limit = make_test_span_event(*test_span_, "over-limit");
-    over_limit.SetSqlQuery("SELECT * FROM users WHERE id = 2", {"12345"});
+    over_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"12345"});
     auto& over_limit_annotations = over_limit.getAnnotations()->getAnnotations();
     ASSERT_EQ(over_limit_annotations.size(), 1U);
     EXPECT_EQ(std::get<IntStringStringValue>(
@@ -827,7 +856,7 @@ TEST_F(SpanEventTest, SetSqlQueryDoesNotTraceBindValueWhenLimitIsZero) {
     mock_agent_service_->reloadConfig(config);
 
     auto span_event = make_test_span_event(*test_span_, "zero-limit");
-    span_event.SetSqlQuery("SELECT * FROM users WHERE id = 1", {"1234"});
+    span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1234"});
 
     auto& annotations = span_event.getAnnotations()->getAnnotations();
     ASSERT_EQ(annotations.size(), 1U);
@@ -841,7 +870,7 @@ TEST_F(SpanEventTest, SetSqlQuerySkipsAnnotationWhenSqlIdUnavailable) {
     // generator and returns nullopt; SetSqlQuery must then append nothing.
     mock_agent_service_->setForceSqlIdFailure(true);
     auto failed = make_test_span_event(*test_span_, "test-op");
-    failed.SetSqlQuery("SELECT * FROM users WHERE id = 77", {"bind"});
+    failed.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"bind"});
     EXPECT_TRUE(failed.getAnnotations()->getAnnotations().empty())
         << "an unavailable SQL id must not append a SQL annotation";
 
@@ -849,7 +878,7 @@ TEST_F(SpanEventTest, SetSqlQuerySkipsAnnotationWhenSqlIdUnavailable) {
     // the same raw SQL resolves and a single annotation is appended.
     mock_agent_service_->setForceSqlIdFailure(false);
     auto ok = make_test_span_event(*test_span_, "test-op");
-    ok.SetSqlQuery("SELECT * FROM users WHERE id = 77", {"bind"});
+    ok.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"bind"});
     auto& annotations = ok.getAnnotations()->getAnnotations();
     ASSERT_EQ(annotations.size(), 1U);
     EXPECT_GT(std::get<IntStringStringValue>(
@@ -861,7 +890,7 @@ TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
     
     // Test SQL with literals that should be normalized
     std::string sql_with_literals = "SELECT * FROM users WHERE id = 123 AND name = 'John'";
-    std::vector<std::string_view> args{"id=123, name=John"};
+    std::vector<SqlBindValue> args;
     
     span_event.SetSqlQuery(sql_with_literals, args);
     
@@ -876,7 +905,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSpecialCharactersTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
     std::string sql_special = "SELECT * FROM `table_name` WHERE `column` = 'O''Reilly'";
-    std::vector<std::string_view> args{"column=O'Reilly"};
+    std::vector<SqlBindValue> args;
     
     span_event.SetSqlQuery(sql_special, args);
     
@@ -894,7 +923,7 @@ TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
     
     // Add SQL query
     std::string sql = "SELECT u.*, COUNT(p.id) as post_count FROM users u LEFT JOIN posts p ON u.id = p.user_id GROUP BY u.id";
-    std::vector<std::string_view> args;
+    std::vector<SqlBindValue> args;
     
     span_event.SetSqlQuery(sql, args);
     
@@ -1033,7 +1062,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsEnabledTest) {
     mock_agent_service_->reloadConfig(mutable_config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
-    span_event.SetSqlQuery("SELECT * FROM users WHERE id = 1", {"id=1"});
+    span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {1});
 
     // With sql stats enabled, cacheSqlUid should be called instead of cacheSql
     // cacheSql counter should not increment (stays at 300)

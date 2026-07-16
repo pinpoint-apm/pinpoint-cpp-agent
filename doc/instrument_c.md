@@ -667,7 +667,7 @@ if (rc != 0) {
     pt_span_event_set_error_named(se, "SQL_ERROR", db_last_error());
     pt_span_set_error(span, "database error");
 } else {
-    pt_span_event_set_sql_query(se, sql, "");  /* sanitize args */
+    pt_span_event_set_sql_query(se, sql, NULL, 0);  /* omit args */
 }
 
 pt_span_event_end(se);
@@ -764,10 +764,12 @@ pt_span_event_destroy(e);   /* optional no-op */
 
 ```c
 /* WRONG — records the password */
-/* pt_span_event_set_sql_query(se, sql, password); */
+/* const char* unsafe_args[] = {password}; */
+/* pt_span_event_set_sql_query(se, sql, unsafe_args, 1); */
 
 /* RIGHT — sanitize or omit sensitive parameters */
-pt_span_event_set_sql_query(se, sql, "[REDACTED]");
+const char* safe_args[] = {"[REDACTED]"};
+pt_span_event_set_sql_query(se, sql, safe_args, 1);
 ```
 
 ### Keep annotation handles short-lived

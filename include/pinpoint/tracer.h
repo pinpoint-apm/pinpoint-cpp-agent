@@ -19,11 +19,14 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace pinpoint {
@@ -31,6 +34,22 @@ namespace pinpoint {
 	/// @brief Fixed-size binary UID for a normalized SQL statement
 	/// (128-bit MurmurHash3 output). Trivially copyable — no heap allocation.
 	using SqlUid = std::array<unsigned char, 16>;
+
+	/// @brief Scalar value accepted as a SQL bind argument.
+	///
+	/// String views are consumed during SetSqlQuery and need only remain valid
+	/// for the duration of that call. nullptr is recorded as "null" and bool
+	/// values are recorded as "true" or "false".
+	using SqlBindValue = std::variant<
+		std::nullptr_t,
+		bool,
+		int32_t,
+		uint32_t,
+		int64_t,
+		uint64_t,
+		float,
+		double,
+		std::string_view>;
 
 	/**
 	 * @brief HTTP header names used to propagate Pinpoint trace context.
@@ -243,7 +262,7 @@ namespace pinpoint {
         virtual void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) = 0;
 		/// @brief Records a SQL query and comma-separated bound parameters.
 		virtual void SetSqlQuery(std::string_view sql_query,
-		                         const std::vector<std::string_view>& args) = 0;
+		                         const std::vector<SqlBindValue>& bind_args) = 0;
 		/// @brief Records HTTP headers into the event.
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 		/// @brief Injects the trace context for the outbound call represented
