@@ -1114,6 +1114,34 @@ TEST_F(HttpTest, SetProxyHeaderNginxTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
+// Regression: a Nginx proxy `t` value whose *1000 product overflows int64_t or
+// is non-finite must be rejected instead of triggering undefined behavior on
+// the double->int64_t cast (t is attacker-controlled). Valid values still record.
+TEST_F(HttpTest, SetProxyHeaderNginxRejectsOutOfRangeTime) {
+    auto received_time_of = [](const std::string& t_val) -> int64_t {
+        std::map<std::string, std::string> headers = {
+            {"Pinpoint-ProxyNginx", "t=" + t_val + " D=2000"}
+        };
+        MockHeaderReader reader(headers);
+        auto annotation = std::make_shared<PinpointAnnotation>();
+        HttpTracerUtil::setProxyHeader(reader, annotation.get());
+        for (const auto& [key, data] : annotation->getAnnotations()) {
+            if (key == ANNOTATION_HTTP_PROXY_HEADER) {
+                return std::get<LongIntIntByteByteStringValue>(data.data).longValue;
+            }
+        }
+        return -1;  // proxy annotation missing
+    };
+
+    // Normal value: seconds * 1000 -> milliseconds (exactly representable).
+    EXPECT_EQ(received_time_of("1.5"), 1500);
+
+    // Out-of-range / non-finite products are rejected; received_time stays 0.
+    EXPECT_EQ(received_time_of("99999999999999999"), 0);  // ~1e17, *1000 > INT64_MAX
+    EXPECT_EQ(received_time_of("1e400"), 0);               // parses to +inf
+    EXPECT_EQ(received_time_of("nan"), 0);                 // NaN
+}
+
 // Test setProxyHeader with Pinpoint-ProxyApp
 TEST_F(HttpTest, SetProxyHeaderAppTest) {
     std::map<std::string, std::string> headers = {

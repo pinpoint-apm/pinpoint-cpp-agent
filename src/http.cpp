@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -471,7 +472,19 @@ namespace pinpoint {
             auto values = parseProxyHeaderInline(nginx.value());
             if (!values.t_val.empty()) {
                 double t = 0.0;
-                if (absl::SimpleAtod(values.t_val, &t)) received_time = static_cast<int64_t>(t * 1000);
+                if (absl::SimpleAtod(values.t_val, &t)) {
+                    // Reject non-finite or out-of-range products before the
+                    // cast: converting such a double to int64_t is undefined
+                    // behavior, and t comes from an untrusted proxy header.
+                    // NaN fails both comparisons; ±inf fails one. The upper
+                    // bound uses '<' because static_cast<double>(INT64_MAX)
+                    // rounds up to 2^63, which is not representable as int64_t.
+                    const double ms = t * 1000.0;
+                    if (ms >= static_cast<double>(std::numeric_limits<int64_t>::min()) &&
+                            ms < static_cast<double>(std::numeric_limits<int64_t>::max())) {
+                        received_time = static_cast<int64_t>(ms);
+                    }
+                }
             }
             if (!values.D_val.empty() && !absl::SimpleAtoi(values.D_val, &duration_time)) {
                 duration_time = 0;
