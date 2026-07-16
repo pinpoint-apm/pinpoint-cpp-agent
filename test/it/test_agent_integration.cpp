@@ -419,7 +419,14 @@ protected:
             << "ApplicationName: cpp-agent-it\n"
             << "AgentId: cpp-it-agent\n"
             << "AgentName: cpp-it-agent-name\n"
-            << "UidVersion: v3\n"
+            << "UidVersion: " << UidVersion() << "\n";
+        if (!ServiceName().empty()) {
+            yaml << "ServiceName: " << ServiceName() << "\n";
+        }
+        if (!ApiKey().empty()) {
+            yaml << "ApiKey: " << ApiKey() << "\n";
+        }
+        yaml
             << "IsContainer: true\n"
             << "EnableCallstackTrace: true\n"
             << "Log:\n"
@@ -473,12 +480,16 @@ protected:
             << "    RecordResponseHeader: [x-client-response]\n"
             << "Sql:\n"
             << "  EnableSqlStats: " << (EnableSqlStats() ? "true" : "false") << "\n"
-            << "  TraceBindValue: true\n"
+            << "  TraceBindValue: "
+            << (TraceBindValue() ? "true" : "false") << "\n"
             << "  MaxBindArgsSize: " << MaxBindArgsSize() << "\n";
         return yaml.str();
     }
 
     virtual std::string_view SamplingType() const { return "COUNTER"; }
+    virtual std::string_view UidVersion() const { return "v3"; }
+    virtual std::string_view ServiceName() const { return ""; }
+    virtual std::string_view ApiKey() const { return ""; }
     virtual int SamplingCounterRate() const { return 1; }
     virtual double SamplingPercentRate() const { return 100.0; }
     virtual int SamplingNewThroughput() const { return 0; }
@@ -489,6 +500,7 @@ protected:
     virtual int MaxEventDepth() const { return 16; }
     virtual int MaxEventSequence() const { return 128; }
     virtual bool EnableSqlStats() const { return true; }
+    virtual bool TraceBindValue() const { return true; }
     virtual bool StatEnable() const { return true; }
     virtual int MaxBindArgsSize() const { return 2048; }
     virtual std::string_view ServerRecordRequestHeaders() const {
@@ -576,6 +588,13 @@ protected:
     }
 };
 
+class V4AgentIntegrationTest : public AgentIntegrationTest {
+protected:
+    std::string_view UidVersion() const override { return "v4"; }
+    std::string_view ServiceName() const override { return "cpp-it-service"; }
+    std::string_view ApiKey() const override { return "cpp-it-api-key"; }
+};
+
 class CounterSamplingIntegrationTest : public AgentIntegrationTest {
 protected:
     int SamplingCounterRate() const override { return 3; }
@@ -627,6 +646,11 @@ protected:
 class SqlIdModeIntegrationTest : public AgentIntegrationTest {
 protected:
     bool EnableSqlStats() const override { return false; }
+};
+
+class SqlBindValueDisabledIntegrationTest : public AgentIntegrationTest {
+protected:
+    bool TraceBindValue() const override { return false; }
 };
 
 // CounterRate 0 means "never sample a new trace"; continued traces bypass the
@@ -682,6 +706,107 @@ TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
     EXPECT_EQ(snapshot.command_streams_v2.front()
                   .value("supportcommandcode").value_or(""),
               "710;730");
+}
+
+TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
+    auto root = agent_->NewSpan("v4.server", "/v4-root");
+    ASSERT_TRUE(root->IsSampled());
+    const auto trace_id = root->GetTraceId();
+    const auto root_span_id = root->GetSpanId();
+
+    auto* outbound = root->NewSpanEvent("v4.client", SERVICE_TYPE_GRPC_CLIENT);
+    ASSERT_NE(outbound, nullptr);
+    outbound->SetDestination("v4-downstream");
+    MapCarrier propagated;
+    outbound->InjectContext(propagated);
+    EXPECT_EQ(propagated.Get(HEADER_PARENT_APP_NAME).value_or(""),
+              "cpp-agent-it");
+    EXPECT_EQ(propagated.Get(HEADER_PARENT_APP_TYPE).value_or(""),
+              std::to_string(kApplicationType));
+    EXPECT_EQ(propagated.Get(HEADER_PARENT_SERVICE_NAME).value_or(""),
+              "cpp-it-service");
+
+    auto continued = agent_->NewSpan("v4.continued", "/v4-continued",
+                                     propagated);
+    ASSERT_TRUE(continued->IsSampled());
+    EXPECT_EQ(continued->GetTraceId(), trace_id);
+    outbound->EndEvent();
+    continued->EndSpan();
+    root->EndSpan();
+
+    // Force one stat write so the v4 headers are observed on every collector
+    // endpoint without waiting for the periodic collection interval.
+    impl_->recordStats(AGENT_STATS);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/v4-root").has_value() &&
+               find_span_by_rpc(snapshot, "/v4-continued").has_value() &&
+               !snapshot.api_metadata.empty() &&
+               !snapshot.span_batches.empty() &&
+               !snapshot.stats.empty() &&
+               !snapshot.ping_streams.empty() &&
+               !snapshot.command_streams_v2.empty();
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    ASSERT_FALSE(snapshot.agent_infos.empty());
+    const auto agent_id = snapshot.agent_infos.front().metadata
+                              .value("agentid").value_or("");
+    const auto start_time = snapshot.agent_infos.front().metadata
+                                .value("starttime").value_or("");
+    ASSERT_EQ(agent_id.size(), 22U);
+    EXPECT_NE(agent_id, "cpp-it-agent")
+        << "v4 must ignore the configured v1/v3 AgentId";
+    EXPECT_EQ(impl_->getAgentId(), agent_id);
+    ASSERT_FALSE(start_time.empty());
+
+    const auto expect_v4_metadata = [&](const RpcMetadata& metadata,
+                                        bool expect_socket_id) {
+        EXPECT_EQ(metadata.value("applicationname").value_or(""),
+                  "cpp-agent-it");
+        EXPECT_EQ(metadata.value("agentid").value_or(""), agent_id);
+        EXPECT_EQ(metadata.value("agentname").value_or(""),
+                  "cpp-it-agent-name");
+        EXPECT_EQ(metadata.value("starttime").value_or(""), start_time);
+        EXPECT_EQ(metadata.value("servicetype").value_or(""),
+                  std::to_string(kApplicationType));
+        EXPECT_EQ(metadata.value("protocol.version").value_or(""), "400");
+        EXPECT_EQ(metadata.value("servicename").value_or(""),
+                  "cpp-it-service");
+        EXPECT_EQ(metadata.value("apikey").value_or(""), "cpp-it-api-key");
+        EXPECT_EQ(metadata.value("socketid").has_value(), expect_socket_id);
+    };
+
+    expect_v4_metadata(snapshot.agent_infos.front().metadata, false);
+    expect_v4_metadata(snapshot.api_metadata.front().metadata, false);
+    expect_v4_metadata(snapshot.span_batches.front().metadata, false);
+    expect_v4_metadata(snapshot.stat_streams.front(), false);
+    expect_v4_metadata(snapshot.ping_streams.front(), true);
+    expect_v4_metadata(snapshot.command_streams_v2.front(), true);
+
+    const auto root_wire = find_span_by_rpc(snapshot, "/v4-root");
+    ASSERT_TRUE(root_wire.has_value());
+    EXPECT_EQ(root_wire->transactionid().agentid(), agent_id);
+    EXPECT_EQ(root_wire->spanid(), root_span_id);
+    const auto continued_wire = find_span_by_rpc(snapshot, "/v4-continued");
+    ASSERT_TRUE(continued_wire.has_value());
+    ASSERT_TRUE(continued_wire->acceptevent().has_parentinfo());
+    EXPECT_EQ(continued_wire->acceptevent().parentinfo()
+                  .parentapplicationname(),
+              "cpp-agent-it");
+    EXPECT_EQ(continued_wire->acceptevent().parentinfo()
+                  .parentapplicationtype(),
+              kApplicationType);
+    EXPECT_EQ(continued_wire->acceptevent().parentinfo()
+                  .parentservicename(),
+              "cpp-it-service");
+    EXPECT_EQ(continued_wire->acceptevent().parentinfo().acceptorhost(),
+              "v4-downstream");
+
+    // The API key is intentionally present in gRPC metadata but must never be
+    // copied into the AgentInfo payload/config summary.
+    EXPECT_EQ(snapshot.agent_infos.front().message.SerializeAsString().find(
+                  "cpp-it-api-key"),
+              std::string::npos);
 }
 
 TEST_F(PingFailureIntegrationTest, ReconnectsPingStreamAfterResponseError) {
@@ -1023,6 +1148,95 @@ TEST_F(AgentIntegrationTest, FinalizesScopedAndOpenSpanEventsExactlyOnce) {
     EXPECT_EQ(std::count_if(events.begin(), events.end(), [](const auto& event) {
                   return event.servicetype() == SERVICE_TYPE_REDIS;
               }), 1);
+}
+
+TEST_F(AgentIntegrationTest,
+       PreservesOutOfOrderEventsAndIgnoresPostFinishMutations) {
+    auto span = agent_->NewSpan("event.lifecycle", "/event-lifecycle");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+
+    auto* outer = span->NewSpanEvent("event.outer", SERVICE_TYPE_REDIS);
+    ASSERT_NE(outer, nullptr);
+    outer->SetDestination("outer-before");
+
+    // An empty constructor operation leaves apiId unset, making the operation
+    // itself visible as ANNOTATION_API on the wire.
+    auto* inner = span->NewSpanEvent("", SERVICE_TYPE_MEMCACHED);
+    ASSERT_NE(inner, nullptr);
+    inner->SetOperationName("event.inner.before");
+    inner->SetDestination("inner-before");
+    inner->SetEndPoint("inner-before.example.test:11211");
+    inner->SetError("BeforeError", "before-error-message");
+    inner->GetAnnotations()->AppendString(9200, "before-annotation");
+
+    // Ending the outer event first implicitly unwinds the inner event. The two
+    // completed events also cross EventChunkSize=2 and are handed to the gRPC
+    // worker, so every later mutation must be a safe no-op.
+    outer->EndEvent();
+    inner->SetServiceType(SERVICE_TYPE_KAFKA);
+    inner->SetOperationName("event.inner.after");
+    inner->SetStartTime(std::chrono::system_clock::now() + 1h);
+    inner->SetDestination("inner-after");
+    inner->SetEndPoint("inner-after.example.test:9092");
+    inner->SetError("AfterError", "after-error-message");
+    inner->SetSqlQuery("SELECT * FROM post_finish_guard WHERE id = 7",
+                       {std::string_view("sensitive-after-finish")});
+    MapCarrier post_finish_headers;
+    post_finish_headers.Set("x-client-request", "after-finish-header");
+    inner->RecordHeader(HTTP_REQUEST, post_finish_headers);
+    inner->GetAnnotations()->AppendString(9201, "after-annotation");
+
+    auto* later = span->NewSpanEvent("event.later", SERVICE_TYPE_KAFKA);
+    ASSERT_NE(later, nullptr);
+    // A duplicate EndEvent on the implicitly finished inner event must not pop
+    // the newly active event from the span stack.
+    inner->EndEvent();
+    EXPECT_EQ(span->GetSpanEvent(), later);
+    later->EndEvent();
+    outer->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return count_spans_by_rpc(snapshot, "/event-lifecycle") == 1 &&
+               events_for_span(snapshot, span_id).size() == 3;
+    }, kWaitTimeout));
+
+    auto events = events_for_span(collector_.snapshot(), span_id);
+    ASSERT_EQ(events.size(), 3U);
+    std::sort(events.begin(), events.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.sequence() < rhs.sequence();
+    });
+    EXPECT_EQ(events[0].sequence(), 0);
+    EXPECT_EQ(events[0].depth(), 1);
+    EXPECT_EQ(events[0].servicetype(), SERVICE_TYPE_REDIS);
+    EXPECT_EQ(events[1].sequence(), 1);
+    EXPECT_EQ(events[1].depth(), 2);
+    EXPECT_EQ(events[1].servicetype(), SERVICE_TYPE_MEMCACHED);
+    EXPECT_EQ(events[2].sequence(), 2);
+    EXPECT_EQ(events[2].servicetype(), SERVICE_TYPE_KAFKA);
+
+    const auto& inner_wire = events[1];
+    const auto* operation = find_annotation(inner_wire.annotation(),
+                                            ANNOTATION_API);
+    ASSERT_NE(operation, nullptr);
+    EXPECT_EQ(operation->value().stringvalue(), "event.inner.before");
+    ASSERT_TRUE(inner_wire.has_nextevent());
+    EXPECT_EQ(inner_wire.nextevent().messageevent().destinationid(),
+              "inner-before");
+    EXPECT_EQ(inner_wire.nextevent().messageevent().endpoint(),
+              "inner-before.example.test:11211");
+    ASSERT_TRUE(inner_wire.has_exceptioninfo());
+    EXPECT_EQ(inner_wire.exceptioninfo().stringvalue().value(),
+              "before-error-message");
+
+    const auto* before_annotation = find_annotation(inner_wire.annotation(), 9200);
+    ASSERT_NE(before_annotation, nullptr);
+    EXPECT_EQ(before_annotation->value().stringvalue(), "before-annotation");
+    EXPECT_EQ(find_annotation(inner_wire.annotation(), 9201), nullptr);
+    EXPECT_EQ(find_annotation(inner_wire.annotation(), ANNOTATION_SQL_UID), nullptr);
+    EXPECT_EQ(find_annotation(inner_wire.annotation(),
+                              ANNOTATION_HTTP_REQUEST_HEADER), nullptr);
 }
 
 TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
@@ -1498,6 +1712,55 @@ TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
               "NOT_SUPPORTED_REQUEST");
 }
 
+TEST_F(AgentIntegrationTest, DroppedSpanReleasesActiveRequestWithoutSendingSpan) {
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.command_streams_v2.empty();
+    }, kWaitTimeout));
+
+    auto dropped = agent_->NewSpan("dropped.request", "/dropped-without-end");
+    ASSERT_TRUE(dropped->IsSampled());
+    constexpr int32_t kRequestId = 150;
+    collector_.SendActiveThreadCountCommand(kRequestId);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return std::any_of(
+            snapshot.active_thread_count_responses.begin(),
+            snapshot.active_thread_count_responses.end(),
+            [](const auto& response) {
+                if (response.message.commonstreamresponse().responseid() !=
+                    kRequestId) {
+                    return false;
+                }
+                return std::accumulate(
+                           response.message.activethreadcount().begin(),
+                           response.message.activethreadcount().end(), 0) >= 1;
+            });
+    }, kWaitTimeout));
+
+    // User code may abandon a span on an early return or exception. Its
+    // destructor must remove the active-request entry even though no PSpan is
+    // finalized or sent.
+    dropped.reset();
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return std::any_of(
+            snapshot.active_thread_count_responses.begin(),
+            snapshot.active_thread_count_responses.end(),
+            [](const auto& response) {
+                if (response.message.commonstreamresponse().responseid() !=
+                        kRequestId ||
+                    response.message.commonstreamresponse().sequenceid() < 2) {
+                    return false;
+                }
+                return std::accumulate(
+                           response.message.activethreadcount().begin(),
+                           response.message.activethreadcount().end(), 0) == 0;
+            });
+    }, kWaitTimeout));
+
+    EXPECT_EQ(count_spans_by_rpc(collector_.snapshot(),
+                                 "/dropped-without-end"),
+              0U);
+}
+
 TEST_F(AgentIntegrationTest, RetriesMetadataAfterGrpcAndApplicationErrors) {
     collector_.FailNext(CollectorRpc::ApiMetadata,
                         grpc::StatusCode::UNAVAILABLE,
@@ -1953,6 +2216,83 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
         EXPECT_TRUE(value.stringvalue2().value().empty());
         EXPECT_EQ(find_annotation(event.annotation(), ANNOTATION_SQL_ID), nullptr);
     }
+}
+
+TEST_F(AgentIntegrationTest, SerializesEveryTypedSqlBindValueOnTheWire) {
+    constexpr std::string_view sql =
+        "INSERT INTO typed_values VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const std::vector<SqlBindValue> bind_values{
+        nullptr,
+        std::string_view("alpha"),
+        true,
+        false,
+        int32_t{-7},
+        uint32_t{8},
+        INT64_C(-9000000000),
+        UINT64_C(10000000000),
+        1.5F,
+        2.25,
+    };
+
+    auto span = agent_->NewSpan("sql.typed.binds", "/sql-typed-binds");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+    auto* event = span->NewSpanEvent("sql.typed.insert",
+                                     SERVICE_TYPE_PGSQL_QUERY);
+    ASSERT_NE(event, nullptr);
+    event->SetSqlQuery(sql, bind_values);
+    event->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id, sql](const auto& snapshot) {
+        return !events_for_span(snapshot, span_id).empty() &&
+               std::any_of(snapshot.sql_uid_metadata.begin(),
+                           snapshot.sql_uid_metadata.end(),
+                           [sql](const auto& received) {
+                               return received.message.sql() == sql;
+                           });
+    }, kWaitTimeout));
+
+    const auto events = events_for_span(collector_.snapshot(), span_id);
+    ASSERT_EQ(events.size(), 1U);
+    const auto* annotation = find_annotation(events[0].annotation(),
+                                             ANNOTATION_SQL_UID);
+    ASSERT_NE(annotation, nullptr);
+    const auto& value = annotation->value().bytesstringstringvalue();
+    EXPECT_TRUE(value.stringvalue1().value().empty());
+    EXPECT_EQ(value.stringvalue2().value(),
+              "null,alpha,true,false,-7,8,-9000000000,10000000000,1.5,2.25");
+}
+
+TEST_F(SqlBindValueDisabledIntegrationTest,
+       OmitsSensitiveSqlBindValuesFromSpanPayload) {
+    constexpr std::string_view sql =
+        "SELECT * FROM secrets WHERE token = ? AND tenant = ?";
+    constexpr std::string_view secret = "do-not-collect-this-token";
+
+    auto span = agent_->NewSpan("sql.binds.disabled", "/sql-binds-disabled");
+    ASSERT_TRUE(span->IsSampled());
+    const auto span_id = span->GetSpanId();
+    auto* event = span->NewSpanEvent("sql.secret.lookup",
+                                     SERVICE_TYPE_MYSQL_QUERY);
+    ASSERT_NE(event, nullptr);
+    event->SetSqlQuery(sql, {secret, int32_t{42}});
+    event->EndEvent();
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
+        return !events_for_span(snapshot, span_id).empty();
+    }, kWaitTimeout));
+
+    const auto events = events_for_span(collector_.snapshot(), span_id);
+    ASSERT_EQ(events.size(), 1U);
+    const auto* annotation = find_annotation(events[0].annotation(),
+                                             ANNOTATION_SQL_UID);
+    ASSERT_NE(annotation, nullptr);
+    const auto& value = annotation->value().bytesstringstringvalue();
+    EXPECT_TRUE(value.stringvalue1().value().empty());
+    EXPECT_TRUE(value.stringvalue2().value().empty());
+    EXPECT_EQ(events[0].SerializeAsString().find(secret), std::string::npos);
 }
 
 TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {

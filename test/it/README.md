@@ -22,7 +22,12 @@ The suite also exercises the SDK-facing features through a running agent and
 asserts their collector wire representation:
 
 - span lifecycle, scoped and implicitly finalized events, duplicate completion,
-  async spans, propagation, SQL/errors, annotations, and event chunking
+  out-of-order completion, post-finish mutation guards, abandoned-span active
+  request cleanup, async spans, propagation, SQL/errors, annotations, and event
+  chunking
+- v1/v3 and v4 agent identity metadata across the Agent, Metadata, Span, Stat,
+  ping, and command channels, including v4 service-name propagation and API-key
+  payload redaction
 - exception metadata for errors captured on async spans, including the literal
   `NULL` URI-template fallback
 - periodic agent statistics, including sampling decisions, response time, CPU,
@@ -40,7 +45,8 @@ asserts their collector wire representation:
   Nginx, and App proxy headers (priority order, out-of-range timestamp
   rejection), configured header and cookie recording, HTTP status handling,
   and client endpoint serialization
-- SQL bind-value join truncation at `Sql.MaxBindArgsSize`
+- every typed SQL bind-value representation, the `Sql.TraceBindValue` privacy
+  gate, and bind-value join truncation at `Sql.MaxBindArgsSize`
 - the active-thread-count stream limit and ping-stream socket-id increments on
   reconnect
 - the noop agent produced by `Enable: false`, and C API double-destroy safety
