@@ -197,7 +197,9 @@ namespace pinpoint {
         }
         span_->decrEventDepth();
         // system_clock can step backwards (NTP); never report a negative
-        // elapsed time.
+        // elapsed time. Only the low side is clamped: the wire field is
+        // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a
+        // user-supplied start time in seconds instead of ms) wraps.
         elapsed_ = static_cast<int32_t>(
             std::max<int64_t>(to_milli_seconds(std::chrono::system_clock::now()) - start_time_, 0));
     }

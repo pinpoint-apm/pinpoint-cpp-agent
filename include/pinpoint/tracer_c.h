@@ -194,7 +194,10 @@ typedef const char* (*pt_reader_get_fn)(void* userdata, const char* key);
  *
  * @param userdata Opaque pointer provided at carrier construction time.
  * @param key      NUL-terminated header/key name.
- * @param value    NUL-terminated value to set.
+ * @param value    NUL-terminated value to set. Both strings are valid only
+ *                 for the duration of the callback — the library may reuse
+ *                 the backing buffers for the next call — so copy them if
+ *                 they must outlive it.
  */
 typedef void (*pt_writer_set_fn)(void* userdata, const char* key, const char* value);
 
@@ -510,7 +513,13 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
  *
  * The returned non-owning handle is valid only while that event remains active.
  * pt_span_event_destroy() may be called when done, but it is a compatibility
- * no-op. Returns NULL if there is no active event.
+ * no-op.
+ *
+ * When there is no active event (the span is already ended, or no event is on
+ * the stack), this returns a valid handle to a shared no-op event that
+ * silently ignores recording — NOT NULL — so the return value cannot be used
+ * to detect whether an event is active. NULL is returned only when `span`
+ * itself is NULL or already destroyed.
  *
  * Mirrors pinpoint::Span::GetSpanEvent().
  */
@@ -573,7 +582,11 @@ void pt_span_set_service_type(pt_span_t span, int32_t service_type);
  * @brief Sets the span start time.
  *
  * @param ms_since_epoch  Start time expressed as milliseconds since the Unix
- *                        epoch (UTC).
+ *                        epoch (UTC). The unit matters: elapsed times are
+ *                        reported as 32-bit millisecond deltas on the wire,
+ *                        so a value in seconds (e.g. time(NULL)) makes the
+ *                        computed deltas overflow int32 and silently corrupts
+ *                        the trace timeline. The value is not validated.
  *
  * Mirrors pinpoint::Span::SetStartTime().
  */
@@ -654,7 +667,12 @@ void pt_span_event_set_operation_name(pt_span_event_t se, const char* operation)
 /**
  * @brief Sets the span event start time.
  *
- * @param ms_since_epoch  Start time as milliseconds since the Unix epoch (UTC).
+ * @param ms_since_epoch  Start time as milliseconds since the Unix epoch
+ *                        (UTC). The unit matters: elapsed/offset fields are
+ *                        reported as 32-bit millisecond deltas on the wire,
+ *                        so a value in seconds (e.g. time(NULL)) makes the
+ *                        computed deltas overflow int32 and silently corrupts
+ *                        the trace timeline. The value is not validated.
  *
  * Mirrors pinpoint::SpanEvent::SetStartTime().
  */

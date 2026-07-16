@@ -128,6 +128,26 @@ TEST_F(SqlTest, DecimalNumberParameterTest) {
     EXPECT_EQ(result.parameters, "99.99");
 }
 
+// A digit following a non-ASCII (multibyte UTF-8) identifier character is
+// extracted as a numeric literal: every byte of a multibyte character takes
+// the default branch of updateNumberTokenStartEnable and re-enables number
+// token start. The Java agent behaves identically — its
+// ParserContext.isNumberTokenStart is the same ASCII-only check — so both
+// agents normalize such SQL to the same bytes and the same UID. ASCII
+// identifiers keep their digits. Do not "fix" this without the Java side
+// changing first.
+TEST_F(SqlTest, NonAsciiIdentifierDigitMatchesJavaAgentTest) {
+    // ASCII identifier: the trailing digit is part of the identifier.
+    auto result = normalizer_->normalize("SELECT col1 FROM users");
+    EXPECT_EQ(result.normalized_sql, "SELECT col1 FROM users");
+    EXPECT_EQ(result.parameters, "");
+
+    // Non-ASCII identifier: the trailing digit is extracted, as in Java.
+    result = normalizer_->normalize("SELECT * FROM 테이블1");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM 테이블0#");
+    EXPECT_EQ(result.parameters, "1");
+}
+
 // Test multiple numbers with proper indexing
 TEST_F(SqlTest, MultipleNumbersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE age > 18 AND balance < 1000.0 AND score = 95");

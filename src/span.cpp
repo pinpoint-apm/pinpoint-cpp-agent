@@ -168,6 +168,10 @@ namespace pinpoint {
         int64_t prev_start_time = 0;
         int32_t prev_depth = 0;
 
+        // The startElapsed casts below assume epoch-millisecond timestamps
+        // whose in-chunk deltas fit int32 (the wire field): a delta beyond
+        // INT32_MAX ms — or a negative one from a user-supplied start time —
+        // wraps unclamped, unlike the elapsed computation in finish().
         for (size_t i = 0; i < event_chunk_.size(); i++) {
             const auto& se = event_chunk_[i];
             if (i == 0) {

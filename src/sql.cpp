@@ -480,7 +480,12 @@ namespace pinpoint {
                 return false;
             default:
                 // Letters begin an identifier (no number token); any other character may
-                // precede a numeric literal.
+                // precede a numeric literal. Bytes of a multibyte UTF-8 character land
+                // here and return true, so a digit after a non-ASCII identifier is
+                // extracted ("테이블1" -> "테이블0#"). The Java agent behaves the same:
+                // ParserContext.isNumberTokenStart is this exact ASCII-only check on
+                // UTF-16 chars. Do not "fix" this without the Java side changing first —
+                // SQL metadata/UIDs must stay identical across agents.
                 return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z');
         }
     }

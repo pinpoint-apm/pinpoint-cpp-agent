@@ -319,7 +319,9 @@ namespace pinpoint {
 		virtual SpanEventPtr NewSpanEvent(std::string_view operation) = 0;
 		/// @brief Creates a new span event using the specified service type.
 		virtual SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) = 0;
-		/// @brief Returns the active span event.
+		/// @brief Returns the active (top-of-stack) span event, or a shared
+		/// no-op event (never null) when the span is finished or has no
+		/// active event.
 		virtual SpanEventPtr GetSpanEvent() = 0;
 		/// @brief Completes the span and flushes recorded data.
 		///        Span events are finalized individually via
