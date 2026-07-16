@@ -615,8 +615,22 @@ namespace pinpoint {
 
             if (pending.retry_count <= METADATA_RETRY_MAX_ATTEMPTS) {
                 LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, METADATA_RETRY_MAX_ATTEMPTS);
-                std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-                schedule_retry(std::move(pending));
+                try {
+                    std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+                    schedule_retry(std::move(pending));
+                } catch (...) {
+                    // Enqueuing the retry threw (e.g. bad_alloc). The popped item
+                    // would otherwise be destroyed here with its cache id still
+                    // marked published, leaving spans referencing metadata the
+                    // collector never receives. Release the cache entry so the id
+                    // is regenerated and re-sent later. schedule_retry only throws
+                    // from the queue insertion, before `pending` is moved, so
+                    // `pending.meta` is still valid.
+                    LOG_ERROR("failed to schedule metadata retry; releasing cache to allow re-send");
+                    if (pending.meta) {
+                        release_failed_cache(*pending.meta);
+                    }
+                }
             } else {
                 LOG_INFO("drop metadata after retry exhaustion: retryCount={}", pending.retry_count);
                 // Outside meta_queue_mutex_: removeCache* takes the agent
@@ -1323,13 +1337,27 @@ namespace pinpoint {
             stream_context_ = std::move(context);
             grpc_status_ = STREAM_CONTINUE;
         }
-        agent_stub_->async()->PingSession(stream_context_.get(), this);
+        // The published "live call" state above assumes the start calls below
+        // cannot fail. Should one throw anyway (e.g. bad_alloc under memory
+        // pressure), no OnDone will ever arrive for this reactor, so restore
+        // STREAM_DONE before returning — otherwise finish_ping_stream() and
+        // drain_ping_stream_on_error() would wait forever for it and hang
+        // shutdown. Reporting a failed start makes the worker retry with a
+        // fresh stream.
+        try {
+            agent_stub_->async()->PingSession(stream_context_.get(), this);
 
-        ping_stream_closing_ = false;
+            ping_stream_closing_ = false;
 
-        AddHold();
-        StartRead(&pong_);
-        StartCall();
+            AddHold();
+            StartRead(&pong_);
+            StartCall();
+        } catch (...) {
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            grpc_status_ = STREAM_DONE;
+            LOG_ERROR("start_ping_stream failed to launch the ping call");
+            return false;
+        }
 
         return true;
     }
@@ -1757,16 +1785,21 @@ namespace pinpoint {
         // escaping this window would leak the permit permanently, shrinking
         // the in-flight pipeline for the rest of the process lifetime.
         std::shared_ptr<PendingSpanBatch> pending;
-        const auto release_unlaunched = [this, &batch, &pending]() {
+        bool registered = false;
+        const auto release_unlaunched = [this, &batch, &pending, &registered]() {
             batch.clear();
-            // The call was never launched: drop it from the registry (it may or
-            // may not have been registered yet) and hand the permit back.
+            // The call was never launched: hand the permit back, but exactly
+            // once. Release only if this batch still owns the permit — either it
+            // was never registered (so no completion callback exists for it), or
+            // it is still in the registry (the callback has not completed it). If
+            // it was registered and is already gone, completeCall() released the
+            // permit, and a second ++permits here would permanently inflate the
+            // concurrency cap.
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
-                if (pending) {
-                    inflight_->pending.erase(pending);
+                if (!registered || inflight_->pending.erase(pending) == 1) {
+                    ++inflight_->permits;
                 }
-                ++inflight_->permits;
             }
             inflight_->cv.notify_one();
         };
@@ -1792,6 +1825,7 @@ namespace pinpoint {
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
                 inflight_->pending.insert(pending);
+                registered = true;
                 LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
                           batch_count, inflight_->max_permits - inflight_->permits, inflight_->max_permits);
             }
@@ -2010,12 +2044,23 @@ namespace pinpoint {
             grpc_status_ = STREAM_CONTINUE;
         }
 
-        stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
+        // See start_ping_stream(): if a start call below throws, no OnDone will
+        // arrive for this reactor, so restore STREAM_DONE to keep
+        // finish_stats_stream()/drain_stats_stream_on_error() from hanging and
+        // report a failed start so the worker retries with a fresh stream.
+        try {
+            stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
-        stats_stream_closing_ = false;
+            stats_stream_closing_ = false;
 
-        AddHold();
-        StartCall();
+            AddHold();
+            StartCall();
+        } catch (...) {
+            std::unique_lock<std::mutex> lock(stream_mutex_);
+            grpc_status_ = STREAM_DONE;
+            LOG_ERROR("start_stats_stream failed to launch the stats call");
+            return false;
+        }
         return true;
     }
 
@@ -2177,6 +2222,11 @@ namespace pinpoint {
         return STREAM_WRITE;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to send stats: exception = {}", e.what());
+        // No StartWrite was issued for this msg_, so OnWriteDone will not run to
+        // reset the arena. Reset here so a failed build does not accumulate
+        // allocations across consecutive failures (compounding memory pressure
+        // in exactly the OOM scenario that triggers this path).
+        arena_.Reset();
         return STREAM_EXCEPTION;
     }
 
