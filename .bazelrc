@@ -4,3 +4,32 @@ build:profiling --strip=never
 build:profiling --copt=-g
 build:profiling --copt=-fno-omit-frame-pointer
 build:profiling --copt=-fno-optimize-sibling-calls
+
+# AddressSanitizer: use-after-free, heap/stack overflow and leaks.
+# Usage: bazel test --config=asan //test:all
+build:asan --strip=never
+build:asan --copt=-fsanitize=address
+build:asan --copt=-g
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --linkopt=-fsanitize=address
+build:asan --test_env=ASAN_OPTIONS=abort_on_error=1
+
+# ThreadSanitizer: data races across the agent's worker threads, queues and caches.
+# Usage: bazel test --config=tsan //test:all
+build:tsan --strip=never
+build:tsan --copt=-fsanitize=thread
+build:tsan --copt=-g
+build:tsan --copt=-fno-omit-frame-pointer
+build:tsan --linkopt=-fsanitize=thread
+build:tsan --test_env=TSAN_OPTIONS=halt_on_error=1
+
+# UndefinedBehaviorSanitizer: UB such as out-of-range float->int casts and signed
+# overflow. Halts on the first error (-fno-sanitize-recover) so CI fails loudly.
+# Usage: bazel test --config=ubsan //test:all
+build:ubsan --strip=never
+build:ubsan --copt=-fsanitize=undefined
+build:ubsan --copt=-fno-sanitize-recover=undefined
+build:ubsan --copt=-g
+build:ubsan --copt=-fno-omit-frame-pointer
+build:ubsan --linkopt=-fsanitize=undefined
+build:ubsan --test_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1

@@ -18,6 +18,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 - [Build Options](#build-options)
 - [Running Tests](#running-tests)
   - [LLVM Coverage](#llvm-coverage-cmake)
+- [Sanitizers (ASan, TSan, UBSan)](#sanitizers-asan-tsan-ubsan)
 - [Integration Test](#integration-test)
 - [Troubleshooting](#troubleshooting)
 
@@ -85,7 +86,7 @@ pinpoint-cpp-agent/
 ├── BUILD.bazel          # Bazel: main library target
 ├── MODULE.bazel         # Bazel: module dependencies (bzlmod)
 ├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
-├── CMakePresets.json    # CMake: standard, debug, coverage, and profiling presets
+├── CMakePresets.json    # CMake: standard, debug, coverage, profiling, sanitizer presets
 ├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
 ├── conanfile.txt        # Conan 2 requirements (used by the `conan` preset)
 ├── include/             # Public headers
@@ -168,6 +169,9 @@ cmake --list-presets
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
 | `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
 | `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
+| `asan` | `default` deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
+| `tsan` | `default` deps; `Debug` build instrumented with ThreadSanitizer (`-fsanitize=thread`) |
+| `ubsan` | `default` deps; `Debug` build instrumented with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
 
 Configure + build + test using a preset:
 
@@ -316,6 +320,7 @@ The following CMake options are available:
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
 | `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
 | `BUILD_PROFILING` | OFF | Preserve symbols and reliable call stacks for sampling profilers |
+| `SANITIZE` | (empty) | Enable a sanitizer: `address`, `thread`, `undefined`, or `address+undefined` |
 | `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
 
 Example:
@@ -431,6 +436,78 @@ cmake --build build/coverage --target coverage
 | `test_grpc` | gRPC transport |
 | `test_grpc_with_mocks` | gRPC transport with mock services |
 | `test_tracer_c` | Pure-C API wrapper behavior |
+
+---
+
+## Sanitizers (ASan, TSan, UBSan)
+
+Runtime sanitizers instrument the binaries to catch bugs while the tests run.
+They are especially valuable for this agent, which is concurrency-heavy
+(background gRPC workers, lock-free queues and caches), crosses a C FFI boundary,
+and parses untrusted input (HTTP headers, SQL). Both build systems expose the same
+three sanitizers; enable one at a time (ASan and TSan are mutually exclusive).
+
+| Sanitizer | Catches | CMake preset | Bazel config |
+|---|---|---|---|
+| AddressSanitizer (ASan) | use-after-free, heap/stack overflow, leaks | `asan` | `--config=asan` |
+| ThreadSanitizer (TSan) | data races, lock-order inversions | `tsan` | `--config=tsan` |
+| UndefinedBehaviorSanitizer (UBSan) | out-of-range casts, signed overflow, null/misaligned derefs | `ubsan` | `--config=ubsan` |
+
+UBSan halts on the first error (`-fno-sanitize-recover`), so CI fails loudly and
+points at the exact `file:line` of the violation.
+
+### Sanitizers with CMake
+
+```bash
+cmake --preset ubsan
+cmake --build --preset ubsan
+ctest --preset ubsan          # the matching UBSAN_OPTIONS is applied automatically
+```
+
+Swap `ubsan` for `asan` or `tsan`. Each preset writes to its own `build/<preset>/`
+directory. These are `Debug` builds with examples off that build only the shared
+library, mirroring the `coverage` preset. Like `coverage` and `profiling`, they
+resolve dependencies through the `default` source (system / `CMAKE_PREFIX_PATH`,
+with a FetchContent fallback); to reuse a package manager, pass its toolchain —
+e.g. with vcpkg:
+
+```bash
+cmake --preset ubsan --toolchain "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build --preset ubsan
+ctest --preset ubsan
+```
+
+The equivalent manual configuration uses the `SANITIZE` cache variable, which
+accepts `address`, `thread`, `undefined`, or `address+undefined` (ASan and UBSan
+can be combined) and cannot be combined with `BUILD_COVERAGE` or `BUILD_PROFILING`:
+
+```bash
+cmake -S . -B build/ubsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSANITIZE=undefined
+cmake --build build/ubsan
+```
+
+### Sanitizers with Bazel
+
+The sanitizers are `--config` groups in `.bazelrc`, so they apply to any build or
+test target; the matching `*SAN_OPTIONS` are wired in with `--test_env`:
+
+```bash
+bazel test --config=asan  //test:all
+bazel test --config=tsan  //test:all
+bazel test --config=ubsan //test:all
+```
+
+> Bazel applies `--copt` to every C++ target in the graph, so the first sanitized
+> run rebuilds the external dependencies (gRPC, Abseil, ...) with instrumentation.
+> This is intentional — it gives TSan a fully instrumented view and avoids false
+> positives at library boundaries — but makes the first build slow.
+
+### Suppressing third-party false positives
+
+Point the relevant `*_OPTIONS` variable at a suppression file when a dependency
+trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`
+(the `scripts/grpc_protobuf.supp` Valgrind file is a reference for the kinds of
+gRPC/protobuf noise that tend to need silencing).
 
 ---
 

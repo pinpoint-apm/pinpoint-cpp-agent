@@ -29,6 +29,10 @@ option(BUILD_STATIC_LIBS  "Build as a static library"  ON)
 option(BUILD_COVERAGE     "Enable coverage instrumentation (Clang/LLVM or GCC)" OFF)
 option(BUILD_BENCHMARKS   "Build standalone microbenchmarks" OFF)
 option(BUILD_PROFILING    "Build with symbols and reliable sampling-profiler stacks" OFF)
+set(SANITIZE "" CACHE STRING
+  "Enable a sanitizer: address, thread, undefined, or address+undefined (empty = off)")
+set_property(CACHE SANITIZE PROPERTY STRINGS
+  "" "address" "thread" "undefined" "address+undefined")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -216,6 +220,37 @@ if(BUILD_PROFILING)
   endif()
   message(STATUS
     "Sampling-profiler build enabled: debug symbols and frame pointers retained")
+endif()
+
+if(SANITIZE)
+  if(BUILD_COVERAGE OR BUILD_PROFILING)
+    message(FATAL_ERROR
+      "SANITIZE cannot be combined with BUILD_COVERAGE or BUILD_PROFILING")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    message(FATAL_ERROR "SANITIZE currently supports Clang/AppleClang and GCC")
+  endif()
+
+  if(SANITIZE STREQUAL "address")
+    set(_pinpoint_sanitize_flags -fsanitize=address)
+  elseif(SANITIZE STREQUAL "thread")
+    set(_pinpoint_sanitize_flags -fsanitize=thread)
+  elseif(SANITIZE STREQUAL "undefined")
+    set(_pinpoint_sanitize_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
+  elseif(SANITIZE STREQUAL "address+undefined")
+    set(_pinpoint_sanitize_flags
+      -fsanitize=address,undefined -fno-sanitize-recover=undefined)
+  else()
+    message(FATAL_ERROR
+      "Unknown SANITIZE value '${SANITIZE}'. "
+      "Use address, thread, undefined, or address+undefined.")
+  endif()
+
+  # Retain symbolized, complete stacks in sanitizer reports and apply the same
+  # instrumentation to both compile and link (the runtime is pulled in at link).
+  add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags})
+  add_link_options(${_pinpoint_sanitize_flags})
+  message(STATUS "Sanitizer enabled: ${SANITIZE}")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
