@@ -42,14 +42,14 @@ namespace pinpoint {
 	/// values are recorded as "true" or "false".
 	using SqlBindValue = std::variant<
 		std::nullptr_t,
+		std::string_view,
 		bool,
 		int32_t,
 		uint32_t,
 		int64_t,
 		uint64_t,
 		float,
-		double,
-		std::string_view>;
+		double>;
 
 	/**
 	 * @brief HTTP header names used to propagate Pinpoint trace context.
