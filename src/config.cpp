@@ -1141,7 +1141,13 @@ namespace pinpoint {
 
         validate_grpc_channel(config->collector.grpc.channel, "grpc", Config::GrpcChannelOptions());
 
-        if (!is_container_set) {
+        // Auto-detect only on the first load. On a reload the value is already
+        // seeded from the running config (env- or file-sourced) at the top of
+        // make_config(); re-running is_container_env() here would clobber an
+        // env-set value that the file does not explicitly override. is_container
+        // is reloadable and is NOT restored by retainNonReloadableFrom(), so
+        // that clobber would otherwise persist across the reload.
+        if (!old && !is_container_set) {
             config->is_container = is_container_env();
         }
 

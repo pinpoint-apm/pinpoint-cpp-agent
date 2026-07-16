@@ -576,6 +576,37 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 55555) << "gRPC max receive size should match environment variable";
 }
 
+// Regression: is_container is reloadable and is NOT restored by
+// retainNonReloadableFrom(), so on reload it must be inherited from the running
+// config when the file does not override it. Previously make_config(old) re-ran
+// is_container_env() auto-detection here, clobbering the env-sourced value.
+// Both directions are checked so the test is independent of the host's actual
+// container state: whichever value differs from auto-detection flips pre-fix,
+// while the fix preserves both, so neither direction can false-fail.
+TEST_F(ConfigTest, IsContainerSurvivesReload) {
+    // A resolvable identity keeps make_config() from logging resolution errors;
+    // is_container resolution is independent of it.
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
+    setenv(full_env(env::AGENT_ID).c_str(), "reload-agent", 1);
+    setenv(full_env(env::IS_CONTAINER).c_str(), "true", 1);
+    auto first_true = make_config();
+    ASSERT_NE(first_true, nullptr);
+    ASSERT_TRUE(first_true->is_container);
+    auto reloaded_true = make_config(first_true);
+    ASSERT_NE(reloaded_true, nullptr);
+    EXPECT_TRUE(reloaded_true->is_container)
+        << "Reload must preserve env-sourced is_container=true";
+
+    setenv(full_env(env::IS_CONTAINER).c_str(), "false", 1);
+    auto first_false = make_config();
+    ASSERT_NE(first_false, nullptr);
+    ASSERT_FALSE(first_false->is_container);
+    auto reloaded_false = make_config(first_false);
+    ASSERT_NE(reloaded_false, nullptr);
+    EXPECT_FALSE(reloaded_false->is_container)
+        << "Reload must preserve env-sourced is_container=false";
+}
+
 // Test the preferred COLLECTOR_* environment variables
 TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
     setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env.host", 1);
