@@ -42,7 +42,7 @@ protected:
     void SetUp() override {
         mock_agent_service_ = std::make_unique<MockAgentService>();
         mock_agent_service_->mutableConfig()->enable_callstack_trace = true;
-        mock_agent_service_->mutableConfig()->sql.enable_rawsql_cache = true;
+        mock_agent_service_->mutableConfig()->sql.enable_raw_sql_cache = true;
         test_span_ = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
         test_span_data_ = test_span_->getSpanData();
     }

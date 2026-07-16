@@ -310,7 +310,7 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 |---|---|---|---|---|
 | `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. Bind values are recorded only when this is greater than `0`; negative values are clamped to `0`. An argument that would exceed a positive limit is omitted and the value ends with `...(N)`. |
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Aggregate execution counts even for unsampled traces. |
-| `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAWSQL_CACHE` | bool | `false` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
+| `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAW_SQL_CACHE` | bool | `true` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
 
 ---
@@ -698,7 +698,7 @@ Http:
 Sql:
   MaxBindArgsSize: 1024
   EnableSqlStats: false
-  EnableRawSqlCache: false
+  EnableRawSqlCache: true
   TraceBindValue: true
 
 EnableCallstackTrace: false

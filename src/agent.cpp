@@ -925,7 +925,7 @@ namespace pinpoint {
         // SqlNormalizer has immutable configuration and normalize() keeps all
         // state local, so one process-wide instance is safe for concurrent use.
         static const SqlNormalizer normalizer(64 * 1024);
-        const bool enable_rawsql_cache = getConfig()->sql.enable_rawsql_cache;
+        const bool enable_raw_sql_cache = getConfig()->sql.enable_raw_sql_cache;
 
         if (mode == SqlMetaMode::Id) {
             auto prepare = [&]() -> PreparedSqlRef {
@@ -941,7 +941,7 @@ namespace pinpoint {
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
             };
-            if (enable_rawsql_cache) {
+            if (enable_raw_sql_cache) {
                 const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
                 return raw_sql_id_cache_->get(raw_sql, epoch, prepare).value;
             }
@@ -960,7 +960,7 @@ namespace pinpoint {
                     std::move(normalized.parameters),
                     SqlIdentity{*uid}});
             };
-            if (enable_rawsql_cache) {
+            if (enable_raw_sql_cache) {
                 const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
                 return raw_sql_uid_cache_->get(raw_sql, epoch, prepare).value;
             }

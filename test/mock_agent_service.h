@@ -140,7 +140,7 @@ public:
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
             };
-            if (config_->sql.enable_rawsql_cache) {
+            if (config_->sql.enable_raw_sql_cache) {
                 const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
                 return raw_sql_id_cache_.get(raw_sql, epoch, prepare).value;
             }
@@ -159,7 +159,7 @@ public:
                 std::move(normalized.parameters),
                 SqlIdentity{*uid}});
         };
-        if (config_->sql.enable_rawsql_cache) {
+        if (config_->sql.enable_raw_sql_cache) {
             const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
             return raw_sql_uid_cache_.get(raw_sql, epoch, prepare).value;
         }

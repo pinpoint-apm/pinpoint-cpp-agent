@@ -154,7 +154,7 @@ static std::shared_ptr<Config> make_test_config() {
     cfg->http.url_stat.trim_path_depth = 3;
     cfg->sampling.type = "counter";
     cfg->sampling.counter_rate = 1;
-    cfg->sql.enable_rawsql_cache = true;
+    cfg->sql.enable_raw_sql_cache = true;
     return cfg;
 }
 
@@ -359,7 +359,7 @@ TEST_F(AgentImplTest, PrepareSqlCachesCompleteRawResult) {
 
 TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
     auto config = std::make_shared<Config>(*agent_->getConfig());
-    config->sql.enable_rawsql_cache = false;
+    config->sql.enable_raw_sql_cache = false;
     agent_->reloadConfig(config);
 
     constexpr std::string_view raw_sql =
