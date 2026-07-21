@@ -503,11 +503,10 @@ namespace pinpoint {
             bool finished{false};
             std::vector<std::thread> threads;
         };
-        auto state = std::make_shared<JoinState>();
-
         // init_grpc_workers assigns the other thread members; join it first so
         // moving them below cannot race those assignments. The init thread only
-        // spawns workers and returns, so this join is quick.
+        // spawns workers and returns, so this join is quick. Done before the
+        // allocations below so the inline-join fallback never races it either.
         if (init_thread_.joinable()) {
             init_thread_.join();
         }
@@ -517,7 +516,29 @@ namespace pinpoint {
             &agent_stat_thread_, &ping_thread_, &meta_thread_,
             &span_thread_, &stat_thread_, &command_thread_,
         };
-        state->threads.reserve(std::size(workers));
+
+        std::shared_ptr<JoinState> state;
+        try {
+            state = std::make_shared<JoinState>();
+            state->threads.reserve(std::size(workers));
+        } catch (...) {
+            // An allocation failing here is the same resource-exhaustion case
+            // as the joiner-thread fallback below, and skipping the joins is
+            // not an option: do_shutdown() swallows exceptions from this
+            // path, so unwinding would let ~AgentImpl destroy the members the
+            // still-running workers use. Join inline — allocation-free —
+            // losing only the slow-shutdown diagnostic.
+            try { LOG_WARN("wait grpc workers: allocation failed, joining inline"); } catch (...) {}
+            for (auto* worker : workers) {
+                if (worker->joinable()) {
+                    worker->join();
+                }
+            }
+            return;
+        }
+        // reserve() above guarantees these push_backs cannot throw (std::thread
+        // move construction is noexcept), so every joinable handle reaches
+        // `state` once we get here.
         for (auto* worker : workers) {
             if (worker->joinable()) {
                 state->threads.push_back(std::move(*worker));
@@ -1025,7 +1046,7 @@ namespace pinpoint {
     }
 
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
-                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const {
+                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
         const auto cfg = getConfig();
         if (!enabled_ || !cfg->enable_callstack_trace) {
             return;
@@ -1034,6 +1055,10 @@ namespace pinpoint {
         auto meta = std::make_unique<MetaData>(META_EXCEPTION, trace_id, span_id, url_template,
                                                std::move(exceptions));
         grpc_metadata_->enqueueMeta(std::move(meta));
+    } catch (const std::exception& e) {
+        LOG_ERROR("failed to record exception meta: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to record exception meta: unknown exception");
     }
 
     // These check enabled_ before runtime_.load(): the load is a

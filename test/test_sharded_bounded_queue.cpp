@@ -271,5 +271,63 @@ namespace {
         EXPECT_EQ(queue.dropped_oldest(), 32u);
     }
 
+    TEST(ShardedBoundedQueueTest, HeadDropDestroysOverwrittenValuesPromptly) {
+        // Regression: the saturated overwrite path used to advance head_ past
+        // the dropped oldest value without destroying it, so up to the full
+        // physical ring (shard_count * capacity cells) of already-dropped
+        // values stayed alive instead of the documented `capacity` bound.
+        constexpr size_t kProducerCount = 2;
+        constexpr size_t kItemsPerProducer = 200;
+        constexpr size_t kCapacity = 64;
+
+        std::atomic<size_t> alive{0};
+        ShardedBoundedQueue<std::shared_ptr<int>> queue(kCapacity, kProducerCount);
+
+        std::atomic<size_t> first_items_enqueued{0};
+        std::vector<std::thread> producers;
+        for (size_t producer = 0; producer < kProducerCount; ++producer) {
+            producers.emplace_back([&] {
+                const auto make_item = [&alive] {
+                    alive.fetch_add(1, std::memory_order_relaxed);
+                    return std::shared_ptr<int>(new int(0), [&alive](int* p) {
+                        alive.fetch_sub(1, std::memory_order_relaxed);
+                        delete p;
+                    });
+                };
+                // Barrier after the first item so both shards are active (and
+                // the overwrite path is taken) for the bulk of the enqueues.
+                auto first = make_item();
+                queue.enqueue(first);
+                first_items_enqueued.fetch_add(1, std::memory_order_release);
+                while (first_items_enqueued.load(std::memory_order_acquire) <
+                       kProducerCount) {
+                    std::this_thread::yield();
+                }
+                for (size_t sequence = 1; sequence < kItemsPerProducer; ++sequence) {
+                    auto item = make_item();
+                    queue.enqueue(item);
+                }
+            });
+        }
+        for (auto& producer : producers) {
+            producer.join();
+        }
+
+        EXPECT_LE(alive.load(), kCapacity)
+            << "dropped values must be destroyed when overwritten, not retained "
+               "until the ring wraps back around";
+
+        size_t dequeued = 0;
+        std::shared_ptr<int> item;
+        while (queue.try_dequeue(item)) {
+            ASSERT_NE(item, nullptr);
+            item.reset();
+            ++dequeued;
+        }
+        EXPECT_LE(dequeued, kCapacity);
+        EXPECT_EQ(alive.load(), 0u)
+            << "every value must be destroyed once dequeued or overwritten";
+    }
+
 } // namespace
 } // namespace pinpoint

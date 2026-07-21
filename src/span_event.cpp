@@ -153,6 +153,13 @@ namespace pinpoint {
         // Ended through an internal path (event-stack pop): mark it so a
         // later user-level EndEvent on this event is rejected by the guard.
         finished_.store(true);
+        // Seal the annotation list too: an annotation handle obtained while
+        // the event was active bypasses the finished_ guard above, and the
+        // list may be under serialization on the gRPC worker once this event
+        // reaches a chunk.
+        if (annotations_) {
+            annotations_->seal();
+        }
         span_->decrEventDepth();
         // system_clock can step backwards (NTP); never report a negative
         // elapsed time.
@@ -249,6 +256,11 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::InjectContext(TraceContextWriter& writer) {
+        // Guarded like every other mutator: generateNextSpanId() writes a
+        // field the gRPC worker reads once this event sits in a chunk, and a
+        // finished event can outlive span_ itself (retired events are kept
+        // alive by SpanData after the SpanImpl has been destroyed).
+        if (warnIfFinished()) return;
         span_->injectContext(writer, generateNextSpanId(), destination_id_);
     }
 

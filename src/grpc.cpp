@@ -1061,6 +1061,18 @@ namespace pinpoint {
 
             const StreamContextGuard context_guard(this, &context);
 
+            // Re-check under the publish: a stopCommandWorker() that ran
+            // between the loop condition above and the guard publishing the
+            // context found nothing to TryCancel, so it must be honored here.
+            // Otherwise the RPC below would start uncancellable, and its
+            // deadline-less Finish() could block on an unresponsive peer
+            // while agent shutdown hangs in the unconditional worker join —
+            // the same window the active-thread-count stream closes after
+            // publishing its own context.
+            if (stopping()) {
+                break;
+            }
+
             LOG_INFO("connect to command service stream");
             auto stream = command_stub_->HandleCommandV2(&context);
             if (stream == nullptr) {

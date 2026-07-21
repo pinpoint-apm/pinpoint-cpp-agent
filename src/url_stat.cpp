@@ -99,10 +99,14 @@ namespace pinpoint {
     }
 
     std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot() {
+        // Allocate the replacement before touching snapshot_: if this throws
+        // under memory pressure the member must stay intact — moving it out
+        // first would leave it null after the caller's catch, and the next
+        // addSnapshot()/drainQueueShards() would dereference a null pointer.
+        auto fresh = std::make_unique<UrlStatSnapshot>();
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        auto old_snapshot = std::move(snapshot_);
-        snapshot_ = std::make_unique<UrlStatSnapshot>();
-        return old_snapshot;
+        snapshot_.swap(fresh);
+        return fresh;
     }
 
     int64_t TickClock::tick(const std::chrono::system_clock::time_point end_time) const {

@@ -174,9 +174,18 @@ namespace pinpoint {
                 if (quota_ == 0) {
                     return;
                 }
+                // Destroy the dropped oldest value before storing the new one:
+                // when quota_ < physical capacity the tail cell is empty, so
+                // the old head value would otherwise stay alive until tail_
+                // wraps back around to its cell — retaining up to the full
+                // physical ring instead of quota_ values (take_excess_quota
+                // clears dropped cells the same way). Clearing head_ first
+                // also keeps the quota_ == capacity case correct, where
+                // head_ and tail_ are the same cell.
+                cells_[head_] = T{};
+                head_ = next(head_);
                 cells_[tail_] = std::move(value);
                 tail_ = next(tail_);
-                head_ = next(head_);
                 record_drop();
             }
 

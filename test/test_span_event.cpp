@@ -597,6 +597,41 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     EXPECT_NE(span_event.GetAnnotations(), nullptr);
 }
 
+TEST_F(SpanEventTest, InjectContextNoOpAfterFinishTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+    span_event.SetDestination("dest");
+
+    span_event.finish();  // finished_ is now set.
+
+    // InjectContext after finish must neither regenerate next_span_id_ (a
+    // field the gRPC worker reads once the event sits in a chunk) nor write
+    // any trace headers through the (possibly destroyed) parent span.
+    const auto next_span_id = span_event.getNextSpanId();
+    MockTraceContextWriter writer;
+    span_event.InjectContext(writer);
+
+    EXPECT_EQ(span_event.getNextSpanId(), next_span_id)
+        << "InjectContext must not generate a next span id after finish";
+    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
+        << "InjectContext must not write trace headers after finish";
+}
+
+TEST_F(SpanEventTest, AnnotationHandleSealedByFinishTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    // A handle fetched while the event is active stays a live pointer after
+    // finish (unlike GetAnnotations(), which degrades to the noop); appends
+    // through it must be sealed off once the event can sit in a chunk.
+    auto* annotations = span_event.getAnnotations();
+    annotations->AppendString(100, "before");
+
+    span_event.finish();
+
+    annotations->AppendString(101, "after");
+    EXPECT_EQ(annotations->getAnnotations().size(), 1u)
+        << "annotation appends through a pre-finish handle must no-op after finish";
+}
+
 // ========== Annotations Tests ==========
 
 TEST_F(SpanEventTest, GetAnnotationsTest) {

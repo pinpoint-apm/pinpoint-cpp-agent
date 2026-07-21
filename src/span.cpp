@@ -357,7 +357,7 @@ namespace pinpoint {
         LOG_WARN("span event is already finished");
     }
 
-    void SpanImpl::EndSpan() {
+    void SpanImpl::EndSpan() try {
         // Atomic exchange so only the first caller proceeds: a check-then-set
         // would let two concurrent EndSpan calls both pass the guard and run
         // record_chunk / dropActiveSpan / collectResponseTime twice.
@@ -401,7 +401,27 @@ namespace pinpoint {
             sendUrlStat();
         }
 
+        // Seal the span-level annotation list before the final chunk reaches
+        // the gRPC worker: an annotation handle obtained while the span was
+        // active must degrade to a warn/no-op from here on, not grow a vector
+        // the worker is iterating.
+        data_->getAnnotations()->seal();
         record_chunk(true);
+    } catch (const std::exception& e) {
+        // Reached only on allocation failure (e.g. bad_alloc while finishing
+        // open events): EndSpan is commonly called from destructors in host
+        // code, so the exception must not escape — the sibling entry points
+        // (NewSpanEvent, record_chunk, NewAsyncSpan) already catch. finished_
+        // is set by now, which disables the destructor's self-heal, so
+        // release the active-span registration here instead (a duplicate
+        // erase is a no-op).
+        LOG_ERROR("end span exception = {}", e.what());
+        try {
+            if (data_ && !data_->isAsyncSpan()) {
+                agent_->getAgentStats().dropActiveSpan(data_->getSpanId());
+            }
+        } catch (...) {
+        }
     }
 
     SpanEventPtr SpanImpl::disabledSpanEvent() {

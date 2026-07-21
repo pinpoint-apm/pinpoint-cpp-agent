@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <type_traits>
 #include <variant>
@@ -259,6 +260,16 @@ namespace pinpoint {
         void AppendData(int32_t key, AnnotationData&& data);
 
         /**
+         * @brief Permanently freezes the annotation list.
+         *
+         * Called by the owning span/span event when the list is handed to the
+         * gRPC layer for serialization. Later Append calls become warn/no-ops:
+         * a handle obtained while the owner was active would otherwise grow
+         * annotation_list_ concurrently with the worker's iteration.
+         */
+        void seal() noexcept { sealed_.store(true, std::memory_order_release); }
+
+        /**
          * @brief Returns the internal annotation list for serialization.
          *
          * @return Reference to the stored annotations.
@@ -274,7 +285,13 @@ namespace pinpoint {
             }
         }
 
+        /// @brief Returns true (after logging a warning) once seal() was
+        /// called, signalling that an Append must no-op. Mirrors the
+        /// warnIfFinished guard on span events.
+        bool warnIfSealed() const noexcept;
+
         std::vector<std::pair<int32_t,AnnotationData>> annotation_list_;
+        std::atomic<bool> sealed_{false};
     };
 
 } // namespace pinpoint

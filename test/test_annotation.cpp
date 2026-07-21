@@ -849,4 +849,25 @@ TEST_F(AnnotationTest, CachedSqlParameterAliasKeepsPreparedEntryAlive) {
     EXPECT_TRUE(weak.expired());
 }
 
+// Once sealed (the owner handed the list to the gRPC layer for
+// serialization), every Append overload must become a no-op instead of
+// growing a vector the worker may be iterating.
+TEST_F(AnnotationTest, SealedAnnotationIgnoresEveryLateAppend) {
+    annotation->AppendInt(100, 42);
+    annotation->seal();
+
+    annotation->AppendInt(101, 1);
+    annotation->AppendLong(102, 2);
+    annotation->AppendString(103, "late");
+    annotation->AppendStringString(104, "a", "b");
+    annotation->AppendIntStringString(105, 3, "a", "b");
+    annotation->AppendSqlUidStringString(106, SqlUid{}, "a", "b");
+    annotation->AppendLongIntIntByteByteString(107, 4, 5, 6, 7, 8, "s");
+    annotation->AppendData(108, AnnotationData(int32_t{9}));
+
+    auto& annotations = annotation->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1u) << "appends after seal() must be ignored";
+    EXPECT_EQ(annotations.front().first, 100);
+}
+
 } // namespace pinpoint
