@@ -21,16 +21,21 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "agent_service.h"
 #include "limiter.h"
 
 namespace pinpoint {
 
+    // constexpr string_views (not const std::strings): these are read by the
+    // config-reload path (build_runtime), which the config-file watcher thread
+    // can still run during static destruction when the process exits without
+    // Shutdown() — a dynamic destructor here would make that a use-after-free.
     /// @brief Sampling mode that relies on counter-based periodic selection.
-    const std::string COUNTER_SAMPLING = "COUNTER";
+    inline constexpr std::string_view COUNTER_SAMPLING = "COUNTER";
     /// @brief Sampling mode that uses percentage-based selection.
-    const std::string PERCENT_SAMPLING = "PERCENT";
+    inline constexpr std::string_view PERCENT_SAMPLING = "PERCENT";
     /// @brief Maximum supported percent rate (stored as hundredths of a percent).
     constexpr int MAX_PERCENT_RATE = 100 * 100;
 

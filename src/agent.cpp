@@ -945,7 +945,11 @@ namespace pinpoint {
 
         // SqlNormalizer has immutable configuration and normalize() keeps all
         // state local, so one process-wide instance is safe for concurrent use.
-        static const SqlNormalizer normalizer(64 * 1024);
+        // Leaked like the other exit-surviving singletons (Logger, the global
+        // agent holder): user threads can still call prepareSql during static
+        // destruction when the process exits without Shutdown(), and a
+        // function-local static would already be destroyed at that point.
+        static const SqlNormalizer& normalizer = *new SqlNormalizer(64 * 1024);
         const bool enable_raw_sql_cache = getConfig()->sql.enable_raw_sql_cache;
 
         if (mode == SqlMetaMode::Id) {

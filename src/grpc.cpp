@@ -1352,10 +1352,12 @@ namespace pinpoint {
         // The published "live call" state above assumes the start calls below
         // cannot fail. Should one throw anyway (e.g. bad_alloc under memory
         // pressure), no OnDone will ever arrive for this reactor, so restore
-        // STREAM_DONE before returning — otherwise finish_ping_stream() and
+        // STREAM_DONE before unwinding — otherwise finish_ping_stream() and
         // drain_ping_stream_on_error() would wait forever for it and hang
-        // shutdown. Reporting a failed start makes the worker retry with a
-        // fresh stream.
+        // shutdown. Rethrow rather than return false: the worker loops treat
+        // false as "stopping" and exit for the process lifetime, while the
+        // supervisor (sendPingWorker) retries a thrown transient failure
+        // after WORKER_RESTART_DELAY.
         try {
             agent_stub_->async()->PingSession(stream_context_.get(), this);
 
@@ -1365,10 +1367,12 @@ namespace pinpoint {
             StartRead(&pong_);
             StartCall();
         } catch (...) {
-            std::unique_lock<std::mutex> lock(stream_mutex_);
-            grpc_status_ = STREAM_DONE;
+            {
+                std::unique_lock<std::mutex> lock(stream_mutex_);
+                grpc_status_ = STREAM_DONE;
+            }
             LOG_ERROR("start_ping_stream failed to launch the ping call");
-            return false;
+            throw;
         }
 
         return true;
@@ -2058,8 +2062,11 @@ namespace pinpoint {
 
         // See start_ping_stream(): if a start call below throws, no OnDone will
         // arrive for this reactor, so restore STREAM_DONE to keep
-        // finish_stats_stream()/drain_stats_stream_on_error() from hanging and
-        // report a failed start so the worker retries with a fresh stream.
+        // finish_stats_stream()/drain_stats_stream_on_error() from hanging.
+        // Rethrow rather than return false: the worker loops treat false as
+        // "stopping" and exit for the process lifetime, while the supervisor
+        // (sendStatsWorker) retries a thrown transient failure after
+        // WORKER_RESTART_DELAY.
         try {
             stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
@@ -2068,10 +2075,12 @@ namespace pinpoint {
             AddHold();
             StartCall();
         } catch (...) {
-            std::unique_lock<std::mutex> lock(stream_mutex_);
-            grpc_status_ = STREAM_DONE;
+            {
+                std::unique_lock<std::mutex> lock(stream_mutex_);
+                grpc_status_ = STREAM_DONE;
+            }
             LOG_ERROR("start_stats_stream failed to launch the stats call");
-            return false;
+            throw;
         }
         return true;
     }

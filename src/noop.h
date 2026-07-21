@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -169,6 +170,12 @@ namespace pinpoint {
         int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};
+        // Guards url_stat_ between SetUrlStat() and EndSpan(): unlike the
+        // fully-stateful SpanImpl, this span's only mutable state is this one
+        // optional, so a mutex is cheap insurance that turns the
+        // contract-violating concurrent SetUrlStat/EndSpan into a defined
+        // warn/no-op instead of a data race on the moved-from entry.
+        std::mutex url_stat_mutex_;
         std::optional<UrlStatEntry> url_stat_;
         // Keeps the agent alive while user code still holds this span.
         std::shared_ptr<AgentService> agent_ref_;

@@ -233,7 +233,7 @@ namespace pinpoint {
         } stat;
 
         struct {
-            std::string type = COUNTER_SAMPLING;
+            std::string type{COUNTER_SAMPLING};
             int counter_rate = defaults::SAMPLING_COUNTER_RATE;
             double percent_rate = defaults::SAMPLING_PERCENT_RATE;
             int new_throughput = 0;

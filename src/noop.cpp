@@ -105,6 +105,11 @@ namespace pinpoint {
         stats.collectResponseTime(elapsed_);
         stats.dropActiveSpan(span_id_);
 
+        // url_stat_mutex_ pairs with SetUrlStat(): its finished_ check runs
+        // under the same lock, so a SetUrlStat racing this consume (documented
+        // misuse) either lands before it or degrades to the warn/no-op below —
+        // never a concurrent write to the moved-from entry.
+        std::lock_guard<std::mutex> lock(url_stat_mutex_);
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
@@ -118,9 +123,11 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
-        // Same guard as SpanImpl::SetUrlStat: after EndSpan the entry would
-        // never be sent (EndSpan already consumed url_stat_), and writing it
-        // would race a concurrent EndSpan's std::move on misuse.
+        // Same guard as SpanImpl::SetUrlStat — after EndSpan the entry would
+        // never be sent (EndSpan already consumed url_stat_) — but taken
+        // under url_stat_mutex_ so the check-then-emplace cannot interleave
+        // with EndSpan's exchange-then-consume.
+        std::lock_guard<std::mutex> lock(url_stat_mutex_);
         if (finished_) {
             LOG_WARN("span is already finished");
             return;
