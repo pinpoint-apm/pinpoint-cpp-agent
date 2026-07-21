@@ -367,6 +367,11 @@ namespace pinpoint {
 
     void AgentImpl::apply_config(const std::shared_ptr<const AgentRuntime>& old_rt,
                                  std::shared_ptr<const Config> cfg) {
+        // Refresh the prepareSql() fast-path flag (see raw_sql_cache_enabled_).
+        // Relaxed and slightly ahead of the runtime_ swap below: prepareSql
+        // tolerates a stale value for the instant around a reload.
+        raw_sql_cache_enabled_.store(cfg->sql.enable_raw_sql_cache,
+                                     std::memory_order_relaxed);
         runtime_.store(build_runtime(old_rt, std::move(cfg)));
 
         if (grpc_agent_) {
@@ -648,7 +653,7 @@ namespace pinpoint {
 
         if (const auto parent_sampling = reader.Get(HEADER_SAMPLED); parent_sampling == "s0") {
             agent_stats_->incrUnsampleCont();
-            return std::make_shared<UnsampledSpan>(this);
+            return std::make_shared<UnsampledSpan>(this, runtime);
         }
 
         const auto& sampler = runtime->sampler;
@@ -670,14 +675,15 @@ namespace pinpoint {
             if (trace_id.empty()) {
                 return noopSpan();
             }
-            // Pass this runtime's config so the span skips a second atomic load
-            // and lives on the same config generation its admission was decided
+            // Pass this runtime snapshot so the span skips further atomic
+            // loads (config limits, status-error checks, URL-stat gating) and
+            // lives on the same config generation its admission was decided
             // under, and hand the resolved trace id to the impl-level extract.
-            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, runtime->config);
+            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, runtime);
             span->extractContext(reader, std::move(trace_id));
             return span;
         }
-        return std::make_shared<UnsampledSpan>(this);
+        return std::make_shared<UnsampledSpan>(this, runtime);
     } catch (const std::exception& e) {
         LOG_ERROR("new span exception = {}", e.what());
         return noopSpan();
@@ -835,9 +841,23 @@ namespace pinpoint {
         }
     }
 
+    // Default for implementations without the snapshot-taking override
+    // (mocks/test doubles): fall back to the config-loading overload. Defined
+    // out-of-line because an inline body in agent_service.h would need
+    // UrlStatEntry complete there.
+    void AgentService::recordUrlStat(UrlStatEntry stat, const Config& /*config*/) const {
+        recordUrlStat(std::move(stat));
+    }
+
     void AgentImpl::recordUrlStat(UrlStatEntry stat) const {
         if (enabled_) {
             url_stats_->enqueueUrlStats(std::move(stat));
+        }
+    }
+
+    void AgentImpl::recordUrlStat(UrlStatEntry stat, const Config& config) const {
+        if (enabled_) {
+            url_stats_->enqueueUrlStats(std::move(stat), config);
         }
     }
 
@@ -950,7 +970,10 @@ namespace pinpoint {
         // destruction when the process exits without Shutdown(), and a
         // function-local static would already be destroyed at that point.
         static const SqlNormalizer& normalizer = *new SqlNormalizer(64 * 1024);
-        const bool enable_raw_sql_cache = getConfig()->sql.enable_raw_sql_cache;
+        // One relaxed load instead of getConfig() (a full runtime_.load()):
+        // this runs once per SQL statement and only needs this flag.
+        const bool enable_raw_sql_cache =
+            raw_sql_cache_enabled_.load(std::memory_order_relaxed);
 
         if (mode == SqlMetaMode::Id) {
             auto prepare = [&]() -> PreparedSqlRef {
@@ -1051,8 +1074,9 @@ namespace pinpoint {
 
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
-        const auto cfg = getConfig();
-        if (!enabled_ || !cfg->enable_callstack_trace) {
+        // Cheap flag first, config load second (same ordering as the getters
+        // below): a disabled agent must not pay the runtime_.load().
+        if (!enabled_ || !getConfig()->enable_callstack_trace) {
             return;
         }
 

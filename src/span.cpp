@@ -18,6 +18,7 @@
 #include <cassert>
 #include <charconv>
 
+#include "http.h"
 #include "logging.h"
 #include "noop.h"
 #include "stat.h"
@@ -228,16 +229,17 @@ namespace pinpoint {
     }
 
     SpanImpl::SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point,
-                       std::shared_ptr<const Config> config) :
+                       std::shared_ptr<const AgentRuntime> runtime) :
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent),
+        runtime_(std::move(runtime)),
         data_(nullptr),
         overflow_(0),
         finished_(false),
         url_stat_{},
         exceptions_{} {
         assert(agent_ != nullptr);
-        config_ = config ? std::move(config) : agent_->getConfig();
+        config_ = runtime_ ? runtime_->config : agent_->getConfig();
         const auto app_type = agent_->getAppType();
         // Async child spans are created with an empty operation (see
         // NewAsyncSpan): skip the api-cache lookup — api_id 0 is simply not
@@ -531,10 +533,10 @@ namespace pinpoint {
             LOG_WARN("NewAsyncSpan: abnormal span - has no event");
             return noopSpan();
         }
-        // Hand down this span's config snapshot: the async child records into
+        // Hand down this span's runtime snapshot: the async child records into
         // the same trace, so it must run under the same config generation (and
         // it skips another atomic runtime load).
-        auto async_span = std::make_shared<SpanImpl>(agent_, "", "", config_);
+        auto async_span = std::make_shared<SpanImpl>(agent_, "", "", runtime_);
 
         async_span->data_->setTraceId(data_->getTraceId());
         async_span->data_->setSpanId(data_->getSpanId());
@@ -569,6 +571,17 @@ namespace pinpoint {
 
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) {
         CHECK_FINISHED();
+        // Gate at entry creation: with URL stats disabled (the default) the
+        // entry used to be built — two heap string copies — and carried to
+        // enqueueUrlStats() only to be dropped there. The entry doubles as
+        // the url_template source for recordException (see getUrlTemplate),
+        // so it is still kept while callstack tracing needs it; sendUrlStat()
+        // then discards it without enqueueing. Only applied under a runtime
+        // snapshot: spans constructed without one (tests) keep the legacy
+        // record-then-drop behavior their assertions rely on.
+        if (runtime_ && !config_->http.url_stat.enable && !config_->enable_callstack_trace) {
+            return;
+        }
         url_stat_.emplace(url_pattern, method, status_code);
     }
 
@@ -614,9 +627,21 @@ namespace pinpoint {
         CHECK_FINISHED();
 
         data_->getAnnotations()->AppendInt(ANNOTATION_HTTP_STATUS_CODE, status);
-        if (agent_->isStatusFail(status)) {
+        if (isStatusFail(status)) {
             data_->setErr(1);
         }
+    }
+
+    bool SpanImpl::isStatusFail(const int status) const {
+        // Evaluate against the span's own runtime generation: no atomic
+        // runtime load, and the same status-error set for the span's whole
+        // lifetime even when a config reload lands mid-span (matching how
+        // config_ pins the span's limits).
+        if (runtime_) {
+            const auto& status_errors = runtime_->http_status_errors;
+            return status_errors && status_errors->isErrorCode(status);
+        }
+        return agent_->isStatusFail(status);
     }
 
     void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
@@ -631,10 +656,17 @@ namespace pinpoint {
         if (!url_stat_) {
             return;
         }
+        // With URL stats disabled the entry only existed so sendExceptions()
+        // could read the url template (see SetUrlStat) — discard it here.
+        // Snapshot-gated like SetUrlStat: without one, legacy behavior.
+        if (runtime_ && !config_->http.url_stat.enable) {
+            url_stat_.reset();
+            return;
+        }
         url_stat_->end_time_ = data_->getEndTime();
         url_stat_->elapsed_ = data_->getElapsed();
-        url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
-        agent_->recordUrlStat(std::move(*url_stat_));
+        url_stat_->failed_ = isStatusFail(url_stat_->status_code_);
+        agent_->recordUrlStat(std::move(*url_stat_), *config_);
         url_stat_.reset();
     }
 

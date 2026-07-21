@@ -16,6 +16,7 @@
 
 #include <algorithm>
 
+#include "http.h"
 #include "logging.h"
 #include "stat.h"
 #include "utility.h"
@@ -54,10 +55,12 @@ namespace pinpoint {
         return getNoop().agent();
     }
 
-    UnsampledSpan::UnsampledSpan(AgentService *agent) : NoopSpan(),
+    UnsampledSpan::UnsampledSpan(AgentService *agent,
+                                 std::shared_ptr<const AgentRuntime> runtime) : NoopSpan(),
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         url_stat_(),
+        runtime_(std::move(runtime)),
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {
         // Guard the deref to stay consistent with the null check on agent_ref_
@@ -115,14 +118,31 @@ namespace pinpoint {
             url_stat_->elapsed_ = elapsed_;
             // Mirror SpanImpl::sendUrlStat: unsampled requests are the
             // majority when sampling is on, so missing this here would skew
-            // the URL-stat failure rate toward zero.
-            url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
-            agent_->recordUrlStat(std::move(*url_stat_));
+            // the URL-stat failure rate toward zero. With a runtime snapshot
+            // both the status check and the record skip the atomic runtime
+            // loads agent_->isStatusFail()/getConfig() would pay.
+            if (runtime_) {
+                const auto& status_errors = runtime_->http_status_errors;
+                url_stat_->failed_ =
+                    status_errors && status_errors->isErrorCode(url_stat_->status_code_);
+                agent_->recordUrlStat(std::move(*url_stat_), *runtime_->config);
+            } else {
+                url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
+                agent_->recordUrlStat(std::move(*url_stat_));
+            }
             url_stat_.reset();
         }
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        // Gate at entry creation (see SpanImpl::SetUrlStat): with URL stats
+        // disabled the entry's two heap string copies were built only to be
+        // dropped in enqueueUrlStats(). Unlike SpanImpl there is no exception
+        // url_template to preserve. Snapshot-gated: without one (tests),
+        // legacy record-then-drop behavior.
+        if (runtime_ && !runtime_->config->http.url_stat.enable) {
+            return;
+        }
         // Same guard as SpanImpl::SetUrlStat — after EndSpan the entry would
         // never be sent (EndSpan already consumed url_stat_) — but taken
         // under url_stat_mutex_ so the check-then-emplace cannot interleave

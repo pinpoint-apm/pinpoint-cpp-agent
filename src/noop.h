@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "pinpoint/tracer.h"
+#include "agent_runtime.h"
 #include "agent_service.h"
 #include "url_stat.h"
 
@@ -150,7 +151,12 @@ namespace pinpoint {
      */
     class UnsampledSpan final : public NoopSpan {
     public:
-        explicit UnsampledSpan(AgentService *agent);
+        // `runtime` is the creator's already-loaded runtime snapshot (see
+        // SpanImpl). With it, SetUrlStat gates on the snapshot's config and
+        // EndSpan resolves the failure status without any atomic runtime
+        // load. When omitted (tests), both fall back to the agent calls.
+        explicit UnsampledSpan(AgentService *agent,
+                               std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~UnsampledSpan() override;
 
         // Hand out the unsampled span event so that InjectContext on the event
@@ -177,6 +183,9 @@ namespace pinpoint {
         // warn/no-op instead of a data race on the moved-from entry.
         std::mutex url_stat_mutex_;
         std::optional<UrlStatEntry> url_stat_;
+        // Runtime snapshot of this span's admission decision; null only when
+        // constructed without one (tests). See the ctor comment.
+        std::shared_ptr<const AgentRuntime> runtime_;
         // Keeps the agent alive while user code still holds this span.
         std::shared_ptr<AgentService> agent_ref_;
         AgentService *agent_;

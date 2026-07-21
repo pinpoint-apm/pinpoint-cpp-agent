@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "pinpoint/tracer.h"
+#include "agent_runtime.h"
 #include "atomic_shared_ptr.h"
 #include "config.h"
 #include "http.h"
@@ -35,24 +36,6 @@
 #include "agent_service.h"
 
 namespace pinpoint {
-
-    /**
-     * @brief Immutable bundle of the resolved config and every component derived from it.
-     *
-     * Covers the sampler, HTTP filters and header recorders. Published behind a
-     * single AtomicSharedPtr so per-request readers pay one atomic load for a
-     * mutually consistent set, and a reload swap can never be observed
-     * half-applied.
-     */
-    struct AgentRuntime {
-        std::shared_ptr<const Config> config;
-        std::shared_ptr<TraceSampler> sampler;
-        std::shared_ptr<HttpUrlFilter> http_url_filter;
-        std::shared_ptr<HttpMethodFilter> http_method_filter;
-        std::shared_ptr<HttpStatusErrors> http_status_errors;
-        std::shared_ptr<HttpHeaderRecorder> http_srv_header_recorder[3];
-        std::shared_ptr<HttpHeaderRecorder> http_cli_header_recorder[3];
-    };
 
     /**
      * @brief Concrete agent implementation that wires together configuration, samplers and transports.
@@ -133,6 +116,7 @@ namespace pinpoint {
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
     	void recordUrlStat(UrlStatEntry stat) const override;
+    	void recordUrlStat(UrlStatEntry stat, const Config& config) const override;
         void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                              std::vector<std::unique_ptr<Exception>>&& exceptions) const override;
     	void recordStats(StatsType stats) const override;
@@ -185,6 +169,12 @@ namespace pinpoint {
 		std::unique_ptr<RawSqlCache> raw_sql_uid_cache_{};
 		mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
 		mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
+		// Mirror of config->sql.enable_raw_sql_cache, refreshed by
+		// apply_config(). prepareSql() runs once per SQL statement and only
+		// needs this one flag, so a relaxed load here replaces a full
+		// runtime_.load() (shared-lock + two shared_ptr refcount bumps) on
+		// that hot path. Benignly stale for the instant around a reload.
+		std::atomic<bool> raw_sql_cache_enabled_{true};
 
     	std::unique_ptr<GrpcAgent> grpc_agent_{};
     	std::unique_ptr<GrpcMetadata> grpc_metadata_{};

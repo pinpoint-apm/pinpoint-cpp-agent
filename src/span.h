@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "agent_runtime.h"
 #include "agent_service.h"
 #include "callstack.h"
 #include "config.h"
@@ -447,14 +448,15 @@ namespace pinpoint {
      */
     class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
     public:
-        // `config` is the creator's already-loaded config snapshot (e.g. the
+        // `runtime` is the creator's already-loaded runtime snapshot (the
         // AgentRuntime generation NewSpan sampled/filtered against). Passing it
-        // skips the extra atomic runtime load agent->getConfig() would pay and
-        // keeps the span on the exact config generation of its admission
-        // decision. When omitted (tests, direct construction), the ctor loads
-        // the current config itself.
+        // skips every further atomic runtime load — config limits, status-error
+        // checks, URL-stat gating — and keeps the span on the exact runtime
+        // generation of its admission decision. When omitted (tests, direct
+        // construction), the ctor loads the current config itself and the
+        // status-error checks fall back to agent->isStatusFail().
         SpanImpl(AgentService* agent, std::string_view operation, std::string_view rpc_point,
-                 std::shared_ptr<const Config> config = nullptr);
+                 std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~SpanImpl() override;
 
     	SpanEventPtr NewSpanEvent(std::string_view operation) override {
@@ -576,12 +578,19 @@ namespace pinpoint {
             // (stack-constructed test instances).
             std::shared_ptr<AgentService> agent_ref_;
             AgentService *agent_;
-            // Config snapshot taken once at span creation. Per-event hot paths
-            // (NewSpanEvent/EndEvent and the SpanEventImpl recorders) read
-            // this instead of agent_->getConfig(), so they pay no atomic
-            // shared_ptr load per call, and the span's limits (max_event_depth,
-            // event_chunk_size, ...) stay consistent for its whole lifetime
-            // even when a config reload lands mid-span.
+            // Runtime snapshot taken once at span creation (see the ctor).
+            // SetStatusCode/sendUrlStat evaluate status failures against its
+            // http_status_errors directly, with no agent_->isStatusFail()
+            // runtime load per call. Null only for spans constructed without
+            // a snapshot (tests), which fall back to the agent call.
+            std::shared_ptr<const AgentRuntime> runtime_;
+            // Convenience alias for runtime_->config (or the config loaded by
+            // the ctor when runtime_ is null — never null itself). Per-event
+            // hot paths (NewSpanEvent/EndEvent and the SpanEventImpl
+            // recorders) read this instead of agent_->getConfig(), so they
+            // pay no atomic shared_ptr load per call, and the span's limits
+            // (max_event_depth, event_chunk_size, ...) stay consistent for
+            // its whole lifetime even when a config reload lands mid-span.
             std::shared_ptr<const Config> config_;
             std::shared_ptr<SpanData> data_;
             std::atomic<int32_t> overflow_;
@@ -617,6 +626,11 @@ namespace pinpoint {
             void record_chunk(bool final) const;
             void sendUrlStat();
             void sendExceptions();
+            // Snapshot-based equivalent of agent_->isStatusFail(): evaluates
+            // the span's own runtime generation with no atomic runtime load.
+            // Falls back to the agent call for spans constructed without a
+            // snapshot (tests).
+            bool isStatusFail(int status) const;
             // Exceptions are only drained at EndSpan (unlike span events,
             // which chunk-flush mid-span), so a retry loop on a long-lived
             // span would otherwise grow this without bound — each entry

@@ -198,6 +198,16 @@ namespace pinpoint {
          */
         void enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept;
         void enqueueUrlStats(UrlStatEntry stats) noexcept;
+        /**
+         * @brief Queues a URL statistic using the caller's config snapshot.
+         *
+         * Primary overload: the ones above load the current config and
+         * delegate here. Hot-path callers (spans, via
+         * AgentService::recordUrlStat) pass the snapshot they already hold,
+         * skipping the atomic config load per record. `config` only has to
+         * stay alive for the duration of the call.
+         */
+        void enqueueUrlStats(UrlStatEntry stats, const Config& config) noexcept;
         /// @brief Worker loop that aggregates URL statistics.
         void addUrlStatsWorker();
         /// @brief Stops the aggregation worker.

@@ -199,7 +199,18 @@ namespace pinpoint {
 
     void UrlStats::enqueueUrlStats(UrlStatEntry stats) noexcept try {
         const auto config = agent_->getConfig();
-        if (!config->http.url_stat.enable) {
+        enqueueUrlStats(std::move(stats), *config);
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("failed to enqueue url stats: unknown exception");
+    }
+
+    void UrlStats::enqueueUrlStats(UrlStatEntry stats, const Config& config) noexcept try {
+        // Re-checked here even though span-side callers gate at SetUrlStat:
+        // the config-loading overload above and any future callers still rely
+        // on this as the authoritative drop point.
+        if (!config.http.url_stat.enable) {
             return;
         }
 
@@ -214,8 +225,8 @@ namespace pinpoint {
             // url_stat queue knob; url_stat.limit bounds distinct URL keys,
             // not this buffer) — both queues buffer per-request records, so
             // one sizing intent covers both.
-            if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config->span.queue_size)) {
-                LOG_DEBUG("drop url stats: overflow max queue size {}", config->span.queue_size);
+            if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config.span.queue_size)) {
+                LOG_DEBUG("drop url stats: overflow max queue size {}", config.span.queue_size);
                 return;
             }
             shard.queue_.push(std::move(stats));

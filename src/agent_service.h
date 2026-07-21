@@ -190,6 +190,21 @@
        */
       virtual void recordUrlStat(UrlStatEntry stat) const = 0;
       /**
+       * @brief Sends an aggregated URL statistic using the caller's config snapshot.
+       *
+       * Overload for hot-path callers (spans) that already hold a config
+       * snapshot: skips the atomic config load the single-argument overload
+       * pays per record. `config` only has to stay alive for the duration of
+       * the call. The default implementation (defined in agent.cpp — the
+       * inline body would need UrlStatEntry complete) forwards to the
+       * single-argument overload so mocks and test doubles keep working
+       * unchanged.
+       *
+       * @param stat URL statistic record to be transferred.
+       * @param config The caller's config snapshot.
+       */
+      virtual void recordUrlStat(UrlStatEntry stat, const Config& config) const;
+      /**
        * @brief Reports exceptions captured during span processing.
        */
       virtual void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
