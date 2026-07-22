@@ -67,17 +67,16 @@ namespace pinpoint {
      * @brief Abandons a thread handle without joining or detaching it,
      *        tolerating handles inherited across fork().
      *
-     * The joinable handle is leak-moved into a heap std::thread that is
-     * intentionally never destroyed: the move leaves @p t non-joinable (its
-     * destructor becomes a no-op), nothing ever joins or destroys the leaked
-     * handle, and no pthread call is made on it. detach() must never be used
-     * here: for a handle inherited across fork() the thread does not exist in
-     * the child, and while macOS pthread_detach fails cleanly with ESRCH
-     * (making std::thread::detach() throw catchably), glibc unconditionally
-     * dereferences the thread descriptor — memory the child's fork() has
-     * already reclaimed — and crashes. Cost of the leak: a LIVE abandoned
-     * thread keeps its stack until process exit instead of releasing it at
-     * thread exit; a fork-dead handle leaks only the handle itself.
+     * The joinable object's storage is reused for a default-constructed empty
+     * std::thread without invoking the old object's destructor. This leaves
+     * @p t non-joinable without allocating memory or making a pthread call.
+     * detach() must never be used here: for a handle inherited across fork()
+     * the thread does not exist in the child, and while macOS pthread_detach
+     * fails cleanly with ESRCH (making std::thread::detach() throw catchably),
+     * glibc unconditionally dereferences the thread descriptor — memory the
+     * child's fork() has already reclaimed — and crashes. Cost of the leak: a
+     * LIVE abandoned thread keeps its native resources until process exit; a
+     * fork-dead handle leaks only the stale handle state.
      */
     void abandon_thread(std::thread& t) noexcept;
 

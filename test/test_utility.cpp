@@ -16,10 +16,37 @@
 
 #include "../src/utility.h"
 #include <gtest/gtest.h>
+#include <atomic>
+#include <cstdlib>
+#include <new>
 #include <set>
 #include <thread>
 #include <vector>
 #include <cmath>
+
+namespace {
+
+thread_local bool fail_allocations_on_this_thread = false;
+
+}  // namespace
+
+void* operator new(std::size_t size) {
+    if (fail_allocations_on_this_thread) {
+        throw std::bad_alloc();
+    }
+    if (void* ptr = std::malloc(size)) {
+        return ptr;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* ptr) noexcept {
+    std::free(ptr);
+}
+
+void operator delete(void* ptr, std::size_t) noexcept {
+    std::free(ptr);
+}
 
 namespace pinpoint {
 
@@ -110,6 +137,26 @@ TEST(UtilityTest, GetHostIpAddrReturnsValidFormat) {
     EXPECT_FALSE(ip.empty());
     // Should contain dots (IPv4 format)
     EXPECT_NE(ip.find('.'), std::string::npos);
+}
+
+TEST(UtilityTest, AbandonThreadDoesNotAllocateAndClearsHandle) {
+    std::atomic<bool> finished{false};
+    std::thread thread([&finished]() { finished.store(true); });
+    while (!finished.load()) {
+        std::this_thread::yield();
+    }
+
+    fail_allocations_on_this_thread = true;
+    abandon_thread(thread);
+    fail_allocations_on_this_thread = false;
+
+    const bool still_joinable = thread.joinable();
+    if (still_joinable) {
+        // Keeps the regression test safe against std::terminate when run
+        // against the old allocation-and-catch implementation.
+        thread.join();
+    }
+    EXPECT_FALSE(still_joinable);
 }
 
 // ========== compare_string Tests ==========

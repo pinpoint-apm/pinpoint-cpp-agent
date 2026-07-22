@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <new>
 #include <random>
 #include <cctype>
 #include <sys/socket.h>
@@ -118,11 +119,12 @@ namespace pinpoint {
         // Never detach(): for a handle inherited across fork(), glibc's
         // pthread_detach unconditionally dereferences the thread descriptor,
         // which the child's fork() has already reclaimed (__reclaim_stacks) —
-        // it segfaults instead of returning ESRCH as macOS does. The leak-move
-        // makes no pthread call at all: it only transfers the handle into a
-        // heap std::thread that is intentionally never destroyed, leaving t
-        // non-joinable.
-        try { new std::thread(std::move(t)); } catch (...) {}
+        // it segfaults instead of returning ESRCH as macOS does. Reusing the
+        // object's storage ends the joinable thread object's lifetime without
+        // invoking its destructor, then constructs an empty handle in place.
+        // Placement new performs no allocation, std::thread's default
+        // constructor is noexcept, and no pthread call is made.
+        ::new (static_cast<void*>(&t)) std::thread();
     }
 
     bool compare_string(std::string_view str1, std::string_view str2) {
