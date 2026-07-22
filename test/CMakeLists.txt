@@ -24,6 +24,19 @@ else()
   message(STATUS "Using system GoogleTest")
 endif()
 
+find_package(Threads REQUIRED)
+
+# AtomicSharedPtr generation/TLS cache tests
+add_executable(test_atomic_shared_ptr test_atomic_shared_ptr.cpp)
+target_include_directories(test_atomic_shared_ptr PRIVATE ../src)
+target_link_libraries(test_atomic_shared_ptr
+    GTest::gtest
+    GTest::gtest_main
+    Threads::Threads
+)
+set_target_properties(test_atomic_shared_ptr PROPERTIES CXX_STANDARD 17)
+add_test(NAME test_atomic_shared_ptr COMMAND test_atomic_shared_ptr)
+
 # RateLimiter tests
 add_executable(test_limiter test_limiter.cpp)
 target_include_directories(test_limiter PRIVATE ../src)

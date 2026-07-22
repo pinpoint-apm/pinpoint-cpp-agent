@@ -85,3 +85,22 @@ normalization. Its `overhead` value is `raw-cache ns/op ÷ legacy ns/op`; a valu
 above `1.0` means that for workloads which inline literals instead of binding
 parameters (hit rate ≈ 0), the front cache costs more than it saves. Weigh both
 numbers against the expected raw-SQL repetition of the target application.
+
+## Atomic shared pointer snapshots
+
+`atomic_shared_ptr_benchmark` compares the former C++17 `shared_mutex` plus
+owning-copy load with the generation-validated thread-local cache. It reports
+both the compatible by-value `load()` and the opt-in reference accessor. The
+legacy implementation is embedded in the benchmark, so one run produces the
+before/after comparison under the same machine load.
+
+```sh
+cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug-cached --target atomic_shared_ptr_benchmark
+./build/debug-cached/benchmark/atomic_shared_ptr_benchmark 1000000
+```
+
+The optional argument is the operation count per thread. Each row is the median
+of three runs. `ns/op` is elapsed wall time divided by operations per thread,
+so an unchanged value as thread count rises indicates that the reader path is
+not accumulating cross-core contention.

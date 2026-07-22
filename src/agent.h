@@ -141,15 +141,16 @@ namespace pinpoint {
     private:
 
         // Single source of truth for the config and its derived components
-        // (see AgentRuntime). One load() per request yields a mutually
-        // consistent snapshot of all of them.
+        // (see AgentRuntime). A generation-validated thread-local snapshot
+        // yields a mutually consistent view without a shared lock on the
+        // unchanged per-request path.
         AtomicSharedPtr<const AgentRuntime> runtime_;
 
     	// Identity fields snapshotted once at construction. Config::isReloadable()
-    	// guarantees these never change while this agent lives, so they are served
-    	// directly — without an atomic runtime_ load (shared_mutex lock + shared_ptr
-    	// copy) or a string copy — on the per-request hot path (e.g. InjectContext,
-    	// SpanData ctor, generateTraceId).
+	// guarantees these never change while this agent lives, so they are served
+	// directly — without a runtime snapshot lookup, shared_ptr copy, or string
+	// copy — on the per-request hot path (e.g. InjectContext,
+	// SpanData ctor, generateTraceId).
     	std::string app_name_;
     	int32_t app_type_{};
     	// Held as a shared string so generateTraceId() can seed every new
@@ -171,9 +172,9 @@ namespace pinpoint {
 		mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
 		// Mirror of config->sql.enable_raw_sql_cache, refreshed by
 		// apply_config(). prepareSql() runs once per SQL statement and only
-		// needs this one flag, so a relaxed load here replaces a full
-		// runtime_.load() (shared-lock + two shared_ptr refcount bumps) on
-		// that hot path. Benignly stale for the instant around a reload.
+		// needs this one flag, so a relaxed load here avoids a runtime cache
+		// lookup and owning Config snapshot on that hot path. Benignly stale
+		// for the instant around a reload.
 		std::atomic<bool> raw_sql_cache_enabled_{true};
 
     	std::unique_ptr<GrpcAgent> grpc_agent_{};

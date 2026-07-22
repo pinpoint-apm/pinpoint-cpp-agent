@@ -209,7 +209,7 @@ namespace pinpoint {
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
-        const auto runtime = runtime_.load();
+        const auto& runtime = runtime_.load_cached_ref();
         return runtime ? runtime->config : nullptr;
     }
 
@@ -384,9 +384,9 @@ namespace pinpoint {
         // read-modify-write of runtime_, so a CreateAgent()-driven reload and
         // the config-file watcher thread could otherwise both build from the
         // same old runtime and lose one of the updates. Readers remain
-        // lock-free (a single AtomicSharedPtr::load()).
+        // lock-free on the generation-cache fast path.
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
-        apply_config(runtime_.load(), std::move(cfg));
+        apply_config(runtime_.load_cached_ref(), std::move(cfg));
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -640,8 +640,10 @@ namespace pinpoint {
         if (!enabled_) {
             return noopSpan();
         }
-        // One atomic load covers the filters and the sampler for this request.
-        const auto runtime = runtime_.load();
+        // One generation-validated TLS snapshot covers the filters and sampler
+        // for this request. The span takes the one owning copy it needs below;
+        // this reference avoids a second, temporary control-block RMW pair.
+        const auto& runtime = runtime_.load_cached_ref();
         const auto& url_filter = runtime->http_url_filter;
         if (url_filter && url_filter->isFiltered(rpc_point)) {
             return noopSpan();
@@ -970,8 +972,8 @@ namespace pinpoint {
         // destruction when the process exits without Shutdown(), and a
         // function-local static would already be destroyed at that point.
         static const SqlNormalizer& normalizer = *new SqlNormalizer(64 * 1024);
-        // One relaxed load instead of getConfig() (a full runtime_.load()):
-        // this runs once per SQL statement and only needs this flag.
+        // One relaxed load instead of a runtime snapshot lookup plus owning
+        // Config copy: this runs once per SQL statement and only needs this flag.
         const bool enable_raw_sql_cache =
             raw_sql_cache_enabled_.load(std::memory_order_relaxed);
 
@@ -1075,7 +1077,7 @@ namespace pinpoint {
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
         // Cheap flag first, config load second (same ordering as the getters
-        // below): a disabled agent must not pay the runtime_.load().
+        // below): a disabled agent must not look up or retain a runtime snapshot.
         if (!enabled_ || !getConfig()->enable_callstack_trace) {
             return;
         }
@@ -1089,15 +1091,13 @@ namespace pinpoint {
         LOG_ERROR("failed to record exception meta: unknown exception");
     }
 
-    // These check enabled_ before runtime_.load(): the load is a
-    // shared-lock + shared_ptr copy on platforms without the C++20 atomic
-    // shared_ptr (see AtomicSharedPtr), so ordering the cheap flag first
-    // makes the disabled-agent path free.
+    // These check enabled_ before touching the runtime generation so the
+    // disabled-agent path remains free.
     bool AgentImpl::isStatusFail(const int status) const {
         if (!enabled_) {
             return false;
         }
-        const auto runtime = runtime_.load();
+        const auto& runtime = runtime_.load_cached_ref();
         if (runtime->http_status_errors) {
             return runtime->http_status_errors->isErrorCode(status);
         }
@@ -1108,7 +1108,7 @@ namespace pinpoint {
         if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto runtime = runtime_.load();
+        const auto& runtime = runtime_.load_cached_ref();
         const auto& recorder = runtime->http_srv_header_recorder[which];
         if (recorder) {
             recorder->recordHeader(reader, annotation);
@@ -1119,7 +1119,7 @@ namespace pinpoint {
         if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
-        const auto runtime = runtime_.load();
+        const auto& runtime = runtime_.load_cached_ref();
         const auto& recorder = runtime->http_cli_header_recorder[which];
         if (recorder) {
             recorder->recordHeader(reader, annotation);
@@ -1221,10 +1221,10 @@ namespace pinpoint {
     }
 
     AgentPtr GlobalAgent() {
-        // Reader path: a single AtomicSharedPtr load, no global_agent_mutex.
-        // Host applications call this per request, and taking the writers'
-        // mutex here would stall every request behind a reload in progress.
-        auto agent = global_agent().load();
+        // Host applications call this per request. The TLS reference avoids
+        // the shared-source lock; the return still makes one necessary owning
+        // copy because the host may keep the AgentPtr beyond this call.
+        const auto& agent = global_agent().load_cached_ref();
         if (agent == nullptr) {
             return noopAgent();
         }
