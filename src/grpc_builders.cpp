@@ -177,6 +177,8 @@ namespace pinpoint {
             }
 
             auto& annotations = se->getAnnotations()->getAnnotations();
+            span_event->mutable_annotation()->Reserve(
+                span_event->annotation_size() + static_cast<int>(annotations.size()));
             for (const auto& [key, val] : annotations) {
                 build_annotation(span_event->add_annotation(), key, val, arena);
             }
@@ -226,6 +228,8 @@ namespace pinpoint {
             auto* histogram = google::protobuf::Arena::Create<v1::PActiveTraceHistogram>(arena);
             histogram->set_version(1);
             histogram->set_histogramschematype(2);
+            histogram->mutable_activetracecount()->Reserve(
+                static_cast<int>(std::size(stat.active_requests_)));
             for (int32_t c : stat.active_requests_) {
                 histogram->add_activetracecount(c);
             }
@@ -245,6 +249,7 @@ namespace pinpoint {
         void build_url_histogram(v1::PUriHistogram* grpc_histogram, const UrlStatHistogram& url_histogram) {
             grpc_histogram->set_total(url_histogram.total());
             grpc_histogram->set_max(url_histogram.max());
+            grpc_histogram->mutable_histogram()->Reserve(URL_STATS_BUCKET_SIZE);
             for (auto i = 0; i < URL_STATS_BUCKET_SIZE; i++) {
                 grpc_histogram->add_histogram(url_histogram.histogram(i));
             }
@@ -314,12 +319,18 @@ namespace pinpoint {
         grpc_span->set_flag(span->getFlags());
         grpc_span->set_err(span->getErr());
 
+        // Reserve up front: RepeatedPtrField doubles its pointer array as it
+        // grows, and on an arena each regrow strands the old array in the
+        // arena. Count is known here, so one allocation suffices.
         const auto& events = chunk->getSpanEventChunk();
+        grpc_span->mutable_spanevent()->Reserve(static_cast<int>(events.size()));
         for (const auto& e : events) {
             build_span_event(grpc_span->add_spanevent(), e, arena);
         }
 
         const auto& annotations = span->getAnnotations()->getAnnotations();
+        grpc_span->mutable_annotation()->Reserve(
+            grpc_span->annotation_size() + static_cast<int>(annotations.size()));
         for (const auto& [key, val] : annotations) {
             build_annotation(grpc_span->add_annotation(), key, val, arena);
         }
@@ -361,6 +372,7 @@ namespace pinpoint {
         }
 
         auto& events = chunk->getSpanEventChunk();
+        grpc_span->mutable_spanevent()->Reserve(static_cast<int>(events.size()));
         for (const auto& e : events) {
             build_span_event(grpc_span->add_spanevent(), e, arena);
         }
@@ -372,6 +384,7 @@ namespace pinpoint {
                                                 google::protobuf::Arena* arena) {
         auto* grpc_stat = google::protobuf::Arena::Create<v1::PAgentStatBatch>(arena);
 
+        grpc_stat->mutable_agentstat()->Reserve(static_cast<int>(stats.size()));
         for (const auto& stat : stats) {
             auto* agent_stat = grpc_stat->add_agentstat();
             build_agent_stat(agent_stat, stat, arena);
@@ -385,6 +398,7 @@ namespace pinpoint {
 
         uri_stat->set_bucketversion(URL_STATS_BUCKET_VERSION);
         const auto& m = snapshot->getEachStats();
+        uri_stat->mutable_eachuristat()->Reserve(static_cast<int>(m.size()));
         for (const auto& [key, each_stats] : m) {
             auto* url_stat = uri_stat->add_eachuristat();
             build_each_url_stat(url_stat, key, each_stats.get(), arena);

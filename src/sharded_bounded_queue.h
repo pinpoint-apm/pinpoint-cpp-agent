@@ -379,7 +379,12 @@ namespace pinpoint {
         std::atomic<uint64_t> active_shards_;
         std::atomic<uint64_t> borrowable_shards_;
         std::mutex rebalance_mutex_;
-        size_t consumer_cursor_{0};
+        // Own cache line: the consumer writes this on every successful
+        // dequeue, while producers read active_shards_/borrowable_shards_
+        // above on every enqueue. Without the padding the cursor write would
+        // ping-pong the line those reads ride on — the exact cross-thread
+        // line sharing the per-shard design set out to remove.
+        alignas(64) size_t consumer_cursor_{0};
     };
 
 } // namespace pinpoint

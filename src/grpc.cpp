@@ -1824,7 +1824,7 @@ namespace pinpoint {
             pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
 
             for (auto& span_chunk : batch) {
-                const auto span = span_chunk->getSpanData();
+                const auto& span = span_chunk->getSpanData();
                 auto* msg = pending->request->add_span();
                 if (!span_chunk->isFinal() || span->isAsyncSpan()) {
                     msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &pending->arena));

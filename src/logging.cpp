@@ -18,9 +18,8 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
+#include <iterator>
 
 namespace pinpoint {
 
@@ -100,24 +99,30 @@ namespace pinpoint {
         std::tm tm{};
         localtime_r(&now_time, &tm);
 
-        std::ostringstream prefix;
-        prefix << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-        prefix << "." << std::setw(3) << std::setfill('0') << ms.count() << "]";
-        prefix << "[" << (level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
-                          level == LogLevel::kInfo ? LOG_LEVEL_INFO :
-                          level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR) << "]";
-        prefix << "[pinpoint]";
-        prefix << "[" << file << ":" << line << "] ";
+        const char* level_str = level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
+                                level == LogLevel::kInfo ? LOG_LEVEL_INFO :
+                                level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR;
 
-        const std::string msg = prefix.str() + message + "\n";
+        // Build the whole line into a stack buffer in one pass. Replaces the
+        // ostringstream + std::put_time (locale machinery, one heap buffer)
+        // and the prefix.str()+message+"\n" chain (three more temporaries)
+        // with a single allocation-free format. Output format is unchanged:
+        // [YYYY-MM-DD HH:MM:SS.mmm][level][pinpoint][file:line] message
+        fmt::memory_buffer buf;
+        fmt::format_to(std::back_inserter(buf),
+                       "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}][{}][pinpoint][{}:{}] {}\n",
+                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                       tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()),
+                       level_str, file, line, message);
+
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (file_enabled_ && file_stream_) {
-            file_stream_->write(msg.data(), static_cast<std::streamsize>(msg.size()));
-            current_file_size_ += static_cast<std::uint64_t>(msg.size());
+            file_stream_->write(buf.data(), static_cast<std::streamsize>(buf.size()));
+            current_file_size_ += static_cast<std::uint64_t>(buf.size());
             rotateFileIfNeededLocked();
         } else {
-            std::cout << msg;
+            std::cout.write(buf.data(), static_cast<std::streamsize>(buf.size()));
         }
     }
 

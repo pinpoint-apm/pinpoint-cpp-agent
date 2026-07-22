@@ -163,14 +163,20 @@ namespace pinpoint {
         std::atomic<bool> response_time_snapshotting_{false};
         std::mutex response_time_snapshot_mutex_;
         
-        std::atomic<int64_t> sample_new_{0};
+        // Sampler counters isolated on their own cache line. Each request does
+        // one fetch_add here, while response_time_snapshotting_ just above is
+        // read twice per request in collectResponseTime — packed together, every
+        // counter increment would invalidate the line that read rides on.
+        // active_span_shards_ below is re-aligned so it does not share this line
+        // either (ActiveSpanShard is not itself over-aligned).
+        alignas(64) std::atomic<int64_t> sample_new_{0};
         std::atomic<int64_t> un_sample_new_{0};
         std::atomic<int64_t> sample_cont_{0};
         std::atomic<int64_t> un_sample_cont_{0};
         std::atomic<int64_t> skip_new_{0};
         std::atomic<int64_t> skip_cont_{0};
-        
-        std::array<ActiveSpanShard, kActiveSpanShardCount> active_span_shards_;
+
+        alignas(64) std::array<ActiveSpanShard, kActiveSpanShardCount> active_span_shards_;
         
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};

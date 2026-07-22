@@ -442,7 +442,16 @@ namespace pinpoint {
             size_t hash = std::hash<std::string_view>{}(raw_sql);
             hash ^= std::hash<uint64_t>{}(metadata_epoch) + 0x9e3779b9 +
                     (hash << 6) + (hash >> 2);
-            auto& shard = *shards_[hash % shards_.size()];
+            // Pick the shard from a remixed value, not `hash % size`: the
+            // shard's unordered_map is fed this same `hash` (pass-through
+            // hasher), so selecting the shard from the low bits would leave
+            // every key in a shard sharing those bits. Harmless with prime
+            // bucket counts (libstdc++/libc++) but 16x chain length with
+            // power-of-two buckets (MSVC). The multiply spreads high entropy
+            // into the bits the modulo consumes.
+            const size_t shard_idx =
+                (hash * 0x9E3779B97F4A7C15ull >> 32) % shards_.size();
+            auto& shard = *shards_[shard_idx];
             return shard.cache.get(
                 RawSqlCacheKey{raw_sql, metadata_epoch, hash},
                 std::forward<Generator>(generator));

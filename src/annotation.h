@@ -64,10 +64,15 @@ namespace pinpoint {
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
         IntStringStringValue(const int intVal, std::string&& strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
+        // strVal2 by value so a caller-owned bind-value string (see
+        // SpanEventImpl::SetSqlQuery) moves in without copying up to
+        // max_bind_args_size bytes; a literal still builds one std::string as
+        // before. (This overload is only reached with a shared_ptr strVal1,
+        // so widening string_view->string adds no ambiguity.)
         IntStringStringValue(const int intVal,
                              std::shared_ptr<const std::string> strVal1,
-                             std::string_view strVal2)
-            : intValue(intVal), stringValue2(strVal2),
+                             std::string strVal2)
+            : intValue(intVal), stringValue2(std::move(strVal2)),
               sharedStringValue1(std::move(strVal1)) {}
 
         std::string_view stringValue1View() const noexcept {
@@ -104,10 +109,11 @@ namespace pinpoint {
             : bytesValue(bytesVal), stringValue1(strVal1), stringValue2(strVal2) {}
         BytesStringStringValue(SqlUid bytesVal, std::string&& strVal1, std::string_view strVal2)
             : bytesValue(bytesVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
+        // strVal2 by value; see IntStringStringValue above.
         BytesStringStringValue(SqlUid bytesVal,
                                std::shared_ptr<const std::string> strVal1,
-                               std::string_view strVal2)
-            : bytesValue(bytesVal), stringValue2(strVal2),
+                               std::string strVal2)
+            : bytesValue(bytesVal), stringValue2(std::move(strVal2)),
               sharedStringValue1(std::move(strVal1)) {}
 
         std::string_view stringValue1View() const noexcept {
@@ -149,8 +155,8 @@ namespace pinpoint {
             : data(IntStringStringValue(intVal, std::move(strVal1), strVal2)) {}
         AnnotationData(const int intVal,
                        std::shared_ptr<const std::string> strVal1,
-                       std::string_view strVal2)
-            : data(IntStringStringValue(intVal, std::move(strVal1), strVal2)) {}
+                       std::string strVal2)
+            : data(IntStringStringValue(intVal, std::move(strVal1), std::move(strVal2))) {}
         AnnotationData(const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
@@ -160,8 +166,8 @@ namespace pinpoint {
             : data(BytesStringStringValue(bytesVal, std::move(strVal1), strVal2)) {}
         AnnotationData(SqlUid bytesVal,
                        std::shared_ptr<const std::string> strVal1,
-                       std::string_view strVal2)
-            : data(BytesStringStringValue(bytesVal, std::move(strVal1), strVal2)) {}
+                       std::string strVal2)
+            : data(BytesStringStringValue(bytesVal, std::move(strVal1), std::move(strVal2))) {}
 
         AnnotationType type() const {
             // The variant alternatives are declared in exactly the enum's

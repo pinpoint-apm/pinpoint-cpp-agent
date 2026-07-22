@@ -238,7 +238,7 @@ namespace pinpoint {
             if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
                 ensureAnnotations()->AppendData(
                     ANNOTATION_SQL_UID,
-                    AnnotationData(*uid, std::move(parameters), joined_bind_args));
+                    AnnotationData(*uid, std::move(parameters), std::move(joined_bind_args)));
             }
             return;
         }
@@ -246,7 +246,7 @@ namespace pinpoint {
         if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
             ensureAnnotations()->AppendData(
                 ANNOTATION_SQL_ID,
-                AnnotationData(*sql_id, std::move(parameters), joined_bind_args));
+                AnnotationData(*sql_id, std::move(parameters), std::move(joined_bind_args)));
         }
     }
 

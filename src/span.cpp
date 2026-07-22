@@ -141,7 +141,10 @@ namespace pinpoint {
         }
 
         out.reserve(finished_events.size());
-        retired_events_.reserve(retired_events_.size() + finished_events.size());
+        // No reserve() on retired_events_: reserve(size + batch) allocates
+        // exactly that on every chunk flush, so a long-lived span reallocates
+        // and copies the whole vector per flush (O(E^2/C)). Plain emplace_back
+        // grows geometrically instead — O(log E) reallocations overall.
         for (auto& event : finished_events) {
             out.push_back(event.get());
             retired_events_.emplace_back(std::move(event));

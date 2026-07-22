@@ -223,7 +223,6 @@ namespace pinpoint {
 
         static CompiledPattern compilePattern(const std::string& pattern);
         static bool ant_match(const CompiledPattern& pattern, std::string_view url, MatchScratch& scratch);
-        static bool ant_match(std::string_view pattern, std::string_view url);
     };
 
     /**

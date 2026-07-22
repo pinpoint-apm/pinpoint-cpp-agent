@@ -283,25 +283,6 @@ namespace pinpoint {
         return scratch.next[0] != 0;
     }
 
-    bool HttpUrlFilter::ant_match(std::string_view pattern, std::string_view url) {
-        const auto compiled = compilePattern(to_string(pattern));
-        switch (compiled.kind) {
-        case PatternKind::Exact:
-            return url.size() == compiled.pattern.size() && url.compare(as_view(compiled.pattern)) == 0;
-        case PatternKind::Prefix:
-            return starts_with(url, as_view(compiled.literal_prefix));
-        case PatternKind::SegmentPrefix:
-            return starts_with(url, as_view(compiled.literal_prefix)) &&
-                url.find('/', compiled.literal_prefix.size()) == std::string_view::npos;
-        case PatternKind::Ant: {
-            MatchScratch scratch;
-            return ant_match(compiled, url, scratch);
-        }
-        }
-
-        return false;
-    }
-
     HttpMethodFilter::HttpMethodFilter(std::vector<std::string> cfg)
         : methods_(std::move(cfg)) {}
 
@@ -356,32 +337,35 @@ namespace pinpoint {
             }
         }
 
-        // No proxy headers, extract IP from RemoteAddr (may include port)
-        std::string addr_str(remote_addr);
-        
+        // No proxy headers, extract IP from RemoteAddr (may include port).
+        // Parse on the view and materialize the result string exactly once —
+        // this is the common direct-connection path, and the previous code
+        // copied remote_addr into a std::string and then substr()'d it, up to
+        // two heap allocations where one suffices.
+
         // Handle IPv6 addresses enclosed in brackets [::]:port
-        if (!addr_str.empty() && addr_str[0] == '[') {
-            auto bracket_end = addr_str.find(']');
-            if (bracket_end != std::string::npos) {
+        if (!remote_addr.empty() && remote_addr[0] == '[') {
+            auto bracket_end = remote_addr.find(']');
+            if (bracket_end != std::string_view::npos) {
                 // Extract IPv6 address with brackets
-                return addr_str.substr(0, bracket_end + 1);
+                return std::string(remote_addr.substr(0, bracket_end + 1));
             }
-        }
-        
-        // Try to split host:port for IPv4
-        auto colon_pos = addr_str.rfind(':');
-        if (colon_pos != std::string::npos) {
-            // Check if this is IPv6 without brackets (contains multiple colons)
-            auto first_colon = addr_str.find(':');
-            if (first_colon != colon_pos) {
-                // Multiple colons, likely IPv6 without brackets - return as is
-                return addr_str;
-            }
-            // Single colon, extract host part (IPv4:port)
-            return addr_str.substr(0, colon_pos);
         }
 
-        return addr_str;
+        // Try to split host:port for IPv4
+        auto colon_pos = remote_addr.rfind(':');
+        if (colon_pos != std::string_view::npos) {
+            // Check if this is IPv6 without brackets (contains multiple colons)
+            auto first_colon = remote_addr.find(':');
+            if (first_colon != colon_pos) {
+                // Multiple colons, likely IPv6 without brackets - return as is
+                return std::string(remote_addr);
+            }
+            // Single colon, extract host part (IPv4:port)
+            return std::string(remote_addr.substr(0, colon_pos));
+        }
+
+        return std::string(remote_addr);
     }
 
     namespace {
@@ -518,23 +502,34 @@ namespace pinpoint {
     }
 
     namespace helper {
+        namespace {
+            // Shared request-recording body taken by const ref so the two
+            // public overloads (which take SpanPtr by value — API-fixed) each
+            // pay exactly one shared_ptr copy from their caller, instead of
+            // the cookie overload copying a second time to forward.
+            void traceServerRequest(const SpanPtr& span, std::string_view remote_addr,
+                                    std::string_view endpoint, HeaderReader& request_reader) {
+                std::string r_addr = HttpTracerUtil::getRemoteAddr(request_reader, remote_addr);
+                span->SetRemoteAddress(r_addr);
+                span->SetEndPoint(endpoint);
+
+                HttpTracerUtil::setProxyHeader(request_reader, span->GetAnnotations());
+                span->RecordHeader(HTTP_REQUEST, request_reader);
+            }
+        }
+
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader) {
             if (!span) {
                 return;
             }
-            std::string r_addr = HttpTracerUtil::getRemoteAddr(request_reader, remote_addr);
-            span->SetRemoteAddress(r_addr);
-            span->SetEndPoint(endpoint);
-
-            HttpTracerUtil::setProxyHeader(request_reader, span->GetAnnotations());
-            span->RecordHeader(HTTP_REQUEST, request_reader);
+            traceServerRequest(span, remote_addr, endpoint, request_reader);
         }
 
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader) {
             if (!span) {
                 return;
             }
-            TraceHttpServerRequest(span, remote_addr, endpoint, request_reader);
+            traceServerRequest(span, remote_addr, endpoint, request_reader);
             span->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
