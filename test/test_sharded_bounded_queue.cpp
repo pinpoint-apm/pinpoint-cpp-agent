@@ -82,6 +82,79 @@ namespace {
         EXPECT_FALSE(queue.try_dequeue(empty));
     }
 
+    TEST(ShardedBoundedQueueTest, BatchDequeueDrainsFifoAndRespectsLimit) {
+        ShardedBoundedQueue<std::unique_ptr<int>> queue(16, 1);
+
+        for (int value = 1; value <= 10; ++value) {
+            auto item = std::make_unique<int>(value);
+            queue.enqueue(item);
+        }
+
+        std::vector<std::unique_ptr<int>> batch;
+        EXPECT_EQ(queue.try_dequeue_batch(batch, 0), 0u);
+        EXPECT_TRUE(batch.empty());
+
+        // Appends across calls and respects max_items per call.
+        ASSERT_EQ(queue.try_dequeue_batch(batch, 4), 4u);
+        ASSERT_EQ(queue.try_dequeue_batch(batch, 4), 4u);
+        ASSERT_EQ(queue.try_dequeue_batch(batch, 4), 2u);
+        EXPECT_EQ(queue.try_dequeue_batch(batch, 4), 0u);
+
+        ASSERT_EQ(batch.size(), 10u);
+        for (int expected = 1; expected <= 10; ++expected) {
+            ASSERT_NE(batch[expected - 1], nullptr);
+            EXPECT_EQ(*batch[expected - 1], expected);
+        }
+    }
+
+    TEST(ShardedBoundedQueueTest, BatchDequeuePreservesPerProducerOrderAcrossShards) {
+        struct Item {
+            size_t producer;
+            size_t sequence;
+        };
+
+        constexpr size_t kProducerCount = 4;
+        // Matches each shard's base quota so no producer ever borrows or
+        // head-drops: every enqueued item must come back out.
+        constexpr size_t kItemsPerProducer = 64;
+        ShardedBoundedQueue<std::unique_ptr<Item>> queue(
+            kProducerCount * kItemsPerProducer, kProducerCount);
+
+        std::vector<std::thread> producers;
+        for (size_t producer = 0; producer < kProducerCount; ++producer) {
+            producers.emplace_back([&, producer] {
+                for (size_t sequence = 0; sequence < kItemsPerProducer; ++sequence) {
+                    auto item = std::make_unique<Item>(Item{producer, sequence});
+                    queue.enqueue(item);
+                }
+            });
+        }
+        for (auto& producer : producers) {
+            producer.join();
+        }
+        ASSERT_EQ(queue.dropped_oldest(), 0u);
+
+        // A batch size that is not a multiple of any shard's backlog, so the
+        // drain rotates across shards and resumes shards mid-run.
+        std::vector<std::unique_ptr<Item>> batch;
+        std::vector<size_t> next_sequence(kProducerCount, 0);
+        size_t total = 0;
+        while (queue.try_dequeue_batch(batch, 24) > 0) {
+            for (auto& item : batch) {
+                ASSERT_NE(item, nullptr);
+                ASSERT_LT(item->producer, kProducerCount);
+                EXPECT_EQ(item->sequence, next_sequence[item->producer]);
+                ++next_sequence[item->producer];
+                ++total;
+            }
+            batch.clear();
+        }
+        EXPECT_EQ(total, kProducerCount * kItemsPerProducer);
+
+        std::unique_ptr<Item> leftover;
+        EXPECT_FALSE(queue.try_dequeue(leftover));
+    }
+
     TEST(ShardedBoundedQueueTest, ConcurrentProducersPreservePerProducerOrder) {
         struct Item {
             size_t producer;

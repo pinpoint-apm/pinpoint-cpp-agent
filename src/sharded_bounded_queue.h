@@ -124,6 +124,44 @@ namespace pinpoint {
             return dequeue_from_active_shards(value);
         }
 
+        /**
+         * @brief Dequeues up to max_items values, appended to out.
+         *
+         * One shard lock drains a whole run of values, where per-item
+         * try_dequeue() pays a lock/unlock per probed shard per item — under
+         * a skewed producer load (a few busy threads filling one shard) that
+         * is O(active_shards) mutex operations per item. Each active shard is
+         * probed at most once per call, and the cursor advances past every
+         * shard that yielded, preserving try_dequeue()'s round-robin rotation
+         * so a persistently hot shard cannot starve the others.
+         *
+         * @return The number of values appended to out.
+         */
+        size_t try_dequeue_batch(std::vector<T>& out, size_t max_items) {
+            if (max_items == 0) {
+                return 0;
+            }
+            // Grow out before probing so the per-shard drains never allocate
+            // while holding a producer-contended shard mutex.
+            out.reserve(out.size() + max_items);
+
+            const uint64_t active = active_shards_.load(std::memory_order_acquire);
+            const size_t begin = consumer_cursor_;
+            size_t taken = 0;
+            for (size_t offset = 0; offset < shard_count_ && taken < max_items; ++offset) {
+                const size_t shard = (begin + offset) % shard_count_;
+                if ((active & shard_bit(shard)) == 0) {
+                    continue;
+                }
+                const size_t got = shards_[shard]->try_dequeue_batch(out, max_items - taken);
+                if (got > 0) {
+                    taken += got;
+                    consumer_cursor_ = (shard + 1) % shard_count_;
+                }
+            }
+            return taken;
+        }
+
         /// @brief Explicit shutdown drain entry point for the quiescent queue.
         bool try_dequeue_after_stop(T& value) {
             return dequeue_from_active_shards(value);
@@ -206,6 +244,20 @@ namespace pinpoint {
                 }
                 pop(value);
                 return true;
+            }
+
+            // Caller must have reserved capacity in out for max_items: the
+            // push_backs below run under the shard mutex and must not grow
+            // the vector there (see ShardedBoundedQueue::try_dequeue_batch).
+            size_t try_dequeue_batch(std::vector<T>& out, size_t max_items) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const size_t count = std::min(size_, max_items);
+                for (size_t i = 0; i < count; ++i) {
+                    out.push_back(std::move(cells_[head_]));
+                    head_ = next(head_);
+                }
+                size_ -= count;
+                return count;
             }
 
             size_t quota() const {

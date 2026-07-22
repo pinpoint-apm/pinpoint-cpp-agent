@@ -1741,10 +1741,12 @@ namespace pinpoint {
         }
         while (buffer.size() < batch_size) {
             // Drain everything that is already published before paying the
-            // cost of another sleep/wakeup round trip.
-            while (buffer.size() < batch_size && span_queue_.try_dequeue(span)) {
-                buffer.push_back(std::move(span));
-            }
+            // cost of another sleep/wakeup round trip. The batch call locks
+            // each active shard at most once, where dequeuing one item at a
+            // time pays a lock per probed shard per item — O(active_shards)
+            // mutex ops per item when a skewed producer load concentrates
+            // the backlog in one shard.
+            span_queue_.try_dequeue_batch(buffer, batch_size - buffer.size());
             if (buffer.size() >= batch_size || stopping() ||
                     std::chrono::steady_clock::now() >= deadline) {
                 break;
