@@ -143,14 +143,18 @@ namespace pinpoint {
         // Single source of truth for the config and its derived components
         // (see AgentRuntime). A generation-validated thread-local snapshot
         // yields a mutually consistent view without a shared lock on the
-        // unchanged per-request path.
-        AtomicSharedPtr<const AgentRuntime> runtime_;
+        // unchanged per-request path. ThreadCached is safe for this holder
+        // because AgentRuntime is passive data: a reader thread's TLS may pin
+        // a snapshot past this agent's destruction, and destroying it that
+        // late touches no agent state. Holders of active objects (e.g. the
+        // global AgentImpl handle) must stay Uncached.
+        AtomicSharedPtr<const AgentRuntime, SnapshotCache::ThreadCached> runtime_;
 
     	// Identity fields snapshotted once at construction. Config::isReloadable()
-	// guarantees these never change while this agent lives, so they are served
-	// directly — without a runtime snapshot lookup, shared_ptr copy, or string
-	// copy — on the per-request hot path (e.g. InjectContext,
-	// SpanData ctor, generateTraceId).
+    	// guarantees these never change while this agent lives, so they are served
+    	// directly — without a runtime snapshot lookup, shared_ptr copy, or string
+    	// copy — on the per-request hot path (e.g. InjectContext, SpanData ctor,
+    	// generateTraceId).
     	std::string app_name_;
     	int32_t app_type_{};
     	// Held as a shared string so generateTraceId() can seed every new

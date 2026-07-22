@@ -30,14 +30,40 @@
 namespace pinpoint {
 
     /**
+     * @brief Snapshot-serving policy for AtomicSharedPtr.
+     *
+     * Uncached (the default): every load() takes an owning copy directly from
+     * the shared source and retains nothing once the caller drops it.
+     *
+     * ThreadCached: unchanged values are served from a generation-validated
+     * thread-local snapshot, and load_cached_ref() becomes available. The
+     * cache pins each reader thread's last snapshot until that thread's next
+     * load of the same holder or its exit, so the pointee's destructor can run
+     * during thread or process teardown, long after the holder released it.
+     * Opt in only when the pointee is passive data that is safe to destroy
+     * there — never for objects whose teardown must stay explicit, such as the
+     * global AgentImpl holder (see global_agent() in agent.cpp).
+     *
+     * Retention that opt-in accepts: after a store(), threads that never load
+     * this holder again keep the previous snapshot alive until they exit, and
+     * a destroyed holder's per-thread entries are only reclaimed when a new
+     * holder of the same T reuses its address or the thread exits. Keep
+     * ThreadCached holders few, long-lived, and their snapshots bounded in
+     * size, or that memory lingers for the lifetime of every reader thread.
+     */
+    enum class SnapshotCache { Uncached, ThreadCached };
+
+    /**
      * @brief Thread-safe wrapper around std::shared_ptr.
      *
-     * Unchanged values are served from a generation-validated thread-local
-     * snapshot. Refreshes use std::atomic<std::shared_ptr<T>> when the C++20
-     * specialization is available, and fall back to std::shared_mutex on
-     * platforms such as Apple libc++ where it is still missing.
+     * The shared source uses std::atomic<std::shared_ptr<T>> when the C++20
+     * specialization is available, and falls back to std::shared_mutex on
+     * platforms such as Apple libc++ where it is still missing. With
+     * SnapshotCache::ThreadCached, unchanged values are additionally served
+     * from a generation-validated thread-local snapshot (see SnapshotCache for
+     * the lifetime trade-off that opt-in carries).
      */
-    template <typename T>
+    template <typename T, SnapshotCache Cache = SnapshotCache::Uncached>
     class AtomicSharedPtr {
     public:
         AtomicSharedPtr() = default;
@@ -48,8 +74,20 @@ namespace pinpoint {
         AtomicSharedPtr(AtomicSharedPtr&&) = delete;
         AtomicSharedPtr& operator=(AtomicSharedPtr&&) = delete;
 
+        /**
+         * @brief Return an owning copy of the current value.
+         *
+         * Under SnapshotCache::ThreadCached this also refreshes the calling
+         * thread's cache entry, which keeps holding the snapshot after the
+         * returned copy is dropped (see SnapshotCache for what that retention
+         * implies). Uncached retains nothing once the copy is dropped.
+         */
         std::shared_ptr<T> load() const {
-            return load_cached_ref();
+            if constexpr (Cache == SnapshotCache::ThreadCached) {
+                return load_cached_ref();
+            } else {
+                return load_shared_source();
+            }
         }
 
         /**
@@ -59,8 +97,20 @@ namespace pinpoint {
          * the next load() or load_cached_ref() of this AtomicSharedPtr on the
          * same thread. Callers that retain the pointer beyond that point, or
          * hand it to another thread, must copy it into an owning shared_ptr.
+         *
+         * That invalidation includes re-entrant loads: while this reference —
+         * or anything pointing into the snapshot it names — is alive, do not
+         * call code that may load this holder again on the same thread. Host
+         * callbacks are the trap: a re-entrant load racing a store() refreshes
+         * the thread's entry and can drop the last owner of the old snapshot,
+         * leaving such interior references dangling. Around any call that can
+         * run host code, hold an owning copy instead (load(), or a copy of the
+         * needed member) — see AgentImpl::NewSpan / recordServerHeader.
          */
         const std::shared_ptr<T>& load_cached_ref() const {
+            static_assert(Cache == SnapshotCache::ThreadCached,
+                          "load_cached_ref() requires SnapshotCache::ThreadCached; "
+                          "an Uncached holder must hand out owning copies via load()");
             const uint64_t generation = generation_.load(std::memory_order_acquire);
             auto& cache = thread_cache();
             auto cached = cache.find(this);

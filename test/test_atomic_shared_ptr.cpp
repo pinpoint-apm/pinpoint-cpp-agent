@@ -21,7 +21,6 @@
 #include <memory>
 #include <new>
 #include <thread>
-#include <type_traits>
 #include <vector>
 
 #include "atomic_shared_ptr.h"
@@ -29,8 +28,12 @@
 namespace pinpoint {
 namespace {
 
+// The generation/TLS-cache behavior under test is the opt-in policy.
+template <typename T>
+using CachedAtomicSharedPtr = AtomicSharedPtr<T, SnapshotCache::ThreadCached>;
+
 TEST(AtomicSharedPtrTest, StoreIsObservedByReaderOnItsNextLoad) {
-    AtomicSharedPtr<const int> value(std::make_shared<const int>(1));
+    CachedAtomicSharedPtr<const int> value(std::make_shared<const int>(1));
     std::atomic<bool> reader_ready{false};
     std::atomic<bool> store_complete{false};
     std::atomic<int> before_store{0};
@@ -57,8 +60,8 @@ TEST(AtomicSharedPtrTest, StoreIsObservedByReaderOnItsNextLoad) {
 }
 
 TEST(AtomicSharedPtrTest, SameTypeInstancesHaveIndependentThreadCaches) {
-    AtomicSharedPtr<const int> first(std::make_shared<const int>(11));
-    AtomicSharedPtr<const int> second(std::make_shared<const int>(22));
+    CachedAtomicSharedPtr<const int> first(std::make_shared<const int>(11));
+    CachedAtomicSharedPtr<const int> second(std::make_shared<const int>(22));
 
     EXPECT_EQ(*first.load_cached_ref(), 11);
     EXPECT_EQ(*second.load_cached_ref(), 22);
@@ -76,7 +79,7 @@ struct CheckedSnapshot {
 TEST(AtomicSharedPtrTest, ConcurrentReadersAndStoresSeeWholeSnapshots) {
     constexpr uint64_t kStoreCount = 5000;
     constexpr size_t kReaderCount = 8;
-    AtomicSharedPtr<const CheckedSnapshot> value(
+    CachedAtomicSharedPtr<const CheckedSnapshot> value(
         std::make_shared<const CheckedSnapshot>(CheckedSnapshot{0, ~uint64_t{0}}));
     std::atomic<bool> start{false};
     std::atomic<bool> stores_done{false};
@@ -124,16 +127,60 @@ TEST(AtomicSharedPtrTest, ConcurrentReadersAndStoresSeeWholeSnapshots) {
     EXPECT_EQ(errors.load(std::memory_order_relaxed), 0u);
 }
 
-TEST(AtomicSharedPtrTest, ReusedAddressDoesNotResurrectCachedSnapshot) {
-    using Holder = AtomicSharedPtr<const int>;
-    std::aligned_storage<sizeof(Holder), alignof(Holder)>::type storage;
+// The default policy must not leave a strong reference behind in TLS: the
+// global agent holder relies on this so ~AgentImpl can never run from
+// thread/process teardown (see global_agent() in agent.cpp).
+TEST(AtomicSharedPtrTest, UncachedLoadDoesNotPinSnapshotInThreadLocalStorage) {
+    auto initial = std::make_shared<const int>(5);
+    AtomicSharedPtr<const int> value(initial);
 
-    auto* first = ::new (static_cast<void*>(&storage))
+    EXPECT_EQ(*value.load(), 5);
+    value.store(std::make_shared<const int>(6));
+
+    // Only the local `initial` still refers to the first snapshot.
+    EXPECT_EQ(initial.use_count(), 1);
+}
+
+// Pins the documented load_cached_ref() contract: the reference names this
+// thread's cache slot, so a store alone leaves it untouched and the next load
+// of the same holder on this thread rebinds it to the fresh snapshot.
+TEST(AtomicSharedPtrTest, CachedRefRebindsToNewSnapshotOnNextLoad) {
+    CachedAtomicSharedPtr<const int> value(std::make_shared<const int>(1));
+
+    const auto& ref = value.load_cached_ref();
+    EXPECT_EQ(*ref, 1);
+
+    value.store(std::make_shared<const int>(2));
+    EXPECT_EQ(*ref, 1);
+
+    (void)value.load_cached_ref();
+    EXPECT_EQ(*ref, 2);
+}
+
+TEST(AtomicSharedPtrTest, ThreadCachedLoadPinsSnapshotUntilNextLoad) {
+    auto initial = std::make_shared<const int>(5);
+    CachedAtomicSharedPtr<const int> value(initial);
+
+    EXPECT_EQ(*value.load_cached_ref(), 5);
+    value.store(std::make_shared<const int>(6));
+
+    // The holder released the first snapshot but this thread's cache entry
+    // still pins it until the next load refreshes the entry.
+    EXPECT_EQ(initial.use_count(), 2);
+    EXPECT_EQ(*value.load_cached_ref(), 6);
+    EXPECT_EQ(initial.use_count(), 1);
+}
+
+TEST(AtomicSharedPtrTest, ReusedAddressDoesNotResurrectCachedSnapshot) {
+    using Holder = CachedAtomicSharedPtr<const int>;
+    alignas(Holder) unsigned char storage[sizeof(Holder)];
+
+    auto* first = ::new (static_cast<void*>(storage))
         Holder(std::make_shared<const int>(31));
     EXPECT_EQ(*first->load_cached_ref(), 31);
     first->~Holder();
 
-    auto* second = ::new (static_cast<void*>(&storage))
+    auto* second = ::new (static_cast<void*>(storage))
         Holder(std::make_shared<const int>(47));
     EXPECT_EQ(*second->load_cached_ref(), 47);
     second->~Holder();

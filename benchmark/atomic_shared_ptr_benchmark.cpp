@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -127,9 +128,15 @@ uint64_t parse_operations(int argc, char** argv) {
     if (argc != 2) {
         throw std::invalid_argument("expected at most one operations-per-thread argument");
     }
-    const auto operations = std::strtoull(argv[1], nullptr, 10);
-    if (operations == 0) {
-        throw std::invalid_argument("operations per thread must be positive");
+    // strtoull alone would accept trailing garbage ("12abc" -> 12) and wrap
+    // negative input ("-1" -> huge), so validate the whole token.
+    char* end = nullptr;
+    errno = 0;
+    const auto operations = std::strtoull(argv[1], &end, 10);
+    if (argv[1][0] == '-' || end == argv[1] || *end != '\0' || errno == ERANGE ||
+        operations == 0) {
+        throw std::invalid_argument(
+            "operations per thread must be a positive decimal integer");
     }
     return operations;
 }
@@ -139,7 +146,8 @@ uint64_t parse_operations(int argc, char** argv) {
 int run(int argc, char** argv) {
     const uint64_t operations = parse_operations(argc, argv);
     LegacyAtomicSharedPtr legacy(std::make_shared<const uint64_t>(7));
-    AtomicSharedPtr<const uint64_t> cached(std::make_shared<const uint64_t>(7));
+    AtomicSharedPtr<const uint64_t, SnapshotCache::ThreadCached> cached(
+        std::make_shared<const uint64_t>(7));
 
     std::cout << "AtomicSharedPtr unchanged-value load benchmark\n"
               << "operations/thread=" << operations << ", median of 3\n"

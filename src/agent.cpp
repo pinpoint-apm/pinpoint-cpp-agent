@@ -54,6 +54,12 @@ namespace pinpoint {
         // logging through possibly-destroyed singletons) is unsafe for a
         // library embedded in a host application; teardown must only happen
         // through an explicit Shutdown() or a user-released reference.
+        //
+        // SnapshotCache::Uncached (the AtomicSharedPtr default) is load-bearing
+        // for the same invariant: a ThreadCached holder would pin the agent in
+        // every reader thread's TLS until that thread's next load or exit,
+        // deferring the final release — and ~AgentImpl — into thread/process
+        // teardown, exactly where the leak above forbids it.
         AtomicSharedPtr<AgentImpl>& global_agent() {
             static auto* holder = new AtomicSharedPtr<AgentImpl>();
             return *holder;
@@ -640,10 +646,13 @@ namespace pinpoint {
         if (!enabled_) {
             return noopSpan();
         }
-        // One generation-validated TLS snapshot covers the filters and sampler
-        // for this request. The span takes the one owning copy it needs below;
-        // this reference avoids a second, temporary control-block RMW pair.
-        const auto& runtime = runtime_.load_cached_ref();
+        // One owning snapshot covers the filters and the sampler for this
+        // request and then moves into the span, so the function still costs a
+        // single control-block RMW pair. Owning — not load_cached_ref() — is
+        // required here: reader.Get() below runs host code, and a re-entrant
+        // load of runtime_ racing a config reload would refresh the TLS entry
+        // and could destroy the snapshot the references below point into.
+        auto runtime = runtime_.load();
         const auto& url_filter = runtime->http_url_filter;
         if (url_filter && url_filter->isFiltered(rpc_point)) {
             return noopSpan();
@@ -655,7 +664,7 @@ namespace pinpoint {
 
         if (const auto parent_sampling = reader.Get(HEADER_SAMPLED); parent_sampling == "s0") {
             agent_stats_->incrUnsampleCont();
-            return std::make_shared<UnsampledSpan>(this, runtime);
+            return std::make_shared<UnsampledSpan>(this, std::move(runtime));
         }
 
         const auto& sampler = runtime->sampler;
@@ -681,11 +690,11 @@ namespace pinpoint {
             // loads (config limits, status-error checks, URL-stat gating) and
             // lives on the same config generation its admission was decided
             // under, and hand the resolved trace id to the impl-level extract.
-            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, runtime);
+            auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, std::move(runtime));
             span->extractContext(reader, std::move(trace_id));
             return span;
         }
-        return std::make_shared<UnsampledSpan>(this, runtime);
+        return std::make_shared<UnsampledSpan>(this, std::move(runtime));
     } catch (const std::exception& e) {
         LOG_ERROR("new span exception = {}", e.what());
         return noopSpan();
@@ -1109,7 +1118,11 @@ namespace pinpoint {
             return;
         }
         const auto& runtime = runtime_.load_cached_ref();
-        const auto& recorder = runtime->http_srv_header_recorder[which];
+        // Owning copy of the recorder, not a reference into the snapshot:
+        // recordHeader() runs host code (reader.Get()), and a re-entrant load
+        // of runtime_ racing a config reload would refresh the TLS entry the
+        // snapshot lives in, destroying a merely-referenced recorder mid-call.
+        const auto recorder = runtime->http_srv_header_recorder[which];
         if (recorder) {
             recorder->recordHeader(reader, annotation);
         }
@@ -1120,7 +1133,8 @@ namespace pinpoint {
             return;
         }
         const auto& runtime = runtime_.load_cached_ref();
-        const auto& recorder = runtime->http_cli_header_recorder[which];
+        // Owning copy for the same reason as recordServerHeader() above.
+        const auto recorder = runtime->http_cli_header_recorder[which];
         if (recorder) {
             recorder->recordHeader(reader, annotation);
         }
@@ -1221,10 +1235,12 @@ namespace pinpoint {
     }
 
     AgentPtr GlobalAgent() {
-        // Host applications call this per request. The TLS reference avoids
-        // the shared-source lock; the return still makes one necessary owning
-        // copy because the host may keep the AgentPtr beyond this call.
-        const auto& agent = global_agent().load_cached_ref();
+        // Reader path: a single owning load, no global_agent_mutex — taking
+        // the writers' mutex here would stall every request behind a reload in
+        // progress. Deliberately uncached (see global_agent()): a TLS snapshot
+        // would pin the agent per thread, and the host may keep the returned
+        // AgentPtr beyond this call, so an owning copy is needed regardless.
+        auto agent = global_agent().load();
         if (agent == nullptr) {
             return noopAgent();
         }

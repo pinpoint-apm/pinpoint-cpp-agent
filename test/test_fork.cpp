@@ -234,7 +234,8 @@ TEST(ForkLifecycleTest, TeardownOfInheritedStartedAgentDoesNotAbort) {
 // The child inherits the forking thread's TLS snapshot. A child-side store
 // must bump the inherited holder's generation so its next load self-heals.
 TEST(ForkLifecycleTest, ChildStoreRefreshesInheritedAtomicSharedPtrSnapshot) {
-    AtomicSharedPtr<const int> value(std::make_shared<const int>(1));
+    AtomicSharedPtr<const int, SnapshotCache::ThreadCached> value(
+        std::make_shared<const int>(1));
     ASSERT_EQ(*value.load_cached_ref(), 1);
 
     const pid_t pid = fork();
