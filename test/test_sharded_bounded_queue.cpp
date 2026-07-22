@@ -16,8 +16,11 @@
 
 #include <atomic>
 #include <cstddef>
+#include <exception>
 #include <memory>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -342,6 +345,58 @@ namespace {
             EXPECT_EQ(retained[1][offset], offset);
         }
         EXPECT_EQ(queue.dropped_oldest(), 32u);
+    }
+
+    TEST(ShardedBoundedQueueTest, QuotaReclaimUsesNoThrowOperationsAfterScratchAllocation) {
+        // The queue's contract only requires no-throw default construction and
+        // move assignment. A throwing move constructor catches accidental
+        // push_back/exchange use after quota_ has been committed.
+        struct Value {
+            Value() noexcept = default;
+            explicit Value(int value) noexcept : value(value) {}
+            Value(const Value&) = delete;
+            Value& operator=(const Value&) = delete;
+            Value(Value&&) {
+                throw std::runtime_error("move construction must not run");
+            }
+            Value& operator=(Value&& other) noexcept {
+                value = std::exchange(other.value, -1);
+                return *this;
+            }
+            ~Value() noexcept = default;
+
+            int value{-1};
+        };
+
+        ShardedBoundedQueue<Value> queue(64, 2);
+        std::thread first([&] {
+            for (int value = 0; value < 64; ++value) {
+                Value item(value);
+                queue.enqueue(item);
+            }
+        });
+        first.join();
+
+        std::exception_ptr reclaim_failure;
+        std::thread late([&] {
+            try {
+                Value item(64);
+                queue.enqueue(item);
+            } catch (...) {
+                reclaim_failure = std::current_exception();
+            }
+        });
+        late.join();
+
+        EXPECT_EQ(reclaim_failure, nullptr);
+        EXPECT_EQ(queue.dropped_oldest(), 32u);
+
+        size_t retained = 0;
+        Value item;
+        while (queue.try_dequeue(item)) {
+            ++retained;
+        }
+        EXPECT_EQ(retained, 33u);
     }
 
     TEST(ShardedBoundedQueueTest, HeadDropDestroysOverwrittenValuesPromptly) {

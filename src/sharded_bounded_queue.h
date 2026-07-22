@@ -285,19 +285,26 @@ namespace pinpoint {
                 std::lock_guard<std::mutex> lock(mutex_);
                 const size_t excess = quota_ > base_quota ? quota_ - base_quota : 0;
                 const size_t transferred = std::min(excess, requested);
-                quota_ -= transferred;
+                const size_t new_quota = quota_ - transferred;
+
+                // Allocate and default-construct the graveyard before changing
+                // quota_. If allocation fails, the donor keeps both its quota
+                // and values, so the caller cannot lose quota between this
+                // shard and the newly active receiver. After this point every
+                // operation is covered by the class's no-throw T constraints.
+                const size_t drop_count = size_ > new_quota ? size_ - new_quota : 0;
+                dropped.resize(drop_count);
+                quota_ = new_quota;
 
                 // A newly active shard reclaims its reserved base quota. If a
                 // borrower currently uses those cells, preserve the newest data
                 // by head-dropping only the excess oldest values.
-                if (size_ > quota_) {
-                    dropped.reserve(size_ - quota_);
-                    while (size_ > quota_) {
-                        dropped.push_back(std::exchange(cells_[head_], T{}));
-                        head_ = next(head_);
-                        --size_;
-                        record_drop();
-                    }
+                for (auto& value : dropped) {
+                    value = std::move(cells_[head_]);
+                    cells_[head_] = T{};
+                    head_ = next(head_);
+                    --size_;
+                    record_drop();
                 }
                 return transferred;
             }
