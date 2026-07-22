@@ -164,6 +164,23 @@ namespace pinpoint {
      */
     template<typename ValueType, typename KeyTraits = StringCacheKeyTraits>
     class LruCacheImpl {
+    private:
+        // Declared before the member functions: insert_or_promote() names
+        // Node in its parameter list, which — unlike function bodies — is
+        // not complete-class context, so a later declaration would not be
+        // found there (and could resolve to an unrelated outer Node type).
+        struct Node {
+            typename KeyTraits::StoredKey key;
+            ValueType value;
+            // Op sequence at insert / last promotion. Written under the exclusive
+            // lock but read under shared locks, hence atomic (relaxed suffices —
+            // a stale read only mis-estimates the age; see get()).
+            std::atomic<uint64_t> last_promoted;
+
+            Node(typename KeyTraits::StoredKey&& k, ValueType&& v, uint64_t seq)
+                : key(std::move(k)), value(std::move(v)), last_promoted(seq) {}
+        };
+
     public:
         using LookupKey = typename KeyTraits::LookupKey;
 
@@ -252,8 +269,23 @@ namespace pinpoint {
             // which would otherwise serialize every concurrent lookup.
             auto new_value = generator();
 
+            // Stage the new node outside the lock as well: the list-node
+            // allocation and KeyTraits::store()'s key copy (for RawSqlCache
+            // the full raw SQL text, up to 64 KB) would otherwise stall every
+            // concurrent shared-lock hit behind malloc + memcpy. Taking the
+            // op sequence here (relaxed, like every op_seq_ use) can reorder
+            // it slightly against promotions racing under the lock; that only
+            // perturbs an entry's age estimate by a step — the same benign
+            // race the shared-lock age check above already tolerates.
+            // `staged` doubles as the graveyard: the node discarded on a lost
+            // insert race and the evicted victim are spliced back onto it, so
+            // their destruction also runs after the lock is released.
+            std::list<Node> staged;
+            staged.emplace_front(KeyTraits::store(key), std::move(new_value),
+                                 next_op_seq());
+
             std::unique_lock<std::shared_mutex> lock(mutex_);
-            return insert_or_promote(key, std::move(new_value));
+            return insert_or_promote(staged);
         }
 
         /**
@@ -262,59 +294,73 @@ namespace pinpoint {
          * @param key The key to remove.
          */
         void remove(LookupKey key) {
+            // Declared before the lock so the removed node (key storage and
+            // value) is destroyed after the exclusive section, not while
+            // shared-lock readers wait behind the free.
+            std::list<Node> removed;
             std::unique_lock<std::shared_mutex> lock(mutex_);
 
             const auto it = cache_map_.find(KeyTraits::lookup_key(key));
             if (it != cache_map_.end()) {
-                cache_list_.erase(it->second);
+                removed.splice(removed.begin(), cache_list_, it->second);
                 cache_map_.erase(it);
             }
         }
 
     private:
         /**
-         * @brief Inserts a freshly generated entry, or promotes an existing one.
+         * @brief Inserts the staged node, or promotes an existing entry.
          *
-         * Because the generator runs outside the lock (see get()), another thread
-         * may have inserted the same key in the meantime. We detect that race via
-         * try_emplace and, if so, discard our value and return the existing entry
-         * (found = true). Assumes the lock is already held by the caller.
+         * The candidate node is pre-built by get() in `staged` — outside the
+         * lock — so this critical section only relinks list pointers and
+         * updates the map; it never allocates, copies key bytes, or destroys
+         * a node (the map's buckets are pre-reserved in the ctor, so
+         * try_emplace cannot rehash either). Because the generator ran
+         * outside the lock, another thread may have inserted the same key in
+         * the meantime. We detect that race via try_emplace and, if so,
+         * leave our node in `staged` — the caller frees it after unlocking —
+         * and return the existing entry (found = true). The evicted victim
+         * is spliced onto `staged` for the same deferred destruction.
          *
-         * Hashes the key once: try_emplace performs the existence check and the
-         * insert in a single map operation.
+         * Hashes the key once: try_emplace performs the existence check and
+         * the insert in a single map operation. The map key is a view into
+         * the node's owned key storage, which splice never relocates.
+         * Assumes the lock is already held by the caller.
          *
-         * @param key The key to insert (copied into storage only when inserting).
-         * @param value The freshly generated value (moved).
+         * @param staged Single-node list holding the candidate; receives the
+         *               discarded or evicted node, if any.
          */
-        LruCacheResult<ValueType> insert_or_promote(LookupKey key, ValueType&& value) {
-            const auto seq = next_op_seq();
+        LruCacheResult<ValueType> insert_or_promote(std::list<Node>& staged) {
+            const auto list_it = staged.begin();
 
-            // Speculatively create the list node first so the map key can be a
-            // view into the node's owned key storage (single key allocation).
-            cache_list_.emplace_front(KeyTraits::store(key), std::move(value), seq);
-            const auto list_it = cache_list_.begin();
-
-            std::pair<typename MapType::iterator, bool> inserted;
-            try {
-                inserted = cache_map_.try_emplace(KeyTraits::map_key(list_it->key), list_it);
-            } catch (...) {
-                cache_list_.pop_front();  // Rollback the speculative node
-                throw;
-            }
+            // No rollback needed if this throws: the candidate still lives in
+            // `staged`, and neither the map nor the list has changed.
+            const auto inserted =
+                cache_map_.try_emplace(KeyTraits::map_key(list_it->key), list_it);
 
             if (!inserted.second) {
-                // Lost the race: an identical key was inserted concurrently. Drop
-                // our node and promote the existing entry to most-recently-used.
-                cache_list_.pop_front();
+                // Lost the race: an identical key was inserted concurrently.
+                // Leave our node in staged and promote the existing entry to
+                // most-recently-used, reusing the op sequence the candidate
+                // was stamped with.
                 cache_list_.splice(cache_list_.begin(), cache_list_, inserted.first->second);
-                inserted.first->second->last_promoted.store(seq, std::memory_order_relaxed);
+                inserted.first->second->last_promoted.store(
+                    list_it->last_promoted.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
                 return LruCacheResult<ValueType>{inserted.first->second->value, true};
             }
 
-            // Evict least recently used entry if over capacity
+            // Adopt the staged node at the MRU end: an O(1) pointer relink.
+            cache_list_.splice(cache_list_.begin(), staged, list_it);
+
+            // Evict the least recently used entry if over capacity. Only the
+            // map erase happens here; the node itself — its key string and
+            // value, possibly the last PreparedSqlRef — moves to staged and
+            // is freed by the caller after unlock.
             if (cache_map_.size() > max_size_) {
-                cache_map_.erase(KeyTraits::map_key(cache_list_.back().key));
-                cache_list_.pop_back();
+                const auto victim = std::prev(cache_list_.end());
+                cache_map_.erase(KeyTraits::map_key(victim->key));
+                staged.splice(staged.end(), cache_list_, victim);
             }
             return LruCacheResult<ValueType>{list_it->value, false};
         }
@@ -322,18 +368,6 @@ namespace pinpoint {
         uint64_t next_op_seq() noexcept {
             return op_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
         }
-
-        struct Node {
-            typename KeyTraits::StoredKey key;
-            ValueType value;
-            // Op sequence at insert / last promotion. Written under the exclusive
-            // lock but read under shared locks, hence atomic (relaxed suffices —
-            // a stale read only mis-estimates the age; see get()).
-            std::atomic<uint64_t> last_promoted;
-
-            Node(typename KeyTraits::StoredKey&& k, ValueType&& v, uint64_t seq)
-                : key(std::move(k)), value(std::move(v)), last_promoted(seq) {}
-        };
 
         using MapType = std::unordered_map<typename KeyTraits::MapKey,
                                           typename std::list<Node>::iterator,
