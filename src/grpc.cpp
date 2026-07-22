@@ -1279,6 +1279,16 @@ namespace pinpoint {
             if (agent_->isExiting()) {
                 return false;
             }
+            {
+                // Consume any pending refresh request: the attempt below sends
+                // a freshly built AgentInfo, which is all a refresh asks for.
+                // Left set, a request that arrives during the unbounded initial
+                // registration (where nothing else clears it) would make every
+                // wait_agent_info_retry() return immediately — a hot retry loop
+                // for as long as the collector stays unreachable.
+                std::unique_lock<std::mutex> lock(agent_info_mutex_);
+                agent_info_refresh_requested_ = false;
+            }
             if (send_agent_info_once()) {
                 return true;
             }
@@ -1318,12 +1328,10 @@ namespace pinpoint {
                 LOG_ERROR("AgentInfo scheduler unknown exception");
             }
 
-            // Not wait_agent_info_retry(): its wake-on-refresh predicate
-            // would turn a refresh request left pending across the unwind
-            // (the flag is only consumed inside run_agent_info_worker's
-            // refresh loop) into an immediate wakeup on every iteration —
-            // a persistent failure would then restart hot instead of pacing
-            // at WORKER_RESTART_DELAY.
+            // Not wait_agent_info_retry(): this delay paces crash restarts,
+            // and a refresh request left pending across the unwind must not
+            // cut it short — the restarted worker re-sends AgentInfo (and
+            // consumes the flag) as its first act regardless.
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
             if (agent_info_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
                     return should_stop_agent_info();
@@ -1349,11 +1357,8 @@ namespace pinpoint {
                 return;
             }
 
-            {
-                std::unique_lock<std::mutex> lock(agent_info_mutex_);
-                agent_info_refresh_requested_ = false;
-            }
-
+            // A pending refresh request is consumed by the send cycle itself
+            // (each attempt clears the flag before sending).
             send_agent_info_with_retries(config_->collector.agent_info.max_try_per_attempt);
             next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         }

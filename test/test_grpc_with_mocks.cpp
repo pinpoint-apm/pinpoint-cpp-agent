@@ -2490,6 +2490,42 @@ TEST_F(GrpcMockTest, GrpcAgentStopAgentInfoDuringRetriesReturnsPromptly) {
         << "stopAgentInfo should interrupt the retry delay instead of waiting it out";
 }
 
+TEST_F(GrpcMockTest, GrpcAgentRefreshDuringInitialRetriesKeepsPacing) {
+    constexpr int retry_interval_ms = 100;
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = retry_interval_ms;
+    cfg->collector.agent_info.max_try_per_attempt = 3;
+
+    CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    grpc_agent.startAgentInfo();
+    ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)))
+        << "Initial AgentInfo attempt should happen on start";
+
+    // Request a refresh while the initial registration is still failing. The
+    // request must not be left pending in a state where it defeats the retry
+    // pacing (every wait returning immediately = hot spin for the outage).
+    grpc_agent.refreshAgentInfo();
+
+    const auto observe_start = std::chrono::steady_clock::now();
+    const int calls_before = grpc_agent.calls();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const int calls_during = grpc_agent.calls() - calls_before;
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - observe_start).count();
+
+    // Paced retries: at most elapsed/interval attempts, plus slack for the one
+    // legitimate refresh-triggered early wake and read-order jitter. A hot
+    // spin racks up thousands of attempts in the same window.
+    const int max_paced = static_cast<int>(elapsed_ms / retry_interval_ms) + 2;
+    EXPECT_LE(calls_during, max_paced)
+        << "a pending refresh request must not defeat AgentInfo retry pacing";
+
+    grpc_agent.stopAgentInfo();
+}
+
 // ============================================================
 // GrpcMetadata queue boundary tests
 // ============================================================
