@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <type_traits>
 #include <utility>
 
@@ -32,10 +33,15 @@
 namespace pinpoint {
 
     namespace {
+        // Numeric values are formatted into the caller's reused scratch
+        // buffer (fmt::memory_buffer keeps ~500 bytes inline, far above any
+        // int64/double rendering), replacing the previous fresh std::string
+        // per numeric argument — this runs per bind value per traced SQL
+        // statement when trace_bind_value is on.
         std::string_view sqlBindValueView(
             const SqlBindValue& value,
-            std::string& formatted_value) {
-            return std::visit([&formatted_value](const auto& bind_value) -> std::string_view {
+            fmt::memory_buffer& scratch) {
+            return std::visit([&scratch](const auto& bind_value) -> std::string_view {
                 using Value = std::decay_t<decltype(bind_value)>;
                 if constexpr (std::is_same_v<Value, std::nullptr_t>) {
                     return "null";
@@ -44,10 +50,21 @@ namespace pinpoint {
                 } else if constexpr (std::is_same_v<Value, std::string_view>) {
                     return bind_value;
                 } else {
-                    formatted_value = fmt::format("{}", bind_value);
-                    return formatted_value;
+                    scratch.clear();
+                    fmt::format_to(std::back_inserter(scratch), "{}", bind_value);
+                    return {scratch.data(), scratch.size()};
                 }
             }, value);
+        }
+
+        // Upper bound on a bind value's rendered length, without formatting:
+        // exact for strings; 24 covers "null", "false" and any int64/uint64
+        // (20 chars) or shortest-round-trip double (up to 24 chars).
+        std::size_t sqlBindValueSizeBound(const SqlBindValue& value) {
+            if (const auto* s = std::get_if<std::string_view>(&value)) {
+                return s->size();
+            }
+            return 24;
         }
 
         std::string joinSqlBindValues(
@@ -59,16 +76,34 @@ namespace pinpoint {
             }
 
             const auto max_size = static_cast<std::size_t>(max_bind_args_size);
+            // Room for the "...(<max_bind_args_size>)" truncation suffix:
+            // 5 punctuation chars plus at most 10 digits of a positive int.
+            constexpr std::size_t kTruncationSuffixMax = 16;
+
+            // Reserve once from a cheap size estimate so the appends below
+            // never regrow the output (up to max_bind_args_size bytes of
+            // repeated geometric reallocation per SQL statement before).
+            std::size_t estimated = 0;
+            for (const auto& value : bind_args) {
+                estimated += 1 + sqlBindValueSizeBound(value);
+                if (estimated > max_size) {
+                    // The estimate says truncation is possible; its worst
+                    // case is content up to max_size plus the suffix.
+                    estimated = max_size + kTruncationSuffixMax;
+                    break;
+                }
+            }
+            joined_bind_args.reserve(estimated);
+
+            fmt::memory_buffer scratch;
             for (std::size_t i = 0; i < bind_args.size(); ++i) {
-                std::string formatted_arg;
-                const auto arg = sqlBindValueView(bind_args[i], formatted_arg);
+                const auto arg = sqlBindValueView(bind_args[i], scratch);
                 const std::size_t separator_size = i == 0 ? 0 : 1;
                 const std::size_t remaining_size = max_size - joined_bind_args.size();
                 if (separator_size > remaining_size ||
                     arg.size() > remaining_size - separator_size) {
-                    joined_bind_args.append("...(");
-                    joined_bind_args.append(std::to_string(max_bind_args_size));
-                    joined_bind_args.push_back(')');
+                    fmt::format_to(std::back_inserter(joined_bind_args),
+                                   "...({})", max_bind_args_size);
                     break;
                 }
 
