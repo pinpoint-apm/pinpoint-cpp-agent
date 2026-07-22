@@ -50,9 +50,23 @@ namespace pinpoint::benchmark {
         return keys;
     }
 
+    struct OperationResult {
+        int32_t value;
+        bool found;
+        bool matches_expected;
+    };
+
+    struct ThreadResult {
+        uint64_t checksum{0};
+        size_t misses{0};
+        size_t mismatches{0};
+    };
+
     struct ParallelResult {
         double nanoseconds_per_operation;
         uint64_t checksum;
+        size_t misses;
+        size_t mismatches;
     };
 
     template<typename Operation>
@@ -61,7 +75,7 @@ namespace pinpoint::benchmark {
                                 Operation&& operation) {
         std::atomic<size_t> ready{0};
         std::atomic<bool> start{false};
-        std::vector<uint64_t> checksums(thread_count, 0);
+        std::vector<ThreadResult> results(thread_count);
         std::vector<std::thread> threads;
         threads.reserve(thread_count);
 
@@ -71,11 +85,14 @@ namespace pinpoint::benchmark {
                 while (!start.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
-                uint64_t checksum = 0;
+                ThreadResult result;
                 for (size_t i = 0; i < operations_per_thread; ++i) {
-                    checksum += operation(thread_index, i);
+                    const auto operation_result = operation(thread_index, i);
+                    result.checksum += static_cast<uint64_t>(operation_result.value);
+                    result.misses += operation_result.found ? 0 : 1;
+                    result.mismatches += operation_result.matches_expected ? 0 : 1;
                 }
-                checksums[thread_index] = checksum;
+                results[thread_index] = result;
             });
         }
 
@@ -90,14 +107,20 @@ namespace pinpoint::benchmark {
         const auto elapsed = Clock::now() - begin;
 
         uint64_t checksum = 0;
-        for (const auto value : checksums) {
-            checksum += value;
+        size_t misses = 0;
+        size_t mismatches = 0;
+        for (const auto& result : results) {
+            checksum += result.checksum;
+            misses += result.misses;
+            mismatches += result.mismatches;
         }
         const auto operation_count = thread_count * operations_per_thread;
         const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
         return ParallelResult{
             static_cast<double>(nanoseconds) / static_cast<double>(operation_count),
-            checksum};
+            checksum,
+            misses,
+            mismatches};
     }
 }
 
@@ -119,9 +142,16 @@ int main(int argc, char** argv) {
     // property of the key, so all configurations see the same key stream.
     ApiIdCache single_shard(kCacheSize, 1);
     ApiIdCache sharded(kCacheSize, kDefaultCacheShardCount);
+    std::vector<int32_t> expected_ids;
+    expected_ids.reserve(keys.size());
     for (const auto& key : keys) {
-        single_shard.get(ApiCacheKey{key, 100});
-        sharded.get(ApiCacheKey{key, 100});
+        const auto single = single_shard.get(ApiCacheKey{key, 100});
+        const auto shard = sharded.get(ApiCacheKey{key, 100});
+        if (single.found || shard.found || single.value != shard.value) {
+            std::cerr << "id cache warm-up verification failed\n";
+            return 1;
+        }
+        expected_ids.push_back(single.value);
     }
 
     std::cout << std::fixed << std::setprecision(2)
@@ -134,11 +164,16 @@ int main(int argc, char** argv) {
         const size_t operations_per_thread =
             std::max<size_t>(iterations / thread_count, 1);
 
-        auto hit = [&keys](ApiIdCache& cache, size_t thread_index, size_t i) {
-            const auto& key = keys[(thread_index + i) % kHotKeyCount];
+        auto hit = [&keys, &expected_ids](ApiIdCache& cache,
+                                         size_t thread_index,
+                                         size_t i) {
+            const auto key_index = (thread_index + i) % kHotKeyCount;
+            const auto& key = keys[key_index];
             const auto result = cache.get(ApiCacheKey{key, 100});
-            return static_cast<uint64_t>(result.value) +
-                   (result.found ? 0 : 1u << 20);  // poison misses in the checksum
+            return OperationResult{
+                result.value,
+                result.found,
+                result.value == expected_ids[key_index]};
         };
         auto single = run_parallel(
             thread_count, operations_per_thread, [&](size_t t, size_t i) {
@@ -156,9 +191,11 @@ int main(int argc, char** argv) {
                                      shard.nanoseconds_per_operation)
                   << "x\n";
 
-        // Both caches were warmed in the same order, so ids match and every
-        // lookup must be a hit; a checksum mismatch means a spurious miss.
-        verified = verified && single.checksum == shard.checksum;
+        // Validate misses and values directly. Comparing only checksums would
+        // let matching miss patterns in both configurations cancel out.
+        verified = verified && single.misses == 0 && shard.misses == 0 &&
+                   single.mismatches == 0 && shard.mismatches == 0 &&
+                   single.checksum == shard.checksum;
     }
 
     if (!verified) {

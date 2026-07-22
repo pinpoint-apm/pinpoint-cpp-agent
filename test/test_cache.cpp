@@ -997,17 +997,16 @@ TEST_F(CacheTest, ShardedIdCacheTotalCapacityBoundedTest) {
         cache.get("key" + std::to_string(i));
     }
 
-    // Count how many of the inserted keys are still resident. A re-lookup of
-    // an evicted key re-inserts it as a miss, which can only evict further
-    // retained keys — so the hit count never exceeds the retained count,
-    // which the per-shard slices must bound by the configured total.
+    // Inspect newest to oldest. Within each shard, all resident keys were
+    // inserted later than its evicted keys, so this order observes every
+    // resident before the first miss can mutate that shard's contents.
     size_t hits = 0;
-    for (int i = 0; i < key_count; ++i) {
+    for (int i = key_count - 1; i >= 0; --i) {
         if (cache.get("key" + std::to_string(i)).found) {
             ++hits;
         }
     }
-    EXPECT_LE(hits, capacity);
+    EXPECT_EQ(hits, capacity);
 }
 
 TEST_F(CacheTest, ShardCountOneDegeneratesToUnshardedBehaviorTest) {
