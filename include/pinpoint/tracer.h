@@ -134,8 +134,13 @@ namespace pinpoint {
 		/**
 		 * @brief Writes a key/value pair into the propagation carrier.
 		 *
+		 * @warning @p key and @p value are borrowed views that remain valid only
+		 *          for the duration of this call. Implementations must consume or
+		 *          copy their contents before returning and must not retain the
+		 *          views or pointers into their backing storage.
+		 *
 		 * @param key Case-insensitive header name or key.
-		 * @param value Value to set (implementation may copy or reference).
+		 * @param value Value to set.
 		 */
         virtual void Set(std::string_view key, std::string_view value) = 0;
     };
@@ -186,6 +191,8 @@ namespace pinpoint {
 		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override = 0;
 		/**
 		 * @brief Writes a key/value pair into the propagation carrier.
+		 *
+		 * See TraceContextWriter::Set() for the borrowed-view lifetime contract.
 		 */
 		virtual void Set(std::string_view key, std::string_view value) override = 0;
 	};

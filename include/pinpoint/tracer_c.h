@@ -188,6 +188,10 @@ typedef const char* (*pt_reader_get_fn)(void* userdata, const char* key);
 /**
  * @brief Write a key/value pair into a propagation carrier.
  *
+ * @warning @p key and @p value are borrowed pointers that remain valid only
+ *          until this callback returns. The callback must consume or copy
+ *          their contents before returning and must not retain the pointers.
+ *
  * @param userdata Opaque pointer provided at carrier construction time.
  * @param key      NUL-terminated header/key name.
  * @param value    NUL-terminated value to set.

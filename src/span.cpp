@@ -441,8 +441,8 @@ namespace pinpoint {
 
         // Runs on every outbound call: format the numeric headers into a
         // stack buffer instead of allocating std::to_string temporaries.
-        // Reusing one buffer across Set calls matches the temporaries'
-        // lifetime — Set may only reference the value during the call.
+        // Reusing one buffer across Set calls is safe because Set must consume
+        // or copy each borrowed view before returning.
         char buf[32];
         const auto num = [&buf](auto value) -> std::string_view {
             const auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
