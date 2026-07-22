@@ -1301,7 +1301,43 @@ namespace pinpoint {
         return should_stop_agent_info();
     }
 
-    void GrpcAgent::agent_info_worker() try {
+    void GrpcAgent::agent_info_worker() {
+        // Supervise the loop body like the other grpc workers: a transient
+        // exception (e.g. bad_alloc while building AgentInfo under memory
+        // pressure) must not kill the scheduler for the process lifetime —
+        // if it died before the first successful registration,
+        // onAgentInfoSent() would never run and the agent would stay
+        // disabled. Only a stop request or agent exit ends the worker.
+        while (true) {
+            try {
+                run_agent_info_worker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("AgentInfo scheduler unknown exception");
+            }
+
+            // Not wait_agent_info_retry(): its wake-on-refresh predicate
+            // would turn a refresh request left pending across the unwind
+            // (the flag is only consumed inside run_agent_info_worker's
+            // refresh loop) into an immediate wakeup on every iteration —
+            // a persistent failure would then restart hot instead of pacing
+            // at WORKER_RESTART_DELAY.
+            std::unique_lock<std::mutex> lock(agent_info_mutex_);
+            if (agent_info_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+                    return should_stop_agent_info();
+                })) {
+                break;
+            }
+        }
+    }
+
+    void GrpcAgent::run_agent_info_worker() {
+        // A supervisor restart re-enters the unbounded initial registration
+        // phase even when the exception unwound the periodic refresh loop:
+        // re-sending AgentInfo is idempotent, and after an unknown failure
+        // re-establishing the registration is the safe default.
         if (!send_agent_info_with_retries(std::numeric_limits<int>::max())) {
             return;
         }
@@ -1321,10 +1357,6 @@ namespace pinpoint {
             send_agent_info_with_retries(config_->collector.agent_info.max_try_per_attempt);
             next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         }
-    } catch (const std::exception& e) {
-        LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("AgentInfo scheduler unknown exception");
     }
     // Ping Stream
 

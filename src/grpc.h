@@ -505,6 +505,9 @@ namespace pinpoint {
         void run_ping_worker();
 
         void agent_info_worker();
+        // Worker loop body; agent_info_worker() supervises it and restarts it
+        // after a transient exception instead of letting the worker die.
+        void run_agent_info_worker();
         bool send_agent_info_once();
         bool send_agent_info_with_retries(int max_try_count);
         bool wait_agent_info_retry(std::chrono::milliseconds delay);

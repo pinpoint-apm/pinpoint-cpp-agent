@@ -436,6 +436,37 @@ private:
     bool ready_channel_{true};
 };
 
+// GrpcAgent whose registerAgent() throws on the first attempt, for the
+// AgentInfo scheduler's supervised-restart test.
+class ThrowingAgentInfoGrpcAgent : public GrpcAgent {
+public:
+    explicit ThrowingAgentInfoGrpcAgent(std::shared_ptr<const Config> config)
+        : GrpcAgent(std::move(config)) {}
+
+    GrpcRequestStatus registerAgent() override {
+        if (calls_.fetch_add(1) == 0) {
+            throw std::runtime_error("injected AgentInfo build failure");
+        }
+        if (success_promise_ != nullptr && !promise_set_.exchange(true)) {
+            success_promise_->set_value();
+        }
+        return SEND_OK;
+    }
+
+    void setSuccessPromise(std::promise<void>* promise) {
+        success_promise_ = promise;
+    }
+
+    int calls() const {
+        return calls_.load();
+    }
+
+private:
+    std::atomic<int> calls_{0};
+    std::atomic<bool> promise_set_{false};
+    std::promise<void>* success_promise_{nullptr};
+};
+
 // GrpcAgent whose registerAgent() is a counting stub, for AgentInfo scheduler tests
 class CountingAgentInfoGrpcAgent : public GrpcAgent {
 public:
@@ -635,6 +666,29 @@ TEST_F(GrpcMockTest, GrpcAgentInfoRetriesUntilSuccess) {
 
     EXPECT_EQ(success.wait_for(std::chrono::seconds(1)), std::future_status::ready)
         << "GrpcAgent should retry AgentInfo after the configured interval";
+    grpc_agent.stopAgentInfo();
+    EXPECT_GE(grpc_agent.calls(), 2);
+}
+
+TEST_F(GrpcMockTest, GrpcAgentInfoSurvivesRegisterException) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 3;
+
+    ThrowingAgentInfoGrpcAgent grpc_agent(cfg);
+    std::promise<void> success_promise;
+    auto success = success_promise.get_future();
+    grpc_agent.setSuccessPromise(&success_promise);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    grpc_agent.startAgentInfo();
+
+    // The first attempt throws out of the scheduler loop. The supervisor must
+    // restart it after WORKER_RESTART_DELAY instead of letting it die, so a
+    // later attempt still delivers the AgentInfo.
+    EXPECT_EQ(success.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "AgentInfo scheduler should survive a thrown registerAgent()";
     grpc_agent.stopAgentInfo();
     EXPECT_GE(grpc_agent.calls(), 2);
 }
