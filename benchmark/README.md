@@ -86,6 +86,29 @@ above `1.0` means that for workloads which inline literals instead of binding
 parameters (hit rate ≈ 0), the front cache costs more than it saves. Weigh both
 numbers against the expected raw-SQL repetition of the target application.
 
+## Metadata id cache hit path
+
+`id_cache_benchmark` measures the warm `ApiIdCache` hit under thread
+contention. The api id cache is consulted once per sampled span plus once per
+named span event; before sharding, every hit performed two atomic RMWs
+(shared-lock acquire/release) on one `shared_mutex` cache line, so the line
+ping-ponged between cores as request threads were added. The benchmark
+compares a single-shard cache (the former layout) with the default
+`kDefaultCacheShardCount` sharding at 1, 4, and 8 threads, and fails if any
+measured lookup misses or the two configurations disagree on ids.
+
+```sh
+cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug-cached --target id_cache_benchmark
+./build/debug-cached/benchmark/id_cache_benchmark 2000000
+```
+
+The optional argument is the total operation count per configuration. The
+interesting figure is how `ns/op` grows from 1 thread to N threads within each
+configuration: single-shard degrades by multiples while sharded should stay
+close to its single-thread cost. Run several times on an otherwise idle
+machine and compare medians.
+
 ## Atomic shared pointer snapshots
 
 `atomic_shared_ptr_benchmark` compares the former C++17 `shared_mutex` plus

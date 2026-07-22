@@ -37,7 +37,6 @@ namespace pinpoint {
 
     // Constants
     constexpr int kCacheSize = 1024;
-    constexpr int kRawSqlCacheShards = 16;
 
     // Global agent singleton with lock-free reader access
     namespace {
@@ -98,12 +97,16 @@ namespace pinpoint {
         agent_stats_ = std::make_unique<AgentStats>(this);
         url_stats_ = std::make_unique<UrlStats>(this);
 
+        // Each cache shards its store by kDefaultCacheShardCount (see
+        // ShardedLruCache): the api cache in particular is hit once per span
+        // plus once per named span event, so a single rwlock's cache line
+        // would ping-pong across all request threads.
         api_cache_ = std::make_unique<ApiIdCache>(kCacheSize);
         error_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_cache_ = std::make_unique<IdCache>(kCacheSize);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
-        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(kCacheSize, kRawSqlCacheShards);
-        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(kCacheSize, kRawSqlCacheShards);
+        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(kCacheSize);
+        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(kCacheSize);
 
         // Initial build: no previous runtime, so every component is created
         // and published together in one atomic store.

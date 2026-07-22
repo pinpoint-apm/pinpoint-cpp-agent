@@ -79,22 +79,11 @@ namespace pinpoint {
         int32_t api_type;
     };
 
-    struct ApiCacheStoredKey {
-        std::string api_str;
-        int32_t api_type;
-    };
-
     struct ApiCacheKeyHash {
         size_t operator()(const ApiCacheKey& key) const noexcept {
             size_t seed = std::hash<std::string_view>{}(key.api_str);
             seed ^= std::hash<int32_t>{}(key.api_type) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             return seed;
-        }
-    };
-
-    struct ApiCacheKeyEqual {
-        bool operator()(const ApiCacheKey& lhs, const ApiCacheKey& rhs) const noexcept {
-            return lhs.api_type == rhs.api_type && lhs.api_str == rhs.api_str;
         }
     };
 
@@ -118,23 +107,129 @@ namespace pinpoint {
         }
     };
 
-    struct ApiCacheKeyTraits {
-        using LookupKey = ApiCacheKey;
-        using StoredKey = ApiCacheStoredKey;
-        using MapKey = ApiCacheKey;
-        using Hash = ApiCacheKeyHash;
-        using Equal = ApiCacheKeyEqual;
+    /**
+     * Hash-carrying twins of the string/api cache keys, mirroring
+     * RawSqlCacheKey/RawSqlCacheStoredKey below: the sharded caches hash a key
+     * once per lookup — to pick the shard — and hand that same hash to the
+     * shard's unordered_map through these keys (pass-through hasher), so the
+     * key bytes are never scanned a second time.
+     */
+    struct HashedStringCacheKey {
+        std::string_view str;
+        size_t hash;
+    };
+
+    struct HashedStringCacheStoredKey {
+        std::string str;
+        size_t hash;
+    };
+
+    struct HashedStringCacheKeyHash {
+        size_t operator()(const HashedStringCacheKey& key) const noexcept {
+            return key.hash;
+        }
+    };
+
+    struct HashedStringCacheKeyEqual {
+        bool operator()(const HashedStringCacheKey& lhs, const HashedStringCacheKey& rhs) const noexcept {
+            return lhs.str == rhs.str;
+        }
+    };
+
+    struct HashedStringCacheKeyTraits {
+        using LookupKey = HashedStringCacheKey;
+        using StoredKey = HashedStringCacheStoredKey;
+        using MapKey = HashedStringCacheKey;
+        using Hash = HashedStringCacheKeyHash;
+        using Equal = HashedStringCacheKeyEqual;
 
         static MapKey lookup_key(LookupKey key) noexcept {
             return key;
         }
 
         static StoredKey store(LookupKey key) {
-            return ApiCacheStoredKey{std::string(key.api_str), key.api_type};
+            return HashedStringCacheStoredKey{std::string(key.str), key.hash};
         }
 
         static MapKey map_key(const StoredKey& key) noexcept {
-            return ApiCacheKey{key.api_str, key.api_type};
+            return HashedStringCacheKey{key.str, key.hash};
+        }
+    };
+
+    struct HashedApiCacheKey {
+        std::string_view api_str;
+        int32_t api_type;
+        size_t hash;
+    };
+
+    struct HashedApiCacheStoredKey {
+        std::string api_str;
+        int32_t api_type;
+        size_t hash;
+    };
+
+    struct HashedApiCacheKeyHash {
+        size_t operator()(const HashedApiCacheKey& key) const noexcept {
+            return key.hash;
+        }
+    };
+
+    struct HashedApiCacheKeyEqual {
+        bool operator()(const HashedApiCacheKey& lhs, const HashedApiCacheKey& rhs) const noexcept {
+            return lhs.api_type == rhs.api_type && lhs.api_str == rhs.api_str;
+        }
+    };
+
+    struct HashedApiCacheKeyTraits {
+        using LookupKey = HashedApiCacheKey;
+        using StoredKey = HashedApiCacheStoredKey;
+        using MapKey = HashedApiCacheKey;
+        using Hash = HashedApiCacheKeyHash;
+        using Equal = HashedApiCacheKeyEqual;
+
+        static MapKey lookup_key(LookupKey key) noexcept {
+            return key;
+        }
+
+        static StoredKey store(LookupKey key) {
+            return HashedApiCacheStoredKey{std::string(key.api_str), key.api_type, key.hash};
+        }
+
+        static MapKey map_key(const StoredKey& key) noexcept {
+            return HashedApiCacheKey{key.api_str, key.api_type, key.hash};
+        }
+    };
+
+    /**
+     * ShardTraits implementations for ShardedLruCache (see its contract):
+     * they define the caller-facing key, how to hash it once, and how to
+     * attach that hash for the shard's LruCacheImpl.
+     */
+    struct StringCacheShardTraits {
+        using LookupKey = std::string_view;
+        using InnerTraits = HashedStringCacheKeyTraits;
+
+        static size_t hash(LookupKey key) noexcept {
+            return std::hash<std::string_view>{}(key);
+        }
+
+        static HashedStringCacheKey with_hash(LookupKey key, size_t hash) noexcept {
+            return HashedStringCacheKey{key, hash};
+        }
+    };
+
+    struct ApiCacheShardTraits {
+        using LookupKey = ApiCacheKey;
+        using InnerTraits = HashedApiCacheKeyTraits;
+
+        static size_t hash(LookupKey key) noexcept {
+            // Reuses ApiCacheKeyHash so the (string, type) combining logic
+            // has a single definition.
+            return ApiCacheKeyHash{}(key);
+        }
+
+        static HashedApiCacheKey with_hash(LookupKey key, size_t hash) noexcept {
+            return HashedApiCacheKey{key.api_str, key.api_type, hash};
         }
     };
 
@@ -385,6 +480,126 @@ namespace pinpoint {
         mutable std::shared_mutex mutex_{};
     };
 
+    // Shared default for every sharded cache below. 16 shards puts unrelated
+    // hot keys on 16 different shared_mutex cache lines instead of one, while
+    // a 1024-entry cache still leaves each shard a useful 64-entry LRU slice.
+    inline constexpr size_t kDefaultCacheShardCount = 16;
+
+    /**
+     * @brief Hash-sharded front over N independent LruCacheImpl instances.
+     *
+     * A single LruCacheImpl never blocks concurrent hits logically, but
+     * physically every hit is still two atomic RMWs (shared-lock acquire and
+     * release) on the one shared_mutex's cache line, so at high request-thread
+     * counts that line ping-pongs between cores. Splitting the key space over
+     * independent shards gives unrelated hot keys unrelated cache lines.
+     *
+     * The key is hashed ONCE per operation: the shard index derives from the
+     * hash (see shard_for()), and the same hash rides into the shard's
+     * unordered_map via the hash-carrying key (InnerTraits' pass-through
+     * hasher), so the key bytes are never scanned twice.
+     *
+     * ShardTraits contract:
+     *   LookupKey               caller-facing key type
+     *   InnerTraits             KeyTraits for the per-shard LruCacheImpl, whose
+     *                           LookupKey carries a precomputed hash
+     *   size_t hash(LookupKey)  full key hash, computed once per operation
+     *   InnerTraits::LookupKey with_hash(LookupKey, size_t)
+     *                           attaches the hash for the shard's map
+     *
+     * @tparam ValueType   Type of values stored in the cache.
+     * @tparam ShardTraits See contract above.
+     */
+    template<typename ValueType, typename ShardTraits>
+    class ShardedLruCache {
+    public:
+        using LookupKey = typename ShardTraits::LookupKey;
+
+        // Total capacity stays max_size: it is split across shards (remainder
+        // spread over the first shards), so a hot shard evicts within its own
+        // slice — the accepted trade-off for removing the shared lock line.
+        // The shard count is clamped to the entry count so no shard ends up
+        // with capacity 0.
+        explicit ShardedLruCache(size_t max_size, size_t shard_count) {
+            const size_t entry_count = max_size > 0 ? max_size : 1;
+            const size_t requested_shards = shard_count > 0 ? shard_count : 1;
+            const size_t actual_shards = std::min(requested_shards, entry_count);
+            const size_t base_size = entry_count / actual_shards;
+            const size_t remainder = entry_count % actual_shards;
+
+            shards_.reserve(actual_shards);
+            for (size_t i = 0; i < actual_shards; ++i) {
+                const size_t capacity = base_size + (i < remainder ? 1 : 0);
+                shards_.emplace_back(std::make_unique<Shard>(capacity));
+            }
+        }
+        ~ShardedLruCache() = default;
+
+        // Delete copy and move operations (shards hold mutexes)
+        ShardedLruCache(const ShardedLruCache&) = delete;
+        ShardedLruCache& operator=(const ShardedLruCache&) = delete;
+        ShardedLruCache(ShardedLruCache&&) = delete;
+        ShardedLruCache& operator=(ShardedLruCache&&) = delete;
+
+        /**
+         * @brief Retrieves or creates a cache entry in the key's shard.
+         *
+         * @param key The key to look up (hashed once, no allocation on hit).
+         * @param generator Function to generate a new value if key not found.
+         * @return Result containing the value and whether it was found.
+         */
+        template<typename Generator>
+        LruCacheResult<ValueType> get(LookupKey key, Generator&& generator) {
+            const size_t hash = ShardTraits::hash(key);
+            return shard_for(hash).get(ShardTraits::with_hash(key, hash),
+                                       std::forward<Generator>(generator));
+        }
+
+        /**
+         * @brief Removes an entry from the cache.
+         *
+         * Derives the shard from the same hash as get(): removal must evict
+         * from the shard that owns the entry, or a stale entry would keep
+         * serving its old value after an invalidation (for the id caches that
+         * would break metadata re-registration with the collector).
+         *
+         * @param key The key to remove.
+         */
+        void remove(LookupKey key) {
+            const size_t hash = ShardTraits::hash(key);
+            shard_for(hash).remove(ShardTraits::with_hash(key, hash));
+        }
+
+        size_t shardCount() const noexcept {
+            return shards_.size();
+        }
+
+    private:
+        using ShardCache = LruCacheImpl<ValueType, typename ShardTraits::InnerTraits>;
+
+        // Shards live behind unique_ptr: LruCacheImpl is immovable (it owns a
+        // shared_mutex), so the vector could not hold it by value.
+        struct Shard {
+            explicit Shard(size_t capacity) : cache(capacity) {}
+            ShardCache cache;
+        };
+
+        ShardCache& shard_for(size_t hash) noexcept {
+            // Pick the shard from a remixed value, not `hash % size`: the
+            // shard's unordered_map is fed this same `hash` (pass-through
+            // hasher), so selecting the shard from the low bits would leave
+            // every key in a shard sharing those bits. Harmless with prime
+            // bucket counts (libstdc++/libc++) but 16x chain length with
+            // power-of-two buckets (MSVC). The multiply spreads high entropy
+            // into the bits the modulo consumes.
+            const size_t shard_idx =
+                (hash * 0x9E3779B97F4A7C15ull >> 32) % shards_.size();
+            return shards_[shard_idx]->cache;
+        }
+
+        std::vector<std::unique_ptr<Shard>> shards_;
+    };
+
     struct RawSqlCacheKey {
         std::string_view raw_sql;
         uint64_t metadata_epoch;
@@ -431,32 +646,42 @@ namespace pinpoint {
         }
     };
 
+    struct RawSqlCacheShardTraits {
+        // Raw SQL lookups key on (text, metadata epoch): advancing the epoch
+        // makes every entry cached under the old one unreachable (see
+        // RawSqlCacheKeyEqual and removeCacheSql in agent.cpp).
+        struct LookupKey {
+            std::string_view raw_sql;
+            uint64_t metadata_epoch;
+        };
+        using InnerTraits = RawSqlCacheKeyTraits;
+
+        static size_t hash(LookupKey key) noexcept {
+            size_t hash = std::hash<std::string_view>{}(key.raw_sql);
+            hash ^= std::hash<uint64_t>{}(key.metadata_epoch) + 0x9e3779b9 +
+                    (hash << 6) + (hash >> 2);
+            return hash;
+        }
+
+        static RawSqlCacheKey with_hash(LookupKey key, size_t hash) noexcept {
+            return RawSqlCacheKey{key.raw_sql, key.metadata_epoch, hash};
+        }
+    };
+
     using RawSqlCacheResult = LruCacheResult<PreparedSqlRef>;
 
     /**
      * Front cache keyed by raw SQL. The cache is sharded so unrelated hot SQL
-     * statements do not contend on one shared_mutex. A hash is computed once
-     * per lookup and carried in the heterogeneous key, avoiding a second scan
-     * of the SQL text inside unordered_map.
+     * statements do not contend on one shared_mutex; the shard selection,
+     * capacity split, and hash-once contract live in ShardedLruCache.
      */
     class RawSqlCache {
     public:
         explicit RawSqlCache(size_t max_size,
-                             size_t shard_count = 16,
+                             size_t shard_count = kDefaultCacheShardCount,
                              size_t max_cacheable_length = 64 * 1024)
-            : max_cacheable_length_(max_cacheable_length) {
-            const size_t entry_count = max_size > 0 ? max_size : 1;
-            const size_t requested_shards = shard_count > 0 ? shard_count : 1;
-            const size_t actual_shards = std::min(requested_shards, entry_count);
-            const size_t base_size = entry_count / actual_shards;
-            const size_t remainder = entry_count % actual_shards;
-
-            shards_.reserve(actual_shards);
-            for (size_t i = 0; i < actual_shards; ++i) {
-                const size_t capacity = base_size + (i < remainder ? 1 : 0);
-                shards_.emplace_back(std::make_unique<Shard>(capacity));
-            }
-        }
+            : cache_(max_size, shard_count),
+              max_cacheable_length_(max_cacheable_length) {}
 
         RawSqlCache(const RawSqlCache&) = delete;
         RawSqlCache& operator=(const RawSqlCache&) = delete;
@@ -472,51 +697,42 @@ namespace pinpoint {
             if (raw_sql.size() > max_cacheable_length_) {
                 return RawSqlCacheResult{generator(), false};
             }
-
-            size_t hash = std::hash<std::string_view>{}(raw_sql);
-            hash ^= std::hash<uint64_t>{}(metadata_epoch) + 0x9e3779b9 +
-                    (hash << 6) + (hash >> 2);
-            // Pick the shard from a remixed value, not `hash % size`: the
-            // shard's unordered_map is fed this same `hash` (pass-through
-            // hasher), so selecting the shard from the low bits would leave
-            // every key in a shard sharing those bits. Harmless with prime
-            // bucket counts (libstdc++/libc++) but 16x chain length with
-            // power-of-two buckets (MSVC). The multiply spreads high entropy
-            // into the bits the modulo consumes.
-            const size_t shard_idx =
-                (hash * 0x9E3779B97F4A7C15ull >> 32) % shards_.size();
-            auto& shard = *shards_[shard_idx];
-            return shard.cache.get(
-                RawSqlCacheKey{raw_sql, metadata_epoch, hash},
+            return cache_.get(
+                RawSqlCacheShardTraits::LookupKey{raw_sql, metadata_epoch},
                 std::forward<Generator>(generator));
         }
 
         size_t shardCount() const noexcept {
-            return shards_.size();
+            return cache_.shardCount();
         }
 
     private:
-        struct Shard {
-            explicit Shard(size_t capacity) : cache(capacity) {}
-            LruCacheImpl<PreparedSqlRef, RawSqlCacheKeyTraits> cache;
-        };
-
-        std::vector<std::unique_ptr<Shard>> shards_;
+        ShardedLruCache<PreparedSqlRef, RawSqlCacheShardTraits> cache_;
         const size_t max_cacheable_length_;
     };
 
     /**
      * @brief LRU cache that assigns numeric identifiers to frequently used keys.
      *
-     * The cache is used for API, SQL, and error metadata to minimize payload sizes
-     * when sending data over gRPC.
+     * The cache is used for API, SQL, and error metadata to minimize payload
+     * sizes when sending data over gRPC. Every sampled span and every named
+     * span event resolves its api id here, so the store is sharded (see
+     * ShardedLruCache): a single LruCacheImpl would put every request thread's
+     * shared-lock acquire/release on one shared_mutex cache line.
+     *
+     * The id sequence is deliberately ONE atomic shared by all shards, not a
+     * per-shard counter: the collector keys metadata by id, so two shards
+     * handing the same id to different keys would corrupt the mapping. The
+     * counter is only touched on a miss, so it is not a hit-path hot spot.
      */
-    template<typename KeyTraits = StringCacheKeyTraits>
+    template<typename ShardTraits>
     class IdCacheImpl {
     public:
-        using LookupKey = typename KeyTraits::LookupKey;
+        using LookupKey = typename ShardTraits::LookupKey;
 
-        explicit IdCacheImpl(size_t max_size) : cache_(max_size) {}
+        explicit IdCacheImpl(size_t max_size,
+                             size_t shard_count = kDefaultCacheShardCount)
+            : cache_(max_size, shard_count) {}
         ~IdCacheImpl() = default;
 
         // Delete copy and move operations
@@ -540,26 +756,40 @@ namespace pinpoint {
         /**
          * @brief Evicts a cached key from the cache.
          *
+         * Routes to the shard get() uses for the key, so the next get() is a
+         * guaranteed miss that mints a fresh id — the miss path is what
+         * re-enqueues the metadata to the collector after a connection reset.
+         *
          * @param key Entry to remove.
          */
         void remove(LookupKey key) {
             cache_.remove(key);
         }
 
+        size_t shardCount() const noexcept {
+            return cache_.shardCount();
+        }
+
     private:
-        LruCacheImpl<int32_t, KeyTraits> cache_;
+        ShardedLruCache<int32_t, ShardTraits> cache_;
         std::atomic<int32_t> id_sequence_{0};
     };
 
-    using IdCache = IdCacheImpl<StringCacheKeyTraits>;
-    using ApiIdCache = IdCacheImpl<ApiCacheKeyTraits>;
+    using IdCache = IdCacheImpl<StringCacheShardTraits>;
+    using ApiIdCache = IdCacheImpl<ApiCacheShardTraits>;
 
     /**
      * @brief LRU cache that assigns binary UIDs to normalized SQL statements.
+     *
+     * Sharded like IdCacheImpl: when the raw front cache is disabled this is
+     * hit once per SQL statement. UIDs are content hashes of the key, so no
+     * cross-shard state is needed for them to stay consistent.
      */
     class SqlUidCache {
     public:
-        explicit SqlUidCache(size_t max_size) : cache_(max_size) {}
+        explicit SqlUidCache(size_t max_size,
+                             size_t shard_count = kDefaultCacheShardCount)
+            : cache_(max_size, shard_count) {}
         ~SqlUidCache() = default;
 
         // Delete copy and move operations
@@ -585,8 +815,12 @@ namespace pinpoint {
             cache_.remove(key);
         }
 
+        size_t shardCount() const noexcept {
+            return cache_.shardCount();
+        }
+
     private:
-        LruCacheImpl<SqlUid> cache_;
+        ShardedLruCache<SqlUid, StringCacheShardTraits> cache_;
     };
 
 } // namespace pinpoint

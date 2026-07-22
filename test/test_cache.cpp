@@ -217,8 +217,13 @@ TEST_F(CacheTest, IdSequenceIncrementalTest) {
 // LRU policy tests
 
 // Test LRU eviction when cache is full
+//
+// This and the other LRU-order tests pin shard_count=1: with more shards each
+// shard evicts within its own capacity slice, so a global eviction order is
+// no longer observable. shard_count=1 is also the degenerate configuration
+// that must behave exactly like the pre-sharding cache.
 TEST_F(CacheTest, LRUEvictionTest) {
-    IdCache cache(3); // Small cache size
+    IdCache cache(3, 1); // Small cache size, single shard
     
     // Fill cache completely
     auto result1 = cache.get("key1"); // ID: 1
@@ -247,7 +252,7 @@ TEST_F(CacheTest, LRUEvictionTest) {
 
 // Test LRU ordering - accessing item moves it to front
 TEST_F(CacheTest, LRUOrderingTest) {
-    IdCache cache(3);
+    IdCache cache(3, 1);
     
     // Fill cache: key1, key2, key3
     cache.get("key1"); // ID: 1
@@ -283,7 +288,7 @@ TEST_F(CacheTest, LRUOrderingTest) {
 // splice (pure shared-lock read), while a hit on an aged entry promotes it so
 // it survives subsequent evictions
 TEST_F(CacheTest, AgedPromotionTest) {
-    IdCache cache(4);  // promotion age threshold = 2 ops
+    IdCache cache(4, 1);  // single shard; promotion age threshold = 2 ops
 
     cache.get("key1"); // op 1
     cache.get("key2"); // op 2
@@ -320,7 +325,7 @@ TEST_F(CacheTest, AgedPromotionTest) {
 // skipped, later insertions evict it in its original LRU position. A revert to
 // strict LRU would promote it on the hit and let it survive, failing this test.
 TEST_F(CacheTest, AgedPromotionYoungHitDoesNotProtectEntryTest) {
-    IdCache cache(4);  // promote_age_threshold_ = 4/2 = 2 ops
+    IdCache cache(4, 1);  // single shard; promote_age_threshold_ = 4/2 = 2 ops
 
     cache.get("key1"); // op 1
     cache.get("key2"); // op 2
@@ -416,7 +421,7 @@ TEST_F(CacheTest, RemoveNonExistentKeyTest) {
 
 // Test remove from middle of cache
 TEST_F(CacheTest, RemoveFromMiddleTest) {
-    IdCache cache(5);
+    IdCache cache(5, 1);
     
     // Add multiple items
     cache.get("key1"); // ID: 1
@@ -616,7 +621,7 @@ TEST_F(CacheTest, ConcurrentSameKeyTest) {
 TEST_F(CacheTest, ManyItemsTest) {
     const int cache_size = 10; // Use smaller cache size for clearer testing
     const int total_items = 25;
-    IdCache cache(cache_size);
+    IdCache cache(cache_size, 1);
     
     // Add many items
     std::vector<int32_t> original_ids;
@@ -657,7 +662,7 @@ TEST_F(CacheTest, ManyItemsTest) {
 // Test cache at exact capacity - no eviction should occur
 TEST_F(CacheTest, ExactCapacityNoEvictionTest) {
     const int capacity = 5;
-    IdCache cache(capacity);
+    IdCache cache(capacity, 1);
 
     // Fill cache to exact capacity
     for (int i = 0; i < capacity; ++i) {
@@ -674,7 +679,7 @@ TEST_F(CacheTest, ExactCapacityNoEvictionTest) {
 
 // Test removing all items and re-adding
 TEST_F(CacheTest, RemoveAllAndReuseTest) {
-    IdCache cache(5);
+    IdCache cache(5, 1);
 
     // Add 3 items
     cache.get("key1"); // ID: 1
@@ -698,7 +703,7 @@ TEST_F(CacheTest, RemoveAllAndReuseTest) {
 
 // Test LRU eviction chain - verify correct eviction order
 TEST_F(CacheTest, LRUEvictionChainTest) {
-    IdCache cache(3);
+    IdCache cache(3, 1);
 
     // Fill: key1(LRU), key2, key3(MRU)
     cache.get("key1"); // ID: 1
@@ -741,7 +746,7 @@ TEST_F(CacheTest, StringViewKeyFromTemporaryTest) {
 
 // Test remove and re-add places item at MRU position
 TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
-    IdCache cache(3);
+    IdCache cache(3, 1);
 
     // Fill: key1, key2, key3
     cache.get("key1"); // ID: 1
@@ -765,7 +770,9 @@ TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
 
 // Test keys with special characters and Unicode
 TEST_F(CacheTest, SpecialCharacterKeysTest) {
-    IdCache cache(10);
+    // Single shard: three keys must coexist, which sharding cannot guarantee
+    // at this capacity (each shard would hold a single entry).
+    IdCache cache(10, 1);
 
     std::string unicode_key = "키_한글_テスト";
     std::string special_key = "key!@#$%^&*()";
@@ -792,7 +799,7 @@ TEST_F(CacheTest, SpecialCharacterKeysTest) {
 // API cache tests
 
 TEST_F(CacheTest, ApiIdCacheKeepsTypesDistinctTest) {
-    ApiIdCache cache(5);
+    ApiIdCache cache(5, 1);
 
     auto result1 = cache.get(ApiCacheKey{"operation", 100});
     auto result2 = cache.get(ApiCacheKey{"operation", 200});
@@ -807,7 +814,7 @@ TEST_F(CacheTest, ApiIdCacheKeepsTypesDistinctTest) {
 }
 
 TEST_F(CacheTest, ApiIdCacheRemoveOnlyMatchingTypeTest) {
-    ApiIdCache cache(5);
+    ApiIdCache cache(5, 1);
 
     auto result1 = cache.get(ApiCacheKey{"operation", 100});
     auto result2 = cache.get(ApiCacheKey{"operation", 200});
@@ -837,7 +844,7 @@ TEST_F(CacheTest, ApiIdCacheStringViewKeyFromTemporaryTest) {
 }
 
 TEST_F(CacheTest, ApiIdCacheLRUEvictionTest) {
-    ApiIdCache cache(2);
+    ApiIdCache cache(2, 1);
 
     cache.get(ApiCacheKey{"operation1", 100});
     cache.get(ApiCacheKey{"operation2", 100});
@@ -846,6 +853,182 @@ TEST_F(CacheTest, ApiIdCacheLRUEvictionTest) {
 
     EXPECT_TRUE(cache.get(ApiCacheKey{"operation1", 100}).found);
     EXPECT_FALSE(cache.get(ApiCacheKey{"operation2", 100}).found);
+}
+
+// Sharded id cache tests
+//
+// The id caches shard their store (ShardedLruCache) so per-span lookups do
+// not all hammer one shared_mutex cache line. These tests pin the contracts
+// sharding must preserve: one stable id per key, ids unique across shards,
+// remove() routing to the shard get() uses (the metadata re-registration
+// path), and the total capacity bound.
+
+TEST_F(CacheTest, ShardedIdCacheReportsShardCountTest) {
+    IdCache cache(1024, 16);
+    EXPECT_EQ(cache.shardCount(), 16u);
+
+    // The shard count is clamped to the entry count so no shard ends up with
+    // capacity 0.
+    IdCache clamped(4, 16);
+    EXPECT_EQ(clamped.shardCount(), 4u);
+
+    IdCache single(1024, 1);
+    EXPECT_EQ(single.shardCount(), 1u);
+}
+
+TEST_F(CacheTest, ShardedIdCacheSameKeyAlwaysSameIdTest) {
+    IdCache cache(1024, 16);
+
+    const auto first = cache.get("com.example.Service.method()");
+    EXPECT_FALSE(first.found);
+
+    // Same key must route to the same shard every time: any flip-flop in the
+    // shard selection would show up as a spurious miss minting a new id.
+    for (int i = 0; i < 64; ++i) {
+        const auto again = cache.get("com.example.Service.method()");
+        EXPECT_TRUE(again.found);
+        EXPECT_EQ(again.value, first.value);
+    }
+}
+
+TEST_F(CacheTest, ShardedIdCacheConcurrentDistinctKeysUniqueIdsTest) {
+    IdCache cache(4096, 16);
+    constexpr int num_threads = 8;
+    constexpr int keys_per_thread = 500;
+
+    std::vector<std::future<std::vector<int32_t>>> futures;
+    for (int t = 0; t < num_threads; ++t) {
+        futures.push_back(std::async(std::launch::async, [&cache, t]() {
+            std::vector<int32_t> ids;
+            ids.reserve(keys_per_thread);
+            for (int k = 0; k < keys_per_thread; ++k) {
+                ids.push_back(cache.get("thread" + std::to_string(t) +
+                                        "/key" + std::to_string(k)).value);
+            }
+            return ids;
+        }));
+    }
+
+    std::set<int32_t> all_ids;
+    for (auto& future : futures) {
+        for (const auto id : future.get()) {
+            all_ids.insert(id);
+        }
+    }
+
+    // One id sequence is shared by all shards: per-shard sequences would hand
+    // the same id to different keys. Every key is distinct and requested only
+    // once, so the ids must be exactly 1..N — no duplicates and no gaps.
+    constexpr int expected = num_threads * keys_per_thread;
+    EXPECT_EQ(all_ids.size(), static_cast<size_t>(expected)) << "duplicate ids across shards";
+    EXPECT_EQ(*all_ids.begin(), 1);
+    EXPECT_EQ(*all_ids.rbegin(), expected);
+}
+
+TEST_F(CacheTest, ShardedIdCacheRemoveMintsFreshIdTest) {
+    // 1024/16 = 64 entries per shard >= the 33 inserts below, so no shard can
+    // evict no matter how the keys distribute — keeps the test deterministic.
+    IdCache cache(1024, 16);
+    constexpr int key_count = 32;
+
+    std::vector<int32_t> ids;
+    for (int i = 0; i < key_count; ++i) {
+        ids.push_back(cache.get("api/key" + std::to_string(i)).value);
+    }
+
+    cache.remove("api/key7");
+
+    // The metadata re-registration contract: after remove(), the next get()
+    // must be a miss that mints a fresh id — that miss is what re-enqueues
+    // the metadata to the collector after a connection reset.
+    const auto readded = cache.get("api/key7");
+    EXPECT_FALSE(readded.found);
+    EXPECT_EQ(readded.value, key_count + 1);
+
+    // remove() must have routed to the shard get() uses and evicted only that
+    // key: every other key still hits with its original id.
+    for (int i = 0; i < key_count; ++i) {
+        if (i == 7) continue;
+        const auto result = cache.get("api/key" + std::to_string(i));
+        EXPECT_TRUE(result.found) << "key " << i;
+        EXPECT_EQ(result.value, ids[i]) << "key " << i;
+    }
+}
+
+TEST_F(CacheTest, ShardedApiIdCacheRemoveRoutesToOwningShardTest) {
+    // 33 total inserts <= the 64-entry per-shard slice, as above.
+    ApiIdCache cache(1024, 16);
+    constexpr int key_count = 16;
+
+    std::vector<std::string> names;
+    std::vector<int32_t> web_ids;
+    std::vector<int32_t> default_ids;
+    for (int i = 0; i < key_count; ++i) {
+        names.push_back("com.example.Service.method" + std::to_string(i));
+        web_ids.push_back(cache.get(ApiCacheKey{names.back(), 100}).value);
+        default_ids.push_back(cache.get(ApiCacheKey{names.back(), 200}).value);
+    }
+
+    cache.remove(ApiCacheKey{names[3], 100});
+
+    const auto readded = cache.get(ApiCacheKey{names[3], 100});
+    EXPECT_FALSE(readded.found);
+    EXPECT_NE(readded.value, web_ids[3]);
+
+    // The same name under a different type is a different key (possibly in a
+    // different shard) and must be untouched, as must every other entry.
+    const auto sibling = cache.get(ApiCacheKey{names[3], 200});
+    EXPECT_TRUE(sibling.found);
+    EXPECT_EQ(sibling.value, default_ids[3]);
+    for (int i = 0; i < key_count; ++i) {
+        if (i == 3) continue;
+        const auto web = cache.get(ApiCacheKey{names[i], 100});
+        EXPECT_TRUE(web.found) << "key " << i;
+        EXPECT_EQ(web.value, web_ids[i]) << "key " << i;
+    }
+}
+
+TEST_F(CacheTest, ShardedIdCacheTotalCapacityBoundedTest) {
+    constexpr size_t capacity = 64;
+    IdCache cache(capacity, 16);
+
+    constexpr int key_count = 1024;
+    for (int i = 0; i < key_count; ++i) {
+        cache.get("key" + std::to_string(i));
+    }
+
+    // Count how many of the inserted keys are still resident. A re-lookup of
+    // an evicted key re-inserts it as a miss, which can only evict further
+    // retained keys — so the hit count never exceeds the retained count,
+    // which the per-shard slices must bound by the configured total.
+    size_t hits = 0;
+    for (int i = 0; i < key_count; ++i) {
+        if (cache.get("key" + std::to_string(i)).found) {
+            ++hits;
+        }
+    }
+    EXPECT_LE(hits, capacity);
+}
+
+TEST_F(CacheTest, ShardCountOneDegeneratesToUnshardedBehaviorTest) {
+    // shard_count=1 must behave exactly like the pre-sharding cache: one LRU
+    // list over the full capacity with a strict global eviction order. (The
+    // LRU and aged-promotion tests above all run in this configuration.)
+    IdCache cache(3, 1);
+    EXPECT_EQ(cache.shardCount(), 1u);
+
+    cache.get("key1"); // ID: 1
+    cache.get("key2"); // ID: 2
+    cache.get("key3"); // ID: 3
+    cache.get("key4"); // ID: 4, evicts key1
+
+    const auto evicted = cache.get("key1");
+    EXPECT_FALSE(evicted.found);
+    EXPECT_EQ(evicted.value, 5);
+
+    const auto retained = cache.get("key4");
+    EXPECT_TRUE(retained.found);
+    EXPECT_EQ(retained.value, 4);
 }
 
 // SqlUidCache Test Suite
@@ -947,7 +1130,9 @@ TEST_F(SqlUidCacheTest, ConsistentUidGenerationTest) {
 
 // Test LRU eviction when cache is full
 TEST_F(SqlUidCacheTest, LRUEvictionTest) {
-    SqlUidCache cache(3); // Small cache size
+    // Single shard: these tests assert a global LRU eviction order, which
+    // only exists inside one shard (see the CacheTest note above).
+    SqlUidCache cache(3, 1); // Small cache size, single shard
     
     // Fill cache completely
     auto result1 = cache.get("SELECT * FROM table1");
@@ -976,7 +1161,7 @@ TEST_F(SqlUidCacheTest, LRUEvictionTest) {
 
 // Test LRU ordering - accessing item moves it to front
 TEST_F(SqlUidCacheTest, LRUOrderingTest) {
-    SqlUidCache cache(3);
+    SqlUidCache cache(3, 1);
     
     // Fill cache: sql1, sql2, sql3
     std::string sql1 = "SELECT * FROM table1";
@@ -1056,7 +1241,7 @@ TEST_F(SqlUidCacheTest, RemoveNonExistentKeyTest) {
 
 // Test remove from middle of cache
 TEST_F(SqlUidCacheTest, RemoveFromMiddleTest) {
-    SqlUidCache cache(5);
+    SqlUidCache cache(5, 1);
     
     std::string sql1 = "SELECT * FROM table1";
     std::string sql2 = "SELECT * FROM table2";
@@ -1262,7 +1447,7 @@ TEST_F(SqlUidCacheTest, ConcurrentGetRemoveTest) {
 TEST_F(SqlUidCacheTest, ManySqlStatementsTest) {
     const int cache_size = 10;
     const int total_sqls = 25;
-    SqlUidCache cache(cache_size);
+    SqlUidCache cache(cache_size, 1);
     
     // Add many SQL statements
     std::vector<SqlUid> original_uids;
@@ -1334,7 +1519,7 @@ TEST_F(SqlUidCacheTest, UidConsistencyTest) {
 // Test cache at exact capacity - no eviction should occur
 TEST_F(SqlUidCacheTest, ExactCapacityNoEvictionTest) {
     const int capacity = 5;
-    SqlUidCache cache(capacity);
+    SqlUidCache cache(capacity, 1);
 
     std::vector<SqlUid> original_uids;
     for (int i = 0; i < capacity; ++i) {
@@ -1355,7 +1540,7 @@ TEST_F(SqlUidCacheTest, ExactCapacityNoEvictionTest) {
 
 // Test removing all items and re-adding
 TEST_F(SqlUidCacheTest, RemoveAllAndReuseTest) {
-    SqlUidCache cache(5);
+    SqlUidCache cache(5, 1);
 
     std::string sql1 = "SELECT 1";
     std::string sql2 = "SELECT 2";
@@ -1391,9 +1576,28 @@ TEST_F(SqlUidCacheTest, StringViewKeyFromTemporaryTest) {
     EXPECT_TRUE(result.found) << "Should be cache hit even after source string destroyed";
 }
 
+// Sharded UID cache: remove() must route by the same hash as get() so the
+// entry is really evicted; the regenerated UID is identical because UIDs are
+// a content hash of the SQL, so no cross-shard state is involved.
+TEST_F(SqlUidCacheTest, ShardedSqlUidCacheRemoveEvictsEntryTest) {
+    SqlUidCache cache(1024, 16);
+    EXPECT_EQ(cache.shardCount(), 16u);
+
+    const std::string sql = "SELECT * FROM users WHERE id = ?";
+    const auto original = cache.get(sql);
+    EXPECT_FALSE(original.found);
+    EXPECT_TRUE(cache.get(sql).found);
+
+    cache.remove(sql);
+
+    const auto readded = cache.get(sql);
+    EXPECT_FALSE(readded.found) << "remove() must evict from the owning shard";
+    EXPECT_TRUE(areUidsEqual(readded.value, original.value));
+}
+
 // Test remove and re-add places item at MRU position
 TEST_F(SqlUidCacheTest, RemoveAndReaddLRUPositionTest) {
-    SqlUidCache cache(3);
+    SqlUidCache cache(3, 1);
 
     std::string sql1 = "SELECT 1";
     std::string sql2 = "SELECT 2";
