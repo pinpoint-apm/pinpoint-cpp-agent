@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <exception>
@@ -347,10 +348,10 @@ namespace {
         EXPECT_EQ(queue.dropped_oldest(), 32u);
     }
 
-    // The queue's contract only requires no-throw default construction and
-    // move assignment. A throwing move constructor catches accidental
-    // move construction (std::exchange, push_back) on any path that runs
-    // while queue state is being mutated.
+    // The queue's contract only requires no-throw default construction,
+    // move assignment, and destruction. A throwing move constructor
+    // catches accidental move construction (std::exchange, push_back) on
+    // any path that runs while queue state is being mutated.
     struct ThrowingMoveValue {
         ThrowingMoveValue() noexcept = default;
         explicit ThrowingMoveValue(int value) noexcept : value(value) {}
@@ -392,12 +393,18 @@ namespace {
         EXPECT_EQ(reclaim_failure, nullptr);
         EXPECT_EQ(queue.dropped_oldest(), 32u);
 
-        size_t retained = 0;
+        // Cross-shard dequeue order is unspecified, so verify by sorting:
+        // exactly the newest values 32..64 must survive the reclaim.
+        std::vector<int> retained;
         ThrowingMoveValue item;
         while (queue.try_dequeue(item)) {
-            ++retained;
+            retained.push_back(item.value);
         }
-        EXPECT_EQ(retained, 33u);
+        std::sort(retained.begin(), retained.end());
+        ASSERT_EQ(retained.size(), 33u);
+        for (int expected = 32; expected <= 64; ++expected) {
+            EXPECT_EQ(retained[expected - 32], expected);
+        }
     }
 
     TEST(ShardedBoundedQueueTest, SaturatedOverwriteAndBatchDrainUseNoThrowOperations) {
