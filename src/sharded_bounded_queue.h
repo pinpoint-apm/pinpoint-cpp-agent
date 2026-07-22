@@ -164,29 +164,39 @@ namespace pinpoint {
             }
 
             void enqueue_or_overwrite(T& value) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (size_ < quota_) {
-                    push(value);
-                    return;
+                // Declared before the guard so the dropped value's destructor
+                // runs after the lock is released: ~T of a dropped span chunk
+                // is a cascade of frees, and this head-drop path runs exactly
+                // when the queue is saturated — producers mapped to this shard
+                // and consumer probes must not stall behind it.
+                T dropped{};
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (size_ < quota_) {
+                        push(value);
+                        return;
+                    }
+                    // Every active shard is restored to at least its non-zero
+                    // base quota before its first enqueue.
+                    if (quota_ == 0) {
+                        return;
+                    }
+                    // Empty the head cell before storing the new value: when
+                    // quota_ < physical capacity the tail cell is empty, so
+                    // the old head value would otherwise stay alive until
+                    // tail_ wraps back around to its cell — retaining up to
+                    // the full physical ring instead of quota_ values
+                    // (take_excess_quota extracts dropped cells the same
+                    // way). Exchanging head_ first also keeps the
+                    // quota_ == capacity case correct, where head_ and tail_
+                    // are the same cell.
+                    dropped = std::exchange(cells_[head_], T{});
+                    head_ = next(head_);
+                    cells_[tail_] = std::move(value);
+                    tail_ = next(tail_);
+                    record_drop();
                 }
-                // Every active shard is restored to at least its non-zero base
-                // quota before its first enqueue.
-                if (quota_ == 0) {
-                    return;
-                }
-                // Destroy the dropped oldest value before storing the new one:
-                // when quota_ < physical capacity the tail cell is empty, so
-                // the old head value would otherwise stay alive until tail_
-                // wraps back around to its cell — retaining up to the full
-                // physical ring instead of quota_ values (take_excess_quota
-                // clears dropped cells the same way). Clearing head_ first
-                // also keeps the quota_ == capacity case correct, where
-                // head_ and tail_ are the same cell.
-                cells_[head_] = T{};
-                head_ = next(head_);
-                cells_[tail_] = std::move(value);
-                tail_ = next(tail_);
-                record_drop();
+                // dropped is destroyed here, outside the shard lock.
             }
 
             bool try_dequeue(T& value) {
@@ -212,6 +222,14 @@ namespace pinpoint {
             }
 
             size_t take_excess_quota(size_t base_quota, size_t requested) {
+                // Declared before the guard so the dropped values are
+                // destroyed after the lock is released, mirroring
+                // enqueue_or_overwrite. This rebalance path is rare (runs once
+                // when a shard turns active while a borrower holds its
+                // cells), so the vector's one possible allocation is a fair
+                // trade for keeping a batch of ~T cascades out of the
+                // critical section.
+                std::vector<T> dropped;
                 std::lock_guard<std::mutex> lock(mutex_);
                 const size_t excess = quota_ > base_quota ? quota_ - base_quota : 0;
                 const size_t transferred = std::min(excess, requested);
@@ -220,11 +238,14 @@ namespace pinpoint {
                 // A newly active shard reclaims its reserved base quota. If a
                 // borrower currently uses those cells, preserve the newest data
                 // by head-dropping only the excess oldest values.
-                while (size_ > quota_) {
-                    cells_[head_] = T{};
-                    head_ = next(head_);
-                    --size_;
-                    record_drop();
+                if (size_ > quota_) {
+                    dropped.reserve(size_ - quota_);
+                    while (size_ > quota_) {
+                        dropped.push_back(std::exchange(cells_[head_], T{}));
+                        head_ = next(head_);
+                        --size_;
+                        record_drop();
+                    }
                 }
                 return transferred;
             }
