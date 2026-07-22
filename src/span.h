@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <deque>
 #include <memory>
 #include <optional>
 #include <stack>
@@ -99,7 +98,15 @@ namespace pinpoint {
         }
 
     private:
-        std::stack<std::unique_ptr<SpanEventImpl>> stack_;
+        // Vector backing instead of std::stack's default std::deque: on
+        // libstdc++ a default-constructed deque allocates its iterator map
+        // plus a 512-byte block up front, charged to every span's
+        // constructor even when no event is ever recorded. A
+        // default-constructed vector allocates nothing, and nesting depth is
+        // capped by span.max_event_depth, so growth reallocations are rare
+        // and move only a handful of pointers.
+        std::stack<std::unique_ptr<SpanEventImpl>,
+                   std::vector<std::unique_ptr<SpanEventImpl>>> stack_;
     };
 
     /**
@@ -372,7 +379,13 @@ namespace pinpoint {
         // Not mutex-guarded: a span is single-threaded (see the Span thread-safety
         // contract in pinpoint/tracer.h), so the stack and this list are only ever
         // touched by the span's owning thread.
-        std::deque<std::unique_ptr<SpanEventImpl>> finished_events;
+        // A vector, not a deque: the deque paid its map + first-block
+        // allocation in every span's constructor (see EventStack), while a
+        // vector starts allocation-free and keeps its capacity across chunk
+        // flushes (takeFinishedEvents clears it). The front/middle inserts
+        // in storeFinishedEvent are the rare out-of-order finishes and move
+        // at most one chunk's worth of pointers.
+        std::vector<std::unique_ptr<SpanEventImpl>> finished_events;
         // Finished events already handed to a chunk. Ownership is retained
         // here (a chunk holds borrowed pointers plus a shared_ptr to this
         // SpanData), so raw SpanEventPtr handles held by user code stay valid

@@ -122,7 +122,7 @@ namespace pinpoint {
             return;
         }
         if (sequence < finished_events.front()->getSequence()) {
-            finished_events.emplace_front(std::move(se));
+            finished_events.insert(finished_events.begin(), std::move(se));
             return;
         }
 
