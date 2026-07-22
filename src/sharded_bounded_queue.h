@@ -47,6 +47,13 @@ namespace pinpoint {
      * preallocates a physical ring with QueueSize cells. Physical cell storage
      * is therefore shard_count * QueueSize, even though the global logical
      * retention bound remains QueueSize.
+     *
+     * T's complete contract is the three static_asserts below. Every value
+     * transfer inside the queue uses default construction plus move
+     * assignment — never move construction — so a throwing move constructor
+     * cannot corrupt queue state. The operations that may throw (the vector
+     * growth in try_dequeue_batch, the reclaim scratch buffer in
+     * take_excess_quota) all run before any queue state is mutated.
      */
     template <typename T>
     class ShardedBoundedQueue final {
@@ -141,8 +148,10 @@ namespace pinpoint {
             if (max_items == 0) {
                 return 0;
             }
-            // Grow out before probing so the per-shard drains never allocate
-            // while holding a producer-contended shard mutex.
+            // Reserve before probing so the per-shard placeholder resizes
+            // never reallocate — nothing allocates while holding a
+            // producer-contended shard mutex, and a reserve failure throws
+            // here, before any shard state is mutated.
             out.reserve(out.size() + max_items);
 
             const uint64_t active = active_shards_.load(std::memory_order_acquire);
@@ -225,10 +234,13 @@ namespace pinpoint {
                     // tail_ wraps back around to its cell — retaining up to
                     // the full physical ring instead of quota_ values
                     // (take_excess_quota extracts dropped cells the same
-                    // way). Exchanging head_ first also keeps the
+                    // way). Emptying head_ first also keeps the
                     // quota_ == capacity case correct, where head_ and tail_
-                    // are the same cell.
-                    dropped = std::exchange(cells_[head_], T{});
+                    // are the same cell. Two move assignments rather than
+                    // std::exchange, which move-constructs its result —
+                    // outside the class's no-throw T contract.
+                    dropped = std::move(cells_[head_]);
+                    cells_[head_] = T{};
                     head_ = next(head_);
                     cells_[tail_] = std::move(value);
                     tail_ = next(tail_);
@@ -247,16 +259,29 @@ namespace pinpoint {
             }
 
             // Caller must have reserved capacity in out for max_items: the
-            // push_backs below run under the shard mutex and must not grow
-            // the vector there (see ShardedBoundedQueue::try_dequeue_batch).
+            // resizes below must not reallocate, so nothing allocates or
+            // throws while the shard mutex is held and the trailing
+            // down-resize cannot move the appended values (see
+            // ShardedBoundedQueue::try_dequeue_batch).
             size_t try_dequeue_batch(std::vector<T>& out, size_t max_items) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                const size_t count = std::min(size_, max_items);
-                for (size_t i = 0; i < count; ++i) {
-                    out.push_back(std::move(cells_[head_]));
-                    head_ = next(head_);
+                // Append default-constructed placeholders first and fill them
+                // by move assignment: push_back would move-construct, which
+                // is outside the class's no-throw T contract — a throw
+                // mid-loop would leave head_ advanced with size_ not yet
+                // decremented.
+                const size_t base = out.size();
+                out.resize(base + max_items);
+                size_t count = 0;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    count = std::min(size_, max_items);
+                    for (size_t i = 0; i < count; ++i) {
+                        out[base + i] = std::move(cells_[head_]);
+                        head_ = next(head_);
+                    }
+                    size_ -= count;
                 }
-                size_ -= count;
+                out.resize(base + count);
                 return count;
             }
 

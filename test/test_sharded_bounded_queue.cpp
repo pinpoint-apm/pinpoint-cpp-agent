@@ -347,31 +347,32 @@ namespace {
         EXPECT_EQ(queue.dropped_oldest(), 32u);
     }
 
+    // The queue's contract only requires no-throw default construction and
+    // move assignment. A throwing move constructor catches accidental
+    // move construction (std::exchange, push_back) on any path that runs
+    // while queue state is being mutated.
+    struct ThrowingMoveValue {
+        ThrowingMoveValue() noexcept = default;
+        explicit ThrowingMoveValue(int value) noexcept : value(value) {}
+        ThrowingMoveValue(const ThrowingMoveValue&) = delete;
+        ThrowingMoveValue& operator=(const ThrowingMoveValue&) = delete;
+        ThrowingMoveValue(ThrowingMoveValue&&) {
+            throw std::runtime_error("move construction must not run");
+        }
+        ThrowingMoveValue& operator=(ThrowingMoveValue&& other) noexcept {
+            value = std::exchange(other.value, -1);
+            return *this;
+        }
+        ~ThrowingMoveValue() noexcept = default;
+
+        int value{-1};
+    };
+
     TEST(ShardedBoundedQueueTest, QuotaReclaimUsesNoThrowOperationsAfterScratchAllocation) {
-        // The queue's contract only requires no-throw default construction and
-        // move assignment. A throwing move constructor catches accidental
-        // push_back/exchange use after quota_ has been committed.
-        struct Value {
-            Value() noexcept = default;
-            explicit Value(int value) noexcept : value(value) {}
-            Value(const Value&) = delete;
-            Value& operator=(const Value&) = delete;
-            Value(Value&&) {
-                throw std::runtime_error("move construction must not run");
-            }
-            Value& operator=(Value&& other) noexcept {
-                value = std::exchange(other.value, -1);
-                return *this;
-            }
-            ~Value() noexcept = default;
-
-            int value{-1};
-        };
-
-        ShardedBoundedQueue<Value> queue(64, 2);
+        ShardedBoundedQueue<ThrowingMoveValue> queue(64, 2);
         std::thread first([&] {
             for (int value = 0; value < 64; ++value) {
-                Value item(value);
+                ThrowingMoveValue item(value);
                 queue.enqueue(item);
             }
         });
@@ -380,7 +381,7 @@ namespace {
         std::exception_ptr reclaim_failure;
         std::thread late([&] {
             try {
-                Value item(64);
+                ThrowingMoveValue item(64);
                 queue.enqueue(item);
             } catch (...) {
                 reclaim_failure = std::current_exception();
@@ -392,11 +393,47 @@ namespace {
         EXPECT_EQ(queue.dropped_oldest(), 32u);
 
         size_t retained = 0;
-        Value item;
+        ThrowingMoveValue item;
         while (queue.try_dequeue(item)) {
             ++retained;
         }
         EXPECT_EQ(retained, 33u);
+    }
+
+    TEST(ShardedBoundedQueueTest, SaturatedOverwriteAndBatchDrainUseNoThrowOperations) {
+        // Companion to the reclaim test above: the saturated head-drop path
+        // and the batch drain also mutate shard state under the shard mutex
+        // and must therefore never move-construct either.
+        ShardedBoundedQueue<ThrowingMoveValue> queue(64, 1);
+
+        std::exception_ptr failure;
+        try {
+            // With a single always-active shard every enqueue takes the
+            // combined enqueue-or-overwrite path; the 65th head-drops value 0.
+            for (int value = 0; value < 65; ++value) {
+                ThrowingMoveValue item(value);
+                queue.enqueue(item);
+            }
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        EXPECT_EQ(failure, nullptr);
+        EXPECT_EQ(queue.dropped_oldest(), 1u);
+
+        std::vector<ThrowingMoveValue> drained;
+        size_t taken = 0;
+        try {
+            // Request more than is retained so the placeholder shrink runs.
+            taken = queue.try_dequeue_batch(drained, 100);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        EXPECT_EQ(failure, nullptr);
+        EXPECT_EQ(taken, 64u);
+        ASSERT_EQ(drained.size(), 64u);
+        for (int offset = 0; offset < 64; ++offset) {
+            EXPECT_EQ(drained[offset].value, offset + 1);
+        }
     }
 
     TEST(ShardedBoundedQueueTest, HeadDropDestroysOverwrittenValuesPromptly) {
