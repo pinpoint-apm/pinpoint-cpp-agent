@@ -374,6 +374,17 @@ void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id) 
 class AgentIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+
+        ConfigureBeforeAgentStart();
+        agent_->Start();
+        ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+            return !snapshot.agent_infos.empty();
+        }, kWaitTimeout));
+        ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }));
+    }
+
+    void CreateColdAgent() {
         ASSERT_TRUE(collector_.Start());
         ASSERT_GT(collector_.agent_port(), 0);
         ASSERT_GT(collector_.span_port(), 0);
@@ -391,13 +402,6 @@ protected:
                              {"libintegration.so", "libmock-collector.so"});
         impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
         ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
-
-        ConfigureBeforeAgentStart();
-        agent_->Start();
-        ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-            return !snapshot.agent_infos.empty();
-        }, kWaitTimeout));
-        ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }));
     }
 
     void TearDown() override {
@@ -618,6 +622,27 @@ protected:
         collector_.FailNext(CollectorRpc::AgentInfo,
                             grpc::StatusCode::UNAVAILABLE,
                             "first registration attempt rejected");
+    }
+};
+
+class CollectorUnavailableAtStartupIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+
+        // Keep the configured ports but remove every listening server. This
+        // models an agent process starting while the collector is completely
+        // unavailable and lets each test decide whether to recover or stop.
+        ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Agent));
+        ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Span));
+        ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Stat));
+        agent_->Start();
+    }
+
+    void RestartCollector() {
+        ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Span));
+        ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Stat));
+        ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Agent));
     }
 };
 
@@ -1974,6 +1999,79 @@ TEST_F(AgentInfoRetryIntegrationTest, RetriesAgentRegistrationAfterInitialFailur
     EXPECT_EQ(results[1].status_code, grpc::StatusCode::OK);
     EXPECT_TRUE(results[1].response_success);
     EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(CollectorUnavailableAtStartupIntegrationTest,
+       EnablesAndStartsAllGrpcWorkersAfterCollectorRecovery) {
+    // The init thread may keep retrying indefinitely, but it must not expose a
+    // half-started agent or start any downstream worker before AgentInfo is
+    // accepted.
+    std::this_thread::sleep_for(300ms);
+    EXPECT_FALSE(agent_->Enable());
+    const auto outage_snapshot = collector_.snapshot();
+    EXPECT_TRUE(outage_snapshot.agent_infos.empty());
+    EXPECT_TRUE(outage_snapshot.ping_streams.empty());
+    EXPECT_TRUE(outage_snapshot.command_streams_v2.empty());
+    EXPECT_TRUE(outage_snapshot.stat_streams.empty());
+
+    ASSERT_NO_FATAL_FAILURE(RestartCollector());
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.agent_infos.empty() &&
+               !snapshot.pings.empty() &&
+               !snapshot.command_streams_v2.empty() &&
+               !snapshot.stat_streams.empty();
+    }, std::chrono::seconds(20)));
+    ASSERT_TRUE(wait_until([this] { return agent_->Enable(); },
+                           std::chrono::seconds(20)));
+
+    // Verify more than registration: every independent collector channel must
+    // carry fresh work after the full outage ends.
+    constexpr std::string_view api_info = "collector.startup.recovery.api";
+    const auto api_id = impl_->cacheApi(api_info, API_TYPE_DEFAULT);
+    ASSERT_GT(api_id, 0);
+
+    const auto stats_before = collector_.snapshot().stats.size();
+    impl_->recordStats(AGENT_STATS);
+
+    auto span = agent_->NewSpan("collector.startup.recovery",
+                                "/collector-startup-recovery");
+    ASSERT_TRUE(span->IsSampled());
+    span->EndSpan();
+
+    collector_.SendEchoCommand(401, "collector-recovered");
+    ASSERT_TRUE(collector_.WaitFor([stats_before](const auto& snapshot) {
+        const auto echo_received = std::any_of(
+            snapshot.echo_responses.begin(), snapshot.echo_responses.end(),
+            [](const auto& response) {
+                return response.message.commonresponse().responseid() == 401;
+            });
+        return find_span_by_rpc(snapshot, "/collector-startup-recovery").has_value() &&
+               has_api_metadata(snapshot, "collector.startup.recovery.api",
+                                API_TYPE_DEFAULT) &&
+               snapshot.stats.size() > stats_before &&
+               echo_received;
+    }, std::chrono::seconds(20)));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(CollectorUnavailableAtStartupIntegrationTest,
+       ShutdownInterruptsInitialCollectorWait) {
+    // Give the init thread time to enter the channel-readiness backoff while
+    // all three collector endpoints remain unavailable.
+    std::this_thread::sleep_for(300ms);
+    ASSERT_FALSE(agent_->Enable());
+
+    const auto started = std::chrono::steady_clock::now();
+    agent_->Shutdown();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    EXPECT_LT(elapsed, std::chrono::seconds(3))
+        << "shutdown must interrupt the initial collector wait, not wait for a request deadline";
+    EXPECT_FALSE(agent_->Enable());
+
+    const auto snapshot = collector_.snapshot();
+    EXPECT_TRUE(snapshot.agent_infos.empty());
+    EXPECT_TRUE(snapshot.stat_streams.empty());
 }
 
 TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
