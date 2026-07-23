@@ -1993,11 +1993,6 @@ TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
                                       "mock-collector integration server");
     EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(reloaded), impl_);
 
-    // Applying a config refreshes the agent info registration.
-    ASSERT_TRUE(collector_.WaitFor([infos_before](const auto& snapshot) {
-        return snapshot.agent_infos.size() >= infos_before + 1;
-    }, kWaitTimeout));
-
     // The reloaded URL filter must reject new spans while everything else
     // keeps tracing.
     EXPECT_FALSE(agent_->NewSpan("reload.probe", "/reloaded/after")->IsSampled());
@@ -2011,6 +2006,9 @@ TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
     const auto snapshot = collector_.snapshot();
     EXPECT_EQ(count_spans_by_rpc(snapshot, "/reloaded/before"), 1U);
     EXPECT_EQ(count_spans_by_rpc(snapshot, "/reloaded/after"), 0U);
+    // A config reload must not re-send AgentInfo: the registration count
+    // observed before the reload is still the total after spans flowed.
+    EXPECT_EQ(snapshot.agent_infos.size(), infos_before);
     EXPECT_TRUE(agent_->Enable());
 }
 

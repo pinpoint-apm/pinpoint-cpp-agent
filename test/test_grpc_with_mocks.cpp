@@ -333,18 +333,7 @@ public:
         : GrpcAgent(std::move(config)) {}
 
     GrpcRequestStatus registerAgent() override {
-        const auto count = calls_.fetch_add(1) + 1;
-        if (count >= 2) {
-            if (success_promise_ != nullptr && !promise_set_.exchange(true)) {
-                success_promise_->set_value();
-            }
-            return SEND_OK;
-        }
-        return SEND_FAIL;
-    }
-
-    void setSuccessPromise(std::promise<void>* promise) {
-        success_promise_ = promise;
+        return calls_.fetch_add(1) + 1 >= 2 ? SEND_OK : SEND_FAIL;
     }
 
     int calls() const {
@@ -353,8 +342,6 @@ public:
 
 private:
     std::atomic<int> calls_{0};
-    std::atomic<bool> promise_set_{false};
-    std::promise<void>* success_promise_{nullptr};
 };
 
 class TestableGrpcSpan : public GrpcSpan {
@@ -437,7 +424,7 @@ private:
 };
 
 // GrpcAgent whose registerAgent() throws on the first attempt, for the
-// AgentInfo scheduler's supervised-restart test.
+// boot-registration and AgentInfo-scheduler supervised-retry tests.
 class ThrowingAgentInfoGrpcAgent : public GrpcAgent {
 public:
     explicit ThrowingAgentInfoGrpcAgent(std::shared_ptr<const Config> config)
@@ -650,47 +637,43 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
     EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
 }
 
-TEST_F(GrpcMockTest, GrpcAgentInfoRetriesUntilSuccess) {
+TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryRetriesUntilSuccess) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
     cfg->collector.agent_info.send_retry_interval_ms = 10;
-    cfg->collector.agent_info.max_try_per_attempt = 3;
 
     RetryingAgentInfoGrpcAgent grpc_agent(cfg);
-    std::promise<void> success_promise;
-    auto success = success_promise.get_future();
-    grpc_agent.setSuccessPromise(&success_promise);
     grpc_agent.setAgentService(mock_agent_service_.get());
 
-    grpc_agent.startAgentInfo();
-
-    EXPECT_EQ(success.wait_for(std::chrono::seconds(1)), std::future_status::ready)
-        << "GrpcAgent should retry AgentInfo after the configured interval";
-    grpc_agent.stopAgentInfo();
+    EXPECT_TRUE(grpc_agent.registerAgentWithRetry())
+        << "boot registration should retry until the collector accepts AgentInfo";
     EXPECT_GE(grpc_agent.calls(), 2);
 }
 
-TEST_F(GrpcMockTest, GrpcAgentInfoSurvivesRegisterException) {
+TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetrySurvivesRegisterException) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
     cfg->collector.agent_info.send_retry_interval_ms = 10;
-    cfg->collector.agent_info.max_try_per_attempt = 3;
 
     ThrowingAgentInfoGrpcAgent grpc_agent(cfg);
-    std::promise<void> success_promise;
-    auto success = success_promise.get_future();
-    grpc_agent.setSuccessPromise(&success_promise);
     grpc_agent.setAgentService(mock_agent_service_.get());
 
-    grpc_agent.startAgentInfo();
-
-    // The first attempt throws out of the scheduler loop. The supervisor must
-    // restart it after WORKER_RESTART_DELAY instead of letting it die, so a
-    // later attempt still delivers the AgentInfo.
-    EXPECT_EQ(success.wait_for(std::chrono::seconds(5)), std::future_status::ready)
-        << "AgentInfo scheduler should survive a thrown registerAgent()";
-    grpc_agent.stopAgentInfo();
+    // The first attempt throws. The boot loop must treat it like a failed
+    // send and keep retrying instead of aborting the bring-up.
+    EXPECT_TRUE(grpc_agent.registerAgentWithRetry())
+        << "boot registration should survive a thrown registerAgent()";
     EXPECT_GE(grpc_agent.calls(), 2);
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryStopsWhenAgentExits) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+
+    CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    mock_agent_service_->setExiting(true);
+    EXPECT_FALSE(grpc_agent.registerAgentWithRetry())
+        << "boot registration must give up when the agent is exiting";
+    EXPECT_EQ(grpc_agent.calls(), 0);
 }
 
 TEST_F(GrpcMockTest, GrpcAgentMetaDataEnqueueTest) {
@@ -2430,9 +2413,9 @@ TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {
 // GrpcAgent AgentInfo scheduler tests
 // ============================================================
 
-TEST_F(GrpcMockTest, GrpcAgentRefreshAgentInfoTriggersImmediateResend) {
+TEST_F(GrpcMockTest, GrpcAgentInfoSchedulerResendsPeriodically) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.refresh_interval_ms = 20;
     cfg->collector.agent_info.send_retry_interval_ms = 10;
     cfg->collector.agent_info.max_try_per_attempt = 1;
 
@@ -2440,17 +2423,52 @@ TEST_F(GrpcMockTest, GrpcAgentRefreshAgentInfoTriggersImmediateResend) {
     grpc_agent.setAgentService(mock_agent_service_.get());
 
     grpc_agent.startAgentInfo();
-    ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)))
-        << "Initial AgentInfo should be sent on start";
-
-    grpc_agent.refreshAgentInfo();
     EXPECT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 2; }, std::chrono::seconds(2)))
-        << "refreshAgentInfo should trigger a resend before the refresh interval elapses";
+        << "the scheduler should re-send AgentInfo every refresh interval";
 
     grpc_agent.stopAgentInfo();
 }
 
-TEST_F(GrpcMockTest, GrpcAgentStartAgentInfoIsIdempotent) {
+TEST_F(GrpcMockTest, GrpcAgentInfoSchedulerToleratesSendFailure) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.refresh_interval_ms = 20;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 1;
+
+    CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    grpc_agent.startAgentInfo();
+    EXPECT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 2; }, std::chrono::seconds(2)))
+        << "a failed post-boot re-send must not stop the scheduler";
+
+    grpc_agent.stopAgentInfo();
+}
+
+TEST_F(GrpcMockTest, GrpcAgentInfoSchedulerSurvivesRegisterException) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.refresh_interval_ms = 20;
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    cfg->collector.agent_info.max_try_per_attempt = 1;
+
+    ThrowingAgentInfoGrpcAgent grpc_agent(cfg);
+    std::promise<void> success_promise;
+    auto success = success_promise.get_future();
+    grpc_agent.setSuccessPromise(&success_promise);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    grpc_agent.startAgentInfo();
+
+    // The first re-send throws out of the scheduler loop. The supervisor must
+    // restart it after WORKER_RESTART_DELAY instead of letting it die, so a
+    // later cycle still delivers the AgentInfo.
+    EXPECT_EQ(success.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "AgentInfo scheduler should survive a thrown registerAgent()";
+    grpc_agent.stopAgentInfo();
+    EXPECT_GE(grpc_agent.calls(), 2);
+}
+
+TEST_F(GrpcMockTest, GrpcAgentStartAgentInfoIsIdempotentAndDoesNotSendAtStart) {
     auto cfg = mock_agent_service_->mutableConfig();
     cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
     cfg->collector.agent_info.send_retry_interval_ms = 10;
@@ -2460,18 +2478,21 @@ TEST_F(GrpcMockTest, GrpcAgentStartAgentInfoIsIdempotent) {
     grpc_agent.setAgentService(mock_agent_service_.get());
 
     grpc_agent.startAgentInfo();
+    // A second start must be a no-op: spawning over the live scheduler thread
+    // would std::terminate on the std::thread assignment.
     grpc_agent.startAgentInfo();
 
-    ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    EXPECT_EQ(grpc_agent.calls(), 1) << "Second startAgentInfo must not spawn another sender";
+    EXPECT_EQ(grpc_agent.calls(), 0)
+        << "boot registration happens outside the scheduler; the scheduler "
+           "must wait out the refresh interval before its first re-send";
 
     grpc_agent.stopAgentInfo();
 }
 
 TEST_F(GrpcMockTest, GrpcAgentStopAgentInfoDuringRetriesReturnsPromptly) {
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
+    cfg->collector.agent_info.refresh_interval_ms = 20;
     cfg->collector.agent_info.send_retry_interval_ms = 60 * 1000;
     cfg->collector.agent_info.max_try_per_attempt = 3;
 
@@ -2490,24 +2511,19 @@ TEST_F(GrpcMockTest, GrpcAgentStopAgentInfoDuringRetriesReturnsPromptly) {
         << "stopAgentInfo should interrupt the retry delay instead of waiting it out";
 }
 
-TEST_F(GrpcMockTest, GrpcAgentRefreshDuringInitialRetriesKeepsPacing) {
+TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryPacesAndStopsPromptly) {
     constexpr int retry_interval_ms = 100;
     auto cfg = mock_agent_service_->mutableConfig();
-    cfg->collector.agent_info.refresh_interval_ms = 60 * 1000;
     cfg->collector.agent_info.send_retry_interval_ms = retry_interval_ms;
-    cfg->collector.agent_info.max_try_per_attempt = 3;
 
     CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL);
     grpc_agent.setAgentService(mock_agent_service_.get());
 
-    grpc_agent.startAgentInfo();
-    ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)))
-        << "Initial AgentInfo attempt should happen on start";
+    std::atomic<bool> boot_result{true};
+    std::thread boot([&] { boot_result = grpc_agent.registerAgentWithRetry(); });
 
-    // Request a refresh while the initial registration is still failing. The
-    // request must not be left pending in a state where it defeats the retry
-    // pacing (every wait returning immediately = hot spin for the outage).
-    grpc_agent.refreshAgentInfo();
+    ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)))
+        << "boot registration should attempt a send immediately";
 
     const auto observe_start = std::chrono::steady_clock::now();
     const int calls_before = grpc_agent.calls();
@@ -2516,14 +2532,21 @@ TEST_F(GrpcMockTest, GrpcAgentRefreshDuringInitialRetriesKeepsPacing) {
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - observe_start).count();
 
-    // Paced retries: at most elapsed/interval attempts, plus slack for the one
-    // legitimate refresh-triggered early wake and read-order jitter. A hot
-    // spin racks up thousands of attempts in the same window.
+    // Paced retries: at most elapsed/interval attempts, plus slack for
+    // read-order jitter. A hot spin racks up thousands of attempts in the
+    // same window.
     const int max_paced = static_cast<int>(elapsed_ms / retry_interval_ms) + 2;
     EXPECT_LE(calls_during, max_paced)
-        << "a pending refresh request must not defeat AgentInfo retry pacing";
+        << "boot registration retries must stay paced during a collector outage";
 
+    // stopAgentInfo must wake the boot retry wait even though no scheduler
+    // thread was ever started.
+    const auto stop_start = std::chrono::steady_clock::now();
     grpc_agent.stopAgentInfo();
+    boot.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "stopAgentInfo should interrupt the boot retry wait";
+    EXPECT_FALSE(boot_result) << "an interrupted boot registration reports failure";
 }
 
 // ============================================================

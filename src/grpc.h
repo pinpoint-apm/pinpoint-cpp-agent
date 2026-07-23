@@ -439,16 +439,21 @@ namespace pinpoint {
          */
         virtual GrpcRequestStatus registerAgent();
 
+        /// @brief Boot-phase registration: sends AgentInfo repeatedly until the
+        /// collector accepts it. Blocks the caller (the agent's init thread);
+        /// stopAgentInfo() or agent exit interrupts the retry wait.
+        /// @return true once registration succeeded, false when stopped first.
+        bool registerAgentWithRetry();
+
         /// @brief Worker loop that periodically sends ping requests.
         void sendPingWorker();
         /// @brief Stops the ping worker loop.
         void stopPingWorker();
-        /// @brief Starts the scheduled AgentInfo sender loop.
+        /// @brief Starts the periodic AgentInfo re-send scheduler.
         void startAgentInfo();
-        /// @brief Stops the scheduled AgentInfo sender loop.
+        /// @brief Stops the periodic AgentInfo re-send scheduler and wakes a
+        /// blocked registerAgentWithRetry().
         void stopAgentInfo();
-        /// @brief Requests an immediate AgentInfo refresh attempt.
-        void refreshAgentInfo();
         /// @brief Sets server metadata included in AgentInfo.
         void setServerMetaData(std::string_view server_info,
                                const std::vector<std::string>& args,
@@ -490,7 +495,6 @@ namespace pinpoint {
         std::condition_variable agent_info_cv_;
         bool agent_info_running_{false};
         bool agent_info_stop_requested_{false};
-        bool agent_info_refresh_requested_{false};
         bool server_meta_data_set_{false};
         ServerMetaData server_meta_data_;
 

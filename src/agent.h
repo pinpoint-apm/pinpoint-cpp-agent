@@ -111,7 +111,6 @@ namespace pinpoint {
     	int64_t getStartTime() const override { return start_time_; }
 		/// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
     	void reloadConfig(std::shared_ptr<const Config> cfg) override;
-    	void onAgentInfoSent() override;
 
     	TraceId generateTraceId() override;
     	void recordSpan(std::unique_ptr<SpanChunk> span) const override;
@@ -243,8 +242,10 @@ namespace pinpoint {
     	                  std::shared_ptr<const Config> cfg);
     	/// @brief Populates rt's HTTP header recorders for server and client.
     	static void build_header_recorders(AgentRuntime& rt, const Config& cfg);
-    	/// @brief Opens the gRPC channels and starts background threads
-    	/// responsible for gRPC communication. Runs on init_thread_.
+    	/// @brief Opens the gRPC channels, blocks until the boot-phase
+    	/// AgentInfo registration succeeds, then starts the background threads
+    	/// responsible for gRPC communication and enables the agent. Runs on
+    	/// init_thread_.
     	void init_grpc_workers();
     	/// @brief Regenerates a process-unique agent id when Start() runs in a
     	/// forked child (create_pid_ != current pid). A pinned id gets a pid

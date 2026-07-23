@@ -382,10 +382,6 @@ namespace pinpoint {
         raw_sql_cache_enabled_.store(cfg->sql.enable_raw_sql_cache,
                                      std::memory_order_relaxed);
         runtime_.store(build_runtime(old_rt, std::move(cfg)));
-
-        if (grpc_agent_) {
-            grpc_agent_->refreshAgentInfo();
-        }
     }
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
@@ -418,6 +414,18 @@ namespace pinpoint {
             grpc_command_->openChannel();
         }
 
+        // Boot-phase registration: block here until the collector accepts the
+        // first AgentInfo, retrying indefinitely. The other workers are only
+        // spawned after that first success. A shutdown during the wait aborts
+        // the bring-up: close_grpc_workers() runs stopAgentInfo() before
+        // joining this thread, which wakes the retry sleep.
+        if (!grpc_agent_->registerAgentWithRetry()) {
+            return;
+        }
+
+        // Registered: start the periodic AgentInfo re-sender and the rest of
+        // the workers. Post-boot AgentInfo send failures are tolerated and
+        // never touch enabled_.
         grpc_agent_->startAgentInfo();
 
         ping_thread_ = std::thread{&GrpcAgent::sendPingWorker, grpc_agent_.get()};
@@ -430,19 +438,9 @@ namespace pinpoint {
         url_stat_add_thread_ = std::thread{&UrlStats::addUrlStatsWorker, url_stats_.get()};
         url_stat_send_thread_ = std::thread{&UrlStats::sendUrlStatsWorker, url_stats_.get()};
         agent_stat_thread_ = std::thread{&AgentStats::agentStatsWorker, agent_stats_.get()};
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
-        enabled_ = false;
-        return;
-    } catch (...) {
-        LOG_ERROR("failed to init grpc workers: unknown exception");
-        enabled_ = false;
-        return;
-    }
 
-    void AgentImpl::onAgentInfoSent() {
-        // An in-flight registerAgent may complete just after shutdown began;
-        // it must not re-enable span recording into workers being torn down.
+        // All workers are up: enable span recording. A shutdown racing this
+        // init must not re-enable an agent being torn down.
         if (!shutting_down_) {
             enabled_ = true;
             // Close the check-then-store window: do_shutdown() may have run
@@ -456,6 +454,14 @@ namespace pinpoint {
                 enabled_ = false;
             }
         }
+    } catch (const std::exception &e) {
+        LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
+        enabled_ = false;
+        return;
+    } catch (...) {
+        LOG_ERROR("failed to init grpc workers: unknown exception");
+        enabled_ = false;
+        return;
     }
 
     void AgentImpl::close_grpc_workers() {
@@ -518,8 +524,11 @@ namespace pinpoint {
             std::vector<std::thread> threads;
         };
         // init_grpc_workers assigns the other thread members; join it first so
-        // moving them below cannot race those assignments. The init thread only
-        // spawns workers and returns, so this join is quick. Done before the
+        // moving them below cannot race those assignments. The init thread may
+        // be blocked in the boot-phase registration, but close_grpc_workers()
+        // has already run stopAgentInfo(), which interrupts that retry loop,
+        // and an in-flight registerAgent() call is bounded by its request
+        // deadline — so this join completes in bounded time. Done before the
         // allocations below so the inline-join fallback never races it either.
         if (init_thread_.joinable()) {
             init_thread_.join();

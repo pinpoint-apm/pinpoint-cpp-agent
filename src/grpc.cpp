@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -1185,7 +1184,7 @@ namespace pinpoint {
         v1::PResult reply;
 
         // Deliberately NOT under channel_mutex_: agent_stub_ is created by
-        // openChannel() before the AgentInfo worker starts and gRPC stubs are
+        // openChannel() before any AgentInfo send runs and gRPC stubs are
         // thread-safe. Holding the mutex across this blocking unary call would
         // stall the ping worker's readyChannel() for up to the request
         // deadline — and conversely readyChannel()'s unbounded backoff loop
@@ -1209,6 +1208,30 @@ namespace pinpoint {
         return SEND_FAIL;
     }
 
+    bool GrpcAgent::registerAgentWithRetry() {
+        // Boot-phase registration: keep trying until the collector accepts
+        // the AgentInfo. Supervised per attempt — a transient exception (e.g.
+        // bad_alloc while building AgentInfo under memory pressure) is
+        // retried like a failed send, so the agent still comes up once the
+        // condition clears. Only stopAgentInfo() or agent exit ends the loop.
+        const auto retry_interval = std::chrono::milliseconds(config_->collector.agent_info.send_retry_interval_ms);
+        while (!agent_->isExiting()) {
+            try {
+                if (send_agent_info_once()) {
+                    return true;
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("register agent exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("register agent unknown exception");
+            }
+            if (wait_agent_info_retry(retry_interval)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     void GrpcAgent::startAgentInfo() {
         std::unique_lock<std::mutex> lock(agent_info_mutex_);
         if (agent_info_running_) {
@@ -1221,7 +1244,6 @@ namespace pinpoint {
             return;
         }
         agent_info_stop_requested_ = false;
-        agent_info_refresh_requested_ = false;
         agent_info_running_ = true;
         agent_info_thread_ = std::thread{&GrpcAgent::agent_info_worker, this};
     }
@@ -1229,11 +1251,14 @@ namespace pinpoint {
     void GrpcAgent::stopAgentInfo() {
         {
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
+            // Set and signal even when no scheduler thread is running: the
+            // boot-phase registerAgentWithRetry() (on the agent's init
+            // thread) waits on this cv too and must wake promptly.
+            agent_info_stop_requested_ = true;
+            agent_info_cv_.notify_all();
             if (!agent_info_running_ && !agent_info_thread_.joinable()) {
                 return;
             }
-            agent_info_stop_requested_ = true;
-            agent_info_cv_.notify_all();
         }
         if (agent_info_thread_.joinable()) {
             agent_info_thread_.join();
@@ -1241,18 +1266,8 @@ namespace pinpoint {
         {
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
             agent_info_running_ = false;
-            agent_info_refresh_requested_ = false;
         }
         LOG_INFO("AgentInfo scheduler stopped");
-    }
-
-    void GrpcAgent::refreshAgentInfo() {
-        std::unique_lock<std::mutex> lock(agent_info_mutex_);
-        if (!agent_info_running_) {
-            return;
-        }
-        agent_info_refresh_requested_ = true;
-        agent_info_cv_.notify_all();
     }
 
     bool GrpcAgent::should_stop_agent_info() const {
@@ -1266,7 +1281,6 @@ namespace pinpoint {
         const auto status = registerAgent();
         if (status == SEND_OK) {
             LOG_INFO("AgentInfo sent");
-            agent_->onAgentInfoSent();
             return true;
         }
         LOG_WARN("failed to send AgentInfo");
@@ -1278,16 +1292,6 @@ namespace pinpoint {
         for (int try_count = 0; try_count < max_try_count; ++try_count) {
             if (agent_->isExiting()) {
                 return false;
-            }
-            {
-                // Consume any pending refresh request: the attempt below sends
-                // a freshly built AgentInfo, which is all a refresh asks for.
-                // Left set, a request that arrives during the unbounded initial
-                // registration (where nothing else clears it) would make every
-                // wait_agent_info_retry() return immediately — a hot retry loop
-                // for as long as the collector stays unreachable.
-                std::unique_lock<std::mutex> lock(agent_info_mutex_);
-                agent_info_refresh_requested_ = false;
             }
             if (send_agent_info_once()) {
                 return true;
@@ -1301,23 +1305,21 @@ namespace pinpoint {
 
     bool GrpcAgent::wait_agent_info_retry(std::chrono::milliseconds delay) {
         std::unique_lock<std::mutex> lock(agent_info_mutex_);
-        agent_info_cv_.wait_for(lock, delay, [this] { return should_stop_agent_info() || agent_info_refresh_requested_; });
+        agent_info_cv_.wait_for(lock, delay, [this] { return should_stop_agent_info(); });
         return should_stop_agent_info();
     }
 
     bool GrpcAgent::wait_agent_info_until(std::chrono::steady_clock::time_point deadline) {
         std::unique_lock<std::mutex> lock(agent_info_mutex_);
-        agent_info_cv_.wait_until(lock, deadline, [this] { return should_stop_agent_info() || agent_info_refresh_requested_; });
+        agent_info_cv_.wait_until(lock, deadline, [this] { return should_stop_agent_info(); });
         return should_stop_agent_info();
     }
 
     void GrpcAgent::agent_info_worker() {
         // Supervise the loop body like the other grpc workers: a transient
         // exception (e.g. bad_alloc while building AgentInfo under memory
-        // pressure) must not kill the scheduler for the process lifetime —
-        // if it died before the first successful registration,
-        // onAgentInfoSent() would never run and the agent would stay
-        // disabled. Only a stop request or agent exit ends the worker.
+        // pressure) must not kill the periodic re-send scheduler for the
+        // process lifetime. Only a stop request or agent exit ends the worker.
         while (true) {
             try {
                 run_agent_info_worker();
@@ -1328,10 +1330,7 @@ namespace pinpoint {
                 LOG_ERROR("AgentInfo scheduler unknown exception");
             }
 
-            // Not wait_agent_info_retry(): this delay paces crash restarts,
-            // and a refresh request left pending across the unwind must not
-            // cut it short — the restarted worker re-sends AgentInfo (and
-            // consumes the flag) as its first act regardless.
+            // Pace crash restarts before re-entering the periodic loop.
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
             if (agent_info_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
                     return should_stop_agent_info();
@@ -1342,14 +1341,11 @@ namespace pinpoint {
     }
 
     void GrpcAgent::run_agent_info_worker() {
-        // A supervisor restart re-enters the unbounded initial registration
-        // phase even when the exception unwound the periodic refresh loop:
-        // re-sending AgentInfo is idempotent, and after an unknown failure
-        // re-establishing the registration is the safe default.
-        if (!send_agent_info_with_retries(std::numeric_limits<int>::max())) {
-            return;
-        }
-
+        // Boot-time registration already succeeded before this scheduler was
+        // started (init_grpc_workers blocks on registerAgentWithRetry()), so
+        // this loop only re-sends AgentInfo each refresh interval. Post-boot
+        // sends are best-effort: a failed cycle simply waits for the next
+        // interval and never affects the agent's enabled state.
         const auto refresh_interval = std::chrono::milliseconds(config_->collector.agent_info.refresh_interval_ms);
         auto next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         while (true) {
@@ -1357,8 +1353,6 @@ namespace pinpoint {
                 return;
             }
 
-            // A pending refresh request is consumed by the send cycle itself
-            // (each attempt clears the flag before sending).
             send_agent_info_with_retries(config_->collector.agent_info.max_try_per_attempt);
             next_refresh = std::chrono::steady_clock::now() + refresh_interval;
         }
