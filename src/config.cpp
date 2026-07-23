@@ -491,6 +491,7 @@ namespace pinpoint {
         if (auto http = find_node(yaml, "Http")) {
             config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", config.http.url_stat.enable);
             config.http.url_stat.limit = get_int(http, "UrlStatLimit", config.http.url_stat.limit);
+            config.http.url_stat.queue_size = get_int(http, "UrlStatQueueSize", static_cast<int>(config.http.url_stat.queue_size));
             config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path);
             config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth);
             config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", config.http.url_stat.method_prefix);
@@ -762,6 +763,9 @@ namespace pinpoint {
         if(auto e = get_env(env::HTTP_URL_STAT_LIMIT)) {
             config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.limit);
         }
+        if(auto e = get_env(env::HTTP_URL_STAT_QUEUE_SIZE)) {
+            config.http.url_stat.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.http.url_stat.queue_size));
+        }
         if(auto e = get_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
             config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable_trim_path);
         }
@@ -875,6 +879,8 @@ namespace pinpoint {
     constexpr int MAX_STAT_INTERVAL_MS = 60000;
     constexpr int MIN_GRPC_QUEUE_SIZE = 1;
     constexpr int MAX_GRPC_QUEUE_SIZE = 65536;
+    constexpr int MIN_URL_STAT_QUEUE_SIZE = 1;
+    constexpr int MAX_URL_STAT_QUEUE_SIZE = 65536;
 
     static int clamp_port(int port, int default_port) {
         if (port < MIN_PORT || port > MAX_PORT) {
@@ -1160,6 +1166,16 @@ namespace pinpoint {
             config->http.url_stat.limit = defaults::HTTP_URL_STAT_LIMIT;
         }
 
+        // A negative value would wrap into a huge size_t here, so the upper
+        // bound also rejects it.
+        if (config->http.url_stat.queue_size < MIN_URL_STAT_QUEUE_SIZE ||
+            config->http.url_stat.queue_size > MAX_URL_STAT_QUEUE_SIZE) {
+            LOG_WARN("http url stat queue size {} is out of range ({}-{}), using default: {}",
+                     config->http.url_stat.queue_size, MIN_URL_STAT_QUEUE_SIZE, MAX_URL_STAT_QUEUE_SIZE,
+                     defaults::HTTP_URL_STAT_QUEUE_SIZE);
+            config->http.url_stat.queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
+        }
+
         validate_grpc_channel(config->collector.grpc.channel, "grpc", Config::GrpcChannelOptions());
 
         // Auto-detect only on the first load. On a reload the value is already
@@ -1288,6 +1304,8 @@ namespace pinpoint {
                                default_config.http.url_stat.enable);
         add_non_default_config(config_strings, "Http.UrlStatLimit", config.http.url_stat.limit,
                                default_config.http.url_stat.limit);
+        add_non_default_config(config_strings, "Http.UrlStatQueueSize", config.http.url_stat.queue_size,
+                               default_config.http.url_stat.queue_size);
         add_non_default_config(config_strings, "Http.UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path,
                                default_config.http.url_stat.enable_trim_path);
         add_non_default_config(config_strings, "Http.UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth,
@@ -1417,6 +1435,7 @@ namespace pinpoint {
 
         emitter << YAML::Key << "CollectUrlStat" << YAML::Value << config.http.url_stat.enable;
         emitter << YAML::Key << "UrlStatLimit" << YAML::Value << config.http.url_stat.limit;
+        emitter << YAML::Key << "UrlStatQueueSize" << YAML::Value << config.http.url_stat.queue_size;
         emitter << YAML::Key << "UrlStatEnableTrimPath" << YAML::Value << config.http.url_stat.enable_trim_path;
         emitter << YAML::Key << "UrlStatTrimPathDepth" << YAML::Value << config.http.url_stat.trim_path_depth;
         emitter << YAML::Key << "UrlStatMethodPrefix" << YAML::Value << config.http.url_stat.method_prefix;
@@ -1584,11 +1603,13 @@ namespace pinpoint {
     static bool same_url_stat_config(const Config& lhs, const Config& rhs) {
         return std::tie(lhs.http.url_stat.enable,
                         lhs.http.url_stat.limit,
+                        lhs.http.url_stat.queue_size,
                         lhs.http.url_stat.enable_trim_path,
                         lhs.http.url_stat.trim_path_depth,
                         lhs.http.url_stat.method_prefix) ==
                std::tie(rhs.http.url_stat.enable,
                         rhs.http.url_stat.limit,
+                        rhs.http.url_stat.queue_size,
                         rhs.http.url_stat.enable_trim_path,
                         rhs.http.url_stat.trim_path_depth,
                         rhs.http.url_stat.method_prefix);

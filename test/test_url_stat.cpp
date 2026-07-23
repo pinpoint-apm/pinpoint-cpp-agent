@@ -39,7 +39,7 @@ protected:
         cfg->http.url_stat.limit = 1024;
         cfg->http.url_stat.trim_path_depth = 3;
         cfg->http.url_stat.method_prefix = false;
-        cfg->span.queue_size = 100;
+        cfg->http.url_stat.queue_size = 100;
     }
 
     void TearDown() override {

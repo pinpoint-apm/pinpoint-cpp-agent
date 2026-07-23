@@ -274,6 +274,7 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 |---|---|---|---|---|
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
+| `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered while waiting for aggregation; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. |
 | `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. |
 | `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with HTTP method (e.g., `GET:/api/users`). |
@@ -680,6 +681,7 @@ Span:
 Http:
   CollectUrlStat: false
   UrlStatLimit: 1024
+  UrlStatQueueSize: 1024
   UrlStatEnableTrimPath: true
   UrlStatTrimPathDepth: 1
   UrlStatMethodPrefix: false

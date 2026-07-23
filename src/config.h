@@ -50,6 +50,7 @@ namespace pinpoint {
         constexpr int GRPC_MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
         constexpr int GRPC_SENDER_QUEUE_SIZE = 1000;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
+        constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         constexpr const char* LOG_LEVEL = "info";
@@ -121,6 +122,7 @@ namespace pinpoint {
         constexpr const char* IS_CONTAINER = "IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
+        constexpr const char* HTTP_URL_STAT_QUEUE_SIZE = "HTTP_URL_STAT_QUEUE_SIZE";
         constexpr const char* HTTP_URL_STAT_ENABLE_TRIM_PATH = "HTTP_URL_STAT_ENABLE_TRIM_PATH";
         constexpr const char* HTTP_URL_STAT_TRIM_PATH_DEPTH = "HTTP_URL_STAT_TRIM_PATH_DEPTH";
         constexpr const char* HTTP_URL_STAT_METHOD_PREFIX = "HTTP_URL_STAT_METHOD_PREFIX";
@@ -255,6 +257,10 @@ namespace pinpoint {
             struct {
                 bool enable = false;
                 int limit = defaults::HTTP_URL_STAT_LIMIT;
+                // limit bounds distinct URL keys tracked per snapshot;
+                // queue_size bounds per-request records buffered between
+                // request end and worker aggregation.
+                size_t queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
                 bool enable_trim_path = true;
                 int trim_path_depth = 1;
                 bool method_prefix = false;

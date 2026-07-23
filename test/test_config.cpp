@@ -100,6 +100,7 @@ private:
         saved_env_vars_[full_env(env::ENABLE_CALLSTACK_TRACE)] = GetEnvVar(full_env(env::ENABLE_CALLSTACK_TRACE));
         saved_env_vars_[full_env(env::HTTP_COLLECT_URL_STAT)] = GetEnvVar(full_env(env::HTTP_COLLECT_URL_STAT));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_LIMIT)] = GetEnvVar(full_env(env::HTTP_URL_STAT_LIMIT));
+        saved_env_vars_[full_env(env::HTTP_URL_STAT_QUEUE_SIZE)] = GetEnvVar(full_env(env::HTTP_URL_STAT_QUEUE_SIZE));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_METHOD_PREFIX)] = GetEnvVar(full_env(env::HTTP_URL_STAT_METHOD_PREFIX));
@@ -203,6 +204,7 @@ Stat:
 Http:
   CollectUrlStat: true
   UrlStatLimit: 2048
+  UrlStatQueueSize: 4096
   UrlStatEnableTrimPath: false
   UrlStatTrimPathDepth: 3
   UrlStatMethodPrefix: true
@@ -268,6 +270,7 @@ Span:
 
 Http:
   UrlStatLimit: -1
+  UrlStatQueueSize: 0
 )";
 };
 
@@ -329,6 +332,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     // Test HTTP defaults
     EXPECT_FALSE(config->http.url_stat.enable) << "URL stat should be disabled by default";
     EXPECT_EQ(config->http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
+    EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "Default URL stat queue size should be 1024";
     EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
     EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
@@ -430,6 +434,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     // Test HTTP configuration
     EXPECT_TRUE(config->http.url_stat.enable) << "URL stat enable should match YAML";
     EXPECT_EQ(config->http.url_stat.limit, 2048) << "URL stat limit should match YAML";
+    EXPECT_EQ(config->http.url_stat.queue_size, 4096) << "URL stat queue size should match YAML";
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
     EXPECT_TRUE(config->http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
@@ -532,6 +537,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(full_env(env::SQL_ENABLE_RAW_SQL_CACHE).c_str(), "true", 1);
     setenv(full_env(env::SQL_TRACE_BIND_VALUE).c_str(), "true", 1);
     setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
+    setenv(full_env(env::HTTP_URL_STAT_QUEUE_SIZE).c_str(), "333", 1);
     setenv(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS).c_str(), "120000", 1);
     setenv(full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS).c_str(), "50", 1);
     setenv(full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT).c_str(), "4", 1);
@@ -562,6 +568,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     
     // Test HTTP environment variable values
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
+    EXPECT_EQ(config->http.url_stat.queue_size, 333) << "URL stat queue size should match environment variable";
 
     EXPECT_EQ(config->collector.agent_info.refresh_interval_ms, 120000) << "AgentInfo refresh interval should match environment variable";
     EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, 50) << "AgentInfo retry interval should match environment variable";
@@ -783,6 +790,7 @@ TEST_F(ConfigTest, ValueValidationTest) {
 
     // A negative URL stat limit would cast to a huge size_t and disable the cap.
     EXPECT_EQ(config->http.url_stat.limit, 1024) << "Negative URL stat limit should be corrected to default (1024)";
+    EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "URL stat queue size < 1 should be corrected to default (1024)";
 }
 
 // Test edge case percent rates
