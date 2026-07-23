@@ -16,6 +16,7 @@
 
 #include "test/it/mock_collector.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -73,6 +74,35 @@ std::vector<std::string> RpcMetadata::all(std::string_view key) const {
 }
 
 struct MockCollector::Impl {
+    /**
+     * Registers a live server call so begin_outage() can cancel it. Only the
+     * stream handlers need this: they block in Read() for the lifetime of the
+     * client stream, while the unary handlers respond immediately (and a
+     * withheld TimeoutNext() response already polls IsCancelled()).
+     */
+    class LiveCallGuard {
+    public:
+        LiveCallGuard(Impl& owner, grpc::ServerContext* context)
+            : owner_(owner), context_(context) {
+            std::lock_guard<std::mutex> lock(owner_.mutex);
+            owner_.live_calls.push_back(context_);
+        }
+
+        ~LiveCallGuard() {
+            std::lock_guard<std::mutex> lock(owner_.mutex);
+            auto& calls = owner_.live_calls;
+            calls.erase(std::remove(calls.begin(), calls.end(), context_),
+                        calls.end());
+        }
+
+        LiveCallGuard(const LiveCallGuard&) = delete;
+        LiveCallGuard& operator=(const LiveCallGuard&) = delete;
+
+    private:
+        Impl& owner_;
+        grpc::ServerContext* context_;
+    };
+
     struct AgentService final : v1::Agent::Service {
         explicit AgentService(Impl& owner) : owner_(owner) {}
 
@@ -86,6 +116,7 @@ struct MockCollector::Impl {
         grpc::Status PingSession(
                 grpc::ServerContext* context,
                 grpc::ServerReaderWriter<v1::PPing, v1::PPing>* stream) override {
+            const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
             owner_.record_stream(&CollectorSnapshot::ping_streams, metadata);
 
@@ -108,7 +139,7 @@ struct MockCollector::Impl {
                 }
                 ping.Clear();
             }
-            return owner_.complete_stream(CollectorRpc::PingSession);
+            return owner_.complete_stream(CollectorRpc::PingSession, *context);
         }
 
     private:
@@ -174,6 +205,7 @@ struct MockCollector::Impl {
         grpc::Status SendSpan(grpc::ServerContext* context,
                               grpc::ServerReader<v1::PSpanMessage>* reader,
                               google::protobuf::Empty*) override {
+            const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
             owner_.record_stream(&CollectorSnapshot::span_streams, metadata);
 
@@ -193,7 +225,7 @@ struct MockCollector::Impl {
                 }
                 message.Clear();
             }
-            return owner_.complete_stream(CollectorRpc::SendSpan);
+            return owner_.complete_stream(CollectorRpc::SendSpan, *context);
         }
 
         grpc::Status SendSpanBatch(grpc::ServerContext* context,
@@ -213,6 +245,7 @@ struct MockCollector::Impl {
         grpc::Status SendAgentStat(grpc::ServerContext* context,
                                    grpc::ServerReader<v1::PStatMessage>* reader,
                                    google::protobuf::Empty*) override {
+            const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
             owner_.record_stream(&CollectorSnapshot::stat_streams, metadata);
 
@@ -232,7 +265,7 @@ struct MockCollector::Impl {
                 }
                 stat.Clear();
             }
-            return owner_.complete_stream(CollectorRpc::SendAgentStat);
+            return owner_.complete_stream(CollectorRpc::SendAgentStat, *context);
         }
 
     private:
@@ -267,6 +300,7 @@ struct MockCollector::Impl {
                 grpc::ServerContext* context,
                 grpc::ServerReader<v1::PCmdActiveThreadCountRes>* reader,
                 google::protobuf::Empty*) override {
+            const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
             owner_.record_stream(&CollectorSnapshot::active_thread_count_streams, metadata);
 
@@ -288,7 +322,7 @@ struct MockCollector::Impl {
                 response.Clear();
             }
             return owner_.complete_stream(
-                CollectorRpc::CommandStreamActiveThreadCount);
+                CollectorRpc::CommandStreamActiveThreadCount, *context);
         }
 
         grpc::Status CommandActiveThreadDump(
@@ -357,6 +391,12 @@ struct MockCollector::Impl {
     std::optional<FaultAction> take_ready_fault(CollectorRpc rpc,
                                                  size_t message_count) {
         std::lock_guard<std::mutex> lock(mutex);
+        // A sustained outage overrides the one-shot fault queues: it applies
+        // to every RPC at any point of its lifetime and is never consumed.
+        // Queued faults stay put for after the outage ends.
+        if (outage.has_value()) {
+            return outage;
+        }
         const auto it = faults.find(rpc);
         if (it == faults.end() || it->second.empty() ||
             it->second.front().after_messages > message_count) {
@@ -439,7 +479,16 @@ struct MockCollector::Impl {
         return grpc::Status(code, fault->message);
     }
 
-    grpc::Status complete_stream(CollectorRpc rpc) {
+    grpc::Status complete_stream(CollectorRpc rpc,
+                                 const grpc::ServerContext& context) {
+        // A read loop also ends when the call is cancelled (client-side or by
+        // begin_outage()); record that outcome truthfully instead of OK.
+        if (context.IsCancelled()) {
+            record_result(rpc, grpc::StatusCode::CANCELLED,
+                          false, "stream cancelled");
+            return grpc::Status(grpc::StatusCode::CANCELLED,
+                                "stream cancelled");
+        }
         record_result(rpc, grpc::StatusCode::OK, true, {});
         return grpc::Status::OK;
     }
@@ -449,6 +498,7 @@ struct MockCollector::Impl {
             grpc::ServerContext* context,
             grpc::ServerReaderWriter<v1::PCmdRequest, v1::PCmdMessage>* stream,
             bool v2) {
+        const LiveCallGuard live_call(*this, context);
         const auto metadata = copy_metadata(*context);
         record_stream(v2 ? &CollectorSnapshot::command_streams_v2
                          : &CollectorSnapshot::command_streams,
@@ -509,7 +559,7 @@ struct MockCollector::Impl {
             return grpc::Status(grpc::StatusCode::CANCELLED,
                                 "command stream closed");
         }
-        return complete_stream(rpc);
+        return complete_stream(rpc, *context);
     }
 
     bool start() {
@@ -670,6 +720,30 @@ struct MockCollector::Impl {
         cv.notify_all();
     }
 
+    void begin_outage(grpc::StatusCode code, std::string message) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            outage = FaultAction{
+                FaultKind::GrpcError, code, std::move(message), 0};
+            // Cancel while holding the record mutex: a registered handler
+            // cannot pass its LiveCallGuard destructor (and invalidate its
+            // ServerContext) until this loop is done, and TryCancel itself
+            // never blocks or calls back into this file.
+            for (auto* context : live_calls) {
+                context->TryCancel();
+            }
+        }
+        cv.notify_all();
+    }
+
+    void end_outage() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            outage.reset();
+        }
+        cv.notify_all();
+    }
+
     const std::string host_name{"127.0.0.1"};
     mutable std::mutex mutex;
     mutable std::condition_variable cv;
@@ -677,6 +751,8 @@ struct MockCollector::Impl {
     CollectorSnapshot records;
     std::deque<v1::PCmdRequest> commands;
     std::map<CollectorRpc, std::deque<FaultAction>> faults;
+    std::optional<FaultAction> outage;
+    std::vector<grpc::ServerContext*> live_calls;
     bool stopping{false};
 
     int agent_port{0};
@@ -761,6 +837,14 @@ void MockCollector::RejectNext(CollectorRpc rpc, std::string message) {
     impl_->add_fault(rpc, FaultAction{
         FaultKind::ApplicationError, grpc::StatusCode::OK,
         std::move(message), 0});
+}
+
+void MockCollector::BeginOutage(grpc::StatusCode code, std::string message) {
+    impl_->begin_outage(code, std::move(message));
+}
+
+void MockCollector::EndOutage() {
+    impl_->end_outage();
 }
 
 void MockCollector::SendCommand(v1::PCmdRequest request) {

@@ -139,6 +139,24 @@ public:
     bool StopEndpoint(CollectorEndpoint endpoint);
     bool StartEndpoint(CollectorEndpoint endpoint);
 
+    /**
+     * Enters a sustained collector outage: every stream in flight is
+     * cancelled and every subsequent RPC on all three endpoints fails with
+     * @p code until EndOutage() is called. Unlike FailNext(), the fault is
+     * not consumed per call; unlike StopEndpoint(), the listening ports stay
+     * open, so the agent observes RPC-level failures (an unhealthy
+     * collector) rather than connection refusals (a dead host). Queued
+     * FailNext/TimeoutNext/RejectNext faults are left untouched and apply
+     * again after the outage ends. Every failed call is still recorded in
+     * CollectorSnapshot::rpc_results (and unary request protobufs are still
+     * captured), so tests can observe the agent's retry attempts.
+     */
+    void BeginOutage(grpc::StatusCode code = grpc::StatusCode::UNAVAILABLE,
+                     std::string message = "injected collector outage");
+
+    /** Ends a BeginOutage() period; subsequent RPCs behave normally again. */
+    void EndOutage();
+
     const std::string& host() const;
     int agent_port() const;
     int span_port() const;

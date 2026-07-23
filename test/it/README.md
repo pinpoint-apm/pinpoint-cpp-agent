@@ -63,12 +63,40 @@ asserts their collector wire representation:
 - `StopEndpoint()` and `StartEndpoint()` close and rebind the Agent, Span, or
   Stat listener on its original ephemeral port, exercising a real connection
   outage rather than only an RPC-level error.
+- `BeginOutage()` and `EndOutage()` simulate a sustained collector failure:
+  every stream in flight is cancelled and every subsequent RPC on all three
+  endpoints keeps failing (default `UNAVAILABLE`) until the outage ends. The
+  ports stay open, so the agent sees an unhealthy collector rather than a
+  dead host, and every rejected attempt stays visible in the records.
 
 Each handler completion is appended to `CollectorSnapshot::rpc_results`, so a
 test can assert both the received protobuf and the injected result. The failure
 suite verifies metadata retries, command deadlines, failed span batches,
 ping/command/stat stream reconnection, endpoint recovery, and bounded shutdown
 while a span request is stalled.
+
+## Collector-outage scenarios
+
+Three scenarios assert that the host application never degrades with the
+collector:
+
+- An agent started during a sustained outage keeps retrying registration,
+  stays disabled, and hands the shared noop span (no identifiers, inert
+  context injection) to application requests; once the collector recovers it
+  enables itself and traces for real.
+- A mid-flight outage leaves the agent enabled: application requests keep
+  completing with real sampled spans while the span sender drains its queue
+  into failing batches (recycling its concurrency permits), the stat stream
+  keeps reopening, and queued metadata is retried on schedule — after
+  recovery the pending metadata id, fresh spans, statistics, and profiler
+  commands all flow again.
+- With a small `Span.QueueSize`, a span-endpoint connection outage shows the
+  bounded queue's head-drop policy: the newest spans survive to be delivered
+  after the endpoint returns, the oldest are dropped, and the application is
+  never blocked.
+- `Shutdown()` stops tracing in bounded time, after which the application
+  keeps running against noop spans and nothing new reaches the collector;
+  a second shutdown is a no-op.
 
 Run with CMake:
 

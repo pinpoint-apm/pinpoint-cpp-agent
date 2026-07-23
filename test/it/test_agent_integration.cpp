@@ -33,6 +33,7 @@
 #include "pinpoint/tracer.h"
 #include "pinpoint/tracer_c.h"
 #include "src/agent.h"
+#include "src/noop.h"
 #include "test/c_api_test_helpers.h"
 #include "test/it/mock_collector.h"
 
@@ -361,6 +362,44 @@ bool has_api_metadata(const CollectorSnapshot& snapshot,
         });
 }
 
+/**
+ * The host application's "business logic": a fake request handler that must
+ * produce its result no matter what state the agent or the collector is in.
+ * The span API is exercised on the way, like instrumented application code.
+ */
+int handle_instrumented_request(Agent& agent, std::string_view rpc, int input) {
+    auto span = agent.NewSpan("app.request", rpc);
+    auto* event = span->NewSpanEvent("app.compute");
+    const int result = input * 2 + 1;
+    event->EndEvent();
+    span->SetStatusCode(200);
+    span->EndSpan();
+    return result;
+}
+
+/**
+ * Asserts @p span is the shared noop singleton the agent hands out whenever
+ * tracing is impossible: nothing is recorded, no identifiers are minted, and
+ * outbound context injection stays empty so downstream services see an
+ * untraced call.
+ */
+void expect_noop_span(const SpanPtr& span) {
+    ASSERT_NE(span, nullptr);
+    EXPECT_EQ(span, noopSpan());
+    EXPECT_FALSE(span->IsSampled());
+    EXPECT_TRUE(span->GetTraceId().empty());
+    EXPECT_EQ(span->GetSpanId(), 0);
+
+    auto* event = span->NewSpanEvent("noop.probe");
+    ASSERT_NE(event, nullptr);
+    MapCarrier outbound;
+    event->InjectContext(outbound);
+    EXPECT_FALSE(outbound.Get(HEADER_TRACE_ID).has_value());
+    EXPECT_FALSE(outbound.Get(HEADER_SAMPLED).has_value());
+    event->EndEvent();
+    span->EndSpan();
+}
+
 void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id) {
     EXPECT_EQ(metadata.value("applicationname").value_or(""), "cpp-agent-it");
     EXPECT_EQ(metadata.value("agentid").value_or(""), "cpp-it-agent");
@@ -460,7 +499,7 @@ protected:
             << "  NewThroughput: " << SamplingNewThroughput() << "\n"
             << "  ContinueThroughput: " << SamplingContinueThroughput() << "\n"
             << "Span:\n"
-            << "  QueueSize: 128\n"
+            << "  QueueSize: " << SpanQueueSize() << "\n"
             << "  MaxEventDepth: " << MaxEventDepth() << "\n"
             << "  MaxEventSequence: " << MaxEventSequence() << "\n"
             << "  EventChunkSize: 2\n"
@@ -503,6 +542,7 @@ protected:
     virtual bool UrlStatMethodPrefix() const { return true; }
     virtual int MaxEventDepth() const { return 16; }
     virtual int MaxEventSequence() const { return 128; }
+    virtual int SpanQueueSize() const { return 128; }
     virtual bool EnableSqlStats() const { return true; }
     virtual bool TraceBindValue() const { return true; }
     virtual bool StatEnable() const { return true; }
@@ -644,6 +684,28 @@ protected:
         ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Stat));
         ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Agent));
     }
+};
+
+// Models an application that starts while the collector is unhealthy: the
+// ports accept connections but every RPC keeps failing until EndOutage().
+// Unlike CollectorUnavailableAtStartupIntegrationTest, the rejected
+// registration attempts stay visible in the collector records.
+class CollectorOutageAtStartupIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+        collector_.BeginOutage();
+        agent_->Start();
+    }
+};
+
+// Span.QueueSize 8 keeps the sharded span queue at a single shard (strict
+// FIFO, see ShardedBoundedQueue::compute_shard_count), so the bounded
+// head-drop overflow policy is observable with a handful of spans while the
+// span endpoint is down.
+class SmallSpanQueueIntegrationTest : public AgentIntegrationTest {
+protected:
+    int SpanQueueSize() const override { return 8; }
 };
 
 class PercentSamplingIntegrationTest : public AgentIntegrationTest {
@@ -2072,6 +2134,282 @@ TEST_F(CollectorUnavailableAtStartupIntegrationTest,
     const auto snapshot = collector_.snapshot();
     EXPECT_TRUE(snapshot.agent_infos.empty());
     EXPECT_TRUE(snapshot.stat_streams.empty());
+}
+
+TEST_F(CollectorOutageAtStartupIntegrationTest,
+       ServesNoopSpansDuringOutageAndEnablesTracingAfterRecovery) {
+    // The agent must keep retrying registration against the failing
+    // collector without ever coming online.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return results_for(snapshot, CollectorRpc::AgentInfo).size() >= 3;
+    }, kWaitTimeout));
+    EXPECT_FALSE(agent_->Enable());
+
+    // The application's own work proceeds normally; the disabled agent hands
+    // the shared noop span to every request.
+    for (int request = 0; request < 5; ++request) {
+        auto span = agent_->NewSpan("startup.outage", "/startup-outage");
+        ASSERT_NO_FATAL_FAILURE(expect_noop_span(span));
+        EXPECT_EQ(handle_instrumented_request(*agent_, "/startup-outage",
+                                              request),
+                  request * 2 + 1);
+    }
+
+    // Nothing but the rejected registration attempts may have reached the
+    // collector: no downstream worker starts before AgentInfo is accepted.
+    {
+        const auto snapshot = collector_.snapshot();
+        const auto attempts = results_for(snapshot, CollectorRpc::AgentInfo);
+        ASSERT_GE(attempts.size(), 3U);
+        for (const auto& result : attempts) {
+            EXPECT_EQ(result.status_code, grpc::StatusCode::UNAVAILABLE);
+        }
+        EXPECT_TRUE(all_span_messages(snapshot).empty());
+        EXPECT_TRUE(snapshot.ping_streams.empty());
+        EXPECT_TRUE(snapshot.stat_streams.empty());
+        EXPECT_TRUE(snapshot.command_streams_v2.empty());
+    }
+
+    // Collector recovers: the ongoing registration retry loop must succeed
+    // and enable the agent.
+    collector_.EndOutage();
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_result(snapshot, CollectorRpc::AgentInfo,
+                          grpc::StatusCode::OK, true);
+    }, std::chrono::seconds(20)));
+    ASSERT_TRUE(wait_until([this] { return agent_->Enable(); },
+                           std::chrono::seconds(20)));
+
+    // Tracing now runs for real: a fresh span is sampled, carries a trace
+    // id, and reaches the collector alongside the ping stream.
+    auto recovered = agent_->NewSpan("startup.outage.recovered",
+                                     "/startup-outage-recovered");
+    EXPECT_NE(recovered, noopSpan());
+    ASSERT_TRUE(recovered->IsSampled());
+    EXPECT_FALSE(recovered->GetTraceId().empty());
+    recovered->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot,
+                                "/startup-outage-recovered").has_value() &&
+               !snapshot.pings.empty();
+    }, std::chrono::seconds(20)));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(AgentIntegrationTest,
+       KeepsServingAndRecyclingQueuesThroughCollectorOutage) {
+    // Healthy baseline: tracing and the stat stream are live.
+    {
+        auto span = agent_->NewSpan("outage.before", "/collector-outage-before");
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+    }
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot,
+                                "/collector-outage-before").has_value() &&
+               !snapshot.stats.empty();
+    }, kWaitTimeout));
+
+    // Every RPC now fails while the connections stay up — an unhealthy
+    // collector rather than a dead host.
+    collector_.BeginOutage();
+
+    // The application-facing side must be unaffected: the agent stays
+    // enabled, spans are real (not noop) and requests complete promptly.
+    auto probe = agent_->NewSpan("outage.probe", "/collector-outage-probe");
+    EXPECT_NE(probe, noopSpan());
+    EXPECT_TRUE(probe->IsSampled());
+    probe->EndSpan();
+
+    const auto load_started = std::chrono::steady_clock::now();
+    for (int request = 0; request < 12; ++request) {
+        EXPECT_EQ(handle_instrumented_request(
+                      *agent_, "/collector-outage-during", request),
+                  request * 2 + 1);
+        std::this_thread::sleep_for(25ms);
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - load_started,
+              std::chrono::seconds(5));
+    EXPECT_TRUE(agent_->Enable());
+
+    // The span sender keeps draining its queue into failing batches while
+    // recycling its in-flight permits — a permit leak would stall the
+    // pipeline after SpanBatch.MaxConcurrentRequests (2) failures.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        const auto results = results_for(snapshot, CollectorRpc::SendSpanBatch);
+        return std::count_if(results.begin(), results.end(),
+                             [](const auto& result) {
+                                 return result.status_code ==
+                                        grpc::StatusCode::UNAVAILABLE;
+                             }) >= 3;
+    }, kWaitTimeout));
+
+    // The stat stream broke with the outage and the worker keeps reopening
+    // it against the failing collector.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_result(snapshot, CollectorRpc::SendAgentStat,
+                          grpc::StatusCode::UNAVAILABLE, false);
+    }, kWaitTimeout));
+
+    // Metadata queued during the outage fails but is retried on a schedule
+    // instead of being dropped; its cache entry (and id) must survive.
+    const auto api_id = impl_->cacheApi("collector.outage.api",
+                                        API_TYPE_DEFAULT);
+    ASSERT_GT(api_id, 0);
+    ASSERT_TRUE(collector_.WaitFor([api_id](const auto& snapshot) {
+        return std::any_of(snapshot.api_metadata.begin(),
+                           snapshot.api_metadata.end(),
+            [api_id](const auto& received) {
+                return received.message.apiid() == api_id &&
+                       received.message.apiinfo() == "collector.outage.api";
+            });
+    }, kWaitTimeout));
+
+    const auto stats_during_outage = collector_.snapshot().stats.size();
+    collector_.EndOutage();
+
+    // The scheduled metadata retry must deliver the same id after recovery:
+    // one failed and at least one accepted publication of that id.
+    ASSERT_TRUE(collector_.WaitFor([api_id](const auto& snapshot) {
+        return std::count_if(snapshot.api_metadata.begin(),
+                             snapshot.api_metadata.end(),
+            [api_id](const auto& received) {
+                return received.message.apiid() == api_id &&
+                       received.message.apiinfo() == "collector.outage.api";
+            }) >= 2 &&
+            has_result(snapshot, CollectorRpc::ApiMetadata,
+                       grpc::StatusCode::OK, true);
+    }, std::chrono::seconds(20)));
+
+    // Fresh spans flow again and the stat stream re-established itself.
+    auto recovered = agent_->NewSpan("outage.after", "/collector-outage-after");
+    ASSERT_TRUE(recovered->IsSampled());
+    recovered->EndSpan();
+    ASSERT_TRUE(collector_.WaitFor([stats_during_outage](const auto& snapshot) {
+        return find_span_by_rpc(snapshot,
+                                "/collector-outage-after").has_value() &&
+               snapshot.stats.size() > stats_during_outage;
+    }, std::chrono::seconds(20)));
+
+    // The command stream reconnects too: a collector-originated command must
+    // round-trip after recovery.
+    collector_.SendEchoCommand(707, "collector-outage-recovered");
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return std::any_of(snapshot.echo_responses.begin(),
+                           snapshot.echo_responses.end(),
+            [](const auto& response) {
+                return response.message.commonresponse().responseid() == 707;
+            });
+    }, std::chrono::seconds(20)));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(SmallSpanQueueIntegrationTest,
+       HeadDropsOldestSpansWhileSpanEndpointIsDown) {
+    // Healthy baseline proves the span channel is connected before the
+    // outage begins.
+    {
+        auto span = agent_->NewSpan("queue.before", "/queue-before");
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+    }
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/queue-before").has_value();
+    }, kWaitTimeout));
+
+    // Connection-level outage on the span endpoint only: the send worker
+    // parks in its channel backoff and the bounded queue takes the load.
+    ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Span));
+    std::this_thread::sleep_for(300ms);
+
+    constexpr int kOutageSpans = 30;
+    const auto load_started = std::chrono::steady_clock::now();
+    for (int i = 1; i <= kOutageSpans; ++i) {
+        auto span = agent_->NewSpan("queue.outage",
+                                    "/queue-outage-" + std::to_string(i));
+        EXPECT_TRUE(span->IsSampled()) << i;
+        span->EndSpan();
+    }
+    // The bounded queue absorbs the burst without ever blocking the
+    // application on the dead collector.
+    EXPECT_LT(std::chrono::steady_clock::now() - load_started,
+              std::chrono::seconds(2));
+    EXPECT_TRUE(agent_->Enable());
+
+    ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Span));
+
+    auto recovered = agent_->NewSpan("queue.recovered", "/queue-recovered");
+    ASSERT_TRUE(recovered->IsSampled());
+    recovered->EndSpan();
+
+    // After recovery the retained tail of the queue and fresh spans arrive
+    // (the worker leaves its reconnect backoff once the channel is ready).
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/queue-recovered").has_value() &&
+               find_span_by_rpc(snapshot, "/queue-outage-30").has_value();
+    }, std::chrono::seconds(20)));
+
+    // Overflow policy: at most QueueSize (8) queued spans plus one batch
+    // (SpanBatch.Size 4) already held by the worker can survive the outage.
+    // The newest span is always among the survivors (head-drop discards the
+    // oldest), and everything else was dropped instead of growing the queue.
+    const auto snapshot = collector_.snapshot();
+    size_t survivors = 0;
+    for (int i = 1; i <= kOutageSpans; ++i) {
+        survivors += count_spans_by_rpc(snapshot,
+                                        "/queue-outage-" + std::to_string(i));
+    }
+    EXPECT_LE(survivors, 12U);
+    EXPECT_GE(survivors, 1U);
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/queue-outage-30"), 1U);
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/queue-recovered"), 1U);
+}
+
+TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
+    {
+        auto span = agent_->NewSpan("shutdown.noop.before",
+                                    "/shutdown-noop-before");
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+    }
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/shutdown-noop-before").has_value();
+    }, kWaitTimeout));
+
+    const auto started = std::chrono::steady_clock::now();
+    agent_->Shutdown();
+    EXPECT_LT(std::chrono::steady_clock::now() - started,
+              std::chrono::seconds(8));
+    EXPECT_FALSE(agent_->Enable());
+
+    // Every worker has been joined by now, so the message-bearing collector
+    // records are final.
+    const auto quiesced = collector_.snapshot();
+
+    // The application keeps running against the stopped agent: requests
+    // complete normally and every span handed out is the shared noop span.
+    for (int request = 0; request < 5; ++request) {
+        auto span = agent_->NewSpan("shutdown.noop", "/shutdown-noop-after");
+        ASSERT_NO_FATAL_FAILURE(expect_noop_span(span));
+        EXPECT_EQ(handle_instrumented_request(*agent_, "/shutdown-noop-after",
+                                              request),
+                  request * 2 + 1);
+    }
+
+    // A second shutdown must be a harmless no-op.
+    agent_->Shutdown();
+    EXPECT_FALSE(agent_->Enable());
+
+    // Nothing new may reach the collector once the agent stopped.
+    std::this_thread::sleep_for(300ms);
+    const auto after = collector_.snapshot();
+    EXPECT_EQ(all_span_messages(after).size(),
+              all_span_messages(quiesced).size());
+    EXPECT_EQ(after.stats.size(), quiesced.stats.size());
+    EXPECT_EQ(after.pings.size(), quiesced.pings.size());
+    EXPECT_EQ(after.agent_infos.size(), quiesced.agent_infos.size());
+    EXPECT_EQ(after.api_metadata.size(), quiesced.api_metadata.size());
 }
 
 TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
