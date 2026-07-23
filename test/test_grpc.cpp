@@ -19,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -606,6 +607,76 @@ TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
     client.closeChannel();
 
     SUCCEED() << "Calling closeChannel multiple times should be safe";
+}
+
+// ============================================================
+// Collector outage tests: real channel to an unreachable endpoint.
+// Port 1 (tcpmux) is reserved and needs root to bind, so nothing
+// listens there and every connection attempt is refused — the same
+// channel behavior a collector outage produces.
+// ============================================================
+
+TEST_F(GrpcTest, GrpcClientReadyChannelWaitsThroughOutageUntilStopRequested) {
+    mock_agent_service_->mutableConfig()->collector.agent_port = 1;
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+
+    auto ready = std::async(std::launch::async, [&client] { return client.readyChannel(); });
+
+    // While the collector stays down, readyChannel() must keep backing off
+    // and retrying instead of giving up.
+    EXPECT_EQ(ready.wait_for(std::chrono::milliseconds(500)), std::future_status::timeout)
+        << "readyChannel should keep waiting while the collector is unreachable";
+
+    // A stop request must interrupt the unbounded retry loop promptly (the
+    // wait polls the stop flag every backoff slice, at most 1s).
+    client.stopPingWorker();
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "stopping the client must interrupt the channel wait";
+    EXPECT_FALSE(ready.get());
+
+    // A stopped client is terminal: later readiness checks fail fast instead
+    // of re-entering the outage wait.
+    const auto recheck_start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(client.readyChannel());
+    EXPECT_LT(std::chrono::steady_clock::now() - recheck_start, std::chrono::seconds(1));
+
+    client.closeChannel();
+}
+
+TEST_F(GrpcTest, GrpcClientReadyChannelRefusesToWaitWhenAgentIsExiting) {
+    mock_agent_service_->mutableConfig()->collector.agent_port = 1;
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    mock_agent_service_->setExiting(true);
+
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(client.readyChannel());
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1))
+        << "readyChannel must not enter the outage backoff once the agent is exiting";
+
+    client.closeChannel();
+}
+
+TEST_F(GrpcTest, GrpcAgentRegisterAgentFailsWhenCollectorUnreachable) {
+    mock_agent_service_->mutableConfig()->collector.agent_port = 1;
+
+    GrpcAgent agent(mock_agent_service_->getConfig());
+    agent.setAgentService(mock_agent_service_.get());
+    agent.openChannel();
+
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_EQ(agent.registerAgent(), SEND_FAIL)
+        << "AgentInfo sent into an outage must report SEND_FAIL, not hang";
+    // Bounded by the 5s per-request deadline; a refused connection should
+    // surface much sooner.
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(8));
+
+    agent.closeChannel();
 }
 
 // Worker stop idempotency tests

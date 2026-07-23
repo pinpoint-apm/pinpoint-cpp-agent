@@ -266,10 +266,18 @@ public:
     }
 
     bool readyChannel() override {
+        if (ready_channel_failures_.load() > 0) {
+            ready_channel_failures_.fetch_sub(1);
+            return false;
+        }
         return ready_channel_;
     }
 
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
+
+    // Models a transient collector outage: the next N readiness checks fail
+    // (channel down), after which ready_channel_ applies again (recovered).
+    void setReadyChannelFailures(int failures) { ready_channel_failures_ = failures; }
 
     // Retry-specific tests shrink this so retries fire in milliseconds; the
     // default matches production so other tests never see an in-test retry.
@@ -280,6 +288,7 @@ protected:
 
 private:
     bool ready_channel_{true};
+    std::atomic<int> ready_channel_failures_{0};
     std::chrono::milliseconds retry_delay_{std::chrono::milliseconds(1000)};
 };
 
@@ -404,6 +413,40 @@ public:
     bool readyChannel() override {
         throw std::runtime_error("injected stats channel setup failure");
     }
+};
+
+// Models a persistent collector outage: readyChannel() never succeeds but
+// records each attempt, so tests can observe the workers' retry cadence.
+class CountingNotReadyGrpcAgent : public GrpcAgent {
+public:
+    explicit CountingNotReadyGrpcAgent(std::shared_ptr<const Config> config)
+        : GrpcAgent(std::move(config)) {}
+
+    bool readyChannel() override {
+        ++ready_attempts_;
+        return false;
+    }
+
+    int readyAttempts() const { return ready_attempts_.load(); }
+
+private:
+    std::atomic<int> ready_attempts_{0};
+};
+
+class CountingNotReadyGrpcStats : public GrpcStats {
+public:
+    explicit CountingNotReadyGrpcStats(std::shared_ptr<const Config> config)
+        : GrpcStats(std::move(config)) {}
+
+    bool readyChannel() override {
+        ++ready_attempts_;
+        return false;
+    }
+
+    int readyAttempts() const { return ready_attempts_.load(); }
+
+private:
+    std::atomic<int> ready_attempts_{0};
 };
 
 class TestableGrpcCommand : public GrpcCommand {
@@ -2547,6 +2590,194 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryPacesAndStopsPromptly) {
     EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
         << "stopAgentInfo should interrupt the boot retry wait";
     EXPECT_FALSE(boot_result) << "an interrupted boot registration reports failure";
+}
+
+// ============================================================
+// Collector outage tests: worker behavior while the channel cannot
+// become ready, and recovery once it can again.
+// ============================================================
+
+TEST_F(GrpcMockTest, GrpcSpanCollectorOutageDropsBatchAndRecoveryResumesSending) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    span_client.setReadyChannel(false);
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    // Outage policy: a batch collected while the channel cannot become ready
+    // is dropped (not retried), and the worker keeps running.
+    auto outage_span = make_test_span_data_ptr(*mock_agent_service_, "outage-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(outage_span, true));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    EXPECT_EQ(fake->batchCount(), 0u)
+        << "a batch collected during an outage must not be sent";
+
+    // Collector recovery: newly enqueued spans flow again.
+    span_client.setReadyChannel(true);
+    auto recovery_span_data = make_test_span_data_ptr(*mock_agent_service_, "recovery-op");
+    const auto recovery_api_id = recovery_span_data->getApiId();
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(recovery_span_data, true));
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
+        << "spans enqueued after channel recovery should be sent";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    ASSERT_EQ(fake->batchCount(), 1u);
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    EXPECT_EQ(request.span(0).span().apiid(), recovery_api_id)
+        << "the batch dropped during the outage must not reappear after recovery";
+}
+
+TEST_F(GrpcMockTest, GrpcSpanShutdownDuringCollectorOutageDropsRemainingSpans) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 2;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    span_client.setReadyChannel(false);
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    for (int i = 0; i < 3; ++i) {
+        auto span_data = make_test_span_data_ptr(
+            *mock_agent_service_, "shutdown-outage-op-" + std::to_string(i));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+
+    // Stop before the worker runs: the queued spans are still pending when
+    // the shutdown flush executes, and no channel was ever opened (mirrors a
+    // collector that was down for the whole run), so the flush must drop
+    // them instead of sending into the outage.
+    span_client.stopSpanWorker();
+
+    const auto start = std::chrono::steady_clock::now();
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    worker.join();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_EQ(fake->batchCount(), 0u)
+        << "remaining spans must be dropped, not sent, while the channel is down";
+    EXPECT_LT(elapsed, std::chrono::seconds(3))
+        << "the shutdown flush must not block waiting for a dead collector";
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataResendsAfterChannelRecoveryWithoutCacheEviction) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+    // Two readiness checks fail (collector down), then the channel recovers.
+    // Recovery lands within the retry budget (3 retries), so the meta must
+    // survive the outage on the retry schedule and still be delivered.
+    metadata.setReadyChannelFailures(2);
+
+    std::atomic<int> sends{0};
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
+        .WillOnce(DoAll(InvokeWithoutArgs([&sends] { ++sends; }),
+                        SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.outage.recovery"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition([&sends] { return sends.load() >= 1; }, std::chrono::seconds(5)))
+        << "metadata should be re-sent once the channel recovers";
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(sends.load(), 1);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
+        << "metadata delivered after channel recovery must keep its cache entry";
+}
+
+TEST_F(GrpcMockTest, GrpcCommandWorkerReconnectsAfterCollectorStreamFailure) {
+    TestableGrpcCommand command(mock_agent_service_.get());
+
+    auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+
+    // First stream: the collector drops the connection right away, the way a
+    // collector restart mid-stream surfaces to the worker.
+    auto* dying_stream = new NiceMock<MockCmdStream>();
+    EXPECT_CALL(*dying_stream, Read(_)).WillRepeatedly(Return(false));
+    EXPECT_CALL(*dying_stream, Finish())
+        .WillOnce(Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "collector down")));
+
+    std::promise<void> reconnected;
+    std::atomic<bool> reconnected_once{false};
+    EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+        .WillOnce(Return(dying_stream))
+        .WillRepeatedly(Invoke([&](grpc::ClientContext* ctx) {
+            if (!reconnected_once.exchange(true)) {
+                reconnected.set_value();
+            }
+            return make_idle_cmd_stream(ctx);
+        }));
+
+    command.setMockCommandStub(std::move(mock_command_stub));
+
+    std::thread worker([&command] { command.commandWorker(); });
+
+    // The reconnect delay is the default exponential backoff (3s initial,
+    // ±30% jitter), so allow generous headroom for the second connect.
+    EXPECT_EQ(reconnected.get_future().wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "the command worker should reconnect after the collector drops the stream";
+
+    mock_agent_service_->setExiting(true);
+    command.stopCommandWorker();
+    if (worker.joinable()) worker.join();
+}
+
+TEST_F(GrpcMockTest, GrpcAgentPingWorkerKeepsRetryingWhileCollectorUnreachable) {
+    CountingNotReadyGrpcAgent grpc_agent(mock_agent_service_->getConfig());
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    std::thread ping_worker([&grpc_agent] { grpc_agent.sendPingWorker(); });
+
+    // Each failed stream start consumes one readiness attempt; the supervisor
+    // must retry after WORKER_RESTART_DELAY instead of ending the worker for
+    // the process lifetime.
+    EXPECT_TRUE(wait_for_condition(
+        [&grpc_agent] { return grpc_agent.readyAttempts() >= 2; }, std::chrono::seconds(5)))
+        << "the ping worker must keep retrying while the collector is unreachable";
+
+    const auto stop_start = std::chrono::steady_clock::now();
+    grpc_agent.stopPingWorker();
+    ping_worker.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "stopPingWorker must wake the outage retry delay promptly";
+}
+
+TEST_F(GrpcMockTest, GrpcStatsWorkerKeepsRetryingWhileCollectorUnreachable) {
+    CountingNotReadyGrpcStats stats_client(mock_agent_service_->getConfig());
+    stats_client.setAgentService(mock_agent_service_.get());
+
+    std::thread stats_worker([&stats_client] { stats_client.sendStatsWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [&stats_client] { return stats_client.readyAttempts() >= 2; }, std::chrono::seconds(5)))
+        << "the stats worker must keep retrying while the collector is unreachable";
+
+    const auto stop_start = std::chrono::steady_clock::now();
+    stats_client.stopStatsWorker();
+    stats_worker.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "stopStatsWorker must wake the outage retry delay promptly";
 }
 
 // ============================================================
