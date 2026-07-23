@@ -160,7 +160,8 @@ static std::shared_ptr<Config> make_test_config() {
 
 // --- Helper to create AgentImpl with mock gRPC clients ---
 
-static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg) {
+static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg,
+                                                  size_t cache_size = AgentImpl::kDefaultCacheSize) {
     auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
     auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
     auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
@@ -176,7 +177,10 @@ static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg) {
         std::move(grpc_agent),
         std::move(grpc_metadata),
         std::move(grpc_span),
-        std::move(grpc_stat));
+        std::move(grpc_stat),
+        nullptr,
+        DEFAULT_APP_TYPE,
+        cache_size);
     // CreateAgent() is cold; bring the agent online so the worker threads run
     // (mirrors the production CreateAgent()+Start() sequence).
     agent->Start();
@@ -1251,6 +1255,75 @@ TEST_F(CreateAgentTest, MakeConfigKeepsEnvSeededLogLevelOnReload) {
     ASSERT_NE(cfg_reload, nullptr);
     EXPECT_EQ(cfg_reload->log.level, "debug")
         << "env-seeded log settings must survive a config rebuild for reload";
+}
+
+// ============================================================
+// Injected cache size tests: the metadata caches used to be pinned at 1024
+// entries, which made eviction unreachable from agent-level tests. A
+// capacity-1 cache (one shard, one entry) makes eviction deterministic.
+// ============================================================
+
+// The cache* APIs return 0 until the boot AgentInfo registration enables the
+// agent, so each test must wait for enablement first.
+static void wait_cache_test_agent_enabled(const std::shared_ptr<AgentImpl>& agent) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(agent->Enable());
+}
+
+TEST(AgentImplCacheSizeTest, ApiCacheEvictionMintsFreshId) {
+    auto cfg = make_test_config();
+    auto agent = make_test_agent(cfg, 1);
+    wait_cache_test_agent_enabled(agent);
+
+    const int32_t first = agent->cacheApi("api.one", 100);
+    EXPECT_GT(first, 0);
+    // While resident, the same key keeps its id.
+    EXPECT_EQ(agent->cacheApi("api.one", 100), first);
+
+    // A second key evicts the first from the capacity-1 cache.
+    const int32_t second = agent->cacheApi("api.two", 100);
+    EXPECT_NE(second, first);
+
+    // The evicted key is re-registered under a freshly minted id, so the
+    // collector receives its metadata again.
+    const int32_t reissued = agent->cacheApi("api.one", 100);
+    EXPECT_NE(reissued, first);
+    EXPECT_NE(reissued, second);
+
+    agent->Shutdown();
+}
+
+TEST(AgentImplCacheSizeTest, ErrorAndSqlCacheEvictionMintsFreshIds) {
+    auto cfg = make_test_config();
+    auto agent = make_test_agent(cfg, 1);
+    wait_cache_test_agent_enabled(agent);
+
+    const int32_t first_error = agent->cacheError("ErrorOne");
+    agent->cacheError("ErrorTwo");
+    EXPECT_NE(agent->cacheError("ErrorOne"), first_error);
+
+    const int32_t first_sql = agent->cacheSql("SELECT 1");
+    agent->cacheSql("SELECT 2");
+    EXPECT_NE(agent->cacheSql("SELECT 1"), first_sql);
+
+    agent->Shutdown();
+}
+
+TEST(AgentImplCacheSizeTest, DefaultCacheSizeKeepsIdsStable) {
+    auto cfg = make_test_config();
+    auto agent = make_test_agent(cfg);
+    wait_cache_test_agent_enabled(agent);
+
+    const int32_t first = agent->cacheApi("api.one", 100);
+    EXPECT_GT(first, 0);
+    agent->cacheApi("api.two", 100);
+    EXPECT_EQ(agent->cacheApi("api.one", 100), first)
+        << "with the production capacity no eviction may happen for two keys";
+
+    agent->Shutdown();
 }
 
 }  // namespace pinpoint

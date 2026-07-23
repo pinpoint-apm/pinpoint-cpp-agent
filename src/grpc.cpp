@@ -125,32 +125,7 @@ namespace pinpoint {
             return grpc::CreateCustomChannel(addr, credentials, channel_args);
         }
 
-        constexpr int GRPC_REQUEST_TIMEOUT_MS = 5000;
-        constexpr auto RECONNECT_INITIAL_INTERVAL = std::chrono::milliseconds(3000);
-        constexpr double RECONNECT_MULTIPLIER = 1.2;
-        constexpr double RECONNECT_RANDOMIZATION_FACTOR = 0.3;
-        constexpr auto RECONNECT_MAX_INTERVAL = std::chrono::milliseconds(30000);
-        constexpr auto BACKOFF_SLEEP_SLICE = std::chrono::milliseconds(1000);
-
-        // Bounded wait for a stream to deliver OnDone at shutdown before
-        // escalating to TryCancel.
-        constexpr auto STREAM_FINISH_TIMEOUT = std::chrono::seconds(3);
-
-        // Bounded wait for a stream write to complete (for the ping stream:
-        // write + server pong) before the stream is cancelled and recycled.
-        constexpr auto STREAM_WRITE_TIMEOUT = std::chrono::seconds(5);
-
-        static void set_request_deadline(grpc::ClientContext& ctx) {
-            auto deadline = std::chrono::system_clock::now() + std::chrono::milliseconds(GRPC_REQUEST_TIMEOUT_MS);
-            ctx.set_deadline(deadline);
-        }
     }
-
-    ExponentialBackoff::ExponentialBackoff()
-        : ExponentialBackoff(RECONNECT_INITIAL_INTERVAL,
-                             RECONNECT_MULTIPLIER,
-                             RECONNECT_RANDOMIZATION_FACTOR,
-                             RECONNECT_MAX_INTERVAL) {}
 
     ExponentialBackoff::ExponentialBackoff(std::chrono::milliseconds initial_interval,
                                            double multiplier,
@@ -187,12 +162,18 @@ namespace pinpoint {
         attempt_ = 0;
     }
 
-    GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config)
-        : config_{std::move(config)}, client_type_(client_type) {
+    GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
+                           const GrpcClientTuning& tuning)
+        : config_{std::move(config)}, tuning_{tuning}, client_type_(client_type),
+          channel_ready_backoff_{tuning} {
         client_name_ = grpc_client_name(client_type_);
         // The channel and stub are NOT built here: doing so would trigger
         // grpc_init (and gRPC's background threads) at CreateAgent() time.
         // openChannel(), called from Agent::Start(), performs that work.
+    }
+
+    void GrpcClient::set_request_deadline(grpc::ClientContext& context) const {
+        context.set_deadline(std::chrono::system_clock::now() + tuning_.request_timeout);
     }
 
     void GrpcClient::openChannel() {
@@ -289,7 +270,7 @@ namespace pinpoint {
             }
 
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-            const auto wait_for = std::min(remaining, BACKOFF_SLEEP_SLICE);
+            const auto wait_for = std::min(remaining, tuning_.backoff_sleep_slice);
             channel_->WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
             state = channel_->GetState(false);
         }
@@ -321,25 +302,16 @@ namespace pinpoint {
         }
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - wait_start);
-        if (elapsed.count() >= 5) {
+        if (elapsed >= tuning_.slow_recovery_threshold) {
             on_slow_channel_recovery(elapsed);
         }
         return true;
     }
 
-    constexpr int METADATA_RETRY_MAX_ATTEMPTS = 3;
-    constexpr auto METADATA_RETRY_DELAY = std::chrono::milliseconds(1000);
-    // Pause before a worker loop is restarted after an unexpected exception,
-    // so a persistent failure (e.g. allocation pressure) cannot turn the
-    // supervisor loops into a hot spin.
-    constexpr auto WORKER_RESTART_DELAY = std::chrono::milliseconds(1000);
-    // Queue drops are cumulative. The span worker reports them periodically so
-    // a long-lived, overloaded agent exposes telemetry loss while it happens.
-    constexpr auto SPAN_QUEUE_DROP_LOG_INTERVAL = std::chrono::seconds(60);
-
     //GrpcMetadata
 
-    GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config) : GrpcClient(METADATA, std::move(config)) {}
+    GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
+        : GrpcClient(METADATA, std::move(config), tuning) {}
 
     void GrpcMetadata::create_stub() {
         set_meta_stub(v1::Metadata::NewStub(channel_));
@@ -508,15 +480,11 @@ namespace pinpoint {
         LOG_ERROR("failed to enqueue metadata: unknown exception");
     }
 
-    std::chrono::milliseconds GrpcMetadata::meta_retry_delay() const {
-        return METADATA_RETRY_DELAY;
-    }
-
     void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
         // No notify: this runs on the worker thread — the only waiter on
         // meta_queue_cv_ — which re-examines the retry queue in
         // pop_next_meta() right after scheduling.
-        pending.available_at = std::chrono::steady_clock::now() + meta_retry_delay();
+        pending.available_at = std::chrono::steady_clock::now() + tuning_.meta_retry_delay;
         retry_queue_.emplace(pending.available_at, std::move(pending));
     }
 
@@ -569,7 +537,7 @@ namespace pinpoint {
             }
 
             std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-            if (meta_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+            if (meta_queue_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
                     return meta_stop_requested_ || agent_->isExiting();
                 })) {
                 break;
@@ -612,8 +580,8 @@ namespace pinpoint {
                 break;
             }
 
-            if (pending.retry_count <= METADATA_RETRY_MAX_ATTEMPTS) {
-                LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, METADATA_RETRY_MAX_ATTEMPTS);
+            if (pending.retry_count <= tuning_.meta_retry_max_attempts) {
+                LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, tuning_.meta_retry_max_attempts);
                 try {
                     std::unique_lock<std::mutex> lock(meta_queue_mutex_);
                     schedule_retry(std::move(pending));
@@ -652,10 +620,6 @@ namespace pinpoint {
 
     namespace {
         constexpr int ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
-        constexpr auto ACTIVE_THREAD_COUNT_FLUSH_DELAY = std::chrono::milliseconds(1000);
-        // Each stream owns a dedicated thread, so cap how many the collector
-        // can open at once.
-        constexpr size_t MAX_ACTIVE_THREAD_COUNT_STREAMS = 10;
 
         int32_t command_code(const v1::PCmdRequest& request) {
             return static_cast<int32_t>(request.command_case());
@@ -795,7 +759,7 @@ namespace pinpoint {
                 }
 
                 std::unique_lock<std::mutex> lock(cv_mutex_);
-                cv_.wait_for(lock, ACTIVE_THREAD_COUNT_FLUSH_DELAY, [this] {
+                cv_.wait_for(lock, owner_->tuning_.active_thread_count_flush_interval, [this] {
                     return stop_requested_.load() || owner_->agent_->isExiting();
                 });
             }
@@ -838,7 +802,8 @@ namespace pinpoint {
         }
     };
 
-    GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {
+    GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
+        : GrpcClient(AGENT, std::move(config), tuning) {
         register_default_handlers();
     }
 
@@ -953,7 +918,7 @@ namespace pinpoint {
         }
         cleanup_active_thread_count_streams();
 
-        if (active_thread_count_streams_.size() >= MAX_ACTIVE_THREAD_COUNT_STREAMS) {
+        if (active_thread_count_streams_.size() >= tuning_.max_active_thread_count_streams) {
             LOG_WARN("reject active thread count stream: requestId={}, activeStreams={}",
                      request_id, active_thread_count_streams_.size());
             return false;
@@ -1014,7 +979,7 @@ namespace pinpoint {
                 LOG_ERROR("grpc command worker unknown exception");
             }
 
-            if (wait_reconnect_delay(WORKER_RESTART_DELAY)) {
+            if (wait_reconnect_delay(tuning_.worker_restart_delay)) {
                 break;
             }
         }
@@ -1046,7 +1011,7 @@ namespace pinpoint {
         // pointing at a non-command service) — two INFO lines per second for
         // the process lifetime. Back off exponentially instead, resetting
         // once the stream demonstrably works (a command is read).
-        ExponentialBackoff reconnect_backoff{};
+        ExponentialBackoff reconnect_backoff{tuning_};
 
         while (!stopping()) {
             if (!readyChannel()) {
@@ -1126,7 +1091,8 @@ namespace pinpoint {
 
     //GrpcAgent
 
-    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config) : GrpcClient(AGENT, std::move(config)) {}
+    GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
+        : GrpcClient(AGENT, std::move(config), tuning) {}
 
     void GrpcAgent::create_stub() {
         set_agent_stub(v1::Agent::NewStub(channel_));
@@ -1332,7 +1298,7 @@ namespace pinpoint {
 
             // Pace crash restarts before re-entering the periodic loop.
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
-            if (agent_info_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+            if (agent_info_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
                     return should_stop_agent_info();
                 })) {
                 break;
@@ -1388,7 +1354,7 @@ namespace pinpoint {
         // shutdown. Rethrow rather than return false: the worker loops treat
         // false as "stopping" and exit for the process lifetime, while the
         // supervisor (sendPingWorker) retries a thrown transient failure
-        // after WORKER_RESTART_DELAY.
+        // after the worker restart delay.
         try {
             agent_stub_->async()->PingSession(stream_context_.get(), this);
 
@@ -1431,7 +1397,7 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
         close_ping_stream_locked();
-        if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
+        if (!stream_cv_.wait_for(lock, tuning_.stream_finish_timeout,
                                  [this] { return grpc_status_ == STREAM_DONE; })) {
             LOG_INFO("ping stream did not finish in time, cancelling");
             if (stream_context_ != nullptr) {
@@ -1476,7 +1442,7 @@ namespace pinpoint {
 
         grpc_status_ = STREAM_WRITE;
         StartWrite(&ping_);
-        if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
+        if (!stream_cv_.wait_for(lock, tuning_.stream_write_timeout,
                                  [this] { return grpc_status_ != STREAM_WRITE; })) {
             // The transport can stay "healthy" (an intermediary satisfies
             // HTTP/2 keepalive) while the collector backend never answers the
@@ -1559,7 +1525,7 @@ namespace pinpoint {
             }
 
             std::unique_lock<std::mutex> lock(ping_worker_mutex_);
-            if (ping_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+            if (ping_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
                     return ping_stop_requested_ || agent_->isExiting();
                 })) {
                 break;
@@ -1573,7 +1539,6 @@ namespace pinpoint {
             return false;
         }
 
-        constexpr auto timeout = std::chrono::seconds(60);
         std::unique_lock<std::mutex> lock(ping_worker_mutex_);
 
         while (true) {
@@ -1585,7 +1550,7 @@ namespace pinpoint {
             }
 
             lock.lock();
-            if (ping_cv_.wait_for(lock, timeout, [this]{ return ping_stop_requested_ || agent_->isExiting(); })) {
+            if (ping_cv_.wait_for(lock, tuning_.ping_interval, [this]{ return ping_stop_requested_ || agent_->isExiting(); })) {
                 lock.unlock();
                 finish_ping_stream();
                 return true;
@@ -1612,10 +1577,6 @@ namespace pinpoint {
 
 
     //GrpcSpan
-
-    namespace {
-        constexpr auto SHUTDOWN_AWAIT_TIMEOUT = std::chrono::seconds(3);
-    }
 
     // Heap-resident state for a single async SendSpanBatch call. Lives as
     // long as the callback's shared_ptr keeps it alive.
@@ -1656,8 +1617,8 @@ namespace pinpoint {
         }
     };
 
-    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config)
-        : GrpcClient(SPAN, config), span_queue_(config->span.queue_size) {
+    GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
+        : GrpcClient(SPAN, config, tuning), span_queue_(config->span.queue_size) {
         inflight_ = std::make_shared<SpanBatchInflight>();
         inflight_->max_permits = config_->collector.span_batch.max_concurrent_requests;
         inflight_->permits = inflight_->max_permits;
@@ -1806,7 +1767,7 @@ namespace pinpoint {
         if (now < next_span_queue_drop_log_at_) {
             return;
         }
-        next_span_queue_drop_log_at_ = now + SPAN_QUEUE_DROP_LOG_INTERVAL;
+        next_span_queue_drop_log_at_ = now + tuning_.span_queue_drop_log_interval;
 
         if (Logger::getInstance().infoEnabled()) {
             LOG_INFO("span queue drops: oldest={}", dropped_oldest);
@@ -1924,7 +1885,7 @@ namespace pinpoint {
     }
 
     void GrpcSpan::await_in_flight_requests() {
-        if (try_acquire_all_permits(SHUTDOWN_AWAIT_TIMEOUT)) {
+        if (try_acquire_all_permits(tuning_.span_shutdown_await_timeout)) {
             return;
         }
 
@@ -1942,7 +1903,7 @@ namespace pinpoint {
             call->ctx.TryCancel();
         }
 
-        if (!try_acquire_all_permits(SHUTDOWN_AWAIT_TIMEOUT)) {
+        if (!try_acquire_all_permits(tuning_.span_shutdown_await_timeout)) {
             // Even now the callbacks stay memory-safe: they reference only the
             // shared in-flight state, never this client or the agent.
             LOG_WARN("in-flight span requests still pending after cancellation");
@@ -1994,7 +1955,7 @@ namespace pinpoint {
         last_logged_span_queue_drops_ = 0;
         span_queue_drop_log_pending_ = false;
         next_span_queue_drop_log_at_ =
-            std::chrono::steady_clock::now() + SPAN_QUEUE_DROP_LOG_INTERVAL;
+            std::chrono::steady_clock::now() + tuning_.span_queue_drop_log_interval;
         while (!stopping()) {
             try {
                 run_span_worker(pending_batch);
@@ -2011,7 +1972,7 @@ namespace pinpoint {
                 pending_batch.clear();
             }
             std::unique_lock<std::mutex> lock(span_wait_mutex_);
-            span_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+            span_queue_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
                 return stopping();
             });
         }
@@ -2062,7 +2023,8 @@ namespace pinpoint {
 
     //GrpcStat
 
-    GrpcStats::GrpcStats(std::shared_ptr<const Config> config) : GrpcClient(STATS, std::move(config)) {}
+    GrpcStats::GrpcStats(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
+        : GrpcClient(STATS, std::move(config), tuning) {}
 
     void GrpcStats::create_stub() {
         set_stats_stub(v1::Stat::NewStub(channel_));
@@ -2102,8 +2064,8 @@ namespace pinpoint {
         // finish_stats_stream()/drain_stats_stream_on_error() from hanging.
         // Rethrow rather than return false: the worker loops treat false as
         // "stopping" and exit for the process lifetime, while the supervisor
-        // (sendStatsWorker) retries a thrown transient failure after
-        // WORKER_RESTART_DELAY.
+        // (sendStatsWorker) retries a thrown transient failure after the
+        // worker restart delay.
         try {
             stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
@@ -2138,7 +2100,7 @@ namespace pinpoint {
             }
             StartWrite(msg_);
 
-            if (!stream_cv_.wait_for(lock, STREAM_WRITE_TIMEOUT,
+            if (!stream_cv_.wait_for(lock, tuning_.stream_write_timeout,
                                      [this] { return grpc_status_ != STREAM_WRITE; })) {
                 // The transport can stay "healthy" (an intermediary satisfies
                 // HTTP/2 keepalive) while the collector backend stops reading,
@@ -2189,7 +2151,7 @@ namespace pinpoint {
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
         close_stats_stream_locked();
-        if (!stream_cv_.wait_for(lock, STREAM_FINISH_TIMEOUT,
+        if (!stream_cv_.wait_for(lock, tuning_.stream_finish_timeout,
                                  [this] { return grpc_status_ == STREAM_DONE; })) {
             LOG_INFO("stats stream did not finish in time, cancelling");
             if (stream_context_ != nullptr) {
@@ -2288,8 +2250,6 @@ namespace pinpoint {
         return STREAM_EXCEPTION;
     }
 
-    constexpr size_t MAX_STATS_QUEUE_SIZE = 2;
-
     void GrpcStats::enqueueStats(const StatsType stats) noexcept try {
         const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
@@ -2299,11 +2259,11 @@ namespace pinpoint {
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
 
-            if (stats_queue_.size() < MAX_STATS_QUEUE_SIZE) {
+            if (stats_queue_.size() < tuning_.max_stats_queue_size) {
                 stats_queue_.push(stats);
             } else {
                 force_stats_queue_empty_.store(true, std::memory_order_release);
-                LOG_DEBUG("drop stats: overflow max queue size {}", MAX_STATS_QUEUE_SIZE);
+                LOG_DEBUG("drop stats: overflow max queue size {}", tuning_.max_stats_queue_size);
             }
         }
 
@@ -2375,7 +2335,7 @@ namespace pinpoint {
             }
 
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            if (stats_queue_cv_.wait_for(lock, WORKER_RESTART_DELAY, [this] {
+            if (stats_queue_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
                     return stats_stop_requested_ || agent_->isExiting();
                 })) {
                 break;

@@ -46,10 +46,16 @@ namespace pinpoint {
     class AgentImpl final : public Agent, public AgentService,
                             public std::enable_shared_from_this<AgentImpl> {
     public:
+		/// Capacity of each metadata cache (api/error/sql/sql-uid/raw-sql).
+		static constexpr size_t kDefaultCacheSize = 1024;
+
 		/**
 		 * @brief Constructs an agent using the provided configuration.
 		 *
 		 * @param options Resolved agent configuration.
+		 * @param cache_size Capacity of each metadata cache; the default is
+		 *        the production value, tests inject small sizes to exercise
+		 *        eviction-driven id reissue.
 		 */
 		AgentImpl(std::shared_ptr<const Config> options,
 				  std::unique_ptr<GrpcAgent> grpc_agent,
@@ -57,7 +63,8 @@ namespace pinpoint {
 				  std::unique_ptr<GrpcSpan> grpc_span,
 				  std::unique_ptr<GrpcStats> grpc_stat,
 				  std::unique_ptr<GrpcCommand> grpc_command = nullptr,
-				  int32_t app_type = DEFAULT_APP_TYPE);
+				  int32_t app_type = DEFAULT_APP_TYPE,
+				  size_t cache_size = kDefaultCacheSize);
         ~AgentImpl() noexcept override;
 
 		/**

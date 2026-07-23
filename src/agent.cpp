@@ -35,9 +35,6 @@
 
 namespace pinpoint {
 
-    // Constants
-    constexpr int kCacheSize = 1024;
-
     // Global agent singleton with lock-free reader access
     namespace {
         // Serializes global-agent WRITERS only (CreateAgent, Shutdown, the
@@ -71,7 +68,8 @@ namespace pinpoint {
                          std::unique_ptr<GrpcSpan> grpc_span,
                          std::unique_ptr<GrpcStats> grpc_stat,
                          std::unique_ptr<GrpcCommand> grpc_command,
-                         int32_t app_type) :
+                         int32_t app_type,
+                         size_t cache_size) :
         grpc_agent_(std::move(grpc_agent)),
         grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
@@ -101,12 +99,12 @@ namespace pinpoint {
         // ShardedLruCache): the api cache in particular is hit once per span
         // plus once per named span event, so a single rwlock's cache line
         // would ping-pong across all request threads.
-        api_cache_ = std::make_unique<ApiIdCache>(kCacheSize);
-        error_cache_ = std::make_unique<IdCache>(kCacheSize);
-        sql_cache_ = std::make_unique<IdCache>(kCacheSize);
-        sql_uid_cache_ = std::make_unique<SqlUidCache>(kCacheSize);
-        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(kCacheSize);
-        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(kCacheSize);
+        api_cache_ = std::make_unique<ApiIdCache>(cache_size);
+        error_cache_ = std::make_unique<IdCache>(cache_size);
+        sql_cache_ = std::make_unique<IdCache>(cache_size);
+        sql_uid_cache_ = std::make_unique<SqlUidCache>(cache_size);
+        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(cache_size);
+        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(cache_size);
 
         // Initial build: no previous runtime, so every component is created
         // and published together in one atomic store.

@@ -257,7 +257,8 @@ private:
 // Testable gRPC classes that inject mock stubs
 class TestableGrpcMetadata : public GrpcMetadata {
 public:
-    explicit TestableGrpcMetadata(AgentService* agent) : GrpcMetadata(agent->getConfig()) {
+    explicit TestableGrpcMetadata(AgentService* agent, const GrpcClientTuning& tuning = {})
+        : GrpcMetadata(agent->getConfig(), tuning) {
         setAgentService(agent);
     }
 
@@ -279,22 +280,21 @@ public:
     // (channel down), after which ready_channel_ applies again (recovered).
     void setReadyChannelFailures(int failures) { ready_channel_failures_ = failures; }
 
-    // Retry-specific tests shrink this so retries fire in milliseconds; the
-    // default matches production so other tests never see an in-test retry.
-    void setRetryDelay(std::chrono::milliseconds delay) { retry_delay_ = delay; }
-
-protected:
-    std::chrono::milliseconds meta_retry_delay() const override { return retry_delay_; }
+    // Retry-specific tests shrink these so retries fire in milliseconds; the
+    // defaults match production so other tests never see an in-test retry.
+    // Must be called before the worker thread starts.
+    void setRetryDelay(std::chrono::milliseconds delay) { tuning_.meta_retry_delay = delay; }
+    void setRetryMaxAttempts(int attempts) { tuning_.meta_retry_max_attempts = attempts; }
 
 private:
     bool ready_channel_{true};
     std::atomic<int> ready_channel_failures_{0};
-    std::chrono::milliseconds retry_delay_{std::chrono::milliseconds(1000)};
 };
 
 class TestableGrpcAgent : public GrpcAgent {
 public:
-    explicit TestableGrpcAgent(AgentService* agent) : GrpcAgent(agent->getConfig()), metadata_(agent) {
+    explicit TestableGrpcAgent(AgentService* agent, const GrpcClientTuning& tuning = {})
+        : GrpcAgent(agent->getConfig(), tuning), metadata_(agent, tuning) {
         setAgentService(agent);
     }
 
@@ -355,7 +355,8 @@ private:
 
 class TestableGrpcSpan : public GrpcSpan {
 public:
-    explicit TestableGrpcSpan(AgentService* agent) : GrpcSpan(agent->getConfig()) {
+    explicit TestableGrpcSpan(AgentService* agent, const GrpcClientTuning& tuning = {})
+        : GrpcSpan(agent->getConfig(), tuning) {
         agent_ = agent;
     }
 
@@ -375,7 +376,8 @@ private:
 
 class TestableGrpcStats : public GrpcStats {
 public:
-    explicit TestableGrpcStats(AgentService* agent) : GrpcStats(agent->getConfig()) {
+    explicit TestableGrpcStats(AgentService* agent, const GrpcClientTuning& tuning = {})
+        : GrpcStats(agent->getConfig(), tuning) {
         agent_ = agent;
     }
 
@@ -397,12 +399,19 @@ private:
 
 class ThrowingReadyGrpcAgent : public GrpcAgent {
 public:
-    explicit ThrowingReadyGrpcAgent(std::shared_ptr<const Config> config)
-        : GrpcAgent(std::move(config)) {}
+    explicit ThrowingReadyGrpcAgent(std::shared_ptr<const Config> config,
+                                    const GrpcClientTuning& tuning = {})
+        : GrpcAgent(std::move(config), tuning) {}
 
     bool readyChannel() override {
+        ++attempts_;
         throw std::runtime_error("injected ping channel setup failure");
     }
+
+    int attempts() const { return attempts_.load(); }
+
+private:
+    std::atomic<int> attempts_{0};
 };
 
 class ThrowingReadyGrpcStats : public GrpcStats {
@@ -419,8 +428,9 @@ public:
 // records each attempt, so tests can observe the workers' retry cadence.
 class CountingNotReadyGrpcAgent : public GrpcAgent {
 public:
-    explicit CountingNotReadyGrpcAgent(std::shared_ptr<const Config> config)
-        : GrpcAgent(std::move(config)) {}
+    explicit CountingNotReadyGrpcAgent(std::shared_ptr<const Config> config,
+                                       const GrpcClientTuning& tuning = {})
+        : GrpcAgent(std::move(config), tuning) {}
 
     bool readyChannel() override {
         ++ready_attempts_;
@@ -435,8 +445,9 @@ private:
 
 class CountingNotReadyGrpcStats : public GrpcStats {
 public:
-    explicit CountingNotReadyGrpcStats(std::shared_ptr<const Config> config)
-        : GrpcStats(std::move(config)) {}
+    explicit CountingNotReadyGrpcStats(std::shared_ptr<const Config> config,
+                                       const GrpcClientTuning& tuning = {})
+        : GrpcStats(std::move(config), tuning) {}
 
     bool readyChannel() override {
         ++ready_attempts_;
@@ -451,7 +462,8 @@ private:
 
 class TestableGrpcCommand : public GrpcCommand {
 public:
-    explicit TestableGrpcCommand(AgentService* agent) : GrpcCommand(agent->getConfig()) {
+    explicit TestableGrpcCommand(AgentService* agent, const GrpcClientTuning& tuning = {})
+        : GrpcCommand(agent->getConfig(), tuning) {
         setAgentService(agent);
     }
 
@@ -2819,6 +2831,241 @@ TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {
     metadata.enqueueMeta(nullptr);
 
     SUCCEED() << "Null metadata must be ignored without touching the queue or stub";
+}
+
+// ============================================================
+// GrpcClientTuning injection tests: each verifies that a knob that used to be
+// a hardcoded constant is actually honored when injected.
+// ============================================================
+
+TEST_F(GrpcMockTest, GrpcAgentUnaryRequestUsesInjectedDeadline) {
+    GrpcClientTuning tuning;
+    tuning.request_timeout = std::chrono::milliseconds(250);
+    TestableGrpcAgent agent(mock_agent_service_.get(), tuning);
+
+    // The remaining budget is measured inside the stub call, right after
+    // set_request_deadline() ran, so slow AgentInfo construction (host name /
+    // ip resolution) cannot inflate it.
+    std::chrono::milliseconds captured_budget{};
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(Invoke([&captured_budget](grpc::ClientContext* ctx,
+                                            const v1::PAgentInfo&,
+                                            v1::PResult*) {
+            captured_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
+                ctx->deadline() - std::chrono::system_clock::now());
+            return grpc::Status::OK;
+        }));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    // The budget must reflect the injected 250ms, not the 5s default.
+    EXPECT_GT(captured_budget, std::chrono::milliseconds(0));
+    EXPECT_LE(captured_budget, std::chrono::milliseconds(250));
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataHonorsInjectedRetryLimit) {
+    GrpcClientTuning tuning;
+    tuning.meta_retry_delay = std::chrono::milliseconds(20);
+    tuning.meta_retry_max_attempts = 1;
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    std::atomic<int> attempts{0};
+    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    // Initial send + exactly one scheduled retry (instead of the default 3)
+    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
+        .Times(2)
+        .WillRepeatedly(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
+                              Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable"))));
+
+    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.injected.retry"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_api_count_ >= 1; }, std::chrono::seconds(5)))
+        << "the cache entry must be released after the injected retry budget is exhausted";
+
+    // Give an unexpected extra retry the chance to fire before stopping, so
+    // the Times(2) expectation would catch it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(attempts.load(), 2);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 1);
+}
+
+TEST_F(GrpcMockTest, GrpcStatsHonorsInjectedQueueCapacity) {
+    GrpcClientTuning tuning;
+    tuning.max_stats_queue_size = 4;
+    TestableGrpcStats stats_client(mock_agent_service_.get(), tuning);
+
+    // Four payloads fit the injected capacity (the default is 2): no
+    // overflow purge may be requested yet.
+    for (int i = 0; i < 4; ++i) {
+        stats_client.enqueueStats(AGENT_STATS);
+    }
+    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest())
+        << "enqueues within the injected capacity must not request a purge";
+
+    // The fifth payload overflows and marks the queued stats stale.
+    stats_client.enqueueStats(AGENT_STATS);
+    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
+    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
+}
+
+TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
+    GrpcClientTuning tuning;
+    tuning.max_active_thread_count_streams = 2;
+    tuning.active_thread_count_flush_interval = std::chrono::milliseconds(20);
+    TestableGrpcCommand command(mock_agent_service_.get(), tuning);
+
+    auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+
+    auto make_atc_request = [](int32_t request_id) {
+        v1::PCmdRequest request;
+        request.set_requestid(request_id);
+        request.mutable_commandactivethreadcount();
+        return request;
+    };
+
+    auto* stream = new NiceMock<MockCmdStream>();
+    EXPECT_CALL(*stream, Read(_))
+        .WillOnce(DoAll(SetArgPointee<0>(make_atc_request(101)), Return(true)))
+        .WillOnce(DoAll(SetArgPointee<0>(make_atc_request(102)), Return(true)))
+        .WillOnce(DoAll(SetArgPointee<0>(make_atc_request(103)), Return(true)))
+        .WillRepeatedly(Return(false));
+
+    // Only the request over the injected cap writes back a fail message.
+    std::promise<void> fail_seen;
+    v1::PCmdMessage fail_message;
+    EXPECT_CALL(*stream, Write(_, _))
+        .WillOnce(DoAll(SaveArg<0>(&fail_message),
+                        InvokeWithoutArgs([&fail_seen] { fail_seen.set_value(); }),
+                        Return(true)));
+
+    EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+        .WillOnce(Return(stream))
+        .WillRepeatedly(Invoke(make_idle_cmd_stream));
+
+    // The two admitted streams keep running (Write succeeds) so they still
+    // occupy their slots when the third request arrives.
+    EXPECT_CALL(*mock_command_stub, CommandStreamActiveThreadCountRaw(_, _))
+        .Times(2)
+        .WillRepeatedly(InvokeWithoutArgs([] {
+            auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+            ON_CALL(*writer, Write(_, _)).WillByDefault(Return(true));
+            ON_CALL(*writer, WritesDone()).WillByDefault(Return(true));
+            ON_CALL(*writer, Finish()).WillByDefault(Return(grpc::Status::OK));
+            return writer;
+        }));
+
+    command.setMockCommandStub(std::move(mock_command_stub));
+
+    std::thread worker([&command] { command.commandWorker(); });
+
+    EXPECT_EQ(fail_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "the third stream must be rejected once the injected cap of 2 is reached";
+
+    mock_agent_service_->setExiting(true);
+    command.stopCommandWorker();
+    if (worker.joinable()) worker.join();
+
+    ASSERT_TRUE(fail_message.has_failmessage());
+    EXPECT_EQ(fail_message.failmessage().responseid(), 103);
+    EXPECT_EQ(fail_message.failmessage().message().value(), "too many active thread count streams");
+}
+
+TEST_F(GrpcMockTest, GrpcSpanShutdownHonorsInjectedAwaitTimeout) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+
+    GrpcClientTuning tuning;
+    tuning.span_shutdown_await_timeout = std::chrono::milliseconds(50);
+    TestableGrpcSpan span_client(mock_agent_service_.get(), tuning);
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "shutdown-await-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
+
+    // The held callback keeps the only permit checked out, so the shutdown
+    // flush must give up after the two injected 50ms waits (cancel in
+    // between) instead of the production 3s+3s.
+    const auto stop_start = std::chrono::steady_clock::now();
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "shutdown must be paced by the injected await timeout";
+
+    // A completion delivered after shutdown only touches the shared in-flight
+    // state and stays safe.
+    fake->releaseHeldCallbacks(grpc::Status::CANCELLED);
+}
+
+TEST_F(GrpcMockTest, GrpcAgentPingWorkerRestartHonorsInjectedDelay) {
+    GrpcClientTuning tuning;
+    tuning.worker_restart_delay = std::chrono::milliseconds(10);
+    ThrowingReadyGrpcAgent agent(mock_agent_service_->getConfig(), tuning);
+    agent.setAgentService(mock_agent_service_.get());
+
+    std::thread ping_worker([&agent]() { EXPECT_NO_THROW(agent.sendPingWorker()); });
+
+    // Every attempt throws in readyChannel(). With the production 1s restart
+    // delay 8 supervised restarts would need ~7s; the injected 10ms delay
+    // must reach them well within the wait budget.
+    EXPECT_TRUE(wait_for_condition([&agent] { return agent.attempts() >= 8; },
+                                   std::chrono::seconds(3)))
+        << "supervised restarts must pace by the injected delay";
+
+    agent.stopPingWorker();
+    if (ping_worker.joinable()) ping_worker.join();
+}
+
+TEST_F(GrpcMockTest, GrpcCommandReconnectHonorsInjectedBackoff) {
+    GrpcClientTuning tuning;
+    tuning.reconnect_initial_interval = std::chrono::milliseconds(10);
+    tuning.reconnect_multiplier = 1.0;
+    tuning.reconnect_randomization_factor = 0.0;
+    tuning.reconnect_max_interval = std::chrono::milliseconds(10);
+    TestableGrpcCommand command(mock_agent_service_.get(), tuning);
+
+    std::atomic<int> connect_attempts{0};
+    auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+    EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+        .WillRepeatedly(Invoke([&connect_attempts](grpc::ClientContext*)
+                -> grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* {
+            ++connect_attempts;
+            return nullptr;
+        }));
+    command.setMockCommandStub(std::move(mock_command_stub));
+
+    std::thread worker([&command] { command.commandWorker(); });
+
+    // With the production 3s initial reconnect interval, 8 connect attempts
+    // would need ~21s; the injected 10ms cadence reaches them almost
+    // immediately.
+    EXPECT_TRUE(wait_for_condition([&connect_attempts] { return connect_attempts.load() >= 8; },
+                                   std::chrono::seconds(3)))
+        << "stream reconnects must pace by the injected backoff";
+
+    mock_agent_service_->setExiting(true);
+    command.stopCommandWorker();
+    if (worker.joinable()) worker.join();
 }
 
 } // namespace pinpoint

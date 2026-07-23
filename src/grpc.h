@@ -80,11 +80,75 @@ namespace pinpoint {
                         int64_t start_time, int32_t app_type, unsigned long socket_id);
 
     /**
+     * @brief Internal timing and capacity knobs shared by the gRPC clients.
+     *
+     * These are deliberately NOT part of Config: they are transport-internal
+     * tuning values with no user-facing contract. The defaults are the
+     * production values; tests inject shortened timeouts and small caps so
+     * timing-dependent behavior (deadlines, retries, restart pacing,
+     * overflow) runs in milliseconds instead of seconds. Injected once at
+     * construction and treated as immutable after workers start.
+     */
+    struct GrpcClientTuning {
+        /// Deadline applied to every unary RPC.
+        std::chrono::milliseconds request_timeout{5000};
+
+        /// Reconnect backoff for channel readiness and stream re-connects.
+        std::chrono::milliseconds reconnect_initial_interval{3000};
+        double reconnect_multiplier{1.2};
+        double reconnect_randomization_factor{0.3};
+        std::chrono::milliseconds reconnect_max_interval{30000};
+        /// Slice for the channel-ready wait loop so stop requests are
+        /// noticed while a longer backoff delay elapses.
+        std::chrono::milliseconds backoff_sleep_slice{1000};
+        /// Channel recovery at least this slow stales client-owned queues
+        /// (see on_slow_channel_recovery()).
+        std::chrono::seconds slow_recovery_threshold{5};
+
+        /// Bounded wait for a stream to deliver OnDone at shutdown before
+        /// escalating to TryCancel.
+        std::chrono::milliseconds stream_finish_timeout{3000};
+        /// Bounded wait for a stream write to complete (for the ping stream:
+        /// write + server pong) before the stream is cancelled and recycled.
+        std::chrono::milliseconds stream_write_timeout{5000};
+        /// Pause before a worker loop is restarted after an unexpected
+        /// exception, so a persistent failure cannot become a hot spin.
+        std::chrono::milliseconds worker_restart_delay{1000};
+
+        /// Scheduled retries for one metadata item before its cache entry is
+        /// released, and the delay between them.
+        int meta_retry_max_attempts{3};
+        std::chrono::milliseconds meta_retry_delay{1000};
+
+        /// Interval between ping writes on the agent ping stream.
+        std::chrono::milliseconds ping_interval{60000};
+
+        /// Interval between active-thread-count stream responses, and the cap
+        /// on concurrently served streams (each owns a dedicated thread).
+        std::chrono::milliseconds active_thread_count_flush_interval{1000};
+        size_t max_active_thread_count_streams{10};
+
+        /// Bounded wait for in-flight SendSpanBatch calls at shutdown before
+        /// they are cancelled (and again after cancellation).
+        std::chrono::milliseconds span_shutdown_await_timeout{3000};
+        /// Minimum spacing between cumulative span-queue-drop reports.
+        std::chrono::seconds span_queue_drop_log_interval{60};
+
+        /// Stats payloads pending on the stream before new ones are dropped
+        /// (an overflow also marks the queued stats stale).
+        size_t max_stats_queue_size{2};
+    };
+
+    /**
      * @brief Exponential backoff with jitter for reconnect attempts.
      */
     class ExponentialBackoff {
     public:
-        ExponentialBackoff();
+        explicit ExponentialBackoff(const GrpcClientTuning& tuning)
+            : ExponentialBackoff(tuning.reconnect_initial_interval,
+                                 tuning.reconnect_multiplier,
+                                 tuning.reconnect_randomization_factor,
+                                 tuning.reconnect_max_interval) {}
         ExponentialBackoff(std::chrono::milliseconds initial_interval,
                            double multiplier,
                            double randomization_factor,
@@ -111,8 +175,12 @@ namespace pinpoint {
          * @brief Constructs a client for the given client type.
          *
          * @param client_type Which collector service this client targets.
+         * @param config Agent configuration (collector address, batch sizes).
+         * @param tuning Transport-internal knobs; defaults are the production
+         *        values, tests inject shortened ones (see GrpcClientTuning).
          */
-        GrpcClient(ClientType client_type, std::shared_ptr<const Config> config);
+        GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
+                   const GrpcClientTuning& tuning = {});
         /**
          * @brief Injects the agent service.
          *
@@ -149,6 +217,10 @@ namespace pinpoint {
         // dangles. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
         std::shared_ptr<const Config> config_{};
+        // Immutable once any worker runs. Non-const only so testable
+        // subclasses can shorten values between construction and starting a
+        // worker; production code never writes it after the constructor.
+        GrpcClientTuning tuning_{};
         std::shared_ptr<grpc::Channel> channel_{};
         std::mutex channel_mutex_{};
         std::string client_name_{};
@@ -166,7 +238,7 @@ namespace pinpoint {
         grpc::Status stream_status_{};
         // Idle state: no write in flight and the stream is not finished.
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
-        ExponentialBackoff channel_ready_backoff_{};
+        ExponentialBackoff channel_ready_backoff_;
 
         // Per-client stop, set by this client's stopXWorker(). Today
         // do_shutdown() always sets the agent-wide exiting flag before the
@@ -198,6 +270,9 @@ namespace pinpoint {
         virtual void create_stub() = 0;
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
+
+        /// @brief Applies the tuned unary request deadline to @p context.
+        void set_request_deadline(grpc::ClientContext& context) const;
 
         /**
          * @brief Notifies derived clients that channel recovery took long enough to stale client-owned queues.
@@ -304,7 +379,8 @@ namespace pinpoint {
      */
     class GrpcMetadata : public GrpcClient {
     public:
-        explicit GrpcMetadata(std::shared_ptr<const Config> config);
+        explicit GrpcMetadata(std::shared_ptr<const Config> config,
+                              const GrpcClientTuning& tuning = {});
         ~GrpcMetadata() override = default;
 
         /**
@@ -321,8 +397,6 @@ namespace pinpoint {
     protected:
         void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
         void create_stub() override;
-        /// @brief Delay before a failed metadata send is retried; overridable for tests.
-        virtual std::chrono::milliseconds meta_retry_delay() const;
 
     private:
         struct PendingMeta {
@@ -376,7 +450,8 @@ namespace pinpoint {
      */
     class GrpcCommand : public GrpcClient {
     public:
-        explicit GrpcCommand(std::shared_ptr<const Config> config);
+        explicit GrpcCommand(std::shared_ptr<const Config> config,
+                             const GrpcClientTuning& tuning = {});
         ~GrpcCommand() override;
 
         /// @brief Worker loop that receives collector commands and dispatches them.
@@ -431,7 +506,8 @@ namespace pinpoint {
      */
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
-        explicit GrpcAgent(std::shared_ptr<const Config> config);
+        explicit GrpcAgent(std::shared_ptr<const Config> config,
+                           const GrpcClientTuning& tuning = {});
         ~GrpcAgent() override;
 
         /**
@@ -583,7 +659,8 @@ namespace pinpoint {
 
     class GrpcSpan : public GrpcClient {
     public:
-        explicit GrpcSpan(std::shared_ptr<const Config> config);
+        explicit GrpcSpan(std::shared_ptr<const Config> config,
+                          const GrpcClientTuning& tuning = {});
         ~GrpcSpan() override = default;
 
         /**
@@ -647,7 +724,8 @@ namespace pinpoint {
      */
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
-        explicit GrpcStats(std::shared_ptr<const Config> config);
+        explicit GrpcStats(std::shared_ptr<const Config> config,
+                           const GrpcClientTuning& tuning = {});
         ~GrpcStats() override { arena_.Reset(); }
 
         /**
