@@ -841,6 +841,16 @@ TEST_F(CreateAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
     write_watcher_config(1, "test-app", false);
     set_config_file_path(watcher_config_file_.string());
 
+    // Shrink the watcher's poll tick (production default: 1s) so the reload
+    // below is picked up in tens of milliseconds. Also verifies the injected
+    // interval is honored: with the 1s default the shortened waits in this
+    // test would never observe a reload. Reset in ScopedPollInterval so later
+    // watcher starts see the production default again.
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(20));
+
     auto initial_config = make_config();
     ASSERT_NE(initial_config, nullptr);
     auto agent = install_mock_agent(initial_config);
@@ -850,7 +860,7 @@ TEST_F(CreateAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
     // Let the watcher seed its initial mtime and complete one polling tick.
     // The later explicit mtime change keeps this deterministic even on file
     // systems with coarse timestamp resolution.
-    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     std::error_code ec;
     const auto previous_mtime =
         std::filesystem::last_write_time(watcher_config_file_, ec);
@@ -877,10 +887,9 @@ TEST_F(CreateAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
     EXPECT_FALSE(excluded->IsSampled());
     excluded->EndSpan();
 
-    // The watcher just completed a reload and entered a fresh one-second wait.
-    // Its stop signal must wake that wait instead of blocking for a full tick.
-    // Measure the watcher directly so unrelated worker shutdown scheduling
-    // cannot make this timing assertion flaky on a loaded test host.
+    // Stop must return promptly. The strict "stop wakes a long tick wait"
+    // regression coverage lives in ConfigFileWatcherStopWakesLongPollTick,
+    // which injects a tick far longer than this bound.
     const auto stop_started = std::chrono::steady_clock::now();
     stop_config_file_watcher();
     const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
@@ -888,6 +897,29 @@ TEST_F(CreateAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
 
     agent->Shutdown();
     EXPECT_FALSE(agent->Enable());
+}
+
+TEST_F(CreateAgentTest, ConfigFileWatcherStopWakesLongPollTick) {
+    write_watcher_config(1, "test-app", false);
+    set_config_file_path(watcher_config_file_.string());
+
+    // A 5s tick makes an un-woken wait unmissable: if the stop signal did not
+    // interrupt the wait, join would block for seconds and the assertion
+    // below would fail loudly.
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(5000));
+
+    start_config_file_watcher();
+    // Give the watcher thread time to enter its tick wait.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto stop_started = std::chrono::steady_clock::now();
+    stop_config_file_watcher();
+    const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
+    EXPECT_LT(stop_elapsed, std::chrono::milliseconds(900))
+        << "stop must wake the poll-tick wait instead of sitting it out";
 }
 
 TEST_F(CreateAgentTest, CreateAgentReloadConfigLogsInfoWhenReloadable) {

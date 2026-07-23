@@ -1045,4 +1045,57 @@ TEST_F(UrlStatTest, EachUrlStatSeparateHistogramsTest) {
     EXPECT_NE(stat.getTotalHistogram().total(), stat.getFailHistogram().total());
 }
 
+// ========== Injected interval tests ==========
+// The tick and send intervals used to be hardcoded to 30s, which made the
+// periodic send and cross-tick bucketing unreachable from tests.
+
+TEST_F(UrlStatTest, SendWorkerHonorsInjectedSendInterval) {
+    UrlStats url_stats(mock_agent_service_.get(),
+                       URL_STAT_TICK_INTERVAL,
+                       std::chrono::milliseconds(50));
+
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    // With the production 30s interval not a single send could happen in this
+    // window; the injected 50ms interval must deliver several.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (mock_agent_service_->recorded_stats_calls_.load() < 3 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+
+    EXPECT_GE(mock_agent_service_->recorded_stats_calls_.load(), 3)
+        << "the send worker must fire on the injected interval";
+    EXPECT_EQ(mock_agent_service_->last_stats_type_.load(), URL_STATS);
+}
+
+TEST_F(UrlStatTest, TickClockBucketsByInjectedTickInterval) {
+    const auto config = mock_agent_service_->getConfig();
+
+    // Two samples of the same URL, one second apart. End times are synthetic
+    // data, so no wall-clock waiting is involved.
+    UrlStatEntry first("/tick/api", "GET", 200);
+    first.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+    first.elapsed_ = 10;
+    UrlStatEntry second("/tick/api", "GET", 200);
+    second.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1001));
+    second.elapsed_ = 10;
+
+    // Injected 1s ticks: the samples land in two distinct tick buckets.
+    UrlStats fine_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    fine_stats.addSnapshot(&first, *config);
+    fine_stats.addSnapshot(&second, *config);
+    EXPECT_EQ(fine_stats.takeSnapshot()->getEachStats().size(), 2u);
+
+    // Production 30s ticks: the same samples aggregate into one bucket.
+    UrlStats coarse_stats(mock_agent_service_.get());
+    coarse_stats.addSnapshot(&first, *config);
+    coarse_stats.addSnapshot(&second, *config);
+    EXPECT_EQ(coarse_stats.takeSnapshot()->getEachStats().size(), 1u);
+}
+
 } // namespace pinpoint

@@ -36,6 +36,11 @@ namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
 
+    // Production intervals; UrlStats accepts overrides so tests can drive the
+    // tick bucketing and the periodic send in milliseconds instead of 30s.
+    constexpr auto URL_STAT_TICK_INTERVAL = std::chrono::seconds(30);
+    constexpr auto URL_STAT_SEND_INTERVAL = std::chrono::seconds(30);
+
     /**
      * @brief Maintains a fixed interval clock used to bucketize URL statistics.
      */
@@ -188,7 +193,18 @@ namespace pinpoint {
      */
     class UrlStats {
     public:
-        explicit UrlStats(AgentService* agent);
+        /**
+         * @brief Constructs the URL statistics aggregator.
+         *
+         * @param agent Owning agent service.
+         * @param tick_interval Time-bucket width for aggregation; defaults to
+         *        the production value, tests inject shorter buckets.
+         * @param send_interval Period of the send worker; defaults to the
+         *        production value, tests inject millisecond periods.
+         */
+        explicit UrlStats(AgentService* agent,
+                          std::chrono::seconds tick_interval = URL_STAT_TICK_INTERVAL,
+                          std::chrono::milliseconds send_interval = URL_STAT_SEND_INTERVAL);
         ~UrlStats() = default;
 
         /**
@@ -261,6 +277,7 @@ namespace pinpoint {
         std::mutex snapshot_mutex_{};
 
         // Send worker synchronization
+        std::chrono::milliseconds send_interval_;
         std::mutex send_mutex_{};
         std::condition_variable send_cond_var_{};
     };

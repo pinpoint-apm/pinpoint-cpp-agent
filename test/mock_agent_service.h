@@ -261,8 +261,9 @@ public:
     mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;
     mutable int recorded_url_stats_ = 0;
     mutable int recorded_exceptions_ = 0;
-    mutable int recorded_stats_calls_ = 0;
-    mutable StatsType last_stats_type_ = AGENT_STATS;
+    // Atomic so tests can poll these from another thread while a worker runs
+    mutable std::atomic<int> recorded_stats_calls_{0};
+    mutable std::atomic<StatsType> last_stats_type_{AGENT_STATS};
     mutable int recorded_server_headers_ = 0;
     mutable int recorded_client_headers_ = 0;
     mutable std::string last_url_stat_url_;

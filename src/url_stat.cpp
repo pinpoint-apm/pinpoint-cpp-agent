@@ -22,10 +22,6 @@
 
 namespace pinpoint {
 
-    // URL stat configuration constants
-    constexpr int URL_STAT_TICK_INTERVAL_SECONDS = 30;
-    constexpr int URL_STAT_SEND_INTERVAL_SECONDS = 30;
-    
     // Histogram bucket thresholds (in milliseconds)
     constexpr int32_t BUCKET_THRESHOLD_100MS = 100;
     constexpr int32_t BUCKET_THRESHOLD_300MS = 300;
@@ -88,10 +84,13 @@ namespace pinpoint {
         return url;
     }
     
-    UrlStats::UrlStats(AgentService* agent)
+    UrlStats::UrlStats(AgentService* agent,
+                       std::chrono::seconds tick_interval,
+                       std::chrono::milliseconds send_interval)
         : agent_(agent),
-          tick_clock_(URL_STAT_TICK_INTERVAL_SECONDS),
-          snapshot_(std::make_unique<UrlStatSnapshot>()) {}
+          tick_clock_(tick_interval.count()),
+          snapshot_(std::make_unique<UrlStatSnapshot>()),
+          send_interval_(send_interval) {}
 
     void UrlStats::addSnapshot(const UrlStatEntry* us, const Config& config) {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -332,7 +331,7 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(send_mutex_);
-        const auto timeout = std::chrono::seconds(URL_STAT_SEND_INTERVAL_SECONDS);
+        const auto timeout = send_interval_;
 
         while (!agent_->isExiting()) {
             if (!send_cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
@@ -349,8 +348,9 @@ namespace pinpoint {
 
     void UrlStats::stopSendUrlStatsWorker() {
         // Same rationale as stopAddUrlStatsWorker: notify unconditionally and
-        // under the lock. This worker's wait_for bounds a lost wakeup at 30s
-        // rather than forever, but shutdown should not stall at all.
+        // under the lock. This worker's wait_for bounds a lost wakeup at the
+        // send interval rather than forever, but shutdown should not stall at
+        // all.
         std::lock_guard<std::mutex> lock(send_mutex_);
         send_cond_var_.notify_one();
     }

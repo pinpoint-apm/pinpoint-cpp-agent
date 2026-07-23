@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -335,6 +336,16 @@ namespace pinpoint {
      * @param prefix Environment variable name prefix (without trailing `_`).
      */
     void set_env_prefix(std::string_view prefix);
+
+    /**
+     * @brief Overrides the config-file watcher poll interval.
+     *
+     * Applies to watchers started by subsequent `start_config_file_watcher()`
+     * calls; a running watcher keeps the interval it started with. A
+     * non-positive value resets to the production default (1s). Intended for
+     * tests, which would otherwise wait out full 1s polling ticks.
+     */
+    void set_config_watcher_poll_interval(std::chrono::milliseconds interval);
 
     /**
      * @brief Starts the config file watcher thread.

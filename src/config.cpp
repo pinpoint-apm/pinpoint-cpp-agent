@@ -131,7 +131,7 @@ namespace pinpoint {
     // running forever and the stopper blocked in join().
     //
     // A condition variable rather than a plain sleep+atomic, so a stop request
-    // wakes the watcher immediately: with an uninterruptible 1-second sleep,
+    // wakes the watcher immediately: with an uninterruptible poll-tick sleep,
     // stop_config_file_watcher() — and therefore agent Shutdown() — would block
     // in join() for up to a full poll tick.
     struct ConfigWatcherStop {
@@ -154,11 +154,21 @@ namespace pinpoint {
 
         // Waits out one poll tick; returns true when a stop was requested
         // (either already pending or arriving during the wait).
-        bool wait(std::chrono::seconds tick) {
+        bool wait(std::chrono::milliseconds tick) {
             std::unique_lock<std::mutex> lock(mutex);
             return cv.wait_for(lock, tick, [this] { return requested; });
         }
     };
+
+    constexpr auto kDefaultConfigWatcherPollInterval = std::chrono::milliseconds(1000);
+
+    // Poll interval applied to the NEXT started watcher; each watcher thread
+    // captures its value at start, so a running watcher is unaffected.
+    // Guarded by config_watcher_mutex() like the other watcher state.
+    static std::chrono::milliseconds& config_watcher_poll_interval() {
+        static auto* interval = new std::chrono::milliseconds(kDefaultConfigWatcherPollInterval);
+        return *interval;
+    }
 
     // Heap-allocated and leaked like the statics above: Shutdown() can run
     // from a host atexit/global-destructor path, where a destroyed static
@@ -198,6 +208,13 @@ namespace pinpoint {
         }
     }
 
+    void set_config_watcher_poll_interval(std::chrono::milliseconds interval) {
+        std::lock_guard<std::mutex> lock(config_watcher_mutex());
+        config_watcher_poll_interval() = interval.count() > 0
+            ? interval
+            : kDefaultConfigWatcherPollInterval;
+    }
+
     void start_config_file_watcher() {
         std::lock_guard<std::mutex> lock(config_watcher_mutex());
         const auto path = get_config_file_path_copy();
@@ -224,8 +241,12 @@ namespace pinpoint {
         auto stop = std::make_shared<ConfigWatcherStop>();
         config_watcher_stop() = stop;
         config_watcher_owner_pid() = getpid();
+        // Captured once under the lock: the watcher keeps this tick for its
+        // lifetime, so a later set_config_watcher_poll_interval() cannot race
+        // the running thread.
+        const auto tick = config_watcher_poll_interval();
 
-        watcher = std::thread([path, stop]() {
+        watcher = std::thread([path, stop, tick]() {
             // Seed with the non-throwing overload: the throwing form could
             // escape this thread function (the file may have been removed
             // between the exists() check above and the thread starting), and
@@ -239,7 +260,7 @@ namespace pinpoint {
             // wait() covers both a stop pending before the tick and one
             // arriving mid-tick, so a reload can never start while shutdown is
             // in progress (nor delay it by a full file-check iteration).
-            while (!stop->wait(std::chrono::seconds(1))) {
+            while (!stop->wait(tick)) {
                 try {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
