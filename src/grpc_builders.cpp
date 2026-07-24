@@ -257,19 +257,19 @@ namespace pinpoint {
 
         void build_each_url_stat(v1::PEachUriStat* url_stat,
                                  const UrlKey& key,
-                                 EachUrlStat* each_stats,
+                                 const EachUrlStat& each_stats,
                                  google::protobuf::Arena* arena) {
             url_stat->set_uri(key.url_);
 
             auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(total, each_stats->getTotalHistogram());
+            build_url_histogram(total, each_stats.getTotalHistogram());
             url_stat->unsafe_arena_set_allocated_totalhistogram(total);
 
             auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(fail, each_stats->getFailHistogram());
+            build_url_histogram(fail, each_stats.getFailHistogram());
             url_stat->unsafe_arena_set_allocated_failedhistogram(fail);
 
-            url_stat->set_timestamp(each_stats->tick());
+            url_stat->set_timestamp(each_stats.tick());
         }
     }  // namespace
 
@@ -401,7 +401,7 @@ namespace pinpoint {
         uri_stat->mutable_eachuristat()->Reserve(static_cast<int>(m.size()));
         for (const auto& [key, each_stats] : m) {
             auto* url_stat = uri_stat->add_eachuristat();
-            build_each_url_stat(url_stat, key, each_stats.get(), arena);
+            build_each_url_stat(url_stat, key, each_stats, arena);
         }
         return uri_stat;
     }

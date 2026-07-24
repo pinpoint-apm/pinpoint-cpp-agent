@@ -65,15 +65,13 @@ namespace pinpoint {
         return {url.substr(0, end), wildcard};
     }
 
-    static std::string build_url_stat_key(const UrlStatEntry& us, const Config& config) {
-        const auto trimmed = config.http.url_stat.enable_trim_path
-            ? trim_url_path_view(us.url_pattern_, config.http.url_stat.trim_path_depth)
-            : TrimmedUrlPath{us.url_pattern_, false};
-
-        const auto method_prefix_size = config.http.url_stat.method_prefix ? us.method_.size() + 1 : 0;
+    static std::string build_url_stat_key(const UrlStatEntry& us,
+                                          const TrimmedUrlPath& trimmed,
+                                          bool method_prefix) {
+        const auto method_prefix_size = method_prefix ? us.method_.size() + 1 : 0;
         std::string url;
         url.reserve(method_prefix_size + trimmed.path.size() + (trimmed.wildcard ? 1 : 0));
-        if (config.http.url_stat.method_prefix) {
+        if (method_prefix) {
             url.append(us.method_);
             url.push_back(' ');
         }
@@ -148,11 +146,24 @@ namespace pinpoint {
         }
 
         const auto tick = tick_clock.tick(us->end_time_);
-        auto key = UrlKey{build_url_stat_key(*us, config), tick};
-        LOG_DEBUG("url stats snapshot add : {}, {}", key.url_, key.tick_);
+        const auto trimmed = config.http.url_stat.enable_trim_path
+            ? trim_url_path_view(us->url_pattern_, config.http.url_stat.trim_path_depth)
+            : TrimmedUrlPath{us->url_pattern_, false};
+        const UrlKey::View key_view{
+            us->method_,
+            trimmed.path,
+            config.http.url_stat.method_prefix,
+            trimmed.wildcard};
+        const auto lookup_key = UrlKey::lookup(key_view, tick);
+        LOG_DEBUG("url stats snapshot add : {}{}{}{}, {}",
+                  config.http.url_stat.method_prefix ? std::string_view{us->method_} : std::string_view{},
+                  config.http.url_stat.method_prefix ? std::string_view{" "} : std::string_view{},
+                  trimmed.path,
+                  trimmed.wildcard ? std::string_view{"*"} : std::string_view{},
+                  tick);
 
-        EachUrlStat *e;
-        if (const auto f = urlMap_.find(key); f == urlMap_.end()) {
+        auto found = urlMap_.find(lookup_key);
+        if (found == urlMap_.end()) {
             if (urlMap_.size() >= static_cast<size_t>(config.http.url_stat.limit)) {
                 return;
             }
@@ -160,16 +171,16 @@ namespace pinpoint {
                 constexpr size_t kMaxInitialReserve = 4096;
                 urlMap_.reserve(std::min(static_cast<size_t>(config.http.url_stat.limit), kMaxInitialReserve));
             }
-            auto new_stat = std::make_unique<EachUrlStat>(key.tick_);
-            e = new_stat.get();
-            urlMap_.emplace(std::move(key), std::move(new_stat));
-        } else {
-            e = f->second.get();
+            auto key = UrlKey{
+                build_url_stat_key(*us, trimmed, config.http.url_stat.method_prefix),
+                tick};
+            found = urlMap_.try_emplace(std::move(key), tick).first;
         }
 
-        e->getTotalHistogram().add(us->elapsed_);
+        auto& stats = found->second;
+        stats.getTotalHistogram().add(us->elapsed_);
         if (us->failed_) {
-            e->getFailHistogram().add(us->elapsed_);
+            stats.getFailHistogram().add(us->elapsed_);
         }
     }
 

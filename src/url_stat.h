@@ -21,6 +21,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,6 +30,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include "config.h"
 #include "agent_service.h"
@@ -104,8 +107,10 @@ namespace pinpoint {
 
         /// @brief Returns the histogram aggregating all responses.
         UrlStatHistogram& getTotalHistogram() { return totalHistogram_; }
+        const UrlStatHistogram& getTotalHistogram() const { return totalHistogram_; }
         /// @brief Returns the histogram aggregating failed responses.
         UrlStatHistogram& getFailHistogram() { return failedHistogram_; }
+        const UrlStatHistogram& getFailHistogram() const { return failedHistogram_; }
         /// @brief Returns the tick value associated with this statistic.
         int64_t tick() const { return tickTime_; }
 
@@ -116,20 +121,163 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Key identifying URL statistics by pattern and tick. Used as an
-     *        unordered_map key (see UrlKeyHash); it needs equality only.
+     * @brief Key identifying URL statistics by pattern and tick.
+     *
+     * Stored keys own url_. UrlStatSnapshot uses the private View form only as
+     * a synchronous C++17 unordered_map lookup key, so a hit can hash and
+     * compare the method/path fragments without first materializing a string.
      */
     struct UrlKey {
+        UrlKey(std::string url, int64_t tick)
+            : url_{std::move(url)}, tick_{tick} {}
+
+        bool operator==(const UrlKey& other) const noexcept {
+            if (tick_ != other.tick_) {
+                return false;
+            }
+            if (view_ == nullptr && other.view_ == nullptr) {
+                return url_ == other.url_;
+            }
+            if (view_ != nullptr && other.view_ == nullptr) {
+                return matches_view(other.url_, *view_);
+            }
+            if (view_ == nullptr && other.view_ != nullptr) {
+                return matches_view(url_, *other.view_);
+            }
+
+            // Two view keys are not used by UrlStatMap::find(), but retaining
+            // the full equivalence relation keeps UrlKey safe as a key type.
+            const auto size = url_size();
+            if (size != other.url_size()) {
+                return false;
+            }
+            for (size_t i = 0; i < size; ++i) {
+                if (url_at(i) != other.url_at(i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         std::string url_;
         int64_t tick_;
-        bool operator==(const UrlKey &o) const {
-            return tick_ == o.tick_ && url_ == o.url_;
+
+    private:
+        struct View {
+            std::string_view method;
+            std::string_view path;
+            bool method_prefix;
+            bool wildcard;
+        };
+
+        friend class UrlStatSnapshot;
+        friend struct UrlKeyHash;
+
+        UrlKey(const View& view, int64_t tick)
+            : url_{}, tick_{tick}, view_{&view} {}
+
+        static UrlKey lookup(const View& view, int64_t tick) {
+            return UrlKey{view, tick};
         }
+
+        static size_t view_url_size(const View& view) noexcept {
+            return (view.method_prefix ? view.method.size() + 1 : 0)
+                + view.path.size() + (view.wildcard ? 1 : 0);
+        }
+
+        static bool matches_view(const std::string& owned, const View& view) noexcept {
+            if (owned.size() != view_url_size(view)) {
+                return false;
+            }
+
+            size_t offset = 0;
+            const auto matches_part = [&owned, &offset](std::string_view part) {
+                const auto begin = owned.begin() + static_cast<std::ptrdiff_t>(offset);
+                if (!std::equal(part.begin(), part.end(), begin)) {
+                    return false;
+                }
+                offset += part.size();
+                return true;
+            };
+
+            if (view.method_prefix) {
+                if (!matches_part(view.method) || owned[offset] != ' ') {
+                    return false;
+                }
+                ++offset;
+            }
+            if (!matches_part(view.path)) {
+                return false;
+            }
+            if (view.wildcard && owned[offset++] != '*') {
+                return false;
+            }
+            return offset == owned.size();
+        }
+
+        size_t url_size() const noexcept {
+            if (view_ == nullptr) {
+                return url_.size();
+            }
+            return view_url_size(*view_);
+        }
+
+        char url_at(size_t index) const noexcept {
+            if (view_ == nullptr) {
+                return url_[index];
+            }
+            if (view_->method_prefix) {
+                if (index < view_->method.size()) {
+                    return view_->method[index];
+                }
+                index -= view_->method.size();
+                if (index == 0) {
+                    return ' ';
+                }
+                --index;
+            }
+            if (index < view_->path.size()) {
+                return view_->path[index];
+            }
+            return view_->wildcard ? '*' : '\0';
+        }
+
+        size_t url_hash() const noexcept {
+            // FNV-1a can be continued across the non-contiguous method/path
+            // fragments, unlike std::hash<std::string>. Both owning and view
+            // forms pass the exact same logical byte sequence through it.
+            std::uint64_t hash = 14695981039346656037ULL;
+            const auto append = [&hash](std::string_view part) {
+                for (const char c : part) {
+                    hash ^= static_cast<unsigned char>(c);
+                    hash *= 1099511628211ULL;
+                }
+            };
+
+            if (view_ == nullptr) {
+                append(url_);
+            } else {
+                if (view_->method_prefix) {
+                    append(view_->method);
+                    append(" ");
+                }
+                append(view_->path);
+                if (view_->wildcard) {
+                    append("*");
+                }
+            }
+            return static_cast<size_t>(hash);
+        }
+
+        // Non-null only for the private, stack-scoped lookup key used by
+        // UrlStatSnapshot::add(). Keys inserted into UrlStatMap always own
+        // url_ and leave this null.
+        const View* view_{nullptr};
     };
 
     struct UrlKeyHash {
         size_t operator()(const UrlKey& key) const noexcept {
-            const auto url_hash = std::hash<std::string>{}(key.url_);
+            const auto url_hash = key.url_hash();
             const auto tick_hash = std::hash<int64_t>{}(key.tick_);
             return url_hash ^ (tick_hash + 0x9e3779b97f4a7c15ULL + (url_hash << 6) + (url_hash >> 2));
         }
@@ -156,10 +304,12 @@ namespace pinpoint {
      */
     class UrlStatSnapshot {
     public:
-        using UrlStatMap = std::unordered_map<UrlKey, std::unique_ptr<EachUrlStat>, UrlKeyHash>;
+        using UrlStatMap = std::unordered_map<UrlKey, EachUrlStat, UrlKeyHash>;
 
         UrlStatSnapshot() : urlMap_{} {}
         ~UrlStatSnapshot() = default;
+        UrlStatSnapshot(const UrlStatSnapshot&) = delete;
+        UrlStatSnapshot& operator=(const UrlStatSnapshot&) = delete;
         
         /**
          * @brief Adds a URL statistic to the snapshot using bucketization rules.

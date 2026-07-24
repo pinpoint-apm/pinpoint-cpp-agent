@@ -15,18 +15,74 @@
  */
 
 #include <gtest/gtest.h>
+#include <google/protobuf/arena.h>
+#include <cstddef>
+#include <cstdlib>
 #include <future>
 #include <memory>
+#include <new>
 #include <thread>
 #include <chrono>
+#include <type_traits>
 
 #include "../src/url_stat.h"
 #include "../src/config.h"
 #include "../src/agent_service.h"
+#include "../src/grpc_builders.h"
 #include "../src/stat.h"
+#include "v1/Stat.pb.h"
 #include "mock_agent_service.h"
 
+namespace {
+
+thread_local bool count_url_stat_allocations = false;
+thread_local std::size_t url_stat_allocation_count = 0;
+
+void record_url_stat_allocation() noexcept {
+    if (count_url_stat_allocations) {
+        ++url_stat_allocation_count;
+    }
+}
+
+void start_counting_url_stat_allocations() noexcept {
+    url_stat_allocation_count = 0;
+    count_url_stat_allocations = true;
+}
+
+std::size_t stop_counting_url_stat_allocations() noexcept {
+    count_url_stat_allocations = false;
+    return url_stat_allocation_count;
+}
+
+}  // namespace
+
+void* operator new(std::size_t size) {
+    record_url_stat_allocation();
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) {
+    record_url_stat_allocation();
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
 namespace pinpoint {
+
+static_assert(std::is_same_v<UrlStatSnapshot::UrlStatMap::mapped_type, EachUrlStat>,
+              "URL statistics must be stored inline in the map");
+static_assert(!std::is_copy_constructible_v<UrlStatSnapshot>,
+              "inline map values must not make snapshots copyable");
 
 class UrlStatTest : public ::testing::Test {
 protected:
@@ -208,6 +264,151 @@ TEST_F(UrlStatTest, UrlStatSnapshotAddTest) {
     
     auto& stats = snapshot.getEachStats();
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain entries after add";
+}
+
+TEST_F(UrlStatTest, SnapshotPreservesExactUntrimmedKey) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = false;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/api/items/42?expand=owner", "GET", 200);
+    stat.elapsed_ = 25;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(100));
+    snapshot.add(&stat, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    const UrlKey expected{"/api/items/42?expand=owner", 100000};
+    const auto found = stats.find(expected);
+    ASSERT_NE(found, stats.end());
+    EXPECT_EQ(stats.size(), 1u);
+    EXPECT_EQ(found->first.url_, "/api/items/42?expand=owner");
+    EXPECT_EQ(found->second.tick(), 100000);
+    EXPECT_EQ(found->second.getTotalHistogram().total(), 25);
+}
+
+TEST_F(UrlStatTest, SnapshotTrimPrefixAndWireFormatStayExact) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = true;
+    config.http.url_stat.trim_path_depth = 2;
+    config.http.url_stat.method_prefix = true;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/api/v1/users/42?verbose=true", "PATCH", 500);
+    stat.elapsed_ = 450;
+    stat.failed_ = true;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1234));
+    snapshot.add(&stat, config, tick_clock);
+
+    UrlStatEntry repeat("/api/v1/users/42?verbose=true", "PATCH", 200);
+    repeat.elapsed_ = 50;
+    repeat.end_time_ = stat.end_time_;
+    snapshot.add(&repeat, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    const UrlKey expected{"PATCH /api/v1/*", 1234000};
+    ASSERT_NE(stats.find(expected), stats.end());
+    ASSERT_EQ(stats.size(), 1u);
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_url_stat(&snapshot, &arena);
+    ASSERT_NE(wire, nullptr);
+    EXPECT_EQ(wire->bucketversion(), URL_STATS_BUCKET_VERSION);
+    ASSERT_EQ(wire->eachuristat_size(), 1);
+
+    const auto& each = wire->eachuristat(0);
+    EXPECT_EQ(each.uri(), "PATCH /api/v1/*");
+    EXPECT_EQ(each.timestamp(), 1234000);
+    ASSERT_TRUE(each.has_totalhistogram());
+    EXPECT_EQ(each.totalhistogram().total(), 500);
+    EXPECT_EQ(each.totalhistogram().max(), 450);
+    ASSERT_EQ(each.totalhistogram().histogram_size(), URL_STATS_BUCKET_SIZE);
+    EXPECT_EQ(each.totalhistogram().histogram(0), 1);
+    EXPECT_EQ(each.totalhistogram().histogram(2), 1);
+    ASSERT_TRUE(each.has_failedhistogram());
+    EXPECT_EQ(each.failedhistogram().total(), 450);
+    EXPECT_EQ(each.failedhistogram().histogram(2), 1);
+}
+
+TEST_F(UrlStatTest, SnapshotSeparatesIdenticalUrlsByTick) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    TickClock tick_clock(1);
+
+    UrlStatEntry first("/tick/api", "GET", 200);
+    first.elapsed_ = 10;
+    first.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+    UrlStatEntry second("/tick/api", "GET", 200);
+    second.elapsed_ = 20;
+    second.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1001));
+
+    snapshot.add(&first, config, tick_clock);
+    snapshot.add(&second, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    const auto first_stat = stats.find(UrlKey{"/tick/api", 1000000});
+    const auto second_stat = stats.find(UrlKey{"/tick/api", 1001000});
+    ASSERT_NE(first_stat, stats.end());
+    ASSERT_NE(second_stat, stats.end());
+    EXPECT_EQ(stats.size(), 2u);
+    EXPECT_EQ(first_stat->second.getTotalHistogram().total(), 10);
+    EXPECT_EQ(second_stat->second.getTotalHistogram().total(), 20);
+}
+
+TEST_F(UrlStatTest, SnapshotHitAndRejectedMissDoNotAllocateKeyStrings) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = true;
+    config.http.url_stat.limit = 1;
+    TickClock tick_clock(1);
+
+    const std::string url = "/allocation/" + std::string(128, 'x');
+    UrlStatEntry hit(url, "GET", 200);
+    hit.elapsed_ = 1;
+    hit.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(500));
+    snapshot.add(&hit, config, tick_clock);
+
+    ASSERT_EQ(snapshot.getEachStats().size(), 1u);
+    const auto* const stored_stat = &snapshot.getEachStats().begin()->second;
+
+    start_counting_url_stat_allocations();
+    for (int i = 0; i < 128; ++i) {
+        snapshot.add(&hit, config, tick_clock);
+    }
+    const auto hit_allocations = stop_counting_url_stat_allocations();
+
+    UrlStatEntry rejected(url + "/miss", "GET", 200);
+    rejected.elapsed_ = 1000;
+    rejected.end_time_ = hit.end_time_;
+    start_counting_url_stat_allocations();
+    snapshot.add(&rejected, config, tick_clock);
+    const auto rejected_miss_allocations = stop_counting_url_stat_allocations();
+
+    UrlStatSnapshot miss_snapshot;
+    Config miss_config = config;
+    miss_config.http.url_stat.limit = 2;
+    UrlStatEntry accepted(url + "/accepted", "GET", 200);
+    accepted.elapsed_ = 1;
+    accepted.end_time_ = hit.end_time_;
+    start_counting_url_stat_allocations();
+    miss_snapshot.add(&accepted, miss_config, tick_clock);
+    const auto accepted_miss_allocations = stop_counting_url_stat_allocations();
+
+    const auto& stats = snapshot.getEachStats();
+    ASSERT_EQ(stats.size(), 1u);
+    EXPECT_EQ(&stats.begin()->second, stored_stat);
+    EXPECT_EQ(stats.begin()->first.url_, "GET " + url);
+    EXPECT_EQ(stats.begin()->second.getTotalHistogram().total(), 129);
+    EXPECT_EQ(hit_allocations, 0u)
+        << "an existing long URL must not materialize a temporary key";
+    EXPECT_EQ(rejected_miss_allocations, 0u)
+        << "a limit-rejected miss must not materialize a key either";
+    EXPECT_GT(accepted_miss_allocations, 0u)
+        << "positive control: a stored miss must allocate its map node/key";
 }
 
 // ========== UrlStats Class Tests ==========
@@ -651,8 +852,8 @@ TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     EXPECT_EQ(stats.size(), 1u) << "Same URL and tick should be aggregated into one entry";
 
     auto& entry = stats.begin()->second;
-    EXPECT_EQ(entry->getTotalHistogram().total(), 300) << "Total should be 100 + 200";
-    EXPECT_EQ(entry->getTotalHistogram().max(), 200);
+    EXPECT_EQ(entry.getTotalHistogram().total(), 300) << "Total should be 100 + 200";
+    EXPECT_EQ(entry.getTotalHistogram().max(), 200);
 }
 
 // Test snapshot fail aggregation honors the precomputed failed_ flag.
@@ -694,9 +895,9 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     EXPECT_EQ(stats.size(), 1u);
 
     auto& entry = stats.begin()->second;
-    EXPECT_EQ(entry->getTotalHistogram().total(), 450) << "All 3 should be in total histogram";
-    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only the 500 should be in fail histogram";
-    EXPECT_EQ(entry->getFailHistogram().max(), 200);
+    EXPECT_EQ(entry.getTotalHistogram().total(), 450) << "All 3 should be in total histogram";
+    EXPECT_EQ(entry.getFailHistogram().total(), 200) << "Only the 500 should be in fail histogram";
+    EXPECT_EQ(entry.getFailHistogram().max(), 200);
 }
 
 // Test that 404 success/500 failure tracks the configurable status-error rule.
@@ -721,8 +922,8 @@ TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
     snapshot.add(&stat_500, config, tick_clock);
 
     auto& entry = snapshot.getEachStats().begin()->second;
-    EXPECT_EQ(entry->getTotalHistogram().total(), 400) << "Both should be counted in total";
-    EXPECT_EQ(entry->getFailHistogram().total(), 250) << "Only the 500 should be a failure under 5xx";
+    EXPECT_EQ(entry.getTotalHistogram().total(), 400) << "Both should be counted in total";
+    EXPECT_EQ(entry.getFailHistogram().total(), 250) << "Only the 500 should be a failure under 5xx";
 }
 
 // Test that configuring http.server.status_errors to include 4xx makes 404 a failure.
@@ -752,8 +953,8 @@ TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
     snapshot.add(&stat_200, config, tick_clock);
 
     auto& entry = snapshot.getEachStats().begin()->second;
-    EXPECT_EQ(entry->getTotalHistogram().total(), 250) << "Both should be counted in total";
-    EXPECT_EQ(entry->getFailHistogram().total(), 150) << "404 should now be a failure";
+    EXPECT_EQ(entry.getTotalHistogram().total(), 250) << "Both should be counted in total";
+    EXPECT_EQ(entry.getFailHistogram().total(), 150) << "404 should now be a failure";
 }
 
 // Test snapshot limit enforcement
@@ -892,9 +1093,9 @@ TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
     auto& stats = snapshot.getEachStats();
     auto& entry = stats.begin()->second;
 
-    EXPECT_EQ(entry->getTotalHistogram().total(), 300);
+    EXPECT_EQ(entry.getTotalHistogram().total(), 300);
     // Only the 5xx code should be in the fail histogram under the default config.
-    EXPECT_EQ(entry->getFailHistogram().total(), 200) << "Only 5xx should be in fail histogram";
+    EXPECT_EQ(entry.getFailHistogram().total(), 200) << "Only 5xx should be in fail histogram";
 }
 
 // ========== Additional TickClock Tests ==========
