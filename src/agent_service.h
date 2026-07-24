@@ -136,9 +136,9 @@
       /**
        * @brief Returns a shared handle that keeps the agent alive.
        *
-       * Spans capture this handle so that user code holding a span (or span
-       * handle in the C API) past the release of the last agent reference can
-       * never dereference a destroyed agent.
+       * Production spans capture a non-null handle so user code holding a span
+       * (or C span handle) past release of the last external agent reference
+       * keeps the agent alive.
        *
        * @return Shared pointer to this service, or nullptr when the instance
        *         is not owned by a shared_ptr (e.g. test fixtures).
@@ -154,7 +154,8 @@
       virtual const std::string& getAppName() const = 0;
       /// @brief Returns the configured application type.
       virtual int32_t getAppType() const = 0;
-      /// @brief Returns the unique agent identifier.
+      /// @brief Returns the resolved agent identifier used as the collector
+      ///        instance key.
       virtual const std::string& getAgentId() const = 0;
       /// @brief Returns the human-readable agent name.
       virtual const std::string& getAgentName() const = 0;
@@ -175,19 +176,19 @@
        */
       virtual TraceId generateTraceId() = 0;
       /**
-       * @brief Sends a span chunk to the collector.
+       * @brief Queues a span chunk for asynchronous collector delivery.
        *
        * @param span Span chunk ownership is transferred to the implementation.
        */
       virtual void recordSpan(std::unique_ptr<SpanChunk> span) const = 0;
       /**
-       * @brief Sends an aggregated URL statistic to the collector.
+       * @brief Queues a per-request URL statistic for aggregation.
        *
        * @param stat URL statistic record to be transferred.
        */
       virtual void recordUrlStat(UrlStatEntry stat) const = 0;
       /**
-       * @brief Sends an aggregated URL statistic using the caller's config snapshot.
+       * @brief Queues a URL statistic using the caller's config snapshot.
        *
        * Overload for hot-path callers (spans) that already hold a config
        * snapshot: skips the atomic config load the single-argument overload
@@ -202,12 +203,12 @@
        */
       virtual void recordUrlStat(UrlStatEntry stat, const Config& config) const;
       /**
-       * @brief Reports exceptions captured during span processing.
+       * @brief Queues exceptions captured during span processing for delivery.
        */
       virtual void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const = 0;
       /**
-       * @brief Pushes agent- or URL-level statistics to the collector.
+       * @brief Queues agent- or URL-level statistics for collector delivery.
        *
        * @param stats Statistic type selector.
        */

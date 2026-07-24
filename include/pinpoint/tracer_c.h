@@ -54,9 +54,9 @@
  *
  * Span-event and annotation handles are non-owning views that hold no
  * resources of their own: pt_span_event_destroy() and pt_annotation_destroy()
- * are safe no-ops kept for API symmetry. Use these handles only while the
- * parent span/span event is alive and active; do not store them for work
- * that can run after pt_span_event_end(), pt_span_end(), or pt_span_destroy().
+ * are safe no-ops kept for API symmetry. Ending a span or event seals its
+ * recording state but retains these objects while the parent span is alive.
+ * Do not retain a view beyond the parent span's lifetime.
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -178,15 +178,14 @@ typedef enum {
  * @brief Look up a value by key in a propagation carrier.
  *
  * @param userdata Opaque pointer provided at carrier construction time.
- * @param key      NUL-terminated header/key name. The agent always queries
- *                 HTTP headers by their canonical mixed-case names
- *                 ("Pinpoint-TraceID", "X-Forwarded-For", ...), while HTTP/2/3
- *                 deliver header names lowercase — a callback backed by a raw
- *                 header map MUST match the key case-insensitively, or those
- *                 lookups miss silently (broken trace propagation, wrong
- *                 client address, empty recorded headers). Only non-HTTP
- *                 carriers with genuinely case-sensitive keys should match
- *                 exactly.
+ * @param key      NUL-terminated header/key name. Built-in HTTP headers are
+ *                 queried with mixed-case names ("Pinpoint-TraceID",
+ *                 "X-Forwarded-For", ...); configured recorded-header names
+ *                 retain their configured spelling. HTTP field names are
+ *                 case-insensitive and HTTP/2/3 deliver them lowercase, so an
+ *                 HTTP-backed callback MUST match case-insensitively. Only
+ *                 non-HTTP carriers with genuinely case-sensitive keys should
+ *                 use exact matching.
  * @return         Pointer to the NUL-terminated value, or NULL if absent.
  *                 The pointer must remain valid until the next call on the same
  *                 carrier or until the carrier is destroyed.
@@ -222,9 +221,9 @@ typedef int (*pt_header_foreach_cb)(const char* key, const char* value, void* us
 /**
  * @brief Iterate all entries in a header carrier.
  *
- * Implementors must call @p callback once for every header, passing
- * @p callback_userdata through unchanged.  Iteration stops when @p callback
- * returns non-zero.
+ * Implementors call @p callback for each header in iteration order, passing
+ * @p callback_userdata through unchanged, until all entries are visited or
+ * the callback returns non-zero.
  *
  * @param userdata          Opaque pointer provided at carrier construction time.
  * @param callback          Per-entry callback.
@@ -403,11 +402,11 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
 /**
  * @brief Returns a handle to the singleton global agent.
  *
- * Each call returns a distinct handle that must be released with
- * pt_agent_destroy() when no longer needed. Destroying the handle only
- * releases the C wrapper; the global agent itself stays alive — its lifetime
- * is managed internally. If no global agent exists, a handle to a disabled
- * (noop) agent is returned, never NULL.
+ * For a live global agent, each call returns a distinct owning handle that
+ * should be released with pt_agent_destroy(). Destroying it only releases the
+ * C wrapper; the global agent itself is managed internally. If no global
+ * agent exists, calls share a disabled-agent sentinel whose destroy operation
+ * is a no-op. NULL is returned only if handle setup itself fails.
  *
  * Mirrors pinpoint::GlobalAgent().
  */
@@ -420,34 +419,39 @@ pt_agent_t pt_global_agent(void);
  * For handles from pt_global_agent() this only frees the C wrapper; the
  * global agent itself is unaffected.
  *
- * Destroying the same handle twice (or a pointer that was never returned by
- * this library) is detected and ignored with a warning log; other calls on a
- * destroyed handle remain undefined behavior.
+ * Unknown and already-destroyed registry handles are ignored with a warning.
+ * NULL and the shared disabled-agent sentinel are ignored silently. Other API
+ * calls made with an already-destroyed registry handle are ignored or return
+ * their documented failure value.
  */
 void pt_agent_destroy(pt_agent_t agent);
 
 /**
  * @brief Brings the agent online in the CURRENT process.
  *
- * Opens the gRPC channels, spawns the worker threads, starts the config-file
- * watcher and (re)generates a process-unique agent id. Idempotent per process
- * and non-blocking. Call this once after pt_create_agent()/
- * pt_create_agent_with_server_metadata(); after fork(), call it from each
- * child so every worker gets a fully working agent with a distinct id.
+ * Starts the config-file watcher and asynchronous agent initialization; the
+ * initialization thread opens the gRPC channels and launches the workers. The
+ * call returns without waiting for collector connection or registration.
+ * After fork(), call it in each child created from a cold agent so each worker
+ * derives a child-specific agent id.
  *
  * Mirrors pinpoint::Agent::Start().
  */
 void pt_agent_start(pt_agent_t agent);
 
 /**
- * @brief Returns non-zero if the agent is enabled and actively sampling.
+ * @brief Returns non-zero after initialization succeeds and tracing is
+ *        enabled. Individual spans may still be rejected by sampling.
  *
  * Mirrors pinpoint::Agent::Enable().
  */
 int pt_agent_is_enabled(pt_agent_t agent);
 
 /**
- * @brief Initiates a graceful shutdown and flushes pending spans.
+ * @brief Stops the agent and waits for worker shutdown.
+ *
+ * Queued spans are submitted when a collector channel is available, but
+ * successful delivery is not guaranteed.
  *
  * Mirrors pinpoint::Agent::Shutdown().
  */
@@ -498,21 +502,23 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
 /**
  * @brief Releases a span handle.
  *
- * Call pt_span_end() first to flush the span data, then destroy the handle.
+ * Call pt_span_end() first to finalize and enqueue the span data, then destroy
+ * the handle.
  *
- * Destroying the same handle twice (or a pointer that was never returned by
- * this library) is detected and ignored with a warning log; other calls on a
- * destroyed handle remain undefined behavior.
+ * Unknown and already-destroyed registry handles are ignored with a warning.
+ * NULL and the shared no-op span sentinel are ignored silently. Other API
+ * calls made with an already-destroyed registry handle are ignored or return
+ * their documented failure value.
  */
 void pt_span_destroy(pt_span_t span);
 
 /**
  * @brief Creates a new child span event and pushes it onto the event stack.
  *
- * The returned non-owning handle must be used only while the parent span is
- * alive and the event is active. pt_span_event_destroy() may be called when
- * done, but it is a compatibility no-op and does not extend the event lifetime.
- * Call pt_span_event_end() on the event handle to pop and finalize the event.
+ * The returned non-owning handle remains valid while the parent span is alive.
+ * Call pt_span_event_end() to pop and finalize the event; later recording
+ * calls become warning no-ops. pt_span_event_destroy() is a compatibility
+ * no-op and does not extend the lifetime.
  *
  * Mirrors pinpoint::Span::NewSpanEvent(operation).
  */
@@ -529,22 +535,23 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
 /**
  * @brief Returns the current (top-of-stack) span event.
  *
- * The returned non-owning handle is valid only while that event remains active.
- * pt_span_event_destroy() may be called when done, but it is a compatibility
- * no-op.
+ * The returned non-owning handle remains valid while the parent span is alive.
+ * Once the event or span is finalized, recording calls become no-ops.
+ * pt_span_event_destroy() is a compatibility no-op.
  *
  * When there is no active event (the span is already ended, or no event is on
  * the stack), this returns a valid handle to a shared no-op event that
- * silently ignores recording — NOT NULL — so the return value cannot be used
- * to detect whether an event is active. NULL is returned only when `span`
- * itself is NULL or already destroyed.
+ * silently ignores recording, so the return value cannot be used to detect
+ * whether an event is active. NULL is returned when `span` is NULL or already
+ * destroyed, or when an internal failure is caught at the C API boundary.
  *
  * Mirrors pinpoint::Span::GetSpanEvent().
  */
 pt_span_event_t pt_span_get_event(pt_span_t span);
 
 /**
- * @brief Completes the span and flushes all recorded data to the collector.
+ * @brief Finalizes the span and submits its recorded data for asynchronous
+ *        delivery.
  *
  * Mirrors pinpoint::Span::EndSpan().
  */
@@ -643,10 +650,10 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
 /**
  * @brief Returns the annotation container for this span.
  *
- * The returned non-owning handle is valid only while the span is alive and
- * active. pt_annotation_destroy() may be called when done, but it is a
- * compatibility no-op. Do not use the handle after the span ends or is
- * destroyed.
+ * The returned non-owning handle remains valid while the span is alive.
+ * Ending the span seals the container, so later appends become warning
+ * no-ops. pt_annotation_destroy() is a compatibility no-op and does not
+ * extend the lifetime.
  *
  * Mirrors pinpoint::Span::GetAnnotations().
  */
@@ -668,9 +675,10 @@ void pt_span_event_destroy(pt_span_event_t se);
  * @brief Pops and finalizes this span event.
  *
  * Records the elapsed time and removes the event from the parent span's event
- * stack. Ending an already-ended event is a warning no-op. Do not use the
- * event or its annotation handles after this call; their destroy functions are
- * optional compatibility no-ops.
+ * stack. Ending an already-ended event is a warning no-op. The event and its
+ * annotation handles remain valid while the parent span is alive, but further
+ * recording calls are no-ops; their destroy functions are optional
+ * compatibility no-ops.
  *
  * Mirrors pinpoint::SpanEvent::EndEvent().
  */
@@ -749,10 +757,10 @@ void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* write
 /**
  * @brief Returns the annotation container for this span event.
  *
- * The returned non-owning handle is valid only while the span event is active.
- * pt_annotation_destroy() may be called when done, but it is a compatibility
- * no-op. Do not use the handle after the span event is ended or the parent span
- * is destroyed.
+ * The returned non-owning handle remains valid while the parent span is alive.
+ * Ending the span event seals the container, so later appends become warning
+ * no-ops. pt_annotation_destroy() is a compatibility no-op and does not
+ * extend the lifetime.
  *
  * Mirrors pinpoint::SpanEvent::GetAnnotations().
  */

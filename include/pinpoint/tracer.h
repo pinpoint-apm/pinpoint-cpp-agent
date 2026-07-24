@@ -112,20 +112,17 @@ namespace pinpoint {
 		/**
 		 * @brief Reads a key value from the propagation carrier.
 		 *
-		 * Returning a view keeps per-request lookups allocation-free: most
-		 * implementations can point straight into their backing header map.
+		 * Returning a view lets implementations avoid a per-lookup value copy;
+		 * for example, a reader can point into its backing header map.
 		 *
-		 * @param key Header name or key to look up. The agent always queries
-		 *        HTTP headers by their canonical mixed-case names
-		 *        ("Pinpoint-TraceID", "X-Forwarded-For", configured
-		 *        RecordRequestHeader names, ...), but HTTP header names are
-		 *        case-insensitive on the wire and HTTP/2/3 deliver them
-		 *        lowercase — so an implementation backed by a raw header map
-		 *        MUST match the key case-insensitively. An exact-case lookup
-		 *        misses those headers silently: broken trace propagation, the
-		 *        load balancer recorded as the client address, empty recorded
-		 *        headers. Only non-HTTP carriers with genuinely case-sensitive
-		 *        keys should match exactly.
+		 * @param key Header name or key to look up. Built-in HTTP headers are
+		 *        queried with mixed-case constants ("Pinpoint-TraceID",
+		 *        "X-Forwarded-For", ...); configured recorded-header names are
+		 *        passed through as configured. HTTP field names are
+		 *        case-insensitive and HTTP/2/3 deliver them lowercase, so an
+		 *        HTTP-backed implementation MUST match case-insensitively.
+		 *        Only non-HTTP carriers with genuinely case-sensitive keys
+		 *        should use exact matching.
 		 * @return View of the value if present. The view must remain valid
 		 *         until the next call on the same reader or until the reader
 		 *         is destroyed, whichever comes first. Implementations that
@@ -246,9 +243,10 @@ namespace pinpoint {
 
 	/// @brief Non-owning annotation pointer.
 	///
-	/// The returned annotation object is owned by the span or span event that
-	/// created it. Do not keep this pointer after the owning span/event has
-	/// ended or been destroyed.
+	/// The returned annotation object is owned by the parent span data. Ending
+	/// its span or span event seals the container, so later appends are warning
+	/// no-ops, but does not immediately invalidate this pointer. Do not retain
+	/// it beyond the lifetime of the parent span.
 	using AnnotationPtr = Annotation*;
 
 	class Span;
@@ -296,12 +294,12 @@ namespace pinpoint {
 
 	/// @brief Non-owning span-event pointer.
 	///
-	/// Span events are owned by their parent span. Use this pointer only while
-	/// the parent span is alive and the event is still in scope; do not retain it
-	/// for work that can outlive the span. Because the event is owned by the span,
-	/// it inherits the span's single-thread contract: use it only on the thread
-	/// that owns the parent span. Ending the span (or the event) on another thread
-	/// can free the event out from under this pointer.
+	/// Span events are owned by their parent span. Ending an event retains its
+	/// storage so a duplicate EndEvent() can be a warning no-op while the parent
+	/// span remains alive, but this pointer does not extend that lifetime. Do not
+	/// retain it for work that can outlive the span. It also inherits the span's
+	/// single-thread contract: concurrent use, including ending it from another
+	/// thread, is unsupported and can race with event mutation or span teardown.
 	using SpanEventPtr = SpanEvent*;
 
 	/**
@@ -333,17 +331,16 @@ namespace pinpoint {
 		/// no-op event (never null) when the span is finished or has no
 		/// active event.
 		virtual SpanEventPtr GetSpanEvent() = 0;
-		/// @brief Completes the span and flushes recorded data.
-		///        Span events are finalized individually via
-		///        SpanEvent::EndEvent on the event handle.
+		/// @brief Finalizes the span and submits its recorded data for
+		///        asynchronous delivery. Span events are finalized individually
+		///        via SpanEvent::EndEvent on the event handle.
 		virtual void EndSpan() = 0;
 		/// @brief Creates an asynchronous child span for background work.
 		///
-		/// This is the ONLY sanctioned way to continue a trace on another thread.
-		/// Call it on the thread that owns this span; the returned child span is a
-		/// distinct instance that the other thread then uses exclusively. Never
-		/// share `this` span across threads — see the Span class thread-safety
-		/// contract above.
+		/// Use this to continue the trace on another thread without sharing the
+		/// parent span. Call it on the thread that owns this span; the returned
+		/// child is a distinct instance that the other thread then uses
+		/// exclusively. See the Span thread-safety contract above.
 		virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
 
 		/// @brief Returns the distributed trace identifier for the span in its
@@ -418,20 +415,21 @@ namespace pinpoint {
       	 *
       	 * CreateAgent() is "cold": it only parses configuration and allocates the
       	 * object — it starts no threads, opens no gRPC channel (no `grpc_init`) and
-      	 * installs no config-file watcher. Start() performs that work: it opens the
-      	 * gRPC channels, spawns the worker threads, starts the config-file watcher
-      	 * and (re)generates a process-unique agent id. It must be called before the
-      	 * agent will record any spans.
+		 * installs no config-file watcher. Start() starts the watcher and an
+		 * initialization thread; that thread opens the gRPC channels and launches
+		 * the workers. In a forked child, Start() also derives a child-specific
+		 * agent id. It must be called before the agent will record any spans.
       	 *
-      	 * Idempotent and non-blocking: calling Start() more than once in the same
-      	 * process is a no-op, and the collector connection is established
-      	 * asynchronously.
+		 * Once initialization has been launched, later calls are no-ops. A
+		 * synchronous failure while creating the watcher or initialization thread
+		 * leaves the call retryable. Start() returns without waiting for collector
+		 * connection or registration.
       	 *
       	 * This split enables the "initialize per worker after fork" model used by
       	 * gunicorn/uWSGI/`multiprocessing(fork)`: the master calls CreateAgent()
       	 * (holding no threads and no open gRPC runtime at the fork point) and each
-      	 * forked child calls Start() from its post-fork hook, obtaining a fully
-      	 * working agent with a distinct agent id.
+		 * forked child calls Start() from its post-fork hook, beginning
+		 * initialization with a child-specific agent id.
       	 *
       	 * Because the cold CreateAgent() performs no `grpc_init`, each child's
       	 * Start() runs that child's first, fresh gRPC initialization and inherits
@@ -441,9 +439,12 @@ namespace pinpoint {
       	 * gRPC fork handling.
       	 */
       	virtual void Start() = 0;
-      	/// @brief Returns whether the agent is enabled and sampling.
+		/// @brief Returns whether agent initialization succeeded and tracing is
+		///        enabled. Individual spans may still be rejected by sampling.
       	virtual bool Enable() = 0;
-      	/// @brief Initiates a graceful shutdown of the agent.
+		/// @brief Stops the agent and waits for its workers to finish. Pending
+		///        spans are submitted when a channel is available, but delivery
+		///        is not guaranteed.
       	virtual void Shutdown() = 0;
   	};
 

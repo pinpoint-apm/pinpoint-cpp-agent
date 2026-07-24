@@ -34,8 +34,9 @@ namespace pinpoint {
      *
      * Producer threads are assigned a stable home shard. Each shard has an
      * independent, short-held mutex and circular buffer, removing the former
-     * process-wide mutex and allocation from the hot path. Values never move to
-     * another shard, so FIFO ordering is retained for each producer shard.
+     * process-wide mutex and queue-storage allocation from the hot path. Values
+     * never move to another shard, so FIFO ordering is retained for each
+     * producer shard.
      *
      * Concurrency contract: multi-producer, SINGLE consumer. Any number of
      * threads may enqueue concurrently, but the dequeue methods (try_dequeue,
@@ -52,10 +53,11 @@ namespace pinpoint {
      * separate mutex, while steady-state enqueue and head-drop touch only the
      * producer's shard. Cross-shard dequeue order is intentionally unspecified.
      *
-     * To keep quota borrowing and every enqueue allocation-free, each shard
-     * preallocates a physical ring with QueueSize cells. Physical cell storage
-     * is therefore shard_count * QueueSize, even though the global logical
-     * retention bound remains QueueSize.
+     * To avoid queue-internal allocation during quota borrowing and enqueue,
+     * each shard preallocates a physical ring with QueueSize cells. Physical
+     * cell storage is therefore shard_count * QueueSize, even though the
+     * global logical retention bound remains QueueSize. T's own assignment
+     * operators may still perform implementation-specific work.
      *
      * T's complete contract is the three static_asserts below. Every value
      * transfer inside the queue uses default construction plus move
@@ -94,8 +96,8 @@ namespace pinpoint {
                 // A shard can borrow every other quota when it is the only
                 // active producer. Each shard therefore preallocates capacity_
                 // physical cells: total physical cells are
-                // shard_count_ * capacity_. This keeps all later enqueues
-                // allocation-free, while the sum of logical quotas and retained
+                // shard_count_ * capacity_. This avoids later queue-storage
+                // allocation, while the sum of logical quotas and retained
                 // values remains capacity_.
                 shards_.push_back(std::make_unique<Shard>(capacity_, quota));
                 base_quotas_.push_back(quota);
@@ -157,10 +159,10 @@ namespace pinpoint {
             if (max_items == 0) {
                 return 0;
             }
-            // Reserve before probing so the per-shard placeholder resizes
-            // never reallocate — nothing allocates while holding a
-            // producer-contended shard mutex, and a reserve failure throws
-            // here, before any shard state is mutated.
+            // Reserve before probing so the per-shard placeholder resizes do
+            // not reallocate. A reserve failure therefore happens here, before
+            // any shard state is mutated; operations under a shard mutex are
+            // non-throwing under T's contract.
             out.reserve(out.size() + max_items);
 
             const uint64_t active = active_shards_.load(std::memory_order_acquire);
@@ -268,9 +270,9 @@ namespace pinpoint {
             }
 
             // Caller must have reserved capacity in out for max_items: the
-            // resizes below must not reallocate, so nothing allocates or
-            // throws while the shard mutex is held and the trailing
-            // down-resize cannot move the appended values (see
+            // resizes below must not reallocate, so vector growth cannot throw
+            // while the shard mutex is held and the trailing down-resize
+            // cannot move the appended values (see
             // ShardedBoundedQueue::try_dequeue_batch).
             size_t try_dequeue_batch(std::vector<T>& out, size_t max_items) {
                 // Append default-constructed placeholders first and fill them

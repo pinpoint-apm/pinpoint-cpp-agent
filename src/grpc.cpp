@@ -1431,8 +1431,8 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // OnDone is guaranteed after cancellation; the reactor must not
-            // be abandoned before it arrives.
+            // TryCancel is best-effort. The reactor still must not be
+            // abandoned while the call is outstanding, so wait for OnDone.
             stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
         }
     }
@@ -1481,8 +1481,8 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // OnDone is guaranteed after cancellation; the reactor must not
-            // be abandoned before it arrives.
+            // TryCancel is best-effort. The reactor still must not be
+            // abandoned while the call is outstanding, so wait for OnDone.
             stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
         }
 
@@ -1595,8 +1595,8 @@ namespace pinpoint {
         }
         // The worker may be blocked in write_and_await_ping_stream() waiting
         // for a server pong that never arrives; only stream activity can wake
-        // that wait. Cancelling the active stream forces OnDone, which sets
-        // STREAM_DONE and releases the worker so the stop is deterministic.
+        // that wait. Request cancellation to prompt OnDone, which sets
+        // STREAM_DONE; TryCancel itself provides no hard completion bound.
         std::unique_lock<std::mutex> lock(stream_mutex_);
         if (stream_context_ != nullptr && grpc_status_ != STREAM_DONE) {
             stream_context_->TryCancel();
@@ -1906,9 +1906,9 @@ namespace pinpoint {
             return;
         }
 
-        // Slow collector: cancel whatever is still in flight so the completion
-        // callbacks (which return the permits) fire promptly instead of running
-        // out their full request deadline after this object is gone.
+        // Slow collector: request cancellation for whatever is still in
+        // flight. TryCancel is best-effort, but when honored it avoids waiting
+        // out the full request deadline for callbacks to return their permits.
         std::vector<std::shared_ptr<PendingSpanBatch>> stragglers;
         {
             std::lock_guard<std::mutex> lock(inflight_->mutex);
@@ -2131,9 +2131,8 @@ namespace pinpoint {
                 if (stream_context_ != nullptr) {
                     stream_context_->TryCancel();
                 }
-                // OnDone is guaranteed after cancellation once the hold is
-                // released; the reactor must not be abandoned before it
-                // arrives.
+                // TryCancel is best-effort. With the hold released, keep the
+                // reactor alive and wait for the call's eventual OnDone.
                 stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
             }
 
@@ -2170,8 +2169,8 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // OnDone is guaranteed after cancellation; the reactor must not
-            // be abandoned before it arrives.
+            // TryCancel is best-effort. The reactor still must not be
+            // abandoned while the call is outstanding, so wait for OnDone.
             stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
         }
     }
@@ -2420,9 +2419,9 @@ namespace pinpoint {
         }
         // The worker may be blocked in write_and_await_stats_stream() waiting
         // for a write completion that a stalled collector never delivers; only
-        // stream activity can wake that wait. Cancelling the active stream
-        // forces the pending write (and then OnDone) through, so the stop is
-        // deterministic — mirrors stopPingWorker(). Taken after releasing
+        // stream activity can wake that wait. Request cancellation to prompt
+        // the pending operation and OnDone; TryCancel itself provides no hard
+        // completion bound. Taken after releasing
         // stats_queue_mutex_: the worker acquires stats_queue_mutex_ while
         // holding stream_mutex_ (next_write), so nesting them here in the
         // opposite order would risk deadlock.

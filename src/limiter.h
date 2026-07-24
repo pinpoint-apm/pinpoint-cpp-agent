@@ -26,8 +26,9 @@ namespace pinpoint {
      *
      * The window second and the remaining tokens are packed into a single
      * 64-bit atomic, so refill-and-consume is one CAS: there is no
-     * reset-in-progress flag for other threads to spin on, and a refill can
-     * never race with an in-flight token decrement.
+     * reset-in-progress flag for other threads to spin on. A refill and a
+     * concurrent decrement may contend, but one CAS fails and retries against
+     * the state published by the other instead of losing an update.
      */
     class RateLimiter {
     public:

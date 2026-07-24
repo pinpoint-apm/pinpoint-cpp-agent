@@ -258,8 +258,10 @@ namespace pinpoint {
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
             // wait() covers both a stop pending before the tick and one
-            // arriving mid-tick, so a reload can never start while shutdown is
-            // in progress (nor delay it by a full file-check iteration).
+            // arriving mid-tick, so shutdown need not wait out the polling
+            // interval. The checks below avoid starting expensive reload work
+            // after an observed stop; a stop can still race the final check,
+            // which is why stop_config_file_watcher() joins this thread.
             while (!stop->wait(tick)) {
                 try {
                     auto current = std::filesystem::last_write_time(path);
@@ -1025,9 +1027,9 @@ namespace pinpoint {
 
             if (auto object_name = resolve_object_name(name_version, in)) {
                 // Record whether the id was pinned (explicitly provided and kept
-                // as-is) versus auto-generated. v4 always regenerates the id, so
-                // it is never pinned. Agent::Start() uses this to keep forked
-                // workers' agent ids unique.
+                // as-is) versus auto-generated. v4 always regenerates the id,
+                // so it is never pinned. Agent::Start() uses this to derive a
+                // child-specific id in each forked worker.
                 config->agent_id_pinned_ = (name_version != NameVersion::kV4)
                     && !in.agent_id.empty()
                     && object_name->agent_id == in.agent_id;

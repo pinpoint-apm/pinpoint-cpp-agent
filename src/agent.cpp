@@ -35,7 +35,7 @@
 
 namespace pinpoint {
 
-    // Global agent singleton with lock-free reader access
+    // Global agent singleton whose readers bypass the writer mutex
     namespace {
         // Serializes global-agent WRITERS only (CreateAgent, Shutdown, the
         // test helpers). Readers never take it: GlobalAgent() goes through the
@@ -45,11 +45,12 @@ namespace pinpoint {
         std::mutex global_agent_mutex;
 
         // The holder is intentionally heap-allocated and never destroyed so
-        // that ~AgentImpl can never run from a static destructor. Tearing the
-        // agent down during __cxa_atexit (thread joins, gRPC channel teardown,
-        // logging through possibly-destroyed singletons) is unsafe for a
-        // library embedded in a host application; teardown must only happen
-        // through an explicit Shutdown() or a user-released reference.
+        // its own static destruction cannot release the last AgentImpl.
+        // Tearing the agent down during __cxa_atexit (thread joins, gRPC
+        // channel teardown, logging through possibly-destroyed singletons) is
+        // unsafe for a library embedded in a host application. A global agent
+        // is therefore torn down through explicit Shutdown(); a non-global
+        // instance can still die when its last owner releases it.
         //
         // SnapshotCache::Uncached (the AtomicSharedPtr default) is load-bearing
         // for the same invariant: a ThreadCached holder would pin the agent in
@@ -116,7 +117,7 @@ namespace pinpoint {
         // makes the agent safe to construct in a master process that will
         // fork(): there is nothing live to break at the fork point. Start()
         // later compares getpid() against create_pid_ to tell whether it is
-        // running in a forked child (and must mint a unique agent id).
+        // running in a forked child (and must derive a child-specific id).
         create_pid_ = getpid();
     }
 
@@ -132,20 +133,22 @@ namespace pinpoint {
             return;
         }
 
-        // Idempotent: only the first Start() in the object's life brings it
-        // online. The recommended fork model is a COLD CreateAgent() in the
-        // master (started_ == false) followed by Start() in each child, so a
-        // child always takes the full path below. The discouraged "Start() in
-        // the master, then fork" case leaves an inherited started_ == true in
-        // the child; Start() there is a no-op (its inherited worker handles are
-        // dead and re-spawning over them would terminate), and teardown stays
-        // crash-free via the pid guard in do_shutdown().
+        // Once a Start() launches initialization, later calls are no-ops.
+        // Synchronous setup failures reset started_ in the catch handlers
+        // below and remain retryable. The recommended fork model is a COLD
+        // CreateAgent() in the master (started_ == false) followed by Start()
+        // in each child, so a child takes the full path below. The discouraged
+        // "Start() in the master, then fork" case leaves an inherited
+        // started_ == true in the child; Start() there is a no-op (its
+        // inherited worker handles are dead and re-spawning over them would
+        // terminate), and teardown stays crash-free via the pid guard in
+        // do_shutdown().
         if (started_.exchange(true)) {
             return;
         }
 
-        // Give forked workers a distinct identity before any channel/metadata
-        // is built (the gRPC headers read the id via getAgentId()).
+        // Derive a child-specific id before any channel/metadata is built (the
+        // gRPC headers read it via getAgentId()).
         refresh_agent_id_for_process();
         owner_pid_ = getpid();
 
@@ -207,10 +210,10 @@ namespace pinpoint {
             new_id = base64_encode_uuid(generate_uuid_v7());
         }
 
-        // Only the agent id is made process-unique. agent_id is the unique
-        // instance key on the collector; agent_name is a display alias (and is
-        // still served from the captured config in the gRPC headers), so it is
-        // deliberately left untouched to keep the two consistent.
+        // Only the agent id is made process-specific. agent_id is the instance
+        // key on the collector; agent_name is a display alias (and is still
+        // served from the captured config in the gRPC headers), so it is
+        // deliberately left untouched.
         agent_id_ = std::make_shared<const std::string>(new_id);
         LOG_INFO("fork-safe start: agent id '{}' -> '{}'", old_id, new_id);
     }
@@ -386,8 +389,9 @@ namespace pinpoint {
         // Serialize writers: building the new runtime is a load-build-store
         // read-modify-write of runtime_, so a CreateAgent()-driven reload and
         // the config-file watcher thread could otherwise both build from the
-        // same old runtime and lose one of the updates. Readers remain
-        // lock-free on the generation-cache fast path.
+        // same old runtime and lose one of the updates. Readers do not take
+        // reload_mutex_; an unchanged generation-cache hit also avoids the
+        // AtomicSharedPtr shared source.
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
         apply_config(runtime_.load_cached_ref(), std::move(cfg));
     }
@@ -509,12 +513,12 @@ namespace pinpoint {
         // the timed wait below can emit a diagnostic when shutdown runs long.
         // The workers run member functions of this agent and its gRPC clients
         // and dereference `this` (isExiting/getConfig/getAgentStats); they are
-        // therefore ALWAYS joined — never detached — before this returns.
+        // therefore joined rather than detached before this returns.
         // Abandoning a straggler while ~AgentImpl tears those objects down
-        // underneath it would be a use-after-free. Every worker's blocking
-        // points are bounded (per-request gRPC deadlines plus the stream
-        // cancellation performed by the stopXWorker() calls that precede this),
-        // so the unconditional join still completes in bounded time.
+        // underneath it would be a use-after-free. Unary calls have deadlines
+        // and stopXWorker() requests stream cancellation, but gRPC TryCancel()
+        // is best-effort and callback completion has no hard wall-clock bound;
+        // the joins remain unconditional for lifetime safety.
         struct JoinState {
             std::mutex m;
             std::condition_variable cv;
@@ -525,9 +529,9 @@ namespace pinpoint {
         // moving them below cannot race those assignments. The init thread may
         // be blocked in the boot-phase registration, but close_grpc_workers()
         // has already run stopAgentInfo(), which interrupts that retry loop,
-        // and an in-flight registerAgent() call is bounded by its request
-        // deadline — so this join completes in bounded time. Done before the
-        // allocations below so the inline-join fallback never races it either.
+        // and an in-flight registerAgent() call has a request deadline. This is
+        // done before the allocations below so the inline-join fallback cannot
+        // race init-thread assignments.
         if (init_thread_.joinable()) {
             init_thread_.join();
         }
@@ -547,8 +551,8 @@ namespace pinpoint {
             // as the joiner-thread fallback below, and skipping the joins is
             // not an option: do_shutdown() swallows exceptions from this
             // path, so unwinding would let ~AgentImpl destroy the members the
-            // still-running workers use. Join inline — allocation-free —
-            // losing only the slow-shutdown diagnostic.
+            // still-running workers use. Join inline without building the
+            // helper state, losing only the slow-shutdown diagnostic.
             try { LOG_WARN("wait grpc workers: allocation failed, joining inline"); } catch (...) {}
             for (auto* worker : workers) {
                 if (worker->joinable()) {
@@ -600,8 +604,9 @@ namespace pinpoint {
         if (!finished) {
             // Do NOT abandon them: the workers still reference `this` and the gRPC
             // client members, which ~AgentImpl is about to destroy. Keep
-            // waiting — their blocking points are bounded, so this returns
-            // shortly; we only note that shutdown ran long.
+            // waiting: cancellation is best-effort, and detaching threads that
+            // still reference this agent would be unsafe. The warning records
+            // that shutdown has exceeded its diagnostic threshold.
             LOG_WARN("wait grpc workers: still draining after 5s; waiting for completion");
         }
         joiner.join();

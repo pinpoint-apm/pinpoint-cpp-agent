@@ -121,8 +121,9 @@ namespace pinpoint {
     }
 
     bool HttpUrlFilter::isFiltered(std::string_view url) const {
-        // Called on every request (NewSpan): reuse the DP rows across calls so
-        // Ant-pattern matching does not heap-allocate once warmed up.
+        // Called on every request (NewSpan): reuse the DP rows across calls.
+        // Matching avoids further vector growth while the URL fits the
+        // retained capacity; a longer URL may still allocate.
         static thread_local MatchScratch scratch;
         for (const auto& pattern : patterns_) {
             switch (pattern.kind) {

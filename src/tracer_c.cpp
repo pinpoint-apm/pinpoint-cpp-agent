@@ -18,16 +18,16 @@
  * @file tracer_c.cpp
  * @brief C++ implementation of the pure-C public API declared in tracer_c.h.
  *
- * Agent and span handles are heap-allocated wrappers owning a C++ shared_ptr.
- * Span-event and annotation handles are non-owning raw pointers cast directly
- * to the opaque handle type — creating one allocates nothing and destroying
- * one is a no-op. Their pointees are owned by the parent span/span event and
- * must not be used after that owner is ended or destroyed.
+ * Agent and span handles are opaque registry tokens; each live registry entry
+ * owns a heap wrapper containing a C++ shared_ptr. Span-event and annotation
+ * handles are non-owning raw pointers cast directly to the opaque handle type
+ * — creating one allocates nothing and destroying one is a no-op. Their
+ * pointees are owned by the parent span/span event and must not be used after
+ * that owner is destroyed.
  *
- * Adapter classes (CContextReader, CHeaderReader, CContextWriter,
- * CCallstackReader) bridge the C callback structs to the corresponding
- * pure-virtual C++ interfaces without heap allocation — they are
- * constructed on the stack at each call site.
+ * Adapter objects (CContextReader, CHeaderReader, CContextWriter,
+ * CCallstackReader) are constructed on the stack at each call site. Their
+ * string conversion buffers reuse capacity but may allocate when they grow.
  */
 
 #include "pinpoint/tracer_c.h"
@@ -385,8 +385,8 @@ static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
 //
 // C++ std::function closures cannot be converted to plain C function pointers.
 // We use a small context struct placed on the caller's stack together with a
-// file-scope trampoline function to bridge between the two worlds without any
-// heap allocation.
+// file-scope trampoline function, so the trampoline bridge does not allocate
+// a separate callback context.
 // ============================================================================
 
 // Both trampolines are invoked from inside the USER's C for_each loop, so a
@@ -435,14 +435,15 @@ static void callstack_foreach_trampoline(const char* mod, const char* fn,
 }
 
 // ============================================================================
-// C++ adapter classes — stack-allocated, zero-heap-overhead bridges
+// C++ adapter classes — stack-allocated callback bridges
 // ============================================================================
 
 // Returns a NUL-terminated pointer for `sv`, copying into `storage`. Probing
 // sv.data()[sv.size()] to skip the copy would read one byte past the view —
 // out of bounds for a substring view ending exactly at the end of its buffer.
-// Callers pass an adapter member buffer, so the retained capacity makes the
-// copy allocation-free after the first call on each adapter.
+// Callers pass an adapter member buffer, so later calls reuse retained
+// capacity; an assignment allocates only when the new key/value exceeds the
+// buffer's current capacity.
 static const char* to_c_str(std::string_view sv, std::string& storage) {
     storage.assign(sv);
     return storage.c_str();

@@ -138,8 +138,10 @@ namespace pinpoint {
         bool isErrorCode(int status_code) const noexcept;
 
     private:
-        // Configured tokens are flattened into a direct-lookup table at
-        // construction, so the per-span check is a single branch-free bit test.
+        // Configured tokens in [0, 599] are flattened into a bit table at
+        // construction, so the common per-span check is a bounds check plus a
+        // constant-time bit lookup. Explicit codes outside that range use the
+        // small fallback vector.
         std::bitset<http_status::TABLE_SIZE> error_codes_{};
         std::vector<int> extra_codes_{};  // configured codes outside [0, TABLE_SIZE)
     };

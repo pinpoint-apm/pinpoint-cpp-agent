@@ -246,13 +246,15 @@ namespace pinpoint {
      * @brief Thread-safe LRU cache implementation template.
      *
      * Combines a std::list (LRU ordering) with a std::unordered_map keyed by
-     * a non-owning map key from KeyTraits (O(1) lookup, no allocation on the hit path).
-     * Access is guarded by a std::shared_mutex: lookups take a shared lock so
-     * cache hits run concurrently. LRU reordering is performed lazily — while the
-     * cache is below max_size no eviction can occur, so ordering is irrelevant;
-     * once full, an entry is promoted only after it has aged past half the
-     * capacity's churn (see get()), so most hits remain pure shared-lock reads
-     * instead of serializing on the exclusive lock the splice needs.
+     * a non-owning map key from KeyTraits (average O(1) lookup without
+     * allocating key storage on a hit). Copying the cached ValueType still has
+     * that type's normal copy cost. Access is guarded by a std::shared_mutex:
+     * lookups take a shared lock so ordinary cache hits can run concurrently.
+     * LRU reordering is performed lazily — while the cache is below max_size
+     * no eviction can occur, so ordering is irrelevant; once full, an entry is
+     * promoted only after it has aged past half the capacity's churn (see
+     * get()), so most hits remain shared-lock reads instead of serializing on
+     * the exclusive lock the splice needs.
      *
      * @tparam ValueType Type of values stored in the cache.
      * @tparam KeyTraits Converts lookup keys into owned storage and map keys.
@@ -406,16 +408,16 @@ namespace pinpoint {
         /**
          * @brief Inserts the staged node, or promotes an existing entry.
          *
-         * The candidate node is pre-built by get() in `staged` — outside the
-         * lock — so this critical section only relinks list pointers and
-         * updates the map; it never allocates, copies key bytes, or destroys
-         * a node (the map's buckets are pre-reserved in the ctor, so
-         * try_emplace cannot rehash either). Because the generator ran
-         * outside the lock, another thread may have inserted the same key in
-         * the meantime. We detect that race via try_emplace and, if so,
-         * leave our node in `staged` — the caller frees it after unlocking —
-         * and return the existing entry (found = true). The evicted victim
-         * is spliced onto `staged` for the same deferred destruction.
+         * The candidate list node and its owned key bytes are pre-built by
+         * get() in `staged`, outside the lock. This critical section relinks
+         * list pointers and updates the map; a successful try_emplace may
+         * allocate an unordered_map node, but the pre-reserved buckets avoid
+         * a rehash and no full key string is copied. Node destruction is
+         * deferred until after unlock. Because the generator ran outside the
+         * lock, another thread may have inserted the same key in the meantime.
+         * We detect that race via try_emplace and, if so, leave our node in
+         * `staged` and return the existing entry (found = true). An evicted
+         * victim is also spliced onto `staged` for deferred destruction.
          *
          * Hashes the key once: try_emplace performs the existence check and
          * the insert in a single map operation. The map key is a view into
@@ -480,19 +482,18 @@ namespace pinpoint {
         mutable std::shared_mutex mutex_{};
     };
 
-    // Shared default for every sharded cache below. 16 shards puts unrelated
-    // hot keys on 16 different shared_mutex cache lines instead of one, while
-    // a 1024-entry cache still leaves each shard a useful 64-entry LRU slice.
+    // Shared default for every sharded cache below. 16 shards spread unrelated
+    // hot keys across independent shared_mutex instances, while a 1024-entry
+    // cache still leaves each shard a useful 64-entry LRU slice.
     inline constexpr size_t kDefaultCacheShardCount = 16;
 
     /**
      * @brief Hash-sharded front over N independent LruCacheImpl instances.
      *
-     * A single LruCacheImpl never blocks concurrent hits logically, but
-     * physically every hit is still two atomic RMWs (shared-lock acquire and
-     * release) on the one shared_mutex's cache line, so at high request-thread
-     * counts that line ping-pongs between cores. Splitting the key space over
-     * independent shards gives unrelated hot keys unrelated cache lines.
+     * Ordinary hits on one LruCacheImpl can share its read lock, but every hit
+     * still acquires and releases the same shared_mutex and may wait behind a
+     * writer. Splitting the key space over independent shards reduces that
+     * shared synchronization point for unrelated hot keys.
      *
      * The key is hashed ONCE per operation: the shard index derives from the
      * hash (see shard_for()), and the same hash rides into the shard's

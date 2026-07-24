@@ -72,9 +72,9 @@ namespace pinpoint {
      * protocol.version=400 plus agentname (always), servicename and apikey.
      * Extracted as a pure function so the per-version header set is unit-testable.
      *
-     * @p agent_id is passed separately (rather than read from @p config) so the
-     * agent's process-unique id — which Agent::Start() may regenerate for a
-     * forked worker — is used instead of the id baked into the captured config.
+     * @p agent_id is passed separately (rather than read from @p config) so a
+     * forked worker's process-specific id is used instead of the parent's id
+     * baked into the captured config.
      */
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
@@ -110,7 +110,8 @@ namespace pinpoint {
         /// escalating to TryCancel.
         std::chrono::milliseconds stream_finish_timeout{3000};
         /// Bounded wait for a stream write to complete (for the ping stream:
-        /// write + server pong) before the stream is cancelled and recycled.
+        /// write + server pong) before cancellation is requested and the
+        /// worker begins stream cleanup.
         std::chrono::milliseconds stream_write_timeout{5000};
         /// Pause before a worker loop is restarted after an unexpected
         /// exception, so a persistent failure cannot become a hot spin.
@@ -130,7 +131,7 @@ namespace pinpoint {
         size_t max_active_thread_count_streams{10};
 
         /// Bounded wait for in-flight SendSpanBatch calls at shutdown before
-        /// they are cancelled (and again after cancellation).
+        /// TryCancel is requested (and again after that request).
         std::chrono::milliseconds span_shutdown_await_timeout{3000};
         /// Minimum spacing between cumulative span-queue-drop reports.
         std::chrono::seconds span_queue_drop_log_interval{60};
@@ -203,7 +204,8 @@ namespace pinpoint {
         /**
          * @brief Ensures the gRPC channel is connected and ready for use.
          *
-         * @return `true` if the channel is ready or successfully re-initialized.
+         * @return `true` once the channel is ready; `false` if the client is
+         *         stopping first.
          */
         virtual bool readyChannel();
         /// @brief Releases the current channel handle.
@@ -622,8 +624,8 @@ namespace pinpoint {
      * - Each batch is sent via @c span_stub_->async()->SendSpanBatch() with
      *   a completion callback.
      * - Per-call state (ClientContext, arena, request, reply) is owned by a
-     *   @c shared_ptr captured into the callback, so it lives exactly until
-     *   the callback fires.
+     *   @c shared_ptr captured into the callback, so it remains alive through
+     *   callback completion.
      *
      * ### Concurrency control (permit-based semaphore)
      * - At most @c max_concurrent_requests SendSpanBatch RPCs may be
@@ -638,8 +640,9 @@ namespace pinpoint {
      *   retaining the newest telemetry without returning to a process-wide
      *   lock. FIFO order is preserved per shard; cross-shard order is
      *   intentionally unspecified.
-     * - Once per minute, the worker logs the cumulative oldest-drop count at
-     *   INFO only when it has increased since the previous report.
+     * - By default once per minute, the worker logs the cumulative
+     *   oldest-drop count at WARN only when it has increased since the
+     *   previous report.
      *
      * ### partial_success handling
      * - Successful responses with @c rejected_spans > 0 are logged at WARN.
@@ -649,11 +652,10 @@ namespace pinpoint {
      *
      * ### Shutdown
      * - On exit the worker drains any remaining chunks and, if the channel
-     *   is already connected, sends them in batches of at most @c size, then
-     *   blocks up to 3 s waiting for all in-flight permits to be returned.
-     *   If permits are still missing, every in-flight ClientContext is
-     *   cancelled (TryCancel) and the wait is repeated, so completion
-     *   callbacks fire promptly before the channel is released.
+     *   is already connected, sends them in batches of at most @c size. It
+     *   then waits up to @c span_shutdown_await_timeout for in-flight permits,
+     *   requests best-effort cancellation with TryCancel when calls remain,
+     *   and waits for the same interval once more.
      * - Completion callbacks share state with the client only through a
      *   @c shared_ptr (no raw @c this capture), so a callback that fires
      *   after the GrpcSpan instance is destroyed remains memory-safe.
@@ -677,7 +679,9 @@ namespace pinpoint {
         void enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept;
         /// @brief Worker loop that drains the queue and sends spans in batches.
         void sendSpanWorker();
-        /// @brief Signals the worker loop to stop; the loop flushes pending spans before exiting.
+        /// @brief Signals the worker loop to stop; when the channel is already
+        ///        connected, the loop attempts to send pending spans before
+        ///        exiting.
         void stopSpanWorker();
 
     protected:

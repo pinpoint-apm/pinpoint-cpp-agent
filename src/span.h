@@ -110,7 +110,7 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Holds mutable state for a span until it is serialized and flushed.
+     * @brief Holds mutable state until a span is converted into delivery chunks.
      *
      * `SpanData` collects identifiers, network attributes, annotations, child events and
      * exceptions. When the span ends the data is converted into one or multiple `SpanChunk`
@@ -441,8 +441,9 @@ namespace pinpoint {
     /**
      * @brief Concrete span implementation used when tracing is enabled.
      *
-     * `SpanImpl` delegates storage to `SpanData` while coordinating span event creation,
-     * context propagation and final flushing through the agent service.
+     * `SpanImpl` delegates storage to `SpanData` while coordinating span event
+     * creation, context propagation and final submission through the agent
+     * service.
      *
      * @warning Single-threaded per instance. See the `Span` thread-safety contract
      *          in pinpoint/tracer.h: one `SpanImpl` (and the `SpanEventImpl`s it
@@ -487,7 +488,7 @@ namespace pinpoint {
     	SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override;
         /// @brief Returns the currently active span event.
         SpanEventPtr GetSpanEvent() override;
-      	/// @brief Finalizes the span and schedules it for flushing.
+		/// @brief Finalizes the span and queues it for asynchronous delivery.
       	void EndSpan() override;
     	/**
     	 * @brief Creates a child span used for asynchronous work.

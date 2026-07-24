@@ -91,11 +91,11 @@ namespace pinpoint {
     	 * @param reader Trace context reader provided by user code.
     	 */
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
-		/// @brief Brings the agent online in the current process: performs this
-		/// process's first grpc_init by opening channels, spawns workers, starts
-		/// the config watcher and regenerates a process-unique agent id for
-		/// forked workers. Idempotent (per process) and non-blocking. See
-		/// Agent::Start().
+		/// @brief Begins bringing the agent online in the current process:
+		/// starts the config watcher and an initialization thread that opens
+		/// channels and launches workers. A forked child derives a
+		/// child-specific id. Returns without waiting for collector registration.
+		/// See Agent::Start().
 		void Start() noexcept override;
 		/// @brief Returns whether the agent is enabled for tracing.
 		bool Enable() override;
@@ -210,8 +210,9 @@ namespace pinpoint {
     	// reloads — e.g. a CreateAgent()-driven reload (holding
     	// global_agent_mutex) racing the config-file watcher thread (which does
     	// NOT hold it) — could otherwise both build from the same old runtime
-    	// and lose one of the updates. Readers on the hot path stay lock-free
-    	// via a single AtomicSharedPtr::load(); only writers take this.
+		// and lose one of the updates. Readers do not take this mutex; an
+		// unchanged generation-cache hit also avoids AtomicSharedPtr's shared
+		// source (which may itself use a shared_mutex on C++17 platforms).
     	std::mutex reload_mutex_;
 
         int64_t start_time_{};
@@ -223,7 +224,7 @@ namespace pinpoint {
     	// handles instead of joining when it runs in a different process (a
     	// forked child inheriting dead thread handles). create_pid_ is the pid that constructed the agent
     	// (CreateAgent time); Start() compares against it to detect that it is
-    	// running in a forked child and must give this worker a unique agent id.
+		// running in a forked child and must derive a child-specific agent id.
     	std::atomic<bool> started_{false};
     	pid_t create_pid_{};
     	pid_t owner_pid_{};
@@ -254,11 +255,11 @@ namespace pinpoint {
     	/// responsible for gRPC communication and enables the agent. Runs on
     	/// init_thread_.
     	void init_grpc_workers();
-    	/// @brief Regenerates a process-unique agent id when Start() runs in a
-    	/// forked child (create_pid_ != current pid). A pinned id gets a pid
-    	/// suffix; an auto-generated id is replaced with a fresh one. A no-op in
-    	/// the process that constructed the agent, so non-fork behavior is
-    	/// unchanged.
+		/// @brief Derives a child-specific agent id when Start() runs in a
+		/// forked child (create_pid_ != current pid). A pinned id gets a PID
+		/// suffix; an auto-generated id is replaced with a fresh UUID. A no-op
+		/// in the process that constructed the agent, so non-fork behavior is
+		/// unchanged.
     	void refresh_agent_id_for_process();
     	/// @brief Abandons (never joins or detaches — see abandon_thread())
     	/// every worker thread handle. Used when tearing down an agent inherited

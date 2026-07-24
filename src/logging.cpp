@@ -103,10 +103,10 @@ namespace pinpoint {
                                 level == LogLevel::kInfo ? LOG_LEVEL_INFO :
                                 level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR;
 
-        // Build the whole line into a stack buffer in one pass. Replaces the
-        // ostringstream + std::put_time (locale machinery, one heap buffer)
-        // and the prefix.str()+message+"\n" chain (three more temporaries)
-        // with a single allocation-free format. Output format is unchanged:
+        // Build the whole line in one formatting pass. fmt::memory_buffer uses
+        // inline storage for typical lines and grows on the heap for longer
+        // ones; this still avoids the ostringstream plus the chain of
+        // temporary strings used previously. Output format is unchanged:
         // [YYYY-MM-DD HH:MM:SS.mmm][level][pinpoint][file:line] message
         fmt::memory_buffer buf;
         fmt::format_to(std::back_inserter(buf),

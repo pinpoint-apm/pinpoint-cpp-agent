@@ -30,9 +30,10 @@
 namespace pinpoint {
 
     /**
-     * @brief Generates a unique span identifier.
+     * @brief Generates a pseudo-random span identifier.
      *
-     * @return 64-bit span ID.
+     * @return 64-bit span ID. As with any finite random identifier, collisions
+     *         are possible.
      */
     int64_t generate_span_id();
     /**
@@ -47,7 +48,8 @@ namespace pinpoint {
      * @brief Produces a deterministic UID for a normalized SQL string.
      *
      * @param sql Normalized SQL string.
-     * @return 16-byte UID uniquely identifying the SQL.
+     * @return 16-byte MurmurHash3 fingerprint. Different SQL strings can
+     *         theoretically collide.
      */
     SqlUid generate_sql_uid(std::string_view sql);
 
