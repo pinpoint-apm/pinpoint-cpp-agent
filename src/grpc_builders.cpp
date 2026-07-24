@@ -227,7 +227,7 @@ namespace pinpoint {
             auto* active_trace = google::protobuf::Arena::Create<v1::PActiveTrace>(arena);
             auto* histogram = google::protobuf::Arena::Create<v1::PActiveTraceHistogram>(arena);
             histogram->set_version(1);
-            histogram->set_histogramschematype(2);
+            histogram->set_histogramschematype(ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE);
             histogram->mutable_activetracecount()->Reserve(
                 static_cast<int>(std::size(stat.active_requests_)));
             for (int32_t c : stat.active_requests_) {

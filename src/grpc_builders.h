@@ -38,6 +38,12 @@ namespace v1 {
 }
 
 namespace pinpoint {
+
+    // Pinpoint wire constant identifying the active-trace histogram bucket
+    // schema. Shared by the agent-stat batch builder (grpc_builders.cpp) and
+    // the active-thread-count command response (grpc.cpp) — the collector
+    // interprets both against the same schema, so they must always agree.
+    constexpr int32_t ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
     class Exception;
     class SpanChunk;
     class UrlStatSnapshot;

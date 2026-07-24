@@ -461,7 +461,7 @@ namespace pinpoint {
      *          thread. Do not read any of this as license to share a span across
      *          threads.
      */
-    class SpanImpl final : public Span, public std::enable_shared_from_this<SpanImpl> {
+    class SpanImpl final : public Span {
     public:
         // `runtime` is the creator's already-loaded runtime snapshot (the
         // AgentRuntime generation NewSpan sampled/filtered against). Passing it

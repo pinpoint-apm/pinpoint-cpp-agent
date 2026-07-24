@@ -954,6 +954,11 @@ namespace pinpoint {
         if(auto e = get_env(env::CONFIG_FILE)) {
             set_config_file_path(e.value);
         }
+        // File-over-string precedence, documented at SetConfigString /
+        // pt_set_config_string: read_config_from_file() replaces any injected
+        // config string wholesale (the sources are never merged), and the
+        // path may come from the CONFIG_FILE env var above rather than from
+        // the embedder itself.
         const auto config_path = get_config_file_path_copy();
         if(!config_path.empty()) {
             read_config_from_file(config_path.c_str());

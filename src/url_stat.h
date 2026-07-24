@@ -115,17 +115,12 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Key used to order URL statistics by pattern and tick.
+     * @brief Key identifying URL statistics by pattern and tick. Used as an
+     *        unordered_map key (see UrlKeyHash); it needs equality only.
      */
     struct UrlKey {
         std::string url_;
         int64_t tick_;
-        bool operator<(const UrlKey &o) const {
-            if (url_ != o.url_) {
-                return url_ < o.url_;
-            }
-            return tick_ < o.tick_;
-        }
         bool operator==(const UrlKey &o) const {
             return tick_ == o.tick_ && url_ == o.url_;
         }

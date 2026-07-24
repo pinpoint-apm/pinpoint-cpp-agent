@@ -644,8 +644,6 @@ namespace pinpoint {
     //GrpcCommand
 
     namespace {
-        constexpr int ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
-
         int32_t command_code(const v1::PCmdRequest& request) {
             return static_cast<int32_t>(request.command_case());
         }

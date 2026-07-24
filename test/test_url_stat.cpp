@@ -160,23 +160,17 @@ TEST_F(UrlStatTest, EachUrlStatHistogramModificationTest) {
 
 // ========== UrlKey Tests ==========
 
-TEST_F(UrlStatTest, UrlKeyComparisonTest) {
+TEST_F(UrlStatTest, UrlKeyEqualityTest) {
+    // UrlKey is an unordered_map key (UrlKeyHash): equality is the whole
+    // comparison contract — the former operator< was unused and removed.
     UrlKey key1{"/api/users", 1000};
     UrlKey key2{"/api/users", 1000};
     UrlKey key3{"/api/users", 2000};
     UrlKey key4{"/api/posts", 1000};
-    
-    // Same keys should not be less than each other
-    EXPECT_FALSE(key1 < key2) << "Identical keys should not be less than each other";
-    EXPECT_FALSE(key2 < key1) << "Identical keys should not be less than each other";
-    
-    // Same URL, different tick
-    EXPECT_TRUE(key1 < key3) << "Same URL with earlier tick should be less";
-    EXPECT_FALSE(key3 < key1) << "Same URL with later tick should not be less";
-    
-    // Different URLs
-    EXPECT_TRUE(key4 < key1) << "Alphabetically earlier URL should be less";
-    EXPECT_FALSE(key1 < key4) << "Alphabetically later URL should not be less";
+
+    EXPECT_TRUE(key1 == key2) << "Same URL and tick should compare equal";
+    EXPECT_FALSE(key1 == key3) << "Same URL with a different tick should differ";
+    EXPECT_FALSE(key1 == key4) << "Different URL with the same tick should differ";
 }
 
 // ========== UrlStat Tests ==========
@@ -942,30 +936,6 @@ TEST_F(UrlStatTest, TickClockFarTimeDifferentTickTest) {
 
     EXPECT_NE(tick1, tick2) << "Times 60 seconds apart should produce different ticks";
     EXPECT_LT(tick1, tick2) << "Later time should produce larger tick";
-}
-
-// ========== Additional UrlKey Tests ==========
-
-// Test UrlKey with empty URL
-TEST_F(UrlStatTest, UrlKeyEmptyUrlTest) {
-    UrlKey key1{"", 1000};
-    UrlKey key2{"/api", 1000};
-
-    EXPECT_TRUE(key1 < key2) << "Empty URL should be less than non-empty";
-    EXPECT_FALSE(key2 < key1);
-}
-
-// Test UrlKey with same URL different ticks
-TEST_F(UrlStatTest, UrlKeySameUrlDifferentTickTest) {
-    UrlKey key1{"/api", 1000};
-    UrlKey key2{"/api", 2000};
-    UrlKey key3{"/api", 1000};
-
-    EXPECT_TRUE(key1 < key2);
-    EXPECT_FALSE(key2 < key1);
-    // Equality: neither is less than the other
-    EXPECT_FALSE(key1 < key3);
-    EXPECT_FALSE(key3 < key1);
 }
 
 // ========== Additional UrlStatEntry Tests ==========

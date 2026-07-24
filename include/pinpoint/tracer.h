@@ -450,8 +450,17 @@ namespace pinpoint {
 	using AgentPtr = std::shared_ptr<Agent>;
 
 	/// @brief Set the configuration file path used by the global agent.
+	///        A configured file — whether set here or via the
+	///        PINPOINT_CPP_CONFIG_FILE environment variable, which overrides
+	///        this path — takes precedence over SetConfigString(); see there.
 	void SetConfigFilePath(std::string_view config_file_path);
 	/// @brief Inject raw configuration YAML directly.
+	///        Precedence: when a config file path is also set — including via
+	///        the PINPOINT_CPP_CONFIG_FILE environment variable, which the
+	///        embedder does not control — the file's content replaces this
+	///        string wholesale on every (re)load; the two sources are never
+	///        merged. Environment variables still override individual
+	///        settings from either source.
 	void SetConfigString(std::string_view config_string);
 	/// @brief Overrides the prefix of the environment variable names the agent
 	///        reads (e.g. `MYAPP` makes it read `MYAPP_APPLICATION_NAME`).
@@ -556,6 +565,14 @@ namespace pinpoint {
 					event_ = span_->NewSpanEvent(operation, service_type);
 				}
 			}
+
+			// Non-copyable (and thereby non-movable) scope guard: a copy
+			// would call EndEvent() once per instance on the same raw event
+			// — a warn no-op while the span lives, a dangling access after
+			// it. C++17 guaranteed elision keeps direct initialization from
+			// a prvalue (auto guard = ScopedSpanEvent(span, "op")) working.
+			ScopedSpanEvent(const ScopedSpanEvent&) = delete;
+			ScopedSpanEvent& operator=(const ScopedSpanEvent&) = delete;
 
 			~ScopedSpanEvent() {
 				if (event_) {

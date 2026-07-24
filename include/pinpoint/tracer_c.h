@@ -341,6 +341,10 @@ typedef struct {
  *
  * Must be called before pt_create_agent() / pt_global_agent().
  * Mirrors pinpoint::SetConfigFilePath().
+ *
+ * A configured file — whether set here or via the PINPOINT_CPP_CONFIG_FILE
+ * environment variable, which overrides this path — takes precedence over
+ * pt_set_config_string(); see there.
  */
 void pt_set_config_file_path(const char* config_file_path);
 
@@ -349,6 +353,12 @@ void pt_set_config_file_path(const char* config_file_path);
  *
  * Must be called before pt_create_agent() / pt_global_agent().
  * Mirrors pinpoint::SetConfigString().
+ *
+ * Precedence: when a config file path is also set — including via the
+ * PINPOINT_CPP_CONFIG_FILE environment variable, which the embedder does not
+ * control — the file's content replaces this string wholesale on every
+ * (re)load; the two sources are never merged. Environment variables still
+ * override individual settings from either source.
  */
 void pt_set_config_string(const char* config_string);
 

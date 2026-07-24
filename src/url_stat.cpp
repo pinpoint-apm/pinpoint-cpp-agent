@@ -127,6 +127,14 @@ namespace pinpoint {
     }
 
     void UrlStatHistogram::add(int32_t elapsed) {
+        // Defensive clamp at the aggregation sink: the span paths already
+        // clamp their system_clock-derived elapsed (setEndTime and
+        // UnsampledSpan::EndSpan), but a negative value slipping in from any
+        // other producer would silently decrement total_ and skew the
+        // reported average — getBucket() alone would mask it into bucket 0.
+        if (elapsed < 0) {
+            elapsed = 0;
+        }
         total_ += elapsed;
         if (max_ < elapsed) {
             max_ = elapsed;
