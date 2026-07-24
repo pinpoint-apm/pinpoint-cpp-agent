@@ -29,6 +29,7 @@
 #include "../src/config.h"
 #include "../src/agent_service.h"
 #include "../src/grpc_builders.h"
+#include "../src/logging.h"
 #include "../src/stat.h"
 #include "v1/Stat.pb.h"
 #include "mock_agent_service.h"
@@ -359,6 +360,11 @@ TEST_F(UrlStatTest, SnapshotSeparatesIdenticalUrlsByTick) {
 }
 
 TEST_F(UrlStatTest, SnapshotHitAndRejectedMissDoNotAllocateKeyStrings) {
+    // Pin the global log level: with debug enabled, add()'s LOG_DEBUG would
+    // format (and allocate) on the hit path, failing the zero-allocation
+    // assertions below regardless of the lookup implementation.
+    Logger::getInstance().setLogLevel(LOG_LEVEL_INFO);
+
     UrlStatSnapshot snapshot;
     Config config;
     config.http.url_stat.enable_trim_path = false;
