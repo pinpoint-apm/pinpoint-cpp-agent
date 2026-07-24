@@ -135,9 +135,40 @@ namespace pinpoint {
             return 0;
         }
 
+        /**
+         * @brief Pull-side variant for queues that count their drops
+         *        internally (the span queue: ShardedBoundedQueue counts
+         *        overwritten-oldest drops under its shard locks, keeping the
+         *        enqueue hot path free of clock reads and logging).
+         *
+         * The consumer polls with the queue's cumulative drop count and gets
+         * it back when a report is due — the count grew since the last report
+         * and the interval has passed — or 0 to stay silent. An instance is
+         * either producer-counted (record()) or queue-counted (this); do not
+         * mix the two on one instance, their counters are unrelated.
+         */
+        uint64_t report_if_due(uint64_t cumulative_dropped) noexcept {
+            if (cumulative_dropped <= last_reported_.load(std::memory_order_relaxed)) {
+                return 0;
+            }
+            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto next = next_report_at_.load(std::memory_order_relaxed);
+            if (now < next) {
+                return 0;
+            }
+            if (next_report_at_.compare_exchange_strong(
+                    next, now + interval_.count(), std::memory_order_relaxed)) {
+                last_reported_.store(cumulative_dropped, std::memory_order_relaxed);
+                return cumulative_dropped;
+            }
+            return 0;
+        }
+
     private:
         const std::chrono::steady_clock::duration interval_;
         std::atomic<uint64_t> dropped_{0};
+        // Cumulative count at the last granted report_if_due() report.
+        std::atomic<uint64_t> last_reported_{0};
         std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
     };
 

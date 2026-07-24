@@ -343,4 +343,25 @@ TEST(UtilityTest, QueueDropReporterCountsConcurrentDropsExactly) {
         << "every concurrent drop must be counted despite CAS contention";
 }
 
+TEST(UtilityTest, QueueDropReporterPullVariantReportsOnlyNewDrops) {
+    // Zero interval isolates the count-progress logic from rate limiting.
+    QueueDropReporter reporter(std::chrono::milliseconds(0));
+
+    EXPECT_EQ(reporter.report_if_due(0), 0u) << "no drops, nothing to report";
+    EXPECT_EQ(reporter.report_if_due(5), 5u) << "first drops report immediately";
+    EXPECT_EQ(reporter.report_if_due(5), 0u) << "an unchanged count stays silent";
+    EXPECT_EQ(reporter.report_if_due(9), 9u) << "new drops report the cumulative count";
+}
+
+TEST(UtilityTest, QueueDropReporterPullVariantRateLimits) {
+    QueueDropReporter reporter(std::chrono::milliseconds(30));
+
+    EXPECT_EQ(reporter.report_if_due(1), 1u);
+    EXPECT_EQ(reporter.report_if_due(2), 0u) << "rate-limited inside the window";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    EXPECT_EQ(reporter.report_if_due(2), 2u)
+        << "the drops silenced inside the window report after it";
+}
+
 } // namespace pinpoint

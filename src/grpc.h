@@ -696,9 +696,9 @@ namespace pinpoint {
         std::mutex span_wait_mutex_{};
         std::condition_variable span_queue_cv_{};
         std::atomic<bool> span_consumer_waiting_{false};
-        std::chrono::steady_clock::time_point next_span_queue_drop_log_at_{};
-        uint64_t last_logged_span_queue_drops_{0};
-        bool span_queue_drop_log_pending_{false};
+        // Rate-limited overflow reporting, fed by the queue's own drop
+        // counter via report_if_due() — see maybe_log_span_queue_drops().
+        QueueDropReporter span_drop_reporter_;
 
         // Permit-based semaphore that caps the number of concurrently in-flight
         // SendSpanBatch RPCs, plus a registry of the in-flight call contexts so
