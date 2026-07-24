@@ -31,6 +31,7 @@
 
 #include "config.h"
 #include "agent_service.h"
+#include "utility.h"
 
 namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
@@ -270,6 +271,8 @@ namespace pinpoint {
         std::atomic<int64_t> pending_{0};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
+        // Rate-limited overflow reporting (see QueueDropReporter).
+        QueueDropReporter drop_reporter_{};
 
         // Snapshot management
         TickClock tick_clock_;

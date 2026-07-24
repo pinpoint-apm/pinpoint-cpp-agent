@@ -464,17 +464,15 @@ namespace pinpoint {
         // overflow drop or a throwing queue insertion — the metadata is still
         // owned here and its cache entry can be released.
         PendingMeta pending{std::move(meta), 0, {}};
+        const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
         try {
             std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
-            const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
             if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
                 // deque::push_back gives the strong guarantee and PendingMeta's
                 // move cannot throw, so `pending` still owns the metadata
                 // whenever this block is left by exception.
                 meta_queue_.push_back(std::move(pending));
-            } else {
-                LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
             }
         } catch (const std::exception &e) {
             LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
@@ -482,8 +480,15 @@ namespace pinpoint {
 
         if (pending.meta != nullptr) {
             // Dropped on overflow, or never enqueued because the insertion
-            // threw. The producer registered the id in the agent caches
-            // before enqueueing (see AgentImpl::cacheApi), and a cache hit
+            // threw. Reported outside the lock, at WARN so outage data loss
+            // is visible at the default log level, rate-limited so a full
+            // queue cannot flood the log from request threads.
+            if (const auto dropped = meta_drop_reporter_.record()) {
+                LOG_WARN("metadata queue overflow: {} dropped in total (max queue size {})",
+                         dropped, max_queue_size);
+            }
+            // The producer registered the id in the agent caches before
+            // enqueueing (see AgentImpl::cacheApi), and a cache hit
             // suppresses re-publication — dropping the message without
             // releasing the entry would leave spans referencing metadata the
             // collector never receives, for the rest of the process lifetime.
@@ -2279,6 +2284,7 @@ namespace pinpoint {
             return;
         }
 
+        bool dropped_now = false;
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
 
@@ -2286,7 +2292,17 @@ namespace pinpoint {
                 stats_queue_.push(stats);
             } else {
                 force_stats_queue_empty_.store(true, std::memory_order_release);
-                LOG_DEBUG("drop stats: overflow max queue size {}", tuning_.max_stats_queue_size);
+                dropped_now = true;
+            }
+        }
+
+        // Reported outside the lock, at WARN so outage data loss is visible
+        // at the default log level, rate-limited so a stalled stream cannot
+        // repeat it every collect interval for hours.
+        if (dropped_now) {
+            if (const auto dropped = stats_drop_reporter_.record()) {
+                LOG_WARN("stats queue overflow: {} dropped in total (max queue size {})",
+                         dropped, tuning_.max_stats_queue_size);
             }
         }
 

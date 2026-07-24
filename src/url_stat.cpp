@@ -222,7 +222,8 @@ namespace pinpoint {
         }
 
         auto& shard = queueShard();
-        int64_t prev_pending;
+        int64_t prev_pending = 0;
+        bool dropped_now = false;
         {
             std::lock_guard<std::mutex> shard_lock(shard.mutex_);
             // The limit check uses its own relaxed load; concurrent enqueues
@@ -232,11 +233,23 @@ namespace pinpoint {
             // URL keys per snapshot, while queue_size caps the per-request
             // records buffered here awaiting aggregation.
             if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config.http.url_stat.queue_size)) {
-                LOG_DEBUG("drop url stats: overflow max queue size {}", config.http.url_stat.queue_size);
-                return;
+                dropped_now = true;
+            } else {
+                shard.queue_.push(std::move(stats));
+                prev_pending = pending_.fetch_add(1, std::memory_order_relaxed);
             }
-            shard.queue_.push(std::move(stats));
-            prev_pending = pending_.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (dropped_now) {
+            // Reported outside the shard lock — this is the request hot path
+            // and the WARN below formats and writes. WARN so outage data loss
+            // is visible at the default log level, rate-limited so a full
+            // queue cannot log once per dropped request.
+            if (const auto dropped = drop_reporter_.record()) {
+                LOG_WARN("url stat queue overflow: {} dropped in total (max queue size {})",
+                         dropped, config.http.url_stat.queue_size);
+            }
+            return;
         }
 
         // Wake the worker only on the empty→non-empty transition, decided by

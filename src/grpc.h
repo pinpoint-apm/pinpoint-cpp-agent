@@ -48,6 +48,7 @@
 #include "callstack.h"
 #include "sharded_bounded_queue.h"
 #include "span.h"
+#include "utility.h"
 
 namespace pinpoint {
     /**
@@ -412,6 +413,8 @@ namespace pinpoint {
         std::mutex meta_queue_mutex_{};
         std::condition_variable meta_queue_cv_{};
         bool meta_stop_requested_{false};
+        // Rate-limited overflow reporting (see QueueDropReporter).
+        QueueDropReporter meta_drop_reporter_{};
 
         template<typename Request, typename StubMethod>
         GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);
@@ -760,6 +763,8 @@ namespace pinpoint {
         std::queue<StatsType> stats_queue_{};
         std::mutex stats_queue_mutex_{};
         std::condition_variable stats_queue_cv_{};
+        // Rate-limited overflow reporting (see QueueDropReporter).
+        QueueDropReporter stats_drop_reporter_{};
         bool stats_stop_requested_{false};
         std::atomic<bool> force_stats_queue_empty_{false};
         // Set once per stats stream session when the stream starts shutting

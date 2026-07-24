@@ -297,4 +297,50 @@ TEST(UtilityTest, GenerateSqlUidSimilarInputsDifferentOutput) {
     EXPECT_NE(uid1, uid2);
 }
 
+TEST(UtilityTest, QueueDropReporterFirstDropReportsThenRateLimits) {
+    QueueDropReporter reporter(std::chrono::hours(1));
+
+    EXPECT_EQ(reporter.record(), 1u) << "the very first drop must report";
+    // Every further drop inside the interval is counted but stays silent.
+    EXPECT_EQ(reporter.record(), 0u);
+    EXPECT_EQ(reporter.record(), 0u);
+}
+
+TEST(UtilityTest, QueueDropReporterReportsCumulativeCountPerWindow) {
+    QueueDropReporter reporter(std::chrono::milliseconds(30));
+
+    EXPECT_EQ(reporter.record(), 1u);
+    EXPECT_EQ(reporter.record(), 0u) << "rate-limited inside the window";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    // The next drop after the window wins the report and carries the
+    // cumulative count, including the silently counted one above.
+    EXPECT_EQ(reporter.record(), 3u);
+}
+
+TEST(UtilityTest, QueueDropReporterCountsConcurrentDropsExactly) {
+    // Zero interval: an uncontended record() always wins the report window,
+    // so the final single-threaded record() must observe every prior drop.
+    QueueDropReporter reporter(std::chrono::milliseconds(0));
+    constexpr int kThreads = 8;
+    constexpr int kDropsPerThread = 1000;
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&reporter] {
+            for (int j = 0; j < kDropsPerThread; ++j) {
+                (void)reporter.record();
+            }
+        });
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    EXPECT_EQ(reporter.record(),
+              static_cast<uint64_t>(kThreads) * kDropsPerThread + 1)
+        << "every concurrent drop must be counted despite CAS contention";
+}
+
 } // namespace pinpoint

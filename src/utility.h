@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <optional>
 #include <thread>
@@ -88,5 +90,55 @@ namespace pinpoint {
      * @return `true` if both strings are equal (ignoring case).
      */
     bool compare_string(std::string_view str1, std::string_view str2);
+
+    /**
+     * @brief Rate-limited reporter for queue-overflow drops.
+     *
+     * Producers call record() on every dropped item, from any thread; at most
+     * one report per interval is granted, carrying the cumulative drop count.
+     * This mirrors the span queue's once-per-interval drop report
+     * (GrpcSpan::maybe_log_span_queue_drops) for the metadata, stats and
+     * url-stat queues: during a collector outage an unlimited WARN per
+     * dropped item would flood the log from request threads, while the
+     * previous per-drop DEBUG line was invisible at the default level —
+     * outage data loss went unreported either way.
+     */
+    class QueueDropReporter {
+    public:
+        static constexpr std::chrono::seconds kDefaultReportInterval{60};
+
+        explicit QueueDropReporter(
+            std::chrono::steady_clock::duration interval = kDefaultReportInterval)
+            : interval_(interval) {}
+
+        /**
+         * @brief Counts one dropped item.
+         *
+         * @return The cumulative drop count when this caller won the current
+         *         report window and should log it now; 0 while rate-limited
+         *         (the drop is still counted and folded into the next report).
+         *         The very first drop always reports.
+         */
+        uint64_t record() noexcept {
+            const auto dropped = dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto next = next_report_at_.load(std::memory_order_relaxed);
+            if (now < next) {
+                return 0;
+            }
+            // One concurrent producer wins the window via the CAS; the losers
+            // stay silent and their drops surface in the winner's next count.
+            if (next_report_at_.compare_exchange_strong(
+                    next, now + interval_.count(), std::memory_order_relaxed)) {
+                return dropped;
+            }
+            return 0;
+        }
+
+    private:
+        const std::chrono::steady_clock::duration interval_;
+        std::atomic<uint64_t> dropped_{0};
+        std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
+    };
 
 }
