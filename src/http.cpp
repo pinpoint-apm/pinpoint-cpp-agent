@@ -321,6 +321,10 @@ namespace pinpoint {
     }
 
     std::string HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
+        // Canonical mixed-case lookups, here and in setProxyHeader/
+        // recordHeader below: correct only under the Get contract in
+        // pinpoint/tracer.h, which requires HTTP-backed readers to match
+        // header names case-insensitively (HTTP/2/3 deliver them lowercase).
         // Check X-Forwarded-For header
         if (auto xff = reader.Get("X-Forwarded-For"); xff.has_value()) {
             auto ip = extractFirstIp(xff.value());

@@ -178,7 +178,15 @@ typedef enum {
  * @brief Look up a value by key in a propagation carrier.
  *
  * @param userdata Opaque pointer provided at carrier construction time.
- * @param key      NUL-terminated, case-sensitive header/key name.
+ * @param key      NUL-terminated header/key name. The agent always queries
+ *                 HTTP headers by their canonical mixed-case names
+ *                 ("Pinpoint-TraceID", "X-Forwarded-For", ...), while HTTP/2/3
+ *                 deliver header names lowercase — a callback backed by a raw
+ *                 header map MUST match the key case-insensitively, or those
+ *                 lookups miss silently (broken trace propagation, wrong
+ *                 client address, empty recorded headers). Only non-HTTP
+ *                 carriers with genuinely case-sensitive keys should match
+ *                 exactly.
  * @return         Pointer to the NUL-terminated value, or NULL if absent.
  *                 The pointer must remain valid until the next call on the same
  *                 carrier or until the carrier is destroyed.

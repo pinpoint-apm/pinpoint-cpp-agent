@@ -115,7 +115,17 @@ namespace pinpoint {
 		 * Returning a view keeps per-request lookups allocation-free: most
 		 * implementations can point straight into their backing header map.
 		 *
-		 * @param key Case-sensitive header name or key.
+		 * @param key Header name or key to look up. The agent always queries
+		 *        HTTP headers by their canonical mixed-case names
+		 *        ("Pinpoint-TraceID", "X-Forwarded-For", configured
+		 *        RecordRequestHeader names, ...), but HTTP header names are
+		 *        case-insensitive on the wire and HTTP/2/3 deliver them
+		 *        lowercase — so an implementation backed by a raw header map
+		 *        MUST match the key case-insensitively. An exact-case lookup
+		 *        misses those headers silently: broken trace propagation, the
+		 *        load balancer recorded as the client address, empty recorded
+		 *        headers. Only non-HTTP carriers with genuinely case-sensitive
+		 *        keys should match exactly.
 		 * @return View of the value if present. The view must remain valid
 		 *         until the next call on the same reader or until the reader
 		 *         is destroyed, whichever comes first. Implementations that

@@ -186,5 +186,45 @@ TEST(AtomicSharedPtrTest, ReusedAddressDoesNotResurrectCachedSnapshot) {
     second->~Holder();
 }
 
+// State for ThreadCachedLoadDuringTlsTeardownStaysSafe: the host-object
+// destructor runs during thread TLS teardown, where gtest assertions are
+// awkward, so it reports what it observed through these globals instead.
+CachedAtomicSharedPtr<const int>* g_teardown_holder = nullptr;
+std::atomic<int> g_teardown_observed{0};
+
+struct TeardownHostTlsObject {
+    void touch() const {}
+    ~TeardownHostTlsObject() {
+        if (g_teardown_holder != nullptr) {
+            g_teardown_observed.store(*g_teardown_holder->load_cached_ref(),
+                                      std::memory_order_relaxed);
+        }
+    }
+};
+
+TEST(AtomicSharedPtrTest, ThreadCachedLoadDuringTlsTeardownStaysSafe) {
+    CachedAtomicSharedPtr<const int> value(std::make_shared<const int>(42));
+    g_teardown_holder = &value;
+    g_teardown_observed.store(0, std::memory_order_relaxed);
+
+    std::thread host_thread([&value] {
+        // Constructed before the holder's first load on this thread, so TLS
+        // teardown (reverse construction order) destroys it after the
+        // cache's reclaim guard: its destructor re-enters load_cached_ref()
+        // once the thread cache map is already reclaimed — the host pattern
+        // (a thread_local connection wrapper recording a final span at
+        // thread exit) the teardown-safe slot in thread_cache() exists for.
+        // That post-teardown load deliberately leaks one small map.
+        static thread_local TeardownHostTlsObject host_object;
+        host_object.touch();
+        EXPECT_EQ(*value.load_cached_ref(), 42);
+    });
+    host_thread.join();
+
+    EXPECT_EQ(g_teardown_observed.load(std::memory_order_relaxed), 42)
+        << "a load from a host thread_local destructor must still observe the value";
+    g_teardown_holder = nullptr;
+}
+
 }  // namespace
 }  // namespace pinpoint

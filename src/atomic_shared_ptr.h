@@ -50,6 +50,10 @@ namespace pinpoint {
      * holder of the same T reuses its address or the thread exits. Keep
      * ThreadCached holders few, long-lived, and their snapshots bounded in
      * size, or that memory lingers for the lifetime of every reader thread.
+     * A load that runs while the calling thread is already tearing down its
+     * TLS (a host thread_local destructor recording a final span) stays
+     * defined behavior but leaks one small replacement map for that thread —
+     * see thread_cache().
      */
     enum class SnapshotCache { Uncached, ThreadCached };
 
@@ -157,13 +161,65 @@ namespace pinpoint {
 
         using ThreadCache = std::unordered_map<const AtomicSharedPtr*, CacheEntry>;
 
+        // Per-thread cache storage, split into a trivially-destructible slot
+        // plus a separate reclaim guard so a load during thread teardown stays
+        // defined behavior. A block-scope thread_local with a destructor must
+        // not be passed through again once destroyed ([basic.start.term]) —
+        // yet a host thread_local destructor that records a final span during
+        // thread exit re-enters load_cached_ref() exactly then: TLS
+        // destruction runs in reverse construction order, and a host object
+        // constructed before this cache's first use is destroyed after it.
+        // The slot has no destructor, so it is never "destroyed" and stays
+        // valid for the whole thread lifetime; only the map it points at is
+        // reclaimed, by the guard.
+        struct ThreadCacheSlot {
+            ThreadCache* map = nullptr;
+            // Set by the guard's destructor: from then on thread_cache()
+            // takes the leak path below instead of re-registering a guard
+            // (impossible once TLS destructors have started).
+            bool reclaimed = false;
+        };
+
+        struct ThreadCacheReclaim {
+            ~ThreadCacheReclaim() {
+                auto& slot = thread_cache_slot();
+                delete slot.map;
+                slot.map = nullptr;
+                slot.reclaimed = true;
+            }
+        };
+
+        static ThreadCacheSlot& thread_cache_slot() {
+            // Trivially destructible and constant-initialized: safe to touch
+            // at any point of the thread's lifetime, including from other
+            // thread_local destructors after this thread's TLS teardown began.
+            static thread_local ThreadCacheSlot slot;
+            return slot;
+        }
+
         static ThreadCache& thread_cache() {
             // The map is per T and per thread. Entries are keyed by address to
             // avoid accumulating one entry per construction on a long-lived
             // thread, while the construction id stored in each entry prevents
             // address reuse from resurrecting an old snapshot.
-            static thread_local ThreadCache cache;
-            return cache;
+            auto& slot = thread_cache_slot();
+            if (slot.map == nullptr) {
+                slot.map = new ThreadCache();
+                if (!slot.reclaimed) {
+                    // Normal first use on this thread: register the guard that
+                    // reclaims the map at thread exit.
+                    static thread_local ThreadCacheReclaim reclaim;
+                    (void)reclaim;
+                } else {
+                    // Teardown re-entry: the guard already ran and cannot be
+                    // registered again, so this replacement map is deliberately
+                    // leaked — bounded at one small map per thread that loads
+                    // again during its own exit, and the pointee snapshots it
+                    // pins are exactly the ones ThreadCached opts into keeping
+                    // alive through teardown (see SnapshotCache).
+                }
+            }
+            return *slot.map;
         }
 
         std::shared_ptr<T> load_shared_source() const {

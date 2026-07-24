@@ -98,8 +98,14 @@ namespace pinpoint {
         // getaddrinfo can block for seconds when the hostname is not
         // resolvable (e.g. no DNS); the address is stable for the process
         // lifetime, so resolve once and reuse.
-        static const std::string cached_ip_addr = resolve_host_ip_addr();
-        return cached_ip_addr;
+        // Intentionally heap-allocated and never destroyed, matching the
+        // Logger, noop and global-agent singletons: the gRPC agent-info
+        // worker calls this on every re-registration and may still be
+        // running during process-exit static destruction when the host exits
+        // without Shutdown() — copying from a destroyed value static there
+        // would be use-after-destruction.
+        static const auto* cached_ip_addr = new std::string(resolve_host_ip_addr());
+        return *cached_ip_addr;
     }
 
     namespace {

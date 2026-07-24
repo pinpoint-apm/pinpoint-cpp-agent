@@ -37,6 +37,15 @@ namespace pinpoint {
      * process-wide mutex and allocation from the hot path. Values never move to
      * another shard, so FIFO ordering is retained for each producer shard.
      *
+     * Concurrency contract: multi-producer, SINGLE consumer. Any number of
+     * threads may enqueue concurrently, but the dequeue methods (try_dequeue,
+     * try_dequeue_batch, try_dequeue_after_stop) must only ever be called by
+     * one consumer thread — consumer_cursor_ is deliberately a plain field
+     * (see its comment), so two concurrent dequeuers are a data race (UB),
+     * not merely an unspecified dequeue order. The production consumer is the
+     * span-sender worker thread (GrpcSpan::sendSpanWorker, including its
+     * post-stop flush, which runs on that same thread).
+     *
      * QueueSize remains a global logical bound. Capacity starts evenly divided
      * into quotas; an active shard may borrow the quota of an inactive shard.
      * Quota transfers are rare setup/expansion operations protected by a
@@ -489,6 +498,10 @@ namespace pinpoint {
         // above on every enqueue. Without the padding the cursor write would
         // ping-pong the line those reads ride on — the exact cross-thread
         // line sharing the per-shard design set out to remove.
+        // Plain size_t on purpose: only the single consumer (see the class
+        // doc's concurrency contract) ever touches it, so no synchronization
+        // is needed — and none is provided. A second concurrent dequeuer
+        // would race on this unsynchronized read-modify-write.
         alignas(64) size_t consumer_cursor_{0};
     };
 

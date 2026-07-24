@@ -460,15 +460,40 @@ namespace pinpoint {
             return;
         }
 
-        {
+        // Built before the critical section so that on every failure below —
+        // overflow drop or a throwing queue insertion — the metadata is still
+        // owned here and its cache entry can be released.
+        PendingMeta pending{std::move(meta), 0, {}};
+        try {
             std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
             const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
             if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
-                meta_queue_.push_back(PendingMeta{std::move(meta), 0, {}});
+                // deque::push_back gives the strong guarantee and PendingMeta's
+                // move cannot throw, so `pending` still owns the metadata
+                // whenever this block is left by exception.
+                meta_queue_.push_back(std::move(pending));
             } else {
                 LOG_DEBUG("drop metadata: overflow max queue size {}", max_queue_size);
             }
+        } catch (const std::exception &e) {
+            LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
+        }
+
+        if (pending.meta != nullptr) {
+            // Dropped on overflow, or never enqueued because the insertion
+            // threw. The producer registered the id in the agent caches
+            // before enqueueing (see AgentImpl::cacheApi), and a cache hit
+            // suppresses re-publication — dropping the message without
+            // releasing the entry would leave spans referencing metadata the
+            // collector never receives, for the rest of the process lifetime.
+            // Release it so the id is regenerated and re-sent, exactly like
+            // the retry-exhaustion path in run_meta_worker(). Outside
+            // meta_queue_mutex_ for the lock-order reasons documented there.
+            if (agent_ != nullptr) {
+                release_failed_cache(*pending.meta);
+            }
+            return;
         }
 
         // Notify after releasing the lock so the woken worker does not
