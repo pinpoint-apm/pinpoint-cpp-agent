@@ -82,7 +82,7 @@ namespace pinpoint {
         }
     }
 
-    void UnsampledSpan::EndSpan() {
+    void UnsampledSpan::EndSpan() try {
         // Atomic exchange so only the first caller proceeds: a check-then-set
         // would let two concurrent EndSpan calls both pass the guard and run
         // dropActiveSpan / collectResponseTime / recordUrlStat twice.
@@ -132,6 +132,28 @@ namespace pinpoint {
             }
             url_stat_.reset();
         }
+    } catch (const std::exception& e) {
+        // Mirror SpanImpl::EndSpan: EndSpan runs in host destructors, so the
+        // exception must not escape — this is the majority path when
+        // sampling is on (every unsampled request ends here).
+        LOG_ERROR("end span exception = {}", e.what());
+        releaseActiveSpanOnError();
+    } catch (...) {
+        LOG_ERROR("end span unknown exception");
+        releaseActiveSpanOnError();
+    }
+
+    void UnsampledSpan::releaseActiveSpanOnError() noexcept {
+        // Shared by EndSpan's catch handlers: finished_ is set before they
+        // run, which disables the destructor's self-heal, so release the
+        // active-span registration here instead (a duplicate erase is a
+        // no-op). Same shape as SpanImpl::releaseActiveSpanOnError.
+        try {
+            if (agent_ != nullptr) {
+                agent_->getAgentStats().dropActiveSpan(span_id_);
+            }
+        } catch (...) {
+        }
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
@@ -153,11 +175,9 @@ namespace pinpoint {
             return;
         }
         url_stat_.emplace(url_pattern, method, status_code);
-    } catch (const std::exception& e) {
-        LOG_ERROR("set url stat exception = {}", e.what());
-    }
+    } CATCH_AND_LOG("set url stat")
 
-    void UnsampledSpanEvent::InjectContext(TraceContextWriter& writer) {
+    void UnsampledSpanEvent::InjectContext(TraceContextWriter& writer) try {
         writer.Set(HEADER_SAMPLED, "s0");
-    }
+    } CATCH_AND_LOG("inject context")
 }

@@ -210,4 +210,29 @@ namespace pinpoint {
                 _pp_logger.logError(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
             } \
         } while (0)
+
+    // Exception boundary for host-facing entry points (the Span/SpanEvent
+    // recording surface): expands to the catch clauses of a function-try-block
+    // and degrades the call to a logged no-op. These functions are called
+    // straight from host request handlers and destructors, where an escaping
+    // exception (realistically bad_alloc from a string/annotation allocation)
+    // would unwind host frames or std::terminate the process — nothing may
+    // escape, matching the pt_api_call firewall on the C API. `op_desc` must
+    // be a string literal (it must not be named `what`, or it would be
+    // substituted into the `_pp_e.what()` call below).
+    #define CATCH_AND_LOG(op_desc) \
+        catch (const std::exception& _pp_e) { \
+            LOG_ERROR(op_desc " exception = {}", _pp_e.what()); \
+        } catch (...) { \
+            LOG_ERROR(op_desc " unknown exception"); \
+        }
+    /// @brief CATCH_AND_LOG for value-returning entry points.
+    #define CATCH_AND_LOG_RETURN(op_desc, retval) \
+        catch (const std::exception& _pp_e) { \
+            LOG_ERROR(op_desc " exception = {}", _pp_e.what()); \
+            return (retval); \
+        } catch (...) { \
+            LOG_ERROR(op_desc " unknown exception"); \
+            return (retval); \
+        }
 }

@@ -37,14 +37,16 @@ namespace pinpoint {
 
         /// @brief Sets the service type for this event.
         void SetServiceType(int32_t type) override { if (warnIfFinished()) return; service_type_ = type; }
-        /// @brief Sets the logical operation name.
-        void SetOperationName(std::string_view operationName) override { if (warnIfFinished()) return; operation_ = operationName; }
+        /// @brief Sets the logical operation name. Out-of-line: the string
+        /// assignment allocates, so it needs the exception boundary in
+        /// span_event.cpp (as do the other allocating setters below).
+        void SetOperationName(std::string_view operationName) override;
         /// @brief Records the absolute start time.
         void SetStartTime(std::chrono::system_clock::time_point start_time) override { if (warnIfFinished()) return; start_time_ = to_milli_seconds(start_time); }
         /// @brief Records the destination identifier.
-        void SetDestination(std::string_view dest) override { if (warnIfFinished()) return; destination_id_ = dest; }
+        void SetDestination(std::string_view dest) override;
         /// @brief Records the remote endpoint.
-        void SetEndPoint(std::string_view endpoint) override { if (warnIfFinished()) return; endpoint_ = endpoint; }
+        void SetEndPoint(std::string_view endpoint) override;
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
@@ -198,8 +200,10 @@ namespace pinpoint {
         void SetOperationName(std::string_view operation) override {}
         void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
         /// @brief Destination is kept (not recorded) so InjectContext can still
-        /// write the Pinpoint-Host header for the outbound call.
-        void SetDestination(std::string_view dest) override { destination_id_ = dest; }
+        /// write the Pinpoint-Host header for the outbound call. Out-of-line:
+        /// the string assignment allocates, so it needs the exception
+        /// boundary in span_event.cpp.
+        void SetDestination(std::string_view dest) override;
         void SetEndPoint(std::string_view end_point) override {}
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}

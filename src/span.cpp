@@ -115,7 +115,7 @@ namespace pinpoint {
         return count;
     }
 
-    void SpanData::storeFinishedEvent(std::unique_ptr<SpanEventImpl> se) {
+    void SpanData::storeFinishedEvent(std::unique_ptr<SpanEventImpl> se) try {
         const auto sequence = se->getSequence();
         if (finished_events.empty() || finished_events.back()->getSequence() < sequence) {
             finished_events.emplace_back(std::move(se));
@@ -132,6 +132,23 @@ namespace pinpoint {
                 return event->getSequence() < sequence;
             });
         finished_events.insert(pos, std::move(se));
+    } catch (...) {
+        // Vector insertion throws only on allocation, before the element is
+        // moved in (unique_ptr moves are noexcept), so `se` still owns the
+        // event here. It must not be destroyed during unwind: user code may
+        // hold this event's raw SpanEventPtr, and the duplicate-EndEvent
+        // no-op promised in pinpoint/tracer.h needs a live object. Retire it
+        // unsent instead — kept alive until this SpanData dies, like every
+        // chunk-flushed event.
+        try {
+            retired_events_.emplace_back(std::move(se));
+            LOG_ERROR("store finished event: allocation failed; span event dropped from trace");
+        } catch (...) {
+            // Even the one-pointer fallback failed: leak the event rather
+            // than free memory a user-held SpanEventPtr may still point at.
+            se.release();
+            LOG_ERROR("store finished event: allocation failed; span event leaked to keep user handles valid");
+        }
     }
 
     void SpanData::takeFinishedEvents(std::vector<SpanEventImpl*>& out) {
@@ -145,9 +162,26 @@ namespace pinpoint {
         // exactly that on every chunk flush, so a long-lived span reallocates
         // and copies the whole vector per flush (O(E^2/C)). Plain emplace_back
         // grows geometrically instead — O(log E) reallocations overall.
-        for (auto& event : finished_events) {
-            out.push_back(event.get());
-            retired_events_.emplace_back(std::move(event));
+        try {
+            for (auto& event : finished_events) {
+                out.push_back(event.get());
+                retired_events_.emplace_back(std::move(event));
+            }
+        } catch (...) {
+            // A mid-loop allocation failure leaves the events already
+            // processed owned by retired_events_ (emplace_back throws only
+            // before the move) and their finished_events slots null. Compact
+            // the nulls away — a later flush must not hand null event
+            // pointers to a chunk — then rethrow to the caller's boundary
+            // (record_chunk / EndSpan), which logs and abandons the chunk.
+            finished_events.erase(
+                std::remove_if(finished_events.begin(), finished_events.end(),
+                               [](const std::unique_ptr<SpanEventImpl>& event) {
+                                   return event == nullptr;
+                               }),
+                finished_events.end());
+            out.clear();
+            throw;
         }
         finished_events.clear();
     }
@@ -300,12 +334,9 @@ namespace pinpoint {
         auto se = std::make_unique<SpanEventImpl>(this, operation);
         se->SetServiceType(service_type);
         return data_->addSpanEvent(std::move(se));
-    } catch (const std::exception& e) {
-        LOG_ERROR("new span event exception = {}", e.what());
-        return noopSpanEvent();
-    }
+    } CATCH_AND_LOG_RETURN("new span event", noopSpanEvent())
 
-    SpanEventPtr SpanImpl::GetSpanEvent() {
+    SpanEventPtr SpanImpl::GetSpanEvent() try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         // While overflowed, the top of the stack is a discarded event: hand
         // out the disabled event so InjectContext keeps working (see
@@ -318,7 +349,7 @@ namespace pinpoint {
             return noopSpanEvent();
         }
         return se;
-    }
+    } CATCH_AND_LOG_RETURN("get span event", noopSpanEvent())
 
     AnnotationPtr SpanImpl::GetAnnotations() const {
         // A finished span's annotation list may already be under
@@ -334,9 +365,7 @@ namespace pinpoint {
         auto chunk = std::make_unique<SpanChunk>(data_, final);
         chunk->optimizeSpanEvents();
         agent_->recordSpan(std::move(chunk));
-    } catch (const std::exception& e) {
-        LOG_ERROR("record span chunk exception = {}", e.what());
-    }
+    } CATCH_AND_LOG("record span chunk")
 
     void SpanImpl::endSpanEvent(SpanEventImpl* se) {
         CHECK_FINISHED();
@@ -420,11 +449,19 @@ namespace pinpoint {
         // Reached only on allocation failure (e.g. bad_alloc while finishing
         // open events): EndSpan is commonly called from destructors in host
         // code, so the exception must not escape — the sibling entry points
-        // (NewSpanEvent, record_chunk, NewAsyncSpan) already catch. finished_
-        // is set by now, which disables the destructor's self-heal, so
-        // release the active-span registration here instead (a duplicate
-        // erase is a no-op).
+        // (NewSpanEvent, record_chunk, NewAsyncSpan) already catch.
         LOG_ERROR("end span exception = {}", e.what());
+        releaseActiveSpanOnError();
+    } catch (...) {
+        LOG_ERROR("end span unknown exception");
+        releaseActiveSpanOnError();
+    }
+
+    void SpanImpl::releaseActiveSpanOnError() noexcept {
+        // Shared by EndSpan's catch handlers: finished_ is set before they
+        // run, which disables the destructor's self-heal, so release the
+        // active-span registration here instead (a duplicate erase is a
+        // no-op).
         try {
             if (data_ && !data_->isAsyncSpan()) {
                 agent_->getAgentStats().dropActiveSpan(data_->getSpanId());
@@ -567,16 +604,13 @@ namespace pinpoint {
         async_span->data_->addSpanEvent(std::move(async_se));
 
         return async_span;
-    } catch (const std::exception& e) {
-        LOG_ERROR("new async span exception = {}", e.what());
-        return noopSpan();
-    }
+    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
 
     void SpanImpl::decrEventDepth() {
         data_->decrEventDepth();
     }
 
-    void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) {
+    void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
         CHECK_FINISHED();
         // Gate at entry creation: with URL stats disabled (the default) the
         // entry used to be built — two heap string copies — and carried to
@@ -590,7 +624,7 @@ namespace pinpoint {
             return;
         }
         url_stat_.emplace(url_pattern, method, status_code);
-    }
+    } CATCH_AND_LOG("set url stat")
 
     void SpanImpl::SetServiceType(int32_t service_type) {
         CHECK_FINISHED();
@@ -602,33 +636,33 @@ namespace pinpoint {
         data_->setStartTime(start_time);
     }
 
-    void SpanImpl::SetRemoteAddress(std::string_view address) {
+    void SpanImpl::SetRemoteAddress(std::string_view address) try {
         CHECK_FINISHED();
         data_->setRemoteAddr(address);
-    }
+    } CATCH_AND_LOG("set remote address")
 
-    void SpanImpl::SetEndPoint(std::string_view endpoint) {
+    void SpanImpl::SetEndPoint(std::string_view endpoint) try {
         CHECK_FINISHED();
         data_->setEndPoint(endpoint);
-    }
+    } CATCH_AND_LOG("set end point")
 
-    void SpanImpl::SetAcceptorHost(std::string_view host) {
+    void SpanImpl::SetAcceptorHost(std::string_view host) try {
         CHECK_FINISHED();
         data_->setAcceptorHost(host);
-    }
+    } CATCH_AND_LOG("set acceptor host")
 
     void SpanImpl::SetError(std::string_view error_message) {
         CHECK_FINISHED();
         SetError("Error", error_message);
     }
 
-    void SpanImpl::SetError(std::string_view error_name, std::string_view error_message) {
+    void SpanImpl::SetError(std::string_view error_name, std::string_view error_message) try {
         CHECK_FINISHED();
 
         data_->setErrorFuncId(agent_->cacheError(error_name));
         data_->setErrorString(error_message);
         data_->setErr(1);
-    }
+    } CATCH_AND_LOG("set error")
 
     void SpanImpl::SetStatusCode(int status) {
         CHECK_FINISHED();
@@ -651,10 +685,14 @@ namespace pinpoint {
         return agent_->isStatusFail(status);
     }
 
-    void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
+    void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         CHECK_FINISHED();
         agent_->recordServerHeader(which, reader, data_->getAnnotations());
-    }
+    } CATCH_AND_LOG("record header")
+
+    std::string SpanImpl::GetTraceId() try {
+        return data_->getTraceIdWire();
+    } CATCH_AND_LOG_RETURN("get trace id", std::string{})
 
 	const std::string LOG_TRACE_ID_KEY = "PtxId";
 	const std::string LOG_SPAN_ID_KEY = "PspanId";
@@ -683,7 +721,7 @@ namespace pinpoint {
         }
     }
 
-    void SpanImpl::SetLogging(TraceContextWriter& writer) {
+    void SpanImpl::SetLogging(TraceContextWriter& writer) try {
         CHECK_FINISHED();
 
         data_->setLoggingFlag();
@@ -695,6 +733,6 @@ namespace pinpoint {
 
         writer.Set(LOG_TRACE_ID_KEY, data_->getTraceIdWire());
         writer.Set(LOG_SPAN_ID_KEY, std::string_view(span_id, static_cast<size_t>(res.ptr - span_id)));
-    }
+    } CATCH_AND_LOG("set logging")
 
 }  // namespace pinpoint

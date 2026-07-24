@@ -173,6 +173,9 @@ namespace pinpoint {
         }
 
     private:
+        // Shared by EndSpan's catch handlers; see the definition.
+        void releaseActiveSpanOnError() noexcept;
+
         int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};

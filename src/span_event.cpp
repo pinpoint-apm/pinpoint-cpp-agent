@@ -164,14 +164,14 @@ namespace pinpoint {
         return false;
     }
 
-    AnnotationPtr SpanEventImpl::GetAnnotations() const {
+    AnnotationPtr SpanEventImpl::GetAnnotations() const try {
         if (warnIfFinished()) {
             return noopAnnotation();
         }
         return ensureAnnotations();
-    }
+    } CATCH_AND_LOG_RETURN("get annotations", noopAnnotation())
 
-    void SpanEventImpl::EndEvent() {
+    void SpanEventImpl::EndEvent() try {
         // Atomic exchange so only the first end proceeds: ending an event
         // twice would pop a DIFFERENT (still-active) event from the span's
         // stack and desync the whole call tree.
@@ -182,6 +182,15 @@ namespace pinpoint {
         // Pass the identity so the span can detect (and unwind) out-of-order
         // ends instead of finishing whatever event happens to be on top.
         span_->endSpanEvent(this);
+    } catch (const std::exception& e) {
+        // Like EndSpan: EndEvent runs in host destructors — including this
+        // library's own helper::ScopedSpanEvent — where an escaping
+        // exception would std::terminate the host, so nothing may escape.
+        // `this` is still alive here: storeFinishedEvent never lets an event
+        // die on its failure paths (see its catch handler).
+        LOG_ERROR("end span event exception = {}", e.what());
+    } catch (...) {
+        LOG_ERROR("end span event unknown exception");
     }
 
     void SpanEventImpl::finish() {
@@ -209,15 +218,30 @@ namespace pinpoint {
         return next_span_id_;
     }
 
+    void SpanEventImpl::SetOperationName(std::string_view operation) try {
+        if (warnIfFinished()) return;
+        operation_ = operation;
+    } CATCH_AND_LOG("set operation name")
+
+    void SpanEventImpl::SetDestination(std::string_view dest) try {
+        if (warnIfFinished()) return;
+        destination_id_ = dest;
+    } CATCH_AND_LOG("set destination")
+
+    void SpanEventImpl::SetEndPoint(std::string_view endpoint) try {
+        if (warnIfFinished()) return;
+        endpoint_ = endpoint;
+    } CATCH_AND_LOG("set end point")
+
     void SpanEventImpl::SetError(std::string_view error_message) {
         SetError("Error", error_message);
     }
 
-    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) try {
         if (warnIfFinished()) return;
         error_func_id_ = agent_->cacheError(error_name);
         error_string_ = error_message;
-    }
+    } CATCH_AND_LOG("set error")
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
         if (warnIfFinished()) return;
@@ -247,7 +271,7 @@ namespace pinpoint {
 
     void SpanEventImpl::SetSqlQuery(
         std::string_view sql_query,
-        const std::vector<SqlBindValue>& bind_args) {
+        const std::vector<SqlBindValue>& bind_args) try {
         if (warnIfFinished()) return;
         const auto& config = span_->config_;
         const auto mode = config->sql.enable_sql_stats
@@ -285,21 +309,21 @@ namespace pinpoint {
                 ANNOTATION_SQL_ID,
                 AnnotationData(*sql_id, std::move(parameters), std::move(joined_bind_args)));
         }
-    }
+    } CATCH_AND_LOG("set sql query")
 
-    void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) {
+    void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         if (warnIfFinished()) return;
         agent_->recordClientHeader(which, reader, ensureAnnotations());
-    }
+    } CATCH_AND_LOG("record header")
 
-    void SpanEventImpl::InjectContext(TraceContextWriter& writer) {
+    void SpanEventImpl::InjectContext(TraceContextWriter& writer) try {
         // Guarded like every other mutator: generateNextSpanId() writes a
         // field the gRPC worker reads once this event sits in a chunk, and a
         // finished event can outlive span_ itself (retired events are kept
         // alive by SpanData after the SpanImpl has been destroyed).
         if (warnIfFinished()) return;
         span_->injectContext(writer, generateNextSpanId(), destination_id_);
-    }
+    } CATCH_AND_LOG("inject context")
 
     AnnotationPtr DisabledSpanEvent::GetAnnotations() const {
         return noopAnnotation();
@@ -313,12 +337,16 @@ namespace pinpoint {
         span_->endDisabledSpanEvent();
     }
 
-    void DisabledSpanEvent::InjectContext(TraceContextWriter& writer) {
+    void DisabledSpanEvent::SetDestination(std::string_view dest) try {
+        destination_id_ = dest;
+    } CATCH_AND_LOG("set destination")
+
+    void DisabledSpanEvent::InjectContext(TraceContextWriter& writer) try {
         // The overflowed event is never recorded, so the generated child span
         // id is not stored anywhere either — the same shape as the Java
         // agent, where recordNextSpanId on the DisableSpanEventRecorder is a
         // no-op but the full header set is still written.
         span_->injectContext(writer, generate_span_id(), destination_id_);
-    }
+    } CATCH_AND_LOG("inject context")
 
 } // namespace pinpoint

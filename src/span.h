@@ -542,7 +542,9 @@ namespace pinpoint {
     	 */
     	void endDisabledSpanEvent();
 
-        std::string GetTraceId() override { return data_->getTraceIdWire(); }
+        // Out-of-line: getTraceIdWire() lazily builds (and the return copies)
+        // a string, so this needs the exception boundary in span.cpp.
+        std::string GetTraceId() override;
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
         // Out-of-line: returns the noop annotation once the span is finished,
@@ -639,6 +641,8 @@ namespace pinpoint {
 		 * @param final Indicates whether the chunk completes the span.
 		 */
             void record_chunk(bool final) const;
+            // Shared by EndSpan's catch handlers; see the definition.
+            void releaseActiveSpanOnError() noexcept;
             void sendUrlStat();
             void sendExceptions();
             // Snapshot-based equivalent of agent_->isStatusFail(): evaluates

@@ -549,7 +549,16 @@ namespace pinpoint {
 
 			~ScopedSpanEvent() {
 				if (event_) {
-					event_->EndEvent();
+					// A destructor is implicitly noexcept, so anything
+					// escaping EndEvent() would std::terminate the host
+					// process. Current library builds already catch inside
+					// EndEvent(), but this header is compiled into the host
+					// and may run against an older library — swallow
+					// defensively.
+					try {
+						event_->EndEvent();
+					} catch (...) {
+					}
 				}
 			}
 		
