@@ -281,12 +281,43 @@ namespace pinpoint {
         }
     }
 
-    void UrlStats::addUrlStatsWorker() try {
+    void UrlStats::addUrlStatsWorker() {
+        // Boot-time decision: CollectUrlStat is non-reloadable
+        // (Config::retainNonReloadableFrom retains the whole http.url_stat
+        // block on a reload), so a worker that returns here can never be
+        // needed later — the enqueue path's authoritative drop point reads
+        // the same never-changing flag, and no entry can strand in the
+        // shards. If that flag is ever made reloadable, this gate (and
+        // sendUrlStatsWorker's, and GrpcStats::sendStatsWorker's) must
+        // become a per-cycle live check instead.
         const auto config = agent_->getConfig();
         if (!config->http.url_stat.enable) {
             return;
         }
 
+        // Supervise the loop body so an unexpected exception (e.g. bad_alloc
+        // while aggregating a snapshot) cannot kill URL-stat aggregation for
+        // the process lifetime, mirroring the gRPC workers. Restarts are
+        // paced by the send interval; only agent exit ends the worker.
+        while (true) {
+            try {
+                runAddUrlStatsWorker(*config);
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("add url stats worker exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("add url stats worker unknown exception");
+            }
+
+            std::unique_lock<std::mutex> lock(add_mutex_);
+            if (add_cond_var_.wait_for(lock, send_interval_, [this] { return agent_->isExiting(); })) {
+                break;
+            }
+        }
+        LOG_INFO("add url stats worker end");
+    }
+
+    void UrlStats::runAddUrlStatsWorker(const Config& config) {
         std::unique_lock<std::mutex> lock(add_mutex_);
         while (!agent_->isExiting()) {
             // Entries enqueued while draining don't re-notify (only the
@@ -300,21 +331,17 @@ namespace pinpoint {
             }
 
             lock.unlock();
-            drainQueueShards(*config);
+            drainQueueShards(config);
             lock.lock();
         }
-        LOG_INFO("add url stats worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("add url stats worker exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("add url stats worker unknown exception");
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
-        // Always notify, regardless of the CURRENT config: the worker decided
-        // whether to run from the config it saw at startup, and CollectUrlStat
-        // is reloadable — consulting the live config here could skip the only
-        // wakeup for a worker parked in an untimed wait and hang shutdown.
+        // Always notify, without consulting any config: re-deriving the
+        // worker's boot decision from a config load here would couple
+        // shutdown to the non-reloadability invariant documented in
+        // addUrlStatsWorker — get it wrong and the only wakeup for a worker
+        // parked in an untimed wait is skipped, hanging shutdown forever.
         // Taking the lock pairs the notify with the worker's predicate check
         // (isExiting), so it cannot fire in the window between the worker
         // reading the flag as false and blocking — a lost wakeup that would
@@ -323,26 +350,42 @@ namespace pinpoint {
         add_cond_var_.notify_one();
     }
 
-    void UrlStats::sendUrlStatsWorker() try {
+    void UrlStats::sendUrlStatsWorker() {
+        // Boot-time decision; see addUrlStatsWorker for the
+        // non-reloadability invariant this relies on.
         const auto config = agent_->getConfig();
         if (!config->http.url_stat.enable) {
             return;
         }
 
-        std::unique_lock<std::mutex> lock(send_mutex_);
-        const auto timeout = send_interval_;
+        // Supervised like addUrlStatsWorker: a transient exception must not
+        // end periodic URL-stat sending for the process lifetime.
+        while (true) {
+            try {
+                runSendUrlStatsWorker();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("send url stats worker exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("send url stats worker unknown exception");
+            }
 
-        while (!agent_->isExiting()) {
-            if (!send_cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
-                agent_->recordStats(URL_STATS);
+            std::unique_lock<std::mutex> lock(send_mutex_);
+            if (send_cond_var_.wait_for(lock, send_interval_, [this] { return agent_->isExiting(); })) {
+                break;
             }
         }
 
         LOG_INFO("send url stats worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("send url stats worker exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("send url stats worker unknown exception");
+    }
+
+    void UrlStats::runSendUrlStatsWorker() {
+        std::unique_lock<std::mutex> lock(send_mutex_);
+        while (!agent_->isExiting()) {
+            if (!send_cond_var_.wait_for(lock, send_interval_, [this]{ return agent_->isExiting(); })) {
+                agent_->recordStats(URL_STATS);
+            }
+        }
     }
 
     void UrlStats::stopSendUrlStatsWorker() {

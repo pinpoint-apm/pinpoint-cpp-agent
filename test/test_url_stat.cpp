@@ -1073,6 +1073,32 @@ TEST_F(UrlStatTest, SendWorkerHonorsInjectedSendInterval) {
     EXPECT_EQ(mock_agent_service_->last_stats_type_.load(), URL_STATS);
 }
 
+TEST_F(UrlStatTest, SendWorkerSurvivesTransientRecordStatsFailure) {
+    UrlStats url_stats(mock_agent_service_.get(),
+                       URL_STAT_TICK_INTERVAL,
+                       std::chrono::milliseconds(50));
+
+    // The first send throws out of the worker loop; the supervisor must
+    // restart it (paced by the injected send interval) instead of letting
+    // one transient failure end URL-stat sending for the process lifetime.
+    mock_agent_service_->stats_throws_remaining_ = 1;
+
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (mock_agent_service_->recorded_stats_calls_.load() < 3 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+
+    EXPECT_GE(mock_agent_service_->recorded_stats_calls_.load(), 3)
+        << "the send worker must be restarted after a transient recordStats failure";
+}
+
 TEST_F(UrlStatTest, TickClockBucketsByInjectedTickInterval) {
     const auto config = mock_agent_service_->getConfig();
 

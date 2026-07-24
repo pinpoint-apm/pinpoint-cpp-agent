@@ -101,6 +101,9 @@ namespace pinpoint {
         void resetAgentStats();
 
     private:
+        /// @brief One supervised run of the collect loop; agentStatsWorker
+        /// restarts it after a transient exception.
+        void runAgentStatsWorker(const Config& config);
         void pauseResponseTimeUpdates();
         void resumeResponseTimeUpdates();
         void collectAndResetResponseTime(int64_t& avg, int64_t& max);

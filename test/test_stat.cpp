@@ -233,6 +233,34 @@ TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
     SUCCEED() << "AgentStats worker should run without crashing";
 }
 
+TEST_F(StatTest, AgentStatsWorkerSurvivesTransientRecordStatsFailure) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->stat.enable = true;
+    cfg->stat.collect_interval = 20;  // ms; production default is seconds-scale
+    cfg->stat.batch_count = 1;        // send on every collection
+
+    // The first send throws out of the collect loop; the supervisor must
+    // restart the worker (paced by the collect interval) instead of letting
+    // one transient failure end agent-stat reporting for the process
+    // lifetime.
+    mock_agent_service_->stats_throws_remaining_ = 1;
+
+    std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (mock_agent_service_->recorded_stats_calls_.load() < 3 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker_thread.join();
+
+    EXPECT_GE(mock_agent_service_->recorded_stats_calls_.load(), 3)
+        << "the worker must be restarted after a transient recordStats failure";
+}
+
 TEST_F(StatTest, AgentStatsWithExitingAgentTest) {
     mock_agent_service_->setExiting(true);
     

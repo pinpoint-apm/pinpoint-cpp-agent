@@ -2308,6 +2308,11 @@ namespace pinpoint {
     }
 
     void GrpcStats::sendStatsWorker() {
+        // Boot-time decision: both flags are non-reloadable (see
+        // Config::retainNonReloadableFrom and the invariant note in
+        // UrlStats::addUrlStatsWorker), so a worker that returns here can
+        // never be needed later. config_ is the pinned boot snapshot, so
+        // stopStatsWorker's identical gate always agrees with this one.
         const auto& config = config_;
         if (!config->stat.enable && !config->http.url_stat.enable) {
             return;

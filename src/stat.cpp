@@ -426,52 +426,75 @@ namespace pinpoint {
         collectActiveRequests(stat.active_requests_, stat.sample_time_);
     }
 
-    void AgentStats::agentStatsWorker() try {
+    void AgentStats::agentStatsWorker() {
+        // Boot-time decision: Stat.Enable is non-reloadable
+        // (Config::retainNonReloadableFrom retains the whole stat block on a
+        // reload), so a worker that returns here can never be needed later.
         const auto config = agent_->getConfig();
         if (!config->stat.enable) {
             return;
         }
 
+        // Supervise the loop body so an unexpected exception (e.g. bad_alloc
+        // while collecting a snapshot) cannot kill agent-stat reporting for
+        // the process lifetime, mirroring the gRPC workers (sendMetaWorker,
+        // GrpcStats::sendStatsWorker). Restarts are paced by the collect
+        // interval; only agent exit ends the worker.
+        while (true) {
+            try {
+                runAgentStatsWorker(*config);
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("agent stats worker exception = {}", e.what());
+            } catch (...) {
+                LOG_ERROR("agent stats worker unknown exception");
+            }
+
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (cond_var_.wait_for(lock, std::chrono::milliseconds(config->stat.collect_interval),
+                                   [this] { return agent_->isExiting(); })) {
+                break;
+            }
+        }
+
+        LOG_INFO("agent stats worker end");
+    }
+
+    void AgentStats::runAgentStatsWorker(const Config& config) {
         initAgentStats();
 
         {
             // Resize vector safely
             std::lock_guard<std::mutex> lock(mutex_);
-            agent_stats_snapshots_.resize(config->stat.batch_count);
+            agent_stats_snapshots_.resize(config.stat.batch_count);
         }
 
         std::unique_lock<std::mutex> lock(mutex_);
-        collect_interval_ = config->stat.collect_interval;
+        collect_interval_ = config.stat.collect_interval;
         const auto timeout = std::chrono::milliseconds(collect_interval_);
 
         while (!agent_->isExiting()) {
             if (!cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
                 // Period elapsed, collect stats
-                // Unlock while collecting to not block other operations? 
+                // Unlock while collecting to not block other operations?
                 // collectAgentStat locks its own internal mutexes, so it's fine to hold outer lock or not.
                 // But 'agent_stats_snapshots_' is protected by 'mutex_'.
-                
+
                 if (static_cast<size_t>(batch_) < agent_stats_snapshots_.size()) {
                     collectAgentStat(agent_stats_snapshots_[batch_]);
                     batch_++;
                 }
 
-                if (batch_ >= config->stat.batch_count) {
+                if (batch_ >= config.stat.batch_count) {
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);
                     lock.lock();
-                    
+
                     batch_ = 0;
                 }
             }
         }
-
-        LOG_INFO("agent stats worker end");
-    } catch (const std::exception& e) {
-        LOG_ERROR("agent stats worker exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("agent stats worker unknown exception");
     }
 
     void AgentStats::stopAgentStatsWorker() {

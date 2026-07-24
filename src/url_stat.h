@@ -253,6 +253,11 @@ namespace pinpoint {
 
         QueueShard& queueShard();
         void drainQueueShards(const Config& config);
+        /// @brief One supervised run of the aggregation loop; the public
+        /// worker restarts it after a transient exception.
+        void runAddUrlStatsWorker(const Config& config);
+        /// @brief One supervised run of the periodic send loop.
+        void runSendUrlStatsWorker();
 
         // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
         // the URL-stat workers before its own destruction, so agent_ never
