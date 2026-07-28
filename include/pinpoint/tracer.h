@@ -425,6 +425,13 @@ namespace pinpoint {
 		 * leaves the call retryable. Start() returns without waiting for collector
 		 * connection or registration.
       	 *
+		 * @warning Shutdown() is terminal for the instance it is called on. A
+		 * Start() arriving afterwards is refused (logged at error level) and the
+		 * agent stays disabled permanently, so every span it hands out is a noop
+		 * span. An application that stops and later resumes tracing must discard
+		 * the shut-down handle and obtain a fresh agent from CreateAgent() — it
+		 * must not restart this one. See Shutdown().
+      	 *
       	 * This split enables the "initialize per worker after fork" model used by
       	 * gunicorn/uWSGI/`multiprocessing(fork)`: the master calls CreateAgent()
       	 * (holding no threads and no open gRPC runtime at the fork point) and each
@@ -445,6 +452,18 @@ namespace pinpoint {
 		/// @brief Stops the agent and waits for its workers to finish. Pending
 		///        spans are submitted when a channel is available, but delivery
 		///        is not guaranteed.
+		///
+		/// Terminal for this instance: it can never be brought back online with
+		/// Start() (see there), Enable() stays false and NewSpan() only returns
+		/// noop spans. When this is the global agent it is also removed from the
+		/// singleton, so GlobalAgent() falls back to the noop agent until a new
+		/// one is installed.
+		///
+		/// To resume tracing in the same process, run the full
+		/// CreateAgent() -> Start() sequence again on a fresh handle. Note that
+		/// each such cycle re-resolves the agent identity, so it registers a NEW
+		/// agent instance with the collector unless AgentId is pinned in the
+		/// configuration (UidVersion v4 always regenerates it).
       	virtual void Shutdown() = 0;
   	};
 

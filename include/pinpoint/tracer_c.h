@@ -435,6 +435,11 @@ void pt_agent_destroy(pt_agent_t agent);
  * After fork(), call it in each child created from a cold agent so each worker
  * derives a child-specific agent id.
  *
+ * Calling this after pt_agent_shutdown() is refused (logged at error level):
+ * that agent stays disabled permanently and only produces noop spans. To
+ * resume tracing, discard the handle and call pt_create_agent() again — see
+ * pt_agent_shutdown().
+ *
  * Mirrors pinpoint::Agent::Start().
  */
 void pt_agent_start(pt_agent_t agent);
@@ -452,6 +457,17 @@ int pt_agent_is_enabled(pt_agent_t agent);
  *
  * Queued spans are submitted when a collector channel is available, but
  * successful delivery is not guaranteed.
+ *
+ * Terminal for this agent: pt_agent_start() can never bring it back online,
+ * pt_agent_is_enabled() stays 0 and it only produces noop spans. When it is
+ * the global agent it is also removed from the singleton, so pt_global_agent()
+ * returns the disabled-agent sentinel until a new one is installed.
+ *
+ * To resume tracing in the same process, release the handle with
+ * pt_agent_destroy() and run pt_create_agent() + pt_agent_start() again. Each
+ * such cycle re-resolves the agent identity, so it registers a NEW agent
+ * instance with the collector unless AgentId is pinned in the configuration
+ * (UidVersion v4 always regenerates it).
  *
  * Mirrors pinpoint::Agent::Shutdown().
  */

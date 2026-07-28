@@ -10,6 +10,7 @@ This guide helps you get started with the Pinpoint C++ Agent (`pinpoint-cpp-agen
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Basic Usage](#basic-usage)
+- [Stopping and Resuming the Agent](#stopping-and-resuming-the-agent)
 - [Running Your First Traced Application](#running-your-first-traced-application)
 - [Example: HTTP Server](#example-http-server)
 - [Example: Database Query](#example-database-query)
@@ -171,6 +172,13 @@ The typical workflow follows five steps:
 4. **End** — call `EndSpan()` when the transaction completes.
 5. **Shutdown** — call `agent->Shutdown()` before the application exits.
 
+> **`Shutdown()` is terminal for an agent instance.** The same handle can never be
+> brought back online: a later `Start()` is refused (logged at error level),
+> `Enable()` stays `false`, and every span it returns is a noop span. The
+> application itself keeps running normally — it just stops being traced. To stop
+> and later resume tracing in a long-running process, see
+> [Stopping and Resuming the Agent](#stopping-and-resuming-the-agent).
+
 ### Initialize the Agent
 
 ```cpp
@@ -253,6 +261,52 @@ void handleRequest() {
     span->EndSpan();
 }
 ```
+
+---
+
+## Stopping and Resuming the Agent
+
+Most applications start the agent once and shut it down at exit. If yours needs to
+stop and later resume tracing while it keeps running, use a **fresh agent for each
+cycle** — an agent instance cannot be restarted.
+
+```cpp
+// Stop tracing. The application keeps working; it is simply no longer traced.
+agent->Shutdown();
+agent.reset();          // drop the dead handle so nothing keeps using it
+
+// ... later: resume tracing with a NEW agent ...
+agent = pinpoint::CreateAgent();
+agent->Start();
+```
+
+What each call guarantees:
+
+| Call | Behavior after `Shutdown()` |
+|---|---|
+| `agent->Start()` | Refused permanently, logged at error level. The agent stays disabled. |
+| `agent->Enable()` | Always `false`. |
+| `agent->NewSpan(...)` | Returns the shared noop span. Safe to call, records nothing. |
+| `pinpoint::GlobalAgent()` | Returns the noop agent until `CreateAgent()` installs a new one. |
+
+Points to keep in mind:
+
+- **Never reuse the shut-down handle.** Calling `Start()` on it looks successful
+  from the caller's side (`Start()` returns `void`) but leaves tracing off for the
+  rest of the process. Check `Enable()` after `Start()` if you need confirmation.
+- **Drop cached agent pointers.** Any `AgentPtr` the application cached — in a
+  thread-local, a service object, a C `pt_agent_t` handle — still points at the
+  dead agent and keeps producing noop spans. Re-fetch with `GlobalAgent()` or the
+  new handle.
+- **Spans that outlive the shutdown are safe.** A span created before `Shutdown()`
+  can still be ended afterwards without crashing; its data is simply dropped.
+- **Pin `AgentId` if you cycle repeatedly.** Each `CreateAgent()` re-resolves the
+  agent identity, so an unpinned id makes every cycle register as a new agent
+  instance in the Pinpoint UI. (With `UidVersion: v4` the id is always
+  regenerated.)
+- **Shutdown is synchronous.** It joins the worker threads, so it can take up to a
+  few seconds while queued spans drain — do not call it from a latency-sensitive
+  path.
 
 ---
 

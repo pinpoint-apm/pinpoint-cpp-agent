@@ -108,6 +108,25 @@ int main(void) {
 }
 ```
 
+`pt_agent_shutdown()` is terminal for that agent: a later `pt_agent_start()` on the
+same handle is refused (logged at error level), `pt_agent_is_enabled()` stays `0`,
+and every span it hands out is a no-op span. The application keeps running
+normally — it is just no longer traced. To stop and later resume tracing in a
+long-running process, destroy the handle and run `pt_create_agent()` +
+`pt_agent_start()` again for each cycle:
+
+```c
+pt_agent_shutdown(agent);
+pt_agent_destroy(agent);          /* drop the dead handle */
+
+/* ... later ... */
+agent = pt_create_agent();        /* a NEW agent; the old one cannot restart */
+pt_agent_start(agent);
+```
+
+Pin `AgentId` in the configuration if you cycle repeatedly — otherwise each cycle
+re-resolves the identity and registers as a new agent instance in the Pinpoint UI.
+
 `pt_create_agent_with_server_metadata()` lets you attach AgentInfo server metadata (runtime description, args, libs):
 
 ```c

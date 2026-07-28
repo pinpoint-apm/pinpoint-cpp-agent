@@ -95,11 +95,14 @@ namespace pinpoint {
 		/// starts the config watcher and an initialization thread that opens
 		/// channels and launches workers. A forked child derives a
 		/// child-specific id. Returns without waiting for collector registration.
-		/// See Agent::Start().
+		/// Refused once do_shutdown() has run — shutting_down_ is never cleared,
+		/// so a shut-down instance stays offline for good. See Agent::Start().
 		void Start() noexcept override;
 		/// @brief Returns whether the agent is enabled for tracing.
 		bool Enable() override;
-		/// @brief Initiates a graceful shutdown of the agent.
+		/// @brief Initiates a graceful shutdown of the agent. Terminal: this
+		/// instance cannot be restarted, callers must build a new one through
+		/// CreateAgent(). See Agent::Shutdown().
 		void Shutdown() noexcept override;
 
     	bool isExiting() const override { return shutting_down_; }

@@ -2412,6 +2412,109 @@ TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
     EXPECT_EQ(after.api_metadata.size(), quiesced.api_metadata.size());
 }
 
+// A host that stops and resumes tracing while it keeps serving must go through
+// CreateAgent() again: Shutdown() is terminal for an agent instance. These two
+// pin both halves of that contract end-to-end — the supported cycle keeps
+// working, and the unsupported same-handle restart stays refused rather than
+// half-starting an agent.
+
+TEST_F(AgentIntegrationTest, StartAfterShutdownIsRefusedAndKeepsServingNoopSpans) {
+    agent_->Shutdown();
+    ASSERT_FALSE(agent_->Enable());
+    const auto quiesced = collector_.snapshot();
+
+    // Restarting the same handle is refused, permanently.
+    agent_->Start();
+    EXPECT_FALSE(wait_until([this] { return agent_->Enable(); },
+                            std::chrono::seconds(2)))
+        << "a shut-down agent must not come back online through Start()";
+
+    // The application keeps working; it is simply no longer traced.
+    for (int request = 0; request < 3; ++request) {
+        auto span = agent_->NewSpan("restart.refused", "/restart-refused");
+        ASSERT_NO_FATAL_FAILURE(expect_noop_span(span));
+        EXPECT_EQ(handle_instrumented_request(*agent_, "/restart-refused", request),
+                  request * 2 + 1);
+    }
+
+    // GlobalAgent() was cleared by Shutdown() and the refused Start() must not
+    // have re-registered anything with the collector.
+    EXPECT_FALSE(agent_->Enable());
+    std::this_thread::sleep_for(300ms);
+    const auto after = collector_.snapshot();
+    EXPECT_EQ(after.agent_infos.size(), quiesced.agent_infos.size());
+    EXPECT_EQ(all_span_messages(after).size(), all_span_messages(quiesced).size());
+}
+
+TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCycles) {
+    constexpr int kCycles = 3;
+    for (int cycle = 1; cycle <= kCycles; ++cycle) {
+        SCOPED_TRACE("cycle " + std::to_string(cycle));
+        const auto rpc = "/restart-cycle-" + std::to_string(cycle);
+
+        // A sampled span opened under the outgoing agent, deliberately held
+        // across the whole teardown/rebuild below and ended only afterwards.
+        // The span keeps its agent alive (SpanImpl::agent_ref_), so ending it
+        // late must stay safe rather than touching a destroyed agent.
+        auto straddling = agent_->NewSpan("restart.straddle", "/restart-straddle");
+        ASSERT_TRUE(straddling->IsSampled());
+        auto* straddling_event = straddling->NewSpanEvent("straddle.work");
+        ASSERT_NE(straddling_event, nullptr);
+
+        agent_->Shutdown();
+        ASSERT_FALSE(agent_->Enable());
+
+        // Between cycles the application keeps calling into the stale handle.
+        // Those spans must be dropped, not delivered under the next agent.
+        for (int i = 0; i < 3; ++i) {
+            auto stale = agent_->NewSpan("restart.stale", "/restart-stale");
+            stale->SetStatusCode(200);
+            stale->EndSpan();
+        }
+
+        // The supported way to resume: drop the dead handle, build a new agent.
+        impl_.reset();
+        agent_.reset();
+        SetConfigString(config());
+        agent_ = CreateAgent(kApplicationType,
+                             "mock-collector integration server",
+                             {"--integration-test"}, {"libintegration.so"});
+        impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
+        ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
+        agent_->Start();
+        ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }))
+            << "the agent never came back online";
+
+        // Now finish the straddling span: its agent is shut down and no longer
+        // the global one, so this must be inert, not a crash.
+        ASSERT_NO_FATAL_FAILURE({
+            straddling_event->SetDestination("straddle-backend");
+            straddling_event->EndEvent();
+            straddling->SetStatusCode(200);
+            straddling->EndSpan();
+        });
+        straddling.reset();
+
+        // Tracing works again on the new agent, end to end.
+        auto span = agent_->NewSpan("restart.cycle", rpc);
+        ASSERT_TRUE(span->IsSampled());
+        span->SetStatusCode(200);
+        span->EndSpan();
+        ASSERT_TRUE(collector_.WaitFor([&rpc](const auto& snapshot) {
+            return find_span_by_rpc(snapshot, rpc).has_value();
+        }, kWaitTimeout)) << "span never reached the collector";
+    }
+
+    const auto snapshot = collector_.snapshot();
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/restart-stale"), 0U)
+        << "spans recorded through a shut-down agent must be dropped";
+    EXPECT_EQ(count_spans_by_rpc(snapshot, "/restart-straddle"), 0U)
+        << "a span ended after its agent shut down must be dropped, "
+           "never re-attributed to the replacement agent";
+    // One registration for the fixture's agent plus one per rebuilt agent.
+    EXPECT_GE(snapshot.agent_infos.size(), static_cast<size_t>(kCycles) + 1U);
+}
+
 TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
     const auto infos_before = collector_.snapshot().agent_infos.size();
     ASSERT_GE(infos_before, 1U);

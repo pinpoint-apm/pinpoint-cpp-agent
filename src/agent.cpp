@@ -129,7 +129,14 @@ namespace pinpoint {
         // spawning workers nobody will ever join.
         std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
         if (shutting_down_) {
-            LOG_WARN("agent start rejected: agent is shut down");
+            // Terminal, not transient: shutting_down_ is never cleared, so this
+            // instance stays offline for the rest of the process and every span
+            // it hands out is a noop span. Logged at error level because the
+            // void signature gives the caller no other signal, and the usual
+            // cause is a host trying to restart a shut-down agent instead of
+            // building a fresh one through CreateAgent().
+            LOG_ERROR("agent start rejected: this agent was shut down and cannot "
+                      "be restarted; create a new agent with CreateAgent()");
             return;
         }
 
@@ -1206,6 +1213,27 @@ namespace pinpoint {
                                         const std::optional<ServerMetaData>& server_meta_data) {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto agent = global_agent().load();
+
+        // A shut-down agent is not a reload target: Start() refuses it for
+        // good, so reloading its config would hand the caller a permanently
+        // disabled handle. Drop it from the singleton and fall through to
+        // build a fresh agent instead.
+        //
+        // The normal path does not produce this state: Shutdown() clears the
+        // singleton under THIS mutex before do_shutdown() sets the exiting
+        // flag, so an installed agent observed here is still live. What this
+        // covers is the one way the state can still arise — Shutdown()
+        // swallowing a failure to take this mutex and tearing the agent down
+        // while it stays installed. Without the check that is unrecoverable:
+        // every later CreateAgent() would take the reload path and keep
+        // returning the dead agent. Clearing the singleton here (rather than
+        // relying on the store() below) also keeps GlobalAgent() degrading to
+        // the noop agent if the rebuild itself fails.
+        if (agent != nullptr && agent->isExiting()) {
+            LOG_WARN("global agent is shut down; replacing it with a new agent");
+            global_agent().store(nullptr);
+            agent.reset();
+        }
 
         // Build the config under the lock so the running-config snapshot
         // handed to make_config() cannot race with a concurrent CreateAgent()

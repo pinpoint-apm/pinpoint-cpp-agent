@@ -531,6 +531,61 @@ TEST_F(AgentImplTest, IsExitingReflectsShutdown) {
     EXPECT_TRUE(agent_->isExiting());
 }
 
+// --- Terminal-shutdown contract ---
+//
+// Shutdown() cannot be undone: shutting_down_ is never cleared, so Start()
+// refuses for the rest of the process. Hosts that stop and resume tracing must
+// build a fresh agent instead of restarting this one (see Agent::Start() /
+// Agent::Shutdown() in pinpoint/tracer.h). These pin that contract so a future
+// change cannot silently turn a rejected restart into a half-started agent.
+
+TEST_F(AgentImplTest, StartAfterShutdownIsRefused) {
+    agent_->Shutdown();
+    ASSERT_TRUE(agent_->isExiting());
+
+    EXPECT_NO_THROW(agent_->Start());
+
+    // Give a wrongly-accepted Start() the same window the fixture allows a
+    // real one, so the assertion below cannot pass merely by being too early.
+    wait_until_enabled(500);
+    EXPECT_FALSE(agent_->Enable())
+        << "a shut-down agent must stay offline; it cannot be restarted";
+    EXPECT_TRUE(agent_->isExiting());
+}
+
+TEST_F(AgentImplTest, StartAfterShutdownKeepsServingNoopSpans) {
+    agent_->Shutdown();
+    agent_->Start();
+    wait_until_enabled(500);
+
+    // The application keeps working against the dead agent: every span is the
+    // shared noop singleton and recording through it is inert, not a crash.
+    for (int i = 0; i < 3; ++i) {
+        auto span = agent_->NewSpan("post-restart", "/post-restart");
+        ASSERT_NE(span, nullptr);
+        EXPECT_EQ(span, noopSpan());
+        EXPECT_FALSE(span->IsSampled());
+        span->SetStatusCode(200);
+        auto* event = span->NewSpanEvent("work");
+        ASSERT_NE(event, nullptr);
+        event->EndEvent();
+        span->EndSpan();
+    }
+    EXPECT_EQ(agent_->cacheApi("com.example.Api", 100), 0);
+}
+
+TEST_F(AgentImplTest, RepeatedShutdownStartSequencesStayRefused) {
+    // A host looping "stop then start" must not accumulate half-started state
+    // (re-spawned workers over live handles would terminate the process).
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        EXPECT_NO_THROW({
+            agent_->Shutdown();
+            agent_->Start();
+        }) << "cycle " << cycle;
+        EXPECT_FALSE(agent_->Enable()) << "cycle " << cycle;
+    }
+}
+
 // --- Destructor safety tests ---
 //
 // These guard against the SIGABRT-on-exit reported when the host process
@@ -1187,6 +1242,71 @@ Collector:
     // Should return noop because config check() fails
     auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
     EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when config is invalid";
+}
+
+// --- Shut-down global agent is never a reload target ---
+//
+// Reloading a shut-down agent would hand the caller a permanently disabled
+// handle: Start() refuses it for good, so it can never come back online.
+// Shutdown() clears the singleton under global_agent_mutex before it sets the
+// exiting flag, so the normal path never leaves an exiting agent installed —
+// but Shutdown() swallows a failure to take that mutex and tears the agent
+// down anyway, which does. Installing an already-shut-down agent reproduces
+// exactly that state; without the guard it is unrecoverable, because every
+// later CreateAgent() takes the reload path and returns the dead agent.
+
+TEST_F(CreateAgentTest, CreateAgentReplacesShutdownGlobalAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto dead_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(dead_agent->Enable());
+
+    // Shutdown() removes it from the singleton; put it back so the singleton
+    // holds an agent that is already exiting.
+    dead_agent->Shutdown();
+    ASSERT_TRUE(dead_agent->isExiting());
+    set_global_agent(dead_agent);
+    ASSERT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(), dead_agent.get());
+
+    set_config_string(kBaseConfigYaml);
+    auto returned_agent = CreateAgent();
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "a fresh agent must be built, not a noop";
+    EXPECT_NE(returned_impl.get(), dead_agent.get())
+        << "a shut-down agent must never be returned as a reload target";
+    EXPECT_FALSE(returned_impl->isExiting());
+
+    // The singleton was replaced too, so GlobalAgent() stops handing out the
+    // dead instance.
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(),
+              returned_impl.get());
+
+    // The old agent stays shut down and inert.
+    EXPECT_FALSE(dead_agent->Enable());
+    EXPECT_TRUE(dead_agent->isExiting());
+}
+
+TEST_F(CreateAgentTest, CreateAgentEvictsShutdownGlobalAgentEvenWhenRebuildFails) {
+    auto cfg = make_test_config_for_create_agent();
+    auto dead_agent = install_mock_agent(cfg);
+    dead_agent->Shutdown();
+    set_global_agent(dead_agent);
+
+    // check() fails on the empty application name, so no replacement is built.
+    set_config_string(R"(
+ApplicationName: ""
+Collector:
+  GrpcHost: 127.0.0.1
+)");
+    auto returned_agent = CreateAgent();
+
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(returned_agent), nullptr)
+        << "an invalid config must still degrade to a noop agent";
+    // The dead agent must be gone from the singleton regardless: GlobalAgent()
+    // degrading to the noop agent is recoverable, handing out a shut-down
+    // agent forever is not.
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr)
+        << "the shut-down agent must be evicted from the global handle";
 }
 
 TEST_F(CreateAgentTest, CreateAgentReloadsMultipleTimes) {

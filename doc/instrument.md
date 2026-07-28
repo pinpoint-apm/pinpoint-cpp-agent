@@ -92,6 +92,12 @@ int main() {
 }
 ```
 
+`Shutdown()` is terminal for that agent instance: a later `Start()` on the same
+handle is refused and it only produces noop spans from then on. To stop and later
+resume tracing in a long-running process, build a new agent with `CreateAgent()`
+for each cycle — see
+[Stopping and Resuming the Agent](quick_start.md#stopping-and-resuming-the-agent).
+
 ### Sending AgentInfo Metadata
 
 `CreateAgent()` can include server runtime metadata that is sent with AgentInfo.
