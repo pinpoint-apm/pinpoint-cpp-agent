@@ -33,10 +33,10 @@
 #include <unistd.h>
 
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
 
 #include "logging.h"
-#include "agent.h"
 #include "sampling.h"
 #include "utility.h"
 #include "config.h"
@@ -44,53 +44,17 @@
 
 namespace pinpoint {
 
-    // These function-local statics are intentionally heap-allocated and never
-    // destroyed (same treatment as Logger::getInstance() and the config
-    // watcher thread handle): the watcher thread outlives main() when the
-    // host exits without calling Shutdown(), and a config-file change
-    // observed in that window walks make_config() -> get_env() /
-    // get_config_file_path_copy() through these mutexes and strings. Plain
-    // statics would already be destroyed then — locking a destroyed mutex or
-    // reading a destroyed string is undefined behavior during host shutdown.
-    static std::string& global_agent_config_str() {
-        static auto* cfg_str = new std::string();
-        return *cfg_str;
-    }
-
-    static std::mutex& config_str_mutex() {
-        static auto* mutex = new std::mutex();
-        return *mutex;
-    }
-
-    static std::string& global_agent_config_file_path() {
-        static auto* file_path = new std::string();
-        return *file_path;
-    }
-
-    static std::mutex& config_file_path_mutex() {
-        static auto* mutex = new std::mutex();
-        return *mutex;
-    }
-
-    static std::string& env_prefix() {
-        static auto* prefix = new std::string(env::DEFAULT_PREFIX);
-        return *prefix;
-    }
-
-    static std::mutex& env_prefix_mutex() {
-        static auto* mutex = new std::mutex();
-        return *mutex;
-    }
-
-    static std::string get_env_prefix_copy() {
-        std::lock_guard<std::mutex> lock(env_prefix_mutex());
-        return env_prefix();
+    // Returns the effective env var prefix for the options: the configured
+    // one, or the default when unset.
+    static std::string effective_env_prefix(const AgentOptions& options) {
+        return options.env_prefix.empty() ? std::string(env::DEFAULT_PREFIX)
+                                          : options.env_prefix;
     }
 
     // Builds the full env var name from a suffix (e.g. "APPLICATION_NAME") by
     // prepending the active prefix: "<prefix>_<suffix>".
-    static std::string resolve_env_name(const char* suffix) {
-        return get_env_prefix_copy() + "_" + suffix;
+    static std::string resolve_env_name(const std::string& prefix, const char* suffix) {
+        return prefix + "_" + suffix;
     }
 
     // Result of looking up a prefix-resolved env var: the fully resolved name
@@ -101,40 +65,25 @@ namespace pinpoint {
         explicit operator bool() const { return value != nullptr; }
     };
 
-    static ResolvedEnv get_env(const char* suffix) {
-        std::string name = resolve_env_name(suffix);
+    static ResolvedEnv get_env(const std::string& prefix, const char* suffix) {
+        std::string name = resolve_env_name(prefix, suffix);
         const char* value = std::getenv(name.c_str());
         return {std::move(name), value};
     }
 
-    static std::string get_config_file_path_copy() {
-        std::lock_guard<std::mutex> lock(config_file_path_mutex());
-        return global_agent_config_file_path();
-    }
-
-    static std::thread& config_watcher_thread() {
-        // Intentionally heap-allocated and never destroyed. This function-local
-        // static is first used after the global agent registers its destructor,
-        // so a plain `static std::thread` would be destroyed first at process
-        // exit — while still joinable when the host never calls Shutdown() —
-        // and a joinable std::thread destructor calls std::terminate().
-        static auto* watcher = new std::thread();
-        return *watcher;
-    }
-
-    // Stop signal for the CURRENT watcher generation. Each started watcher
-    // captures its own signal by shared_ptr, so a stop issued to one generation
-    // can never be undone by a later start: with a single shared signal, a
-    // start_config_file_watcher() racing stop_config_file_watcher() (which
-    // joins outside the lock) could reset it before the old watcher — possibly
-    // still waiting out its poll tick — ever observed it, leaving that watcher
-    // running forever and the stopper blocked in join().
+    // Stop signal for one watcher generation. Each started watcher captures
+    // its own signal by shared_ptr, so a stop issued to one generation can
+    // never be undone by a later start: with a single shared signal, a
+    // start() racing stop() (which joins outside the lock) could reset it
+    // before the old watcher — possibly still waiting out its poll tick —
+    // ever observed it, leaving that watcher running forever and the stopper
+    // blocked in join().
     //
     // A condition variable rather than a plain sleep+atomic, so a stop request
     // wakes the watcher immediately: with an uninterruptible poll-tick sleep,
-    // stop_config_file_watcher() — and therefore agent Shutdown() — would block
-    // in join() for up to a full poll tick.
-    struct ConfigWatcherStop {
+    // stop() — and therefore agent Shutdown() — would block in join() for up
+    // to a full poll tick.
+    struct ConfigFileWatcher::StopSignal {
         std::mutex mutex;
         std::condition_variable cv;
         bool requested{false};
@@ -164,48 +113,28 @@ namespace pinpoint {
 
     // Poll interval applied to the NEXT started watcher; each watcher thread
     // captures its value at start, so a running watcher is unaffected.
-    // Guarded by config_watcher_mutex() like the other watcher state.
+    // Guarded by config_watcher_mutex().
     static std::chrono::milliseconds& config_watcher_poll_interval() {
         static auto* interval = new std::chrono::milliseconds(kDefaultConfigWatcherPollInterval);
         return *interval;
     }
 
-    // Heap-allocated and leaked like the statics above: Shutdown() can run
-    // from a host atexit/global-destructor path, where a destroyed static
-    // here would be use-after-destruction. (The watcher itself only uses its
-    // captured shared_ptr copy, so the ConfigWatcherStop object is safe
-    // either way.)
-    static std::shared_ptr<ConfigWatcherStop>& config_watcher_stop() {
-        static auto* stop = new std::shared_ptr<ConfigWatcherStop>();
-        return *stop;
-    }
-
+    // Guards the poll-interval knob above; watcher instance state is guarded
+    // by each instance's own mutex_.
     static std::mutex& config_watcher_mutex() {
         static auto* mutex = new std::mutex();
         return *mutex;
     }
 
-    // pid that started the watcher thread. After a fork() the child inherits a
-    // joinable-but-dead watcher handle whose pid no longer matches; joining it
-    // would fail and terminate the process, so start/stop below abandon such
-    // an inherited handle instead of joining it.
-    static pid_t& config_watcher_owner_pid() {
-        static pid_t pid = 0;
-        return pid;
-    }
-
-    static void read_config_from_file(const char* config_file_path) {
+    // Reads the whole config file; empty (with an error log) when unreadable.
+    static std::string read_config_file(const std::string& config_file_path) {
         if (std::ifstream file(config_file_path); file.is_open()) {
             std::stringstream buffer;
             buffer << file.rdbuf();
-            {
-                std::lock_guard<std::mutex> lock(config_str_mutex());
-                global_agent_config_str() = buffer.str();
-            }
-            file.close();
-        } else {
-            LOG_ERROR("can't open config file = {}", config_file_path);
+            return buffer.str();
         }
+        LOG_ERROR("can't open config file = {}", config_file_path);
+        return {};
     }
 
     void set_config_watcher_poll_interval(std::chrono::milliseconds interval) {
@@ -215,38 +144,55 @@ namespace pinpoint {
             : kDefaultConfigWatcherPollInterval;
     }
 
-    void start_config_file_watcher() {
+    static std::chrono::milliseconds config_watcher_poll_interval_copy() {
         std::lock_guard<std::mutex> lock(config_watcher_mutex());
-        const auto path = get_config_file_path_copy();
+        return config_watcher_poll_interval();
+    }
+
+    ConfigFileWatcher::ConfigFileWatcher(std::string file_path, std::function<void()> reload)
+        : file_path_(std::move(file_path)), reload_(std::move(reload)) {}
+
+    ConfigFileWatcher::~ConfigFileWatcher() {
+        // stop() joins (or abandons, in a forked child) so the member thread
+        // is never destroyed joinable. Failures degrade to abandoning the
+        // handle: throwing from a destructor would terminate the host.
+        try {
+            stop();
+        } catch (...) {
+            abandon_thread(thread_);
+        }
+    }
+
+    void ConfigFileWatcher::start() {
+        std::lock_guard<std::mutex> lock(mutex_);
         // Non-throwing exists(): a transient filesystem error here must degrade
-        // to "no watcher", not propagate into Agent::Start()'s catch and leave
+        // to "no watcher", not propagate into StartAgent()'s catch and leave
         // the whole agent offline.
         std::error_code exists_ec;
-        if (path.empty() || !std::filesystem::exists(path, exists_ec)) {
+        if (file_path_.empty() || !std::filesystem::exists(file_path_, exists_ec)) {
             return;
         }
 
-        auto& watcher = config_watcher_thread();
-        if (watcher.joinable()) {
+        if (thread_.joinable()) {
             // A joinable handle from THIS process means the watcher is already
             // running. A joinable handle inherited across fork() references a
             // thread that does not exist in this child — abandon it (never
             // join or detach; see abandon_thread()) and fall through to start
             // a fresh watcher for this process.
-            if (config_watcher_owner_pid() == getpid()) {
+            if (owner_pid_ == getpid()) {
                 return;
             }
-            abandon_thread(watcher);
+            abandon_thread(thread_);
         }
-        auto stop = std::make_shared<ConfigWatcherStop>();
-        config_watcher_stop() = stop;
-        config_watcher_owner_pid() = getpid();
-        // Captured once under the lock: the watcher keeps this tick for its
-        // lifetime, so a later set_config_watcher_poll_interval() cannot race
-        // the running thread.
-        const auto tick = config_watcher_poll_interval();
+        auto stop = std::make_shared<StopSignal>();
+        stop_ = stop;
+        owner_pid_ = getpid();
+        // Captured once: the watcher keeps this tick for its lifetime, so a
+        // later set_config_watcher_poll_interval() cannot race the running
+        // thread.
+        const auto tick = config_watcher_poll_interval_copy();
 
-        watcher = std::thread([path, stop, tick]() {
+        thread_ = std::thread([path = file_path_, reload = reload_, stop, tick]() {
             // Seed with the non-throwing overload: the throwing form could
             // escape this thread function (the file may have been removed
             // between the exists() check above and the thread starting), and
@@ -259,27 +205,18 @@ namespace pinpoint {
 
             // wait() covers both a stop pending before the tick and one
             // arriving mid-tick, so shutdown need not wait out the polling
-            // interval. The checks below avoid starting expensive reload work
-            // after an observed stop; a stop can still race the final check,
-            // which is why stop_config_file_watcher() joins this thread.
+            // interval. The check below avoids starting expensive reload work
+            // after an observed stop; a stop can still race that check, which
+            // is why stop() joins this thread — the owning agent stops the
+            // watcher before tearing anything down, so an in-flight reload
+            // always completes against a live agent.
             while (!stop->wait(tick)) {
                 try {
                     auto current = std::filesystem::last_write_time(path);
                     if (current != last_write_time) {
                         last_write_time = current;
-                        const auto agent_impl =
-                            std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
-                        if (agent_impl && !stop->stop_requested()) {
-                            // make_config(old) returns the final reload config:
-                            // non-reloadable fields retained from the running
-                            // config and the logger already reconfigured. It
-                            // also re-reads the config file itself (the path is
-                            // set), so no separate read is needed here.
-                            auto new_cfg = make_config(agent_impl->getConfig());
-                            if (new_cfg && !stop->stop_requested()) {
-                                agent_impl->reloadConfig(new_cfg);
-                                LOG_INFO("agent config reloaded");
-                            }
+                        if (!stop->stop_requested()) {
+                            reload();
                         }
                     }
                 } catch (const std::exception& e) {
@@ -291,26 +228,25 @@ namespace pinpoint {
         });
     }
 
-    void stop_config_file_watcher() {
+    void ConfigFileWatcher::stop() {
         std::thread watcher_to_join;
         {
-            std::lock_guard<std::mutex> lock(config_watcher_mutex());
-            auto& watcher = config_watcher_thread();
-            if (!watcher.joinable()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!thread_.joinable()) {
                 return;
             }
             // Inherited across fork(): the thread does not exist here, so
             // abandon the dead handle rather than joining it (which would
             // abort) or detaching it (which segfaults on glibc — see
             // abandon_thread()).
-            if (config_watcher_owner_pid() != getpid()) {
-                abandon_thread(watcher);
+            if (owner_pid_ != getpid()) {
+                abandon_thread(thread_);
                 return;
             }
-            if (const auto& stop = config_watcher_stop()) {
-                stop->request();
+            if (stop_) {
+                stop_->request();
             }
-            watcher_to_join = std::move(watcher);
+            watcher_to_join = std::move(thread_);
         }
         watcher_to_join.join();
     }
@@ -584,30 +520,31 @@ namespace pinpoint {
         }
     }
 
-    static void load_env_grpc_channel(Config::GrpcChannelOptions& options,
+    static void load_env_grpc_channel(const std::string& prefix,
+                                      Config::GrpcChannelOptions& options,
                                       const char* keepalive_time_env,
                                       const char* keepalive_timeout_env,
                                       const char* keepalive_permit_env,
                                       const char* max_send_env,
                                       const char* max_receive_env,
                                       const char* sender_queue_env) {
-        if(auto e = get_env(keepalive_time_env)) {
+        if(auto e = get_env(prefix, keepalive_time_env)) {
             options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
         }
-        if(auto e = get_env(keepalive_timeout_env)) {
+        if(auto e = get_env(prefix, keepalive_timeout_env)) {
             options.keepalive_timeout_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_timeout_ms);
         }
-        if(auto e = get_env(keepalive_permit_env)) {
+        if(auto e = get_env(prefix, keepalive_permit_env)) {
             options.keepalive_permit_without_calls =
                 safe_env_stob(e.name.c_str(), e.value, options.keepalive_permit_without_calls);
         }
-        if(auto e = get_env(max_send_env)) {
+        if(auto e = get_env(prefix, max_send_env)) {
             options.max_send_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_send_message_size);
         }
-        if(auto e = get_env(max_receive_env)) {
+        if(auto e = get_env(prefix, max_receive_env)) {
             options.max_receive_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_receive_message_size);
         }
-        if(auto e = get_env(sender_queue_env)) {
+        if(auto e = get_env(prefix, sender_queue_env)) {
             options.sender_queue_size = safe_env_stoi(e.name.c_str(), e.value, options.sender_queue_size);
         }
     }
@@ -617,136 +554,136 @@ namespace pinpoint {
     // setting — never a hardcoded default. A malformed env var must degrade to
     // "env override ignored", not silently clobber a value the user set in the
     // config file.
-    static void load_env_config(Config& config, bool& is_container_set) {
-        if(auto e = get_env(env::ENABLE)) {
+    static void load_env_config(const std::string& prefix, Config& config, bool& is_container_set) {
+        if(auto e = get_env(prefix, env::ENABLE)) {
             config.enable = safe_env_stob(e.name.c_str(), e.value, config.enable);
         }
-        if(auto e = get_env(env::APPLICATION_NAME)) {
+        if(auto e = get_env(prefix, env::APPLICATION_NAME)) {
             config.app_name_ = std::string(e.value);
         }
-        if(auto e = get_env(env::AGENT_ID)) {
+        if(auto e = get_env(prefix, env::AGENT_ID)) {
             config.agent_id_ = std::string(e.value);
         }
-        if(auto e = get_env(env::AGENT_NAME)) {
+        if(auto e = get_env(prefix, env::AGENT_NAME)) {
             config.agent_name_ = std::string(e.value);
         }
-        if(auto e = get_env(env::UID_VERSION)) {
+        if(auto e = get_env(prefix, env::UID_VERSION)) {
             config.uid_version_ = std::string(e.value);
         }
-        if(auto e = get_env(env::SERVICE_NAME)) {
+        if(auto e = get_env(prefix, env::SERVICE_NAME)) {
             config.service_name_ = std::string(e.value);
         }
-        if(auto e = get_env(env::API_KEY)) {
+        if(auto e = get_env(prefix, env::API_KEY)) {
             config.api_key_ = std::string(e.value);
         }
 
-        if(auto e = get_env(env::LOG_LEVEL)) {
+        if(auto e = get_env(prefix, env::LOG_LEVEL)) {
             config.log.level = std::string(e.value);
         }
-        if(auto e = get_env(env::LOG_FILE_PATH)) {
+        if(auto e = get_env(prefix, env::LOG_FILE_PATH)) {
             config.log.file_path = std::string(e.value);
         }
-        if(auto e = get_env(env::LOG_MAX_FILE_SIZE)) {
+        if(auto e = get_env(prefix, env::LOG_MAX_FILE_SIZE)) {
             config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, config.log.max_file_size);
         }
 
         // The deprecated GRPC_* variables are read first, then the preferred
         // COLLECTOR_* variables override them when both are set.
-        if(auto e = get_env(env::GRPC_HOST)) {
+        if(auto e = get_env(prefix, env::GRPC_HOST)) {
             config.collector.host = std::string(e.value);
         }
-        if(auto e = get_env(env::COLLECTOR_HOST)) {
+        if(auto e = get_env(prefix, env::COLLECTOR_HOST)) {
             config.collector.host = std::string(e.value);
         }
-        if(auto e = get_env(env::GRPC_AGENT_PORT)) {
+        if(auto e = get_env(prefix, env::GRPC_AGENT_PORT)) {
             config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
         }
-        if(auto e = get_env(env::COLLECTOR_AGENT_PORT)) {
+        if(auto e = get_env(prefix, env::COLLECTOR_AGENT_PORT)) {
             config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
         }
-        if(auto e = get_env(env::GRPC_SPAN_PORT)) {
+        if(auto e = get_env(prefix, env::GRPC_SPAN_PORT)) {
             config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
         }
-        if(auto e = get_env(env::COLLECTOR_SPAN_PORT)) {
+        if(auto e = get_env(prefix, env::COLLECTOR_SPAN_PORT)) {
             config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
         }
-        if(auto e = get_env(env::GRPC_STAT_PORT)) {
+        if(auto e = get_env(prefix, env::GRPC_STAT_PORT)) {
             config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
         }
-        if(auto e = get_env(env::COLLECTOR_STAT_PORT)) {
+        if(auto e = get_env(prefix, env::COLLECTOR_STAT_PORT)) {
             config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
         }
 
-        if(auto e = get_env(env::STAT_ENABLE)) {
+        if(auto e = get_env(prefix, env::STAT_ENABLE)) {
             config.stat.enable = safe_env_stob(e.name.c_str(), e.value, config.stat.enable);
         }
-        if(auto e = get_env(env::STAT_BATCH_COUNT)) {
+        if(auto e = get_env(prefix, env::STAT_BATCH_COUNT)) {
             config.stat.batch_count = safe_env_stoi(e.name.c_str(), e.value, config.stat.batch_count);
         }
-        if(auto e = get_env(env::STAT_BATCH_INTERVAL)) {
+        if(auto e = get_env(prefix, env::STAT_BATCH_INTERVAL)) {
             config.stat.collect_interval = safe_env_stoi(e.name.c_str(), e.value, config.stat.collect_interval);
         }
 
-        if(auto e = get_env(env::SAMPLING_TYPE)) {
+        if(auto e = get_env(prefix, env::SAMPLING_TYPE)) {
             config.sampling.type = std::string(e.value);
         }
-        if(auto e = get_env(env::SAMPLING_COUNTER_RATE)) {
+        if(auto e = get_env(prefix, env::SAMPLING_COUNTER_RATE)) {
             config.sampling.counter_rate = safe_env_stoi(e.name.c_str(), e.value, config.sampling.counter_rate);
         }
-        if(auto e = get_env(env::SAMPLING_PERCENT_RATE)) {
+        if(auto e = get_env(prefix, env::SAMPLING_PERCENT_RATE)) {
             config.sampling.percent_rate = safe_env_stod(e.name.c_str(), e.value, config.sampling.percent_rate);
         }
-        if(auto e = get_env(env::SAMPLING_NEW_THROUGHPUT)) {
+        if(auto e = get_env(prefix, env::SAMPLING_NEW_THROUGHPUT)) {
             config.sampling.new_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.new_throughput);
         }
-        if(auto e = get_env(env::SAMPLING_CONTINUE_THROUGHPUT)) {
+        if(auto e = get_env(prefix, env::SAMPLING_CONTINUE_THROUGHPUT)) {
             config.sampling.cont_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.cont_throughput);
         }
 
-        if(auto e = get_env(env::SPAN_QUEUE_SIZE)) {
+        if(auto e = get_env(prefix, env::SPAN_QUEUE_SIZE)) {
             config.span.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.span.queue_size));
         }
-        if(auto e = get_env(env::SPAN_MAX_EVENT_DEPTH)) {
+        if(auto e = get_env(prefix, env::SPAN_MAX_EVENT_DEPTH)) {
             config.span.max_event_depth = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_depth);
         }
-        if(auto e = get_env(env::SPAN_MAX_EVENT_SEQUENCE)) {
+        if(auto e = get_env(prefix, env::SPAN_MAX_EVENT_SEQUENCE)) {
             config.span.max_event_sequence = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_sequence);
         }
-        if(auto e = get_env(env::SPAN_EVENT_CHUNK_SIZE)) {
+        if(auto e = get_env(prefix, env::SPAN_EVENT_CHUNK_SIZE)) {
             config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, config.span.event_chunk_size);
         }
-        if(auto e = get_env(env::SPAN_BATCH_SIZE)) {
+        if(auto e = get_env(prefix, env::SPAN_BATCH_SIZE)) {
             config.collector.span_batch.size = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.size);
         }
-        if(auto e = get_env(env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
+        if(auto e = get_env(prefix, env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
             config.collector.span_batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.flush_interval_ms);
         }
-        if(auto e = get_env(env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
+        if(auto e = get_env(prefix, env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
             config.collector.span_batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.collect_deadline_ms);
         }
-        if(auto e = get_env(env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
+        if(auto e = get_env(prefix, env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
             config.collector.span_batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.max_concurrent_requests);
         }
-        if(auto e = get_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
+        if(auto e = get_env(prefix, env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
             config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.refresh_interval_ms);
         }
-        if(auto e = get_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
+        if(auto e = get_env(prefix, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
             config.collector.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.send_retry_interval_ms);
         }
-        if(auto e = get_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
+        if(auto e = get_env(prefix, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
             config.collector.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.max_try_per_attempt);
         }
 
-        if(auto e = get_env(env::GRPC_SSL_ENABLE)) {
+        if(auto e = get_env(prefix, env::GRPC_SSL_ENABLE)) {
             config.collector.grpc.ssl.enable = safe_env_stob(e.name.c_str(), e.value, config.collector.grpc.ssl.enable);
         }
-        if(auto e = get_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
+        if(auto e = get_env(prefix, env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
             config.collector.grpc.ssl.trust_cert_file_path = std::string(e.value);
         }
-        if(auto e = get_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
+        if(auto e = get_env(prefix, env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
             config.collector.grpc.ssl.root_cert_file_path = std::string(e.value);
         }
-        load_env_grpc_channel(config.collector.grpc.channel,
+        load_env_grpc_channel(prefix, config.collector.grpc.channel,
                               env::GRPC_KEEPALIVE_TIME_MS,
                               env::GRPC_KEEPALIVE_TIMEOUT_MS,
                               env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
@@ -754,74 +691,74 @@ namespace pinpoint {
                               env::GRPC_MAX_RECEIVE_MESSAGE_SIZE,
                               env::GRPC_SENDER_QUEUE_SIZE);
 
-        if(auto e = get_env(env::IS_CONTAINER)) {
+        if(auto e = get_env(prefix, env::IS_CONTAINER)) {
             config.is_container = safe_env_stob(e.name.c_str(), e.value, config.is_container);
             is_container_set = true;
         }
 
-        if(auto e = get_env(env::HTTP_COLLECT_URL_STAT)) {
+        if(auto e = get_env(prefix, env::HTTP_COLLECT_URL_STAT)) {
             config.http.url_stat.enable = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable);
         }
-        if(auto e = get_env(env::HTTP_URL_STAT_LIMIT)) {
+        if(auto e = get_env(prefix, env::HTTP_URL_STAT_LIMIT)) {
             config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.limit);
         }
-        if(auto e = get_env(env::HTTP_URL_STAT_QUEUE_SIZE)) {
+        if(auto e = get_env(prefix, env::HTTP_URL_STAT_QUEUE_SIZE)) {
             config.http.url_stat.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.http.url_stat.queue_size));
         }
-        if(auto e = get_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
+        if(auto e = get_env(prefix, env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
             config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable_trim_path);
         }
-        if(auto e = get_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
+        if(auto e = get_env(prefix, env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
             config.http.url_stat.trim_path_depth = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.trim_path_depth);
         }
-        if(auto e = get_env(env::HTTP_URL_STAT_METHOD_PREFIX)) {
+        if(auto e = get_env(prefix, env::HTTP_URL_STAT_METHOD_PREFIX)) {
             config.http.url_stat.method_prefix = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.method_prefix);
         }
 
         // SkipEmpty keeps an empty (or all-commas) variable from producing
         // phantom "" entries: e.g. HTTP_SERVER_EXCLUDE_URL="" must clear the
         // list, not build a URL filter around a single empty pattern.
-        if(auto e = get_env(env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
             config.http.server.status_errors = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_URL)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_EXCLUDE_URL)) {
             config.http.server.exclude_url = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_SERVER_EXCLUDE_METHOD)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_EXCLUDE_METHOD)) {
             config.http.server.exclude_method = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
             config.http.server.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
             config.http.server.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
+        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
             config.http.server.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
+        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
             config.http.client.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
+        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
             config.http.client.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
-        if(auto e = get_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
+        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
             config.http.client.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
         }
 
-        if(auto e = get_env(env::SQL_MAX_BIND_ARGS_SIZE)) {
+        if(auto e = get_env(prefix, env::SQL_MAX_BIND_ARGS_SIZE)) {
             config.sql.max_bind_args_size = safe_env_stoi(e.name.c_str(), e.value, config.sql.max_bind_args_size);
         }
-        if(auto e = get_env(env::SQL_ENABLE_SQL_STATS)) {
+        if(auto e = get_env(prefix, env::SQL_ENABLE_SQL_STATS)) {
             config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_sql_stats);
         }
-        if(auto e = get_env(env::SQL_ENABLE_RAW_SQL_CACHE)) {
+        if(auto e = get_env(prefix, env::SQL_ENABLE_RAW_SQL_CACHE)) {
             config.sql.enable_raw_sql_cache = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_raw_sql_cache);
         }
-        if(auto e = get_env(env::SQL_TRACE_BIND_VALUE)) {
+        if(auto e = get_env(prefix, env::SQL_TRACE_BIND_VALUE)) {
             config.sql.trace_bind_value = safe_env_stob(e.name.c_str(), e.value, config.sql.trace_bind_value);
         }
-        if(auto e = get_env(env::ENABLE_CALLSTACK_TRACE)) {
+        if(auto e = get_env(prefix, env::ENABLE_CALLSTACK_TRACE)) {
             config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, config.enable_callstack_trace);
         }
     }
@@ -842,21 +779,11 @@ namespace pinpoint {
         return false;
     }
 
-    void set_config_string(std::string_view cfg_str) {
-        std::lock_guard<std::mutex> lock(config_str_mutex());
-        global_agent_config_str() = cfg_str;
-    }
-
-    void set_config_file_path(std::string_view file_path) {
-        {
-            std::lock_guard<std::mutex> lock(config_file_path_mutex());
-            global_agent_config_file_path() = file_path;
+    std::string resolve_config_file_path(const AgentOptions& options) {
+        if (auto e = get_env(effective_env_prefix(options), env::CONFIG_FILE)) {
+            return e.value;
         }
-    }
-
-    void set_env_prefix(std::string_view prefix) {
-        std::lock_guard<std::mutex> lock(env_prefix_mutex());
-        env_prefix() = prefix.empty() ? std::string(env::DEFAULT_PREFIX) : std::string(prefix);
+        return options.config_file_path;
     }
 
     constexpr int MIN_PORT = 1;
@@ -921,21 +848,95 @@ namespace pinpoint {
         }
     }
 
-    static void apply_log_config(const Config& cfg, const Config* old) {
+    // Appends "-<suffix>" to base, truncating base so the result fits max_len.
+    static std::string append_id_suffix(const std::string& base, const std::string& suffix,
+                                        size_t max_len) {
+        const std::string sep_suffix = "-" + suffix;
+        std::string result = base;
+        if (result.size() + sep_suffix.size() > max_len && sep_suffix.size() < max_len) {
+            result.resize(max_len - sep_suffix.size());
+        }
+        return result + sep_suffix;
+    }
+
+    // Per-worker identity for multi-process hosts (see
+    // AgentOptions::instance_suffix). A pinned agent id gets
+    // "-<instance_suffix>" appended — or "-<pid>" with a warning when no
+    // suffix is configured — so sibling pre-fork workers sharing one
+    // configured id register as distinct agent instances. An explicitly
+    // configured agent name gets the configured suffix too (display names
+    // need not be unique, so the name never falls back to the pid). An
+    // auto-generated id is already process-unique and is left untouched, as
+    // is an agent name that merely defaulted to the agent id.
+    static void apply_instance_suffix(Config& config, const AgentOptions& options,
+                                      const std::string& explicit_agent_name) {
+        std::string suffix = options.instance_suffix;
+        if (!suffix.empty() && !validate_id(suffix, object_name::AGENT_ID_MAX_LEN)) {
+            LOG_WARN("invalid instance_suffix '{}' (allowed: [a-zA-Z0-9._-], max {} chars); ignoring it",
+                     suffix, object_name::AGENT_ID_MAX_LEN);
+            suffix.clear();
+        }
+
+        if (config.agent_id_pinned_) {
+            const std::string old_id = config.agent_id_;
+            if (!suffix.empty()) {
+                config.agent_id_ = append_id_suffix(old_id, suffix, object_name::AGENT_ID_MAX_LEN);
+                LOG_INFO("per-worker AgentId: '{}' -> '{}'", old_id, config.agent_id_);
+            } else {
+                config.agent_id_ = append_id_suffix(old_id,
+                                                    std::to_string(static_cast<long>(getpid())),
+                                                    object_name::AGENT_ID_MAX_LEN);
+                LOG_WARN("pinned AgentId '{}' got a pid suffix ('{}'): sibling pre-fork workers "
+                         "must not share one agent id; set AgentOptions::instance_suffix for a "
+                         "stable per-worker id",
+                         old_id, config.agent_id_);
+            }
+        }
+
+        if (!suffix.empty() && !explicit_agent_name.empty()) {
+            const size_t name_max_len = config.is_v4() ? object_name::AGENT_NAME_MAX_LEN_V4
+                                                       : object_name::AGENT_NAME_MAX_LEN;
+            config.agent_name_ = append_id_suffix(explicit_agent_name, suffix, name_max_len);
+        }
+    }
+
+    // Expands per-worker placeholders in the configured log file path at
+    // sink-application time (Config keeps the raw value, so reload
+    // comparisons and to_config_string() round-trips stay stable):
+    //   %pid%    -> current process id
+    //   %suffix% -> AgentOptions::instance_suffix, or the pid when unset
+    // Sibling pre-fork workers can thereby write separate log files — the
+    // built-in size rotation is not multi-process safe on a shared file.
+    static std::string expand_log_file_path(const std::string& path,
+                                            const AgentOptions& options) {
+        if (path.find('%') == std::string::npos) {
+            return path;
+        }
+        const std::string pid = std::to_string(static_cast<long>(getpid()));
+        const std::string& suffix =
+            options.instance_suffix.empty() ? pid : options.instance_suffix;
+        return absl::StrReplaceAll(path, {{"%pid%", pid}, {"%suffix%", suffix}});
+    }
+
+    static void apply_log_config(const Config& cfg, const Config* old,
+                                 const AgentOptions& options) {
         // Skip the file logger when its settings are unchanged: setFileLogger()
         // closes and reopens the stream, and a reload triggered by an unrelated
         // setting should not churn the log file. An empty path is applied too —
         // that is how removing FilePath at runtime switches back to stdout.
+        // Comparing the raw (unexpanded) paths is equivalent: the placeholder
+        // expansion is constant within one process and agent.
         if (!old || old->log.file_path != cfg.log.file_path ||
             old->log.max_file_size != cfg.log.max_file_size) {
-            Logger::getInstance().setFileLogger(cfg.log.file_path, cfg.log.max_file_size);
+            Logger::getInstance().setFileLogger(
+                expand_log_file_path(cfg.log.file_path, options), cfg.log.max_file_size);
         }
         if (!old || old->log.level != cfg.log.level) {
             Logger::getInstance().setLogLevel(cfg.log.level);
         }
     }
 
-    // make_config() is reached from the public CreateAgent() entry points, so
+    // make_config() is reached from the public StartAgent() entry point, so
     // it must never let a parsing problem escape into the host application:
     // yaml errors degrade to defaults, and the function-level handler below is
     // the last-resort backstop.
@@ -945,33 +946,25 @@ namespace pinpoint {
     // reload the non-reloadable fields are already retained from `old` and the
     // logger is already reconfigured, so callers pass it straight to
     // reloadConfig().
-    std::shared_ptr<Config> make_config(const std::shared_ptr<const Config>& old) try {
+    std::shared_ptr<Config> make_config(const AgentOptions& options,
+                                        const std::shared_ptr<const Config>& old) try {
         // Seed the config with the running values on a reload so every setting
         // absent from the file keeps its current value (including env-sourced
         // ones applied at first load) instead of reverting to its default.
         // On a first load the Config member initializers are the defaults.
         auto config = old ? std::make_shared<Config>(*old) : std::make_shared<Config>();
         bool is_container_set = false;
+        const auto prefix = effective_env_prefix(options);
 
-        if(auto e = get_env(env::CONFIG_FILE)) {
-            set_config_file_path(e.value);
-        }
-        // File-over-string precedence, documented at SetConfigString /
-        // pt_set_config_string: read_config_from_file() replaces any injected
-        // config string wholesale (the sources are never merged), and the
-        // path may come from the CONFIG_FILE env var above rather than from
-        // the embedder itself.
-        const auto config_path = get_config_file_path_copy();
-        if(!config_path.empty()) {
-            read_config_from_file(config_path.c_str());
-        }
+        // File-over-string precedence, documented at AgentOptions: the file's
+        // content replaces options.config_yaml wholesale (the sources are
+        // never merged), and the path may come from the CONFIG_FILE env var
+        // rather than from the embedder itself.
+        const auto config_path = resolve_config_file_path(options);
+        const std::string user_config =
+            !config_path.empty() ? read_config_file(config_path) : options.config_yaml;
 
         YAML::Node yaml;
-        std::string user_config;
-        {
-            std::lock_guard<std::mutex> lock(config_str_mutex());
-            user_config = global_agent_config_str();
-        }
         if (!user_config.empty()) {
             try {
                 yaml = YAML::Load(user_config);
@@ -996,7 +989,7 @@ namespace pinpoint {
         // the old-config seeding above, as long as the file does not
         // explicitly override them.
         if (!old) {
-            load_env_config(*config, is_container_set);
+            load_env_config(prefix, *config, is_container_set);
         }
 
         // Configure the logger immediately on the first load so the rest of
@@ -1005,7 +998,7 @@ namespace pinpoint {
         // the end instead, once this config is complete and can no longer be
         // rejected.
         if (!old) {
-            apply_log_config(*config, nullptr);
+            apply_log_config(*config, nullptr, options);
         }
 
         // Resolve agent self-identity (ObjectName) according to the configured
@@ -1028,8 +1021,8 @@ namespace pinpoint {
             if (auto object_name = resolve_object_name(name_version, in)) {
                 // Record whether the id was pinned (explicitly provided and kept
                 // as-is) versus auto-generated. v4 always regenerates the id,
-                // so it is never pinned. Agent::Start() uses this to derive a
-                // child-specific id in each forked worker.
+                // so it is never pinned. apply_instance_suffix() below uses
+                // this to derive a per-worker id in multi-process hosts.
                 config->agent_id_pinned_ = (name_version != NameVersion::kV4)
                     && !in.agent_id.empty()
                     && object_name->agent_id == in.agent_id;
@@ -1039,10 +1032,21 @@ namespace pinpoint {
                 config->service_name_ = object_name->service_name;
                 config->api_key_ = object_name->api_key;
                 config->identity_resolved_ = true;
+
+                // First load only: a reload retains the running identity via
+                // retainNonReloadableFrom(), so re-applying the suffix there
+                // would only produce noise before being overwritten.
+                if (!old) {
+                    const std::string explicit_agent_name =
+                        (!in.agent_name.empty() && object_name->agent_name == in.agent_name)
+                            ? in.agent_name
+                            : std::string();
+                    apply_instance_suffix(*config, options, explicit_agent_name);
+                }
             } else {
                 // A required identity value is missing/invalid. Keep returning a
                 // populated config (callers may inspect it); Config::check() fails
-                // and CreateAgent() degrades to a noop agent. Ensure agent_id is
+                // and StartAgent() degrades to a noop agent. Ensure agent_id is
                 // populated for diagnostic logging.
                 LOG_ERROR("failed to resolve agent identity (uid.version='{}')",
                           config->uid_version_.empty() ? "v3" : config->uid_version_);
@@ -1202,7 +1206,7 @@ namespace pinpoint {
             // settings that actually changed. The "config:" line below already
             // goes to the new sink/level and shows the final merged config.
             config->retainNonReloadableFrom(old);
-            apply_log_config(*config, old.get());
+            apply_log_config(*config, old.get(), options);
         }
 
         LOG_INFO("config: {}", "\n" + to_config_string(*config));

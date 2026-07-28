@@ -120,6 +120,20 @@ TEST(ExponentialBackoffTest, ResetStartsFromInitialDelay) {
     EXPECT_EQ(backoff.next_delay(), std::chrono::milliseconds(3000));
 }
 
+// The flat-jitter shape used by registerAgentWithRetry(): multiplier 1.0
+// keeps the base interval so the delay never escalates, and the jitter alone
+// spreads sibling workers' retries apart.
+TEST(ExponentialBackoffTest, FlatMultiplierJittersAroundInitialDelay) {
+    ExponentialBackoff backoff(std::chrono::milliseconds(1000), 1.0, 0.3,
+                               std::chrono::milliseconds(2000));
+
+    for (int i = 0; i < 32; ++i) {
+        const auto delay = backoff.next_delay();
+        EXPECT_GE(delay, std::chrono::milliseconds(700));
+        EXPECT_LE(delay, std::chrono::milliseconds(1300));
+    }
+}
+
 TEST(ExponentialBackoffTest, JitterStaysWithinRandomizationRange) {
     ExponentialBackoff backoff(std::chrono::milliseconds(3000), 1.2, 0.3, std::chrono::milliseconds(30000));
 

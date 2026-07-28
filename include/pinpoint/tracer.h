@@ -410,104 +410,113 @@ namespace pinpoint {
       	 * @param reader Trace context carrier reader.
       	 */
       	virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
-      	/**
-      	 * @brief Brings the agent online in the CURRENT process.
-      	 *
-      	 * CreateAgent() is "cold": it only parses configuration and allocates the
-      	 * object — it starts no threads, opens no gRPC channel (no `grpc_init`) and
-		 * installs no config-file watcher. Start() starts the watcher and an
-		 * initialization thread; that thread opens the gRPC channels and launches
-		 * the workers. In a forked child, Start() also derives a child-specific
-		 * agent id. It must be called before the agent will record any spans.
-      	 *
-		 * Once initialization has been launched, later calls are no-ops. A
-		 * synchronous failure while creating the watcher or initialization thread
-		 * leaves the call retryable. Start() returns without waiting for collector
-		 * connection or registration.
-      	 *
-		 * @warning Shutdown() is terminal for the instance it is called on. A
-		 * Start() arriving afterwards is refused (logged at error level) and the
-		 * agent stays disabled permanently, so every span it hands out is a noop
-		 * span. An application that stops and later resumes tracing must discard
-		 * the shut-down handle and obtain a fresh agent from CreateAgent() — it
-		 * must not restart this one. See Shutdown().
-      	 *
-      	 * This split enables the "initialize per worker after fork" model used by
-      	 * gunicorn/uWSGI/`multiprocessing(fork)`: the master calls CreateAgent()
-      	 * (holding no threads and no open gRPC runtime at the fork point) and each
-		 * forked child calls Start() from its post-fork hook, beginning
-		 * initialization with a child-specific agent id.
-      	 *
-      	 * Because the cold CreateAgent() performs no `grpc_init`, each child's
-      	 * Start() runs that child's first, fresh gRPC initialization and inherits
-      	 * no gRPC state across the fork — so GRPC_ENABLE_FORK_SUPPORT is not
-      	 * required. This holds only as long as the HOST application also refrains
-      	 * from using gRPC before forking; if it does, the host must arrange its own
-      	 * gRPC fork handling.
-      	 */
-      	virtual void Start() = 0;
 		/// @brief Returns whether agent initialization succeeded and tracing is
 		///        enabled. Individual spans may still be rejected by sampling.
+		///        Always false for an agent handle inherited across fork() —
+		///        each process must obtain its own agent via StartAgent().
       	virtual bool Enable() = 0;
 		/// @brief Stops the agent and waits for its workers to finish. Pending
 		///        spans are submitted when a channel is available, but delivery
 		///        is not guaranteed.
 		///
-		/// Terminal for this instance: it can never be brought back online with
-		/// Start() (see there), Enable() stays false and NewSpan() only returns
-		/// noop spans. When this is the global agent it is also removed from the
-		/// singleton, so GlobalAgent() falls back to the noop agent until a new
-		/// one is installed.
+		/// Terminal for this instance: it can never be brought back online,
+		/// Enable() stays false and NewSpan() only returns noop spans. When
+		/// this is the global agent it is also removed from the singleton, so
+		/// GlobalAgent() falls back to the noop agent until a new one is
+		/// installed.
 		///
-		/// To resume tracing in the same process, run the full
-		/// CreateAgent() -> Start() sequence again on a fresh handle. Note that
-		/// each such cycle re-resolves the agent identity, so it registers a NEW
-		/// agent instance with the collector unless AgentId is pinned in the
-		/// configuration (UidVersion v4 always regenerates it).
+		/// To resume tracing in the same process, call StartAgent() again for
+		/// a fresh handle. Note that each such cycle re-resolves the agent
+		/// identity, so it registers a NEW agent instance with the collector.
       	virtual void Shutdown() = 0;
   	};
 
 	using AgentPtr = std::shared_ptr<Agent>;
 
-	/// @brief Set the configuration file path used by the global agent.
-	///        A configured file — whether set here or via the
-	///        PINPOINT_CPP_CONFIG_FILE environment variable, which overrides
-	///        this path — takes precedence over SetConfigString(); see there.
-	void SetConfigFilePath(std::string_view config_file_path);
-	/// @brief Inject raw configuration YAML directly.
-	///        Precedence: when a config file path is also set — including via
-	///        the PINPOINT_CPP_CONFIG_FILE environment variable, which the
-	///        embedder does not control — the file's content replaces this
-	///        string wholesale on every (re)load; the two sources are never
-	///        merged. Environment variables still override individual
-	///        settings from either source.
-	void SetConfigString(std::string_view config_string);
-	/// @brief Overrides the prefix of the environment variable names the agent
-	///        reads (e.g. `MYAPP` makes it read `MYAPP_APPLICATION_NAME`).
-	///        Defaults to `PINPOINT_CPP`; an empty prefix resets to the default.
-	///        Must be called before CreateAgent(); environment variables are read
-	///        only while building the initial configuration.
-	void SetConfigEnvVarPrefix(std::string_view prefix);
-
-	/// @brief Default application type used by CreateAgent().
+	/// @brief Default application type used by StartAgent().
 	constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
-	/// @brief Default server metadata description used by CreateAgent().
+	/// @brief Default server metadata description used by StartAgent().
 	constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
 
-	/// @brief Creates a "cold" agent: parses configuration and allocates the
-	///        object only. It starts no threads, opens no gRPC channel and
-	///        installs no config-file watcher — call Agent::Start() to bring it
-	///        online in the process that will use it. This makes the returned
-	///        agent safe to create in a master process that will later fork().
-	///        All arguments are optional: app_type defaults to DEFAULT_APP_TYPE
-	///        and server_info to DEFAULT_SERVER_INFO.
-	///        @p args is the process command line arguments and @p libs the
-	///        loaded service libraries.
-	AgentPtr CreateAgent(int32_t app_type = DEFAULT_APP_TYPE,
-	                     std::string_view server_info = DEFAULT_SERVER_INFO,
-	                     const std::vector<std::string>& args = {},
-	                     const std::vector<std::string>& libs = {});
-	/// @brief Returns the singleton global agent instance.
+	/**
+	 * @brief Inputs for StartAgent(): configuration sources, server metadata
+	 *        and per-worker naming.
+	 *
+	 * Configuration source precedence: when @ref config_file_path is set —
+	 * including via the `<env_prefix>_CONFIG_FILE` environment variable, which
+	 * overrides it — the file's content replaces @ref config_yaml wholesale on
+	 * every (re)load; the two sources are never merged. Environment variables
+	 * (`<env_prefix>_*`) still override individual settings from either source.
+	 */
+	struct AgentOptions {
+		/// YAML configuration file path. When set, the file is re-read by the
+		/// config-file watcher and its content replaces config_yaml wholesale.
+		std::string config_file_path;
+		/// Raw YAML configuration used when no config file is configured.
+		std::string config_yaml;
+		/// Prefix of the environment variable names the agent reads (e.g.
+		/// `MYAPP` makes it read `MYAPP_APPLICATION_NAME`). Empty selects the
+		/// default `PINPOINT_CPP`.
+		std::string env_prefix;
+
+		/// Application type reported to the collector.
+		int32_t app_type = DEFAULT_APP_TYPE;
+		/// Server runtime description included in AgentInfo.
+		std::string server_info = std::string(DEFAULT_SERVER_INFO);
+		/// Process command line arguments included in AgentInfo.
+		std::vector<std::string> args;
+		/// Loaded service libraries included in AgentInfo.
+		std::vector<std::string> libs;
+
+		/// Stable per-worker identifier for multi-process hosts (e.g. "w0" for
+		/// nginx worker slot 0). When set, a pinned AgentId and an explicitly
+		/// configured AgentName get "-<instance_suffix>" appended so sibling
+		/// workers register as distinct agent instances with names that are
+		/// stable across worker restarts. When empty, a pinned AgentId gets a
+		/// "-<pid>" suffix instead (with a warning): sibling workers sharing
+		/// one exact id would collide on the collector, and the library cannot
+		/// tell a single-process host from a pre-fork worker. Auto-generated
+		/// ids are already unique per process and never get a suffix.
+		///
+		/// Also substituted into the Log.FilePath placeholders: `%suffix%`
+		/// expands to this value (or the pid when unset) and `%pid%` to the
+		/// process id, so sibling workers can write separate log files — the
+		/// built-in log rotation is not multi-process safe on a shared file.
+		std::string instance_suffix;
+	};
+
+	/**
+	 * @brief Creates, configures and starts the agent in the CURRENT process,
+	 *        and installs it as the global agent.
+	 *
+	 * This is the only way to bring an agent online. Call it in the process
+	 * that will record spans — for pre-fork servers (nginx, Apache prefork,
+	 * uWSGI, ...) that means each worker calls StartAgent() after fork(), from
+	 * its post-fork/worker-init hook, and the master process makes NO agent
+	 * API calls at all. Each worker registers as its own agent instance with a
+	 * process-unique agent id and its own start time.
+	 *
+	 * The call returns as soon as initialization is launched: the config-file
+	 * watcher is installed and an initialization thread opens the gRPC
+	 * channels, registers with the collector and starts the workers. It does
+	 * NOT wait for collector connection or registration; Enable() flips to
+	 * true once registration succeeds. On configuration or setup failure a
+	 * noop agent is returned — never an exception.
+	 *
+	 * Calling StartAgent() again in the same process returns the already
+	 * running agent (with a warning). After Shutdown() a new StartAgent()
+	 * call builds a fresh agent.
+	 *
+	 * @warning An agent handle (or the global agent) inherited across fork()
+	 * is unusable in the child and is refused: its threads and gRPC runtime
+	 * do not exist there, and gRPC cannot be re-initialized in a process that
+	 * forked after `grpc_init`. The child must be a fresh process that calls
+	 * StartAgent() itself before any other agent use.
+	 */
+	AgentPtr StartAgent(const AgentOptions& options = {});
+
+	/// @brief Returns the singleton global agent instance installed by
+	///        StartAgent(), or the noop agent when none is installed.
 	AgentPtr GlobalAgent();
 
 	namespace helper {

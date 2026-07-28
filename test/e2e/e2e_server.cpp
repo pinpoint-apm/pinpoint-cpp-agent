@@ -847,8 +847,7 @@ void on_agent_start(const httplib::Request&, httplib::Response& res) {
         res.set_content("{\"status\":\"already_running\"}", "application/json");
         return;
     }
-    g_agent = pinpoint::CreateAgent();
-    g_agent->Start();
+    g_agent = pinpoint::StartAgent();
     res.status = 200;
     res.set_content("{\"status\":\"started\"}", "application/json");
 }
@@ -878,11 +877,17 @@ void on_agent_reload(const httplib::Request& req, httplib::Response& res) {
            << "  CounterRate: " << counter_rate << "\n"
            << "Log:\n"
            << "  Level: debug\n";
-    pinpoint::SetConfigString(config.str());
-
     std::lock_guard<std::mutex> lock(g_agent_mutex);
-    g_agent = pinpoint::CreateAgent();
-    g_agent->Start();
+    // Runtime reconfiguration flows through the config-file watcher in
+    // production; this test server simulates it by restarting the agent with
+    // the new configuration (a fresh agent instance).
+    if (g_agent) {
+        g_agent->Shutdown();
+        g_agent.reset();
+    }
+    pinpoint::AgentOptions options;
+    options.config_yaml = config.str();
+    g_agent = pinpoint::StartAgent(options);
     std::ostringstream body;
     body << "{\"status\":\"reloaded\",\"counter_rate\":" << counter_rate
          << ",\"agent_enabled\":" << it_test::JsonBool(g_agent->Enable()) << "}";
@@ -962,10 +967,12 @@ int main(int argc, char* argv[]) {
                                        "cpp-it-http-up");
 
     if (auto_start) {
-        g_agent = pinpoint::CreateAgent(
-            pinpoint::APP_TYPE_CPP, "cpp-it-http-upstream",
-            {"--port=" + std::to_string(port)}, {"cpp-httplib", "grpc"});
-        g_agent->Start();
+        pinpoint::AgentOptions options;
+        options.app_type = pinpoint::APP_TYPE_CPP;
+        options.server_info = "cpp-it-http-upstream";
+        options.args = {"--port=" + std::to_string(port)};
+        options.libs = {"cpp-httplib", "grpc"};
+        g_agent = pinpoint::StartAgent(options);
     }
 
     httplib::Server server;

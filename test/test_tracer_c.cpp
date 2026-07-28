@@ -159,7 +159,7 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
     return cfg;
 }
 
-static constexpr const char* kCreateAgentConfigYaml = R"(
+static constexpr const char* kStartAgentConfigYaml = R"(
 ApplicationName: c-api-test
 AgentId: c-api-agent
 AgentName: c-api-agent-name
@@ -192,7 +192,7 @@ static std::shared_ptr<pinpoint::AgentImpl> make_test_agent(
         std::move(grpc_metadata),
         std::move(grpc_span),
         std::move(grpc_stat));
-    // CreateAgent() is cold; Start() spawns the workers (mirrors production).
+    // Construction is cold; Start() spawns the workers (mirrors production).
     agent->Start();
     return agent;
 }
@@ -237,7 +237,6 @@ class TracerCApiTest : public ::testing::Test {
 protected:
     void SetUp() override {
         pinpoint::reset_global_agent();
-        pinpoint::set_config_string("");
 
         cfg_        = make_test_config();
         mock_agent_ = make_test_agent(cfg_);
@@ -256,7 +255,6 @@ protected:
         mock_agent_->Shutdown();
         mock_agent_.reset();
         pinpoint::reset_global_agent();
-        pinpoint::set_config_string("");
     }
 
     void wait_enabled(int timeout_ms = 3000) {
@@ -338,34 +336,51 @@ TEST_F(TracerCApiTest, AgentShutdownDisablesAgent) {
     EXPECT_EQ(pt_agent_is_enabled(agent_), 0);
 }
 
-TEST_F(TracerCApiTest, CreateAgentWithServerMetadata) {
-    pt_set_config_string(kCreateAgentConfigYaml);
-
+// pt_start_agent() while an agent already runs in this process returns the
+// running (mock) agent — options, including server metadata, are accepted but
+// the running instance is not rebuilt.
+TEST_F(TracerCApiTest, StartAgentReturnsRunningAgent) {
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_set_config_yaml(opts, kStartAgentConfigYaml);
     const char* args[] = {"--port=8080", "--worker=4"};
     const char* libs[] = {"libfoo.so", "libbar.so"};
-    pt_agent_t agent = pt_create_agent_with_server_metadata("c-api-server",
-                                                            args,
-                                                            2,
-                                                            libs,
-                                                            2);
+    pt_agent_options_set_server_metadata(opts, "c-api-server", args, 2, libs, 2);
+
+    pt_agent_t agent = pt_start_agent(opts);
+    pt_agent_options_free(opts);
 
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
     pt_agent_destroy(agent);
 }
 
-TEST_F(TracerCApiTest, CreateAgentWithServerMetadataAllowsMissingArgsAndLibs) {
-    pt_set_config_string(kCreateAgentConfigYaml);
-
-    pt_agent_t agent = pt_create_agent_with_server_metadata("c-api-server",
-                                                            nullptr,
-                                                            0,
-                                                            nullptr,
-                                                            0);
+TEST_F(TracerCApiTest, StartAgentWithNullOptionsReturnsRunningAgent) {
+    pt_agent_t agent = pt_start_agent(nullptr);
 
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
     pt_agent_destroy(agent);
+}
+
+// The options builder tolerates NULL objects and NULL values.
+TEST(TracerCAgentOptionsTest, NullSafety) {
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_free(nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_file(nullptr, "x"));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_yaml(nullptr, "x"));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(nullptr, "x"));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(nullptr, 1));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(nullptr, "x", nullptr, 0, nullptr, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_instance_suffix(nullptr, "x"));
+
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_file(opts, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_yaml(opts, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(opts, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, nullptr, nullptr, -1, nullptr, -1));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_instance_suffix(opts, nullptr));
+    pt_agent_options_free(opts);
 }
 
 // ============================================================================
@@ -1230,11 +1245,9 @@ class TracerCNoopPathTest : public ::testing::Test {
 protected:
     void SetUp() override {
         pinpoint::reset_global_agent();
-        pinpoint::set_config_string("");
     }
     void TearDown() override {
         pinpoint::reset_global_agent();
-        pinpoint::set_config_string("");
     }
 };
 

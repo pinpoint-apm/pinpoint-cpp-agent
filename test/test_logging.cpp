@@ -92,6 +92,19 @@ TEST_F(LoggingTest, SetLogLevelDebug) {
     EXPECT_TRUE(content.find("debug message") != std::string::npos);
 }
 
+// Every line is flushed as it is written (multi-process shared-file safety:
+// no buffered bytes can be duplicated by fork() or interleave mid-line), so
+// it must be visible in the file BEFORE any shutdown/flush call.
+TEST_F(LoggingTest, WriteFlushesEachLineImmediately) {
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+
+    Logger::getInstance().logInfo("test.cpp", 1, "flushed immediately");
+
+    auto content = read_file(log_file_.string());
+    EXPECT_TRUE(content.find("flushed immediately") != std::string::npos)
+        << "a written line must reach the file without an explicit flush";
+}
+
 TEST_F(LoggingTest, SetLogLevelInfo) {
     Logger::getInstance().setLogLevel("info");
     Logger::getInstance().setFileLogger(log_file_.string(), 10);

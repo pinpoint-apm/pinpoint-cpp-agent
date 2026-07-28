@@ -23,7 +23,7 @@ curl -> it_test_server (HTTP upstream)
           `-> grpc_server (unary + three streaming shapes)
 
 c_api_scenario  (standalone pure-C API coverage)
-fork_scenario   (cold CreateAgent -> fork -> Start per child)
+fork_scenario   (master makes no agent calls -> fork -> StartAgent per child)
 ```
 
 ## Collector configuration

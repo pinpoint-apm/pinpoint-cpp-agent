@@ -70,35 +70,46 @@ Span-event and annotation handles are non-owning views. They allocate no resourc
 
 ### Configuration
 
-Configuration can be supplied via a YAML file, an inline YAML string, or environment variables. All configuration must be applied **before** calling `pt_create_agent()`.
+Configuration sources are collected in an options object (`pt_agent_options_t`) passed to `pt_start_agent()`. Environment variables override individual settings from either source.
 
 ```c
 #include "pinpoint/tracer_c.h"
 
+pt_agent_options_t opts = pt_agent_options_new();
+
 /* Option 1: config file */
-pt_set_config_file_path("/etc/pinpoint/agent.yaml");
+pt_agent_options_set_config_file(opts, "/etc/pinpoint/agent.yaml");
 
-/* Option 2: inline YAML string */
-pt_set_config_string("ApplicationName: my-c-service\n"
-                     "Collector:\n"
-                     "  Host: localhost\n");
+/* Option 2: inline YAML string (used when no config file is set) */
+pt_agent_options_set_config_yaml(opts, "ApplicationName: my-c-service\n"
+                                       "Collector:\n"
+                                       "  Host: localhost\n");
 
-/* Option 3: environment variables (set before calling pt_create_agent) */
+/* Option 3: environment variables (set before calling pt_start_agent) */
 setenv("PINPOINT_CPP_CONFIG_FILE",           "/tmp/pinpoint-config.yaml", 0);
 setenv("PINPOINT_CPP_APPLICATION_NAME",      "my-c-service",              0);
 setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true",                      0);
 ```
 
-### Creating and destroying an agent
+### Starting and destroying an agent
+
+`pt_start_agent()` creates, configures and starts the agent in the **current
+process** and installs it as the global agent. Call it in the process that
+records spans — for pre-fork servers (nginx, Apache prefork) that means each
+worker calls it after `fork()`, and the master makes no agent API calls at all;
+see the [Pre-fork Integration Guide](prefork.md).
 
 ```c
 int main(void) {
-    pt_agent_t agent = pt_create_agent();
+    pt_agent_options_t opts = pt_agent_options_new();
+    pt_agent_options_set_config_file(opts, "/etc/pinpoint/agent.yaml");
+
+    pt_agent_t agent = pt_start_agent(opts);  /* NULL options = all defaults */
+    pt_agent_options_free(opts);              /* only read during the call   */
     if (!agent) {
-        fprintf(stderr, "failed to create pinpoint agent\n");
+        fprintf(stderr, "failed to start pinpoint agent\n");
         return 1;
     }
-    pt_agent_start(agent);
 
     /* application logic ... */
 
@@ -108,37 +119,42 @@ int main(void) {
 }
 ```
 
-`pt_agent_shutdown()` is terminal for that agent: a later `pt_agent_start()` on the
-same handle is refused (logged at error level), `pt_agent_is_enabled()` stays `0`,
-and every span it hands out is a no-op span. The application keeps running
-normally — it is just no longer traced. To stop and later resume tracing in a
-long-running process, destroy the handle and run `pt_create_agent()` +
-`pt_agent_start()` again for each cycle:
+`pt_agent_shutdown()` is terminal for that agent: the same handle can never come
+back online, `pt_agent_is_enabled()` stays `0`, and every span it hands out is a
+no-op span. The application keeps running normally — it is just no longer
+traced. To stop and later resume tracing in a long-running process, destroy the
+handle and run `pt_start_agent()` again for each cycle:
 
 ```c
 pt_agent_shutdown(agent);
 pt_agent_destroy(agent);          /* drop the dead handle */
 
 /* ... later ... */
-agent = pt_create_agent();        /* a NEW agent; the old one cannot restart */
-pt_agent_start(agent);
+agent = pt_start_agent(NULL);     /* a NEW agent; the old one cannot restart */
 ```
 
-Pin `AgentId` in the configuration if you cycle repeatedly — otherwise each cycle
-re-resolves the identity and registers as a new agent instance in the Pinpoint UI.
+Pin `AgentId` in the configuration (plus `pt_agent_options_set_instance_suffix()`)
+if you cycle repeatedly — otherwise each cycle re-resolves the identity and
+registers as a new agent instance in the Pinpoint UI.
 
-`pt_create_agent_with_server_metadata()` lets you attach AgentInfo server metadata (runtime description, args, libs):
+`pt_agent_options_set_server_metadata()` attaches AgentInfo server metadata
+(runtime description, args, libs), and
+`pt_agent_options_set_instance_suffix()` sets a stable per-worker identifier
+for multi-process hosts (see the [Pre-fork Integration Guide](prefork.md)):
 
 ```c
 const char* args[] = {"--port=8080"};
 const char* libs[] = {"my-http-framework/1.2.3"};
-pt_agent_t agent = pt_create_agent_with_server_metadata("my-service-runtime", args, 1, libs, 1);
-pt_agent_start(agent);
+
+pt_agent_options_t opts = pt_agent_options_new();
+pt_agent_options_set_server_metadata(opts, "my-service-runtime", args, 1, libs, 1);
+pt_agent_t agent = pt_start_agent(opts);
+pt_agent_options_free(opts);
 ```
 
 ### Using the global agent
 
-`pt_global_agent()` returns a C handle wrapper around the singleton agent that was created by the most recent `pt_create_agent()` call. If no global agent exists, it returns a disabled no-op agent handle. Release the returned wrapper with `pt_agent_destroy()` when done. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
+`pt_global_agent()` returns a C handle wrapper around the singleton agent that was installed by the most recent `pt_start_agent()` call. If no global agent exists, it returns a disabled no-op agent handle. Release the returned wrapper with `pt_agent_destroy()` when done. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
 
 ```c
 /* In a request handler, far from main() */
@@ -855,9 +871,8 @@ int main(void) {
     setenv("PINPOINT_CPP_CONFIG_FILE",      "/tmp/pinpoint-config.yaml", 0);
     setenv("PINPOINT_CPP_APPLICATION_NAME", "c-http-server",             0);
 
-    pt_agent_t agent = pt_create_agent();
+    pt_agent_t agent = pt_start_agent(NULL);
     if (!agent) return 1;
-    pt_agent_start(agent);
 
     my_server_t* srv = my_server_create();
     my_server_get(srv, "/api", on_request, NULL);

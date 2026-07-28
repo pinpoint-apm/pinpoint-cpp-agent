@@ -123,11 +123,12 @@ int main(int argc, char** argv) {
                                      "cpp-it-grpc-down");
   setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "false", 0);
 
-  auto agent = pinpoint::CreateAgent(
-      pinpoint::APP_TYPE_CPP, "cpp-it-grpc-downstream",
-      {"--port=" + std::to_string(port)}, {"grpc"});
-  // CreateAgent() is cold; Start() brings the agent online in this process.
-  agent->Start();
+  pinpoint::AgentOptions agent_options;
+  agent_options.app_type = pinpoint::APP_TYPE_CPP;
+  agent_options.server_info = "cpp-it-grpc-downstream";
+  agent_options.args = {"--port=" + std::to_string(port)};
+  agent_options.libs = {"grpc"};
+  auto agent = pinpoint::StartAgent(agent_options);
 
   grpc_demo::HelloServiceImpl service;
 

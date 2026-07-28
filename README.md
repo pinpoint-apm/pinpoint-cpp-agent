@@ -93,10 +93,10 @@ export PINPOINT_CPP_COLLECTOR_HOST="my.collector.host"
 #include "pinpoint/tracer.h"
 
 int main() {
-    // Initialize agent
-    pinpoint::SetConfigFilePath("pinpoint-config.yaml");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    // Configure and start the agent in the process that records spans
+    pinpoint::AgentOptions options;
+    options.config_file_path = "pinpoint-config.yaml";
+    auto agent = pinpoint::StartAgent(options);
 
     // Create a span for an incoming request
     auto span = agent->NewSpan("C++ Server", "/api/endpoint");
@@ -157,6 +157,7 @@ See the [Build Guide](doc/build.md) for detailed instructions including vcpkg in
 | [Quick Start Guide](doc/quick_start.md) | Step-by-step setup with full examples |
 | [Configuration Guide](doc/config.md) | All configuration options, environment variables, and best practices |
 | [Instrumentation Guide](doc/instrument.md) | API reference: spans, span events, annotations, distributed tracing |
+| [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
 | [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
 | [Troubleshooting](doc/trouble_shooting.md) | Debugging, logging, common issues and solutions |
 

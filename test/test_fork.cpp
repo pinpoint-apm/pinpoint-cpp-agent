@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-// Fork-safe agent lifecycle (issue #94). Verifies that a "cold" agent created
-// in a master process can be brought online with Start() in each forked child,
-// that forked children register with distinct agent ids, and that tearing down
-// an agent that was started in the master never joins dead threads in a child
-// (no abort).
+// Pre-fork agent lifecycle. The supported model is worker-only
+// initialization: the master process makes no agent API calls, and each
+// forked worker builds and starts its own agent. Verifies that workers
+// register with distinct agent ids, that an agent inherited across fork()
+// refuses use in the child (Enable() false, Start() no-op), and that tearing
+// down an inherited started agent never joins dead threads (no abort).
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -133,18 +134,34 @@ void wait_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000
     }
 }
 
+// Builds the worker's config the production way — make_config() runs in the
+// worker process, so the pinned AgentId gets its per-process suffix there.
+std::shared_ptr<Config> make_fork_config_from_yaml() {
+    AgentOptions options;
+    options.config_yaml = R"(
+ApplicationName: fork-app
+AgentId: fork-agent-id
+AgentName: fork-agent-name
+Enable: true
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+    return make_config(options);
+}
+
 } // namespace
 
-// A master creates a cold agent, forks, and each child brings it online with
-// Start(). Each child must obtain a working (enabled) agent and register with a
-// distinct agent id, and exit cleanly.
-TEST(ForkLifecycleTest, ChildStartYieldsWorkingAgentWithUniqueId) {
-    auto cfg = make_fork_config();
-    auto agent = make_cold_agent(cfg);   // cold: no threads, no channel yet
-
-    // The cold agent in the master holds no live workers.
-    EXPECT_FALSE(agent->Enable());
-
+// The supported pre-fork model: the master makes no agent API calls; each
+// forked worker builds and starts its own agent. Each worker must obtain a
+// working (enabled) agent, register with a distinct agent id, and exit
+// cleanly.
+TEST(ForkLifecycleTest, WorkerBuiltAgentYieldsWorkingAgentWithUniqueId) {
     int pipes[2][2];
     ASSERT_EQ(pipe(pipes[0]), 0);
     ASSERT_EQ(pipe(pipes[1]), 0);
@@ -154,8 +171,15 @@ TEST(ForkLifecycleTest, ChildStartYieldsWorkingAgentWithUniqueId) {
         pid_t pid = fork();
         ASSERT_GE(pid, 0);
         if (pid == 0) {
-            // Child: bring the inherited cold agent online in this process.
+            // Worker: build the whole agent in this process, post-fork. The
+            // pinned AgentId in the yaml gets this worker's pid suffix during
+            // identity resolution.
             close(pipes[i][0]);
+            auto cfg = make_fork_config_from_yaml();
+            if (!cfg) {
+                _exit(2);
+            }
+            auto agent = make_cold_agent(cfg);
             agent->Start();
             wait_enabled(agent);
             const bool enabled = agent->Enable();
@@ -165,8 +189,8 @@ TEST(ForkLifecycleTest, ChildStartYieldsWorkingAgentWithUniqueId) {
             ssize_t rc = write(pipes[i][1], msg.c_str(), msg.size());
             (void)rc;
             close(pipes[i][1]);
-            // Tearing down the freshly-started agent in this process must join
-            // its own (live) workers without issue.
+            // Tearing down the agent started in this process must join its
+            // own (live) workers without issue.
             agent->Shutdown();
             _exit(0);
         }
@@ -189,16 +213,47 @@ TEST(ForkLifecycleTest, ChildStartYieldsWorkingAgentWithUniqueId) {
         EXPECT_EQ(WEXITSTATUS(status), 0) << "child " << i << " exit status";
     }
 
-    // Both children became enabled.
+    // Both workers became enabled.
     EXPECT_EQ(reports[0].substr(0, 2), "1:") << "child 0 not enabled: " << reports[0];
     EXPECT_EQ(reports[1].substr(0, 2), "1:") << "child 1 not enabled: " << reports[1];
 
     const std::string id0 = reports[0].substr(2);
     const std::string id1 = reports[1].substr(2);
-    // Distinct across children, and regenerated away from the configured id.
+    // Distinct across workers, and suffixed away from the configured id.
     EXPECT_NE(id0, id1);
     EXPECT_NE(id0, "fork-agent-id");
     EXPECT_NE(id1, "fork-agent-id");
+    // The pinned base stays recognizable.
+    EXPECT_EQ(id0.rfind("fork-agent-id-", 0), 0u) << "id0: " << id0;
+    EXPECT_EQ(id1.rfind("fork-agent-id-", 0), 0u) << "id1: " << id1;
+}
+
+// An agent STARTED in the parent and inherited across fork() must refuse use
+// in the child: Enable() reports false and Start() stays a no-op, so the
+// child cannot silently record spans into queues nothing drains.
+TEST(ForkLifecycleTest, InheritedStartedAgentRefusesUseInChild) {
+    auto cfg = make_fork_config();
+    auto agent = make_cold_agent(cfg);
+    agent->Start();
+    wait_enabled(agent);
+    ASSERT_TRUE(agent->Enable());
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        // Inherited: Enable() must report false despite the inherited
+        // enabled_ flag, and Start() must not respawn workers.
+        const bool enabled_before = agent->Enable();
+        agent->Start();
+        const bool enabled_after = agent->Enable();
+        _exit((!enabled_before && !enabled_after) ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "an inherited started agent must be refused in the child";
 
     agent->Shutdown();
 }

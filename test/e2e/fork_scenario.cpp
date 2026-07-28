@@ -26,8 +26,7 @@ bool WaitUntilEnabled(const pinpoint::AgentPtr& agent) {
     return agent->Enable();
 }
 
-std::string RunChild(const pinpoint::AgentPtr& cold_agent, int index,
-                     int* child_status) {
+std::string RunChild(int index, int* child_status) {
     int fds[2];
     if (pipe(fds) != 0) {
         *child_status = 1;
@@ -44,22 +43,30 @@ std::string RunChild(const pinpoint::AgentPtr& cold_agent, int index,
 
     if (pid == 0) {
         close(fds[0]);
-        cold_agent->Start();
-        if (!WaitUntilEnabled(cold_agent)) {
+        // Worker-only initialization: the whole agent is built and started in
+        // this forked child. The pinned agent id from the environment gets a
+        // per-process suffix during identity resolution.
+        pinpoint::AgentOptions options;
+        options.app_type = pinpoint::APP_TYPE_CPP;
+        options.server_info = "cpp-it-fork";
+        options.args = {"--scenario=fork"};
+        options.libs = {"fork"};
+        auto agent = pinpoint::StartAgent(options);
+        if (!WaitUntilEnabled(agent)) {
             const char* failure = "collector-timeout";
             (void)write(fds[1], failure, std::strlen(failure));
             close(fds[1]);
             _exit(2);
         }
 
-        auto span = cold_agent->NewSpan(
+        auto span = agent->NewSpan(
             "fork-child", "/fork/" + std::to_string(index));
         const std::string trace_id = span->GetTraceId();
         span->NewSpanEvent("fork-child-work")->EndEvent();
         span->EndSpan();
         (void)write(fds[1], trace_id.data(), trace_id.size());
         close(fds[1]);
-        cold_agent->Shutdown();
+        agent->Shutdown();
         _exit(trace_id.empty() ? 3 : 0);
     }
 
@@ -86,15 +93,12 @@ std::string AgentPart(const std::string& trace_id) {
 int main() {
     it_test::ConfigureAgentEnvironment("cpp-it-fork", "cpp-it-fork");
 
-    // CreateAgent is deliberately cold here. Each forked child calls Start()
-    // independently and must receive a process-unique agent id.
-    auto cold_agent = pinpoint::CreateAgent(
-        pinpoint::APP_TYPE_CPP, "cpp-it-fork", {"--scenario=fork"}, {"fork"});
-
+    // The master makes NO agent API calls: each forked child runs
+    // StartAgent() itself and must receive a process-unique agent id.
     int first_status = 0;
     int second_status = 0;
-    const std::string first_trace = RunChild(cold_agent, 1, &first_status);
-    const std::string second_trace = RunChild(cold_agent, 2, &second_status);
+    const std::string first_trace = RunChild(1, &first_status);
+    const std::string second_trace = RunChild(2, &second_status);
     const std::string first_agent = AgentPart(first_trace);
     const std::string second_agent = AgentPart(second_trace);
     const bool children_ok = WIFEXITED(first_status) && WEXITSTATUS(first_status) == 0 &&
@@ -110,6 +114,5 @@ int main() {
               << "\",\"unique_agent_ids\":" << it_test::JsonBool(unique) << "}"
               << std::endl;
 
-    cold_agent->Shutdown();
     return children_ok && unique ? 0 : 1;
 }

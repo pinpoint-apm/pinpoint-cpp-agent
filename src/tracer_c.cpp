@@ -568,21 +568,80 @@ static std::vector<std::string> to_string_vector(const char* const* values, int 
 }
 
 // ============================================================================
-// Global configuration
+// Agent options
 // ============================================================================
 
-void pt_set_config_file_path(const char* config_file_path) {
+// Opaque owner of the C++ options mirrored by the pt_agent_options_* setters.
+struct pt_agent_options_s {
+    pinpoint::AgentOptions options;
+};
+
+pt_agent_options_t pt_agent_options_new(void) {
+    return pt_api_call(__func__, static_cast<pt_agent_options_t>(nullptr), [] {
+        return new pt_agent_options_s();
+    });
+}
+
+void pt_agent_options_free(pt_agent_options_t options) {
     pt_api_call(__func__, [&] {
-        if (config_file_path) {
-            pinpoint::SetConfigFilePath(config_file_path);
+        delete options;
+    });
+}
+
+void pt_agent_options_set_config_file(pt_agent_options_t options, const char* path) {
+    pt_api_call(__func__, [&] {
+        if (options) {
+            options->options.config_file_path = path ? path : "";
         }
     });
 }
 
-void pt_set_config_string(const char* config_string) {
+void pt_agent_options_set_config_yaml(pt_agent_options_t options, const char* yaml) {
     pt_api_call(__func__, [&] {
-        if (config_string) {
-            pinpoint::SetConfigString(config_string);
+        if (options) {
+            options->options.config_yaml = yaml ? yaml : "";
+        }
+    });
+}
+
+void pt_agent_options_set_env_prefix(pt_agent_options_t options, const char* prefix) {
+    pt_api_call(__func__, [&] {
+        if (options) {
+            options->options.env_prefix = prefix ? prefix : "";
+        }
+    });
+}
+
+void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type) {
+    pt_api_call(__func__, [&] {
+        if (options) {
+            options->options.app_type = app_type;
+        }
+    });
+}
+
+void pt_agent_options_set_server_metadata(pt_agent_options_t options,
+                                          const char* server_info,
+                                          const char* const* args,
+                                          int args_count,
+                                          const char* const* libs,
+                                          int libs_count) {
+    pt_api_call(__func__, [&] {
+        if (!options) {
+            return;
+        }
+        if (server_info) {
+            options->options.server_info = server_info;
+        }
+        options->options.args = to_string_vector(args, args_count);
+        options->options.libs = to_string_vector(libs, libs_count);
+    });
+}
+
+void pt_agent_options_set_instance_suffix(pt_agent_options_t options, const char* suffix) {
+    pt_api_call(__func__, [&] {
+        if (options) {
+            options->options.instance_suffix = suffix ? suffix : "";
         }
     });
 }
@@ -591,24 +650,11 @@ void pt_set_config_string(const char* config_string) {
 // Agent lifecycle
 // ============================================================================
 
-pt_agent_t pt_create_agent(void) {
-    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [] {
-        return make_agent_handle(pinpoint::CreateAgent());
-    });
-}
-
-pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
-                                                const char* const* args,
-                                                int args_count,
-                                                const char* const* libs,
-                                                int libs_count) {
+pt_agent_t pt_start_agent(pt_agent_options_t options) {
     return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
-        return make_agent_handle(server_info
-            ? pinpoint::CreateAgent(pinpoint::DEFAULT_APP_TYPE,
-                                    server_info,
-                                    to_string_vector(args, args_count),
-                                    to_string_vector(libs, libs_count))
-            : pinpoint::CreateAgent());
+        return make_agent_handle(options
+            ? pinpoint::StartAgent(options->options)
+            : pinpoint::StartAgent());
     });
 }
 
@@ -631,14 +677,6 @@ int pt_agent_is_enabled(pt_agent_t agent) {
     return pt_api_call(__func__, 0, [&] {
         return pt_handle_call(agent, 0, [](pt_agent_t valid) {
             return valid->ptr->Enable() ? 1 : 0;
-        });
-    });
-}
-
-void pt_agent_start(pt_agent_t agent) {
-    pt_api_call(__func__, [&] {
-        pt_handle_call(agent, [](pt_agent_t valid) {
-            valid->ptr->Start();
         });
     });
 }

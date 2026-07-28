@@ -70,8 +70,7 @@ void trace(const httplib::Request& req, httplib::Response& res) {
 int main(int argc, char** argv) {
     const int port = argc > 1 ? std::atoi(argv[1]) : 8091;
     it_test::configure_agent_env("cpp-it-http-downstream", "it-http-downstream");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    auto agent = pinpoint::StartAgent();
 
     httplib::Server server;
     server.Get("/health", health);

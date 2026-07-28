@@ -135,14 +135,18 @@ int main(void) {
     set_default_env("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");
     set_default_env("PINPOINT_CPP_ENABLE_CALLSTACK_TRACE", "true");
 
-    pt_agent_t agent = pt_create_agent_with_server_metadata(
-        "cpp-it-c-api", args, 1, libs, 1);
+    pt_agent_options_t options = pt_agent_options_new();
+    if (options == NULL) {
+        fprintf(stderr, "C API scenario: options allocation failed\n");
+        return 1;
+    }
+    pt_agent_options_set_server_metadata(options, "cpp-it-c-api", args, 1, libs, 1);
+    pt_agent_t agent = pt_start_agent(options);
+    pt_agent_options_free(options);
     if (agent == NULL) {
         fprintf(stderr, "C API scenario: agent creation failed\n");
         return 1;
     }
-    pt_agent_start(agent);
-    pt_agent_start(agent);
     if (!wait_until_enabled(agent)) {
         fprintf(stderr, "C API scenario: collector registration timed out\n");
         pt_agent_shutdown(agent);

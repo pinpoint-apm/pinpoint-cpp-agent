@@ -119,6 +119,14 @@ namespace pinpoint {
 
         if (file_enabled_ && file_stream_) {
             file_stream_->write(buf.data(), static_cast<std::streamsize>(buf.size()));
+            // Flush every line. In pre-fork hosts several worker processes may
+            // share one log file: with an empty stream buffer each line goes
+            // out as a single O_APPEND write, so lines from sibling processes
+            // cannot interleave mid-line, and a fork() can never duplicate
+            // buffered-but-unwritten lines into every child. The log is a
+            // low-volume diagnostic channel, so the extra write syscall per
+            // line is irrelevant.
+            file_stream_->flush();
             current_file_size_ += static_cast<std::uint64_t>(buf.size());
             rotateFileIfNeededLocked();
         } else {
@@ -162,6 +170,8 @@ namespace pinpoint {
                 "log rotation disabled: rename to " + rotated_path +
                 " failed: " + rename_ec.message() + "\n";
             file_stream_->write(msg.data(), static_cast<std::streamsize>(msg.size()));
+            // Same per-line flush policy as write().
+            file_stream_->flush();
             return;
         }
         current_file_size_ = 0;

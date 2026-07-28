@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <csignal>
 #include <string>
 #include <exception>
 #include <iterator>
@@ -24,12 +25,12 @@
 #include <optional>
 #include <stdexcept>
 #include <vector>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
-#include "object_name.h"
 #include "sql.h"
 #include "utility.h"
 
@@ -37,7 +38,7 @@ namespace pinpoint {
 
     // Global agent singleton whose readers bypass the writer mutex
     namespace {
-        // Serializes global-agent WRITERS only (CreateAgent, Shutdown, the
+        // Serializes global-agent WRITERS only (StartAgent, Shutdown, the
         // test helpers). Readers never take it: GlobalAgent() goes through the
         // AtomicSharedPtr below, so per-request lookups cannot contend with a
         // create/reload that holds this mutex across make_config()'s file I/O
@@ -108,17 +109,49 @@ namespace pinpoint {
         raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(cache_size);
 
         // Initial build: no previous runtime, so every component is created
-        // and published together in one atomic store.
+        // and published together in one atomic store. The constructor stays
+        // "cold": it starts no threads, opens no gRPC channel and installs no
+        // config-file watcher — Start() does all of that. The split keeps
+        // construction infallible past this point and lets tests exercise a
+        // built-but-offline agent.
         apply_config(nullptr, std::move(cfg));
+    }
 
-        // Remember the process that constructed the agent. CreateAgent() is
-        // deliberately "cold": it starts no threads, opens no gRPC channel and
-        // installs no config-file watcher here — Start() does all of that. This
-        // makes the agent safe to construct in a master process that will
-        // fork(): there is nothing live to break at the fork point. Start()
-        // later compares getpid() against create_pid_ to tell whether it is
-        // running in a forked child (and must derive a child-specific id).
-        create_pid_ = getpid();
+    namespace {
+        // Blocks (nearly) all signals on the calling thread for the enclosing
+        // scope, restoring the previous mask on exit. Threads created inside
+        // the scope inherit the blocked mask, and threads THEY create — gRPC's
+        // internal threads and the worker pool spawned by the init thread —
+        // inherit it transitively. Signal-driven hosts (an nginx worker's
+        // event loop relies on a process-directed signal interrupting its own
+        // epoll_wait) therefore keep receiving signals on a host thread,
+        // never on an agent thread. The synchronous hardware signals stay
+        // unblocked: a crash inside an agent thread must still raise the
+        // normal fatal signal instead of undefined behavior.
+        class ScopedSignalBlock {
+        public:
+            ScopedSignalBlock() noexcept {
+                sigset_t all_blocked;
+                sigfillset(&all_blocked);
+                sigdelset(&all_blocked, SIGABRT);
+                sigdelset(&all_blocked, SIGBUS);
+                sigdelset(&all_blocked, SIGFPE);
+                sigdelset(&all_blocked, SIGILL);
+                sigdelset(&all_blocked, SIGSEGV);
+                restore_ = pthread_sigmask(SIG_SETMASK, &all_blocked, &saved_) == 0;
+            }
+            ~ScopedSignalBlock() noexcept {
+                if (restore_) {
+                    pthread_sigmask(SIG_SETMASK, &saved_, nullptr);
+                }
+            }
+            ScopedSignalBlock(const ScopedSignalBlock&) = delete;
+            ScopedSignalBlock& operator=(const ScopedSignalBlock&) = delete;
+
+        private:
+            sigset_t saved_{};
+            bool restore_{false};
+        };
     }
 
     void AgentImpl::Start() noexcept try {
@@ -134,52 +167,74 @@ namespace pinpoint {
             // it hands out is a noop span. Logged at error level because the
             // void signature gives the caller no other signal, and the usual
             // cause is a host trying to restart a shut-down agent instead of
-            // building a fresh one through CreateAgent().
+            // building a fresh one through StartAgent().
             LOG_ERROR("agent start rejected: this agent was shut down and cannot "
-                      "be restarted; create a new agent with CreateAgent()");
+                      "be restarted; create a new agent with StartAgent()");
+            return;
+        }
+
+        // An agent object inherited across fork() must not be (re)started
+        // here: the parent's Start() already claimed it (its threads and any
+        // gRPC runtime live in the parent only), and gRPC cannot be freshly
+        // initialized in a child forked after grpc_init. The supported model
+        // is StartAgent() in the process that traces — a master must not
+        // start an agent before forking.
+        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+            warn_fork_inheritance();
             return;
         }
 
         // Once a Start() launches initialization, later calls are no-ops.
         // Synchronous setup failures reset started_ in the catch handlers
-        // below and remain retryable. The recommended fork model is a COLD
-        // CreateAgent() in the master (started_ == false) followed by Start()
-        // in each child, so a child takes the full path below. The discouraged
-        // "Start() in the master, then fork" case leaves an inherited
-        // started_ == true in the child; Start() there is a no-op (its
-        // inherited worker handles are dead and re-spawning over them would
-        // terminate), and teardown stays crash-free via the pid guard in
-        // do_shutdown().
+        // below and remain retryable.
         if (started_.exchange(true)) {
             return;
         }
 
-        // Derive a child-specific id before any channel/metadata is built (the
-        // gRPC headers read it via getAgentId()).
-        refresh_agent_id_for_process();
         owner_pid_ = getpid();
 
-        // Fork safety rests on an invariant, not on GRPC_ENABLE_FORK_SUPPORT:
-        // CreateAgent() is cold (it triggers no grpc_init — no channel, stub or
-        // credentials are built until openChannel() runs from init_grpc_workers
-        // below), so the master holds NO live gRPC runtime at the fork point.
-        // Each child's Start() then performs that child's first, fresh grpc_init,
-        // inheriting no gRPC state to recover. This is gRPC's own "instantiate
-        // gRPC objects only after fork()" pattern, which needs no pthread_atfork
-        // fork handlers. GRPC_ENABLE_FORK_SUPPORT would only matter if grpc_init
-        // had run before the fork; the cold model guarantees it did not. (This
-        // assumes the HOST application likewise does not use gRPC before forking
-        // — an env var set here, post-fork in the child, could not fix that.)
+        // NOTE on gRPC and fork(): the constructor triggers no grpc_init — no
+        // channel, stub or credentials are built until openChannel() runs from
+        // init_grpc_workers below — so this Start() performs this process's
+        // first, fresh gRPC initialization. This is gRPC's own "instantiate
+        // gRPC objects only after fork()" pattern, which needs no
+        // pthread_atfork handlers or GRPC_ENABLE_FORK_SUPPORT. (It assumes the
+        // HOST application likewise does not use gRPC before forking.)
+
+        // Every agent thread descends from the two spawns below, so blocking
+        // signals for the rest of this function keeps process-directed
+        // signals away from all of them (see ScopedSignalBlock). The caller's
+        // mask is restored when Start() returns or unwinds.
+        ScopedSignalBlock signal_block;
 
         // Start the config-file watcher BEFORE spawning init_thread_ so that, if
         // thread creation throws, no joinable std::thread member exists yet and
         // the stack unwinds without hitting a joinable-thread destructor.
-        start_config_file_watcher();
+        const auto watch_path = resolve_config_file_path(options_);
+        if (!watch_path.empty()) {
+            config_watcher_ = std::make_unique<ConfigFileWatcher>(watch_path, [this] {
+                // make_config(options_, old) returns the final reload config:
+                // non-reloadable fields retained from the running config and
+                // the logger already reconfigured. It re-reads the config
+                // file itself, so no separate read is needed here. This runs
+                // on the watcher thread; do_shutdown() stops (joins) the
+                // watcher before tearing anything down, so `this` stays valid
+                // for the whole callback.
+                auto new_cfg = make_config(options_, getConfig());
+                if (new_cfg) {
+                    reloadConfig(std::move(new_cfg));
+                    LOG_INFO("agent config reloaded");
+                }
+            });
+            config_watcher_->start();
+        }
 
         try {
             init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
         } catch (...) {
-            stop_config_file_watcher();
+            if (config_watcher_) {
+                config_watcher_->stop();
+            }
             throw;
         }
     } catch (const std::exception& e) {
@@ -192,37 +247,15 @@ namespace pinpoint {
         started_ = false;
     }
 
-    void AgentImpl::refresh_agent_id_for_process() {
-        // In the process that constructed the agent, keep the configured id
-        // exactly as resolved — non-fork behavior is unchanged.
-        if (create_pid_ == getpid()) {
+    void AgentImpl::warn_fork_inheritance() const noexcept {
+        if (fork_misuse_warned_.exchange(true)) {
             return;
         }
-
-        const auto cfg = getConfig();
-        const std::string old_id = *agent_id_;
-        std::string new_id;
-        if (cfg && cfg->agent_id_pinned_) {
-            // Explicit id pinned by the user: keep it recognizable but append a
-            // pid so sibling workers differ. Cap at the max id length.
-            const std::string suffix = "-" + std::to_string(static_cast<long>(getpid()));
-            const size_t max_len = object_name::AGENT_ID_MAX_LEN;
-            std::string base = old_id;
-            if (base.size() + suffix.size() > max_len && suffix.size() < max_len) {
-                base.resize(max_len - suffix.size());
-            }
-            new_id = base + suffix;
-        } else {
-            // Auto-generated id: mint a fresh one per worker.
-            new_id = base64_encode_uuid(generate_uuid_v7());
-        }
-
-        // Only the agent id is made process-specific. agent_id is the instance
-        // key on the collector; agent_name is a display alias (and is still
-        // served from the captured config in the gRPC headers), so it is
-        // deliberately left untouched.
-        agent_id_ = std::make_shared<const std::string>(new_id);
-        LOG_INFO("fork-safe start: agent id '{}' -> '{}'", old_id, new_id);
+        try {
+            LOG_ERROR("agent was started in another process (pid {}); this process inherited it "
+                      "across fork() and cannot use it — call StartAgent() in this process instead",
+                      static_cast<long>(owner_pid_));
+        } catch (...) {}
     }
 
     std::shared_ptr<const Config> AgentImpl::getConfig() const {
@@ -394,7 +427,7 @@ namespace pinpoint {
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
         // Serialize writers: building the new runtime is a load-build-store
-        // read-modify-write of runtime_, so a CreateAgent()-driven reload and
+        // read-modify-write of runtime_, so a test-driven reload and
         // the config-file watcher thread could otherwise both build from the
         // same old runtime and lose one of the updates. Readers do not take
         // reload_mutex_; an unchanged generation-cache hit also avoids the
@@ -414,7 +447,8 @@ namespace pinpoint {
 
         // Open the channels here (not at construction): this is where grpc_init
         // and gRPC's background threads come up, kept out of the cold
-        // CreateAgent() path so a master can fork before Start().
+        // constructor so no gRPC state exists until this process starts the
+        // agent.
         grpc_agent_->openChannel();
         grpc_metadata_->openChannel();
         grpc_span_->openChannel();
@@ -726,6 +760,14 @@ namespace pinpoint {
     }
 
 	bool AgentImpl::Enable() {
+    	// An agent inherited across fork() reports disabled: its workers and
+    	// gRPC runtime do not exist in this process, so anything recorded here
+    	// would silently go nowhere. Detected at this query point (one
+    	// getpid() call) rather than on the per-span hot path.
+    	if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+    		warn_fork_inheritance();
+    		return false;
+    	}
     	return enabled_;
 	}
 
@@ -769,6 +811,9 @@ namespace pinpoint {
         if (owner_pid_ != 0 && owner_pid_ != getpid()) {
             try { LOG_INFO("agent shutdown in forked child: abandoning inherited workers"); } catch (...) {}
             abandon_grpc_workers();
+            // The watcher thread does not exist in this process either; its
+            // stop() abandons the inherited dead handle via its own pid guard.
+            try { if (config_watcher_) config_watcher_->stop(); } catch (...) {}
             // The gRPC clients inherited from the parent are intentionally
             // leaked, but not here: releasing the unique_ptrs would null them
             // while a racing thread that loaded enabled_ == true just before
@@ -780,7 +825,7 @@ namespace pinpoint {
         }
 
         try { LOG_INFO("agent shutdown"); } catch (...) {}
-        try { stop_config_file_watcher(); } catch (...) {}
+        try { if (config_watcher_) config_watcher_->stop(); } catch (...) {}
         try { close_grpc_workers(); } catch (...) {}
         try { shutdown_logger(); } catch (...) {}
     }
@@ -1162,32 +1207,21 @@ namespace pinpoint {
         }
     }
 
-    struct ServerMetaData {
-        std::string server_info;
-        std::vector<std::string> args;
-        std::vector<std::string> libs;
-    };
-
     static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg,
-                                                 int32_t app_type,
-                                                 const std::optional<ServerMetaData>& server_meta_data) {
+                                                 const AgentOptions& options) {
         if (!cfg->enable) {
             return nullptr;
         }
         try {
             auto grpc_agent = std::make_unique<GrpcAgent>(cfg);
-            if (server_meta_data.has_value()) {
-                grpc_agent->setServerMetaData(server_meta_data->server_info,
-                                              server_meta_data->args,
-                                              server_meta_data->libs);
-            }
+            grpc_agent->setServerMetaData(options.server_info, options.args, options.libs);
             auto grpc_metadata = std::make_unique<GrpcMetadata>(cfg);
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);
             auto grpc_command = std::make_unique<GrpcCommand>(cfg);
             return std::make_shared<AgentImpl>(cfg,
                 std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span),
-                std::move(grpc_stat), std::move(grpc_command), app_type);
+                std::move(grpc_stat), std::move(grpc_command), options.app_type);
         } catch (const std::exception& e) {
             LOG_ERROR("make agent exception = {}", e.what());
             return nullptr;
@@ -1197,82 +1231,55 @@ namespace pinpoint {
         }
     }
 
-    void SetConfigFilePath(std::string_view config_file_path) {
-        set_config_file_path(config_file_path);
-    }
-
-    void SetConfigString(std::string_view config_string) {
-        set_config_string(config_string);
-    }
-
-    void SetConfigEnvVarPrefix(std::string_view prefix) {
-        set_env_prefix(prefix);
-    }
-
-    static AgentPtr create_agent_helper(int32_t app_type,
-                                        const std::optional<ServerMetaData>& server_meta_data) {
+    // Public entry point: a failure to configure or construct the agent must
+    // surface as a noop agent, never as an exception in the host application.
+    AgentPtr StartAgent(const AgentOptions& options) try {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto agent = global_agent().load();
 
-        // A shut-down agent is not a reload target: Start() refuses it for
-        // good, so reloading its config would hand the caller a permanently
-        // disabled handle. Drop it from the singleton and fall through to
-        // build a fresh agent instead.
-        //
-        // The normal path does not produce this state: Shutdown() clears the
-        // singleton under THIS mutex before do_shutdown() sets the exiting
-        // flag, so an installed agent observed here is still live. What this
-        // covers is the one way the state can still arise — Shutdown()
-        // swallowing a failure to take this mutex and tearing the agent down
-        // while it stays installed. Without the check that is unrecoverable:
-        // every later CreateAgent() would take the reload path and keep
-        // returning the dead agent. Clearing the singleton here (rather than
-        // relying on the store() below) also keeps GlobalAgent() degrading to
-        // the noop agent if the rebuild itself fails.
-        if (agent != nullptr && agent->isExiting()) {
+        if (agent != nullptr) {
+            // A global agent inherited across fork() is unusable here (its
+            // threads and gRPC runtime live in the parent), and a fresh agent
+            // cannot be built either: the parent's Start() ran grpc_init, and
+            // gRPC must not be re-initialized in a process that forked after
+            // grpc_init. Refuse loudly — the master process must not call
+            // StartAgent() before forking.
+            if (!agent->ownedByThisProcess()) {
+                LOG_ERROR("StartAgent() refused: the global agent was started in another process "
+                          "(a master must not start an agent before fork()); tracing stays "
+                          "disabled in this process");
+                return noopAgent();
+            }
+
+            // Already running in this process: StartAgent() is one-shot per
+            // process. Config changes flow through the config-file watcher,
+            // not through repeated StartAgent() calls.
+            if (!agent->isExiting()) {
+                LOG_WARN("StartAgent() called again in this process; returning the running agent");
+                return agent;
+            }
+
+            // A shut-down agent is not restartable: drop it from the
+            // singleton and fall through to build a fresh agent. (Clearing
+            // the singleton here also keeps GlobalAgent() degrading to the
+            // noop agent if the rebuild below fails.)
             LOG_WARN("global agent is shut down; replacing it with a new agent");
             global_agent().store(nullptr);
             agent.reset();
         }
 
-        // Build the config under the lock so the running-config snapshot
-        // handed to make_config() cannot race with a concurrent CreateAgent()
-        // or Shutdown() swapping the global agent.
-        auto cfg = make_config(agent ? agent->getConfig() : nullptr);
-        if (!cfg) {
+        auto cfg = make_config(options);
+        if (!cfg || !cfg->check()) {
             return noopAgent();
         }
-
-        if (agent != nullptr) {
-            // A new config always triggers a reload. make_config() already
-            // returned the final reload config (non-reloadable fields retained
-            // from the running config, logger reconfigured). app_type is part
-            // of the agent identity and likewise fixed for the agent's
-            // lifetime, so the incoming value is ignored on reload.
-            agent->reloadConfig(std::move(cfg));
-            LOG_INFO("agent config reloaded");
-            return agent;
-        }
-
-        if (!cfg->check()) {
-            return noopAgent();
-        }
-        agent = make_agent(std::move(cfg), app_type, server_meta_data);
+        agent = make_agent(std::move(cfg), options);
         if (agent == nullptr) {
             return noopAgent();
         }
+        agent->setOptions(options);
+        agent->Start();
         global_agent().store(agent);
         return agent;
-    }
-
-    // Public entry point: a failure to configure or construct the agent must
-    // surface as a noop agent, never as an exception in the host application.
-    AgentPtr CreateAgent(int32_t app_type,
-                         std::string_view server_info,
-                         const std::vector<std::string>& args,
-                         const std::vector<std::string>& libs) try {
-        return create_agent_helper(app_type,
-                                   ServerMetaData{std::string(server_info), args, libs});
     } catch (...) {
         return noopAgent();
     }

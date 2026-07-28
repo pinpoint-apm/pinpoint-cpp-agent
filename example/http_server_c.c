@@ -223,12 +223,11 @@ int main(void) {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true",                   0);
     /* setenv("PINPOINT_CPP_LOG_LEVEL", "debug", 0); */
 
-    pt_agent_t agent = pt_create_agent();
+    pt_agent_t agent = pt_start_agent(NULL);
     if (!agent) {
-        fprintf(stderr, "failed to create pinpoint agent\n");
+        fprintf(stderr, "failed to start pinpoint agent\n");
         return 1;
     }
-    pt_agent_start(agent);
 
     hlc_server_t server = hlc_server_create();
     if (!server) {

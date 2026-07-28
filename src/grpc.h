@@ -72,9 +72,9 @@ namespace pinpoint {
      * protocol.version=400 plus agentname (always), servicename and apikey.
      * Extracted as a pure function so the per-version header set is unit-testable.
      *
-     * @p agent_id is passed separately (rather than read from @p config) so a
-     * forked worker's process-specific id is used instead of the parent's id
-     * baked into the captured config.
+     * @p agent_id is passed separately (rather than read from @p config) so
+     * the value always comes from the agent's resolved identity snapshot,
+     * which the gRPC clients read through AgentService::getAgentId().
      */
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
@@ -193,12 +193,12 @@ namespace pinpoint {
         /**
          * @brief Opens the gRPC channel and creates the client stub.
          *
-         * Deferred out of the constructor so that CreateAgent() stays "cold":
-         * `grpc::CreateCustomChannel()` triggers `grpc_init` and starts gRPC's
-         * own background threads, which must not happen until Agent::Start() is
-         * called in the process that will actually use the agent (a master that
-         * forks must not hold a live gRPC runtime at the fork point). Idempotent:
-         * a second call while a channel already exists is a no-op.
+         * Deferred out of the constructor so that agent construction stays
+         * "cold": `grpc::CreateCustomChannel()` triggers `grpc_init` and starts
+         * gRPC's own background threads, which must not happen until the agent
+         * is started in the process that will actually use it (StartAgent()
+         * runs in each worker, after any fork). Idempotent: a second call
+         * while a channel already exists is a no-op.
          */
         void openChannel();
         /**

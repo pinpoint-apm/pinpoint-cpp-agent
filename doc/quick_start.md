@@ -105,9 +105,9 @@ Set the configuration file path in your application:
 #include "pinpoint/tracer.h"
 
 int main() {
-    pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_file_path = "/path/to/pinpoint-config.yaml";
+    auto agent = pinpoint::StartAgent(options);
 
     // Your application code
 
@@ -147,9 +147,9 @@ int main() {
           GrpcHost: "localhost"
     )";
 
-    pinpoint::SetConfigString(config);
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_yaml = config;
+    auto agent = pinpoint::StartAgent(options);
 
     // Your application code
 
@@ -166,15 +166,15 @@ For a complete list of configuration options, see the [Configuration Guide](conf
 
 The typical workflow follows five steps:
 
-1. **Initialize** — set configuration, create an agent, and call `Start()` at application startup.
+1. **Initialize** — call `StartAgent()` with your configuration at application startup, in the process that records spans (for pre-fork servers: in each worker, see the [Pre-fork Integration Guide](prefork.md)).
 2. **Trace** — use `Agent::NewSpan` to start tracing a transaction.
 3. **Record work** — create span events and annotations for sub-operations.
 4. **End** — call `EndSpan()` when the transaction completes.
 5. **Shutdown** — call `agent->Shutdown()` before the application exits.
 
 > **`Shutdown()` is terminal for an agent instance.** The same handle can never be
-> brought back online: a later `Start()` is refused (logged at error level),
-> `Enable()` stays `false`, and every span it returns is a noop span. The
+> brought back online: `Enable()` stays `false`, and every span it returns is a
+> noop span. The
 > application itself keeps running normally — it just stops being traced. To stop
 > and later resume tracing in a long-running process, see
 > [Stopping and Resuming the Agent](#stopping-and-resuming-the-agent).
@@ -185,9 +185,9 @@ The typical workflow follows five steps:
 #include "pinpoint/tracer.h"
 
 int main() {
-    pinpoint::SetConfigFilePath("pinpoint-config.yaml");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_file_path = "pinpoint-config.yaml";
+    auto agent = pinpoint::StartAgent(options);
 
     // Check if agent is enabled
     if (!agent->Enable()) {
@@ -276,34 +276,33 @@ agent->Shutdown();
 agent.reset();          // drop the dead handle so nothing keeps using it
 
 // ... later: resume tracing with a NEW agent ...
-agent = pinpoint::CreateAgent();
-agent->Start();
+agent = pinpoint::StartAgent(options);
 ```
 
 What each call guarantees:
 
 | Call | Behavior after `Shutdown()` |
 |---|---|
-| `agent->Start()` | Refused permanently, logged at error level. The agent stays disabled. |
 | `agent->Enable()` | Always `false`. |
 | `agent->NewSpan(...)` | Returns the shared noop span. Safe to call, records nothing. |
-| `pinpoint::GlobalAgent()` | Returns the noop agent until `CreateAgent()` installs a new one. |
+| `pinpoint::StartAgent(...)` | Builds a fresh agent and installs it as the global agent. |
+| `pinpoint::GlobalAgent()` | Returns the noop agent until `StartAgent()` installs a new one. |
 
 Points to keep in mind:
 
-- **Never reuse the shut-down handle.** Calling `Start()` on it looks successful
-  from the caller's side (`Start()` returns `void`) but leaves tracing off for the
-  rest of the process. Check `Enable()` after `Start()` if you need confirmation.
+- **Never reuse the shut-down handle.** It stays permanently disabled; get the
+  replacement handle from `StartAgent()` and check `Enable()` if you need
+  confirmation.
 - **Drop cached agent pointers.** Any `AgentPtr` the application cached — in a
   thread-local, a service object, a C `pt_agent_t` handle — still points at the
   dead agent and keeps producing noop spans. Re-fetch with `GlobalAgent()` or the
   new handle.
 - **Spans that outlive the shutdown are safe.** A span created before `Shutdown()`
   can still be ended afterwards without crashing; its data is simply dropped.
-- **Pin `AgentId` if you cycle repeatedly.** Each `CreateAgent()` re-resolves the
-  agent identity, so an unpinned id makes every cycle register as a new agent
-  instance in the Pinpoint UI. (With `UidVersion: v4` the id is always
-  regenerated.)
+- **Pin `AgentId` (plus `AgentOptions::instance_suffix`) if you cycle
+  repeatedly.** Each `StartAgent()` re-resolves the agent identity, so an
+  unpinned id makes every cycle register as a new agent instance in the
+  Pinpoint UI. (With `UidVersion: v4` the id is always regenerated.)
 - **Shutdown is synchronous.** It joins the worker threads, so it can take up to a
   few seconds while queued spans drain — do not call it from a latency-sensitive
   path.
@@ -346,8 +345,7 @@ int main() {
     setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 0);
 
     // Create and start agent
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    auto agent = pinpoint::StartAgent();
 
     if (!agent->Enable()) {
         std::cerr << "Failed to enable agent" << std::endl;
@@ -419,9 +417,9 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 }
 
 int main() {
-    pinpoint::SetConfigFilePath("pinpoint-config.yaml");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_file_path = "pinpoint-config.yaml";
+    auto agent = pinpoint::StartAgent(options);
 
     httplib::Server server;
     server.Get("/users", handle_users);

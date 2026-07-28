@@ -402,8 +402,8 @@ void expect_noop_span(const SpanPtr& span) {
 
 void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id) {
     EXPECT_EQ(metadata.value("applicationname").value_or(""), "cpp-agent-it");
-    EXPECT_EQ(metadata.value("agentid").value_or(""), "cpp-it-agent");
-    EXPECT_EQ(metadata.value("agentname").value_or(""), "cpp-it-agent-name");
+    EXPECT_EQ(metadata.value("agentid").value_or(""), "cpp-it-agent-it0");
+    EXPECT_EQ(metadata.value("agentname").value_or(""), "cpp-it-agent-name-it0");
     EXPECT_EQ(metadata.value("servicetype").value_or(""), std::to_string(kApplicationType));
     EXPECT_EQ(metadata.value("protocol.version").value_or(""), "100");
     EXPECT_FALSE(metadata.value("starttime").value_or("").empty());
@@ -412,33 +412,45 @@ void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id) 
 
 class AgentIntegrationTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+    void StartCollector() {
+        ASSERT_TRUE(collector_.Start());
+        ASSERT_GT(collector_.agent_port(), 0);
+        ASSERT_GT(collector_.span_port(), 0);
+        ASSERT_GT(collector_.stat_port(), 0);
+    }
 
+    void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(StartCollector());
+
+        // Collector-side fault injection must be armed before the agent
+        // starts (StartAgent() begins registration immediately).
         ConfigureBeforeAgentStart();
-        agent_->Start();
+
+        ASSERT_NO_FATAL_FAILURE(StartTestAgent());
         ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
             return !snapshot.agent_infos.empty();
         }, kWaitTimeout));
         ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }));
     }
 
-    void CreateColdAgent() {
-        ASSERT_TRUE(collector_.Start());
-        ASSERT_GT(collector_.agent_port(), 0);
-        ASSERT_GT(collector_.span_port(), 0);
-        ASSERT_GT(collector_.stat_port(), 0);
-
+    AgentOptions agent_options() const {
+        AgentOptions options;
         // A test-only prefix prevents a developer's PINPOINT_CPP_* environment
         // from overriding the deterministic inline configuration below.
-        SetConfigEnvVarPrefix("PINPOINT_CPP_AGENT_IT_ISOLATED");
-        SetConfigFilePath("");
-        SetConfigString(config());
+        options.env_prefix = "PINPOINT_CPP_AGENT_IT_ISOLATED";
+        options.config_yaml = config();
+        // Deterministic per-worker identity: the pinned AgentId and explicit
+        // AgentName become "...-it0" (instead of a pid suffix).
+        options.instance_suffix = "it0";
+        options.app_type = kApplicationType;
+        options.server_info = "mock-collector integration server";
+        options.args = {"--integration-test", "--ephemeral-ports"};
+        options.libs = {"libintegration.so", "libmock-collector.so"};
+        return options;
+    }
 
-        agent_ = CreateAgent(kApplicationType,
-                             "mock-collector integration server",
-                             {"--integration-test", "--ephemeral-ports"},
-                             {"libintegration.so", "libmock-collector.so"});
+    void StartTestAgent() {
+        agent_ = StartAgent(agent_options());
         impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
         ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
     }
@@ -450,9 +462,6 @@ protected:
         impl_.reset();
         agent_.reset();
         collector_.Shutdown();
-        SetConfigString("");
-        SetConfigFilePath("");
-        SetConfigEnvVarPrefix("");
     }
 
     std::string config() const {
@@ -668,7 +677,7 @@ protected:
 class CollectorUnavailableAtStartupIntegrationTest : public AgentIntegrationTest {
 protected:
     void SetUp() override {
-        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+        ASSERT_NO_FATAL_FAILURE(StartCollector());
 
         // Keep the configured ports but remove every listening server. This
         // models an agent process starting while the collector is completely
@@ -676,7 +685,7 @@ protected:
         ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Agent));
         ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Span));
         ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Stat));
-        agent_->Start();
+        ASSERT_NO_FATAL_FAILURE(StartTestAgent());
     }
 
     void RestartCollector() {
@@ -693,9 +702,9 @@ protected:
 class CollectorOutageAtStartupIntegrationTest : public AgentIntegrationTest {
 protected:
     void SetUp() override {
-        ASSERT_NO_FATAL_FAILURE(CreateColdAgent());
+        ASSERT_NO_FATAL_FAILURE(StartCollector());
         collector_.BeginOutage();
-        agent_->Start();
+        ASSERT_NO_FATAL_FAILURE(StartTestAgent());
     }
 };
 
@@ -852,7 +861,7 @@ TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
                   "cpp-agent-it");
         EXPECT_EQ(metadata.value("agentid").value_or(""), agent_id);
         EXPECT_EQ(metadata.value("agentname").value_or(""),
-                  "cpp-it-agent-name");
+                  "cpp-it-agent-name-it0");
         EXPECT_EQ(metadata.value("starttime").value_or(""), start_time);
         EXPECT_EQ(metadata.value("servicetype").value_or(""),
                   std::to_string(kApplicationType));
@@ -1035,7 +1044,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     const auto root_wire = find_span_by_rpc(snapshot, "/orders/42");
     ASSERT_TRUE(root_wire.has_value());
     EXPECT_EQ(root_wire->spanid(), root_span_id);
-    EXPECT_EQ(root_wire->transactionid().agentid(), "cpp-it-agent");
+    EXPECT_EQ(root_wire->transactionid().agentid(), "cpp-it-agent-it0");
     EXPECT_EQ(root_wire->acceptevent().remoteaddr(), "192.0.2.10");
     EXPECT_EQ(root_wire->acceptevent().endpoint(), "orders.internal:8443");
     EXPECT_EQ(root_wire->err(), 1);
@@ -2413,7 +2422,7 @@ TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
 }
 
 // A host that stops and resumes tracing while it keeps serving must go through
-// CreateAgent() again: Shutdown() is terminal for an agent instance. These two
+// StartAgent() again: Shutdown() is terminal for an agent instance. These two
 // pin both halves of that contract end-to-end — the supported cycle keeps
 // working, and the unsupported same-handle restart stays refused rather than
 // half-starting an agent.
@@ -2424,7 +2433,7 @@ TEST_F(AgentIntegrationTest, StartAfterShutdownIsRefusedAndKeepsServingNoopSpans
     const auto quiesced = collector_.snapshot();
 
     // Restarting the same handle is refused, permanently.
-    agent_->Start();
+    impl_->Start();
     EXPECT_FALSE(wait_until([this] { return agent_->Enable(); },
                             std::chrono::seconds(2)))
         << "a shut-down agent must not come back online through Start()";
@@ -2472,16 +2481,15 @@ TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCyc
             stale->EndSpan();
         }
 
-        // The supported way to resume: drop the dead handle, build a new agent.
+        // The supported way to resume: drop the dead handle, start a new agent.
         impl_.reset();
         agent_.reset();
-        SetConfigString(config());
-        agent_ = CreateAgent(kApplicationType,
-                             "mock-collector integration server",
-                             {"--integration-test"}, {"libintegration.so"});
+        auto options = agent_options();
+        options.args = {"--integration-test"};
+        options.libs = {"libintegration.so"};
+        agent_ = StartAgent(options);
         impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
         ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
-        agent_->Start();
         ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }))
             << "the agent never came back online";
 
@@ -2515,7 +2523,7 @@ TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCyc
     EXPECT_GE(snapshot.agent_infos.size(), static_cast<size_t>(kCycles) + 1U);
 }
 
-TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
+TEST_F(AgentIntegrationTest, ReloadsConfigAndAppliesNewFilters) {
     const auto infos_before = collector_.snapshot().agent_infos.size();
     ASSERT_GE(infos_before, 1U);
     {
@@ -2524,13 +2532,15 @@ TEST_F(AgentIntegrationTest, ReloadsConfigOnCreateAgentAndAppliesNewFilters) {
         probe->EndSpan();
     }
 
-    // CreateAgent() on a live agent is the reload path: it must return the
-    // same instance with the new configuration applied.
+    // Rebuild the config from the updated sources and reload the live agent —
+    // the same path the config-file watcher drives. A repeated StartAgent()
+    // must NOT be a reload path: it returns the running instance untouched.
     server_exclude_urls_ = "[/excluded/**, /reloaded/**]";
-    SetConfigString(config());
-    const auto reloaded = CreateAgent(kApplicationType,
-                                      "mock-collector integration server");
-    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(reloaded), impl_);
+    auto reload_cfg = make_config(agent_options(), impl_->getConfig());
+    ASSERT_NE(reload_cfg, nullptr);
+    impl_->reloadConfig(reload_cfg);
+    const auto restarted = StartAgent(agent_options());
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(restarted), impl_);
 
     // The reloaded URL filter must reject new spans while everything else
     // keeps tracing.
@@ -3022,13 +3032,11 @@ TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
 }
 
 TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
-    // Exercise the standalone lifecycle entry points against the already
-    // installed singleton. CreateAgent returns another owning handle and
-    // Start is intentionally idempotent.
-    pt_set_config_file_path("");
-    pt_agent_t created = pt_create_agent();
+    // Exercise the standalone lifecycle entry point against the already
+    // installed singleton: pt_start_agent() in a process whose agent runs
+    // returns another owning handle to that same running agent.
+    pt_agent_t created = pt_start_agent(NULL);
     ASSERT_NE(created, nullptr);
-    pt_agent_start(created);
     EXPECT_NE(pt_agent_is_enabled(created), 0);
     pt_agent_destroy(created);
 
@@ -3510,11 +3518,13 @@ TEST_F(AgentIntegrationTest, RejectsActiveThreadCountStreamsBeyondLimit) {
 // Runs without the fixture: a disabled configuration must yield a noop agent
 // that needs no collector and never registers itself as the global agent.
 TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
-    SetConfigEnvVarPrefix("PINPOINT_CPP_AGENT_IT_ISOLATED");
-    SetConfigFilePath("");
-    SetConfigString("Enable: false\nApplicationName: noop-agent-it\n");
+    AgentOptions options;
+    options.env_prefix = "PINPOINT_CPP_AGENT_IT_ISOLATED";
+    options.config_yaml = "Enable: false\nApplicationName: noop-agent-it\n";
+    options.app_type = kApplicationType;
+    options.server_info = "disabled agent";
 
-    auto agent = CreateAgent(kApplicationType, "disabled agent");
+    auto agent = StartAgent(options);
     ASSERT_NE(agent, nullptr);
     EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(agent), nullptr);
     EXPECT_FALSE(agent->Enable());
@@ -3536,12 +3546,8 @@ TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
     span->EndSpan();
 
     // The noop agent's lifecycle entry points must be inert and safe.
-    agent->Start();
     EXPECT_FALSE(agent->Enable());
     agent->Shutdown();
-
-    SetConfigString("");
-    SetConfigEnvVarPrefix("");
 }
 
 TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutSpanRequest) {

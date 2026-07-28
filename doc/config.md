@@ -45,9 +45,9 @@ Create a `pinpoint-config.yaml` file and set its path:
 #include "pinpoint/tracer.h"
 
 int main() {
-    pinpoint::SetConfigFilePath("/path/to/pinpoint-config.yaml");
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_file_path = "/path/to/pinpoint-config.yaml";
+    auto agent = pinpoint::StartAgent(options);
     // ...
 }
 ```
@@ -75,25 +75,22 @@ Or programmatically:
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    auto agent = pinpoint::StartAgent();
     // ...
 }
 ```
 
 #### Customizing the environment variable prefix
 
-All environment variable names use the `PINPOINT_CPP` prefix by default. Call `SetConfigEnvVarPrefix()` **before** `CreateAgent()` to change it — the agent then reads `<prefix>_<suffix>` (e.g. `MYAPP_APPLICATION_NAME`). An empty prefix resets to the default.
+All environment variable names use the `PINPOINT_CPP` prefix by default. Set `AgentOptions::env_prefix` to change it — the agent then reads `<prefix>_<suffix>` (e.g. `MYAPP_APPLICATION_NAME`). An empty prefix selects the default.
 
 ```cpp
-pinpoint::SetConfigEnvVarPrefix("MYAPP");   // read MYAPP_* instead of PINPOINT_CPP_*
+pinpoint::AgentOptions options;
+options.env_prefix = "MYAPP";   // read MYAPP_* instead of PINPOINT_CPP_*
 setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
 setenv("MYAPP_COLLECTOR_HOST", "localhost", 1);
-auto agent = pinpoint::CreateAgent();
-agent->Start();
+auto agent = pinpoint::StartAgent(options);
 ```
-
-Because environment variables are read only while building the initial configuration, the prefix must be set before the agent is created; it has no effect on a running agent.
 
 ### Method 3: Configuration String (Inline YAML)
 
@@ -110,9 +107,9 @@ int main() {
           PercentRate: 10
     )";
 
-    pinpoint::SetConfigString(config);
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    pinpoint::AgentOptions options;
+    options.config_yaml = config;
+    auto agent = pinpoint::StartAgent(options);
     // ...
 }
 ```
@@ -131,7 +128,9 @@ int main() {
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
 
-> **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as the `app_type` argument of `pinpoint::CreateAgent()` and defaults to `APP_TYPE_CPP` (`1300`).
+> **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
+
+> **Multi-process hosts:** a pinned `AgentId` gets a per-worker suffix — `AgentOptions::instance_suffix` when set (e.g. `myid-w0`), otherwise the process id, so sibling pre-fork workers never share one agent id. Auto-generated ids are already unique per process. See the [Pre-fork Integration Guide](prefork.md).
 
 ### Identity Versions
 
@@ -156,10 +155,16 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error` |
-| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. Supports per-worker placeholders: `%pid%` expands to the process id, `%suffix%` to `AgentOptions::instance_suffix` (or the pid when unset). |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
 `LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.
+
+> **Multi-process hosts:** the built-in size rotation is not safe when several
+> worker processes share one log file — use the `%pid%`/`%suffix%` placeholders
+> to give each worker its own file (e.g.
+> `FilePath: "/var/log/pinpoint/agent-%suffix%.log"`). See the
+> [Pre-fork Integration Guide](prefork.md).
 
 ---
 
@@ -366,7 +371,7 @@ All rebuilt components are published together in a **single atomic swap** (threa
 
 ### Requirements
 
-- A **YAML configuration file path** must be set (via `SetConfigFilePath()` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
+- A **YAML configuration file path** must be set (via `AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
 - The config file must exist at startup; the watcher is not started otherwise.
 
 ### Example: Changing Sampling Rate at Runtime

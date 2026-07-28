@@ -168,8 +168,9 @@ namespace pinpoint {
           channel_ready_backoff_{tuning} {
         client_name_ = grpc_client_name(client_type_);
         // The channel and stub are NOT built here: doing so would trigger
-        // grpc_init (and gRPC's background threads) at CreateAgent() time.
-        // openChannel(), called from Agent::Start(), performs that work.
+        // grpc_init (and gRPC's background threads) at agent construction
+        // time. openChannel(), called when the agent starts, performs that
+        // work.
     }
 
     void GrpcClient::set_request_deadline(grpc::ClientContext& context) const {
@@ -1209,6 +1210,15 @@ namespace pinpoint {
         // retried like a failed send, so the agent still comes up once the
         // condition clears. Only stopAgentInfo() or agent exit ends the loop.
         const auto retry_interval = std::chrono::milliseconds(config_->collector.agent_info.send_retry_interval_ms);
+        // Jittered, non-escalating delay (multiplier 1.0 keeps the base
+        // interval): sibling pre-fork workers start simultaneously, and an
+        // identical fixed retry interval would send every worker's
+        // registration to the collector in lockstep for the whole outage.
+        // Constructed here — in the worker's init thread, always post-fork —
+        // so each worker seeds its own jitter sequence.
+        ExponentialBackoff retry_backoff(retry_interval, 1.0,
+                                         tuning_.reconnect_randomization_factor,
+                                         retry_interval * 2);
         while (!agent_->isExiting()) {
             try {
                 if (send_agent_info_once()) {
@@ -1219,7 +1229,7 @@ namespace pinpoint {
             } catch (...) {
                 LOG_ERROR("register agent unknown exception");
             }
-            if (wait_agent_info_retry(retry_interval)) {
+            if (wait_agent_info_retry(retry_backoff.next_delay())) {
                 return false;
             }
         }

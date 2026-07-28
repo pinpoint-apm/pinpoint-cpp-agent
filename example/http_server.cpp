@@ -15,8 +15,7 @@ int main() {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     setenv("PINPOINT_CPP_LOG_LEVEL", "debug", 0);
 
-    auto agent = pinpoint::CreateAgent();
-    agent->Start();
+    auto agent = pinpoint::StartAgent();
 
     httplib::Server server;
     server.Get("/foo", on_foo);

@@ -91,18 +91,28 @@ namespace pinpoint {
     	 * @param reader Trace context reader provided by user code.
     	 */
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
+		/// @brief Injects the StartAgent() options used by the config-file
+		/// watcher and config reloads. Called by StartAgent() before Start();
+		/// an agent built without options (tests) runs without a watcher.
+		void setOptions(AgentOptions options) { options_ = std::move(options); }
 		/// @brief Begins bringing the agent online in the current process:
 		/// starts the config watcher and an initialization thread that opens
-		/// channels and launches workers. A forked child derives a
-		/// child-specific id. Returns without waiting for collector registration.
-		/// Refused once do_shutdown() has run — shutting_down_ is never cleared,
-		/// so a shut-down instance stays offline for good. See Agent::Start().
-		void Start() noexcept override;
-		/// @brief Returns whether the agent is enabled for tracing.
+		/// channels and launches workers. Returns without waiting for
+		/// collector registration. Refused once do_shutdown() has run —
+		/// shutting_down_ is never cleared, so a shut-down instance stays
+		/// offline for good — and refused for an agent object inherited
+		/// across fork() (owner_pid_ from another process).
+		void Start() noexcept;
+		/// @brief Returns whether the agent is enabled for tracing. Always
+		/// false (with a one-time error log) for an agent inherited across
+		/// fork() — see warn_fork_inheritance().
 		bool Enable() override;
+		/// @brief True when this agent was started in the current process (or
+		/// not started at all); false for a handle inherited across fork().
+		bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == getpid(); }
 		/// @brief Initiates a graceful shutdown of the agent. Terminal: this
 		/// instance cannot be restarted, callers must build a new one through
-		/// CreateAgent(). See Agent::Shutdown().
+		/// StartAgent(). See Agent::Shutdown().
 		void Shutdown() noexcept override;
 
     	bool isExiting() const override { return shutting_down_; }
@@ -210,9 +220,8 @@ namespace pinpoint {
 
     	// Serializes reloadConfig() writers. Building a new AgentRuntime is a
     	// load-build-store read-modify-write of runtime_: two concurrent
-    	// reloads — e.g. a CreateAgent()-driven reload (holding
-    	// global_agent_mutex) racing the config-file watcher thread (which does
-    	// NOT hold it) — could otherwise both build from the same old runtime
+    	// reloads — e.g. a test-driven reload racing the config-file watcher
+    	// thread — could otherwise both build from the same old runtime
 		// and lose one of the updates. Readers do not take this mutex; an
 		// unchanged generation-cache hit also avoids AtomicSharedPtr's shared
 		// source (which may itself use a shared_mutex on C++17 platforms).
@@ -222,15 +231,24 @@ namespace pinpoint {
     	std::atomic<uint64_t> trace_id_sequence_{};
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
-    	// Fork-safe lifecycle. Start() flips started_ and records owner_pid_ (the
-    	// pid that actually brought the agent online); teardown abandons the
-    	// handles instead of joining when it runs in a different process (a
-    	// forked child inheriting dead thread handles). create_pid_ is the pid that constructed the agent
-    	// (CreateAgent time); Start() compares against it to detect that it is
-		// running in a forked child and must derive a child-specific agent id.
+    	// Start() flips started_ and records owner_pid_ (the pid that brought
+    	// the agent online). The supported model starts the agent in the
+    	// process that uses it (StartAgent() per worker); owner_pid_ exists to
+    	// keep MISUSE crash-free: when a started agent is inherited across
+    	// fork(), Start()/Enable() refuse with a one-time error log and
+    	// teardown abandons the inherited dead thread handles instead of
+    	// joining them. Atomic because Enable() reads it without a lock.
     	std::atomic<bool> started_{false};
-    	pid_t create_pid_{};
-    	pid_t owner_pid_{};
+    	std::atomic<pid_t> owner_pid_{0};
+    	// One-time fork-inheritance diagnostic (see warn_fork_inheritance()).
+    	mutable std::atomic<bool> fork_misuse_warned_{false};
+
+    	// StartAgent() inputs, kept for the config-file watcher's reloads.
+    	// Written once by setOptions() before Start(); read by the watcher
+    	// thread afterwards.
+    	AgentOptions options_;
+    	// Per-agent config-file watcher; null when no config file is watched.
+    	std::unique_ptr<ConfigFileWatcher> config_watcher_;
 
     	// Serializes Start() against do_shutdown(). Without it a concurrent
     	// Shutdown() races Start()'s writes to owner_pid_ and init_thread_
@@ -258,12 +276,9 @@ namespace pinpoint {
     	/// responsible for gRPC communication and enables the agent. Runs on
     	/// init_thread_.
     	void init_grpc_workers();
-		/// @brief Derives a child-specific agent id when Start() runs in a
-		/// forked child (create_pid_ != current pid). A pinned id gets a PID
-		/// suffix; an auto-generated id is replaced with a fresh UUID. A no-op
-		/// in the process that constructed the agent, so non-fork behavior is
-		/// unchanged.
-    	void refresh_agent_id_for_process();
+    	/// @brief Logs, once per agent, that this handle was inherited across
+    	/// fork() and cannot be used in this process.
+    	void warn_fork_inheritance() const noexcept;
     	/// @brief Abandons (never joins or detaches — see abandon_thread())
     	/// every worker thread handle. Used when tearing down an agent inherited
     	/// across fork(), where the handles are joinable but reference threads

@@ -26,11 +26,11 @@
  * @code
  *   #include "pinpoint/tracer_c.h"
  *
- *   // Optional: load configuration before creating the agent.
- *   pt_set_config_file_path("/etc/pinpoint/agent.yaml");
- *
- *   pt_agent_t agent = pt_create_agent();
- *   pt_agent_start(agent);
+ *   // Configure and start the agent in the process that records spans.
+ *   pt_agent_options_t opts = pt_agent_options_new();
+ *   pt_agent_options_set_config_file(opts, "/etc/pinpoint/agent.yaml");
+ *   pt_agent_t agent = pt_start_agent(opts);
+ *   pt_agent_options_free(opts);
  *
  *   // --- incoming request ---
  *   pt_context_reader_t reader = { &my_headers, my_header_get };
@@ -332,72 +332,120 @@ typedef struct {
 } pt_callstack_reader_t;
 
 /* ========================================================================== */
-/* Global configuration                                                         */
+/* Agent options                                                                */
 /* ========================================================================== */
 
 /**
- * @brief Sets the path of the YAML configuration file.
+ * @brief Opaque builder for pt_start_agent() inputs.
  *
- * Must be called before pt_create_agent() / pt_global_agent().
- * Mirrors pinpoint::SetConfigFilePath().
- *
- * A configured file — whether set here or via the PINPOINT_CPP_CONFIG_FILE
- * environment variable, which overrides this path — takes precedence over
- * pt_set_config_string(); see there.
+ * Mirrors pinpoint::AgentOptions. Build one with pt_agent_options_new(),
+ * populate it with the setters below, pass it to pt_start_agent() and release
+ * it with pt_agent_options_free(). The options object is only read during the
+ * pt_start_agent() call; it may be freed immediately afterwards.
  */
-void pt_set_config_file_path(const char* config_file_path);
+typedef struct pt_agent_options_s* pt_agent_options_t;
 
 /**
- * @brief Injects a YAML configuration string directly.
- *
- * Must be called before pt_create_agent() / pt_global_agent().
- * Mirrors pinpoint::SetConfigString().
- *
- * Precedence: when a config file path is also set — including via the
- * PINPOINT_CPP_CONFIG_FILE environment variable, which the embedder does not
- * control — the file's content replaces this string wholesale on every
- * (re)load; the two sources are never merged. Environment variables still
- * override individual settings from either source.
+ * @brief Allocates an options object with all defaults. Returns NULL only if
+ *        allocation fails.
  */
-void pt_set_config_string(const char* config_string);
+pt_agent_options_t pt_agent_options_new(void);
+
+/** @brief Releases an options object. NULL is ignored. */
+void pt_agent_options_free(pt_agent_options_t options);
+
+/**
+ * @brief Sets the YAML configuration file path.
+ *
+ * Precedence: the `<env_prefix>_CONFIG_FILE` environment variable overrides
+ * this path; a configured file's content replaces the YAML string set with
+ * pt_agent_options_set_config_yaml() wholesale on every (re)load — the two
+ * sources are never merged. Environment variables still override individual
+ * settings from either source. A NULL value resets to "not set".
+ */
+void pt_agent_options_set_config_file(pt_agent_options_t options, const char* path);
+
+/**
+ * @brief Injects a YAML configuration string, used when no config file is
+ *        configured (see pt_agent_options_set_config_file()). A NULL value
+ *        resets to "not set".
+ */
+void pt_agent_options_set_config_yaml(pt_agent_options_t options, const char* yaml);
+
+/**
+ * @brief Overrides the prefix of the environment variable names the agent
+ *        reads (e.g. "MYAPP" makes it read MYAPP_APPLICATION_NAME). NULL or
+ *        empty selects the default "PINPOINT_CPP".
+ */
+void pt_agent_options_set_env_prefix(pt_agent_options_t options, const char* prefix);
+
+/** @brief Sets the application type reported to the collector. */
+void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type);
+
+/**
+ * @brief Sets AgentInfo server metadata.
+ *
+ * @param server_info Server runtime description. NULL keeps the default.
+ * @param args        Optional array of command line argument strings. May be NULL.
+ * @param args_count  Number of entries in args. Values <= 0 are treated as 0.
+ * @param libs        Optional array of service library strings. May be NULL.
+ * @param libs_count  Number of entries in libs. Values <= 0 are treated as 0.
+ */
+void pt_agent_options_set_server_metadata(pt_agent_options_t options,
+                                          const char* server_info,
+                                          const char* const* args,
+                                          int args_count,
+                                          const char* const* libs,
+                                          int libs_count);
+
+/**
+ * @brief Sets a stable per-worker identifier for multi-process hosts (e.g.
+ *        "w0" for nginx worker slot 0).
+ *
+ * When set, a pinned AgentId and an explicitly configured AgentName get
+ * "-<suffix>" appended so sibling workers register as distinct agent
+ * instances with names stable across worker restarts. When unset, a pinned
+ * AgentId gets a "-<pid>" suffix instead (with a warning). Auto-generated ids
+ * are already unique per process and never get a suffix. A NULL value resets
+ * to "not set".
+ */
+void pt_agent_options_set_instance_suffix(pt_agent_options_t options, const char* suffix);
 
 /* ========================================================================== */
 /* Agent lifecycle                                                              */
 /* ========================================================================== */
 
 /**
- * @brief Creates a new "cold" Pinpoint agent using the global configuration.
+ * @brief Creates, configures and starts the agent in the CURRENT process, and
+ *        installs it as the global agent.
  *
- * Like pinpoint::CreateAgent(), the returned agent is only allocated and
- * configured: it starts no threads and opens no gRPC connection until
- * pt_agent_start() is called. Call pt_agent_start() before expecting spans to
- * be recorded. This split makes the agent safe to create in a process that will
- * fork() and start the agent separately in each child.
+ * This is the only way to bring an agent online. Call it in the process that
+ * will record spans — for pre-fork servers (nginx, Apache prefork, ...) that
+ * means each worker calls pt_start_agent() after fork(), from its worker-init
+ * hook, and the master process makes NO agent API calls at all. Each worker
+ * registers as its own agent instance with a process-unique agent id.
+ *
+ * The call returns as soon as initialization is launched; it does NOT wait
+ * for collector registration. pt_agent_is_enabled() flips to non-zero once
+ * registration succeeds. On failure a disabled (noop) agent handle is
+ * returned — never NULL, except when handle setup itself fails.
+ *
+ * Calling pt_start_agent() again in the same process returns the already
+ * running agent (with a warning). After pt_agent_shutdown() a new
+ * pt_start_agent() call builds a fresh agent.
+ *
+ * An agent inherited across fork() is unusable in the child and is refused —
+ * see pinpoint::StartAgent().
+ *
+ * @param options Options built with pt_agent_options_new(); NULL uses all
+ *                defaults. Only read during this call.
  *
  * The returned handle must be released with pt_agent_destroy() after
  * pt_agent_shutdown() has been called.
  *
- * Mirrors pinpoint::CreateAgent().
+ * Mirrors pinpoint::StartAgent().
  */
-pt_agent_t pt_create_agent(void);
-
-/**
- * @brief Creates a new Pinpoint agent with AgentInfo server metadata.
- *
- * @param server_info Server runtime description. If NULL, behaves like
- *                    pt_create_agent().
- * @param args        Optional array of command line argument strings. May be NULL.
- * @param args_count  Number of entries in args. Values <= 0 are treated as 0.
- * @param libs        Optional array of service library strings. May be NULL.
- * @param libs_count  Number of entries in libs. Values <= 0 are treated as 0.
- *
- * Mirrors pinpoint::CreateAgent(std::string_view, args, libs).
- */
-pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
-                                                const char* const* args,
-                                                int args_count,
-                                                const char* const* libs,
-                                                int libs_count);
+pt_agent_t pt_start_agent(pt_agent_options_t options);
 
 /**
  * @brief Returns a handle to the singleton global agent.
@@ -413,8 +461,8 @@ pt_agent_t pt_create_agent_with_server_metadata(const char* server_info,
 pt_agent_t pt_global_agent(void);
 
 /**
- * @brief Releases an agent handle obtained from pt_create_agent(),
- *        pt_create_agent_with_server_metadata(), or pt_global_agent().
+ * @brief Releases an agent handle obtained from pt_start_agent() or
+ *        pt_global_agent().
  *
  * For handles from pt_global_agent() this only frees the C wrapper; the
  * global agent itself is unaffected.
@@ -427,26 +475,9 @@ pt_agent_t pt_global_agent(void);
 void pt_agent_destroy(pt_agent_t agent);
 
 /**
- * @brief Brings the agent online in the CURRENT process.
- *
- * Starts the config-file watcher and asynchronous agent initialization; the
- * initialization thread opens the gRPC channels and launches the workers. The
- * call returns without waiting for collector connection or registration.
- * After fork(), call it in each child created from a cold agent so each worker
- * derives a child-specific agent id.
- *
- * Calling this after pt_agent_shutdown() is refused (logged at error level):
- * that agent stays disabled permanently and only produces noop spans. To
- * resume tracing, discard the handle and call pt_create_agent() again — see
- * pt_agent_shutdown().
- *
- * Mirrors pinpoint::Agent::Start().
- */
-void pt_agent_start(pt_agent_t agent);
-
-/**
  * @brief Returns non-zero after initialization succeeds and tracing is
  *        enabled. Individual spans may still be rejected by sampling.
+ *        Always 0 for an agent handle inherited across fork().
  *
  * Mirrors pinpoint::Agent::Enable().
  */
@@ -458,16 +489,15 @@ int pt_agent_is_enabled(pt_agent_t agent);
  * Queued spans are submitted when a collector channel is available, but
  * successful delivery is not guaranteed.
  *
- * Terminal for this agent: pt_agent_start() can never bring it back online,
+ * Terminal for this agent: it can never be brought back online,
  * pt_agent_is_enabled() stays 0 and it only produces noop spans. When it is
  * the global agent it is also removed from the singleton, so pt_global_agent()
  * returns the disabled-agent sentinel until a new one is installed.
  *
  * To resume tracing in the same process, release the handle with
- * pt_agent_destroy() and run pt_create_agent() + pt_agent_start() again. Each
- * such cycle re-resolves the agent identity, so it registers a NEW agent
- * instance with the collector unless AgentId is pinned in the configuration
- * (UidVersion v4 always regenerates it).
+ * pt_agent_destroy() and call pt_start_agent() again. Each such cycle
+ * re-resolves the agent identity, so it registers a NEW agent instance with
+ * the collector.
  *
  * Mirrors pinpoint::Agent::Shutdown().
  */

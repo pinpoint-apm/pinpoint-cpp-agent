@@ -17,9 +17,13 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+#include <sys/types.h>
 #include <yaml-cpp/yaml.h>
 #include "pinpoint/tracer.h"
 #include "sampling.h"
@@ -64,8 +68,8 @@ namespace pinpoint {
      *
      * The constants below hold only the suffix (without a prefix). At read time
      * the agent builds the full name as `<prefix>_<suffix>`, where the prefix is
-     * `DEFAULT_PREFIX` (`PINPOINT_CPP`) unless overridden via `set_env_prefix()`
-     * (public `SetConfigEnvVarPrefix()`). E.g. `APPLICATION_NAME` is read from
+     * `DEFAULT_PREFIX` (`PINPOINT_CPP`) unless overridden via
+     * `AgentOptions::env_prefix`. E.g. `APPLICATION_NAME` is read from
      * `PINPOINT_CPP_APPLICATION_NAME` by default.
      */
     namespace env {
@@ -169,10 +173,11 @@ namespace pinpoint {
         // Defaults to true so directly-constructed Config values stay valid.
         bool identity_resolved_ = true;
         // True when the resolved agent_id came from an explicit, user-provided
-        // value (v1/v3 only; v4 always auto-generates). Used by Agent::Start()
-        // to derive a child-specific id after a fork: a pinned id gets a PID
-        // suffix, while an auto id is regenerated. Defaults to false so
-        // directly-constructed Config values are treated as auto-generated.
+        // value (v1/v3 only; v4 always auto-generates). make_config() appends
+        // a per-process suffix (AgentOptions::instance_suffix, or the pid) to
+        // a pinned id so sibling pre-fork workers register as distinct agent
+        // instances. Defaults to false so directly-constructed Config values
+        // are treated as auto-generated.
         bool agent_id_pinned_ = false;
 
         // gRPC protocol.version header wire value (Java ProtocolVersion: V1=100, V4=400).
@@ -321,32 +326,9 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Sets the raw YAML configuration source used by `make_config`.
-     *
-     * @param cfg_str YAML configuration string.
-     */
-    void set_config_string(std::string_view cfg_str);
-
-    /**
-     * @brief Sets the configuration file path used by `make_config`.
-     *
-     * @param file_path Configuration file path.
-     */
-    void set_config_file_path(std::string_view file_path);
-
-    /**
-     * @brief Sets the prefix used to build environment variable names read by
-     *        `make_config` (default `PINPOINT_CPP`). An empty prefix resets to
-     *        the default.
-     *
-     * @param prefix Environment variable name prefix (without trailing `_`).
-     */
-    void set_env_prefix(std::string_view prefix);
-
-    /**
      * @brief Overrides the config-file watcher poll interval.
      *
-     * Applies to watchers started by subsequent `start_config_file_watcher()`
+     * Applies to watchers started by subsequent `ConfigFileWatcher::start()`
      * calls; a running watcher keeps the interval it started with. A
      * non-positive value resets to the production default (1s). Intended for
      * tests, which would otherwise wait out full 1s polling ticks.
@@ -354,34 +336,81 @@ namespace pinpoint {
     void set_config_watcher_poll_interval(std::chrono::milliseconds interval);
 
     /**
-     * @brief Starts the config file watcher thread.
+     * @brief Polls one configuration file for modification-time changes and
+     *        invokes a reload callback when it changed.
+     *
+     * Owned by the agent that watches its own config file (one watcher per
+     * agent, running in the agent's process). stop() joins the watcher
+     * thread; a handle inherited across fork() is abandoned instead of
+     * joined, so teardown in a forked child never touches a dead thread.
      */
-    void start_config_file_watcher();
+    class ConfigFileWatcher {
+    public:
+        struct StopSignal;
+
+        /**
+         * @param file_path Path of the file to watch; empty disables start().
+         * @param reload Invoked on the watcher thread each time the file's
+         *        modification time changes. The callee owns re-reading the
+         *        sources and applying the result.
+         */
+        ConfigFileWatcher(std::string file_path, std::function<void()> reload);
+        /// @brief Stops the watcher (see stop()).
+        ~ConfigFileWatcher();
+
+        ConfigFileWatcher(const ConfigFileWatcher&) = delete;
+        ConfigFileWatcher& operator=(const ConfigFileWatcher&) = delete;
+
+        /// @brief Starts the watcher thread. No-op when the path is empty or
+        ///        does not exist, or when this process's watcher already runs.
+        void start();
+        /// @brief Signals the watcher and joins its thread. A joinable handle
+        ///        inherited across fork() is abandoned instead (never joined
+        ///        or detached — see abandon_thread()).
+        void stop();
+
+    private:
+        std::string file_path_;
+        std::function<void()> reload_;
+        std::mutex mutex_;
+        std::thread thread_;
+        std::shared_ptr<StopSignal> stop_;
+        pid_t owner_pid_{0};
+    };
 
     /**
-     * @brief Stops the config file watcher thread if running.
+     * @brief Resolves the effective configuration file path for @p options:
+     *        the `<env_prefix>_CONFIG_FILE` environment variable when set,
+     *        otherwise `options.config_file_path`. Empty when neither is set.
      */
-    void stop_config_file_watcher();
+    std::string resolve_config_file_path(const AgentOptions& options);
 
     /**
-     * @brief Builds a `Config` object by combining defaults, the cached YAML and environment overrides.
+     * @brief Builds a `Config` object by combining defaults, the configuration
+     *        sources named by @p options and environment overrides.
      *
-     * On the first load (@p old is nullptr) environment overrides are applied
-     * and the logger is configured immediately. When @p old — the running
-     * agent's config — is given, the sources are being re-read for a reload:
-     * the config is seeded from @p old so keys absent from the file keep
-     * their running values (env-sourced ones included) instead of reverting
-     * to defaults, environment variables are not re-read, the non-reloadable
-     * fields are retained from @p old, and the global logger is reconfigured
-     * for the log settings that actually changed. Either way the returned
-     * config is final: reload callers pass it straight to `reloadConfig()`.
+     * The YAML source is the file named by `resolve_config_file_path(options)`
+     * (re-read on every call), falling back to `options.config_yaml` when no
+     * file is configured. On the first load (@p old is nullptr) environment
+     * overrides are applied, the logger is configured immediately, and
+     * `options.instance_suffix` is applied to the resolved identity. When
+     * @p old — the running agent's config — is given, the sources are being
+     * re-read for a reload: the config is seeded from @p old so keys absent
+     * from the file keep their running values (env-sourced ones included)
+     * instead of reverting to defaults, environment variables are not
+     * re-read, the non-reloadable fields are retained from @p old, and the
+     * global logger is reconfigured for the log settings that actually
+     * changed. Either way the returned config is final: reload callers pass
+     * it straight to `reloadConfig()`.
      *
+     * @param options Configuration sources and identity inputs.
      * @param old Currently active config when rebuilding for a reload,
      *        nullptr on the first load.
      * @return Resolved configuration ready to be consumed by the agent, or
      *         nullptr when construction failed entirely.
      */
-    std::shared_ptr<Config> make_config(const std::shared_ptr<const Config>& old = nullptr);
+    std::shared_ptr<Config> make_config(const AgentOptions& options,
+                                        const std::shared_ptr<const Config>& old = nullptr);
 
     /**
      * @brief Serializes a `Config` object back into its YAML representation.
