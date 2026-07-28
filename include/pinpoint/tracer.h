@@ -449,8 +449,10 @@ namespace pinpoint {
 	 * (`<env_prefix>_*`) still override individual settings from either source.
 	 */
 	struct AgentOptions {
-		/// YAML configuration file path. When set, the file is re-read by the
-		/// config-file watcher and its content replaces config_yaml wholesale.
+		/// YAML configuration file path. When set, the file's content replaces
+		/// config_yaml wholesale. With `EnableConfigFileWatcher: true`
+		/// (default: false) the config-file watcher re-reads the file on
+		/// change and hot-reloads the reloadable settings.
 		std::string config_file_path;
 		/// Raw YAML configuration used when no config file is configured.
 		std::string config_yaml;
@@ -497,7 +499,8 @@ namespace pinpoint {
 	 * process-unique agent id and its own start time.
 	 *
 	 * The call returns as soon as initialization is launched: the config-file
-	 * watcher is installed and an initialization thread opens the gRPC
+	 * watcher is installed (only when enabled via `EnableConfigFileWatcher`,
+	 * which defaults to false) and an initialization thread opens the gRPC
 	 * channels, registers with the collector and starts the workers. It does
 	 * NOT wait for collector connection or registration; Enable() flips to
 	 * true once registration succeeds. On configuration or setup failure a

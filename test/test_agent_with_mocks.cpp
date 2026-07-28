@@ -841,15 +841,22 @@ protected:
         std::filesystem::remove(log_file_.string() + ".1", ec);
     }
 
+    // enable_watcher=true opts in to the config-file watcher
+    // (EnableConfigFileWatcher); false omits the key entirely, exercising
+    // the default-off behavior.
     void write_watcher_config(int counter_rate, std::string_view application_name,
-                              bool exclude_test_url) const {
+                              bool exclude_test_url, bool enable_watcher = true) const {
         std::ofstream config_file(watcher_config_file_);
         ASSERT_TRUE(config_file.is_open());
         config_file
             << "ApplicationName: " << application_name << "\n"
             << "AgentId: test-agent-id\n"
             << "AgentName: test-agent-name\n"
-            << "Enable: true\n"
+            << "Enable: true\n";
+        if (enable_watcher) {
+            config_file << "EnableConfigFileWatcher: true\n";
+        }
+        config_file
             << "Collector:\n"
             << "  GrpcHost: 127.0.0.1\n"
             << "  GrpcAgentPort: 9991\n"
@@ -1017,6 +1024,47 @@ TEST_F(StartAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
     const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
     EXPECT_LT(stop_elapsed, std::chrono::milliseconds(2000));
 
+    EXPECT_FALSE(agent->Enable());
+}
+
+// EnableConfigFileWatcher defaults to false: without opting in, an agent
+// started with a config file path must NOT install the watcher, so editing
+// the file at runtime leaves the running config untouched.
+TEST_F(StartAgentTest, ConfigFileWatcherNotInstalledByDefault) {
+    write_watcher_config(1, "test-app", false, /*enable_watcher=*/false);
+    set_config_file_path(watcher_config_file_.string());
+
+    // A short tick makes the negative check meaningful: with the watcher
+    // (wrongly) installed, many polls fit into the wait below and the reload
+    // would be observed.
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(20));
+
+    auto initial_config = make_config();
+    ASSERT_NE(initial_config, nullptr);
+    EXPECT_FALSE(initial_config->enable_config_file_watcher);
+    auto agent = install_mock_agent(initial_config, options_);
+    ASSERT_TRUE(agent->Enable());
+    ASSERT_EQ(agent->getConfig()->sampling.counter_rate, 1);
+
+    std::error_code ec;
+    const auto previous_mtime =
+        std::filesystem::last_write_time(watcher_config_file_, ec);
+    ASSERT_FALSE(ec);
+    write_watcher_config(50, "test-app", false, /*enable_watcher=*/false);
+    std::filesystem::last_write_time(
+        watcher_config_file_, previous_mtime + std::chrono::seconds(5), ec);
+    ASSERT_FALSE(ec);
+
+    // Give a hypothetical watcher ample polls to pick the change up, then
+    // verify nothing was reloaded.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(agent->getConfig()->sampling.counter_rate, 1)
+        << "config must not be hot-reloaded when EnableConfigFileWatcher is off";
+
+    agent->Shutdown();
     EXPECT_FALSE(agent->Enable());
 }
 

@@ -210,8 +210,10 @@ namespace pinpoint {
         // Start the config-file watcher BEFORE spawning init_thread_ so that, if
         // thread creation throws, no joinable std::thread member exists yet and
         // the stack unwinds without hitting a joinable-thread destructor.
+        // The watcher is opt-in (EnableConfigFileWatcher, default off) and the
+        // toggle is consumed only here, which is why it is non-reloadable.
         const auto watch_path = resolve_config_file_path(options_);
-        if (!watch_path.empty()) {
+        if (!watch_path.empty() && getConfig()->enable_config_file_watcher) {
             config_watcher_ = std::make_unique<ConfigFileWatcher>(watch_path, [this] {
                 // make_config(options_, old) returns the final reload config:
                 // non-reloadable fields retained from the running config and

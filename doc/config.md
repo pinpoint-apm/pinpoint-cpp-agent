@@ -327,12 +327,13 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 |---|---|---|---|---|
 | `IsContainer` | `PINPOINT_CPP_IS_CONTAINER` | bool | auto-detected | Checks `/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Set explicitly if auto-detection fails. |
 | `EnableCallstackTrace` | `PINPOINT_CPP_ENABLE_CALLSTACK_TRACE` | bool | `false` | Capture stack trace when recording errors. |
+| `EnableConfigFileWatcher` | `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER` | bool | `false` | Watch the YAML config file and hot-reload changes at runtime. See [Configuration Hot Reload](#configuration-hot-reload). Non-reloadable: evaluated once at agent start. |
 
 ---
 
 ## Configuration Hot Reload
 
-The agent supports hot-reloading a subset of configuration options from the YAML configuration file **without restarting the application**. When the agent starts with a valid config file path, a background file-watcher thread monitors the file for changes (polling every 1 second). When a modification is detected the agent automatically re-reads the file, validates the new configuration, and applies it.
+The agent supports hot-reloading a subset of configuration options from the YAML configuration file **without restarting the application**. Hot reload is **disabled by default**: set `EnableConfigFileWatcher: true` (or `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER=true`) to opt in. When the agent starts with a valid config file path and the watcher enabled, a background file-watcher thread monitors the file for changes (polling every 1 second). When a modification is detected the agent automatically re-reads the file, validates the new configuration, and applies it.
 
 ### How It Works
 
@@ -349,6 +350,7 @@ Not all configuration options can be changed at runtime. Options that define the
 |---|---|---|
 | Agent identity | `ApplicationName`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector / gRPC connection | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*` | No |
+| Config-file watcher | `EnableConfigFileWatcher` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
@@ -371,6 +373,7 @@ All rebuilt components are published together in a **single atomic swap** (threa
 
 ### Requirements
 
+- **`EnableConfigFileWatcher: true`** must be set (in the config file or via `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER`); the watcher is disabled by default. The toggle is evaluated once at agent start and cannot itself be changed by a reload.
 - A **YAML configuration file path** must be set (via `AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
 - The config file must exist at startup; the watcher is not started otherwise.
 
@@ -380,6 +383,7 @@ Initial config file:
 
 ```yaml
 ApplicationName: "MyApp"
+EnableConfigFileWatcher: true
 Collector:
   Host: "collector.example.com"
 Sampling:
@@ -391,6 +395,7 @@ To reduce sampling to 10% without restart, edit the file in place:
 
 ```yaml
 ApplicationName: "MyApp"
+EnableConfigFileWatcher: true
 Collector:
   Host: "collector.example.com"
 Sampling:

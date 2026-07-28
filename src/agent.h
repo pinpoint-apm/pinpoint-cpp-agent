@@ -96,7 +96,8 @@ namespace pinpoint {
 		/// an agent built without options (tests) runs without a watcher.
 		void setOptions(AgentOptions options) { options_ = std::move(options); }
 		/// @brief Begins bringing the agent online in the current process:
-		/// starts the config watcher and an initialization thread that opens
+		/// starts the config watcher (when enabled via EnableConfigFileWatcher)
+		/// and an initialization thread that opens
 		/// channels and launches workers. Returns without waiting for
 		/// collector registration. Refused once do_shutdown() has run —
 		/// shutting_down_ is never cleared, so a shut-down instance stays

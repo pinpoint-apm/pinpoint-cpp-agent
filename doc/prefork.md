@@ -88,11 +88,11 @@ process id.
 
 ## Configuration reloads
 
-Each worker installs its own config-file watcher on
-`AgentOptions::config_file_path`, so editing the YAML file reconfigures every
-worker within the poll interval (default 1s) — no host reload required.
-Identity and collector settings are not reloadable; see the
-[Configuration Guide](config.md#configuration-hot-reload).
+With `EnableConfigFileWatcher: true` (default: false), each worker installs
+its own config-file watcher on `AgentOptions::config_file_path`, so editing
+the YAML file reconfigures every worker within the poll interval (default 1s)
+— no host reload required. Identity and collector settings are not
+reloadable; see the [Configuration Guide](config.md#configuration-hot-reload).
 
 For a host-driven reload (e.g. nginx `SIGHUP`), nothing special is needed: old
 workers shut their agents down in their exit hooks, and the newly forked

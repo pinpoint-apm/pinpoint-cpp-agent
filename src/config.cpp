@@ -485,6 +485,8 @@ namespace pinpoint {
         }
 
         config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", config.enable_callstack_trace);
+        config.enable_config_file_watcher =
+            get_boolean(yaml, "EnableConfigFileWatcher", config.enable_config_file_watcher);
     }
 
     static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
@@ -760,6 +762,10 @@ namespace pinpoint {
         }
         if(auto e = get_env(prefix, env::ENABLE_CALLSTACK_TRACE)) {
             config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, config.enable_callstack_trace);
+        }
+        if(auto e = get_env(prefix, env::ENABLE_CONFIG_FILE_WATCHER)) {
+            config.enable_config_file_watcher =
+                safe_env_stob(e.name.c_str(), e.value, config.enable_config_file_watcher);
         }
     }
 
@@ -1351,6 +1357,8 @@ namespace pinpoint {
                                default_config.sql.trace_bind_value);
         add_non_default_config(config_strings, "EnableCallstackTrace", config.enable_callstack_trace,
                                default_config.enable_callstack_trace);
+        add_non_default_config(config_strings, "EnableConfigFileWatcher", config.enable_config_file_watcher,
+                               default_config.enable_config_file_watcher);
 
         return config_strings;
     }
@@ -1524,6 +1532,7 @@ namespace pinpoint {
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "EnableCallstackTrace" << YAML::Value << config.enable_callstack_trace;
+        emitter << YAML::Key << "EnableConfigFileWatcher" << YAML::Value << config.enable_config_file_watcher;
         emitter << YAML::EndMap;
 
         return emitter.c_str();
@@ -1630,10 +1639,10 @@ namespace pinpoint {
         if (!old) return true;
         return std::tie(app_name_, agent_id_, agent_name_,
                         uid_version_, service_name_, api_key_, object_name_version_,
-                        span.queue_size) ==
+                        span.queue_size, enable_config_file_watcher) ==
                std::tie(old->app_name_, old->agent_id_, old->agent_name_,
                         old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
-                        old->span.queue_size) &&
+                        old->span.queue_size, old->enable_config_file_watcher) &&
                same_collector_config(*this, *old) &&
                same_stat_config(*this, *old) &&
                same_url_stat_config(*this, *old);
@@ -1650,9 +1659,9 @@ namespace pinpoint {
         // warn and fall through to overwrite them with the running values.
         if (!isReloadable(old)) {
             LOG_WARN("non-reloadable config fields changed at runtime "
-                     "(identity, collector, stat, http url_stat or span queue "
-                     "size); retaining the existing values and reloading the "
-                     "rest");
+                     "(identity, collector, stat, http url_stat, span queue "
+                     "size or config-file watcher); retaining the existing "
+                     "values and reloading the rest");
         }
 
         app_name_ = old->app_name_;
@@ -1669,5 +1678,9 @@ namespace pinpoint {
         stat = old->stat;
         http.url_stat = old->http.url_stat;
         span.queue_size = old->span.queue_size;
+        // Consumed once by Start(): the watcher either was or was not
+        // installed, and a reload (running on the watcher's own thread)
+        // cannot change that.
+        enable_config_file_watcher = old->enable_config_file_watcher;
     }
 }

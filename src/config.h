@@ -145,6 +145,7 @@ namespace pinpoint {
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
         constexpr const char* CONFIG_FILE = "CONFIG_FILE";
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
+        constexpr const char* ENABLE_CONFIG_FILE_WATCHER = "ENABLE_CONFIG_FILE_WATCHER";
     }
 
     /**
@@ -187,6 +188,12 @@ namespace pinpoint {
         bool enable = true;
         bool is_container = false;
         bool enable_callstack_trace = false;
+        // Opt-in for the config-file watcher (hot reload). Consumed once by
+        // Start() to decide whether the watcher is installed, so it is
+        // non-reloadable: with the watcher off nothing observes the file,
+        // and a running watcher cannot stop itself from its own reload
+        // callback.
+        bool enable_config_file_watcher = false;
 
         struct {
             std::string level = defaults::LOG_LEVEL;
@@ -311,8 +318,8 @@ namespace pinpoint {
 
         /**
          * @brief Copies the non-reloadable fields (identity, the whole collector
-         * section, stat, http url_stat and span queue size) from an existing
-         * config into this one.
+         * section, stat, http url_stat, span queue size and the config-file
+         * watcher toggle) from an existing config into this one.
          *
          * These fields cannot change while the agent is running. When a new
          * config is built for a reload it may carry different values for them;

@@ -110,6 +110,7 @@ private:
         saved_env_vars_[full_env(env::SQL_ENABLE_RAW_SQL_CACHE)] = GetEnvVar(full_env(env::SQL_ENABLE_RAW_SQL_CACHE));
         saved_env_vars_[full_env(env::SQL_TRACE_BIND_VALUE)] = GetEnvVar(full_env(env::SQL_TRACE_BIND_VALUE));
         saved_env_vars_[full_env(env::ENABLE_CALLSTACK_TRACE)] = GetEnvVar(full_env(env::ENABLE_CALLSTACK_TRACE));
+        saved_env_vars_[full_env(env::ENABLE_CONFIG_FILE_WATCHER)] = GetEnvVar(full_env(env::ENABLE_CONFIG_FILE_WATCHER));
         saved_env_vars_[full_env(env::HTTP_COLLECT_URL_STAT)] = GetEnvVar(full_env(env::HTTP_COLLECT_URL_STAT));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_LIMIT)] = GetEnvVar(full_env(env::HTTP_URL_STAT_LIMIT));
         saved_env_vars_[full_env(env::HTTP_URL_STAT_QUEUE_SIZE)] = GetEnvVar(full_env(env::HTTP_URL_STAT_QUEUE_SIZE));
@@ -1760,6 +1761,105 @@ TEST_F(ConfigTest, CallstackTraceDefaultInStringOutputTest) {
         << "Config string should contain EnableCallstackTrace key";
     EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
         << "Config string should show default value (false)";
+}
+
+// ========== Config File Watcher Configuration Tests ==========
+
+// The config-file watcher (hot reload) is opt-in
+TEST_F(ConfigTest, ConfigFileWatcherDefaultTest) {
+    auto config = make_config();
+
+    EXPECT_FALSE(config->enable_config_file_watcher)
+        << "Config file watcher should be disabled by default";
+}
+
+TEST_F(ConfigTest, ConfigFileWatcherEnableViaYamlTest) {
+    set_config_string(R"(
+EnableConfigFileWatcher: true
+)");
+    auto config = make_config();
+
+    EXPECT_TRUE(config->enable_config_file_watcher)
+        << "Config file watcher should be enabled as per YAML";
+}
+
+TEST_F(ConfigTest, ConfigFileWatcherEnableViaEnvironmentVariableTest) {
+    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "true", 1);
+
+    auto config = make_config();
+
+    EXPECT_TRUE(config->enable_config_file_watcher)
+        << "Config file watcher should be enabled as per environment variable";
+}
+
+TEST_F(ConfigTest, ConfigFileWatcherEnvironmentVariableOverrideYamlTest) {
+    set_config_string(R"(
+EnableConfigFileWatcher: true
+)");
+    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "false", 1);
+
+    auto config = make_config();
+
+    EXPECT_FALSE(config->enable_config_file_watcher)
+        << "Environment variable should override YAML for the config file watcher";
+}
+
+TEST_F(ConfigTest, ConfigFileWatcherInvalidEnvironmentVariableTest) {
+    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "invalid_bool", 1);
+
+    auto config = make_config();
+
+    EXPECT_FALSE(config->enable_config_file_watcher)
+        << "Should use default (false) when env var is invalid";
+}
+
+// The toggle is consumed once at Start() (the watcher either was or was not
+// installed), so a reload must never flip it — in either direction.
+TEST_F(ConfigTest, ConfigFileWatcherToggleIsNonReloadable) {
+    set_config_string(R"(
+ApplicationName: "WatcherApp"
+EnableConfigFileWatcher: true
+)");
+    auto enabled = make_config();
+    ASSERT_NE(enabled, nullptr);
+    ASSERT_TRUE(enabled->enable_config_file_watcher);
+
+    set_config_string(R"(
+ApplicationName: "WatcherApp"
+EnableConfigFileWatcher: false
+)");
+    auto reloaded_off = make_config(enabled);
+    ASSERT_NE(reloaded_off, nullptr);
+    EXPECT_TRUE(reloaded_off->enable_config_file_watcher)
+        << "Reload must retain the running watcher toggle (true)";
+
+    set_config_string(R"(
+ApplicationName: "WatcherApp"
+)");
+    auto disabled = make_config();
+    ASSERT_NE(disabled, nullptr);
+    ASSERT_FALSE(disabled->enable_config_file_watcher);
+
+    set_config_string(R"(
+ApplicationName: "WatcherApp"
+EnableConfigFileWatcher: true
+)");
+    auto reloaded_on = make_config(disabled);
+    ASSERT_NE(reloaded_on, nullptr);
+    EXPECT_FALSE(reloaded_on->enable_config_file_watcher)
+        << "Reload must retain the running watcher toggle (false)";
+}
+
+TEST_F(ConfigTest, ConfigFileWatcherConfigurationToStringTest) {
+    set_config_string(R"(
+EnableConfigFileWatcher: true
+)");
+    auto config = make_config();
+
+    std::string config_string = to_config_string(*config);
+
+    EXPECT_TRUE(config_string.find("EnableConfigFileWatcher: true") != std::string::npos)
+        << "Config string should contain EnableConfigFileWatcher setting";
 }
 
 // ========== URL Stat Enable Trim Path Tests ==========
