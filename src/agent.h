@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <memory>
 #include <mutex>
@@ -66,6 +67,29 @@ namespace pinpoint {
 				  int32_t app_type = DEFAULT_APP_TYPE,
 				  size_t cache_size = kDefaultCacheSize);
         ~AgentImpl() noexcept override;
+
+		/// @brief Deleter attached by createShared(): runs the (bounded)
+		/// terminal teardown before destruction when the last reference is
+		/// dropped without an explicit Shutdown(), and skips destruction
+		/// entirely when the teardown runner took ownership of the object
+		/// (deferred destroy) or when a resource-exhausted shutdown leaked it.
+		struct SharedDeleter {
+			void operator()(AgentImpl* agent) const noexcept;
+		};
+
+		/// @brief Creates a shared agent whose final release stays bounded:
+		/// dropping the last reference without Shutdown() runs the teardown
+		/// under the shutdown deadline, and when the deadline expires the
+		/// teardown runner assumes ownership and destroys the agent only
+		/// after the straggling workers finish (a leak if they never do).
+		/// StartAgent() and the tests create every shared agent through this
+		/// factory; a shared agent built without it keeps the unbounded-join
+		/// destructor fallback.
+		template <typename... Args>
+		static std::shared_ptr<AgentImpl> createShared(Args&&... args) {
+			return std::shared_ptr<AgentImpl>(new AgentImpl(std::forward<Args>(args)...),
+			                                  SharedDeleter{});
+		}
 
 		/**
 		 * @brief Creates a new span for an outbound operation.
@@ -285,18 +309,60 @@ namespace pinpoint {
     	/// across fork(), where the handles are joinable but reference threads
     	/// that do not exist in this process.
     	void abandon_grpc_workers() noexcept;
-    	/// @brief Signals all gRPC workers to stop and joins their threads.
-    	void close_grpc_workers();
-    	/// @brief Waits for all gRPC workers to finish execution.
+    	/// @brief Sends every worker/watcher stop signal without blocking, so
+    	/// all of them wind down concurrently before the joins.
+    	void request_stop_workers() noexcept;
+    	/// @brief Blocking teardown tail: joins the config watcher, the
+    	/// AgentInfo scheduler, the init thread and every gRPC worker, then
+    	/// closes the channels. Unbounded — run it under
+    	/// teardown_workers_with_deadline().
+    	void teardown_workers() noexcept;
+    	/// @brief Runs teardown_workers() on a helper thread and waits for it
+    	/// up to the shutdown deadline (see agent_shutdown_deadline()). When
+    	/// the deadline expires the helper is detached and the object's
+    	/// lifetime is secured for the still-draining workers: with a
+    	/// shared_ptr self-reference while shared-owned (Shutdown() path), or
+    	/// by deferring destruction to the helper when the SharedDeleter is
+    	/// the caller (may_defer_destroy). Returns true when destruction was
+    	/// deferred — the caller must then not destroy the object.
+    	bool teardown_workers_with_deadline(bool may_defer_destroy) noexcept;
+    	/// @brief Resource-exhaustion fallback when the teardown helper thread
+    	/// cannot be created: intentionally leaks this agent (leak_on_release_)
+    	/// instead of joining unbounded — the already-signaled workers wind
+    	/// down on their own against a permanently live object. Returns false
+    	/// when the leak cannot be arranged (an object neither shared-owned
+    	/// nor deleter-owned dies with its scope regardless), in which case
+    	/// the caller must fall back to the inline join.
+    	bool leak_agent_for_stragglers(bool may_defer_destroy) noexcept;
+    	/// @brief Joins the init thread and every gRPC worker thread.
     	void wait_grpc_workers();
     	/// @brief Performs the actual shutdown work (workers, watcher, logger)
     	/// without touching the global_agent singleton. Safe to call from the
     	/// destructor — does not lock global_agent_mutex, never throws.
-    	void do_shutdown() noexcept;
+    	/// @param may_defer_destroy true only when the caller owns the object
+    	///        and can skip destroying it (the SharedDeleter): a teardown
+    	///        that outlives the deadline is then handed the object for a
+    	///        deferred destroy instead of an unbounded join.
+    	/// @return true when the object's destruction was deferred or leaked;
+    	///         the caller must not destroy it.
+    	bool do_shutdown(bool may_defer_destroy) noexcept;
+
+    	// Sticky "never destroy this object" marker, set when a
+    	// resource-exhausted shutdown had to abandon its workers without
+    	// joining them: the workers dereference this object indefinitely, so
+    	// SharedDeleter consults this flag at final release and leaks the
+    	// object instead of destroying it under them.
+    	std::atomic<bool> leak_on_release_{false};
     };
 
     // Test helpers for managing the global agent singleton
     void set_global_agent(std::shared_ptr<AgentImpl> agent);
     void reset_global_agent();
+
+    /// @brief Overrides the hard wall-clock bound applied to the blocking
+    ///        phase of agent shutdown; a non-positive value restores the
+    ///        3-second default. Test helper, mirroring
+    ///        set_config_watcher_poll_interval().
+    void set_agent_shutdown_deadline(std::chrono::milliseconds deadline);
 
 }  // namespace pinpoint

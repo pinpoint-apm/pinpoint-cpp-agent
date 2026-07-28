@@ -228,6 +228,13 @@ namespace pinpoint {
         });
     }
 
+    void ConfigFileWatcher::requestStop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stop_) {
+            stop_->request();
+        }
+    }
+
     void ConfigFileWatcher::stop() {
         std::thread watcher_to_join;
         {

@@ -303,9 +303,10 @@ Points to keep in mind:
   repeatedly.** Each `StartAgent()` re-resolves the agent identity, so an
   unpinned id makes every cycle register as a new agent instance in the
   Pinpoint UI. (With `UidVersion: v4` the id is always regenerated.)
-- **Shutdown is synchronous.** It joins the worker threads, so it can take up to a
-  few seconds while queued spans drain — do not call it from a latency-sensitive
-  path.
+- **Shutdown is synchronous but bounded.** It joins the worker threads while
+  queued spans drain, and returns within a 3-second deadline even if a worker
+  is stuck in an unresponsive RPC (stragglers finish draining on a background
+  thread). Still, do not call it from a latency-sensitive path.
 
 ---
 

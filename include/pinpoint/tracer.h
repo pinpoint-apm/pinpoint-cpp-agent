@@ -419,6 +419,15 @@ namespace pinpoint {
 		///        spans are submitted when a channel is available, but delivery
 		///        is not guaranteed.
 		///
+		/// Bounded: Shutdown() returns within a 3-second deadline even if a
+		/// worker is wedged in an RPC that ignores cancellation. Stragglers
+		/// then keep draining on a background thread that holds the agent
+		/// alive until they finish, so the final release of the object may
+		/// happen after Shutdown() returns. Dropping the last AgentPtr
+		/// without calling Shutdown() is bounded the same way — destruction
+		/// is deferred until the workers finish (the object stays leaked if
+		/// they never do) rather than blocking the release.
+		///
 		/// Terminal for this instance: it can never be brought back online,
 		/// Enable() stays false and NewSpan() only returns noop spans. When
 		/// this is the global agent it is also removed from the singleton, so

@@ -123,8 +123,8 @@ std::shared_ptr<AgentImpl> make_cold_agent(const std::shared_ptr<Config>& cfg) {
     m->injectMockStubs();
     s->injectMockStubs();
     st->injectMockStubs();
-    return std::make_shared<AgentImpl>(cfg, std::move(a), std::move(m),
-                                       std::move(s), std::move(st));
+    return AgentImpl::createShared(cfg, std::move(a), std::move(m),
+                                   std::move(s), std::move(st));
 }
 
 void wait_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {

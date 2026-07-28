@@ -102,8 +102,9 @@ workers start fresh agents.
 
 Call `Shutdown()` / `pt_agent_shutdown()` from the worker's exit hook. It
 drains queued spans to the collector (bounded wait) and joins the agent's
-threads. A worker killed without the hook simply loses whatever was still
-queued in that process.
+threads, returning within a 3-second deadline even if the collector is
+unresponsive. A worker killed without the hook simply loses whatever was
+still queued in that process.
 
 ## Operational notes
 

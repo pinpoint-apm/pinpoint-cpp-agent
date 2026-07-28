@@ -62,6 +62,28 @@ namespace pinpoint {
             static auto* holder = new AtomicSharedPtr<AgentImpl>();
             return *holder;
         }
+
+        // Hard wall-clock bound for the blocking phase of do_shutdown().
+        // gRPC cancellation is best-effort (TryCancel gives no completion
+        // bound) and the config watcher can sit in a filesystem call on a
+        // hung mount, so the joins themselves cannot be made individually
+        // bounded; instead the whole blocking teardown runs under this
+        // deadline and is handed to a detached reaper when it expires (see
+        // teardown_workers_with_deadline()). Overridable for tests via
+        // set_agent_shutdown_deadline().
+        constexpr std::chrono::milliseconds kDefaultShutdownDeadline{3000};
+        std::atomic<std::chrono::milliseconds::rep> shutdown_deadline_ms{
+            kDefaultShutdownDeadline.count()};
+
+        std::chrono::milliseconds agent_shutdown_deadline() {
+            return std::chrono::milliseconds{shutdown_deadline_ms.load(std::memory_order_relaxed)};
+        }
+    }
+
+    void set_agent_shutdown_deadline(std::chrono::milliseconds deadline) {
+        shutdown_deadline_ms.store(deadline.count() > 0 ? deadline.count()
+                                                        : kDefaultShutdownDeadline.count(),
+                                   std::memory_order_relaxed);
     }
 
     AgentImpl::AgentImpl(std::shared_ptr<const Config> cfg,
@@ -219,9 +241,10 @@ namespace pinpoint {
                 // non-reloadable fields retained from the running config and
                 // the logger already reconfigured. It re-reads the config
                 // file itself, so no separate read is needed here. This runs
-                // on the watcher thread; do_shutdown() stops (joins) the
-                // watcher before tearing anything down, so `this` stays valid
-                // for the whole callback.
+                // on the watcher thread; teardown_workers() joins the watcher
+                // while the agent is still guaranteed alive (by the shutdown
+                // caller or the deadline runner's keep-alive), so `this`
+                // stays valid for the whole callback.
                 auto new_cfg = make_config(options_, getConfig());
                 if (new_cfg) {
                     reloadConfig(std::move(new_cfg));
@@ -462,8 +485,8 @@ namespace pinpoint {
         // Boot-phase registration: block here until the collector accepts the
         // first AgentInfo, retrying indefinitely. The other workers are only
         // spawned after that first success. A shutdown during the wait aborts
-        // the bring-up: close_grpc_workers() runs stopAgentInfo() before
-        // joining this thread, which wakes the retry sleep.
+        // the bring-up: request_stop_workers() signals stopAgentInfo's cv
+        // before this thread is joined, which wakes the retry sleep.
         if (!grpc_agent_->registerAgentWithRetry()) {
             return;
         }
@@ -509,30 +532,48 @@ namespace pinpoint {
         return;
     }
 
-    void AgentImpl::close_grpc_workers() {
-        grpc_agent_->stopAgentInfo();
-        url_stats_->stopAddUrlStatsWorker();
-        url_stats_->stopSendUrlStatsWorker();
-        agent_stats_->stopAgentStatsWorker();
-        grpc_agent_->stopPingWorker();
-        grpc_metadata_->stopMetaWorker();
-        grpc_span_->stopSpanWorker();
-        grpc_stat_->stopStatsWorker();
-        if (grpc_command_) {
-            grpc_command_->stopCommandWorker();
+    void AgentImpl::request_stop_workers() noexcept {
+        // Every call here only sets flags, notifies condition variables or
+        // issues a best-effort TryCancel — none of them blocks. Signaling
+        // everything before any join lets all workers wind down in parallel
+        // inside the shutdown deadline instead of serially behind each other.
+        // Per-call try/catch so one failing signal cannot skip the rest.
+        try { if (config_watcher_) config_watcher_->requestStop(); } catch (...) {}
+        try { grpc_agent_->requestStopAgentInfo(); } catch (...) {}
+        try { url_stats_->stopAddUrlStatsWorker(); } catch (...) {}
+        try { url_stats_->stopSendUrlStatsWorker(); } catch (...) {}
+        try { agent_stats_->stopAgentStatsWorker(); } catch (...) {}
+        try { grpc_agent_->stopPingWorker(); } catch (...) {}
+        try { grpc_metadata_->stopMetaWorker(); } catch (...) {}
+        try { grpc_span_->stopSpanWorker(); } catch (...) {}
+        try { grpc_stat_->stopStatsWorker(); } catch (...) {}
+        try { if (grpc_command_) grpc_command_->stopCommandWorker(); } catch (...) {}
+    }
+
+    void AgentImpl::teardown_workers() noexcept {
+        // The watcher's reload callback dereferences this agent, so it is
+        // joined before anything else; the caller (inline teardown or the
+        // deadline runner's keep-alive) guarantees the agent outlives this
+        // whole function.
+        try { if (config_watcher_) config_watcher_->stop(); } catch (...) {}
+        try {
+            grpc_agent_->stopAgentInfo();
+            wait_grpc_workers();
+
+            grpc_agent_->closeChannel();
+            grpc_metadata_->closeChannel();
+            grpc_stat_->closeChannel();
+            grpc_span_->closeChannel();
+            if (grpc_command_) {
+                grpc_command_->closeChannel();
+            }
+
+            LOG_INFO("close grpc workers done");
+        } catch (const std::exception& e) {
+            try { LOG_ERROR("agent teardown failed: exception = {}", e.what()); } catch (...) {}
+        } catch (...) {
+            try { LOG_ERROR("agent teardown failed: unknown exception"); } catch (...) {}
         }
-
-        wait_grpc_workers();
-
-        grpc_agent_->closeChannel();
-        grpc_metadata_->closeChannel();
-        grpc_stat_->closeChannel();
-        grpc_span_->closeChannel();
-        if (grpc_command_) {
-            grpc_command_->closeChannel();
-        }
-
-        LOG_INFO("close grpc workers done");
     }
 
     void AgentImpl::abandon_grpc_workers() noexcept {
@@ -551,30 +592,11 @@ namespace pinpoint {
     }
 
     void AgentImpl::wait_grpc_workers() {
-        // The worker thread handles are moved out of the agent into a
-        // heap-allocated state block and joined on a helper thread, purely so
-        // the timed wait below can emit a diagnostic when shutdown runs long.
-        // The workers run member functions of this agent and its gRPC clients
-        // and dereference `this` (isExiting/getConfig/getAgentStats); they are
-        // therefore joined rather than detached before this returns.
-        // Abandoning a straggler while ~AgentImpl tears those objects down
-        // underneath it would be a use-after-free. Unary calls have deadlines
-        // and stopXWorker() requests stream cancellation, but gRPC TryCancel()
-        // is best-effort and callback completion has no hard wall-clock bound;
-        // the joins remain unconditional for lifetime safety.
-        struct JoinState {
-            std::mutex m;
-            std::condition_variable cv;
-            bool finished{false};
-            std::vector<std::thread> threads;
-        };
         // init_grpc_workers assigns the other thread members; join it first so
-        // moving them below cannot race those assignments. The init thread may
-        // be blocked in the boot-phase registration, but close_grpc_workers()
-        // has already run stopAgentInfo(), which interrupts that retry loop,
-        // and an in-flight registerAgent() call has a request deadline. This is
-        // done before the allocations below so the inline-join fallback cannot
-        // race init-thread assignments.
+        // the joins below cannot race those assignments. The init thread may
+        // be blocked in the boot-phase registration, but request_stop_workers()
+        // has already signaled stopAgentInfo's cv, which interrupts that retry
+        // loop, and an in-flight registerAgent() call has a request deadline.
         if (init_thread_.joinable()) {
             init_thread_.join();
         }
@@ -584,79 +606,186 @@ namespace pinpoint {
             &agent_stat_thread_, &ping_thread_, &meta_thread_,
             &span_thread_, &stat_thread_, &command_thread_,
         };
-
-        std::shared_ptr<JoinState> state;
-        try {
-            state = std::make_shared<JoinState>();
-            state->threads.reserve(std::size(workers));
-        } catch (...) {
-            // An allocation failing here is the same resource-exhaustion case
-            // as the joiner-thread fallback below, and skipping the joins is
-            // not an option: do_shutdown() swallows exceptions from this
-            // path, so unwinding would let ~AgentImpl destroy the members the
-            // still-running workers use. Join inline without building the
-            // helper state, losing only the slow-shutdown diagnostic.
-            try { LOG_WARN("wait grpc workers: allocation failed, joining inline"); } catch (...) {}
-            for (auto* worker : workers) {
-                if (worker->joinable()) {
-                    worker->join();
-                }
-            }
-            return;
-        }
-        // reserve() above guarantees these push_backs cannot throw (std::thread
-        // move construction is noexcept), so every joinable handle reaches
-        // `state` once we get here.
         for (auto* worker : workers) {
             if (worker->joinable()) {
-                state->threads.push_back(std::move(*worker));
+                worker->join();
             }
         }
+    }
 
-        std::thread joiner;
+    bool AgentImpl::leak_agent_for_stragglers(bool may_defer_destroy) noexcept {
+        // Resource exhaustion left no helper thread to bound (or even watch)
+        // the joins, and joining inline would reintroduce the unbounded
+        // shutdown. Leak the whole object instead: the stop signals are
+        // already sent, so the workers wind down on their own, and everything
+        // they dereference (this agent and its members) simply stays alive
+        // forever. Arranging that requires the power to prevent destruction —
+        // available while shared-owned (SharedDeleter consults
+        // leak_on_release_ at final release) or when the SharedDeleter itself
+        // is the caller (may_defer_destroy). An object that is neither dies
+        // with its scope no matter what, so the leak cannot be arranged for
+        // it and the caller must join inline.
+        if (!may_defer_destroy && weak_from_this().expired()) {
+            return false;
+        }
+        leak_on_release_.store(true);
+        // The thread handles are deliberately left joinable: a leaked object
+        // never runs its destructors, so nothing ever joins or terminates on
+        // them, and touching the handles here could race the init thread
+        // still assigning the worker members.
         try {
-            joiner = std::thread([state] {
-                for (auto& worker : state->threads) {
-                    worker.join();
-                }
+            LOG_WARN("agent shutdown: teardown thread unavailable; leaking the agent "
+                     "and letting its workers wind down unjoined");
+        } catch (...) {}
+        return true;
+    }
+
+    bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
+        // The workers run member functions of this agent and its gRPC clients
+        // and dereference `this` (isExiting/getConfig/getAgentStats); they
+        // must be joined, never detached, before the members they use are
+        // destroyed — abandoning a straggler around the object's destruction
+        // would be a use-after-free. Unary calls have deadlines and the stop
+        // signals request stream cancellation, but gRPC TryCancel() is
+        // best-effort and callback completion has no hard wall-clock bound,
+        // so the joins themselves are unbounded. To still bound shutdown, the
+        // whole blocking teardown runs on a helper thread: if it beats the
+        // deadline the helper is joined and shutdown completes as before;
+        // otherwise the helper is detached and the object's lifetime is
+        // secured for it — via a keep-alive self-reference (Shutdown() path)
+        // or by deferring destruction to the helper (SharedDeleter path).
+        struct TeardownState {
+            std::mutex m;
+            std::condition_variable cv;
+            bool finished{false};
+            bool abandoned{false};
+            // At most one of the two is set when the deadline expires.
+            // keep_alive keeps this agent (and every member the
+            // still-draining workers use) alive until the detached runner
+            // finishes; it is released when the runner drops its state
+            // reference, which may run the SharedDeleter on the runner
+            // thread — by then every worker is joined, so destruction is
+            // benign. delete_when_done instead hands the runner ownership of
+            // an object whose final reference is already gone (SharedDeleter
+            // caller): the runner deletes it after the joins — a leak only
+            // if the stragglers never finish.
+            std::shared_ptr<AgentImpl> keep_alive;
+            bool delete_when_done{false};
+        };
+
+        std::shared_ptr<TeardownState> state;
+        std::thread runner;
+        try {
+            state = std::make_shared<TeardownState>();
+            runner = std::thread([this, state] {
+                teardown_workers();
+                bool abandoned;
+                bool delete_when_done;
                 {
                     std::lock_guard<std::mutex> l(state->m);
                     state->finished = true;
+                    abandoned = state->abandoned;
+                    delete_when_done = state->delete_when_done;
                 }
-                state->cv.notify_one();
+                state->cv.notify_all();
+                if (abandoned) {
+                    // do_shutdown() already returned and ran its logger
+                    // flush; flush again for everything the stragglers
+                    // logged since. Logger is a never-destroyed singleton
+                    // with an idempotent, mutex-guarded shutdown.
+                    try { LOG_INFO("agent shutdown: background teardown finished"); } catch (...) {}
+                    try { shutdown_logger(); } catch (...) {}
+                }
+                if (delete_when_done) {
+                    // Deferred destroy: the SharedDeleter skipped destruction
+                    // when the deadline expired and handed the object here.
+                    // Every worker is joined now, so the destructor is
+                    // benign (its own do_shutdown call no-ops).
+                    delete this;
+                }
             });
         } catch (...) {
-            // Thread creation failing (EAGAIN) is precisely the resource-
-            // exhaustion case. Unwinding with joinable handles still in
-            // `state` would run ~thread on them and std::terminate the host,
-            // so join inline — losing only the slow-shutdown diagnostic.
-            try { LOG_WARN("wait grpc workers: joiner thread unavailable, joining inline"); } catch (...) {}
-            for (auto& worker : state->threads) {
-                worker.join();
+            // Allocation or thread creation (EAGAIN) failed: no runner can
+            // bound the joins. Leak the agent instead of joining unbounded;
+            // only an object that is neither shared-owned nor deleter-owned
+            // (it dies with its scope regardless) still requires the inline
+            // join for lifetime safety.
+            if (leak_agent_for_stragglers(may_defer_destroy)) {
+                return may_defer_destroy;
             }
-            return;
+            try { LOG_WARN("agent shutdown: teardown thread unavailable, tearing down inline"); } catch (...) {}
+            teardown_workers();
+            return false;
         }
 
-        bool finished;
-        {
+        // From here every path must leave `runner` joined or detached —
+        // destroying a joinable std::thread would std::terminate the host.
+        bool finished = false;
+        try {
             std::unique_lock<std::mutex> l(state->m);
-            finished = state->cv.wait_for(l, std::chrono::seconds(5),
-                [&state] { return state->finished; });
+            finished = state->cv.wait_for(l, agent_shutdown_deadline(),
+                                          [&state] { return state->finished; });
+        } catch (...) {
+            finished = false;
+        }
+        if (finished) {
+            runner.join();
+            return false;
         }
 
-        if (!finished) {
-            // Do NOT abandon them: the workers still reference `this` and the gRPC
-            // client members, which ~AgentImpl is about to destroy. Keep
-            // waiting: cancellation is best-effort, and detaching threads that
-            // still reference this agent would be unsafe. The warning records
-            // that shutdown has exceeded its diagnostic threshold.
-            LOG_WARN("wait grpc workers: still draining after 5s; waiting for completion");
+        // Deadline expired. Detaching requires securing the object for the
+        // runner: a keep-alive self-reference while shared-owned (Shutdown()
+        // path), or handing the runner ownership when the SharedDeleter is
+        // the caller. An object that is neither (a stack-constructed
+        // instance — none exist in this codebase; every shared agent comes
+        // from createShared()) dies with its scope no matter what, so the
+        // unbounded join remains its only lifetime-safe option.
+        std::shared_ptr<AgentImpl> keep_alive = weak_from_this().lock();
+        if (keep_alive == nullptr && !may_defer_destroy) {
+            try {
+                LOG_WARN("agent shutdown exceeded the {}ms deadline; not shared-owned, "
+                         "waiting for workers to finish",
+                         agent_shutdown_deadline().count());
+            } catch (...) {}
+            runner.join();
+            return false;
         }
-        joiner.join();
+
+        bool abandoned = false;
+        const bool defer_destroy = keep_alive == nullptr;
+        try {
+            std::lock_guard<std::mutex> l(state->m);
+            // The runner may have finished between the timed wait and this
+            // lock; hand the object over only while it is still running.
+            if (!state->finished) {
+                if (defer_destroy) {
+                    state->delete_when_done = true;
+                } else {
+                    state->keep_alive = std::move(keep_alive);
+                }
+                state->abandoned = true;
+                abandoned = true;
+            }
+        } catch (...) {}
+        if (!abandoned) {
+            runner.join();
+            return false;
+        }
+        runner.detach();
+        try {
+            LOG_WARN("agent shutdown exceeded the {}ms deadline; workers keep draining "
+                     "in the background and the agent is {} when they finish",
+                     agent_shutdown_deadline().count(),
+                     defer_destroy ? "destroyed" : "released");
+        } catch (...) {}
+        return defer_destroy;
     }
 
     AgentImpl::~AgentImpl() noexcept {
-        do_shutdown();
+        // No deferral from a running destructor — the object dies when it
+        // returns. For createShared() agents this call is a no-op: the
+        // SharedDeleter already ran do_shutdown(true) before delete.
+        do_shutdown(false);
 
         // Belt-and-braces: if do_shutdown() bailed out early for any reason,
         // a joinable std::thread member would call std::terminate() when its
@@ -787,12 +916,35 @@ namespace pinpoint {
                 self.reset();
             }
         } catch (...) {}
-        do_shutdown();
+        // No deferred destroy from here: `self` (or the caller's own
+        // reference) keeps the object shared-owned, so a teardown that
+        // outlives the deadline is parked on a keep-alive instead.
+        do_shutdown(false);
     }
 
-    void AgentImpl::do_shutdown() noexcept {
-        if (shutting_down_.exchange(true)) {
+    void AgentImpl::SharedDeleter::operator()(AgentImpl* agent) const noexcept {
+        if (agent == nullptr) {
             return;
+        }
+        // Final release. When the host never called Shutdown(), the terminal
+        // teardown runs here, bounded by the shutdown deadline; on timeout
+        // the teardown runner assumes ownership (deferred destroy) and this
+        // deleter must not touch the object again.
+        if (agent->do_shutdown(true)) {
+            return;
+        }
+        // A resource-exhausted shutdown (now or earlier) abandoned the
+        // workers without joining them; they dereference the object
+        // indefinitely, so it must be leaked, never destroyed.
+        if (agent->leak_on_release_.load()) {
+            return;
+        }
+        delete agent;
+    }
+
+    bool AgentImpl::do_shutdown(bool may_defer_destroy) noexcept {
+        if (shutting_down_.exchange(true)) {
+            return false;
         }
 
         // Wait for an in-flight Start() to finish publishing owner_pid_ and
@@ -823,13 +975,27 @@ namespace pinpoint {
             // grpc_metadata_ (recordSpan, cacheApi, ...) — a null operator->
             // crash in the host. The release is deferred to ~AgentImpl, so
             // the pointers stay valid for the whole lifetime of this object.
-            return;
+            return false;
+        }
+
+        // Serialization is achieved: acquiring the lock above waited out any
+        // in-flight Start() and published its writes, and later Start() calls
+        // refuse on shutting_down_. Release it before the teardown — on the
+        // deferred-destroy path the teardown runner may delete this object as
+        // soon as ownership is handed over, and this frame must not be
+        // holding a member mutex when that happens (unlocking a destroyed
+        // mutex is undefined behavior).
+        if (lifecycle_lock.owns_lock()) {
+            lifecycle_lock.unlock();
         }
 
         try { LOG_INFO("agent shutdown"); } catch (...) {}
-        try { if (config_watcher_) config_watcher_->stop(); } catch (...) {}
-        try { close_grpc_workers(); } catch (...) {}
+        request_stop_workers();
+        const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
+        // Nothing below may touch members: on the deferred-destroy path the
+        // runner owns the object from here and may already have deleted it.
         try { shutdown_logger(); } catch (...) {}
+        return destroy_deferred;
     }
 
     TraceId TraceId::parseTraceId(std::string_view txid) noexcept try {
@@ -1221,7 +1387,10 @@ namespace pinpoint {
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);
             auto grpc_command = std::make_unique<GrpcCommand>(cfg);
-            return std::make_shared<AgentImpl>(cfg,
+            // createShared (not make_shared): its SharedDeleter keeps the
+            // final release bounded when the host drops the last reference
+            // without calling Shutdown().
+            return AgentImpl::createShared(cfg,
                 std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span),
                 std::move(grpc_stat), std::move(grpc_command), options.app_type);
         } catch (const std::exception& e) {

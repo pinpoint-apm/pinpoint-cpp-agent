@@ -532,8 +532,13 @@ namespace pinpoint {
         void stopPingWorker();
         /// @brief Starts the periodic AgentInfo re-send scheduler.
         void startAgentInfo();
+        /// @brief Non-blocking half of stopAgentInfo(): records the stop
+        /// request and wakes a blocked registerAgentWithRetry() or scheduler
+        /// wait without joining anything. Used by the shutdown signal phase
+        /// so every worker winds down in parallel before the joins.
+        void requestStopAgentInfo();
         /// @brief Stops the periodic AgentInfo re-send scheduler and wakes a
-        /// blocked registerAgentWithRetry().
+        /// blocked registerAgentWithRetry(); joins the scheduler thread.
         void stopAgentInfo();
         /// @brief Sets server metadata included in AgentInfo.
         void setServerMetaData(std::string_view server_info,

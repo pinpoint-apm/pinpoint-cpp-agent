@@ -16,11 +16,14 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <thread>
 #include <memory>
 #include <string>
@@ -174,7 +177,10 @@ static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg,
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
 
-    auto agent = std::make_shared<AgentImpl>(
+    // createShared mirrors production (StartAgent): the SharedDeleter keeps
+    // the final release bounded when a test drops the last reference
+    // without calling Shutdown().
+    auto agent = AgentImpl::createShared(
         cfg,
         std::move(grpc_agent),
         std::move(grpc_metadata),
@@ -654,6 +660,157 @@ TEST_F(AgentImplTest, DtorBeforeInitCompletesDoesNotThrow) {
         auto agent = make_test_agent(make_test_config());
         // No wait_agent_enabled — destroy while init may still be racing.
     });
+}
+
+// --- Shutdown deadline ---
+//
+// Stop signals are best-effort against a wedged RPC (gRPC TryCancel gives no
+// completion bound), so the blocking teardown runs under a hard deadline:
+// Shutdown() must return once it expires, handing the joins to a background
+// reaper that keeps the agent alive until the straggler actually finishes.
+
+namespace {
+
+// A GrpcAgent whose registration wedges the init thread until released,
+// ignoring every stop signal — the mock equivalent of an RPC that never
+// honors cancellation. Its destruction is observable through a flag that
+// outlives the agent, so tests can watch a deferred destroy complete.
+class WedgedRegisterGrpcAgent : public TestableGrpcAgent {
+public:
+    explicit WedgedRegisterGrpcAgent(std::shared_ptr<const Config> config)
+        : TestableGrpcAgent(std::move(config)) {}
+
+    ~WedgedRegisterGrpcAgent() override { destroyed_->store(true); }
+
+    GrpcRequestStatus registerAgent() override {
+        std::unique_lock<std::mutex> lock(m_);
+        wedged_ = true;
+        cv_.notify_all();
+        cv_.wait(lock, [this] { return released_; });
+        return SEND_FAIL;
+    }
+
+    void waitUntilWedged() {
+        std::unique_lock<std::mutex> lock(m_);
+        cv_.wait(lock, [this] { return wedged_; });
+    }
+
+    void release() {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            released_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    std::shared_ptr<std::atomic<bool>> destroyedFlag() const { return destroyed_; }
+
+private:
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool wedged_{false};
+    bool released_{false};
+    std::shared_ptr<std::atomic<bool>> destroyed_ =
+        std::make_shared<std::atomic<bool>>(false);
+};
+
+// Builds a shared agent (production factory) whose init thread wedges in
+// registration; returns the agent and the wedged client (owned by the agent).
+std::shared_ptr<AgentImpl> make_wedged_agent(const std::shared_ptr<Config>& cfg,
+                                             WedgedRegisterGrpcAgent** wedged_out) {
+    auto wedged_owner = std::make_unique<WedgedRegisterGrpcAgent>(cfg);
+    *wedged_out = wedged_owner.get();
+    (*wedged_out)->injectMockStubs();
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
+    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
+    grpc_metadata->injectMockStubs();
+    grpc_span->injectMockStubs();
+    grpc_stat->injectMockStubs();
+
+    auto agent = AgentImpl::createShared(
+        cfg, std::move(wedged_owner), std::move(grpc_metadata),
+        std::move(grpc_span), std::move(grpc_stat));
+    agent->Start();
+    (*wedged_out)->waitUntilWedged();
+    return agent;
+}
+
+// Restores the production deadline no matter how the test exits.
+struct ShutdownDeadlineGuard {
+    explicit ShutdownDeadlineGuard(std::chrono::milliseconds deadline) {
+        set_agent_shutdown_deadline(deadline);
+    }
+    ~ShutdownDeadlineGuard() {
+        set_agent_shutdown_deadline(std::chrono::milliseconds(0));
+    }
+};
+
+}  // namespace
+
+TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
+
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto agent = make_wedged_agent(make_test_config(), &wedged);
+
+    const auto start = std::chrono::steady_clock::now();
+    agent->Shutdown();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::seconds(2))
+        << "Shutdown() must return by the deadline even with a wedged worker";
+
+    // The deadline reaper must keep the agent alive while the wedged worker
+    // still dereferences it. `wedged` stays valid through the keep-alive:
+    // the reaper cannot finish (and release the agent) before release().
+    std::weak_ptr<AgentImpl> weak = agent;
+    agent.reset();
+    EXPECT_FALSE(weak.expired())
+        << "the reaper must hold the agent alive while a worker still runs";
+
+    // ...and release it once the straggler finishes.
+    wedged->release();
+    const auto release_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!weak.expired() && std::chrono::steady_clock::now() < release_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(weak.expired())
+        << "the reaper must release the agent once the wedged worker finishes";
+}
+
+// Dropping the last reference WITHOUT Shutdown() must be just as bounded:
+// the SharedDeleter runs the teardown under the deadline and, on expiry,
+// defers destruction to the teardown runner instead of joining unbounded.
+// The object stays leaked exactly as long as the straggler runs and is
+// destroyed once it finishes.
+TEST(AgentShutdownDeadlineTest, ReleaseWithoutShutdownDefersDestructionWhenWedged) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
+
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto agent = make_wedged_agent(make_test_config(), &wedged);
+    const auto destroyed = wedged->destroyedFlag();
+
+    const auto start = std::chrono::steady_clock::now();
+    agent.reset();  // final release, deliberately without Shutdown()
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::seconds(2))
+        << "the final release must return by the deadline even with a wedged worker";
+
+    // Destruction was deferred, not skipped-and-freed: the object (and the
+    // wedged client it owns) must still be alive while the worker runs.
+    EXPECT_FALSE(destroyed->load())
+        << "the runner must not destroy the agent while a worker still runs";
+
+    // Once the straggler finishes, the runner joins it and destroys the agent.
+    wedged->release();
+    const auto destroy_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!destroyed->load() && std::chrono::steady_clock::now() < destroy_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(destroyed->load())
+        << "the runner must destroy the agent once the wedged worker finishes";
 }
 
 // --- URL filter tests ---

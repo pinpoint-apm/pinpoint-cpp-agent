@@ -1242,8 +1242,9 @@ namespace pinpoint {
             return;
         }
         // Stop is sticky once shutdown began: the async init thread may reach
-        // here after close_grpc_workers() already ran stopAgentInfo(), and it
-        // must not clear the stop request and spawn a worker nobody will join.
+        // here after the shutdown path already ran requestStopAgentInfo(), and
+        // it must not clear the stop request and spawn a worker nobody will
+        // join.
         if (agent_ != nullptr && agent_->isExiting()) {
             return;
         }
@@ -1252,12 +1253,21 @@ namespace pinpoint {
         agent_info_thread_ = std::thread{&GrpcAgent::agent_info_worker, this};
     }
 
+    void GrpcAgent::requestStopAgentInfo() {
+        // Set and signal even when no scheduler thread is running: the
+        // boot-phase registerAgentWithRetry() (on the agent's init thread)
+        // waits on this cv too and must wake promptly.
+        std::unique_lock<std::mutex> lock(agent_info_mutex_);
+        agent_info_stop_requested_ = true;
+        agent_info_cv_.notify_all();
+    }
+
     void GrpcAgent::stopAgentInfo() {
         {
             std::unique_lock<std::mutex> lock(agent_info_mutex_);
-            // Set and signal even when no scheduler thread is running: the
-            // boot-phase registerAgentWithRetry() (on the agent's init
-            // thread) waits on this cv too and must wake promptly.
+            // Re-signal here so stopAgentInfo() remains complete on its own:
+            // callers other than the shutdown path may not have gone through
+            // requestStopAgentInfo() first.
             agent_info_stop_requested_ = true;
             agent_info_cv_.notify_all();
             if (!agent_info_running_ && !agent_info_thread_.joinable()) {

@@ -371,6 +371,11 @@ namespace pinpoint {
         /// @brief Starts the watcher thread. No-op when the path is empty or
         ///        does not exist, or when this process's watcher already runs.
         void start();
+        /// @brief Non-blocking half of stop(): signals the current watcher
+        ///        generation to wind down without joining it. Used by the
+        ///        agent's shutdown signal phase so the watcher drains in
+        ///        parallel with the gRPC workers before stop() joins it.
+        void requestStop();
         /// @brief Signals the watcher and joins its thread. A joinable handle
         ///        inherited across fork() is abandoned instead (never joined
         ///        or detached — see abandon_thread()).
