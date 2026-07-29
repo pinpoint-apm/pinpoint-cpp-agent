@@ -428,7 +428,9 @@ void pt_agent_options_set_instance_suffix(pt_agent_options_t options, const char
  * The call returns as soon as initialization is launched; it does NOT wait
  * for collector registration. pt_agent_is_enabled() flips to non-zero once
  * registration succeeds. On failure a disabled (noop) agent handle is
- * returned — never NULL, except when handle setup itself fails.
+ * returned — never NULL, except when handle setup itself fails — and nothing
+ * is installed as the global agent, so a later pt_start_agent() call retries
+ * from scratch.
  *
  * Calling pt_start_agent() again in the same process returns the already
  * running agent (with a warning). After pt_agent_shutdown() a new

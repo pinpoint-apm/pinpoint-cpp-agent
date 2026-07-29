@@ -236,6 +236,32 @@ TEST_F(AgentImplTest, EnableAfterInit) {
     EXPECT_TRUE(agent_->Enable());
 }
 
+// Start() reports whether initialization is running: true on the first call
+// and on idempotent repeats, false once the agent was shut down. StartAgent()
+// relies on this to publish only successfully launched agents as the global
+// instance — a synchronous launch failure must never install a permanently
+// cold agent that later StartAgent() calls would keep returning.
+TEST(AgentStartResultTest, StartReportsLaunchRepeatAndShutdownRefusal) {
+    auto cfg = make_test_config();
+    auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
+    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
+    grpc_agent->injectMockStubs();
+    grpc_metadata->injectMockStubs();
+    grpc_span->injectMockStubs();
+    grpc_stat->injectMockStubs();
+    auto agent = std::make_shared<AgentImpl>(
+        cfg, std::move(grpc_agent), std::move(grpc_metadata),
+        std::move(grpc_span), std::move(grpc_stat));
+
+    EXPECT_TRUE(agent->Start()) << "first Start() must report a successful launch";
+    EXPECT_TRUE(agent->Start()) << "a repeated Start() is a successful no-op";
+
+    agent->Shutdown();
+    EXPECT_FALSE(agent->Start()) << "a shut-down agent must refuse Start()";
+}
+
 // Start() blocks signals only while it spawns the agent threads (so they
 // inherit a blocked mask); the calling thread's own mask must be restored
 // before Start() returns — the host's signal handling must not be altered.

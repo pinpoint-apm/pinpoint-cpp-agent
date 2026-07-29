@@ -513,7 +513,8 @@ namespace pinpoint {
 	 * channels, registers with the collector and starts the workers. It does
 	 * NOT wait for collector connection or registration; Enable() flips to
 	 * true once registration succeeds. On configuration or setup failure a
-	 * noop agent is returned — never an exception.
+	 * noop agent is returned — never an exception — and nothing is installed
+	 * as the global agent, so a later StartAgent() call retries from scratch.
 	 *
 	 * Calling StartAgent() again in the same process returns the already
 	 * running agent (with a warning). After Shutdown() a new StartAgent()

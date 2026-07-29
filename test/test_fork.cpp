@@ -242,9 +242,10 @@ TEST(ForkLifecycleTest, InheritedStartedAgentRefusesUseInChild) {
     ASSERT_GE(pid, 0);
     if (pid == 0) {
         // Inherited: Enable() must report false despite the inherited
-        // enabled_ flag, and Start() must not respawn workers.
+        // enabled_ flag, and Start() must refuse (false) rather than
+        // respawn workers.
         const bool enabled_before = agent->Enable();
-        agent->Start();
+        const bool start_refused = !agent->Start();
         const bool enabled_after = agent->Enable();
         // The span path is guarded independently of Enable(): a span from
         // the inherited agent must be a noop span, not a real span headed
@@ -253,7 +254,7 @@ TEST(ForkLifecycleTest, InheritedStartedAgentRefusesUseInChild) {
         const bool span_noop = span != nullptr && !span->IsSampled() &&
                                span->GetTraceId().empty() && span->GetSpanId() == 0;
         span->EndSpan();
-        _exit((!enabled_before && !enabled_after && span_noop) ? 0 : 1);
+        _exit((!enabled_before && start_refused && !enabled_after && span_noop) ? 0 : 1);
     }
 
     int status = 0;

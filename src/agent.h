@@ -123,11 +123,16 @@ namespace pinpoint {
 		/// starts the config watcher (when enabled via EnableConfigFileWatcher)
 		/// and an initialization thread that opens
 		/// channels and launches workers. Returns without waiting for
-		/// collector registration. Refused once do_shutdown() has run —
-		/// shutting_down_ is never cleared, so a shut-down instance stays
-		/// offline for good — and refused for an agent object inherited
-		/// across fork() (owner_pid_ from another process).
-		void Start() noexcept;
+		/// collector registration.
+		///
+		/// Returns true when initialization was launched — or already had
+		/// been by an earlier call (idempotent success). Returns false when
+		/// refused (shut down — shutting_down_ is never cleared, so such an
+		/// instance stays offline for good — or inherited across fork()) and
+		/// when synchronous setup failed; a setup failure resets started_,
+		/// and StartAgent() publishes the agent as the global instance only
+		/// on success, so the next StartAgent() call retries from scratch.
+		bool Start() noexcept;
 		/// @brief Returns whether the agent is enabled for tracing. Always
 		/// false (with a one-time error log) for an agent inherited across
 		/// fork() — see warn_fork_inheritance().

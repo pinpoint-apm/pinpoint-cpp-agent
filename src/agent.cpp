@@ -176,7 +176,7 @@ namespace pinpoint {
         };
     }
 
-    void AgentImpl::Start() noexcept try {
+    bool AgentImpl::Start() noexcept try {
         // Serialized against do_shutdown() (see lifecycle_mutex_): a
         // concurrent Shutdown() waits for the writes to owner_pid_ and
         // init_thread_ below to be published before tearing down, and a
@@ -186,13 +186,13 @@ namespace pinpoint {
         if (shutting_down_) {
             // Terminal, not transient: shutting_down_ is never cleared, so this
             // instance stays offline for the rest of the process and every span
-            // it hands out is a noop span. Logged at error level because the
-            // void signature gives the caller no other signal, and the usual
-            // cause is a host trying to restart a shut-down agent instead of
-            // building a fresh one through StartAgent().
+            // it hands out is a noop span. Logged at error level in addition
+            // to the false return, because the usual cause is a host trying
+            // to restart a shut-down agent instead of building a fresh one
+            // through StartAgent().
             LOG_ERROR("agent start rejected: this agent was shut down and cannot "
                       "be restarted; create a new agent with StartAgent()");
-            return;
+            return false;
         }
 
         // An agent object inherited across fork() must not be (re)started
@@ -203,14 +203,16 @@ namespace pinpoint {
         // start an agent before forking.
         if (owner_pid_ != 0 && owner_pid_ != getpid()) {
             warn_fork_inheritance();
-            return;
+            return false;
         }
 
-        // Once a Start() launches initialization, later calls are no-ops.
-        // Synchronous setup failures reset started_ in the catch handlers
-        // below and remain retryable.
+        // Once a Start() launches initialization, later calls are successful
+        // no-ops: the agent IS running. Synchronous setup failures reset
+        // started_ in the catch handlers below, and the false return makes
+        // StartAgent() skip publishing, so the next StartAgent() call
+        // rebuilds and retries from scratch.
         if (started_.exchange(true)) {
-            return;
+            return true;
         }
 
         owner_pid_ = getpid();
@@ -262,14 +264,17 @@ namespace pinpoint {
             }
             throw;
         }
+        return true;
     } catch (const std::exception& e) {
         try { LOG_ERROR("agent start failed: exception = {}", e.what()); } catch (...) {}
         enabled_ = false;
         started_ = false;
+        return false;
     } catch (...) {
         try { LOG_ERROR("agent start failed: unknown exception"); } catch (...) {}
         enabled_ = false;
         started_ = false;
+        return false;
     }
 
     void AgentImpl::warn_fork_inheritance() const noexcept {
@@ -1482,7 +1487,16 @@ namespace pinpoint {
             return noopAgent();
         }
         agent->setOptions(options);
-        agent->Start();
+        // Publish only a successfully launched agent. A synchronous Start()
+        // failure (watcher allocation, init-thread creation) must not install
+        // a permanently cold instance: every later StartAgent() would treat
+        // it as the running agent and never call Start() again. Returning the
+        // noop agent instead leaves the singleton empty, so the next
+        // StartAgent() call rebuilds and retries from scratch. The failed
+        // agent is destroyed here through its never-started cold teardown.
+        if (!agent->Start()) {
+            return noopAgent();
+        }
         global_agent().store(agent);
         return agent;
     } catch (...) {
