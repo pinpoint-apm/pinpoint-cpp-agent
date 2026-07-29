@@ -522,7 +522,10 @@ namespace pinpoint {
 	 * @warning An agent handle (or the global agent) inherited across fork()
 	 * is unusable in the child and is refused: its threads and gRPC runtime
 	 * do not exist there, and gRPC cannot be re-initialized in a process that
-	 * forked after `grpc_init`. The child must be a fresh process that calls
+	 * forked after `grpc_init`. An inherited agent reports Enable() == false
+	 * and hands out noop spans, and a StartAgent() call in such a child is
+	 * refused and evicts the inherited global agent, so GlobalAgent() degrades
+	 * to the noop agent. The child must be a fresh process that calls
 	 * StartAgent() itself before any other agent use.
 	 */
 	AgentPtr StartAgent(const AgentOptions& options = {});

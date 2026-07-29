@@ -40,9 +40,9 @@ The agent detects the most common mistake — starting an agent before
 
 | Situation in the child | Behavior |
 |---|---|
-| Using an inherited started agent | `Enable()` returns `false` with a one-time error log; spans are noop. |
+| Using an inherited started agent | `Enable()` returns `false` and `NewSpan()` returns noop spans (the pid guard sits on the span-creation path itself, so cached `AgentPtr`s and `GlobalAgent()` are covered alike), with a one-time error log. |
 | Calling `Start()` on the inherited object | Refused with an error log. |
-| `StartAgent()` while the inherited agent is installed | Refused (returns the noop agent): gRPC was initialized pre-fork in the parent, so a fresh agent cannot be built safely in this process. |
+| `StartAgent()` while the inherited agent is installed | Refused (returns the noop agent) and the inherited agent is evicted from the singleton, so `GlobalAgent()` degrades to the noop agent: gRPC was initialized pre-fork in the parent, so a fresh agent cannot be built safely in this process. |
 | Destroying / shutting down the inherited agent | Safe: inherited dead thread handles are abandoned, never joined. |
 
 A worker that itself `fork()+exec()`s subprocesses (e.g. spawning tools) is

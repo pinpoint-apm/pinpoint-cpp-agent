@@ -811,9 +811,32 @@ namespace pinpoint {
         }
     }
 
+    bool AgentImpl::tracing_active() const noexcept {
+        // Fast reject first: a disabled agent pays nothing extra here.
+        if (!enabled_) {
+            return false;
+        }
+        // One getpid() per span creation, only on the enabled path. An agent
+        // inherited across fork() carries the parent's enabled_ == true, but
+        // its worker threads do not exist in this process: recording would
+        // enqueue real spans into queues nothing drains — silently, since
+        // even the queue-drop reporter runs on the missing worker thread.
+        // Reading owner_pid_ is race-free: it is written before the init
+        // thread that publishes enabled_ = true is spawned, so any thread
+        // observing enabled_ == true also observes the final owner_pid_.
+        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+            warn_fork_inheritance();
+            return false;
+        }
+        return true;
+    }
+
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
         SpanPtr span;
 
+        // Cheap pre-filter only: the funnel end (the method+reader overload
+        // below) performs the authoritative tracing_active() check, so the
+        // pid guard runs once per span, not once per overload hop.
         if (enabled_) {
             NoopTraceContextReader reader;
             span = NewSpan(operation, rpc_point, reader);
@@ -830,7 +853,11 @@ namespace pinpoint {
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
 	                           std::string_view method, TraceContextReader& reader) try {
-        if (!enabled_) {
+        // Every NewSpan overload funnels through here, so this is the single
+        // authoritative admission check: enabled AND owned by this process.
+        // An agent inherited across fork() therefore hands out noop spans
+        // (with a one-time error log) instead of recording into dead queues.
+        if (!tracing_active()) {
             return noopSpan();
         }
         // One owning snapshot covers the filters and the sampler for this
@@ -891,10 +918,9 @@ namespace pinpoint {
     }
 
 	bool AgentImpl::Enable() {
-    	// An agent inherited across fork() reports disabled: its workers and
-    	// gRPC runtime do not exist in this process, so anything recorded here
-    	// would silently go nowhere. Detected at this query point (one
-    	// getpid() call) rather than on the per-span hot path.
+    	// Same fork-inheritance guard as the span path (tracing_active()),
+    	// but checked before enabled_: an inherited agent must report
+    	// disabled even while a torn-down enabled_ flag is still flipping.
     	if (owner_pid_ != 0 && owner_pid_ != getpid()) {
     		warn_fork_inheritance();
     		return false;
@@ -1419,6 +1445,14 @@ namespace pinpoint {
                 LOG_ERROR("StartAgent() refused: the global agent was started in another process "
                           "(a master must not start an agent before fork()); tracing stays "
                           "disabled in this process");
+                // Evict the inherited handle so GlobalAgent() degrades to the
+                // noop agent from now on, matching the message above. Dropping
+                // what may be the last reference is safe: destruction in a
+                // forked child goes through the pid-guarded teardown, which
+                // abandons the inherited thread handles and leaks the parent's
+                // gRPC clients instead of touching them.
+                global_agent().store(nullptr);
+                agent.reset();
                 return noopAgent();
             }
 

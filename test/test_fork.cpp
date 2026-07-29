@@ -246,7 +246,14 @@ TEST(ForkLifecycleTest, InheritedStartedAgentRefusesUseInChild) {
         const bool enabled_before = agent->Enable();
         agent->Start();
         const bool enabled_after = agent->Enable();
-        _exit((!enabled_before && !enabled_after) ? 0 : 1);
+        // The span path is guarded independently of Enable(): a span from
+        // the inherited agent must be a noop span, not a real span headed
+        // for queues whose worker threads do not exist in this process.
+        auto span = agent->NewSpan("inherited.child", "/inherited");
+        const bool span_noop = span != nullptr && !span->IsSampled() &&
+                               span->GetTraceId().empty() && span->GetSpanId() == 0;
+        span->EndSpan();
+        _exit((!enabled_before && !enabled_after && span_noop) ? 0 : 1);
     }
 
     int status = 0;
@@ -255,6 +262,49 @@ TEST(ForkLifecycleTest, InheritedStartedAgentRefusesUseInChild) {
     EXPECT_EQ(WEXITSTATUS(status), 0)
         << "an inherited started agent must be refused in the child";
 
+    agent->Shutdown();
+}
+
+// StartAgent() in a forked child that inherited a started global agent is
+// refused AND evicts the inherited handle from the singleton, so
+// GlobalAgent() degrades to the noop agent instead of handing the dead
+// instance back out.
+TEST(ForkLifecycleTest, StartAgentInChildEvictsInheritedGlobal) {
+    reset_global_agent();
+
+    auto cfg = make_fork_config();
+    auto agent = make_cold_agent(cfg);
+    agent->Start();
+    wait_enabled(agent);
+    ASSERT_TRUE(agent->Enable());
+    set_global_agent(agent);
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        auto refused = StartAgent();
+        const bool refused_noop =
+            std::dynamic_pointer_cast<AgentImpl>(refused) == nullptr;
+        const bool evicted =
+            std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()) == nullptr;
+        auto span = GlobalAgent()->NewSpan("inherited.child", "/evicted");
+        const bool span_noop = span != nullptr && !span->IsSampled();
+        span->EndSpan();
+        _exit((refused_noop && evicted && span_noop) ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "StartAgent() in the child must refuse and evict the inherited global";
+
+    // The child's eviction ran on its own copy of the singleton: the parent's
+    // installed agent is untouched.
+    EXPECT_TRUE(agent->Enable());
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(), agent.get());
+
+    reset_global_agent();
     agent->Shutdown();
 }
 

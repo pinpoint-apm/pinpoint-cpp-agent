@@ -304,6 +304,14 @@ namespace pinpoint {
     	/// @brief Logs, once per agent, that this handle was inherited across
     	/// fork() and cannot be used in this process.
     	void warn_fork_inheritance() const noexcept;
+    	/// @brief True when spans may be recorded right now: the agent is
+    	/// enabled AND running in the process that started it. The pid check
+    	/// runs only on the enabled path (disabled agents pay nothing), so an
+    	/// agent inherited across fork() hands out noop spans (with a one-time
+    	/// error log via warn_fork_inheritance()) instead of recording into
+    	/// queues whose worker threads do not exist in this process. Sole
+    	/// admission check of the NewSpan funnel.
+    	bool tracing_active() const noexcept;
     	/// @brief Abandons (never joins or detaches — see abandon_thread())
     	/// every worker thread handle. Used when tearing down an agent inherited
     	/// across fork(), where the handles are joinable but reference threads
