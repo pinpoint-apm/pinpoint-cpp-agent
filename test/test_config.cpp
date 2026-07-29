@@ -917,6 +917,35 @@ TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     EXPECT_EQ(config->http.server.status_errors.size(), config2->http.server.status_errors.size()) 
         << "Status errors count should match after round-trip";
     EXPECT_EQ(config->uid_version_, config2->uid_version_) << "UID version should match after round-trip";
+    EXPECT_EQ(config->agent_name_, config2->agent_name_)
+        << "Explicit AgentName should match after round-trip";
+}
+
+// Runtime-generated identity must not become configuration input when a
+// serialized config is loaded by a new agent. In particular, a defaulted
+// AgentName must follow the newly generated AgentId instead of retaining the
+// previous process's id as an explicit display name.
+TEST_F(ConfigTest, GeneratedIdentityDoesNotLeakIntoRoundTripConfig) {
+    set_config_string(R"(
+ApplicationName: RoundTripIdentityApp
+Collector:
+  GrpcHost: localhost
+)");
+    auto first = make_config();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->agent_name_, first->agent_id_);
+
+    const std::string generated_config = to_config_string(*first);
+    EXPECT_EQ(generated_config.find("AgentId:"), std::string::npos);
+    EXPECT_EQ(generated_config.find(first->agent_id_), std::string::npos)
+        << "Serialized config must not contain the runtime-generated identity";
+
+    set_config_string(generated_config);
+    auto second = make_config();
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second->agent_id_, first->agent_id_);
+    EXPECT_EQ(second->agent_name_, second->agent_id_)
+        << "Default AgentName must follow the new process's AgentId";
 }
 
 // Test empty configuration string generation

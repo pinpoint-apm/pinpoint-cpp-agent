@@ -1300,8 +1300,13 @@ namespace pinpoint {
 
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "ApplicationName" << YAML::Value << config.app_name_;
-        emitter << YAML::Key << "AgentId" << YAML::Value << config.agent_id_;
-        emitter << YAML::Key << "AgentName" << YAML::Value << config.agent_name_;
+        // AgentId is runtime-generated state, not a configuration input.
+        // Likewise, serialize a defaulted AgentName (= AgentId) as empty so
+        // loading this YAML in a new process falls back to that process's new
+        // id instead of pinning the previous process's id as a display name.
+        const bool agent_name_defaulted = config.agent_name_ == config.agent_id_;
+        emitter << YAML::Key << "AgentName" << YAML::Value
+                << (agent_name_defaulted ? std::string() : config.agent_name_);
         emitter << YAML::Key << "UidVersion" << YAML::Value << config.uid_version_;
         if (config.is_v4()) {
             emitter << YAML::Key << "ServiceName" << YAML::Value << config.service_name_;

@@ -420,6 +420,9 @@ namespace pinpoint {
 
     /**
      * @brief Serializes a `Config` object back into its YAML representation.
+     *        Runtime-generated AgentId state is omitted, and an AgentName that
+     *        defaulted to AgentId is emitted as empty so a fresh load preserves
+     *        the fallback semantics.
      *
      * @param config Configuration instance to serialize.
      * @return YAML string.
