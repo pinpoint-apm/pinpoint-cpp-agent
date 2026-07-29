@@ -37,6 +37,7 @@
 #include "../src/agent.h"
 #include "../src/grpc.h"
 #include "../src/config.h"
+#include "../src/object_name.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 
@@ -156,6 +157,50 @@ Sampling:
 }
 
 } // namespace
+
+// Regression: Abseil's process-global entropy pool can be initialized in the
+// master by any library user before fork(). Both children then inherit the
+// same pool state, so UUID generation must add a per-process discriminator
+// instead of returning identical random fields.
+TEST(ForkLifecycleTest, UuidRandomBitsDifferAfterParentInitializedEntropyPool) {
+    (void)generate_uuid_v7(); // initialize and advance the parent's entropy pool
+
+    int pipes[2][2];
+    ASSERT_EQ(pipe(pipes[0]), 0);
+    ASSERT_EQ(pipe(pipes[1]), 0);
+
+    pid_t pids[2];
+    for (int i = 0; i < 2; ++i) {
+        const pid_t pid = fork();
+        ASSERT_GE(pid, 0);
+        if (pid == 0) {
+            close(pipes[i][0]);
+            const Uuid uuid = generate_uuid_v7();
+            const ssize_t n = write(pipes[i][1], &uuid, sizeof(uuid));
+            close(pipes[i][1]);
+            _exit(n == static_cast<ssize_t>(sizeof(uuid)) ? 0 : 2);
+        }
+        pids[i] = pid;
+        close(pipes[i][1]);
+    }
+
+    Uuid uuids[2];
+    for (int i = 0; i < 2; ++i) {
+        const ssize_t n = read(pipes[i][0], &uuids[i], sizeof(uuids[i]));
+        close(pipes[i][0]);
+
+        int status = 0;
+        ASSERT_EQ(waitpid(pids[i], &status, 0), pids[i]);
+        ASSERT_TRUE(WIFEXITED(status));
+        ASSERT_EQ(WEXITSTATUS(status), 0);
+        ASSERT_EQ(n, static_cast<ssize_t>(sizeof(uuids[i])));
+    }
+
+    // lsb contains the 62-bit random field but no timestamp, so this catches
+    // inherited RNG streams even when the children run in different millis.
+    EXPECT_NE(uuids[0].lsb, uuids[1].lsb);
+    EXPECT_NE(base64_encode_uuid(uuids[0]), base64_encode_uuid(uuids[1]));
+}
 
 // The supported pre-fork model: the master makes no agent API calls; each
 // forked worker builds and starts its own agent. Each worker must obtain a

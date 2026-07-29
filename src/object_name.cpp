@@ -18,6 +18,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <unistd.h>
 
 #include "absl/random/random.h"
 #include "absl/strings/escaping.h"
@@ -102,8 +103,16 @@ namespace pinpoint {
             to_milli_seconds(std::chrono::system_clock::now()));
 
         absl::BitGen gen;
+        // Abseil's entropy pool is process-global. If it was initialized
+        // before fork(), sibling children inherit the same pool state and can
+        // draw identical random bits. XORing the pid into the random field
+        // domain-separates those inherited streams while preserving a uniform
+        // distribution for independently seeded processes.
+        const uint64_t process_discriminator = static_cast<uint64_t>(getpid());
         const uint64_t rand_a = absl::Uniform<uint64_t>(gen) & 0x0FFFULL;             // 12 bits
-        const uint64_t rand_b = absl::Uniform<uint64_t>(gen) & 0x3FFFFFFFFFFFFFFFULL; // 62 bits
+        const uint64_t rand_b =
+            (absl::Uniform<uint64_t>(gen) ^ process_discriminator)
+            & 0x3FFFFFFFFFFFFFFFULL; // 62 bits
 
         Uuid uuid;
         // msb: 48-bit unix_ts_ms | version(0b0111) | rand_a(12 bits)
