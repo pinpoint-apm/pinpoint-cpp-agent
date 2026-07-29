@@ -120,11 +120,42 @@ namespace pinpoint {
         }
     }
 
+    HttpUrlFilter::MatchScratchSlot& HttpUrlFilter::match_scratch_slot() {
+        // Trivially destructible and constant-initialized: safe to touch at
+        // any point of the thread's lifetime, including from other
+        // thread_local destructors after this thread's TLS teardown began
+        // (see the slot declaration in http.h).
+        static thread_local MatchScratchSlot slot;
+        return slot;
+    }
+
+    HttpUrlFilter::MatchScratchReclaim::~MatchScratchReclaim() {
+        auto& slot = match_scratch_slot();
+        delete slot.scratch;
+        slot.scratch = nullptr;
+        slot.reclaimed = true;
+    }
+
+    HttpUrlFilter::MatchScratch& HttpUrlFilter::match_scratch() {
+        auto& slot = match_scratch_slot();
+        if (slot.scratch == nullptr) {
+            slot.scratch = new MatchScratch();
+            if (!slot.reclaimed) {
+                // Normal first use on this thread: register the guard that
+                // reclaims the scratch at thread exit.
+                static thread_local MatchScratchReclaim reclaim;
+                (void)reclaim;
+            } else {
+                // Teardown re-entry: the guard already ran and cannot be
+                // registered again, so this replacement scratch is
+                // deliberately leaked — bounded at one small buffer pair per
+                // thread that runs the URL filter again during its own exit.
+            }
+        }
+        return *slot.scratch;
+    }
+
     bool HttpUrlFilter::isFiltered(std::string_view url) const {
-        // Called on every request (NewSpan): reuse the DP rows across calls.
-        // Matching avoids further vector growth while the URL fits the
-        // retained capacity; a longer URL may still allocate.
-        static thread_local MatchScratch scratch;
         for (const auto& pattern : patterns_) {
             switch (pattern.kind) {
             case PatternKind::Exact:
@@ -144,7 +175,12 @@ namespace pinpoint {
                 }
                 break;
             case PatternKind::Ant: {
-                if (ant_match(pattern, url, scratch)) {
+                // Fetched per Ant pattern, not once per call: reuse the
+                // per-thread DP rows across calls (matching avoids further
+                // vector growth while the URL fits the retained capacity),
+                // without paying the slot's one heap allocation on threads
+                // whose patterns never reach an Ant match.
+                if (ant_match(pattern, url, match_scratch())) {
                     return true;
                 }
                 break;

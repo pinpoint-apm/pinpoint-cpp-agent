@@ -221,6 +221,32 @@ namespace pinpoint {
             std::vector<char> next;
         };
 
+        // Per-thread scratch storage, split into a trivially-destructible
+        // slot plus a separate reclaim guard so a match during thread
+        // teardown stays defined behavior — the same shape as
+        // AtomicSharedPtr::thread_cache(). A block-scope thread_local with a
+        // destructor must not be passed through again once destroyed
+        // ([basic.start.term]) — yet a host thread_local destructor that
+        // records a final span during thread exit reaches isFiltered()
+        // exactly then (AgentImpl::NewSpan runs the URL filter), and TLS
+        // destruction order would have already destroyed a plain
+        // thread_local MatchScratch constructed after the host's object. The
+        // slot has no destructor, so it is never "destroyed" and stays valid
+        // for the whole thread lifetime; only the scratch it points at is
+        // reclaimed, by the guard.
+        struct MatchScratchSlot {
+            MatchScratch* scratch = nullptr;
+            // Set by the guard's destructor: from then on match_scratch()
+            // takes the leak path instead of re-registering a guard
+            // (impossible once TLS destructors have started).
+            bool reclaimed = false;
+        };
+        struct MatchScratchReclaim {
+            ~MatchScratchReclaim();
+        };
+        static MatchScratchSlot& match_scratch_slot();
+        static MatchScratch& match_scratch();
+
         std::vector<CompiledPattern> patterns_;
 
         static CompiledPattern compilePattern(const std::string& pattern);
