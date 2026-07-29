@@ -1927,8 +1927,16 @@ namespace pinpoint {
             release_unlaunched();
         }
     } catch (const std::exception& e) {
+        // Reached only by a throw before the permit is held (realistically
+        // try_acquire_permit's lock/wait); every later path is covered by the
+        // inner catch-all. Clear the batch like every other exit: the chunks
+        // were not sent, and flush_remaining() keeps appending to the same
+        // vector across calls, so leftovers here would be re-sent by its next
+        // send_batch_async round.
+        batch.clear();
         LOG_ERROR("failed to build span batch: exception = {}", e.what());
     } catch (...) {
+        batch.clear();
         LOG_ERROR("failed to build span batch: unknown exception");
     }
 
