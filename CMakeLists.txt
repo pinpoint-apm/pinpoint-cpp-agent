@@ -20,7 +20,7 @@ if(USE_CCACHE)
   endif()
 endif()
 
-project(pinpoint-cpp VERSION 1.1.0)
+project(pinpoint-cpp VERSION 2.0.0)
 
 option(BUILD_TESTING      "Build tests"                ON)
 option(BUILD_EXAMPLES     "Build examples"             ON)
