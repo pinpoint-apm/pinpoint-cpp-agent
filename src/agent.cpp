@@ -147,8 +147,9 @@ namespace pinpoint {
         // inherit it transitively. Signal-driven hosts (an nginx worker's
         // event loop relies on a process-directed signal interrupting its own
         // epoll_wait) therefore keep receiving signals on a host thread,
-        // never on an agent thread. The synchronous hardware signals stay
-        // unblocked: a crash inside an agent thread must still raise the
+        // never on an agent thread. The synchronous fatal signals — the
+        // hardware faults and seccomp's SIGSYS — stay unblocked: a crash (or
+        // seccomp violation) inside an agent thread must still raise the
         // normal fatal signal instead of undefined behavior.
         class ScopedSignalBlock {
         public:
@@ -160,6 +161,7 @@ namespace pinpoint {
                 sigdelset(&all_blocked, SIGFPE);
                 sigdelset(&all_blocked, SIGILL);
                 sigdelset(&all_blocked, SIGSEGV);
+                sigdelset(&all_blocked, SIGSYS);
                 restore_ = pthread_sigmask(SIG_SETMASK, &all_blocked, &saved_) == 0;
             }
             ~ScopedSignalBlock() noexcept {
@@ -1022,6 +1024,22 @@ namespace pinpoint {
 
         try { LOG_INFO("agent shutdown"); } catch (...) {}
         request_stop_workers();
+
+        // A never-launched agent (Start() never ran, or its synchronous
+        // failure already reset started_ and stopped the watcher) has no init
+        // thread and no workers, so the blocking teardown cannot actually
+        // block. Run it inline: this skips the deadline runner thread — and
+        // the leak fallback its creation failure would force — which matters
+        // on the StartAgent() failure path, where the failure may itself have
+        // been thread-creation exhaustion. Reading started_ here is stable:
+        // the lifecycle lock above waited out any in-flight Start(), and
+        // later Start() calls refuse on shutting_down_ before touching it.
+        if (!started_) {
+            teardown_workers();
+            try { shutdown_logger(); } catch (...) {}
+            return false;
+        }
+
         const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
         // Nothing below may touch members: on the deferred-destroy path the
         // runner owns the object from here and may already have deleted it.

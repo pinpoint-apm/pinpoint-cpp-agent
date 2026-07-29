@@ -251,7 +251,10 @@ TEST(AgentStartResultTest, StartReportsLaunchRepeatAndShutdownRefusal) {
     grpc_metadata->injectMockStubs();
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
-    auto agent = std::make_shared<AgentImpl>(
+    // createShared, never make_shared: the shutdown machinery's leak fallback
+    // assumes every shared-owned agent carries the SharedDeleter (it consults
+    // leak_on_release_ at final release).
+    auto agent = AgentImpl::createShared(
         cfg, std::move(grpc_agent), std::move(grpc_metadata),
         std::move(grpc_span), std::move(grpc_stat));
 
