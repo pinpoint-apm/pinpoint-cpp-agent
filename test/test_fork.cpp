@@ -97,7 +97,7 @@ std::shared_ptr<Config> make_fork_config() {
     auto cfg = std::make_shared<Config>();
     cfg->enable = true;
     cfg->app_name_ = "fork-app";
-    cfg->agent_id_ = "fork-agent-id";     // set directly => treated as auto id
+    cfg->agent_id_ = "fork-agent-id";
     cfg->agent_name_ = "fork-agent-name";
     cfg->collector.host = "127.0.0.1";
     cfg->collector.agent_port = 9991;
@@ -135,12 +135,12 @@ void wait_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000
 }
 
 // Builds the worker's config the production way — make_config() runs in the
-// worker process, so the pinned AgentId gets its per-process suffix there.
+// worker process, so the auto-generated agent id is minted there and is
+// unique per worker.
 std::shared_ptr<Config> make_fork_config_from_yaml() {
     AgentOptions options;
     options.config_yaml = R"(
 ApplicationName: fork-app
-AgentId: fork-agent-id
 AgentName: fork-agent-name
 Enable: true
 Collector:
@@ -171,9 +171,9 @@ TEST(ForkLifecycleTest, WorkerBuiltAgentYieldsWorkingAgentWithUniqueId) {
         pid_t pid = fork();
         ASSERT_GE(pid, 0);
         if (pid == 0) {
-            // Worker: build the whole agent in this process, post-fork. The
-            // pinned AgentId in the yaml gets this worker's pid suffix during
-            // identity resolution.
+            // Worker: build the whole agent in this process, post-fork.
+            // Identity resolution mints this worker's own auto-generated
+            // agent id.
             close(pipes[i][0]);
             auto cfg = make_fork_config_from_yaml();
             if (!cfg) {
@@ -219,13 +219,10 @@ TEST(ForkLifecycleTest, WorkerBuiltAgentYieldsWorkingAgentWithUniqueId) {
 
     const std::string id0 = reports[0].substr(2);
     const std::string id1 = reports[1].substr(2);
-    // Distinct across workers, and suffixed away from the configured id.
+    // Auto-generated per worker: distinct 22-char base64 UUIDs.
     EXPECT_NE(id0, id1);
-    EXPECT_NE(id0, "fork-agent-id");
-    EXPECT_NE(id1, "fork-agent-id");
-    // The pinned base stays recognizable.
-    EXPECT_EQ(id0.rfind("fork-agent-id-", 0), 0u) << "id0: " << id0;
-    EXPECT_EQ(id1.rfind("fork-agent-id-", 0), 0u) << "id1: " << id1;
+    EXPECT_EQ(id0.size(), 22u) << "id0: " << id0;
+    EXPECT_EQ(id1.size(), 22u) << "id1: " << id1;
 }
 
 // An agent STARTED in the parent and inherited across fork() must refuse use

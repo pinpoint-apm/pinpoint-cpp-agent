@@ -161,7 +161,6 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
 
 static constexpr const char* kStartAgentConfigYaml = R"(
 ApplicationName: c-api-test
-AgentId: c-api-agent
 AgentName: c-api-agent-name
 Enable: true
 Collector:
@@ -371,7 +370,6 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(nullptr, "x"));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(nullptr, 1));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(nullptr, "x", nullptr, 0, nullptr, 0));
-    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_instance_suffix(nullptr, "x"));
 
     pt_agent_options_t opts = pt_agent_options_new();
     ASSERT_NE(opts, nullptr);
@@ -379,7 +377,6 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_yaml(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, nullptr, nullptr, -1, nullptr, -1));
-    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_instance_suffix(opts, nullptr));
     pt_agent_options_free(opts);
 }
 

@@ -34,11 +34,11 @@ Set the collector explicitly before running the suite:
 export PINPOINT_CPP_COLLECTOR_HOST="your-collector-host"
 ```
 
-`pinpoint-config.yaml` intentionally has no `Collector.Host`. Each process also
-gets a unique `PINPOINT_CPP_AGENT_ID`, so concurrent test runs are distinguishable
-under the stable applications `cpp-it-http-upstream`,
-`cpp-it-http-downstream`, `cpp-it-grpc-downstream`, `cpp-it-c-api`, and
-`cpp-it-fork`.
+`pinpoint-config.yaml` intentionally has no `Collector.Host`. Each process
+gets an auto-generated agent id plus a unique `PINPOINT_CPP_AGENT_NAME`, so
+concurrent test runs are distinguishable under the stable applications
+`cpp-it-http-upstream`, `cpp-it-http-downstream`, `cpp-it-grpc-downstream`,
+`cpp-it-c-api`, and `cpp-it-fork`.
 
 ## Build and run with CMake
 

@@ -62,7 +62,6 @@ export PINPOINT_CPP_CONFIG_FILE="/path/to/pinpoint-config.yaml"
 
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
-export PINPOINT_CPP_AGENT_ID="my-agent-001"
 export PINPOINT_CPP_COLLECTOR_HOST="localhost"
 export PINPOINT_CPP_LOG_LEVEL="info"
 ```
@@ -121,8 +120,7 @@ int main() {
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
-| `AgentId` | `PINPOINT_CPP_AGENT_ID` | string | auto-generated | Allowed chars `[a-zA-Z0-9._-]`, max 24 chars. Auto-generated as a 22-char URL-safe Base64 UUIDv7 when empty/invalid. **Ignored for `UidVersion: v4`** (a fresh UUIDv7 is always generated). |
-| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to `AgentId` when omitted. |
+| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to the agent id when omitted. |
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars). Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
@@ -130,7 +128,7 @@ int main() {
 
 > **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
 
-> **Multi-process hosts:** a pinned `AgentId` gets a per-worker suffix — `AgentOptions::instance_suffix` when set (e.g. `myid-w0`), otherwise the process id, so sibling pre-fork workers never share one agent id. Auto-generated ids are already unique per process. See the [Pre-fork Integration Guide](prefork.md).
+> **Agent id:** the agent id is not configurable. It is always auto-generated at startup as a 22-char URL-safe Base64 UUIDv7, so every process — including sibling pre-fork workers — gets a unique id. Use `AgentName` for a stable, human-readable label; it need not be unique. See the [Pre-fork Integration Guide](prefork.md).
 
 ### Identity Versions
 
@@ -139,14 +137,14 @@ int main() {
 | | v1 | v3 (default) | v4 |
 |---|---|---|---|
 | `ApplicationName` max length | 24 | 254 | 254 |
-| `AgentId` | user value, else auto Base64(UUIDv7) | same as v1 | always auto Base64(UUIDv7); input ignored |
+| Agent id | auto Base64(UUIDv7) | same as v1 | auto Base64(UUIDv7) |
 | `ServiceName` / `ApiKey` | not used | not used | **required** |
 | gRPC `protocol.version` header | 100 | 100 | 400 |
 | gRPC `servicename` / `apikey` headers | not sent | not sent | sent |
 
 v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid required value (e.g. `ApplicationName`, or `ServiceName`/`ApiKey` for v4) aborts agent startup (the agent degrades to a no-op).
 
-> **Note (v4):** because v4 generates a new `AgentId` on every startup, the agent's id changes across restarts — matching the Java agent's behavior.
+> **Note:** because the agent id is generated afresh on every startup, it changes across restarts — matching the Java agent's v4 behavior. Use `AgentName` for a stable label.
 
 ---
 
@@ -155,15 +153,15 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error` |
-| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. Supports per-worker placeholders: `%pid%` expands to the process id, `%suffix%` to `AgentOptions::instance_suffix` (or the pid when unset). |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
 `LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.
 
 > **Multi-process hosts:** the built-in size rotation is not safe when several
-> worker processes share one log file — use the `%pid%`/`%suffix%` placeholders
-> to give each worker its own file (e.g.
-> `FilePath: "/var/log/pinpoint/agent-%suffix%.log"`). See the
+> worker processes share one log file — use the `%pid%` placeholder to give
+> each worker its own file (e.g.
+> `FilePath: "/var/log/pinpoint/agent-%pid%.log"`). See the
 > [Pre-fork Integration Guide](prefork.md).
 
 ---
@@ -348,7 +346,7 @@ Not all configuration options can be changed at runtime. Options that define the
 
 | Category | Options | Reloadable? |
 |---|---|---|
-| Agent identity | `ApplicationName`, `AgentId`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
+| Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector / gRPC connection | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*` | No |
 | Config-file watcher | `EnableConfigFileWatcher` | No |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
@@ -450,7 +448,7 @@ Percentage sampling, reduced logging, selective header recording.
 
 ```yaml
 ApplicationName: "MyApp-Prod"
-AgentId: "prod-server-01"
+AgentName: "prod-server-01"
 Enable: true
 
 Log:
@@ -542,7 +540,7 @@ EnableCallstackTrace: false
 
 # Agent
 export PINPOINT_CPP_APPLICATION_NAME="MyApp"
-export PINPOINT_CPP_AGENT_ID="app-server-01"
+export PINPOINT_CPP_AGENT_NAME="app-server-01"
 export PINPOINT_CPP_ENABLE="true"
 
 # Collector
@@ -595,7 +593,7 @@ export PINPOINT_CPP_SQL_TRACE_BIND_VALUE="true"
 ### Container Deployments
 - Set `IsContainer: true` explicitly if auto-detection fails.
 - Use environment variables for configuration.
-- Ensure unique `AgentId` per container (e.g., include hostname or pod name).
+- The agent id is auto-generated per process, so containers never collide; set a distinct `AgentName` (e.g., hostname or pod name) for a recognizable label.
 
 ### Security
 - Never record sensitive headers unless absolutely necessary.
@@ -632,8 +630,7 @@ Below is a complete YAML config with all keys and their default values:
 
 ```yaml
 ApplicationName: ""
-AgentId: ""          # auto-generated if empty
-AgentName: ""
+AgentName: ""        # falls back to the auto-generated agent id
 UidVersion: "v3"
 ServiceName: ""      # required only for UidVersion: v4
 ApiKey: ""           # required only for UidVersion: v4; masked in logs

@@ -478,22 +478,6 @@ namespace pinpoint {
 		std::vector<std::string> args;
 		/// Loaded service libraries included in AgentInfo.
 		std::vector<std::string> libs;
-
-		/// Stable per-worker identifier for multi-process hosts (e.g. "w0" for
-		/// nginx worker slot 0). When set, a pinned AgentId and an explicitly
-		/// configured AgentName get "-<instance_suffix>" appended so sibling
-		/// workers register as distinct agent instances with names that are
-		/// stable across worker restarts. When empty, a pinned AgentId gets a
-		/// "-<pid>" suffix instead (with a warning): sibling workers sharing
-		/// one exact id would collide on the collector, and the library cannot
-		/// tell a single-process host from a pre-fork worker. Auto-generated
-		/// ids are already unique per process and never get a suffix.
-		///
-		/// Also substituted into the Log.FilePath placeholders: `%suffix%`
-		/// expands to this value (or the pid when unset) and `%pid%` to the
-		/// process id, so sibling workers can write separate log files — the
-		/// built-in log rotation is not multi-process safe on a shared file.
-		std::string instance_suffix;
 	};
 
 	/**

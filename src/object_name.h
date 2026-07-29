@@ -81,6 +81,13 @@ namespace pinpoint {
     std::string base64_encode_uuid(const Uuid& uuid);
 
     /**
+     * @brief Decode a string produced by base64_encode_uuid() back into its
+     *        Uuid. Returns std::nullopt when the input is not URL-safe Base64
+     *        for exactly 16 bytes.
+     */
+    std::optional<Uuid> base64_decode_uuid(std::string_view value);
+
+    /**
      * @brief Validate an id, matching Java IdValidateUtils.validateId.
      *        Allowed characters: [a-zA-Z0-9], '.', '-', '_'. Empty fails.
      *        Length is the byte length and must be in (0, max_len].
@@ -89,6 +96,10 @@ namespace pinpoint {
 
     /**
      * @brief Raw identity inputs collected from config (env over yaml already merged).
+     *
+     * agent_id is not a configuration input: it is empty on the first load
+     * (the resolver auto-generates one) and carries the running agent's id on
+     * a config reload so resolution keeps the identity stable.
      */
     struct ObjectNameInput {
         std::string agent_id;

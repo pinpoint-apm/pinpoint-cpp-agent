@@ -194,19 +194,19 @@ echo "Run ID:    $RUN_SUFFIX"
 echo ""
 
 PINPOINT_CPP_APPLICATION_NAME="cpp-it-grpc-downstream" \
-PINPOINT_CPP_AGENT_ID="it-grpc-$RUN_SUFFIX" \
+PINPOINT_CPP_AGENT_NAME="it-grpc-$RUN_SUFFIX" \
     "$GRPC_BIN" "$GRPC_PORT" >"$LOG_DIR/grpc_server.log" 2>&1 &
 GRPC_PID=$!
 
 PINPOINT_CPP_APPLICATION_NAME="cpp-it-http-downstream" \
-PINPOINT_CPP_AGENT_ID="it-down-$RUN_SUFFIX" \
+PINPOINT_CPP_AGENT_NAME="it-down-$RUN_SUFFIX" \
     "$DOWNSTREAM_BIN" "$DOWNSTREAM_PORT" \
     >"$LOG_DIR/http_downstream_server.log" 2>&1 &
 DOWNSTREAM_PID=$!
 
 GRPC_TARGET="$HOST:$GRPC_PORT" HTTP_TARGET="$HOST:$DOWNSTREAM_PORT" \
 PINPOINT_CPP_APPLICATION_NAME="cpp-it-http-upstream" \
-PINPOINT_CPP_AGENT_ID="it-up-$RUN_SUFFIX" \
+PINPOINT_CPP_AGENT_NAME="it-up-$RUN_SUFFIX" \
     "$UPSTREAM_BIN" "$PORT" >"$LOG_DIR/it_test_server.log" 2>&1 &
 UPSTREAM_PID=$!
 

@@ -638,14 +638,6 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
     });
 }
 
-void pt_agent_options_set_instance_suffix(pt_agent_options_t options, const char* suffix) {
-    pt_api_call(__func__, [&] {
-        if (options) {
-            options->options.instance_suffix = suffix ? suffix : "";
-        }
-    });
-}
-
 // ============================================================================
 // Agent lifecycle
 // ============================================================================

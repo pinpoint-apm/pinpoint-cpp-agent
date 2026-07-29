@@ -119,7 +119,7 @@ int main(void) {
     size_t i;
     pthread_t worker;
     async_work_t async_work;
-    char default_agent_id[25];
+    char default_agent_name[32];
 
     if (getenv("PINPOINT_CPP_COLLECTOR_HOST") == NULL ||
         getenv("PINPOINT_CPP_COLLECTOR_HOST")[0] == '\0') {
@@ -127,9 +127,9 @@ int main(void) {
         return 2;
     }
     set_default_env("PINPOINT_CPP_APPLICATION_NAME", "cpp-it-c-api");
-    snprintf(default_agent_id, sizeof(default_agent_id), "cpp-it-c-%ld",
+    snprintf(default_agent_name, sizeof(default_agent_name), "cpp-it-c-%ld",
              (long)getpid());
-    set_default_env("PINPOINT_CPP_AGENT_ID", default_agent_id);
+    set_default_env("PINPOINT_CPP_AGENT_NAME", default_agent_name);
     set_default_env("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
     set_default_env("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true");
     set_default_env("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");

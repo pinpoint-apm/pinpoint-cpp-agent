@@ -73,7 +73,6 @@ private:
         // Save environment variables that might affect config
         saved_env_vars_[full_env(env::ENABLE)] = GetEnvVar(full_env(env::ENABLE));
         saved_env_vars_[full_env(env::APPLICATION_NAME)] = GetEnvVar(full_env(env::APPLICATION_NAME));
-        saved_env_vars_[full_env(env::AGENT_ID)] = GetEnvVar(full_env(env::AGENT_ID));
         saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
         saved_env_vars_[full_env(env::UID_VERSION)] = GetEnvVar(full_env(env::UID_VERSION));
         saved_env_vars_[full_env(env::SERVICE_NAME)] = GetEnvVar(full_env(env::SERVICE_NAME));
@@ -166,7 +165,6 @@ protected:
     // Test YAML configurations
     const std::string complete_config_yaml_ = R"(
 ApplicationName: "MyTestApp"
-AgentId: "test-agent-123"
 AgentName: "TestAgentName"
 Enable: true
 IsContainer: true
@@ -395,8 +393,8 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     
     // Test basic values
     EXPECT_EQ(config->app_name_, "MyTestApp") << "App name should match YAML";
-    EXPECT_EQ(config->agent_id_, "test-agent-123-" + std::to_string(getpid()))
-        << "a pinned Agent ID gets a per-process suffix (no instance_suffix configured)";
+    EXPECT_EQ(config->agent_id_.size(), 22u)
+        << "the Agent ID is always auto-generated (base64 UUIDv7)";
     EXPECT_EQ(config->agent_name_, "TestAgentName") << "Agent name should match YAML";
     EXPECT_TRUE(config->enable) << "Enable should match YAML";
     EXPECT_TRUE(config->is_container) << "IsContainer should match YAML";
@@ -539,7 +537,7 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvApp", 1);
-    setenv(full_env(env::AGENT_ID).c_str(), "env-agent-456", 1);
+    setenv(full_env(env::AGENT_NAME).c_str(), "env-agent-456", 1);
     setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
     setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8888", 1);
@@ -566,8 +564,9 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     
     // Test environment variable values
     EXPECT_EQ(config->app_name_, "EnvApp") << "App name should match environment variable";
-    EXPECT_EQ(config->agent_id_, "env-agent-456-" + std::to_string(getpid()))
-        << "a pinned Agent ID from the environment gets a per-process suffix";
+    EXPECT_EQ(config->agent_name_, "env-agent-456") << "Agent name should match environment variable";
+    EXPECT_EQ(config->agent_id_.size(), 22u)
+        << "the Agent ID is always auto-generated (base64 UUIDv7)";
     EXPECT_EQ(config->log.level, "error") << "Log level should match environment variable";
     EXPECT_EQ(config->collector.host, "env.collector.host") << "Collector host should match environment variable";
     EXPECT_EQ(config->collector.agent_port, 8888) << "Agent port should match environment variable";
@@ -609,7 +608,7 @@ TEST_F(ConfigTest, IsContainerSurvivesReload) {
     // A resolvable identity keeps make_config() from logging resolution errors;
     // is_container resolution is independent of it.
     setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
-    setenv(full_env(env::AGENT_ID).c_str(), "reload-agent", 1);
+    setenv(full_env(env::AGENT_NAME).c_str(), "reload-agent", 1);
     setenv(full_env(env::IS_CONTAINER).c_str(), "true", 1);
     auto first_true = make_config();
     ASSERT_NE(first_true, nullptr);
@@ -845,7 +844,7 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
 TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
     set_config_string(invalid_yaml_);
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvRecoveredApp", 1);
-    setenv(full_env(env::AGENT_ID).c_str(), "env-agent-recovered", 1);
+    setenv(full_env(env::AGENT_NAME).c_str(), "env-agent-recovered", 1);
     setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "70000", 1);
     setenv(full_env(env::SPAN_MAX_EVENT_DEPTH).c_str(), "1", 1);
@@ -857,17 +856,10 @@ TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->app_name_, "EnvRecoveredApp")
         << "Environment app name should apply even when YAML parsing fails";
-    // The pid suffix must fit the AgentId length cap, so the base is
-    // truncated as needed.
-    const std::string pid_suffix = "-" + std::to_string(getpid());
-    std::string expected_base = "env-agent-recovered";
-    if (expected_base.size() + pid_suffix.size() > object_name::AGENT_ID_MAX_LEN) {
-        expected_base.resize(object_name::AGENT_ID_MAX_LEN - pid_suffix.size());
-    }
-    EXPECT_EQ(config->agent_id_, expected_base + pid_suffix)
-        << "Environment agent ID should apply and get the per-process suffix";
+    EXPECT_EQ(config->agent_id_.size(), 22u)
+        << "the Agent ID should still be auto-generated after YAML parse failure";
     EXPECT_EQ(config->agent_name_, "env-agent-recovered")
-        << "Identity resolution should still derive the default agent name";
+        << "Environment agent name should apply even when YAML parsing fails";
     EXPECT_TRUE(config->identity_resolved_)
         << "Identity resolution should run after YAML parse failure";
     EXPECT_EQ(config->collector.host, "env.collector.host")
@@ -1135,8 +1127,9 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     
     // File values should be used where no environment variable exists
     EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should come from file";
-    EXPECT_EQ(config->agent_id_, "test-agent-123-" + std::to_string(getpid()))
-        << "Agent ID should come from file, with the per-process suffix";
+    EXPECT_EQ(config->agent_name_, "TestAgentName") << "Agent name should come from file";
+    EXPECT_EQ(config->agent_id_.size(), 22u)
+        << "the Agent ID is always auto-generated (base64 UUIDv7)";
 }
 
 // ========== Exception Handling Tests ==========
@@ -2105,6 +2098,40 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
     EXPECT_TRUE(full->check());
 }
 
+// Regression: a v4 reload must carry the running (auto-generated) agent id
+// through identity resolution instead of minting a fresh UUID. A fresh id
+// would make isReloadable() false inside retainNonReloadableFrom() and log a
+// spurious "non-reloadable config fields changed" warning on every reload,
+// even when the config file did not change at all.
+TEST_F(ConfigTest, MakeConfigV4ReloadKeepsAgentIdWithoutWarning) {
+    set_config_string(
+        "ApplicationName: v4-reload-app\n"
+        "UidVersion: v4\n"
+        "ServiceName: v4-service\n"
+        "ApiKey: v4-key\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n");
+    auto first = make_config();
+    ASSERT_NE(first, nullptr);
+    ASSERT_TRUE(first->identity_resolved_);
+    const std::string running_id = first->agent_id_;
+    ASSERT_EQ(running_id.size(), 22u);
+
+    // The agent logs to stdout when no file sink is configured.
+    testing::internal::CaptureStdout();
+    auto reloaded = make_config(first);
+    const std::string log_output = testing::internal::GetCapturedStdout();
+
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->agent_id_, running_id)
+        << "a v4 reload must keep the running agent id";
+    EXPECT_TRUE(reloaded->isReloadable(first))
+        << "an unchanged v4 reload must not differ in non-reloadable fields";
+    EXPECT_EQ(log_output.find("non-reloadable config fields changed"), std::string::npos)
+        << "an unchanged v4 reload must not warn about non-reloadable changes; log:\n"
+        << log_output;
+}
+
 // ========== Config::isReloadable() Tests ==========
 
 // Test isReloadable() returns true when critical fields match
@@ -2489,101 +2516,43 @@ TEST_F(ConfigTest, LogFilePathExpandsPidPlaceholder) {
     Logger::getInstance().shutdown();
 }
 
-// %suffix% expands to the configured instance_suffix, falling back to the pid
-// when none is set (mirroring the pinned-AgentId policy).
-TEST_F(ConfigTest, LogFilePathExpandsSuffixPlaceholder) {
-    const std::string raw_path = temp_dir_ + "/agent-%suffix%.log";
-    set_config_string("ApplicationName: LogPathApp\nLog:\n  FilePath: " + raw_path + "\n");
+// ========== Agent Identity Tests ==========
 
-    options_.instance_suffix = "w7";
+// A legacy AgentId key in the config is ignored: the id is always
+// auto-generated.
+TEST_F(ConfigTest, AgentIdConfigKeyIsIgnored) {
+    set_config_string(R"(
+ApplicationName: IdentityApp
+AgentId: configured-id
+)");
     auto config = make_config();
-    ASSERT_NE(config, nullptr);
-    EXPECT_TRUE(std::filesystem::exists(temp_dir_ + "/agent-w7.log"));
 
-    options_.instance_suffix.clear();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->agent_id_.size(), 22u);
+    EXPECT_EQ(config->agent_id_.find("configured-id"), std::string::npos)
+        << "a configured AgentId must not leak into the identity: " << config->agent_id_;
+}
+
+// An explicitly configured AgentName is used verbatim (it need not be
+// unique); a missing name falls back to the auto-generated agent id.
+TEST_F(ConfigTest, AgentNameUsedVerbatimAndDefaultsToAgentId) {
+    set_config_string(R"(
+ApplicationName: IdentityApp
+AgentName: worker-name
+)");
+    auto config = make_config();
+
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->agent_name_, "worker-name");
+
+    set_config_string(R"(
+ApplicationName: IdentityApp
+)");
     config = make_config();
-    ASSERT_NE(config, nullptr);
-    EXPECT_TRUE(std::filesystem::exists(
-        temp_dir_ + "/agent-" + std::to_string(getpid()) + ".log"))
-        << "%suffix% must fall back to the pid when no instance_suffix is set";
-
-    Logger::getInstance().shutdown();
-}
-
-// ========== Instance Suffix Tests ==========
-
-// A configured instance_suffix yields deterministic per-worker identity: the
-// pinned AgentId and the explicitly configured AgentName both get "-<suffix>".
-TEST_F(ConfigTest, InstanceSuffixAppliesToPinnedIdAndExplicitName) {
-    set_config_string(R"(
-ApplicationName: SuffixApp
-AgentId: pinned-id
-AgentName: pinned-name
-)");
-    options_.instance_suffix = "w3";
-    auto config = make_config();
 
     ASSERT_NE(config, nullptr);
-    EXPECT_EQ(config->agent_id_, "pinned-id-w3");
-    EXPECT_EQ(config->agent_name_, "pinned-name-w3");
-}
-
-// Without a suffix, a pinned id falls back to the pid so sibling pre-fork
-// workers cannot collide; the display name is left alone.
-TEST_F(ConfigTest, PinnedIdWithoutSuffixGetsPidSuffix) {
-    set_config_string(R"(
-ApplicationName: SuffixApp
-AgentId: pinned-id
-AgentName: pinned-name
-)");
-    auto config = make_config();
-
-    ASSERT_NE(config, nullptr);
-    EXPECT_EQ(config->agent_id_, "pinned-id-" + std::to_string(getpid()));
-    EXPECT_EQ(config->agent_name_, "pinned-name");
-}
-
-// Auto-generated ids are already process-unique: no suffix is attached, and a
-// defaulted agent name (= the agent id) is not suffixed either.
-TEST_F(ConfigTest, InstanceSuffixLeavesAutoGeneratedIdUntouched) {
-    set_config_string(R"(
-ApplicationName: SuffixApp
-)");
-    options_.instance_suffix = "w3";
-    auto config = make_config();
-
-    ASSERT_NE(config, nullptr);
-    EXPECT_EQ(config->agent_id_.find("-w3"), std::string::npos)
-        << "auto ids must not get a suffix: " << config->agent_id_;
-}
-
-// An invalid suffix (bad charset) is ignored with a warning; the pinned id
-// then falls back to the pid suffix.
-TEST_F(ConfigTest, InvalidInstanceSuffixIsIgnored) {
-    set_config_string(R"(
-ApplicationName: SuffixApp
-AgentId: pinned-id
-)");
-    options_.instance_suffix = "bad suffix!";
-    auto config = make_config();
-
-    ASSERT_NE(config, nullptr);
-    EXPECT_EQ(config->agent_id_, "pinned-id-" + std::to_string(getpid()));
-}
-
-// The suffixed id stays within the AgentId length cap: the base is truncated,
-// never the suffix.
-TEST_F(ConfigTest, InstanceSuffixTruncatesBaseToFitIdLimit) {
-    set_config_string(R"(
-ApplicationName: SuffixApp
-AgentId: abcdefghijklmnopqrstuvwx
-)");
-    options_.instance_suffix = "w12";
-    auto config = make_config();
-
-    ASSERT_NE(config, nullptr);
-    EXPECT_LE(config->agent_id_.size(), object_name::AGENT_ID_MAX_LEN);
-    EXPECT_EQ(config->agent_id_.substr(config->agent_id_.size() - 4), "-w12");
+    EXPECT_EQ(config->agent_name_, config->agent_id_)
+        << "a missing AgentName must fall back to the agent id";
 }
 
 // Test an empty prefix resets to the default PINPOINT_CPP prefix.

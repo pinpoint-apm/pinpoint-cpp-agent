@@ -398,19 +398,6 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
                                           const char* const* libs,
                                           int libs_count);
 
-/**
- * @brief Sets a stable per-worker identifier for multi-process hosts (e.g.
- *        "w0" for nginx worker slot 0).
- *
- * When set, a pinned AgentId and an explicitly configured AgentName get
- * "-<suffix>" appended so sibling workers register as distinct agent
- * instances with names stable across worker restarts. When unset, a pinned
- * AgentId gets a "-<pid>" suffix instead (with a warning). Auto-generated ids
- * are already unique per process and never get a suffix. A NULL value resets
- * to "not set".
- */
-void pt_agent_options_set_instance_suffix(pt_agent_options_t options, const char* suffix);
-
 /* ========================================================================== */
 /* Agent lifecycle                                                              */
 /* ========================================================================== */

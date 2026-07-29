@@ -400,10 +400,14 @@ void expect_noop_span(const SpanPtr& span) {
     span->EndSpan();
 }
 
-void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id) {
+void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id,
+                            const std::string& expected_agent_id) {
     EXPECT_EQ(metadata.value("applicationname").value_or(""), "cpp-agent-it");
-    EXPECT_EQ(metadata.value("agentid").value_or(""), "cpp-it-agent-it0");
-    EXPECT_EQ(metadata.value("agentname").value_or(""), "cpp-it-agent-name-it0");
+    // The agent id is always auto-generated; callers pass the running
+    // agent's id so the wire metadata is checked against it.
+    EXPECT_EQ(expected_agent_id.size(), 22u);
+    EXPECT_EQ(metadata.value("agentid").value_or(""), expected_agent_id);
+    EXPECT_EQ(metadata.value("agentname").value_or(""), "cpp-it-agent-name");
     EXPECT_EQ(metadata.value("servicetype").value_or(""), std::to_string(kApplicationType));
     EXPECT_EQ(metadata.value("protocol.version").value_or(""), "100");
     EXPECT_FALSE(metadata.value("starttime").value_or("").empty());
@@ -439,9 +443,6 @@ protected:
         // from overriding the deterministic inline configuration below.
         options.env_prefix = "PINPOINT_CPP_AGENT_IT_ISOLATED";
         options.config_yaml = config();
-        // Deterministic per-worker identity: the pinned AgentId and explicit
-        // AgentName become "...-it0" (instead of a pid suffix).
-        options.instance_suffix = "it0";
         options.app_type = kApplicationType;
         options.server_info = "mock-collector integration server";
         options.args = {"--integration-test", "--ephemeral-ports"};
@@ -469,7 +470,6 @@ protected:
         yaml
             << "Enable: true\n"
             << "ApplicationName: cpp-agent-it\n"
-            << "AgentId: cpp-it-agent\n"
             << "AgentName: cpp-it-agent-name\n"
             << "UidVersion: " << UidVersion() << "\n";
         if (!ServiceName().empty()) {
@@ -794,11 +794,11 @@ TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
     ASSERT_EQ(libraries->servicelib_size(), 2);
     EXPECT_EQ(libraries->servicelib(1), "libmock-collector.so");
 
-    expect_common_metadata(received_info.metadata, false);
+    expect_common_metadata(received_info.metadata, false, impl_->getAgentId());
     ASSERT_FALSE(snapshot.ping_streams.empty());
-    expect_common_metadata(snapshot.ping_streams.front(), true);
+    expect_common_metadata(snapshot.ping_streams.front(), true, impl_->getAgentId());
     ASSERT_FALSE(snapshot.command_streams_v2.empty());
-    expect_common_metadata(snapshot.command_streams_v2.front(), true);
+    expect_common_metadata(snapshot.command_streams_v2.front(), true, impl_->getAgentId());
     EXPECT_EQ(snapshot.command_streams_v2.front()
                   .value("supportcommandcode").value_or(""),
               "710;730");
@@ -850,8 +850,6 @@ TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
     const auto start_time = snapshot.agent_infos.front().metadata
                                 .value("starttime").value_or("");
     ASSERT_EQ(agent_id.size(), 22U);
-    EXPECT_NE(agent_id, "cpp-it-agent")
-        << "v4 must ignore the configured v1/v3 AgentId";
     EXPECT_EQ(impl_->getAgentId(), agent_id);
     ASSERT_FALSE(start_time.empty());
 
@@ -861,7 +859,7 @@ TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
                   "cpp-agent-it");
         EXPECT_EQ(metadata.value("agentid").value_or(""), agent_id);
         EXPECT_EQ(metadata.value("agentname").value_or(""),
-                  "cpp-it-agent-name-it0");
+                  "cpp-it-agent-name");
         EXPECT_EQ(metadata.value("starttime").value_or(""), start_time);
         EXPECT_EQ(metadata.value("servicetype").value_or(""),
                   std::to_string(kApplicationType));
@@ -1044,7 +1042,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     const auto root_wire = find_span_by_rpc(snapshot, "/orders/42");
     ASSERT_TRUE(root_wire.has_value());
     EXPECT_EQ(root_wire->spanid(), root_span_id);
-    EXPECT_EQ(root_wire->transactionid().agentid(), "cpp-it-agent-it0");
+    EXPECT_EQ(root_wire->transactionid().agentid(), impl_->getAgentId());
     EXPECT_EQ(root_wire->acceptevent().remoteaddr(), "192.0.2.10");
     EXPECT_EQ(root_wire->acceptevent().endpoint(), "orders.internal:8443");
     EXPECT_EQ(root_wire->err(), 1);
@@ -1115,7 +1113,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     EXPECT_EQ(exception.exceptions(0).stacktraceelement(1).methodname(), "execute");
 
     ASSERT_FALSE(snapshot.span_batches.empty());
-    expect_common_metadata(snapshot.span_batches.front().metadata, false);
+    expect_common_metadata(snapshot.span_batches.front().metadata, false, impl_->getAgentId());
 }
 
 TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
@@ -1162,7 +1160,7 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
 
     const auto snapshot = collector_.snapshot();
     ASSERT_FALSE(snapshot.stat_streams.empty());
-    expect_common_metadata(snapshot.stat_streams.front(), false);
+    expect_common_metadata(snapshot.stat_streams.front(), false, impl_->getAgentId());
 
     bool checked_agent_stat = false;
     for (const auto& received : snapshot.stats) {
@@ -1779,7 +1777,7 @@ TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
         });
     ASSERT_NE(echo, snapshot.echo_responses.end());
     EXPECT_EQ(echo->message.message(), "collector-echo");
-    expect_common_metadata(echo->metadata, false);
+    expect_common_metadata(echo->metadata, false, impl_->getAgentId());
 
     const auto active_count = std::find_if(
         snapshot.active_thread_count_responses.begin(),
@@ -1795,7 +1793,7 @@ TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
                               active_count->message.activethreadcount().end(), 0),
               1);
     EXPECT_GT(active_count->message.timestamp(), 0);
-    expect_common_metadata(active_count->metadata, true);
+    expect_common_metadata(active_count->metadata, true, impl_->getAgentId());
 
     const auto failure = std::find_if(snapshot.command_stream_messages.begin(),
                                       snapshot.command_stream_messages.end(),

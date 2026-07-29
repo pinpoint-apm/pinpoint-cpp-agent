@@ -59,6 +59,14 @@ namespace pinpoint {
             }
         }
 
+        uint64_t read_be64(const char* src) {
+            uint64_t value = 0;
+            for (int i = 0; i < 8; ++i) {
+                value = (value << 8) | static_cast<unsigned char>(src[i]);
+            }
+            return value;
+        }
+
     } // namespace
 
     std::string base64_encode_uuid(const Uuid& uuid) {
@@ -76,6 +84,17 @@ namespace pinpoint {
             encoded.pop_back();
         }
         return encoded;
+    }
+
+    std::optional<Uuid> base64_decode_uuid(std::string_view value) {
+        std::string bytes;
+        if (!absl::WebSafeBase64Unescape(value, &bytes) || bytes.size() != 16) {
+            return std::nullopt;
+        }
+        Uuid uuid;
+        uuid.msb = read_be64(&bytes[0]);
+        uuid.lsb = read_be64(&bytes[8]);
+        return uuid;
     }
 
     Uuid generate_uuid_v7() {
@@ -137,13 +156,15 @@ namespace pinpoint {
             ObjectName obj;
             obj.version = object_name::VERSION_V1;
 
-            // agentId: required, auto-generated as base64(UUIDv7) when missing/invalid.
+            // agentId: auto-generated as base64(UUIDv7). A valid input id only
+            // arrives on a config reload (the running agent's id) and is kept
+            // so the identity stays stable.
             if (validate_id(input.agent_id, object_name::AGENT_ID_MAX_LEN)) {
                 obj.agent_id = input.agent_id;
                 LOG_INFO("resolved AgentId='{}'", obj.agent_id);
             } else {
                 obj.agent_id = new_base64_uid();
-                LOG_INFO("AgentId not provided or invalid - auto generated AgentId='{}'", obj.agent_id);
+                LOG_INFO("auto generated AgentId='{}'", obj.agent_id);
             }
 
             // applicationName: required.
@@ -169,10 +190,20 @@ namespace pinpoint {
             ObjectName obj;
             obj.version = object_name::VERSION_V4;
 
-            // agentId: input is ignored, always a freshly generated UUIDv7.
-            obj.agent_uuid = generate_uuid_v7();
-            obj.agent_id = base64_encode_uuid(obj.agent_uuid);
-            LOG_INFO("v4 auto generated AgentId='{}'", obj.agent_id);
+            // agentId: auto-generated as base64(UUIDv7). A decodable input id
+            // only arrives on a config reload (the running agent's own
+            // generated id) and is kept — together with its UUID — so the
+            // identity stays stable instead of tripping the non-reloadable
+            // -change warning with a freshly minted id.
+            if (const auto uuid = base64_decode_uuid(input.agent_id)) {
+                obj.agent_uuid = *uuid;
+                obj.agent_id = input.agent_id;
+                LOG_INFO("v4 resolved AgentId='{}'", obj.agent_id);
+            } else {
+                obj.agent_uuid = generate_uuid_v7();
+                obj.agent_id = base64_encode_uuid(obj.agent_uuid);
+                LOG_INFO("v4 auto generated AgentId='{}'", obj.agent_id);
+            }
 
             // applicationName: required.
             if (!validate_id(input.application_name, object_name::AGENT_NAME_MAX_LEN_V4)) {

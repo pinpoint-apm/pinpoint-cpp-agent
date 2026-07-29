@@ -83,7 +83,7 @@ Create a `pinpoint-config.yaml` file:
 
 ```yaml
 ApplicationName: "MyApplication"
-AgentId: "my-agent-id"  # Optional: auto-generated if not specified
+AgentName: "my-agent-name"  # Optional label; the agent id is always auto-generated
 
 Collector:
   GrpcHost: "localhost"      # Your Pinpoint collector host
@@ -120,7 +120,7 @@ int main() {
 
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
-export PINPOINT_CPP_AGENT_ID="my-agent-id"
+export PINPOINT_CPP_AGENT_NAME="my-agent-name"
 export PINPOINT_CPP_GRPC_HOST="localhost"
 export PINPOINT_CPP_GRPC_AGENT_PORT="9991"
 export PINPOINT_CPP_GRPC_SPAN_PORT="9993"
@@ -299,10 +299,9 @@ Points to keep in mind:
   new handle.
 - **Spans that outlive the shutdown are safe.** A span created before `Shutdown()`
   can still be ended afterwards without crashing; its data is simply dropped.
-- **Pin `AgentId` (plus `AgentOptions::instance_suffix`) if you cycle
-  repeatedly.** Each `StartAgent()` re-resolves the agent identity, so an
-  unpinned id makes every cycle register as a new agent instance in the
-  Pinpoint UI. (With `UidVersion: v4` the id is always regenerated.)
+- **Each cycle registers as a new agent instance.** Every `StartAgent()`
+  re-resolves the agent identity with a freshly auto-generated agent id. Set
+  `AgentName` for a stable label in the Pinpoint UI across cycles.
 - **Shutdown is synchronous but bounded.** It joins the worker threads while
   queued spans drain, and returns within a 3-second deadline even if a worker
   is stuck in an unresponsive RPC (stragglers finish draining on a background

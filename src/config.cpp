@@ -388,7 +388,6 @@ namespace pinpoint {
         config.log.level = get_string(yaml, "LogLevel", config.log.level);
         config.enable = get_boolean(yaml, "Enable", config.enable);
         config.app_name_ = get_string(yaml, "ApplicationName", config.app_name_);
-        config.agent_id_ = get_string(yaml, "AgentId", config.agent_id_);
         config.agent_name_ = get_string(yaml, "AgentName", config.agent_name_);
         config.uid_version_ = get_string(yaml, "UidVersion", config.uid_version_);
         config.service_name_ = get_string(yaml, "ServiceName", config.service_name_);
@@ -569,9 +568,6 @@ namespace pinpoint {
         }
         if(auto e = get_env(prefix, env::APPLICATION_NAME)) {
             config.app_name_ = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::AGENT_ID)) {
-            config.agent_id_ = std::string(e.value);
         }
         if(auto e = get_env(prefix, env::AGENT_NAME)) {
             config.agent_name_ = std::string(e.value);
@@ -861,78 +857,21 @@ namespace pinpoint {
         }
     }
 
-    // Appends "-<suffix>" to base, truncating base so the result fits max_len.
-    static std::string append_id_suffix(const std::string& base, const std::string& suffix,
-                                        size_t max_len) {
-        const std::string sep_suffix = "-" + suffix;
-        std::string result = base;
-        if (result.size() + sep_suffix.size() > max_len && sep_suffix.size() < max_len) {
-            result.resize(max_len - sep_suffix.size());
-        }
-        return result + sep_suffix;
-    }
-
-    // Per-worker identity for multi-process hosts (see
-    // AgentOptions::instance_suffix). A pinned agent id gets
-    // "-<instance_suffix>" appended — or "-<pid>" with a warning when no
-    // suffix is configured — so sibling pre-fork workers sharing one
-    // configured id register as distinct agent instances. An explicitly
-    // configured agent name gets the configured suffix too (display names
-    // need not be unique, so the name never falls back to the pid). An
-    // auto-generated id is already process-unique and is left untouched, as
-    // is an agent name that merely defaulted to the agent id.
-    static void apply_instance_suffix(Config& config, const AgentOptions& options,
-                                      const std::string& explicit_agent_name) {
-        std::string suffix = options.instance_suffix;
-        if (!suffix.empty() && !validate_id(suffix, object_name::AGENT_ID_MAX_LEN)) {
-            LOG_WARN("invalid instance_suffix '{}' (allowed: [a-zA-Z0-9._-], max {} chars); ignoring it",
-                     suffix, object_name::AGENT_ID_MAX_LEN);
-            suffix.clear();
-        }
-
-        if (config.agent_id_pinned_) {
-            const std::string old_id = config.agent_id_;
-            if (!suffix.empty()) {
-                config.agent_id_ = append_id_suffix(old_id, suffix, object_name::AGENT_ID_MAX_LEN);
-                LOG_INFO("per-worker AgentId: '{}' -> '{}'", old_id, config.agent_id_);
-            } else {
-                config.agent_id_ = append_id_suffix(old_id,
-                                                    std::to_string(static_cast<long>(getpid())),
-                                                    object_name::AGENT_ID_MAX_LEN);
-                LOG_WARN("pinned AgentId '{}' got a pid suffix ('{}'): sibling pre-fork workers "
-                         "must not share one agent id; set AgentOptions::instance_suffix for a "
-                         "stable per-worker id",
-                         old_id, config.agent_id_);
-            }
-        }
-
-        if (!suffix.empty() && !explicit_agent_name.empty()) {
-            const size_t name_max_len = config.is_v4() ? object_name::AGENT_NAME_MAX_LEN_V4
-                                                       : object_name::AGENT_NAME_MAX_LEN;
-            config.agent_name_ = append_id_suffix(explicit_agent_name, suffix, name_max_len);
-        }
-    }
-
-    // Expands per-worker placeholders in the configured log file path at
+    // Expands the per-worker placeholder in the configured log file path at
     // sink-application time (Config keeps the raw value, so reload
     // comparisons and to_config_string() round-trips stay stable):
-    //   %pid%    -> current process id
-    //   %suffix% -> AgentOptions::instance_suffix, or the pid when unset
+    //   %pid% -> current process id
     // Sibling pre-fork workers can thereby write separate log files — the
     // built-in size rotation is not multi-process safe on a shared file.
-    static std::string expand_log_file_path(const std::string& path,
-                                            const AgentOptions& options) {
+    static std::string expand_log_file_path(const std::string& path) {
         if (path.find('%') == std::string::npos) {
             return path;
         }
         const std::string pid = std::to_string(static_cast<long>(getpid()));
-        const std::string& suffix =
-            options.instance_suffix.empty() ? pid : options.instance_suffix;
-        return absl::StrReplaceAll(path, {{"%pid%", pid}, {"%suffix%", suffix}});
+        return absl::StrReplaceAll(path, {{"%pid%", pid}});
     }
 
-    static void apply_log_config(const Config& cfg, const Config* old,
-                                 const AgentOptions& options) {
+    static void apply_log_config(const Config& cfg, const Config* old) {
         // Skip the file logger when its settings are unchanged: setFileLogger()
         // closes and reopens the stream, and a reload triggered by an unrelated
         // setting should not churn the log file. An empty path is applied too —
@@ -942,7 +881,7 @@ namespace pinpoint {
         if (!old || old->log.file_path != cfg.log.file_path ||
             old->log.max_file_size != cfg.log.max_file_size) {
             Logger::getInstance().setFileLogger(
-                expand_log_file_path(cfg.log.file_path, options), cfg.log.max_file_size);
+                expand_log_file_path(cfg.log.file_path), cfg.log.max_file_size);
         }
         if (!old || old->log.level != cfg.log.level) {
             Logger::getInstance().setLogLevel(cfg.log.level);
@@ -1011,7 +950,7 @@ namespace pinpoint {
         // the end instead, once this config is complete and can no longer be
         // rejected.
         if (!old) {
-            apply_log_config(*config, nullptr, options);
+            apply_log_config(*config, nullptr);
         }
 
         // Resolve agent self-identity (ObjectName) according to the configured
@@ -1025,6 +964,10 @@ namespace pinpoint {
                                                    : object_name::VERSION_V1;
 
             ObjectNameInput in;
+            // The agent id is not a configuration input: it is empty on the
+            // first load (the resolver auto-generates one) and carries the
+            // running agent's id on a reload so identity resolution keeps it
+            // stable instead of minting a new id.
             in.agent_id = config->agent_id_;
             in.agent_name = config->agent_name_;
             in.application_name = config->app_name_;
@@ -1032,30 +975,12 @@ namespace pinpoint {
             in.api_key = config->api_key_;
 
             if (auto object_name = resolve_object_name(name_version, in)) {
-                // Record whether the id was pinned (explicitly provided and kept
-                // as-is) versus auto-generated. v4 always regenerates the id,
-                // so it is never pinned. apply_instance_suffix() below uses
-                // this to derive a per-worker id in multi-process hosts.
-                config->agent_id_pinned_ = (name_version != NameVersion::kV4)
-                    && !in.agent_id.empty()
-                    && object_name->agent_id == in.agent_id;
                 config->agent_id_ = object_name->agent_id;
                 config->agent_name_ = object_name->agent_name;
                 config->app_name_ = object_name->application_name;
                 config->service_name_ = object_name->service_name;
                 config->api_key_ = object_name->api_key;
                 config->identity_resolved_ = true;
-
-                // First load only: a reload retains the running identity via
-                // retainNonReloadableFrom(), so re-applying the suffix there
-                // would only produce noise before being overwritten.
-                if (!old) {
-                    const std::string explicit_agent_name =
-                        (!in.agent_name.empty() && object_name->agent_name == in.agent_name)
-                            ? in.agent_name
-                            : std::string();
-                    apply_instance_suffix(*config, options, explicit_agent_name);
-                }
             } else {
                 // A required identity value is missing/invalid. Keep returning a
                 // populated config (callers may inspect it); Config::check() fails
@@ -1219,7 +1144,7 @@ namespace pinpoint {
             // settings that actually changed. The "config:" line below already
             // goes to the new sink/level and shows the final merged config.
             config->retainNonReloadableFrom(old);
-            apply_log_config(*config, old.get(), options);
+            apply_log_config(*config, old.get());
         }
 
         LOG_INFO("config: {}", "\n" + to_config_string(*config));

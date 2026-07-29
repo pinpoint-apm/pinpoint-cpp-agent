@@ -1036,7 +1036,6 @@ protected:
         ASSERT_TRUE(config_file.is_open());
         config_file
             << "ApplicationName: " << application_name << "\n"
-            << "AgentId: test-agent-id\n"
             << "AgentName: test-agent-name\n"
             << "Enable: true\n";
         if (enable_watcher) {
@@ -1068,7 +1067,6 @@ protected:
 
     static constexpr const char* kBaseConfigYaml = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1095,7 +1093,6 @@ TEST_F(StartAgentTest, StartAgentAgainReturnsRunningAgentUnchanged) {
     // 2. Call StartAgent() again with a different config source
     std::string changed_config = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1128,7 +1125,6 @@ TEST_F(StartAgentTest, ReloadConfigAppliesReloadableFields) {
 
     std::string reloadable_config = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1288,7 +1284,6 @@ TEST_F(StartAgentTest, ReloadConfigRetainsNonReloadableFields) {
     // reloadable one (counter rate) at once.
     std::string non_reloadable_config = R"(
 ApplicationName: different-app-name
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1332,7 +1327,6 @@ TEST_F(StartAgentTest, ReloadConfigAppliesUrlFilter) {
     // 2. Reload with exclude_url added
     std::string config_with_filter = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1450,7 +1444,6 @@ TEST_F(StartAgentTest, ReloadConfigAppliesMultipleTimes) {
     // 2. First reload: change counter rate to 10
     std::string config_v2 = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:
@@ -1471,7 +1464,6 @@ Sampling:
     // 3. Second reload: change counter rate to 100
     std::string config_v3 = R"(
 ApplicationName: test-app
-AgentId: test-agent-id
 AgentName: test-agent-name
 Enable: true
 Collector:

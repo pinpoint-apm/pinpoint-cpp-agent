@@ -133,14 +133,12 @@ pt_agent_destroy(agent);          /* drop the dead handle */
 agent = pt_start_agent(NULL);     /* a NEW agent; the old one cannot restart */
 ```
 
-Pin `AgentId` in the configuration (plus `pt_agent_options_set_instance_suffix()`)
-if you cycle repeatedly — otherwise each cycle re-resolves the identity and
-registers as a new agent instance in the Pinpoint UI.
+Each cycle re-resolves the identity with a freshly auto-generated agent id and
+registers as a new agent instance in the Pinpoint UI. Set `AgentName` in the
+configuration for a stable label across cycles.
 
 `pt_agent_options_set_server_metadata()` attaches AgentInfo server metadata
-(runtime description, args, libs), and
-`pt_agent_options_set_instance_suffix()` sets a stable per-worker identifier
-for multi-process hosts (see the [Pre-fork Integration Guide](prefork.md)):
+(runtime description, args, libs):
 
 ```c
 const char* args[] = {"--port=8080"};

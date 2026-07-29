@@ -72,6 +72,23 @@ TEST(Base64Uuid, EncodeMatchesGoldenVectors) {
     }
 }
 
+TEST(Base64Uuid, DecodeRoundTripsGoldenVectors) {
+    for (const auto& v : kGoldenVectors) {
+        const auto decoded = base64_decode_uuid(v.base64);
+        ASSERT_TRUE(decoded.has_value()) << "base64=" << v.base64;
+        const Uuid expected = uuid_from_string(v.uuid);
+        EXPECT_EQ(decoded->msb, expected.msb) << "uuid=" << v.uuid;
+        EXPECT_EQ(decoded->lsb, expected.lsb) << "uuid=" << v.uuid;
+    }
+}
+
+TEST(Base64Uuid, DecodeRejectsNonUuidInput) {
+    EXPECT_FALSE(base64_decode_uuid("").has_value());
+    EXPECT_FALSE(base64_decode_uuid("my-agent-id").has_value());       // wrong byte length
+    EXPECT_FALSE(base64_decode_uuid("not base64 at all!").has_value()); // bad charset
+    EXPECT_FALSE(base64_decode_uuid(std::string(24, 'A')).has_value()); // 18 bytes, not 16
+}
+
 TEST(Base64Uuid, UrlSafeAlphabetUsed) {
     // ffff... must use '_' (URL-safe) and never '+' or '/' or padding '='.
     const std::string all_ones = base64_encode_uuid(uuid_from_string(kGoldenVectors[1].uuid));
@@ -158,6 +175,8 @@ ObjectNameInput baseInput() {
     return in;
 }
 
+// A valid input id is kept: this is how a config reload carries the running
+// agent's (auto-generated) id through resolution instead of minting a new one.
 TEST(ResolveV1V3, ProvidedAgentIdUsed) {
     ObjectNameInput in = baseInput();
     in.agent_id = "my-agent-id";
@@ -228,7 +247,9 @@ TEST(ResolveV4, HappyPath) {
     EXPECT_EQ(base64_encode_uuid(obj->agent_uuid), obj->agent_id);
 }
 
-TEST(ResolveV4, AgentIdInputIgnoredAndRegenerated) {
+// An input id that is not a base64-encoded UUID is regenerated: only the
+// agent's own generated id (fed back on a config reload) can pass through.
+TEST(ResolveV4, NonUuidAgentIdInputRegenerated) {
     ObjectNameInput in;
     in.agent_id = "user-supplied-id";
     in.application_name = "test-app";
@@ -241,6 +262,27 @@ TEST(ResolveV4, AgentIdInputIgnoredAndRegenerated) {
     ASSERT_TRUE(b.has_value());
     EXPECT_NE(a->agent_id, "user-supplied-id");
     EXPECT_NE(a->agent_id, b->agent_id); // fresh UUID each resolve
+}
+
+// A decodable input id is kept: this is how a config reload carries the
+// running agent's generated id through resolution instead of minting a new
+// one. The stored UUID must stay consistent with the kept id.
+TEST(ResolveV4, GeneratedAgentIdInputKeptOnReresolve) {
+    ObjectNameInput in;
+    in.application_name = "test-app";
+    in.service_name = "test-service";
+    in.api_key = "secret-key";
+
+    const auto first = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(first.has_value());
+
+    in.agent_id = first->agent_id; // reload feeds the running id back in
+    const auto again = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_EQ(again->agent_id, first->agent_id);
+    EXPECT_EQ(again->agent_uuid.msb, first->agent_uuid.msb);
+    EXPECT_EQ(again->agent_uuid.lsb, first->agent_uuid.lsb);
+    EXPECT_EQ(base64_encode_uuid(again->agent_uuid), again->agent_id);
 }
 
 TEST(ResolveV4, AgentNameDefaultsToBase64AgentId) {

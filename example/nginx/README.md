@@ -6,8 +6,8 @@ from the [Pre-fork Integration Guide](../../doc/prefork.md):
 
 - the **master** process makes no agent API calls,
 - each **worker** starts its own agent in `init_process`
-  (`pt_start_agent()`, with `instance_suffix` = `w<ngx_worker>` so every
-  worker registers as a stable, distinct agent instance),
+  (`pt_start_agent()`; every worker registers as a distinct agent instance
+  with its own auto-generated agent id),
 - each worker shuts its agent down in `exit_process`,
 - helper processes (cache manager/loader) are skipped,
 - one span per completed request is recorded from the LOG phase, with the
@@ -52,12 +52,12 @@ http {
 
 ```yaml
 ApplicationName: "my-nginx"
-AgentId: "my-nginx"            # becomes my-nginx-w0, my-nginx-w1, ... per worker
+AgentName: "my-nginx"          # shared display label; need not be unique
 Collector:
   Host: "my.collector.host"
 Log:
   # One log file per worker: the built-in rotation is not multi-process safe.
-  FilePath: "/var/log/pinpoint/nginx-agent-%suffix%.log"
+  FilePath: "/var/log/pinpoint/nginx-agent-%pid%.log"
 ```
 
 Each worker appears as its own agent instance in the Pinpoint UI

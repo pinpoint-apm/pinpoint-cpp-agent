@@ -150,7 +150,6 @@ ngx_http_pinpoint_init_process(ngx_cycle_t *cycle)
     ngx_http_pinpoint_main_conf_t *pmcf;
     pt_agent_options_t             opts;
     char                           config_file[1024];
-    char                           suffix[32];
     char                           server_info[64];
 
     /* Only request-serving processes trace. The cache manager/loader also run
@@ -178,14 +177,6 @@ ngx_http_pinpoint_init_process(ngx_cycle_t *cycle)
         config_file[pmcf->config_file.len] = '\0';
         pt_agent_options_set_config_file(opts, config_file);
     }
-
-    /* ngx_worker is this worker's slot number (0..N-1). It is stable across
-     * worker respawns and config reloads, so the per-worker agent id
-     * ("<AgentId>-w0", "<AgentId>-w1", ...) survives restarts. In single
-     * process mode there is only one slot. */
-    ngx_snprintf((u_char *) suffix, sizeof(suffix) - 1, "w%ui%Z",
-                 (ngx_process == NGX_PROCESS_SINGLE) ? 0 : ngx_worker);
-    pt_agent_options_set_instance_suffix(opts, suffix);
 
     ngx_snprintf((u_char *) server_info, sizeof(server_info) - 1,
                  "nginx/%s%Z", NGINX_VERSION);

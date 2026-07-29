@@ -4,7 +4,6 @@
 Enable: true
 
 ApplicationName: "it-test-server"
-AgentId: "it-test-001"
 AgentName: "it-test-agent"
 
 IsContainer: true

@@ -76,7 +76,6 @@ namespace pinpoint {
         constexpr const char* DEFAULT_PREFIX = "PINPOINT_CPP";
         constexpr const char* ENABLE = "ENABLE";
         constexpr const char* APPLICATION_NAME = "APPLICATION_NAME";
-        constexpr const char* AGENT_ID = "AGENT_ID";
         constexpr const char* AGENT_NAME = "AGENT_NAME";
         constexpr const char* UID_VERSION = "UID_VERSION";
         constexpr const char* SERVICE_NAME = "SERVICE_NAME";
@@ -156,6 +155,9 @@ namespace pinpoint {
      */
     struct Config {
         std::string app_name_;
+        // Not a configuration input: the agent id is always auto-generated
+        // (base64 of a UUIDv7) by make_config()'s identity resolution, so it
+        // is process-unique by construction. A reload keeps the running id.
         std::string agent_id_;
         std::string agent_name_;
 
@@ -173,13 +175,6 @@ namespace pinpoint {
         // by check() so startup degrades to a noop agent (Java aborts here).
         // Defaults to true so directly-constructed Config values stay valid.
         bool identity_resolved_ = true;
-        // True when the resolved agent_id came from an explicit, user-provided
-        // value (v1/v3 only; v4 always auto-generates). make_config() appends
-        // a per-process suffix (AgentOptions::instance_suffix, or the pid) to
-        // a pinned id so sibling pre-fork workers register as distinct agent
-        // instances. Defaults to false so directly-constructed Config values
-        // are treated as auto-generated.
-        bool agent_id_pinned_ = false;
 
         // gRPC protocol.version header wire value (Java ProtocolVersion: V1=100, V4=400).
         int protocol_version() const { return object_name_version_ == 4 ? 400 : 100; }
@@ -404,8 +399,7 @@ namespace pinpoint {
      * The YAML source is the file named by `resolve_config_file_path(options)`
      * (re-read on every call), falling back to `options.config_yaml` when no
      * file is configured. On the first load (@p old is nullptr) environment
-     * overrides are applied, the logger is configured immediately, and
-     * `options.instance_suffix` is applied to the resolved identity. When
+     * overrides are applied and the logger is configured immediately. When
      * @p old — the running agent's config — is given, the sources are being
      * re-read for a reload: the config is seeded from @p old so keys absent
      * from the file keep their running values (env-sourced ones included)

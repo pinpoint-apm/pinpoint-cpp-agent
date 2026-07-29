@@ -54,20 +54,13 @@ agent use in the child.
 ## Worker identity
 
 Each worker appears as one agent instance in the Pinpoint UI. Identity is
-resolved inside the worker, when `StartAgent()` runs:
+resolved inside the worker, when `StartAgent()` runs: the agent id is always
+auto-generated (a fresh UUIDv7 per worker process), so sibling workers can
+never collide — but the id changes on worker restart.
 
-| Configuration | Resulting per-worker agent id |
-|---|---|
-| No `AgentId` configured | A fresh UUIDv7 per worker (changes on worker restart). |
-| `AgentId: myapp` + `instance_suffix = "w0"` | `myapp-w0` — **stable across worker restarts**. Recommended. |
-| `AgentId: myapp`, no suffix | `myapp-<pid>` plus a warning (safe, but changes on worker restart). |
-| `UidVersion: v4` | Always a fresh UUIDv7 (the configured id is ignored). |
-
-`AgentOptions::instance_suffix` (`pt_agent_options_set_instance_suffix()`) is
-the knob for stable per-worker names. Use the host's worker slot number when it
-has one — nginx exposes it as `ngx_worker` (0..N-1), which is stable across
-worker respawns and reloads. An explicitly configured `AgentName` gets the same
-suffix, so the UI shows `myapp-name-w0`, `myapp-name-w1`, ...
+`AgentName` provides the human-readable display label. It need not be unique:
+all workers can share one configured name (the auto-generated id already
+tells the instances apart).
 
 ## Logging
 
@@ -75,16 +68,15 @@ Multiple workers writing one log file is safe at line granularity (every line
 is flushed as a single append), but the built-in **size rotation is not
 multi-process safe**: a worker that rotates the file pulls it out from under
 its siblings. Give each worker its own file with the `Log.FilePath`
-placeholders:
+placeholder:
 
 ```yaml
 Log:
-  FilePath: "/var/log/pinpoint/agent-%suffix%.log"   # or agent-%pid%.log
+  FilePath: "/var/log/pinpoint/agent-%pid%.log"
   MaxFileSize: 50
 ```
 
-`%suffix%` expands to `instance_suffix` (or the pid when unset), `%pid%` to the
-process id.
+`%pid%` expands to the process id.
 
 ## Configuration reloads
 
@@ -143,10 +135,6 @@ static ngx_int_t ngx_http_pinpoint_init_process(ngx_cycle_t *cycle) {
 
     pt_agent_options_t opts = pt_agent_options_new();
     pt_agent_options_set_config_file(opts, conf->config_file);
-
-    char suffix[16];
-    ngx_snprintf((u_char *) suffix, sizeof(suffix), "w%ui%Z", ngx_worker);
-    pt_agent_options_set_instance_suffix(opts, suffix);
     pt_agent_options_set_server_metadata(opts, "nginx/" NGINX_VERSION,
                                          NULL, 0, NULL, 0);
 
