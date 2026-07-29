@@ -157,6 +157,7 @@ int run(int argc, char** argv) {
               << std::setw(18) << "legacy ns/op"
               << std::setw(18) << "cached load"
               << std::setw(18) << "cached ref"
+              << std::setw(15) << "load speedup"
               << std::setw(14) << "ref speedup" << '\n';
 
     for (const size_t threads : thread_counts()) {
@@ -176,6 +177,10 @@ int run(int argc, char** argv) {
                   << std::setw(18) << legacy_result.contended_ns_per_op
                   << std::setw(18) << cached_value_result.contended_ns_per_op
                   << std::setw(18) << cached_ref_result.contended_ns_per_op
+                  << std::setw(14)
+                  << legacy_result.contended_ns_per_op /
+                         cached_value_result.contended_ns_per_op
+                  << "x"
                   << std::setw(13)
                   << legacy_result.contended_ns_per_op /
                          cached_ref_result.contended_ns_per_op

@@ -114,8 +114,11 @@ machine and compare medians.
 `atomic_shared_ptr_benchmark` compares the former C++17 `shared_mutex` plus
 owning-copy load with the generation-validated thread-local cache. It reports
 both the compatible by-value `load()` and the opt-in reference accessor. The
-legacy implementation is embedded in the benchmark, so one run produces the
-before/after comparison under the same machine load.
+thread-cached owning load uses a per-thread localized control block: it keeps
+the lifetime and re-entrancy safety of a `shared_ptr` copy without updating one
+source refcount from every reader core. The legacy implementation is embedded
+in the benchmark, so one run produces the before/after comparison under the
+same machine load.
 
 ```sh
 cmake --preset debug-cached -DBUILD_BENCHMARKS=ON

@@ -202,8 +202,10 @@ namespace pinpoint {
         // unchanged per-request path. ThreadCached is safe for this holder
         // because AgentRuntime is passive data: a reader thread's TLS may pin
         // a snapshot past this agent's destruction, and destroying it that
-        // late touches no agent state. Holders of active objects (e.g. the
-        // global AgentImpl handle) must stay Uncached.
+        // late touches no agent state. Its per-thread localized control block
+        // also keeps owning NewSpan() copies from contending across request
+        // threads. Holders of active objects (e.g. the global AgentImpl
+        // handle) must stay Uncached.
         AtomicSharedPtr<const AgentRuntime, SnapshotCache::ThreadCached> runtime_;
 
     	// Identity fields snapshotted once at construction. Config::isReloadable()

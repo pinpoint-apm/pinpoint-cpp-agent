@@ -875,11 +875,10 @@ namespace pinpoint {
             return noopSpan();
         }
         // One owning snapshot covers the filters and the sampler for this
-        // request and then moves into the span, so the function still costs a
-        // single control-block RMW pair. Owning — not load_cached_ref() — is
-        // required here: reader.Get() below runs host code, and a re-entrant
-        // load of runtime_ racing a config reload would refresh the TLS entry
-        // and could destroy the snapshot the references below point into.
+        // request and then moves into the span. AtomicSharedPtr localizes the
+        // cached snapshot's control block per reader thread, so this owning
+        // copy keeps re-entrant reader.Get() calls safe without making request
+        // threads contend on the shared runtime control block.
         auto runtime = runtime_.load();
         const auto& url_filter = runtime->http_url_filter;
         if (url_filter && url_filter->isFiltered(rpc_point)) {

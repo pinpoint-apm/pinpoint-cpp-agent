@@ -171,6 +171,61 @@ TEST(AtomicSharedPtrTest, ThreadCachedLoadPinsSnapshotUntilNextLoad) {
     EXPECT_EQ(initial.use_count(), 1);
 }
 
+TEST(AtomicSharedPtrTest, OwningLoadCopiesThreadLocalControlBlock) {
+    auto source = std::make_shared<const int>(7);
+    CachedAtomicSharedPtr<const int> value(source);
+
+    // Warm this thread's localized owner. It contributes one reference to the
+    // source control block regardless of how many owning loads follow.
+    (void)value.load_cached_ref();
+    const auto source_owners = source.use_count();
+
+    auto first = value.load();
+    auto second = value.load();
+    EXPECT_EQ(*first, 7);
+    EXPECT_EQ(*second, 7);
+    EXPECT_EQ(source.use_count(), source_owners)
+        << "owning cache hits must not update the shared source refcount";
+    EXPECT_FALSE(first.owner_before(second));
+    EXPECT_FALSE(second.owner_before(first))
+        << "loads on one thread must share that thread's localized owner";
+}
+
+TEST(AtomicSharedPtrTest, OwningLoadSurvivesThreadCacheRefresh) {
+    auto initial = std::make_shared<const int>(7);
+    std::weak_ptr<const int> initial_weak = initial;
+    CachedAtomicSharedPtr<const int> value(initial);
+
+    auto owner = value.load();
+    initial.reset();
+    value.store(std::make_shared<const int>(8));
+    EXPECT_EQ(*value.load_cached_ref(), 8);
+
+    // Models NewSpan's host-callback re-entry: refreshing this thread's cache
+    // drops its alias to the old generation, but the owning load keeps that
+    // generation alive through its localized owner.
+    ASSERT_FALSE(initial_weak.expired());
+    EXPECT_EQ(*owner, 7);
+    owner.reset();
+    EXPECT_TRUE(initial_weak.expired());
+}
+
+TEST(AtomicSharedPtrTest, ReaderThreadsUseIndependentControlBlocks) {
+    CachedAtomicSharedPtr<const int> value(std::make_shared<const int>(9));
+    auto main_owner = value.load();
+    std::shared_ptr<const int> worker_owner;
+
+    std::thread worker([&] {
+        worker_owner = value.load();
+    });
+    worker.join();
+
+    ASSERT_EQ(main_owner.get(), worker_owner.get());
+    EXPECT_TRUE(main_owner.owner_before(worker_owner) ||
+                worker_owner.owner_before(main_owner))
+        << "each reader thread must localize ownership independently";
+}
+
 TEST(AtomicSharedPtrTest, ReusedAddressDoesNotResurrectCachedSnapshot) {
     using Holder = CachedAtomicSharedPtr<const int>;
     alignas(Holder) unsigned char storage[sizeof(Holder)];

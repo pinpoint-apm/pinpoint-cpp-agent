@@ -36,13 +36,18 @@ namespace pinpoint {
      * the shared source and retains nothing once the caller drops it.
      *
      * ThreadCached: unchanged values are served from a generation-validated
-     * thread-local snapshot, and load_cached_ref() becomes available. The
-     * cache pins each reader thread's last snapshot until that thread's next
-     * load of the same holder or its exit, so the pointee's destructor can run
-     * during thread or process teardown, long after the holder released it.
-     * Opt in only when the pointee is passive data that is safe to destroy
-     * there — never for objects whose teardown must stay explicit, such as the
-     * global AgentImpl holder (see global_agent() in agent.cpp).
+     * thread-local snapshot, and load_cached_ref() becomes available. Each
+     * cache entry owns the source snapshot through a separate, per-thread
+     * control block. An owning load() therefore changes only that thread's
+     * local refcount on the unchanged path instead of ping-ponging the shared
+     * source control block between reader cores.
+     *
+     * The cache pins each reader thread's last snapshot until that thread's
+     * next load of the same holder or its exit, so the pointee's destructor
+     * can run during thread or process teardown, long after the holder
+     * released it. Opt in only when the pointee is passive data that is safe
+     * to destroy there — never for objects whose teardown must stay explicit,
+     * such as the global AgentImpl holder (see global_agent() in agent.cpp).
      *
      * Retention that opt-in accepts: after a store(), threads that never load
      * this holder again keep the previous snapshot alive until they exit, and
@@ -83,8 +88,11 @@ namespace pinpoint {
          *
          * Under SnapshotCache::ThreadCached this also refreshes the calling
          * thread's cache entry, which keeps holding the snapshot after the
-         * returned copy is dropped (see SnapshotCache for what that retention
-         * implies). Uncached retains nothing once the copy is dropped.
+         * returned copy is dropped. Unchanged owning loads copy a localized
+         * alias, so their refcount RMW is private to this reader thread unless
+         * the returned owner is explicitly handed to another thread. See
+         * SnapshotCache for the retention implications. Uncached retains
+         * nothing once the copy is dropped.
          */
         std::shared_ptr<T> load() const {
             if constexpr (Cache == SnapshotCache::ThreadCached) {
@@ -124,7 +132,7 @@ namespace pinpoint {
                 return cached->second.snapshot;
             }
 
-            auto snapshot = load_shared_source();
+            auto snapshot = localize(load_shared_source());
             if (cached == cache.end()) {
                 cached = cache.emplace(
                     this, CacheEntry{instance_id_, generation, std::move(snapshot)}).first;
@@ -153,6 +161,16 @@ namespace pinpoint {
         }
 
     private:
+        // One of these is allocated per reader thread and observed generation.
+        // Its `source` is the sole reference that reader normally contributes
+        // to the shared source control block. Cache hits and owning load()
+        // copies share LocalOwner's distinct control block instead, keeping
+        // their frequent RMWs local to the reader core.
+        struct LocalOwner {
+            explicit LocalOwner(std::shared_ptr<T> value) : source(std::move(value)) {}
+            std::shared_ptr<T> source;
+        };
+
         struct CacheEntry {
             uint64_t instance_id;
             uint64_t generation;
@@ -229,6 +247,17 @@ namespace pinpoint {
             std::shared_lock lock(mutex_);
             return ptr_;
 #endif
+        }
+
+        static std::shared_ptr<T> localize(std::shared_ptr<T> source) {
+            if (!source) {
+                return {};
+            }
+            auto owner = std::make_shared<LocalOwner>(std::move(source));
+            auto* pointee = owner->source.get();
+            // Aliasing gives this thread a new control block while preserving
+            // the exact source pointer (including const qualification).
+            return std::shared_ptr<T>(owner, pointee);
         }
 
         inline static std::atomic<uint64_t> next_instance_id_{1};
