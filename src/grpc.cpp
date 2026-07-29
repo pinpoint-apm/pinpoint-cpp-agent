@@ -466,6 +466,7 @@ namespace pinpoint {
         // owned here and its cache entry can be released.
         PendingMeta pending{std::move(meta), 0, {}};
         const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
+        bool enqueue_threw = false;
         try {
             std::unique_lock<std::mutex> lock(meta_queue_mutex_);
 
@@ -476,16 +477,26 @@ namespace pinpoint {
                 meta_queue_.push_back(std::move(pending));
             }
         } catch (const std::exception &e) {
+            enqueue_threw = true;
             LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
+        } catch (...) {
+            // Catch everything, not just std::exception: unwinding past this
+            // block would skip the cache release below and strand the id in
+            // the agent caches for the rest of the process lifetime.
+            enqueue_threw = true;
+            LOG_ERROR("failed to enqueue metadata: unknown exception");
         }
 
         if (pending.meta != nullptr) {
             // Dropped on overflow, or never enqueued because the insertion
             // threw. Reported outside the lock, at WARN so outage data loss
             // is visible at the default log level, rate-limited so a full
-            // queue cannot flood the log from request threads.
+            // queue cannot flood the log from request threads. The label
+            // names the current drop's cause; the count is cumulative across
+            // both causes.
             if (const auto dropped = meta_drop_reporter_.record()) {
-                LOG_WARN("metadata queue overflow: {} dropped in total (max queue size {})",
+                LOG_WARN("metadata {}: {} dropped in total (max queue size {})",
+                         enqueue_threw ? "enqueue failed" : "queue overflow",
                          dropped, max_queue_size);
             }
             // The producer registered the id in the agent caches before
