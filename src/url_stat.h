@@ -50,7 +50,11 @@ namespace pinpoint {
      */
     class TickClock {
     public:
-        explicit TickClock(int64_t interval) : interval_(interval) {}
+        // Clamped to >= 1: tick() computes `end_millis % interval`, so a
+        // non-positive interval would be a division by zero (SIGFPE).
+        // Production always passes the URL_STAT_TICK_INTERVAL constant; the
+        // clamp guards the test-injection path (see UrlStats' ctor).
+        explicit TickClock(int64_t interval) : interval_(interval > 0 ? interval : 1) {}
         /**
          * @brief Returns the tick for the supplied end time.
          *

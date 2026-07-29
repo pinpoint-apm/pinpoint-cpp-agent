@@ -25,6 +25,7 @@
 #include <sstream>
 #include <functional>
 #include <memory>
+#include <thread>
 
 namespace pinpoint {
 
@@ -687,6 +688,54 @@ TEST_F(HttpTest, HttpUrlFilterDuplicatePatternsTest) {
     EXPECT_TRUE(filter.isFiltered("/static/css/main.css")) << "Should work with duplicate patterns";
     
     EXPECT_FALSE(filter.isFiltered("/admin/panel")) << "Should not match unrelated paths";
+}
+
+namespace {
+    // Drives HttpUrlFilter::isFiltered from a thread_local destructor,
+    // mimicking a host whose own thread_local destructor records a final
+    // span during thread exit (AgentImpl::NewSpan runs the URL filter).
+    // Constructed BEFORE the filter's first use on the thread, so TLS
+    // destruction (reverse construction order) runs this destructor AFTER
+    // the filter's per-thread match scratch has been reclaimed — the filter
+    // must still be safe to call at that point (see MatchScratchSlot in
+    // http.h). The pre-fix use-after-destruction ordering materializes on
+    // glibc, whose __cxa_thread_atexit runs TLS destructors strictly LIFO;
+    // Apple's runtime happens not to produce it, so on macOS this test
+    // documents the contract rather than reproducing the crash.
+    struct TeardownFilterCaller {
+        const HttpUrlFilter* filter = nullptr;
+        bool* matched = nullptr;
+        ~TeardownFilterCaller() {
+            if (filter != nullptr && matched != nullptr) {
+                *matched = filter->isFiltered("/api/users/detail");
+            }
+        }
+    };
+    thread_local TeardownFilterCaller teardown_filter_caller;
+}
+
+// Test HttpUrlFilter called during thread TLS teardown (Ant pattern path)
+TEST_F(HttpTest, HttpUrlFilterUsableDuringThreadTeardownTest) {
+    // Mid-pattern '*' keeps the compiled kind Ant, which is the only kind
+    // that uses the per-thread DP scratch.
+    std::vector<std::string> cfg = {"/api/*/detail"};
+    HttpUrlFilter filter(cfg);
+
+    bool teardown_matched = false;
+    std::thread worker([&] {
+        // Touch the host-side thread_local FIRST so its construction
+        // completes before the scratch guard's, making its destructor run
+        // after the scratch reclaim during TLS teardown.
+        teardown_filter_caller.filter = &filter;
+        teardown_filter_caller.matched = &teardown_matched;
+        // First in-thread use: allocates the scratch and registers the
+        // reclaim guard.
+        EXPECT_TRUE(filter.isFiltered("/api/users/detail"));
+    });
+    worker.join();
+
+    EXPECT_TRUE(teardown_matched) << "isFiltered must stay usable from a "
+                                     "thread_local destructor after TLS teardown began";
 }
 
 // ========== HttpHeaderRecorder Class Tests ==========
