@@ -532,10 +532,17 @@ namespace pinpoint {
     } catch (const std::exception &e) {
         LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
         enabled_ = false;
+        // Terminal, unlike a registration failure (which retries above):
+        // nothing ever re-runs this function, so the agent can never come
+        // online. Mark it so StartAgent() replaces this instance instead of
+        // returning it as the running agent forever. Set after enabled_ so
+        // an observer of init_failed_ never sees a still-enabled agent.
+        init_failed_ = true;
         return;
     } catch (...) {
         LOG_ERROR("failed to init grpc workers: unknown exception");
         enabled_ = false;
+        init_failed_ = true;
         return;
     }
 
@@ -1482,16 +1489,23 @@ namespace pinpoint {
             // Already running in this process: StartAgent() is one-shot per
             // process. Config changes flow through the config-file watcher,
             // not through repeated StartAgent() calls.
-            if (!agent->isExiting()) {
+            if (!agent->isExiting() && !agent->initFailed()) {
                 LOG_WARN("StartAgent() called again in this process; returning the running agent");
                 return agent;
             }
 
-            // A shut-down agent is not restartable: drop it from the
-            // singleton and fall through to build a fresh agent. (Clearing
-            // the singleton here also keeps GlobalAgent() degrading to the
-            // noop agent if the rebuild below fails.)
-            LOG_WARN("global agent is shut down; replacing it with a new agent");
+            // Neither a shut-down agent nor one whose async initialization
+            // failed is restartable: drop it from the singleton and fall
+            // through to build a fresh agent. (Clearing the singleton here
+            // also keeps GlobalAgent() degrading to the noop agent if the
+            // rebuild below fails.) Resetting what may be the last reference
+            // tears the dead agent down through its SharedDeleter, joining
+            // any workers a partial initialization did spawn.
+            if (agent->initFailed()) {
+                LOG_WARN("global agent failed to initialize; replacing it with a new agent");
+            } else {
+                LOG_WARN("global agent is shut down; replacing it with a new agent");
+            }
             global_agent().store(nullptr);
             agent.reset();
         }

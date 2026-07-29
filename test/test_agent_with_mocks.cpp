@@ -1434,6 +1434,75 @@ Collector:
         << "the shut-down agent must be evicted from the global handle";
 }
 
+namespace {
+
+// A GrpcAgent whose channel bring-up throws, failing the agent's ASYNC
+// initialization (init_grpc_workers) after Start() already reported a
+// successful launch — the window a synchronous Start() failure (which
+// StartAgent() handles by not publishing) never enters.
+class FailingChannelGrpcAgent : public TestableGrpcAgent {
+public:
+    using TestableGrpcAgent::TestableGrpcAgent;
+
+protected:
+    void create_stub() override {
+        throw std::runtime_error("injected channel bring-up failure");
+    }
+};
+
+// Builds a shared agent whose init thread dies in openChannel(); waits for
+// the failure to be recorded so the caller observes the terminal state.
+std::shared_ptr<AgentImpl> make_init_failed_agent(const std::shared_ptr<Config>& cfg) {
+    auto grpc_agent = std::make_unique<FailingChannelGrpcAgent>(cfg);
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
+    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
+    grpc_agent->injectMockStubs();
+    grpc_metadata->injectMockStubs();
+    grpc_span->injectMockStubs();
+    grpc_stat->injectMockStubs();
+
+    auto agent = AgentImpl::createShared(
+        cfg, std::move(grpc_agent), std::move(grpc_metadata),
+        std::move(grpc_span), std::move(grpc_stat));
+    EXPECT_TRUE(agent->Start()) << "the synchronous half of Start() must succeed";
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!agent->initFailed() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return agent;
+}
+
+}  // namespace
+
+// An agent whose async initialization failed is permanently offline but not
+// exiting; StartAgent() used to return it as "the running agent" forever.
+// It must be treated like a shut-down agent: evicted and replaced.
+TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
+    auto cfg = make_test_config_for_create_agent();
+    auto dead_agent = make_init_failed_agent(cfg);
+    ASSERT_TRUE(dead_agent->initFailed());
+    EXPECT_FALSE(dead_agent->Enable());
+    EXPECT_FALSE(dead_agent->isExiting())
+        << "an init failure must not require the agent to be exiting for replacement";
+    set_global_agent(dead_agent);
+
+    set_config_string(kBaseConfigYaml);
+    auto returned_agent = StartAgent();
+
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    ASSERT_NE(returned_impl, nullptr) << "a fresh agent must be built, not a noop";
+    EXPECT_NE(returned_impl.get(), dead_agent.get())
+        << "an init-failed agent must never be returned as the running agent";
+    EXPECT_FALSE(returned_impl->initFailed());
+
+    // The singleton was replaced too, so GlobalAgent() stops handing out the
+    // dead instance.
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(),
+              returned_impl.get());
+}
+
 TEST_F(StartAgentTest, ReloadConfigAppliesMultipleTimes) {
     // 1. Install a mock agent
     auto cfg = make_test_config_for_create_agent();

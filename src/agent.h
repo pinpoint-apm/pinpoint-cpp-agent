@@ -140,6 +140,13 @@ namespace pinpoint {
 		/// @brief True when this agent was started in the current process (or
 		/// not started at all); false for a handle inherited across fork().
 		bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == getpid(); }
+		/// @brief True when the asynchronous initialization launched by
+		/// Start() failed terminally (channel bring-up or worker spawn threw
+		/// on the init thread). Such an agent can never come online — unlike
+		/// a registration retry, nothing re-runs init_grpc_workers — so
+		/// StartAgent() replaces it with a fresh agent instead of returning
+		/// it as the running instance forever.
+		bool initFailed() const { return init_failed_; }
 		/// @brief Initiates a graceful shutdown of the agent. Terminal: this
 		/// instance cannot be restarted, callers must build a new one through
 		/// StartAgent(). See Agent::Shutdown().
@@ -270,6 +277,12 @@ namespace pinpoint {
     	// joining them. Atomic because Enable() reads it without a lock.
     	std::atomic<bool> started_{false};
     	std::atomic<pid_t> owner_pid_{0};
+    	// Set by init_grpc_workers' failure handlers: asynchronous
+    	// initialization failed after Start() already returned success, so
+    	// the agent is permanently offline while isExiting() stays false.
+    	// Consulted (alongside isExiting()) by StartAgent(), which would
+    	// otherwise keep returning the dead instance as the running agent.
+    	std::atomic<bool> init_failed_{false};
     	// One-time fork-inheritance diagnostic (see warn_fork_inheritance()).
     	mutable std::atomic<bool> fork_misuse_warned_{false};
 
