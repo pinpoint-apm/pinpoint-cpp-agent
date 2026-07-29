@@ -372,8 +372,10 @@ namespace pinpoint {
 
         data_->finishSpanEvent(se);
 
-        // event_chunk_size is validated to >= 1 in Config::check(), so the
-        // cast cannot produce a huge unsigned value.
+        // event_chunk_size is clamped to >= 1 by make_config()'s range
+        // validation (MIN_SPAN_EVENT_CHUNK_SIZE in config.cpp) before any
+        // config reaches an agent, so the cast cannot produce a huge
+        // unsigned value.
         if (data_->getFinishedEventsCount() >= static_cast<size_t>(config_->span.event_chunk_size)) {
             record_chunk(false);
         }
