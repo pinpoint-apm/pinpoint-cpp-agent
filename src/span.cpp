@@ -194,6 +194,25 @@ namespace pinpoint {
         span_data_->takeFinishedEvents(event_chunk_);
     }
 
+    SpanChunk::~SpanChunk() {
+        // A chunk dies in exactly two ways: consumed by the gRPC builders
+        // (which copy every event field into arena-owned protobuf) or dropped
+        // unsent (queue overflow, permit timeout, shutdown, enqueue refusal).
+        // Either way this chunk was the last reader of its events' payload —
+        // user-facing accessors have been finished_-guarded no-ops since
+        // finish() — so release the heavy payload now instead of holding it
+        // until the span data dies. The event objects themselves stay alive
+        // in retired_events_ (span_data_ outlives this chunk, and its members
+        // outlive this destructor body) as small tombstones, keeping
+        // user-held raw SpanEventPtr handles valid. Ordering is provided by
+        // the span queue's shard mutex: the destroying thread acquired the
+        // lock the owning thread released at enqueue, so the payload writes
+        // are visible here.
+        for (auto* se : event_chunk_) {
+            se->releaseRetiredPayload();
+        }
+    }
+
     void SpanChunk::optimizeSpanEvents() {
         if (event_chunk_.empty()) {
             return;

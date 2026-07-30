@@ -438,6 +438,68 @@ TEST_F(SpanTest, SpanChunkEndPointSnapshotTest) {
         << "Span data should hold the updated endpoint";
 }
 
+TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto span_data = span->getSpanData();
+
+    auto event = make_test_span_event_unique(*span, "payload-event");
+    auto* event_ptr = event.get();
+    span_data->addSpanEvent(std::move(event));
+    event_ptr->SetEndPoint("db-host:3306");
+    event_ptr->SetDestination("MySQL");
+    event_ptr->SetError("SomeError", "boom");
+    event_ptr->GetAnnotations()->AppendString(12, "annotation-value");
+    span_data->finishSpanEvent();
+
+    const auto sequence = event_ptr->getSequence();
+    {
+        SpanChunk chunk(span_data, false);
+        // Until the chunk is destroyed (i.e. until the gRPC worker has
+        // consumed it), the payload must stay readable for serialization.
+        EXPECT_EQ(event_ptr->getEndPoint(), "db-host:3306");
+        EXPECT_EQ(event_ptr->getDestinationId(), "MySQL");
+        EXPECT_EQ(event_ptr->getErrorString(), "boom");
+        EXPECT_NE(event_ptr->annotationsOrNull(), nullptr);
+    }
+
+    // Chunk destroyed: the heavy payload is released while the event object
+    // itself stays alive in SpanData's retired list (a tombstone at a stable
+    // address for user-held raw SpanEventPtr handles).
+    EXPECT_TRUE(event_ptr->getOperationName().empty())
+        << "operation should be released once the chunk is done";
+    EXPECT_TRUE(event_ptr->getEndPoint().empty())
+        << "endpoint should be released once the chunk is done";
+    EXPECT_TRUE(event_ptr->getDestinationId().empty())
+        << "destination should be released once the chunk is done";
+    EXPECT_TRUE(event_ptr->getErrorString().empty())
+        << "error string should be released once the chunk is done";
+    EXPECT_EQ(event_ptr->annotationsOrNull(), nullptr)
+        << "annotation list should be released once the chunk is done";
+    EXPECT_EQ(event_ptr->getSequence(), sequence)
+        << "numeric identity survives the payload release";
+}
+
+TEST_F(SpanTest, SpanEventHandleSafeAfterPayloadReleaseTest) {
+    // The user-facing flow: a raw SpanEventPtr retained past EndEvent must
+    // stay a safe warn/no-op handle even after the chunk that carried the
+    // event has been destroyed and the payload released. Under ASan this
+    // also proves the tombstone is a live object, not freed memory.
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto se = span.NewSpanEvent("retained-op");
+    se->SetEndPoint("host:80");
+    se->EndEvent();
+    span.EndSpan();
+
+    // Destroy the recorded chunks, which releases the retired payload.
+    mock_agent_service_->recorded_spans_.clear();
+
+    se->EndEvent();                    // duplicate end: warn no-op
+    se->SetOperationName("too-late");  // mutators: finished_-guarded no-ops
+    se->SetEndPoint("too-late:81");
+    EXPECT_EQ(se->GetAnnotations(), noopAnnotation())
+        << "finished event should hand out the noop annotation";
+}
+
 TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
     auto span_data = span->getSpanData();

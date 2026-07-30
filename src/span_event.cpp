@@ -156,7 +156,11 @@ namespace pinpoint {
         // gRPC worker thread; handing out the live annotation container, or
         // mutating any field the worker reads, would race that iteration. So
         // every recording accessor and mutator degrades to a safe no-op after
-        // the event is finished, mirroring EndEvent()/EndSpan().
+        // the event is finished, mirroring EndEvent()/EndSpan(). This guard
+        // is also what makes releaseRetiredPayload() sound: once the chunk is
+        // destroyed the payload heap is gone entirely, so no post-finish path
+        // may touch those fields — the guard is load-bearing for memory
+        // safety, not just race avoidance.
         if (finished_) {
             LOG_WARN("span event is already finished");
             return true;
@@ -211,6 +215,19 @@ namespace pinpoint {
         // user-supplied start time in seconds instead of ms) wraps.
         elapsed_ = static_cast<int32_t>(
             std::max<int64_t>(to_milli_seconds(std::chrono::system_clock::now()) - start_time_, 0));
+    }
+
+    void SpanEventImpl::releaseRetiredPayload() noexcept {
+        // Swap-with-temporary, not clear(): clear() keeps the capacity
+        // allocated, and releasing that heap is this function's whole point.
+        std::string{}.swap(operation_);
+        std::string{}.swap(endpoint_);
+        std::string{}.swap(destination_id_);
+        std::string{}.swap(error_string_);
+        // Also drops the aliasing shared_ptr pins that SQL annotations hold
+        // on PreparedSql cache entries (see SetSqlQuery), instead of keeping
+        // those cache strings alive until the span data dies.
+        annotations_.reset();
     }
 
     int64_t SpanEventImpl::generateNextSpanId() {

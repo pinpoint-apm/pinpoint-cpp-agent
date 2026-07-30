@@ -71,6 +71,23 @@ namespace pinpoint {
          */
         void finish();
 
+        /**
+         * @brief Releases the heap this retired event owns (strings and the
+         * annotation list), leaving a small tombstone at a stable address.
+         *
+         * Called by ~SpanChunk once the chunk holding this event is done with
+         * it — the gRPC builders copied every field into arena protobuf, or
+         * the chunk was dropped unsent — so nothing reads the payload
+         * afterwards: every public accessor and mutator has been a
+         * finished_-guarded no-op since finish() (see warnIfFinished), which
+         * is also why freeing from the gRPC worker (or a dropping producer)
+         * thread cannot race user-held raw SpanEventPtr handles. Only the
+         * payload dies here; the object itself must stay alive at its
+         * address until the owning SpanData does (see
+         * SpanData::retired_events_).
+         */
+        void releaseRetiredPayload() noexcept;
+
         /// @brief Returns the service type identifier.
         int32_t getServiceType() const { return service_type_; }
         /// @brief Returns the recorded operation name.

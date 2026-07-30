@@ -393,7 +393,11 @@ namespace pinpoint {
         // SpanData), so raw SpanEventPtr handles held by user code stay valid
         // until the span data itself is released: a late duplicate EndEvent
         // after a chunk flush lands on a live object and stays the safe no-op
-        // the public headers promise, instead of a use-after-free.
+        // the public headers promise, instead of a use-after-free. Only small
+        // tombstones are retained long-term, though: ~SpanChunk releases each
+        // event's owned heap (strings, annotations) once the chunk is done
+        // with it, so a long-lived span grows by a fixed-size husk per event,
+        // not by the full recorded payload.
         std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
 
     	std::unique_ptr<PinpointAnnotation> annotations_;
@@ -405,7 +409,9 @@ namespace pinpoint {
 	class SpanChunk final {
 	public:
 		SpanChunk(const std::shared_ptr<SpanData>& span_data, bool final);
-		~SpanChunk() = default;
+		/// @brief Releases the retired events' heavy payload; see the
+		/// definition in span.cpp.
+		~SpanChunk();
 
 		/**
 		 * @brief Compacts the span event list by removing completed events.
