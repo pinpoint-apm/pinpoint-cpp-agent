@@ -376,6 +376,46 @@ TEST_F(NoopTest, GlobalNoopFunctionsTest) {
     EXPECT_EQ(agent.get(), agent2.get()) << "noopAgent should return the same instance";
 }
 
+// noopSpan() is returned on every filtered / disabled-agent request, so it hands
+// out copies through a per-thread control block instead of one process-wide one
+// (see its definition). Both halves of that deal are load-bearing and invisible
+// at the call site, so pin them here.
+TEST_F(NoopTest, NoopSpanIsLocalizedPerThreadButPointsAtOneInstance) {
+    const auto main_span = noopSpan();
+    ASSERT_NE(main_span, nullptr);
+
+    SpanPtr worker_span;
+    std::thread worker([&worker_span] { worker_span = noopSpan(); });
+    worker.join();
+    ASSERT_NE(worker_span, nullptr);
+
+    // Same object: callers compare noop spans by identity (see
+    // AgentImplTest's EXPECT_EQ(span, noopSpan())), and the aliasing
+    // localization must not disturb that.
+    EXPECT_EQ(main_span.get(), worker_span.get())
+        << "every thread must observe the one process-wide NoopSpan";
+
+    // Different control block: this is the point of localizing. owner_before is
+    // a strict weak ordering over control blocks, so exactly one direction holds
+    // for two distinct ones and neither holds when they are shared.
+    EXPECT_TRUE(main_span.owner_before(worker_span) || worker_span.owner_before(main_span))
+        << "threads must not share one control block, or every filtered request "
+           "puts its refcount RMW on the same contended cache line";
+
+    // Repeat copies on this thread ride the thread's own block, so they leave
+    // the other thread's use_count alone.
+    const auto worker_owners = worker_span.use_count();
+    {
+        const auto extra1 = noopSpan();
+        const auto extra2 = noopSpan();
+        EXPECT_EQ(extra1.get(), main_span.get());
+        EXPECT_EQ(extra2.get(), main_span.get());
+        EXPECT_EQ(worker_span.use_count(), worker_owners)
+            << "copies taken on one thread must not touch another thread's owner";
+    }
+    EXPECT_EQ(worker_span.use_count(), worker_owners);
+}
+
 // NoopAgent Tests
 
 TEST_F(NoopTest, NoopAgentBasicBehaviorTest) {

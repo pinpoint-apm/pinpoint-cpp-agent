@@ -38,6 +38,16 @@ namespace pinpoint {
     SpanEventPtr noopSpanEvent();
     /**
      * @brief Returns a shared noop span instance.
+     *
+     * Always the same `NoopSpan` object (`.get()` is stable process-wide), but
+     * handed out through a per-thread control block so the returned copy's
+     * refcount traffic stays on the calling thread — see the definition.
+     *
+     * Cannot throw once the calling thread has been set up, which is what the
+     * CATCH_AND_LOG_RETURN handlers returning this rely on. Setting the thread
+     * up is best-effort and degrades to the shared holder on failure, leaving
+     * only the process-wide singleton's own first-call allocation as a throwing
+     * path — unchanged from before the per-thread owner existed.
      */
     SpanPtr noopSpan();
     /**

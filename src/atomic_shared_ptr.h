@@ -63,6 +63,42 @@ namespace pinpoint {
     enum class SnapshotCache { Uncached, ThreadCached };
 
     /**
+     * @brief Returns a shared_ptr to the same object through a fresh, private
+     *        control block.
+     *
+     * The result aliases `source`: it stores the exact same pointer (including
+     * const qualification), so `.get()` and every `==` comparison against the
+     * original still hold, while copies and destructions of the result — and of
+     * anything copied from it — do their refcount RMWs on a control block only
+     * this caller has. That is the point: a shared_ptr handed out from one
+     * process-wide holder makes every copy an atomic RMW on one cache line,
+     * which ping-pongs across cores as soon as more than one thread does it.
+     * Localizing once per thread turns that shared traffic into thread-local
+     * traffic, at the cost of one control-block allocation per thread and one
+     * retained reference to `source` for as long as the result lives.
+     *
+     * Callers are expected to keep the result in per-thread storage; see
+     * AtomicSharedPtr's ThreadCached mode and noopSpan() for the two users, and
+     * their slot/guard machinery for the thread-teardown rules that come with
+     * holding a shared_ptr in a thread_local.
+     */
+    template <typename T>
+    std::shared_ptr<T> localize_shared(std::shared_ptr<T> source) {
+        if (!source) {
+            return {};
+        }
+        // Holds the sole reference this caller contributes to `source`'s
+        // control block, and supplies the new one its copies ride on.
+        struct LocalOwner {
+            explicit LocalOwner(std::shared_ptr<T> value) : source(std::move(value)) {}
+            std::shared_ptr<T> source;
+        };
+        auto owner = std::make_shared<LocalOwner>(std::move(source));
+        auto* pointee = owner->source.get();
+        return std::shared_ptr<T>(owner, pointee);
+    }
+
+    /**
      * @brief Thread-safe wrapper around std::shared_ptr.
      *
      * The shared source uses std::atomic<std::shared_ptr<T>> when the C++20
@@ -132,7 +168,7 @@ namespace pinpoint {
                 return cached->second.snapshot;
             }
 
-            auto snapshot = localize(load_shared_source());
+            auto snapshot = localize_shared(load_shared_source());
             if (cached == cache.end()) {
                 cached = cache.emplace(
                     this, CacheEntry{instance_id_, generation, std::move(snapshot)}).first;
@@ -162,15 +198,10 @@ namespace pinpoint {
 
     private:
         // One of these is allocated per reader thread and observed generation.
-        // Its `source` is the sole reference that reader normally contributes
-        // to the shared source control block. Cache hits and owning load()
-        // copies share LocalOwner's distinct control block instead, keeping
-        // their frequent RMWs local to the reader core.
-        struct LocalOwner {
-            explicit LocalOwner(std::shared_ptr<T> value) : source(std::move(value)) {}
-            std::shared_ptr<T> source;
-        };
-
+        // Its snapshot is localized (see localize_shared): the sole reference
+        // this reader contributes to the shared source control block lives
+        // inside that localized owner, so cache hits and owning load() copies
+        // keep their frequent RMWs local to the reader core.
         struct CacheEntry {
             uint64_t instance_id;
             uint64_t generation;
@@ -247,17 +278,6 @@ namespace pinpoint {
             std::shared_lock lock(mutex_);
             return ptr_;
 #endif
-        }
-
-        static std::shared_ptr<T> localize(std::shared_ptr<T> source) {
-            if (!source) {
-                return {};
-            }
-            auto owner = std::make_shared<LocalOwner>(std::move(source));
-            auto* pointee = owner->source.get();
-            // Aliasing gives this thread a new control block while preserving
-            // the exact source pointer (including const qualification).
-            return std::shared_ptr<T>(owner, pointee);
         }
 
         inline static std::atomic<uint64_t> next_instance_id_{1};
