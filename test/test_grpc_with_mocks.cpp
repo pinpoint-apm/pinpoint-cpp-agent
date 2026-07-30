@@ -287,7 +287,9 @@ public:
     void setRetryMaxAttempts(int attempts) { tuning_.meta_retry_max_attempts = attempts; }
 
 private:
-    bool ready_channel_{true};
+    // Toggled by the test body while the worker thread polls readyChannel();
+    // atomic so TSan-clean, like ready_channel_failures_.
+    std::atomic<bool> ready_channel_{true};
     std::atomic<int> ready_channel_failures_{0};
 };
 
@@ -332,7 +334,9 @@ protected:
     bool wait_channel_ready() const { return true; }
 
 private:
-    bool ready_channel_{true};
+    // Toggled by the test body while the worker thread polls readyChannel();
+    // atomic so TSan-clean, like ready_channel_failures_.
+    std::atomic<bool> ready_channel_{true};
     TestableGrpcMetadata metadata_;
 };
 
@@ -371,7 +375,9 @@ protected:
     bool wait_channel_ready() const { return true; }
 
 private:
-    bool ready_channel_{true};
+    // Toggled by the test body while the worker thread polls readyChannel();
+    // atomic so TSan-clean, like ready_channel_failures_.
+    std::atomic<bool> ready_channel_{true};
 };
 
 class TestableGrpcStats : public GrpcStats {
@@ -394,7 +400,9 @@ protected:
     bool wait_channel_ready() const { return true; }
 
 private:
-    bool ready_channel_{true};
+    // Toggled by the test body while the worker thread polls readyChannel();
+    // atomic so TSan-clean, like ready_channel_failures_.
+    std::atomic<bool> ready_channel_{true};
 };
 
 class ThrowingReadyGrpcAgent : public GrpcAgent {
@@ -475,7 +483,9 @@ public:
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
 private:
-    bool ready_channel_{true};
+    // Toggled by the test body while the worker thread polls readyChannel();
+    // atomic so TSan-clean, like ready_channel_failures_.
+    std::atomic<bool> ready_channel_{true};
 };
 
 // GrpcAgent whose registerAgent() throws on the first attempt, for the

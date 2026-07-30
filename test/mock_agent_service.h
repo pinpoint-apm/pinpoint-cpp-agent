@@ -44,7 +44,7 @@ public:
           trace_id_counter_(0) {}
 
     // AgentService interface implementation
-    bool isExiting() const override { return is_exiting_; }
+    bool isExiting() const override { return is_exiting_.load(std::memory_order_relaxed); }
     const std::string& getAppName() const override { return app_name_; }
     int32_t getAppType() const override { return app_type_; }
     const std::string& getAgentId() const override { return agent_id_; }
@@ -224,7 +224,7 @@ public:
     }
 
     // Test helpers - setters
-    void setExiting(bool exiting) { is_exiting_ = exiting; }
+    void setExiting(bool exiting) { is_exiting_.store(exiting, std::memory_order_relaxed); }
     void setAppName(const std::string& name) { app_name_ = name; }
     void setAppType(int32_t type) { app_type_ = type; }
     void setAgentId(const std::string& id) { agent_id_ = id; }
@@ -297,7 +297,11 @@ public:
     mutable std::atomic<bool> force_sql_id_failure_{false};
 
 private:
-    bool is_exiting_;
+    // Toggled by the test body while gRPC worker threads poll it to decide
+    // when to stop — the one mock field mutated mid-run by design, so it must
+    // be atomic (relaxed suffices for a stop flag). Fields below are only set
+    // before workers start.
+    std::atomic<bool> is_exiting_;
     int64_t start_time_;
     std::string cached_start_time_str_;
     int64_t trace_id_counter_;
