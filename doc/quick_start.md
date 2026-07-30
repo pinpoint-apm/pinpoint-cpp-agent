@@ -520,7 +520,7 @@ To minimize performance impact:
 3. Only trace critical paths.
 4. Monitor agent overhead and adjust configuration (queue sizes, URL stats, SQL stats).
 
-For more detailed troubleshooting, see the [Instrumentation Guide](instrument.md#14-troubleshooting).
+For more detailed troubleshooting, see the [Instrumentation Guide](instrument.md#15-troubleshooting).
 
 ---
 

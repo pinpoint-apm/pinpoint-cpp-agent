@@ -15,16 +15,17 @@ The C++ tracer API mirrors the design of the [Pinpoint Go agent](https://github.
 - [3. Creating Spans for Incoming Work](#3-creating-spans-for-incoming-work)
 - [4. Recording Span Events](#4-recording-span-events)
 - [5. Annotations](#5-annotations)
-- [6. Distributed Tracing and Context Propagation](#6-distributed-tracing-and-context-propagation)
-- [7. HTTP Request Tracing](#7-http-request-tracing)
-- [8. Database and Backend Instrumentation](#8-database-and-backend-instrumentation)
-- [9. Error Reporting and Stack Traces](#9-error-reporting-and-stack-traces)
-- [10. Asynchronous and Background Work](#10-asynchronous-and-background-work)
-- [11. Sampling Policy](#11-sampling-policy)
-- [12. HTTP Filtering and Header Recording](#12-http-filtering-and-header-recording)
-- [13. Best Practices](#13-best-practices)
-- [14. Troubleshooting](#14-troubleshooting)
-- [15. Checklist for New Instrumentation](#15-checklist-for-new-instrumentation)
+- [6. Usage Cautions: Span, SpanEvent, and Annotation Contracts](#6-usage-cautions-span-spanevent-and-annotation-contracts)
+- [7. Distributed Tracing and Context Propagation](#7-distributed-tracing-and-context-propagation)
+- [8. HTTP Request Tracing](#8-http-request-tracing)
+- [9. Database and Backend Instrumentation](#9-database-and-backend-instrumentation)
+- [10. Error Reporting and Stack Traces](#10-error-reporting-and-stack-traces)
+- [11. Asynchronous and Background Work](#11-asynchronous-and-background-work)
+- [12. Sampling Policy](#12-sampling-policy)
+- [13. HTTP Filtering and Header Recording](#13-http-filtering-and-header-recording)
+- [14. Best Practices](#14-best-practices)
+- [15. Troubleshooting](#15-troubleshooting)
+- [16. Checklist for New Instrumentation](#16-checklist-for-new-instrumentation)
 
 ---
 
@@ -152,7 +153,7 @@ auto agent = pinpoint::StartAgent();
 1. Collect configuration in `AgentOptions` (file path, YAML string) and/or environment variables.
 2. Call `StartAgent(options)` in the process that records spans, before creating spans.
 3. Hold the `AgentPtr` for the lifetime of the process.
-4. Call `Shutdown()` on application exit (see [§10](#10-asynchronous-and-background-work)).
+4. Call `Shutdown()` on application exit (see [§11](#11-asynchronous-and-background-work)).
 
 ---
 
@@ -428,7 +429,100 @@ annotations->AppendInt(CUSTOM_CACHE_HIT, 1);  // 1 = hit, 0 = miss
 
 ---
 
-## 6. Distributed Tracing and Context Propagation
+## 6. Usage Cautions: Span, SpanEvent, and Annotation Contracts
+
+This section collects the API contracts enforced by the span, span event, and annotation implementations. Most violations are detected at runtime and degrade to a **logged no-op** rather than a crash — but they distort traces, and the threading and lifetime rules below are hard requirements that can crash the process if broken. Treat the warning messages quoted here as instrumentation bugs when they appear in the agent log.
+
+### 6.1 A Span Is Single-Threaded
+
+A `Span` instance — including every `SpanEvent` it hands out — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked (the event stack, string fields, annotation lists), so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
+
+- The agent binds a span to the first thread that calls `NewSpanEvent()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`.
+- Because binding is lazy, a **complete handoff** is allowed: create the span on thread A, pass the `SpanPtr` to thread B, and never touch it from A again (the thread examples in [§11](#11-asynchronous-and-background-work) rely on this).
+- To trace work that runs **concurrently** with the parent, do not share the span. Call `NewAsyncSpan()` *on the span's owning thread* and hand the returned child span to the worker; the child follows the same single-thread rule on its own thread.
+
+### 6.2 End Exactly Once, and Record Before Ending
+
+`EndSpan()` and `EndEvent()` are terminal:
+
+- A duplicate `EndSpan()`/`EndEvent()` logs `span (event) is already finished` and does nothing.
+- After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `GetAnnotations()` (which then returns a shared no-op annotation). The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
+- A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span. This is why RAII guards (`helper::ScopedSpanEvent`, or a `SpanGuard` as shown in [Best Practices](#14-best-practices)) are the recommended pattern.
+
+### 6.3 End Span Events in Nesting (LIFO) Order
+
+Span events form a stack. Calling `EndEvent()` on an outer event while an inner event is still open implicitly finishes every event nested above it and logs `span event ended out of order`. Likewise, `EndSpan()` force-finishes all still-open events and logs `N span event(s) not ended by user code`. The trace survives, but implicitly finished events get the wrong end time — their duration silently stretches to the enclosing end call.
+
+### 6.4 `SpanEventPtr` and `AnnotationPtr` Are Non-Owning
+
+`SpanEventPtr` and `AnnotationPtr` are raw pointers whose objects are owned by the parent span:
+
+- They stay valid only while you hold the parent `SpanPtr`. Calling into an already-ended event or a sealed annotation while the span is alive is a safe warning no-op; calling through a pointer that **outlives the span** is a use-after-free.
+- Do not cache these pointers in long-lived structures. Obtain them, use them, and let them go within the span's scope.
+
+### 6.5 Event Depth and Count Limits (Overflow)
+
+Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and the total event count by `Span.MaxEventSequence` (default 5000). When either cap is reached, `NewSpanEvent()` logs `span event maximum depth/sequence exceeded` and returns a shared **disabled event** instead:
+
+- It records nothing — operation name, timings, SQL, errors, and annotations are discarded.
+- `InjectContext()` **still writes the full trace context**, so downstream services continue the distributed trace. Overflow limits profiling detail; it is not a sampling decision.
+- You must still call `EndEvent()` exactly once for each overflowed `NewSpanEvent()` call — the span balances an internal overflow counter with it.
+- The disabled event is a single shared object per span, so `SetDestination()` values from interleaved overflowed calls can bleed into each other's `Pinpoint-Host` header.
+- `NewAsyncSpan()` called while the span is overflowed returns a no-op span.
+
+If the overflow warning appears regularly, create fewer, coarser span events per transaction or raise the limits in the configuration.
+
+### 6.6 `GetSpanEvent()` Returns the Innermost Active Event
+
+`GetSpanEvent()` returns the top of the event stack: the most recently created event that has not ended. It never returns null — when the span is finished or has no active event, it returns a shared no-op event and logs `abnormal span - has no event`. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `SpanEventPtr` returned by `NewSpanEvent()` explicitly.
+
+### 6.7 Annotation Container Rules
+
+- The annotation container is **sealed** when its owner ends (`EndEvent()`/`EndSpan()`). Appends through a previously obtained `AnnotationPtr` then log `annotation is already finished` and do nothing.
+- Values are **copied at append time**: `string_view` arguments only need to remain valid for the duration of the call.
+- Append calls never throw; on allocation failure the annotation is dropped with an error log.
+- There is no key de-duplication: appending the same key twice records two annotations.
+- Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [§5](#5-annotations)).
+
+### 6.8 Keep Operation and Error Names Low-Cardinality
+
+The `operation` passed to `NewSpan()`/`NewSpanEvent()`/`NewAsyncSpan()` and the `error_name` passed to `SetError()` are interned in bounded LRU caches, and **every new unique string enqueues a metadata message to the collector**. Per-request unique names churn the cache and flood the collector with metadata:
+
+```cpp
+// DON'T: unique operation name per request
+auto se = span->NewSpanEvent("getUser-" + user_id);
+
+// DO: fixed operation name, variable data as an annotation
+auto se = span->NewSpanEvent("getUser");
+se->GetAnnotations()->AppendString(CUSTOM_USER_ID, user_id);
+```
+
+The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry the actual request path.
+
+### 6.9 Error Recording and Exception Buffering
+
+- `SetError()` on the **span** marks the whole transaction as failed; `SetError()` on a **span event** marks only that step. Record at the granularity of the failure.
+- The call-stack overload `SetError(name, message, CallStackReader&)` exists only on `SpanEvent`, and records frames only when `EnableCallstackTrace: true` is set in the configuration (default `false`).
+- At most **100 exceptions with call stacks are buffered per span**; further ones are dropped. Buffered exceptions are transmitted only at `EndSpan()` — a span kept open for a very long time delays them and grows memory.
+
+### 6.10 Clock and `SetStartTime()` Caveats
+
+Elapsed times travel as **int32 milliseconds** on the wire. If you override timestamps with `SetStartTime()`:
+
+- Only pass values derived from `std::chrono::system_clock::now()` taken at the actual start of the operation.
+- A start time more than ~24.8 days in the past overflows the elapsed field; a start time in the future is clamped to an elapsed of 0 at end time, but inter-event offsets within a chunk can still wrap.
+- A fabricated `time_point` (e.g. built from epoch **seconds** interpreted as milliseconds) produces wrapped, meaningless timings.
+
+### 6.11 Noop and Unsampled Spans Are Deliberately Silent
+
+`NewSpan()` never returns null. When the agent is disabled or not started, the URL/method is excluded by filters, or sampling rejects the transaction, you receive a no-op or unsampled span on which every call succeeds and records nothing:
+
+- `IsSampled()` returns `false`, `GetTraceId()` returns an empty string, and `GetSpanId()` returns 0 for no-op spans (unsampled spans do carry a real span id).
+- Use `IsSampled()` to skip *expensive data collection only* — do **not** skip creating span events and calling `InjectContext()` on outbound calls. An unsampled span's event still writes `Pinpoint-Sampled: s0`, which tells downstream services not to trace the request. Skipping the injection makes downstream agents treat the call as a brand-new transaction and sample it, producing broken partial traces.
+
+---
+
+## 7. Distributed Tracing and Context Propagation
 
 To connect traces across services, Pinpoint propagates context using transport-specific headers.
 
@@ -528,7 +622,7 @@ You can apply the same pattern for message queues, custom RPC frameworks, or bin
 
 ---
 
-## 7. HTTP Request Tracing
+## 8. HTTP Request Tracing
 
 ### Complete HTTP Server Example
 
@@ -724,7 +818,7 @@ This collects statistics normalized by URL pattern, HTTP method, and response st
 
 ---
 
-## 8. Database and Backend Instrumentation
+## 9. Database and Backend Instrumentation
 
 Database, cache, and other backend calls are represented as span events with appropriate service types and annotations.
 
@@ -806,7 +900,7 @@ pinpoint::SERVICE_TYPE_CASSANDRA_QUERY  // Cassandra
 
 ---
 
-## 9. Error Reporting and Stack Traces
+## 10. Error Reporting and Stack Traces
 
 ### Setting Error Messages
 
@@ -899,7 +993,7 @@ void handleRequest() {
 
 ---
 
-## 10. Asynchronous and Background Work
+## 11. Asynchronous and Background Work
 
 Tracing asynchronous or background tasks requires careful span lifecycle management.
 
@@ -990,7 +1084,7 @@ void safeAsyncOperation() {
 
 ---
 
-## 11. Sampling Policy
+## 12. Sampling Policy
 
 ### Why Sampling?
 
@@ -1137,7 +1231,7 @@ For the full configuration reference, see [Configuration Guide — Sampling](con
 
 ---
 
-## 12. HTTP Filtering and Header Recording
+## 13. HTTP Filtering and Header Recording
 
 ### URL Filtering
 
@@ -1195,7 +1289,7 @@ span->RecordHeader(pinpoint::HTTP_RESPONSE, response_headers);
 
 ---
 
-## 13. Best Practices
+## 14. Best Practices
 
 ### Always End Spans and Events
 
@@ -1292,7 +1386,7 @@ if (agent) {
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 ### Spans Not Appearing
 
@@ -1326,7 +1420,7 @@ For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shoot
 
 ---
 
-## 15. Checklist for New Instrumentation
+## 16. Checklist for New Instrumentation
 
 1. **Initialize the agent** — configure via YAML and/or environment variables, then call `StartAgent()`.
 2. **Create a span** — on each incoming request or logical unit of work, call `NewSpan(...)`.
