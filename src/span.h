@@ -413,6 +413,14 @@ namespace pinpoint {
 		/// definition in span.cpp.
 		~SpanChunk();
 
+		// Non-copyable (which also suppresses the implicit moves): the
+		// destructor releases the events' payload, so a copy would let the
+		// first-destroyed sibling wipe the payload out from under the other,
+		// silently emptying whatever it still had to serialize. Chunks are
+		// only ever handled as std::unique_ptr<SpanChunk>; keep it that way.
+		SpanChunk(const SpanChunk&) = delete;
+		SpanChunk& operator=(const SpanChunk&) = delete;
+
 		/**
 		 * @brief Compacts the span event list by removing completed events.
 		 */
