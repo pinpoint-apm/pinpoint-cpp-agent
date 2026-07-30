@@ -108,8 +108,8 @@ int main(void) {
     pt_agent_t agent = pt_start_agent(opts);  /* NULL options = all defaults */
     pt_agent_options_free(opts);              /* only read during the call   */
     if (!agent) {
-        fprintf(stderr, "failed to start pinpoint agent\n");
-        return 1;
+        /* handle allocation failed — the app still runs, just untraced */
+        fprintf(stderr, "failed to create pinpoint agent handle\n");
     }
 
     /* application logic ... */
@@ -119,6 +119,21 @@ int main(void) {
     return 0;
 }
 ```
+
+**`pt_start_agent()` is asynchronous.** It returns as soon as initialization is
+launched: a background thread opens the gRPC channels, registers the agent with
+the collector (retrying until the collector accepts it) and starts the workers.
+`pt_agent_is_enabled()` returns `1` only after that registration succeeds, so it
+is normally still `0` right after `pt_start_agent()` returns — that is not an
+error, and a non-NULL return value does not mean the start succeeded either (on
+a configuration or setup failure a no-op agent handle is returned).
+
+**Verify agent start through the agent log**, not through the API: on success
+the log shows `AgentInfo sent`; failures appear as error entries such as
+`agent start failed: ...` or `failed to init grpc workers: ...` (set
+`Log.Level: "debug"` for more detail). Even when the agent fails to start, the
+application is unaffected — every call on a no-op agent is safe and does
+nothing, so the app runs normally and only the traces are lost.
 
 `pt_agent_shutdown()` is terminal for that agent: the same handle can never come
 back online, `pt_agent_is_enabled()` stays `0`, and every span it hands out is a
@@ -169,9 +184,29 @@ pt_agent_destroy(agent);  /* releases this C handle wrapper */
 
 ### Checking agent status
 
+`pt_agent_is_enabled()` is **not a startup success check**: it returns `1` only
+after the background registration with the collector completes, so it is
+normally still `0` right after `pt_start_agent()` returns. Verify startup
+through the agent log instead (see above).
+
+Use it for one purpose only: as a **fast-fail guard before creating a span**,
+to skip instrumentation work while tracing is off. The request is served
+normally either way:
+
 ```c
-if (!pt_agent_is_enabled(agent)) {
-    fprintf(stderr, "agent is disabled — check configuration\n");
+void handle_request(request_t* req) {
+    pt_agent_t agent = pt_global_agent();
+    if (!pt_agent_is_enabled(agent)) {
+        pt_agent_destroy(agent);
+        process(req);              /* tracing is off — skip instrumentation */
+        return;
+    }
+
+    pt_span_t span = pt_agent_new_span(agent, "MyService", "/api/v1");
+    process(req);
+    pt_span_end(span);
+    pt_span_destroy(span);
+    pt_agent_destroy(agent);
 }
 ```
 

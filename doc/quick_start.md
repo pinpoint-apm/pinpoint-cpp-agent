@@ -189,11 +189,9 @@ int main() {
     options.config_file_path = "pinpoint-config.yaml";
     auto agent = pinpoint::StartAgent(options);
 
-    // Check if agent is enabled
-    if (!agent->Enable()) {
-        std::cerr << "Failed to enable Pinpoint agent" << std::endl;
-        return 1;
-    }
+    // StartAgent() returns immediately; the agent registers with the
+    // collector on a background thread. Verify startup via the agent log —
+    // do NOT gate application startup on Enable() here (see the note below).
 
     // Your application code here
 
@@ -201,6 +199,18 @@ int main() {
     return 0;
 }
 ```
+
+> **`StartAgent()` is asynchronous.** It returns right away, and a background
+> thread connects to the collector, registers the agent (retrying until it
+> succeeds) and starts the workers. `Enable()` flips to `true` only after that
+> registration completes, so it is normally still `false` immediately after
+> `StartAgent()` returns — checking it there is meaningless. **Verify agent
+> start through the agent log**: `AgentInfo sent` on success, error entries
+> such as `agent start failed: ...` on failure. Even if the agent fails to
+> start, the application is unaffected — every tracing call is a safe noop and
+> only the traces are lost. Use `Enable()` solely as a cheap fast-fail guard
+> before creating a span (skip instrumentation while tracing is off), never as
+> a startup success check.
 
 ### Create a Span
 
@@ -291,8 +301,9 @@ What each call guarantees:
 Points to keep in mind:
 
 - **Never reuse the shut-down handle.** It stays permanently disabled; get the
-  replacement handle from `StartAgent()` and check `Enable()` if you need
-  confirmation.
+  replacement handle from `StartAgent()`. The new agent registers with the
+  collector in the background — watch the agent log (`AgentInfo sent`) if you
+  need confirmation that it came online.
 - **Drop cached agent pointers.** Any `AgentPtr` the application cached — in a
   thread-local, a service object, a C `pt_agent_t` handle — still points at the
   dead agent and keeps producing noop spans. Re-fetch with `GlobalAgent()` or the
@@ -344,15 +355,13 @@ int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "my-first-app", 0);
     setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 0);
 
-    // Create and start agent
+    // Create and start agent. StartAgent() returns immediately while the
+    // agent registers with the collector in the background — check the agent
+    // log ("AgentInfo sent") to confirm it came online. If it fails, the app
+    // still runs normally; it is just not traced.
     auto agent = pinpoint::StartAgent();
 
-    if (!agent->Enable()) {
-        std::cerr << "Failed to enable agent" << std::endl;
-        return 1;
-    }
-
-    std::cout << "Pinpoint agent started" << std::endl;
+    std::cout << "Pinpoint agent starting" << std::endl;
 
     // Simulate multiple requests
     for (int i = 0; i < 5; i++) {
@@ -493,19 +502,19 @@ Now that you have a basic understanding of the Pinpoint C++ Agent, you can:
 
 ### Agent Not Starting
 
-If the agent fails to start:
+If the agent fails to start (remember: the application itself keeps working —
+a failed agent start only means no traces are collected):
 
-1. Check that the collector host and ports are correct.
-2. Verify network connectivity to the Pinpoint collector.
-3. Check application logs for error messages (set `Log.Level: "debug"` for verbose output).
+1. Check the agent log for startup errors (`agent start failed`, `failed to send AgentInfo`); on success the log shows `AgentInfo sent`. Set `Log.Level: "debug"` for verbose output. This is the authoritative way to check start success — `Enable()` right after `StartAgent()` is normally still `false` because registration runs in the background.
+2. Check that the collector host and ports are correct.
+3. Verify network connectivity to the Pinpoint collector.
 4. Ensure `ApplicationName` is set correctly.
-5. Confirm `agent->Enable()` returns `true`.
 
 ### No Data in Pinpoint UI
 
 If you don't see data in Pinpoint:
 
-1. Verify the agent is enabled: `agent->Enable()` returns `true`.
+1. Verify from the agent log that collector registration completed (`AgentInfo sent`); `Enable()` becomes `true` only after that point.
 2. Check sampling configuration — use `CounterRate: 1` (sample all) for initial testing.
 3. Ensure spans are properly ended with `EndSpan()`.
 4. Wait a few seconds for data to appear (there is a collection interval).

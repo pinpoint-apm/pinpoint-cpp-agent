@@ -78,67 +78,51 @@ int main() {
 
 You can start and stop the agent dynamically using HTTP endpoints. This is useful for production environments where you want to enable or disable tracing without restarting the application.
 
+There is no need to keep your own agent pointer or lock: `StartAgent()` installs the started agent as the process-wide global agent, `GlobalAgent()` hands it back from anywhere (or the noop agent when none is installed), and both calls are thread-safe.
+
 ```cpp
 #include "pinpoint/tracer.h"
 #include "3rd_party/httplib.h"
-#include <mutex>
-
-std::mutex agent_mutex;
-pinpoint::AgentPtr global_agent = nullptr;
 
 void handle_new_agent(const httplib::Request& req, httplib::Response& res) {
-    std::lock_guard<std::mutex> lock(agent_mutex);
+    // StartAgent() installs the agent as the global agent. Calling it again
+    // while an agent is running is safe: it returns the running agent (with
+    // a warning log). After a Shutdown() it builds a fresh agent.
+    pinpoint::AgentOptions options;
+    options.config_file_path = "/path/to/pinpoint-config.yaml";
+    pinpoint::StartAgent(options);
 
-    try {
-        if (global_agent) {
-            res.status = 400;
-            res.set_content("{\"error\": \"Agent already running\"}", "application/json");
-            return;
-        }
-
-        pinpoint::AgentOptions options;
-        options.config_file_path = "/path/to/pinpoint-config.yaml";
-        global_agent = pinpoint::StartAgent(options);
-
-        if (global_agent && global_agent->Enable()) {
-            res.status = 200;
-            res.set_content("{\"message\": \"New Pinpoint C++ Agent - success\"}",
-                            "application/json");
-        } else {
-            res.status = 500;
-            res.set_content("{\"error\": \"New Pinpoint C++ Agent - fail\"}",
-                            "application/json");
-            global_agent = nullptr;
-        }
-    } catch (const std::exception& e) {
-        res.status = 500;
-        res.set_content("{\"error\": \"" + std::string(e.what()) + "\"}",
-                        "application/json");
-        global_agent = nullptr;
-    }
+    // StartAgent() is asynchronous: it returns immediately while a
+    // background thread registers the agent with the collector, so
+    // Enable() is still false at this point even on a successful start.
+    // Confirm the start via the agent log ("AgentInfo sent" on success,
+    // "agent start failed: ..." on failure). A failed start does not
+    // affect the application — tracing is simply off.
+    res.status = 202;
+    res.set_content("{\"message\": \"Pinpoint C++ Agent start requested - "
+                    "check the agent log for the result\"}",
+                    "application/json");
 }
 
 void handle_shutdown(const httplib::Request& req, httplib::Response& res) {
-    std::lock_guard<std::mutex> lock(agent_mutex);
+    // Shutting down the global agent also removes it from the singleton, so
+    // GlobalAgent() hands out the noop agent afterwards. When no agent is
+    // installed, GlobalAgent() already returns the noop agent, whose
+    // Shutdown() is a safe no-op — no state tracking is needed.
+    pinpoint::GlobalAgent()->Shutdown();
 
-    if (global_agent) {
-        global_agent->Shutdown();
-        global_agent = nullptr;
-        res.status = 200;
-        res.set_content("{\"message\": \"Shutdown Pinpoint C++ Agent\"}",
-                        "application/json");
-    } else {
-        res.status = 400;
-        res.set_content("{\"error\": \"Agent not running\"}", "application/json");
-    }
+    res.status = 200;
+    res.set_content("{\"message\": \"Shutdown Pinpoint C++ Agent\"}",
+                    "application/json");
 }
 
 void handle_status(const httplib::Request& req, httplib::Response& res) {
-    std::lock_guard<std::mutex> lock(agent_mutex);
-
-    bool running = (global_agent != nullptr);
+    // Enable() is true only while the global agent is online (registered
+    // with the collector). It is false while registration is still in
+    // flight, after Shutdown(), and for the noop agent.
+    bool enabled = pinpoint::GlobalAgent()->Enable();
     res.status = 200;
-    res.set_content("{\"running\": " + std::string(running ? "true" : "false") + "}",
+    res.set_content("{\"enabled\": " + std::string(enabled ? "true" : "false") + "}",
                     "application/json");
 }
 
@@ -266,13 +250,16 @@ EnableCallstackTrace: true
 
 **Diagnosis:**
 
-```cpp
-auto agent = pinpoint::StartAgent();
-if (!agent->Enable()) {
-    std::cerr << "Agent failed to start" << std::endl;
-    // Check logs for details
-}
+`StartAgent()` is asynchronous: it returns before the agent has connected to the collector, and `Enable()` flips to `true` only after the background registration succeeds. Checking `Enable()` right after `StartAgent()` therefore always looks like a failure and diagnoses nothing. Check the **agent log** instead:
+
 ```
+AgentInfo sent                       # startup succeeded
+agent start failed: ...              # configuration / setup error
+failed to init grpc workers: ...     # gRPC bring-up error
+failed to send AgentInfo             # collector not reachable yet (retried indefinitely)
+```
+
+A failed agent start never breaks the application — all tracing calls degrade to safe noops and the app runs normally; only the traces are missing. `Enable()` itself is meant only as a fast-fail guard before span creation (to skip instrumentation while tracing is off), not as a startup check.
 
 **Solutions:**
 

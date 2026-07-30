@@ -71,6 +71,12 @@ Before you can create spans, you must start an `Agent` instance with `StartAgent
 
 `StartAgent()` creates, configures and starts the agent in the **current process** and installs it as the global agent. Call it in the process that records spans — for pre-fork servers (nginx, Apache prefork, uWSGI) that means each worker calls it after `fork()`, and the master makes no agent API calls at all; see the [Pre-fork Integration Guide](prefork.md).
 
+**`StartAgent()` is asynchronous.** It returns as soon as initialization is *launched*, handing back the agent handle immediately. A background initialization thread then opens the gRPC channels, registers the agent with the collector — retrying indefinitely until the collector accepts it — and starts the worker threads. Only after that registration succeeds does `Enable()` flip to `true`. `StartAgent()` never waits for any of this, so right after it returns `Enable()` is normally still `false`; that is not an error. On a configuration or setup failure `StartAgent()` returns a noop agent instead — it never throws.
+
+Because of this, **agent start success can only be verified through the agent log**, not through the return value or an immediate `Enable()` call. On success the log shows `AgentInfo sent`; failures appear as error entries such as `agent start failed: ...` or `failed to init grpc workers: ...` (set `Log.Level: "debug"` for more detail).
+
+**A failed agent start never affects the application.** Every API call on a noop or not-yet-enabled agent is safe: spans are noop objects and all operations on them do nothing. The application runs exactly as it would without the agent — the only consequence is that no traces are collected.
+
 ### Starting an Agent
 
 ```cpp
@@ -128,11 +134,21 @@ void someFunction() {
 
 ### Checking Agent Status
 
+`Enable()` returns `true` only after the background initialization has registered the agent with the collector. Since `StartAgent()` does not wait for that, checking `Enable()` immediately after `StartAgent()` proves nothing — it is usually still `false` at that moment even when the agent goes on to start successfully. Do **not** use it as a startup success check, and do not exit the application when it is `false`; verify startup through the agent log instead (see above).
+
+Use `Enable()` for one purpose only: as a **fast-fail guard before creating a span**, to skip instrumentation work (span creation, header capture, context extraction) while tracing is off. The request itself is served normally either way:
+
 ```cpp
-auto agent = pinpoint::StartAgent();
-if (!agent->Enable()) {
-    std::cerr << "Agent failed to start - check configuration" << std::endl;
-    // Continue without tracing or exit
+void handleRequest(const Request& req) {
+    auto agent = pinpoint::GlobalAgent();
+    if (!agent->Enable()) {
+        process(req);   // tracing is off — skip the instrumentation, serve as usual
+        return;
+    }
+
+    auto span = agent->NewSpan("MyOperation", "/api/endpoint");
+    process(req);
+    span->EndSpan();
 }
 ```
 
@@ -1390,7 +1406,7 @@ if (agent) {
 
 ### Spans Not Appearing
 
-- Confirm the agent is enabled and configuration is loaded.
+- Confirm from the agent log that startup succeeded (`AgentInfo sent`); errors such as `agent start failed` or `failed to send AgentInfo` mean the agent never came online — the application still runs, but nothing is traced.
 - Check that `EndSpan()` is called for every created span.
 - Verify sampling rate is greater than zero.
 - Ensure collector host/port and network connectivity are correct.
