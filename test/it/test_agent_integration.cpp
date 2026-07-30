@@ -451,7 +451,8 @@ protected:
     }
 
     void StartTestAgent() {
-        agent_ = StartAgent(agent_options());
+        ASSERT_TRUE(StartAgent(agent_options())) << "starting the agent unexpectedly failed";
+        agent_ = GlobalAgent();
         impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
         ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
     }
@@ -2485,7 +2486,8 @@ TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCyc
         auto options = agent_options();
         options.args = {"--integration-test"};
         options.libs = {"libintegration.so"};
-        agent_ = StartAgent(options);
+        ASSERT_TRUE(StartAgent(options)) << "restarting the agent unexpectedly failed";
+        agent_ = GlobalAgent();
         impl_ = std::dynamic_pointer_cast<AgentImpl>(agent_);
         ASSERT_NE(impl_, nullptr) << "configuration unexpectedly produced a noop agent";
         ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }))
@@ -2532,13 +2534,13 @@ TEST_F(AgentIntegrationTest, ReloadsConfigAndAppliesNewFilters) {
 
     // Rebuild the config from the updated sources and reload the live agent —
     // the same path the config-file watcher drives. A repeated StartAgent()
-    // must NOT be a reload path: it returns the running instance untouched.
+    // must NOT be a reload path: it leaves the running instance untouched.
     server_exclude_urls_ = "[/excluded/**, /reloaded/**]";
     auto reload_cfg = make_config(agent_options(), impl_->getConfig());
     ASSERT_NE(reload_cfg, nullptr);
     impl_->reloadConfig(reload_cfg);
-    const auto restarted = StartAgent(agent_options());
-    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(restarted), impl_);
+    EXPECT_TRUE(StartAgent(agent_options()));
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), impl_);
 
     // The reloaded URL filter must reject new spans while everything else
     // keeps tracing.
@@ -3032,11 +3034,8 @@ TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
 TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
     // Exercise the standalone lifecycle entry point against the already
     // installed singleton: pt_start_agent() in a process whose agent runs
-    // returns another owning handle to that same running agent.
-    pt_agent_t created = pt_start_agent(NULL);
-    ASSERT_NE(created, nullptr);
-    EXPECT_NE(pt_agent_is_enabled(created), 0);
-    pt_agent_destroy(created);
+    // reports success and leaves that same running agent installed.
+    EXPECT_NE(pt_start_agent(NULL), 0);
 
     pt_agent_t agent = pt_global_agent();
     ASSERT_NE(agent, nullptr);
@@ -3513,8 +3512,9 @@ TEST_F(AgentIntegrationTest, RejectsActiveThreadCountStreamsBeyondLimit) {
     EXPECT_TRUE(agent_->Enable());
 }
 
-// Runs without the fixture: a disabled configuration must yield a noop agent
-// that needs no collector and never registers itself as the global agent.
+// Runs without the fixture: a disabled configuration must fail StartAgent()
+// and leave GlobalAgent() serving a noop agent that needs no collector and
+// never registers itself as the global agent.
 TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
     AgentOptions options;
     options.env_prefix = "PINPOINT_CPP_AGENT_IT_ISOLATED";
@@ -3522,7 +3522,8 @@ TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
     options.app_type = kApplicationType;
     options.server_info = "disabled agent";
 
-    auto agent = StartAgent(options);
+    EXPECT_FALSE(StartAgent(options)) << "a disabled configuration must not start an agent";
+    auto agent = GlobalAgent();
     ASSERT_NE(agent, nullptr);
     EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(agent), nullptr);
     EXPECT_FALSE(agent->Enable());

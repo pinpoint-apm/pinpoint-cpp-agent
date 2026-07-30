@@ -185,13 +185,14 @@ ngx_http_pinpoint_init_process(ngx_cycle_t *cycle)
     /* Starts the agent in THIS worker: first gRPC use in this process, own
      * threads, own collector registration. Returns immediately; registration
      * completes asynchronously (pt_agent_is_enabled() flips to non-zero). */
-    g_agent = pt_start_agent(opts);
-    pt_agent_options_free(opts);
-
-    if (g_agent == NULL) {
+    if (pt_start_agent(opts)) {
+        g_agent = pt_global_agent();
+    } else {
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
-                      "pinpoint: agent start failed; worker runs untraced");
+                      "pinpoint: agent start failed; worker runs untraced "
+                      "(check the pinpoint agent log for the cause)");
     }
+    pt_agent_options_free(opts);
 
     return NGX_OK;
 }

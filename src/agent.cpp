@@ -1458,8 +1458,9 @@ namespace pinpoint {
     }
 
     // Public entry point: a failure to configure or construct the agent must
-    // surface as a noop agent, never as an exception in the host application.
-    AgentPtr StartAgent(const AgentOptions& options) try {
+    // surface as a false return, never as an exception in the host
+    // application.
+    bool StartAgent(const AgentOptions& options) try {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
         auto agent = global_agent().load();
 
@@ -1482,15 +1483,15 @@ namespace pinpoint {
                 // gRPC clients instead of touching them.
                 global_agent().store(nullptr);
                 agent.reset();
-                return noopAgent();
+                return false;
             }
 
             // Already running in this process: StartAgent() is one-shot per
             // process. Config changes flow through the config-file watcher,
             // not through repeated StartAgent() calls.
             if (!agent->isExiting() && !agent->initFailed()) {
-                LOG_WARN("StartAgent() called again in this process; returning the running agent");
-                return agent;
+                LOG_WARN("StartAgent() called again in this process; keeping the running agent");
+                return true;
             }
 
             // Neither a shut-down agent nor one whose async initialization
@@ -1511,27 +1512,27 @@ namespace pinpoint {
 
         auto cfg = make_config(options);
         if (!cfg || !cfg->check()) {
-            return noopAgent();
+            return false;
         }
         agent = make_agent(std::move(cfg), options);
         if (agent == nullptr) {
-            return noopAgent();
+            return false;
         }
         agent->setOptions(options);
         // Publish only a successfully launched agent. A synchronous Start()
         // failure (watcher allocation, init-thread creation) must not install
         // a permanently cold instance: every later StartAgent() would treat
-        // it as the running agent and never call Start() again. Returning the
-        // noop agent instead leaves the singleton empty, so the next
-        // StartAgent() call rebuilds and retries from scratch. The failed
-        // agent is destroyed here through its never-started cold teardown.
+        // it as the running agent and never call Start() again. Returning
+        // false instead leaves the singleton empty, so the next StartAgent()
+        // call rebuilds and retries from scratch. The failed agent is
+        // destroyed here through its never-started cold teardown.
         if (!agent->Start()) {
-            return noopAgent();
+            return false;
         }
         global_agent().store(agent);
-        return agent;
+        return true;
     } catch (...) {
-        return noopAgent();
+        return false;
     }
 
     AgentPtr GlobalAgent() {

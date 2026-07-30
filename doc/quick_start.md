@@ -107,7 +107,10 @@ Set the configuration file path in your application:
 int main() {
     pinpoint::AgentOptions options;
     options.config_file_path = "/path/to/pinpoint-config.yaml";
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     // Your application code
 
@@ -149,7 +152,10 @@ int main() {
 
     pinpoint::AgentOptions options;
     options.config_yaml = config;
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     // Your application code
 
@@ -187,7 +193,12 @@ The typical workflow follows five steps:
 int main() {
     pinpoint::AgentOptions options;
     options.config_file_path = "pinpoint-config.yaml";
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        // StartAgent() returns false on a configuration or setup failure —
+        // the application keeps running untraced.
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     // StartAgent() returns immediately; the agent registers with the
     // collector on a background thread. Verify startup via the agent log —
@@ -202,15 +213,18 @@ int main() {
 
 > **`StartAgent()` is asynchronous.** It returns right away, and a background
 > thread connects to the collector, registers the agent (retrying until it
-> succeeds) and starts the workers. `Enable()` flips to `true` only after that
-> registration completes, so it is normally still `false` immediately after
-> `StartAgent()` returns — checking it there is meaningless. **Verify agent
-> start through the agent log**: `AgentInfo sent` on success, error entries
-> such as `agent start failed: ...` on failure. Even if the agent fails to
-> start, the application is unaffected — every tracing call is a safe noop and
-> only the traces are lost. Use `Enable()` solely as a cheap fast-fail guard
-> before creating a span (skip instrumentation while tracing is off), never as
-> a startup success check.
+> succeeds) and starts the workers. A `false` return reports a *synchronous*
+> configuration or setup failure — print a message pointing at the agent log,
+> as in the example above. A `true` return means initialization was launched,
+> NOT that registration already succeeded: `Enable()` flips to `true` only
+> after that registration completes, so it is normally still `false`
+> immediately after `StartAgent()` returns — checking it there is meaningless.
+> **Verify agent start through the agent log**: `AgentInfo sent` on success,
+> error entries such as `agent start failed: ...` on failure. Even if the
+> agent fails to start, the application is unaffected — every tracing call is
+> a safe noop and only the traces are lost. Use `Enable()` solely as a cheap
+> fast-fail guard before creating a span (skip instrumentation while tracing
+> is off), never as a startup success check.
 
 ### Create a Span
 
@@ -286,7 +300,10 @@ agent->Shutdown();
 agent.reset();          // drop the dead handle so nothing keeps using it
 
 // ... later: resume tracing with a NEW agent ...
-agent = pinpoint::StartAgent(options);
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to restart the pinpoint agent: check the agent log" << std::endl;
+}
+agent = pinpoint::GlobalAgent();
 ```
 
 What each call guarantees:
@@ -295,7 +312,7 @@ What each call guarantees:
 |---|---|
 | `agent->Enable()` | Always `false`. |
 | `agent->NewSpan(...)` | Returns the shared noop span. Safe to call, records nothing. |
-| `pinpoint::StartAgent(...)` | Builds a fresh agent and installs it as the global agent. |
+| `pinpoint::StartAgent(...)` | Builds a fresh agent, installs it as the global agent and returns `true`; returns `false` when the rebuild fails. |
 | `pinpoint::GlobalAgent()` | Returns the noop agent until `StartAgent()` installs a new one. |
 
 Points to keep in mind:
@@ -359,7 +376,10 @@ int main() {
     // agent registers with the collector in the background — check the agent
     // log ("AgentInfo sent") to confirm it came online. If it fails, the app
     // still runs normally; it is just not traced.
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     std::cout << "Pinpoint agent starting" << std::endl;
 
@@ -428,7 +448,10 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 int main() {
     pinpoint::AgentOptions options;
     options.config_file_path = "pinpoint-config.yaml";
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
     server.Get("/users", handle_users);

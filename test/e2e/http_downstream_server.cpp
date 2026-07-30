@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -70,7 +71,10 @@ void trace(const httplib::Request& req, httplib::Response& res) {
 int main(int argc, char** argv) {
     const int port = argc > 1 ? std::atoi(argv[1]) : 8091;
     it_test::configure_agent_env("cpp-it-http-downstream", "it-http-downstream");
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
     server.Get("/health", health);

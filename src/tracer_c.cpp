@@ -642,11 +642,12 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
 // Agent lifecycle
 // ============================================================================
 
-pt_agent_t pt_start_agent(pt_agent_options_t options) {
-    return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [&] {
-        return make_agent_handle(options
+int pt_start_agent(pt_agent_options_t options) {
+    return pt_api_call(__func__, 0, [&] {
+        const bool started = options
             ? pinpoint::StartAgent(options->options)
-            : pinpoint::StartAgent());
+            : pinpoint::StartAgent();
+        return started ? 1 : 0;
     });
 }
 

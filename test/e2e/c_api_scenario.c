@@ -141,10 +141,15 @@ int main(void) {
         return 1;
     }
     pt_agent_options_set_server_metadata(options, "cpp-it-c-api", args, 1, libs, 1);
-    pt_agent_t agent = pt_start_agent(options);
+    const int started = pt_start_agent(options);
     pt_agent_options_free(options);
+    if (!started) {
+        fprintf(stderr, "C API scenario: agent start failed; check the agent log\n");
+        return 1;
+    }
+    pt_agent_t agent = pt_global_agent();
     if (agent == NULL) {
-        fprintf(stderr, "C API scenario: agent creation failed\n");
+        fprintf(stderr, "C API scenario: agent handle unavailable\n");
         return 1;
     }
     if (!wait_until_enabled(agent)) {

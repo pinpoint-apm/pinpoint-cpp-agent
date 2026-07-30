@@ -29,8 +29,11 @@
  *   // Configure and start the agent in the process that records spans.
  *   pt_agent_options_t opts = pt_agent_options_new();
  *   pt_agent_options_set_config_file(opts, "/etc/pinpoint/agent.yaml");
- *   pt_agent_t agent = pt_start_agent(opts);
+ *   if (!pt_start_agent(opts)) {
+ *       fprintf(stderr, "failed to start the pinpoint agent: check the agent log\n");
+ *   }
  *   pt_agent_options_free(opts);
+ *   pt_agent_t agent = pt_global_agent();
  *
  *   // --- incoming request ---
  *   pt_context_reader_t reader = { &my_headers, my_header_get };
@@ -414,27 +417,28 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
  *
  * The call returns as soon as initialization is launched; it does NOT wait
  * for collector registration. pt_agent_is_enabled() flips to non-zero once
- * registration succeeds. On failure a disabled (noop) agent handle is
- * returned — never NULL, except when handle setup itself fails — and nothing
- * is installed as the global agent, so a later pt_start_agent() call retries
- * from scratch.
+ * registration succeeds.
  *
- * Calling pt_start_agent() again in the same process returns the already
- * running agent (with a warning). After pt_agent_shutdown() a new
- * pt_start_agent() call builds a fresh agent.
+ * @return Non-zero when the agent was launched and installed as the global
+ * agent — obtain the handle with pt_global_agent(). 0 on a configuration or
+ * setup failure; check the agent log for the cause. Nothing is installed as
+ * the global agent then — pt_global_agent() keeps returning a disabled
+ * (noop) agent handle — and a later pt_start_agent() call retries from
+ * scratch.
  *
- * An agent inherited across fork() is unusable in the child and is refused —
- * see pinpoint::StartAgent().
+ * Calling pt_start_agent() again in the same process leaves the already
+ * running agent untouched and reports success (with a warning). After
+ * pt_agent_shutdown() a new pt_start_agent() call builds a fresh agent.
+ *
+ * An agent inherited across fork() is unusable in the child and is refused
+ * (returns 0) — see pinpoint::StartAgent().
  *
  * @param options Options built with pt_agent_options_new(); NULL uses all
  *                defaults. Only read during this call.
  *
- * The returned handle must be released with pt_agent_destroy() after
- * pt_agent_shutdown() has been called.
- *
  * Mirrors pinpoint::StartAgent().
  */
-pt_agent_t pt_start_agent(pt_agent_options_t options);
+int pt_start_agent(pt_agent_options_t options);
 
 /**
  * @brief Returns a handle to the singleton global agent.
@@ -450,11 +454,9 @@ pt_agent_t pt_start_agent(pt_agent_options_t options);
 pt_agent_t pt_global_agent(void);
 
 /**
- * @brief Releases an agent handle obtained from pt_start_agent() or
- *        pt_global_agent().
+ * @brief Releases an agent handle obtained from pt_global_agent().
  *
- * For handles from pt_global_agent() this only frees the C wrapper; the
- * global agent itself is unaffected.
+ * This only frees the C wrapper; the global agent itself is unaffected.
  *
  * Unknown and already-destroyed registry handles are ignored with a warning.
  * NULL and the shared disabled-agent sentinel are ignored silently. Other API
@@ -484,9 +486,9 @@ int pt_agent_is_enabled(pt_agent_t agent);
  * returns the disabled-agent sentinel until a new one is installed.
  *
  * To resume tracing in the same process, release the handle with
- * pt_agent_destroy() and call pt_start_agent() again. Each such cycle
- * re-resolves the agent identity, so it registers a NEW agent instance with
- * the collector.
+ * pt_agent_destroy() and call pt_start_agent() again; pt_global_agent() then
+ * hands out the fresh agent. Each such cycle re-resolves the agent identity,
+ * so it registers a NEW agent instance with the collector.
  *
  * Mirrors pinpoint::Agent::Shutdown().
  */

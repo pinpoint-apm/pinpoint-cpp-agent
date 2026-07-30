@@ -42,7 +42,7 @@ The agent detects the most common mistake — starting an agent before
 |---|---|
 | Using an inherited started agent | `Enable()` returns `false` and `NewSpan()` returns noop spans (the pid guard sits on the span-creation path itself, so cached `AgentPtr`s and `GlobalAgent()` are covered alike), with a one-time error log. |
 | Calling `Start()` on the inherited object | Refused with an error log. |
-| `StartAgent()` while the inherited agent is installed | Refused (returns the noop agent) and the inherited agent is evicted from the singleton, so `GlobalAgent()` degrades to the noop agent: gRPC was initialized pre-fork in the parent, so a fresh agent cannot be built safely in this process. |
+| `StartAgent()` while the inherited agent is installed | Refused (returns `false`) and the inherited agent is evicted from the singleton, so `GlobalAgent()` degrades to the noop agent: gRPC was initialized pre-fork in the parent, so a fresh agent cannot be built safely in this process. |
 | Destroying / shutting down the inherited agent | Safe: inherited dead thread handles are abandoned, never joined. |
 
 A worker that itself `fork()+exec()`s subprocesses (e.g. spawning tools) is
@@ -138,7 +138,13 @@ static ngx_int_t ngx_http_pinpoint_init_process(ngx_cycle_t *cycle) {
     pt_agent_options_set_server_metadata(opts, "nginx/" NGINX_VERSION,
                                          NULL, 0, NULL, 0);
 
-    g_agent = pt_start_agent(opts);
+    if (pt_start_agent(opts)) {
+        g_agent = pt_global_agent();
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "pinpoint: agent start failed; worker runs untraced "
+                      "(check the pinpoint agent log for the cause)");
+    }
     pt_agent_options_free(opts);
     return NGX_OK;
 }

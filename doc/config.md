@@ -47,7 +47,9 @@ Create a `pinpoint-config.yaml` file and set its path:
 int main() {
     pinpoint::AgentOptions options;
     options.config_file_path = "/path/to/pinpoint-config.yaml";
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
     // ...
 }
 ```
@@ -74,7 +76,9 @@ Or programmatically:
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
     // ...
 }
 ```
@@ -88,7 +92,9 @@ pinpoint::AgentOptions options;
 options.env_prefix = "MYAPP";   // read MYAPP_* instead of PINPOINT_CPP_*
 setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
 setenv("MYAPP_COLLECTOR_HOST", "localhost", 1);
-auto agent = pinpoint::StartAgent(options);
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+}
 ```
 
 ### Method 3: Configuration String (Inline YAML)
@@ -108,7 +114,9 @@ int main() {
 
     pinpoint::AgentOptions options;
     options.config_yaml = config;
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
     // ...
 }
 ```

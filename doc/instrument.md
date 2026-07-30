@@ -71,9 +71,11 @@ Before you can create spans, you must start an `Agent` instance with `StartAgent
 
 `StartAgent()` creates, configures and starts the agent in the **current process** and installs it as the global agent. Call it in the process that records spans — for pre-fork servers (nginx, Apache prefork, uWSGI) that means each worker calls it after `fork()`, and the master makes no agent API calls at all; see the [Pre-fork Integration Guide](prefork.md).
 
-**`StartAgent()` is asynchronous.** It returns as soon as initialization is *launched*, handing back the agent handle immediately. A background initialization thread then opens the gRPC channels, registers the agent with the collector — retrying indefinitely until the collector accepts it — and starts the worker threads. Only after that registration succeeds does `Enable()` flip to `true`. `StartAgent()` never waits for any of this, so right after it returns `Enable()` is normally still `false`; that is not an error. On a configuration or setup failure `StartAgent()` returns a noop agent instead — it never throws.
+**`StartAgent()` is asynchronous.** It returns as soon as initialization is *launched*. A background initialization thread then opens the gRPC channels, registers the agent with the collector — retrying indefinitely until the collector accepts it — and starts the worker threads. Only after that registration succeeds does `Enable()` flip to `true`. `StartAgent()` never waits for any of this, so right after it returns `Enable()` is normally still `false`; that is not an error.
 
-Because of this, **agent start success can only be verified through the agent log**, not through the return value or an immediate `Enable()` call. On success the log shows `AgentInfo sent`; failures appear as error entries such as `agent start failed: ...` or `failed to init grpc workers: ...` (set `Log.Level: "debug"` for more detail).
+**`StartAgent()` returns a `bool`.** `true` means the agent was launched and installed as the global agent — obtain the handle with `GlobalAgent()`. `false` reports a *synchronous* configuration or setup failure (it never throws); nothing is installed as the global agent then, and a later `StartAgent()` call retries from scratch. When it returns `false`, print a message pointing at the agent log, where the failure cause is recorded.
+
+A `true` return only means initialization was launched — **whether the agent actually came online can only be verified through the agent log**, not through the return value or an immediate `Enable()` call. On success the log shows `AgentInfo sent`; failures appear as error entries such as `agent start failed: ...` or `failed to init grpc workers: ...` (set `Log.Level: "debug"` for more detail).
 
 **A failed agent start never affects the application.** Every API call on a noop or not-yet-enabled agent is safe: spans are noop objects and all operations on them do nothing. The application runs exactly as it would without the agent — the only consequence is that no traces are collected.
 
@@ -89,7 +91,10 @@ int main() {
     // environment variables alone (StartAgent() with no arguments).
 
     // options.app_type defaults to APP_TYPE_CPP.
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     // Your application logic ...
 
@@ -116,7 +121,9 @@ options.server_info = "my-service-runtime";
 options.args = {"--port=8080"};
 options.libs = {"my-http-framework/1.2.3"};
 
-auto agent = pinpoint::StartAgent(options);
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+}
 ```
 
 ### Using the Global Agent
@@ -161,14 +168,17 @@ setenv("PINPOINT_CPP_CONFIG_FILE", "/tmp/pinpoint-config.yaml", 0);
 setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-demo", 0);
 setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
 
-auto agent = pinpoint::StartAgent();
+if (!pinpoint::StartAgent()) {
+    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+}
+auto agent = pinpoint::GlobalAgent();
 ```
 
 ### Startup Checklist
 
 1. Collect configuration in `AgentOptions` (file path, YAML string) and/or environment variables.
-2. Call `StartAgent(options)` in the process that records spans, before creating spans.
-3. Hold the `AgentPtr` for the lifetime of the process.
+2. Call `StartAgent(options)` in the process that records spans, before creating spans. When it returns `false`, print a message pointing at the agent log.
+3. Obtain the agent handle with `GlobalAgent()` and hold it for the lifetime of the process.
 4. Call `Shutdown()` on application exit (see [§11](#11-asynchronous-and-background-work)).
 
 ---
@@ -715,7 +725,10 @@ void handle_users(const httplib::Request& req, httplib::Response& res) {
 
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-server", 0);
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
     server.Get("/users", wrap_handler(handle_users));
@@ -1438,7 +1451,7 @@ For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shoot
 
 ## 16. Checklist for New Instrumentation
 
-1. **Initialize the agent** — configure via YAML and/or environment variables, then call `StartAgent()`.
+1. **Initialize the agent** — configure via YAML and/or environment variables, then call `StartAgent()`; on a `false` return, print a message pointing at the agent log.
 2. **Create a span** — on each incoming request or logical unit of work, call `NewSpan(...)`.
 3. **Record metadata** — set remote address, endpoint, service type, and critical attributes.
 4. **Add span events** — wrap key internal operations (DB, HTTP client, cache, business logic).

@@ -434,9 +434,10 @@ namespace pinpoint {
 		/// GlobalAgent() falls back to the noop agent until a new one is
 		/// installed.
 		///
-		/// To resume tracing in the same process, call StartAgent() again for
-		/// a fresh handle. Note that each such cycle re-resolves the agent
-		/// identity, so it registers a NEW agent instance with the collector.
+		/// To resume tracing in the same process, call StartAgent() again;
+		/// GlobalAgent() then hands out the fresh agent. Note that each such
+		/// cycle re-resolves the agent identity, so it registers a NEW agent
+		/// instance with the collector.
       	virtual void Shutdown() = 0;
   	};
 
@@ -496,24 +497,29 @@ namespace pinpoint {
 	 * which defaults to false) and an initialization thread opens the gRPC
 	 * channels, registers with the collector and starts the workers. It does
 	 * NOT wait for collector connection or registration; Enable() flips to
-	 * true once registration succeeds. On configuration or setup failure a
-	 * noop agent is returned — never an exception — and nothing is installed
-	 * as the global agent, so a later StartAgent() call retries from scratch.
+	 * true once registration succeeds.
 	 *
-	 * Calling StartAgent() again in the same process returns the already
-	 * running agent (with a warning). After Shutdown() a new StartAgent()
-	 * call builds a fresh agent.
+	 * @return true when the agent was launched and installed as the global
+	 * agent — obtain the handle with GlobalAgent(). false on a configuration
+	 * or setup failure (never an exception); check the agent log for the
+	 * cause. Nothing is installed as the global agent then — GlobalAgent()
+	 * keeps returning the noop agent — and a later StartAgent() call retries
+	 * from scratch.
+	 *
+	 * Calling StartAgent() again in the same process leaves the already
+	 * running agent untouched and returns true (with a warning). After
+	 * Shutdown() a new StartAgent() call builds a fresh agent.
 	 *
 	 * @warning An agent handle (or the global agent) inherited across fork()
 	 * is unusable in the child and is refused: its threads and gRPC runtime
 	 * do not exist there, and gRPC cannot be re-initialized in a process that
 	 * forked after `grpc_init`. An inherited agent reports Enable() == false
 	 * and hands out noop spans, and a StartAgent() call in such a child is
-	 * refused and evicts the inherited global agent, so GlobalAgent() degrades
-	 * to the noop agent. The child must be a fresh process that calls
-	 * StartAgent() itself before any other agent use.
+	 * refused (returns false) and evicts the inherited global agent, so
+	 * GlobalAgent() degrades to the noop agent. The child must be a fresh
+	 * process that calls StartAgent() itself before any other agent use.
 	 */
-	AgentPtr StartAgent(const AgentOptions& options = {});
+	bool StartAgent(const AgentOptions& options = {});
 
 	/// @brief Returns the singleton global agent instance installed by
 	///        StartAgent(), or the noop agent when none is installed.

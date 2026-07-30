@@ -105,12 +105,13 @@ int main(void) {
     pt_agent_options_t opts = pt_agent_options_new();
     pt_agent_options_set_config_file(opts, "/etc/pinpoint/agent.yaml");
 
-    pt_agent_t agent = pt_start_agent(opts);  /* NULL options = all defaults */
-    pt_agent_options_free(opts);              /* only read during the call   */
-    if (!agent) {
-        /* handle allocation failed — the app still runs, just untraced */
-        fprintf(stderr, "failed to create pinpoint agent handle\n");
+    int started = pt_start_agent(opts);  /* NULL options = all defaults */
+    pt_agent_options_free(opts);         /* only read during the call   */
+    if (!started) {
+        /* configuration/setup failure — the app still runs, just untraced */
+        fprintf(stderr, "failed to start the pinpoint agent: check the agent log\n");
     }
+    pt_agent_t agent = pt_global_agent();
 
     /* application logic ... */
 
@@ -120,13 +121,20 @@ int main(void) {
 }
 ```
 
+**`pt_start_agent()` returns a success flag.** Non-zero means the agent was
+launched and installed as the global agent — obtain the handle with
+`pt_global_agent()`. `0` reports a *synchronous* configuration or setup
+failure; nothing is installed as the global agent then, and a later
+`pt_start_agent()` call retries from scratch. When it returns `0`, print a
+message pointing at the agent log, where the failure cause is recorded.
+
 **`pt_start_agent()` is asynchronous.** It returns as soon as initialization is
 launched: a background thread opens the gRPC channels, registers the agent with
 the collector (retrying until the collector accepts it) and starts the workers.
 `pt_agent_is_enabled()` returns `1` only after that registration succeeds, so it
 is normally still `0` right after `pt_start_agent()` returns — that is not an
-error, and a non-NULL return value does not mean the start succeeded either (on
-a configuration or setup failure a no-op agent handle is returned).
+error, and a non-zero return value does not mean registration already succeeded
+either, only that initialization was launched.
 
 **Verify agent start through the agent log**, not through the API: on success
 the log shows `AgentInfo sent`; failures appear as error entries such as
@@ -145,8 +153,11 @@ handle and run `pt_start_agent()` again for each cycle:
 pt_agent_shutdown(agent);
 pt_agent_destroy(agent);          /* drop the dead handle */
 
-/* ... later ... */
-agent = pt_start_agent(NULL);     /* a NEW agent; the old one cannot restart */
+/* ... later: a NEW agent; the old one cannot restart */
+if (!pt_start_agent(NULL)) {
+    fprintf(stderr, "failed to restart the pinpoint agent: check the agent log\n");
+}
+agent = pt_global_agent();
 ```
 
 Each cycle re-resolves the identity with a freshly auto-generated agent id and
@@ -162,7 +173,9 @@ const char* libs[] = {"my-http-framework/1.2.3"};
 
 pt_agent_options_t opts = pt_agent_options_new();
 pt_agent_options_set_server_metadata(opts, "my-service-runtime", args, 1, libs, 1);
-pt_agent_t agent = pt_start_agent(opts);
+if (!pt_start_agent(opts)) {
+    fprintf(stderr, "failed to start the pinpoint agent: check the agent log\n");
+}
 pt_agent_options_free(opts);
 ```
 
@@ -1004,8 +1017,10 @@ int main(void) {
     setenv("PINPOINT_CPP_CONFIG_FILE",      "/tmp/pinpoint-config.yaml", 0);
     setenv("PINPOINT_CPP_APPLICATION_NAME", "c-http-server",             0);
 
-    pt_agent_t agent = pt_start_agent(NULL);
-    if (!agent) return 1;
+    if (!pt_start_agent(NULL)) {
+        fprintf(stderr, "failed to start the pinpoint agent: check the agent log\n");
+    }
+    pt_agent_t agent = pt_global_agent();
 
     my_server_t* srv = my_server_create();
     my_server_get(srv, "/api", on_request, NULL);

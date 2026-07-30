@@ -1,3 +1,4 @@
+#include <iostream>
 #include <random>
 #include <string>
 
@@ -15,7 +16,10 @@ int main() {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     setenv("PINPOINT_CPP_LOG_LEVEL", "debug", 0);
 
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
     server.Get("/foo", on_foo);

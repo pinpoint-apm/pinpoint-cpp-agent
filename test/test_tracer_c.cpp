@@ -335,10 +335,10 @@ TEST_F(TracerCApiTest, AgentShutdownDisablesAgent) {
     EXPECT_EQ(pt_agent_is_enabled(agent_), 0);
 }
 
-// pt_start_agent() while an agent already runs in this process returns the
-// running (mock) agent — options, including server metadata, are accepted but
-// the running instance is not rebuilt.
-TEST_F(TracerCApiTest, StartAgentReturnsRunningAgent) {
+// pt_start_agent() while an agent already runs in this process reports
+// success and leaves the running (mock) agent untouched — options, including
+// server metadata, are accepted but the running instance is not rebuilt.
+TEST_F(TracerCApiTest, StartAgentReportsSuccessWhileAgentRuns) {
     pt_agent_options_t opts = pt_agent_options_new();
     ASSERT_NE(opts, nullptr);
     pt_agent_options_set_config_yaml(opts, kStartAgentConfigYaml);
@@ -346,17 +346,19 @@ TEST_F(TracerCApiTest, StartAgentReturnsRunningAgent) {
     const char* libs[] = {"libfoo.so", "libbar.so"};
     pt_agent_options_set_server_metadata(opts, "c-api-server", args, 2, libs, 2);
 
-    pt_agent_t agent = pt_start_agent(opts);
+    EXPECT_NE(pt_start_agent(opts), 0);
     pt_agent_options_free(opts);
 
+    pt_agent_t agent = pt_global_agent();
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
     pt_agent_destroy(agent);
 }
 
-TEST_F(TracerCApiTest, StartAgentWithNullOptionsReturnsRunningAgent) {
-    pt_agent_t agent = pt_start_agent(nullptr);
+TEST_F(TracerCApiTest, StartAgentWithNullOptionsReportsSuccessWhileAgentRuns) {
+    EXPECT_NE(pt_start_agent(nullptr), 0);
 
+    pt_agent_t agent = pt_global_agent();
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
     pt_agent_destroy(agent);

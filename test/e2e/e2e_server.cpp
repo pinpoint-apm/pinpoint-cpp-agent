@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -847,7 +848,13 @@ void on_agent_start(const httplib::Request&, httplib::Response& res) {
         res.set_content("{\"status\":\"already_running\"}", "application/json");
         return;
     }
-    g_agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+        res.status = 500;
+        res.set_content("{\"status\":\"start_failed\"}", "application/json");
+        return;
+    }
+    g_agent = pinpoint::GlobalAgent();
     res.status = 200;
     res.set_content("{\"status\":\"started\"}", "application/json");
 }
@@ -887,7 +894,10 @@ void on_agent_reload(const httplib::Request& req, httplib::Response& res) {
     }
     pinpoint::AgentOptions options;
     options.config_yaml = config.str();
-    g_agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+    }
+    g_agent = pinpoint::GlobalAgent();
     std::ostringstream body;
     body << "{\"status\":\"reloaded\",\"counter_rate\":" << counter_rate
          << ",\"agent_enabled\":" << it_test::JsonBool(g_agent->Enable()) << "}";
@@ -972,7 +982,10 @@ int main(int argc, char* argv[]) {
         options.server_info = "cpp-it-http-upstream";
         options.args = {"--port=" + std::to_string(port)};
         options.libs = {"cpp-httplib", "grpc"};
-        g_agent = pinpoint::StartAgent(options);
+        if (!pinpoint::StartAgent(options)) {
+            std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+        }
+        g_agent = pinpoint::GlobalAgent();
     }
 
     httplib::Server server;

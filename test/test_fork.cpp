@@ -325,15 +325,13 @@ TEST(ForkLifecycleTest, StartAgentInChildEvictsInheritedGlobal) {
     pid_t pid = fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        auto refused = StartAgent();
-        const bool refused_noop =
-            std::dynamic_pointer_cast<AgentImpl>(refused) == nullptr;
+        const bool refused = !StartAgent();
         const bool evicted =
             std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()) == nullptr;
         auto span = GlobalAgent()->NewSpan("inherited.child", "/evicted");
         const bool span_noop = span != nullptr && !span->IsSampled();
         span->EndSpan();
-        _exit((refused_noop && evicted && span_noop) ? 0 : 1);
+        _exit((refused && evicted && span_noop) ? 0 : 1);
     }
 
     int status = 0;

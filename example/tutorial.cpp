@@ -9,7 +9,10 @@ int main() {
     setenv("PINPOINT_CPP_CONFIG_FILE", "/tmp/pinpoint-config.yaml", 0);
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-tutorial", 0);
 
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     httplib::Server svr;

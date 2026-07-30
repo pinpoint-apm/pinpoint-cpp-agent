@@ -51,7 +51,13 @@ std::string RunChild(int index, int* child_status) {
         options.server_info = "cpp-it-fork";
         options.args = {"--scenario=fork"};
         options.libs = {"fork"};
-        auto agent = pinpoint::StartAgent(options);
+        if (!pinpoint::StartAgent(options)) {
+            const char* failure = "start-failed";
+            (void)write(fds[1], failure, std::strlen(failure));
+            close(fds[1]);
+            _exit(2);
+        }
+        auto agent = pinpoint::GlobalAgent();
         if (!WaitUntilEnabled(agent)) {
             const char* failure = "collector-timeout";
             (void)write(fds[1], failure, std::strlen(failure));

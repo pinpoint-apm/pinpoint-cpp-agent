@@ -951,7 +951,7 @@ protected:
     std::shared_ptr<Config> make_config(const std::shared_ptr<const Config>& old = nullptr) {
         return pinpoint::make_config(options_, old);
     }
-    AgentPtr StartAgent() { return pinpoint::StartAgent(options_); }
+    bool StartAgent() { return pinpoint::StartAgent(options_); }
 
     void SetUp() override {
         // Ensure clean global state
@@ -1080,9 +1080,10 @@ Sampling:
 )";
 };
 
-// StartAgent() is one-shot per process: a second call returns the running
-// agent untouched. Config changes flow through the config-file watcher (or an
-// explicit reloadConfig()), not through repeated StartAgent() calls.
+// StartAgent() is one-shot per process: a second call reports success but
+// leaves the running agent untouched. Config changes flow through the
+// config-file watcher (or an explicit reloadConfig()), not through repeated
+// StartAgent() calls.
 TEST_F(StartAgentTest, StartAgentAgainReturnsRunningAgentUnchanged) {
     // 1. Install a mock agent as the global agent
     auto cfg = make_test_config_for_create_agent();
@@ -1105,13 +1106,13 @@ Sampling:
   CounterRate: 50
 )";
     set_config_string(changed_config);
-    auto returned_agent = StartAgent();
+    EXPECT_TRUE(StartAgent()) << "a repeated StartAgent() must report success";
 
-    // 3. Verify: the running instance is returned, untouched
-    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
-    ASSERT_NE(returned_impl, nullptr) << "Should return real agent, not noop";
-    EXPECT_EQ(returned_impl.get(), original_agent.get()) << "Should return same agent instance";
-    EXPECT_EQ(returned_impl->getConfig()->sampling.counter_rate, 1)
+    // 3. Verify: the running instance stays installed, untouched
+    auto installed = std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
+    ASSERT_NE(installed, nullptr) << "the global agent must stay a real agent, not noop";
+    EXPECT_EQ(installed.get(), original_agent.get()) << "the running agent must stay installed";
+    EXPECT_EQ(installed->getConfig()->sampling.counter_rate, 1)
         << "a repeated StartAgent() must not reload the running config";
 }
 
@@ -1353,9 +1354,9 @@ Http:
     span_after->EndSpan();
 }
 
-TEST_F(StartAgentTest, StartAgentReturnsNoopWhenConfigInvalid) {
+TEST_F(StartAgentTest, StartAgentFailsWhenConfigInvalid) {
     // No agent exists yet (SetUp resets the global agent). An invalid config
-    // (empty app_name fails check()) must degrade to a noop agent.
+    // (empty app_name fails check()) must fail the start.
     std::string invalid_config = R"(
 ApplicationName: ""
 Collector:
@@ -1363,11 +1364,10 @@ Collector:
 )";
     set_config_string(invalid_config);
 
-    auto returned_agent = StartAgent();
-
-    // Should return noop because config check() fails
-    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
-    EXPECT_EQ(returned_impl, nullptr) << "Should return noop agent when config is invalid";
+    EXPECT_FALSE(StartAgent()) << "StartAgent() must fail when config is invalid";
+    // Nothing was installed: GlobalAgent() keeps serving the noop agent.
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr)
+        << "no agent must be installed when config is invalid";
 }
 
 // --- Shut-down global agent is replaced, never returned ---
@@ -1393,18 +1393,15 @@ TEST_F(StartAgentTest, StartAgentReplacesShutdownGlobalAgent) {
     ASSERT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(), dead_agent.get());
 
     set_config_string(kBaseConfigYaml);
-    auto returned_agent = StartAgent();
+    ASSERT_TRUE(StartAgent()) << "a fresh agent must be built and launched";
 
-    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    // The singleton was replaced, so GlobalAgent() stops handing out the
+    // dead instance.
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
     ASSERT_NE(returned_impl, nullptr) << "a fresh agent must be built, not a noop";
     EXPECT_NE(returned_impl.get(), dead_agent.get())
-        << "a shut-down agent must never be returned";
+        << "a shut-down agent must never be reused";
     EXPECT_FALSE(returned_impl->isExiting());
-
-    // The singleton was replaced too, so GlobalAgent() stops handing out the
-    // dead instance.
-    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(),
-              returned_impl.get());
 
     // The old agent stays shut down and inert.
     EXPECT_FALSE(dead_agent->Enable());
@@ -1423,10 +1420,7 @@ ApplicationName: ""
 Collector:
   GrpcHost: 127.0.0.1
 )");
-    auto returned_agent = StartAgent();
-
-    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(returned_agent), nullptr)
-        << "an invalid config must still degrade to a noop agent";
+    EXPECT_FALSE(StartAgent()) << "an invalid config must still fail the start";
     // The dead agent must be gone from the singleton regardless: GlobalAgent()
     // degrading to the noop agent is recoverable, handing out a shut-down
     // agent forever is not.
@@ -1489,18 +1483,15 @@ TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
     set_global_agent(dead_agent);
 
     set_config_string(kBaseConfigYaml);
-    auto returned_agent = StartAgent();
+    ASSERT_TRUE(StartAgent()) << "a fresh agent must be built and launched";
 
-    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(returned_agent);
+    // The singleton was replaced, so GlobalAgent() stops handing out the
+    // dead instance.
+    auto returned_impl = std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
     ASSERT_NE(returned_impl, nullptr) << "a fresh agent must be built, not a noop";
     EXPECT_NE(returned_impl.get(), dead_agent.get())
-        << "an init-failed agent must never be returned as the running agent";
+        << "an init-failed agent must never be kept as the running agent";
     EXPECT_FALSE(returned_impl->initFailed());
-
-    // The singleton was replaced too, so GlobalAgent() stops handing out the
-    // dead instance.
-    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(),
-              returned_impl.get());
 }
 
 TEST_F(StartAgentTest, ReloadConfigAppliesMultipleTimes) {

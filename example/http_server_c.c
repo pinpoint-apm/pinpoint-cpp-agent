@@ -223,11 +223,12 @@ int main(void) {
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true",                   0);
     /* setenv("PINPOINT_CPP_LOG_LEVEL", "debug", 0); */
 
-    pt_agent_t agent = pt_start_agent(NULL);
-    if (!agent) {
-        fprintf(stderr, "failed to start pinpoint agent\n");
-        return 1;
+    if (!pt_start_agent(NULL)) {
+        /* The app can keep running untraced; here we print where to look
+         * for the cause and continue with the disabled (noop) agent. */
+        fprintf(stderr, "failed to start pinpoint agent: check the agent log\n");
     }
+    pt_agent_t agent = pt_global_agent();
 
     hlc_server_t server = hlc_server_create();
     if (!server) {

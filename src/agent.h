@@ -144,7 +144,7 @@ namespace pinpoint {
 		/// Start() failed terminally (channel bring-up or worker spawn threw
 		/// on the init thread). Such an agent can never come online — unlike
 		/// a registration retry, nothing re-runs init_grpc_workers — so
-		/// StartAgent() replaces it with a fresh agent instead of returning
+		/// StartAgent() replaces it with a fresh agent instead of keeping
 		/// it as the running instance forever.
 		bool initFailed() const { return init_failed_; }
 		/// @brief Initiates a graceful shutdown of the agent. Terminal: this

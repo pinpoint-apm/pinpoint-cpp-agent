@@ -93,10 +93,14 @@ export PINPOINT_CPP_COLLECTOR_HOST="my.collector.host"
 #include "pinpoint/tracer.h"
 
 int main() {
-    // Configure and start the agent in the process that records spans
+    // Configure and start the agent in the process that records spans.
+    // StartAgent() returns false on a configuration or setup failure.
     pinpoint::AgentOptions options;
     options.config_file_path = "pinpoint-config.yaml";
-    auto agent = pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
+    auto agent = pinpoint::GlobalAgent();
 
     // Create a span for an incoming request
     auto span = agent->NewSpan("C++ Server", "/api/endpoint");

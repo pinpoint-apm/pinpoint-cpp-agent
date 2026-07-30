@@ -128,7 +128,10 @@ int main(int argc, char** argv) {
   agent_options.server_info = "cpp-it-grpc-downstream";
   agent_options.args = {"--port=" + std::to_string(port)};
   agent_options.libs = {"grpc"};
-  auto agent = pinpoint::StartAgent(agent_options);
+  if (!pinpoint::StartAgent(agent_options)) {
+    std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+  }
+  auto agent = pinpoint::GlobalAgent();
 
   grpc_demo::HelloServiceImpl service;
 

@@ -44,8 +44,9 @@ Or programmatically in your application:
 int main() {
     setenv("PINPOINT_CPP_ENABLE", "false", 1);
 
-    auto agent = pinpoint::StartAgent();
-    // Agent will be disabled — no tracing data is collected
+    // Tracing is disabled: StartAgent() returns false, no agent is
+    // installed, and no tracing data is collected.
+    pinpoint::StartAgent();
 
     // Your application code
 
@@ -63,12 +64,14 @@ You can stop the agent at runtime by calling `Agent::Shutdown()`. There is no ne
 #include "pinpoint/tracer.h"
 
 int main() {
-    auto agent = pinpoint::StartAgent();
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+    }
 
     // Your application code
 
     // Stop the agent when needed
-    agent->Shutdown();
+    pinpoint::GlobalAgent()->Shutdown();
 
     return 0;
 }
@@ -86,18 +89,27 @@ There is no need to keep your own agent pointer or lock: `StartAgent()` installs
 
 void handle_new_agent(const httplib::Request& req, httplib::Response& res) {
     // StartAgent() installs the agent as the global agent. Calling it again
-    // while an agent is running is safe: it returns the running agent (with
-    // a warning log). After a Shutdown() it builds a fresh agent.
+    // while an agent is running is safe: it leaves the running agent
+    // untouched and returns true (with a warning log). After a Shutdown()
+    // it builds a fresh agent.
     pinpoint::AgentOptions options;
     options.config_file_path = "/path/to/pinpoint-config.yaml";
-    pinpoint::StartAgent(options);
+    if (!pinpoint::StartAgent(options)) {
+        // A false return is a synchronous configuration/setup failure; the
+        // cause is recorded in the agent log. The application is unaffected
+        // — tracing is simply off.
+        res.status = 500;
+        res.set_content("{\"message\": \"Pinpoint C++ Agent start failed - "
+                        "check the agent log for the cause\"}",
+                        "application/json");
+        return;
+    }
 
-    // StartAgent() is asynchronous: it returns immediately while a
-    // background thread registers the agent with the collector, so
-    // Enable() is still false at this point even on a successful start.
-    // Confirm the start via the agent log ("AgentInfo sent" on success,
-    // "agent start failed: ..." on failure). A failed start does not
-    // affect the application — tracing is simply off.
+    // StartAgent() is asynchronous: a true return means initialization was
+    // launched, and a background thread registers the agent with the
+    // collector, so Enable() is still false at this point even on a
+    // successful start. Confirm the start via the agent log ("AgentInfo
+    // sent" on success, "agent start failed: ..." on failure).
     res.status = 202;
     res.set_content("{\"message\": \"Pinpoint C++ Agent start requested - "
                     "check the agent log for the result\"}",
@@ -250,7 +262,7 @@ EnableCallstackTrace: true
 
 **Diagnosis:**
 
-`StartAgent()` is asynchronous: it returns before the agent has connected to the collector, and `Enable()` flips to `true` only after the background registration succeeds. Checking `Enable()` right after `StartAgent()` therefore always looks like a failure and diagnoses nothing. Check the **agent log** instead:
+`StartAgent()` returning `false` reports a synchronous configuration or setup failure — the cause is recorded in the agent log; have your application print a "check the agent log" message in that case. A `true` return only means initialization was launched: `StartAgent()` is asynchronous and returns before the agent has connected to the collector, and `Enable()` flips to `true` only after the background registration succeeds. Checking `Enable()` right after `StartAgent()` therefore always looks like a failure and diagnoses nothing. Check the **agent log** instead:
 
 ```
 AgentInfo sent                       # startup succeeded

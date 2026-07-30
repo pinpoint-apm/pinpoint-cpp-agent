@@ -218,11 +218,12 @@ int main(void) {
     setenv("PINPOINT_CPP_CONFIG_FILE",      "/tmp/pinpoint-config.yaml", 0);
     setenv("PINPOINT_CPP_APPLICATION_NAME", "c-tutorial",                0);
 
-    pt_agent_t agent = pt_start_agent(NULL);
-    if (!agent) {
-        fprintf(stderr, "failed to start pinpoint agent\n");
-        return 1;
+    if (!pt_start_agent(NULL)) {
+        /* The app can keep running untraced; here we print where to look
+         * for the cause and continue with the disabled (noop) agent. */
+        fprintf(stderr, "failed to start pinpoint agent: check the agent log\n");
     }
+    pt_agent_t agent = pt_global_agent();
 
     /* Give the agent a moment to come up — matches the C++ tutorial. */
     sleep_sec(5);
