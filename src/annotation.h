@@ -281,6 +281,9 @@ namespace pinpoint {
          * @return Reference to the stored annotations.
          */
         std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() { return annotation_list_; }
+        /// @brief Const overload for read-only consumers (the gRPC serializer,
+        /// reached through SpanEventImpl::annotationsOrNull()).
+        const std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() const { return annotation_list_; }
 
     private:
         // Most span events carry only a handful of annotations; reserving a

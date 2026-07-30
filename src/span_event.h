@@ -104,6 +104,13 @@ namespace pinpoint {
         /// @brief Returns the mutable annotation container, allocating it on
         /// first use if it has not been created yet.
         PinpointAnnotation* getAnnotations() { return ensureAnnotations(); }
+        /// @brief Returns the annotation container, or nullptr when the event
+        /// never recorded one. Read-only counterpart to getAnnotations(): the
+        /// serializer must NOT materialize the container it is only reading,
+        /// or every annotation-free event pays a heap allocation on the gRPC
+        /// worker thread — and that write would target this object's mutable
+        /// field from a thread other than the span's owner.
+        const PinpointAnnotation* annotationsOrNull() const { return annotations_.get(); }
 
         /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }

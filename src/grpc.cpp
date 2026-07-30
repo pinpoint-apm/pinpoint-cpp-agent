@@ -1868,6 +1868,11 @@ namespace pinpoint {
         try {
             pending = std::make_shared<PendingSpanBatch>();
             pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
+            // Reserve up front, like build_grpc_span does for span events: a
+            // growing RepeatedPtrField doubles its pointer array, and on an arena
+            // every regrow strands the old array there for the batch's lifetime.
+            // The count is exactly batch.size().
+            pending->request->mutable_span()->Reserve(static_cast<int>(batch.size()));
 
             for (auto& span_chunk : batch) {
                 const auto& span = span_chunk->getSpanData();

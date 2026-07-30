@@ -363,7 +363,10 @@ namespace pinpoint {
     void AgentStats::addActiveSpan(int64_t spanId, int64_t start_time) {
         auto& shard = activeSpanShard(spanId);
         std::lock_guard<std::mutex> lock(shard.mutex_);
-        shard.spans_.insert(std::make_pair(spanId, start_time));
+        // try_emplace, not insert(make_pair(...)): the pair is constructed
+        // directly in the node instead of being built on the stack and moved in.
+        // Runs under the shard lock on every span start.
+        shard.spans_.try_emplace(spanId, start_time);
     }
 
     void AgentStats::dropActiveSpan(int64_t spanId) {

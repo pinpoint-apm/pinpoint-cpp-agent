@@ -176,11 +176,18 @@ namespace pinpoint {
                 build_string_annotation(span_event->add_annotation(), ANNOTATION_API, se->getOperationName(), arena);
             }
 
-            auto& annotations = se->getAnnotations()->getAnnotations();
-            span_event->mutable_annotation()->Reserve(
-                span_event->annotation_size() + static_cast<int>(annotations.size()));
-            for (const auto& [key, val] : annotations) {
-                build_annotation(span_event->add_annotation(), key, val, arena);
+            // annotationsOrNull(), not getAnnotations(): the latter allocates the
+            // container on first access, so serializing an event that recorded no
+            // annotation — the common case for a plain NewSpanEvent/EndEvent pair
+            // — would materialize one PinpointAnnotation per event here, undoing
+            // the laziness the member is declared for (see span_event.h).
+            if (const auto* event_annotations = se->annotationsOrNull()) {
+                const auto& annotations = event_annotations->getAnnotations();
+                span_event->mutable_annotation()->Reserve(
+                    span_event->annotation_size() + static_cast<int>(annotations.size()));
+                for (const auto& [key, val] : annotations) {
+                    build_annotation(span_event->add_annotation(), key, val, arena);
+                }
             }
 
             if (const auto& err_str = se->getErrorString(); !err_str.empty()) {
@@ -418,6 +425,12 @@ namespace pinpoint {
         grpc_exception_meta->set_spanid(span_id);
         grpc_exception_meta->set_uritemplate(url_template.data(), url_template.size());
 
+        // Reserve both levels for the same reason as build_grpc_span's span
+        // events: a growing RepeatedPtrField doubles its pointer array and
+        // strands the old one in the arena. Both counts are known and bounded
+        // (SpanImpl::kMaxBufferedExceptions exceptions, CallStack::kMaxFrames
+        // frames each), so one allocation per field suffices.
+        grpc_exception_meta->mutable_exceptions()->Reserve(static_cast<int>(exceptions.size()));
         for (const auto& exception : exceptions) {
             auto* grpc_exception = grpc_exception_meta->add_exceptions();
             const auto& callstack = exception->getCallStack();
@@ -428,7 +441,9 @@ namespace pinpoint {
             grpc_exception->set_starttime(callstack.getErrorTime());
             grpc_exception->set_exceptiondepth(1);
 
-            for (const auto& frame : callstack.getStack()) {
+            const auto& frames = callstack.getStack();
+            grpc_exception->mutable_stacktraceelement()->Reserve(static_cast<int>(frames.size()));
+            for (const auto& frame : frames) {
                 auto* grpc_callstack = grpc_exception->add_stacktraceelement();
 
                 grpc_callstack->set_classname(frame.module);
