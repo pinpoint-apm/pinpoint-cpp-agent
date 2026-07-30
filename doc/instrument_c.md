@@ -17,13 +17,14 @@ If you are writing C++, prefer the richer C++ API documented in [instrument.md](
 - [5. Creating Spans for Incoming Requests](#5-creating-spans-for-incoming-requests)
 - [6. Recording Span Events](#6-recording-span-events)
 - [7. Annotations](#7-annotations)
-- [8. Distributed Tracing and Context Propagation](#8-distributed-tracing-and-context-propagation)
-- [9. HTTP Request Tracing](#9-http-request-tracing)
-- [10. Asynchronous Spans](#10-asynchronous-spans)
-- [11. Error Reporting](#11-error-reporting)
-- [12. Service Type and Annotation Constants](#12-service-type-and-annotation-constants)
-- [13. Best Practices](#13-best-practices)
-- [14. Complete Examples](#14-complete-examples)
+- [8. Usage Cautions: Span, SpanEvent, and Annotation Contracts](#8-usage-cautions-span-spanevent-and-annotation-contracts)
+- [9. Distributed Tracing and Context Propagation](#9-distributed-tracing-and-context-propagation)
+- [10. HTTP Request Tracing](#10-http-request-tracing)
+- [11. Asynchronous Spans](#11-asynchronous-spans)
+- [12. Error Reporting](#12-error-reporting)
+- [13. Service Type and Annotation Constants](#13-service-type-and-annotation-constants)
+- [14. Best Practices](#14-best-practices)
+- [15. Complete Examples](#15-complete-examples)
 
 ---
 
@@ -443,7 +444,106 @@ Never record passwords, secrets, or PII in annotations.
 
 ---
 
-## 8. Distributed Tracing and Context Propagation
+## 8. Usage Cautions: Span, SpanEvent, and Annotation Contracts
+
+The C API wraps the same span, span event, and annotation implementations as the C++ API, so the same contracts apply — this section restates them in C-API terms. Most violations are detected at runtime and degrade to a **logged no-op** rather than a crash, but they distort traces, and the threading and lifetime rules below are hard requirements that can crash the process if broken. Treat the warning messages quoted here as instrumentation bugs when they appear in the agent log.
+
+### 8.1 A Span Is Single-Threaded
+
+A span — including every span event and annotation handle derived from it — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked, so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
+
+- The agent binds a span to the first thread that calls `pt_span_new_event()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`.
+- Because binding is lazy, a **complete handoff** is allowed: create the span on thread A, pass the handle to thread B, and never touch it from A again (the async example in [§11](#11-asynchronous-spans) hands the async span to a `pthread` this way).
+- To trace work that runs **concurrently** with the parent, do not share the span. Call `pt_span_new_async_span()` *on the span's owning thread* and give the returned child span to the worker; the child follows the same single-thread rule on its own thread.
+
+### 8.2 End Exactly Once, Record Before Ending, Destroy Last
+
+`pt_span_end()` and `pt_span_event_end()` are terminal:
+
+- A duplicate end call logs `span (event) is already finished` and does nothing.
+- After the end call, **every recording function** on that object becomes a warning no-op: property setters, error setters, `pt_span_event_set_sql_query()`, `pt_span_event_inject_context()`, header recording, and the `_get_annotations()` functions (which then return a no-op container). The data may already be in flight on the agent's gRPC worker thread. Record status codes, errors, and annotations **before** ending.
+- A span destroyed without `pt_span_end()` is **never sent** — its data is lost. `pt_span_destroy()` only releases the handle; it does not submit the span.
+- `pt_span_event_destroy()` and `pt_annotation_destroy()` are compatibility no-ops — they do **not** end the event. Forgetting `pt_span_event_end()` is not fixed by calling destroy.
+
+### 8.3 End Span Events in Nesting (LIFO) Order
+
+Span events form a stack. Calling `pt_span_event_end()` on an outer event while an inner event is still open implicitly finishes every event nested above it and logs `span event ended out of order`. Likewise, `pt_span_end()` force-finishes all still-open events and logs `N span event(s) not ended by user code`. The trace survives, but implicitly finished events get the wrong end time — their duration silently stretches to the enclosing end call.
+
+### 8.4 Event and Annotation Handles Are Non-Owning Views
+
+`pt_span_event_t` and `pt_annotation_t` are raw pointers into storage owned by the parent span:
+
+- They stay valid only until `pt_span_destroy()` releases the parent span. Calling into an already-ended event or a sealed annotation **while the span handle is alive** is a safe warning no-op; calling through a handle **after the span is destroyed** is a use-after-free.
+- Destroy the span only after every derived event/annotation handle is out of use. Do not cache these handles in long-lived structures.
+- Passing `NULL` for an event or annotation handle is silently ignored, and event-creation functions return `NULL` when the span handle is `NULL` or already destroyed — so a crash on a NULL handle points at memory corruption, not at the agent.
+
+### 8.5 Event Depth and Count Limits (Overflow)
+
+Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and the total event count by `Span.MaxEventSequence` (default 5000). When either cap is reached, `pt_span_new_event()` logs `span event maximum depth/sequence exceeded` and returns a shared **disabled event** handle instead:
+
+- It records nothing — operation name, timings, SQL, errors, and annotations are discarded.
+- `pt_span_event_inject_context()` **still writes the full trace context**, so downstream services continue the distributed trace. Overflow limits profiling detail; it is not a sampling decision.
+- You must still call `pt_span_event_end()` exactly once for each overflowed `pt_span_new_event()` call — the span balances an internal overflow counter with it.
+- The disabled event is a single shared object per span, so `pt_span_event_set_destination()` values from interleaved overflowed calls can bleed into each other's `Pinpoint-Host` header.
+- `pt_span_new_async_span()` called while the span is overflowed returns a no-op span.
+
+If the overflow warning appears regularly, create fewer, coarser span events per transaction or raise the limits in the configuration.
+
+### 8.6 `pt_span_get_event()` Returns the Innermost Active Event
+
+`pt_span_get_event()` returns the top of the event stack: the most recently created event that has not ended. When the span is finished or has no active event, it returns a valid handle to a shared no-op event (and logs `abnormal span - has no event`), so the return value cannot be used to detect whether an event is active; `NULL` is returned only for a `NULL`/destroyed span handle or an internal failure. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `pt_span_event_t` returned by `pt_span_new_event()` explicitly.
+
+### 8.7 Annotation Container Rules
+
+- The annotation container is **sealed** when its owner ends (`pt_span_event_end()`/`pt_span_end()`). Appends through a previously obtained `pt_annotation_t` then log `annotation is already finished` and do nothing.
+- Values are **copied at append time**: string arguments only need to remain valid for the duration of the call.
+- Append calls never fail visibly; on allocation failure the annotation is dropped with an error log.
+- There is no key de-duplication: appending the same key twice records two annotations.
+- Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [§7](#7-annotations)).
+
+### 8.8 Keep Operation and Error Names Low-Cardinality
+
+The `operation` passed to `pt_agent_new_span*()`/`pt_span_new_event*()`/`pt_span_new_async_span()` and the `error_name` passed to the named-error functions are interned in bounded LRU caches, and **every new unique string enqueues a metadata message to the collector**. Per-request unique names churn the cache and flood the collector with metadata:
+
+```c
+/* DON'T: unique operation name per request */
+char op[64];
+snprintf(op, sizeof(op), "getUser-%s", user_id);
+pt_span_event_t se = pt_span_new_event(span, op);
+
+/* DO: fixed operation name, variable data as an annotation */
+pt_span_event_t se = pt_span_new_event(span, "getUser");
+pt_annotation_t anno = pt_span_event_get_annotations(se);
+pt_annotation_append_string(anno, MY_ANNOTATION_USER_ID, user_id);
+```
+
+The `rpc_point` argument of `pt_agent_new_span*()` is not interned — it may safely carry the actual request path.
+
+### 8.9 Error Recording and Exception Buffering
+
+- `pt_span_set_error*()` marks the whole transaction as failed; `pt_span_event_set_error*()` marks only that step. Record at the granularity of the failure.
+- The call-stack variant `pt_span_event_set_error_with_callstack()` exists only for span events, and records frames only when `EnableCallstackTrace: true` is set in the configuration (default `false`).
+- At most **100 exceptions with call stacks are buffered per span**; further ones are dropped. Buffered exceptions are transmitted only at `pt_span_end()` — a span kept open for a very long time delays them and grows memory.
+
+### 8.10 Clock and Start-Time Caveats
+
+Elapsed times travel as **int32 milliseconds** on the wire. If you override timestamps with `pt_span_set_start_time_ms()` / `pt_span_event_set_start_time_ms()`:
+
+- The argument is **milliseconds** since the Unix epoch. Passing seconds (e.g. `time(NULL)`) makes the computed deltas overflow int32 and silently corrupts the trace timeline — the value is not validated.
+- A start time more than ~24.8 days in the past overflows the elapsed field; a start time in the future is clamped to an elapsed of 0 at end time, but inter-event offsets within a chunk can still wrap.
+- Only pass wall-clock values taken at the actual start of the operation.
+
+### 8.11 Noop and Unsampled Spans Are Deliberately Silent
+
+When the agent is disabled or shut down, the URL/method is excluded by filters, or sampling rejects the transaction, the span-creation functions return a no-op or unsampled span handle on which every call succeeds and records nothing (`NULL` is returned only when handle setup itself fails):
+
+- `pt_span_is_sampled()` returns `0`, `pt_span_get_trace_id()` returns length 0 with an empty string, and `pt_span_get_span_id()` returns 0 for no-op spans (unsampled spans do carry a real span id).
+- Use `pt_span_is_sampled()` to skip *expensive data collection only* — do **not** skip creating span events and calling `pt_span_event_inject_context()` on outbound calls. An unsampled span's event still writes `Pinpoint-Sampled: s0`, which tells downstream services not to trace the request. Skipping the injection makes downstream agents treat the call as a brand-new transaction and sample it, producing broken partial traces.
+- `pt_span_end()`/`pt_span_destroy()` are safe (and cheap) on these handles — keep the normal end/destroy flow unconditionally.
+
+---
+
+## 9. Distributed Tracing and Context Propagation
 
 ### Trace propagation headers
 
@@ -495,7 +595,7 @@ See `example/tutorial_c.c` for a complete client-side injection example using `h
 
 ---
 
-## 9. HTTP Request Tracing
+## 10. HTTP Request Tracing
 
 ### HTTP helper functions
 
@@ -606,7 +706,7 @@ pt_span_set_url_stat(span, "/api/users", "GET", 200);
 
 ---
 
-## 10. Asynchronous Spans
+## 11. Asynchronous Spans
 
 Use `pt_span_new_async_span()` to trace background tasks that continue after the parent span has ended.
 
@@ -647,7 +747,7 @@ See `example/tutorial_c.c` (step 3) for a complete async span example.
 
 ---
 
-## 11. Error Reporting
+## 12. Error Reporting
 
 ### Simple error message
 
@@ -709,7 +809,7 @@ pt_span_event_destroy(se);
 
 ---
 
-## 12. Service Type and Annotation Constants
+## 13. Service Type and Annotation Constants
 
 ### Application / service type constants
 
@@ -754,7 +854,7 @@ PT_API_TYPE_INVOCATION  /* 200 */
 
 ---
 
-## 13. Best Practices
+## 14. Best Practices
 
 ### Always end spans and events on every code path
 
@@ -825,7 +925,7 @@ pt_agent_destroy(agent);
 
 ---
 
-## 14. Complete Examples
+## 15. Complete Examples
 
 ### Minimal HTTP server handler
 
