@@ -76,7 +76,12 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override {}
 
-        void SetAnnotation(int32_t key, AnnotationValue value) override {}
+        void SetAnnotation(int32_t key, int32_t value) override {}
+        void SetAnnotation(int32_t key, int64_t value) override {}
+        void SetAnnotation(int32_t key, std::string_view value) override {}
+        void SetAnnotation(int32_t key,
+                           std::string_view value1,
+                           std::string_view value2) override {}
         void EndEvent() override {}
     };
 
@@ -121,7 +126,12 @@ namespace pinpoint {
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override {}
         void SetLogging(TraceContextWriter& writer) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
-        void SetAnnotation(int32_t key, AnnotationValue value) override {}
+        void SetAnnotation(int32_t key, int32_t value) override {}
+        void SetAnnotation(int32_t key, int64_t value) override {}
+        void SetAnnotation(int32_t key, std::string_view value) override {}
+        void SetAnnotation(int32_t key,
+                           std::string_view value1,
+                           std::string_view value2) override {}
 
         std::string GetTraceId() override { return {}; }
         int64_t GetSpanId() override { return 0; }

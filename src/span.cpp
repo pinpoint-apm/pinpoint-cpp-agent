@@ -370,13 +370,30 @@ namespace pinpoint {
         return se;
     } CATCH_AND_LOG_RETURN("get span event", noopSpanEvent())
 
-    void SpanImpl::SetAnnotation(int32_t key, AnnotationValue value) try {
+    void SpanImpl::SetAnnotation(int32_t key, int32_t value) try {
         // A finished span's annotation list may already be under
         // serialization on the gRPC worker thread; appending would race the
         // worker's iteration. Every other mutator degrades to a safe no-op
         // after EndSpan — so does this.
         CHECK_FINISHED();
-        data_->getAnnotations()->AppendData(key, AnnotationData(std::move(value)));
+        data_->getAnnotations()->AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanImpl::SetAnnotation(int32_t key, int64_t value) try {
+        CHECK_FINISHED();
+        data_->getAnnotations()->AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanImpl::SetAnnotation(int32_t key, std::string_view value) try {
+        CHECK_FINISHED();
+        data_->getAnnotations()->AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanImpl::SetAnnotation(int32_t key,
+                                 std::string_view value1,
+                                 std::string_view value2) try {
+        CHECK_FINISHED();
+        data_->getAnnotations()->AppendData(key, AnnotationData(value1, value2));
     } CATCH_AND_LOG("set annotation")
 
     void SpanImpl::record_chunk(bool final) const try {

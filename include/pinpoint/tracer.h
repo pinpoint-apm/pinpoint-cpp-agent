@@ -26,7 +26,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <variant>
 #include <vector>
 
@@ -219,22 +218,6 @@ namespace pinpoint {
 		virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
 	};
 	
-	/**
-	 * @brief Value stored in a span or span-event annotation.
-	 *
-	 * The alternatives map to the collector's int, long, string and
-	 * string-string annotation payloads; a string-string payload is a
-	 * std::pair of (first, second) values. Richer collector-side formats
-	 * (SQL ids, proxy-header metadata, ...) are recorded internally by the
-	 * agent itself and are not part of the public API.
-	 */
-	using AnnotationValue = std::variant<
-		int32_t,
-		int64_t,
-		std::string,
-		std::pair<std::string, std::string>
-	>;
-
 	class Span;
 	using SpanPtr = std::shared_ptr<Span>;
 
@@ -270,9 +253,18 @@ namespace pinpoint {
 		///        by this span event into an outbound carrier.
 		virtual void InjectContext(TraceContextWriter& writer) = 0;
 
-		/// @brief Records an annotation on this span event. Recording on an
-		///        already-ended event is a warning no-op.
-		virtual void SetAnnotation(int32_t key, AnnotationValue value) = 0;
+		/// @brief Records a 32-bit integer annotation on this span event.
+		virtual void SetAnnotation(int32_t key, int32_t value) = 0;
+		/// @brief Records a 64-bit integer annotation on this span event.
+		virtual void SetAnnotation(int32_t key, int64_t value) = 0;
+		/// @brief Records a string annotation. The view is consumed during
+		///        this call and is copied only when the event is recording.
+		virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
+		/// @brief Records a string-string annotation. Both views are consumed
+		///        during this call and copied only when the event is recording.
+		virtual void SetAnnotation(int32_t key,
+		                           std::string_view value1,
+		                           std::string_view value2) = 0;
 		/// @brief Finalizes this span event through its parent span.
 		///        Guarded against duplicate calls: ending an already-ended
 		///        event is a warning no-op, like Span::EndSpan.
@@ -362,9 +354,18 @@ namespace pinpoint {
 		/// @brief Records HTTP headers for the span.
 		virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 
-		/// @brief Records an annotation on the span. Recording on an
-		///        already-ended span is a warning no-op.
-		virtual void SetAnnotation(int32_t key, AnnotationValue value) = 0;
+		/// @brief Records a 32-bit integer annotation on the span.
+		virtual void SetAnnotation(int32_t key, int32_t value) = 0;
+		/// @brief Records a 64-bit integer annotation on the span.
+		virtual void SetAnnotation(int32_t key, int64_t value) = 0;
+		/// @brief Records a string annotation. The view is consumed during
+		///        this call and is copied only when the span is recording.
+		virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
+		/// @brief Records a string-string annotation. Both views are consumed
+		///        during this call and copied only when the span is recording.
+		virtual void SetAnnotation(int32_t key,
+		                           std::string_view value1,
+		                           std::string_view value2) = 0;
 	};
 
 	/**
@@ -543,7 +544,7 @@ namespace pinpoint {
 		 * @param method The method.
 		 * @param status_code The status code.
 		 */
-		void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader);
+		void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader);
 
 		/**
 		 * @brief Traces a HTTP client request.
@@ -573,7 +574,7 @@ namespace pinpoint {
 		 * @param status_code The status code.
 		 * @param response_reader The response reader.
 		 */
-		void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader);
+		void TraceHttpClientResponse(SpanEventPtr span_event, int32_t status_code, HeaderReader& response_reader);
 
 		// RAII helper to manage span events.
 		class ScopedSpanEvent {

@@ -583,7 +583,7 @@ namespace pinpoint {
             span->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
-        void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int status_code, HeaderReader& response_reader){
+        void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader){
             if (!span) {
                 return;
             }
@@ -599,7 +599,7 @@ namespace pinpoint {
             span_event->SetServiceType(SERVICE_TYPE_CPP_HTTP_CLIENT);
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
-            span_event->SetAnnotation(ANNOTATION_HTTP_URL, std::string(url));
+            span_event->SetAnnotation(ANNOTATION_HTTP_URL, url);
             span_event->RecordHeader(HTTP_REQUEST, request_reader);
         }
 
@@ -611,7 +611,7 @@ namespace pinpoint {
             span_event->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
-        void TraceHttpClientResponse(SpanEventPtr span_event, int status_code, HeaderReader& response_reader) {
+        void TraceHttpClientResponse(SpanEventPtr span_event, int32_t status_code, HeaderReader& response_reader) {
             if (!span_event) {
                 return;
             }

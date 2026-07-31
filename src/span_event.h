@@ -57,12 +57,15 @@ namespace pinpoint {
         /// by this event (trace id, generated child span id, parent app info)
         /// into an outbound propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
-        /// @brief Records an annotation on this event. Out-of-line: the
-        /// payload conversion allocates, so it needs the exception boundary
-        /// in span_event.cpp, and a finished event's annotation list may
-        /// already be under serialization on the gRPC worker thread, so the
-        /// call degrades to a warning no-op then.
-        void SetAnnotation(int32_t key, AnnotationValue value) override;
+        /// @brief Annotation overloads are out-of-line because string payload
+        /// copies and list growth must stay inside the exception boundary in
+        /// span_event.cpp. A finished event is a warning no-op.
+        void SetAnnotation(int32_t key, int32_t value) override;
+        void SetAnnotation(int32_t key, int64_t value) override;
+        void SetAnnotation(int32_t key, std::string_view value) override;
+        void SetAnnotation(int32_t key,
+                           std::string_view value1,
+                           std::string_view value2) override;
         /// @brief Finalizes this event through the parent span. Guarded so a
         /// duplicate call is a warning no-op instead of popping (and thereby
         /// corrupting) another event from the span's event stack.
@@ -230,7 +233,12 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override;
 
-        void SetAnnotation(int32_t key, AnnotationValue value) override {}
+        void SetAnnotation(int32_t key, int32_t value) override {}
+        void SetAnnotation(int32_t key, int64_t value) override {}
+        void SetAnnotation(int32_t key, std::string_view value) override {}
+        void SetAnnotation(int32_t key,
+                           std::string_view value1,
+                           std::string_view value2) override {}
         void EndEvent() override;
 
     private:

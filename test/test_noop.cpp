@@ -16,9 +16,13 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
-#include <thread>
-#include <map>
+#include <cstddef>
+#include <cstdlib>
 #include <functional>
+#include <map>
+#include <new>
+#include <string_view>
+#include <thread>
 
 #include "../src/noop.h"
 #include "../src/agent_service.h"
@@ -29,6 +33,69 @@
 #include "../include/pinpoint/tracer.h"
 #include "mock_agent_service.h"
 #include "mock_helpers.h"
+
+namespace {
+
+thread_local bool count_annotation_allocations = false;
+thread_local std::size_t annotation_allocation_count = 0;
+thread_local bool fail_next_annotation_allocation = false;
+
+void record_annotation_allocation() noexcept {
+    if (count_annotation_allocations) {
+        ++annotation_allocation_count;
+    }
+}
+
+void start_counting_annotation_allocations() noexcept {
+    annotation_allocation_count = 0;
+    count_annotation_allocations = true;
+}
+
+std::size_t stop_counting_annotation_allocations() noexcept {
+    count_annotation_allocations = false;
+    return annotation_allocation_count;
+}
+
+void arm_annotation_allocation_failure() noexcept {
+    fail_next_annotation_allocation = true;
+}
+
+bool clear_annotation_allocation_failure() noexcept {
+    const bool was_consumed = !fail_next_annotation_allocation;
+    fail_next_annotation_allocation = false;
+    return was_consumed;
+}
+
+}  // namespace
+
+void* operator new(std::size_t size) {
+    record_annotation_allocation();
+    if (fail_next_annotation_allocation) {
+        fail_next_annotation_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) {
+    record_annotation_allocation();
+    if (fail_next_annotation_allocation) {
+        fail_next_annotation_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace pinpoint {
 
@@ -287,8 +354,8 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
     span.SetUrlStat("/api/test", "GET", 200);
     span.SetAnnotation(1, 42);
     span.SetAnnotation(2, int64_t{123456789});
-    span.SetAnnotation(3, std::string("test-string"));
-    span.SetAnnotation(4, std::make_pair(std::string("key"), std::string("value")));
+    span.SetAnnotation(3, "test-string");
+    span.SetAnnotation(4, "key", "value");
 
     SUCCEED() << "All NoopSpan methods should execute without throwing exceptions";
 }
@@ -316,8 +383,8 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1"});
     span_event.SetAnnotation(1, 42);
     span_event.SetAnnotation(2, int64_t{123456789});
-    span_event.SetAnnotation(3, std::string("test-string"));
-    span_event.SetAnnotation(4, std::make_pair(std::string("key"), std::string("value")));
+    span_event.SetAnnotation(3, "test-string");
+    span_event.SetAnnotation(4, "key", "value");
 
     MockHeaderReader reader;
     span_event.RecordHeader(HTTP_REQUEST, reader);
@@ -328,6 +395,63 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
         << "NoopSpanEvent::InjectContext should write nothing";
 
     SUCCEED() << "All NoopSpanEvent methods should execute without throwing exceptions";
+}
+
+TEST_F(NoopTest, AnnotationStringViewsDoNotAllocateOnNoopPaths) {
+    constexpr std::string_view long_value =
+        "annotation-value-longer-than-every-standard-library-small-string-buffer";
+    NoopSpan span;
+    NoopSpanEvent span_event;
+    UnsampledSpan unsampled_span(mock_agent_service_.get());
+
+    // Warm the virtual dispatch paths before allocation measurement.
+    span.SetAnnotation(1, 1);
+    span_event.SetAnnotation(1, 1);
+    unsampled_span.SetAnnotation(1, 1);
+
+    start_counting_annotation_allocations();
+    span.SetAnnotation(2, long_value);
+    span.SetAnnotation(3, long_value, long_value);
+    span_event.SetAnnotation(2, long_value);
+    span_event.SetAnnotation(3, long_value, long_value);
+    unsampled_span.SetAnnotation(2, long_value);
+    unsampled_span.SetAnnotation(3, long_value, long_value);
+    const auto allocations = stop_counting_annotation_allocations();
+
+    EXPECT_EQ(allocations, 0u)
+        << "no-op annotation calls must not materialize owning strings";
+}
+
+TEST_F(NoopTest, AnnotationAllocationFailuresStayInsidePublicApiBoundary) {
+    constexpr std::string_view long_value =
+        "annotation-value-longer-than-every-standard-library-small-string-buffer";
+    SpanImpl span(mock_agent_service_.get(), "operation", "rpc");
+    SpanEventImpl span_event(&span, "event");
+
+    bool span_exception_escaped = false;
+    arm_annotation_allocation_failure();
+    try {
+        span.SetAnnotation(1, long_value);
+    } catch (...) {
+        span_exception_escaped = true;
+    }
+    const bool span_allocation_failed = clear_annotation_allocation_failure();
+
+    bool event_exception_escaped = false;
+    arm_annotation_allocation_failure();
+    try {
+        span_event.SetAnnotation(1, long_value);
+    } catch (...) {
+        event_exception_escaped = true;
+    }
+    const bool event_allocation_failed = clear_annotation_allocation_failure();
+
+    EXPECT_TRUE(span_allocation_failed);
+    EXPECT_TRUE(event_allocation_failed);
+    EXPECT_FALSE(span_exception_escaped);
+    EXPECT_FALSE(event_exception_escaped);
+    EXPECT_TRUE(span.getSpanData()->getAnnotations()->getAnnotations().empty());
+    EXPECT_TRUE(span_event.getAnnotations()->getAnnotations().empty());
 }
 
 TEST_F(NoopTest, NoopSpanEventSetErrorWithCallStackTest) {

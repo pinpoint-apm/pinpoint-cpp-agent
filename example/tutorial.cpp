@@ -40,7 +40,7 @@ int main() {
         HttpHeaderReaderWriter trace_context_writer(headers);
         se->InjectContext(trace_context_writer);
 
-        se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string("localhost:8090/foo"));
+        se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, "localhost:8090/foo");
 
         httplib::Client cli(host);
         auto res = cli.Get("/foo", headers);

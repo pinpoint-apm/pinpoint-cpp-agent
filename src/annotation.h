@@ -44,23 +44,23 @@ namespace pinpoint {
      * @brief Container for annotations carrying an int and two strings.
      */
     struct IntStringStringValue {
-        int intValue;
+        int32_t intValue;
         std::string stringValue1;
         std::string stringValue2;
         // Set only for cache-backed SQL parameters. The aliasing shared_ptr
         // keeps the PreparedSql owner alive without copying parameter bytes.
         std::shared_ptr<const std::string> sharedStringValue1;
 
-        IntStringStringValue(const int intVal, std::string_view strVal1, std::string_view strVal2)
+        IntStringStringValue(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
-        IntStringStringValue(const int intVal, std::string&& strVal1, std::string_view strVal2)
+        IntStringStringValue(const int32_t intVal, std::string&& strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
         // strVal2 by value so a caller-owned bind-value string (see
         // SpanEventImpl::SetSqlQuery) moves in without copying up to
         // max_bind_args_size bytes; a literal still builds one std::string as
         // before. (This overload is only reached with a shared_ptr strVal1,
         // so widening string_view->string adds no ambiguity.)
-        IntStringStringValue(const int intVal,
+        IntStringStringValue(const int32_t intVal,
                              std::shared_ptr<const std::string> strVal1,
                              std::string strVal2)
             : intValue(intVal), stringValue2(std::move(strVal2)),
@@ -116,8 +116,8 @@ namespace pinpoint {
     /**
      * @brief Type-safe variant wrapper for all supported annotation value types.
      *
-     * Superset of the public pinpoint::AnnotationValue: its four alternatives
-     * come first, in the same order, followed by the internal-only formats.
+     * The four payload shapes exposed by Span/SpanEvent::SetAnnotation come
+     * first, followed by the internal-only formats.
      */
     using AnnotationDataValue = std::variant<
         int32_t,
@@ -143,19 +143,11 @@ namespace pinpoint {
             : data(std::string(strVal)) {}
         AnnotationData(std::string_view strVal1, std::string_view strVal2)
             : data(std::pair<std::string, std::string>(strVal1, strVal2)) {}
-        /// @brief Converts a public API value (Span/SpanEvent::SetAnnotation)
-        /// into the internal payload, moving each alternative through.
-        explicit AnnotationData(AnnotationValue&& value)
-            : data(std::visit(
-                  [](auto&& v) -> AnnotationDataValue {
-                      return AnnotationDataValue(std::forward<decltype(v)>(v));
-                  },
-                  std::move(value))) {}
-        AnnotationData(const int intVal, std::string_view strVal1, std::string_view strVal2)
+        AnnotationData(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
             : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
-        AnnotationData(const int intVal, std::string&& strVal1, std::string_view strVal2)
+        AnnotationData(const int32_t intVal, std::string&& strVal1, std::string_view strVal2)
             : data(IntStringStringValue(intVal, std::move(strVal1), strVal2)) {}
-        AnnotationData(const int intVal,
+        AnnotationData(const int32_t intVal,
                        std::shared_ptr<const std::string> strVal1,
                        std::string strVal2)
             : data(IntStringStringValue(intVal, std::move(strVal1), std::move(strVal2))) {}
@@ -236,7 +228,7 @@ namespace pinpoint {
          * @param s1 First string.
          * @param s2 Second string.
          */
-        void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2);
+        void AppendIntStringString(int32_t key, int32_t i, std::string_view s1, std::string_view s2);
         /**
          * @brief Appends an annotation containing a SQL UID and two strings.
          *

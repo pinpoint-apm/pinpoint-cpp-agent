@@ -448,7 +448,7 @@ TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
     event_ptr->SetEndPoint("db-host:3306");
     event_ptr->SetDestination("MySQL");
     event_ptr->SetError("SomeError", "boom");
-    event_ptr->SetAnnotation(12, std::string("annotation-value"));
+    event_ptr->SetAnnotation(12, "annotation-value");
     span_data->finishSpanEvent();
 
     const auto sequence = event_ptr->getSequence();

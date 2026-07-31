@@ -161,9 +161,26 @@ namespace pinpoint {
         return false;
     }
 
-    void SpanEventImpl::SetAnnotation(int32_t key, AnnotationValue value) try {
+    void SpanEventImpl::SetAnnotation(int32_t key, int32_t value) try {
         if (warnIfFinished()) return;
-        annotations_.AppendData(key, AnnotationData(std::move(value)));
+        annotations_.AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanEventImpl::SetAnnotation(int32_t key, int64_t value) try {
+        if (warnIfFinished()) return;
+        annotations_.AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanEventImpl::SetAnnotation(int32_t key, std::string_view value) try {
+        if (warnIfFinished()) return;
+        annotations_.AppendData(key, AnnotationData(value));
+    } CATCH_AND_LOG("set annotation")
+
+    void SpanEventImpl::SetAnnotation(int32_t key,
+                                      std::string_view value1,
+                                      std::string_view value2) try {
+        if (warnIfFinished()) return;
+        annotations_.AppendData(key, AnnotationData(value1, value2));
     } CATCH_AND_LOG("set annotation")
 
     void SpanEventImpl::EndEvent() try {

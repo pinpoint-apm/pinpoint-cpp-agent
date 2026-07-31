@@ -276,7 +276,7 @@ void handleRequest() {
     auto agent = pinpoint::GlobalAgent();
     auto span = agent->NewSpan("MyOperation", "/api/endpoint");
 
-    span->SetAnnotation(pinpoint::ANNOTATION_API, std::string("getUserInfo"));
+    span->SetAnnotation(pinpoint::ANNOTATION_API, "getUserInfo");
     span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 
     // Your business logic here
@@ -359,7 +359,7 @@ void doWork() {
     spanEvent->EndEvent();
 
     // Add result annotations
-    span->SetAnnotation(pinpoint::ANNOTATION_API, std::string("doWork"));
+    span->SetAnnotation(pinpoint::ANNOTATION_API, "doWork");
     span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 
     span->EndSpan();

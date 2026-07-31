@@ -951,8 +951,8 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
                                 8, 9, 10, 11, 12, 13, 14, 15};
     root->SetAnnotation(9000, 7);
     root->SetAnnotation(9001, INT64_C(9000000000));
-    root->SetAnnotation(9002, std::string("root-value"));
-    root->SetAnnotation(9003, std::make_pair(std::string("left"), std::string("right")));
+    root->SetAnnotation(9002, "root-value");
+    root->SetAnnotation(9003, "left", "right");
     // The remaining collector-side formats are internal-only now; record them
     // straight into the span's annotation container to keep their wire shapes
     // covered end to end.
@@ -1268,7 +1268,7 @@ TEST_F(AgentIntegrationTest,
     inner->SetDestination("inner-before");
     inner->SetEndPoint("inner-before.example.test:11211");
     inner->SetError("BeforeError", "before-error-message");
-    inner->SetAnnotation(9200, std::string("before-annotation"));
+    inner->SetAnnotation(9200, "before-annotation");
 
     // Ending the outer event first implicitly unwinds the inner event. The two
     // completed events also cross EventChunkSize=2 and are handed to the gRPC
@@ -1285,7 +1285,7 @@ TEST_F(AgentIntegrationTest,
     MapCarrier post_finish_headers;
     post_finish_headers.Set("x-client-request", "after-finish-header");
     inner->RecordHeader(HTTP_REQUEST, post_finish_headers);
-    inner->SetAnnotation(9201, std::string("after-annotation"));
+    inner->SetAnnotation(9201, "after-annotation");
 
     auto* later = span->NewSpanEvent("event.later", SERVICE_TYPE_KAFKA);
     ASSERT_NE(later, nullptr);

@@ -556,7 +556,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     span_event.SetEndPoint("ep-before");
     span_event.SetDestination("dest-before");
     span_event.SetError("RuntimeError", "err-before", callstack_reader);
-    span_event.SetAnnotation(100, std::string("before"));
+    span_event.SetAnnotation(100, "before");
 
     const auto baseline_start = span_event.getStartTime();
     const auto baseline_annotations = span_event.getAnnotations()->getAnnotations().size();
@@ -575,7 +575,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     span_event.SetError("after-only");                                   // 1-arg -> 2-arg
     span_event.SetError("AfterError", "err-after", callstack_reader);    // 3-arg + callstack
     span_event.SetSqlQuery("SELECT * FROM t WHERE id = 1", {});
-    span_event.SetAnnotation(101, std::string("after"));
+    span_event.SetAnnotation(101, "after");
     MockHeaderReader header_reader;
     header_reader.SetHeader("X-After", "v");
     span_event.RecordHeader(HTTP_REQUEST, header_reader);
@@ -645,8 +645,8 @@ TEST_F(SpanEventTest, SetAnnotationTest) {
 
     span_event.SetAnnotation(100, 42);
     span_event.SetAnnotation(101, int64_t{123456789});
-    span_event.SetAnnotation(102, std::string("value"));
-    span_event.SetAnnotation(103, std::make_pair(std::string("key"), std::string("value")));
+    span_event.SetAnnotation(102, "value");
+    span_event.SetAnnotation(103, "key", "value");
 
     const auto& annotations = span_event.getAnnotations()->getAnnotations();
     ASSERT_EQ(annotations.size(), 4u) << "All four value shapes should be recorded";
@@ -687,7 +687,7 @@ TEST_F(SpanEventTest, CompleteWorkflowTest) {
     span_event.setAsyncId(42);
     
     // Add some annotations
-    span_event.SetAnnotation(200, std::string("request-url"));
+    span_event.SetAnnotation(200, "request-url");
     span_event.SetAnnotation(300, 200);
     
     // Record headers

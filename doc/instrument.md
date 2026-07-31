@@ -56,7 +56,7 @@ Trace context (trace ID, span ID, sampling decision, etc.) is propagated across 
 | `Agent` | Entry point that manages configuration, span creation, and shutdown lifecycle. |
 | `Span` | Top-level trace segment for an incoming request or logical operation. |
 | `SpanEvent` | Fine-grained operations inside a span. |
-| `AnnotationValue` | Variant value (`int32_t`, `int64_t`, `std::string`, or `std::pair<std::string, std::string>`) recorded via `SetAnnotation()`. |
+| `SqlBindValue` | Variant scalar accepted as a SQL bind argument. |
 | `TraceContextReader` / `TraceContextWriter` | Context propagation adapters for distributed tracing headers. |
 | `HeaderReader` | Structured access to HTTP headers for recording request/response metadata. |
 | `CallStackReader` | Optional stack trace provider for enriched error reporting. |
@@ -404,14 +404,14 @@ pinpoint::ANNOTATION_HTTP_RESPONSE_HEADER   // HTTP response headers
 
 ### Annotation Values
 
-`Span::SetAnnotation()` and `SpanEvent::SetAnnotation()` take a key and a `pinpoint::AnnotationValue` — a `std::variant` over the four supported payload shapes:
+`Span::SetAnnotation()` and `SpanEvent::SetAnnotation()` provide typed overloads for the four supported payload shapes:
 
-| Alternative | Collector payload |
+| C++ value | Collector payload |
 |---|---|
 | `int32_t` | int |
 | `int64_t` | long |
-| `std::string` | string |
-| `std::pair<std::string, std::string>` | string + string |
+| `std::string_view` | string |
+| two `std::string_view` values | string + string |
 
 Richer collector-side formats (SQL ids, proxy-header metadata, ...) are recorded internally by the agent itself and are not part of the public API.
 
@@ -419,8 +419,8 @@ Richer collector-side formats (SQL ids, proxy-header metadata, ...) are recorded
 
 ```cpp
 // String annotations
-span->SetAnnotation(pinpoint::ANNOTATION_API, std::string("getUserById"));
-span->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string("http://api.example.com/users/123"));
+span->SetAnnotation(pinpoint::ANNOTATION_API, "getUserById");
+span->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, "http://api.example.com/users/123");
 
 // Integer annotation
 span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
@@ -429,7 +429,7 @@ span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 span->SetAnnotation(12345, int64_t{1234567890});
 
 // String-pair annotation
-span->SetAnnotation(100, std::make_pair(std::string("key"), std::string("value")));
+span->SetAnnotation(100, "key", "value");
 ```
 
 ### Adding Annotations to Span Events
@@ -439,7 +439,7 @@ auto se = span->NewSpanEvent("external_call");
 se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
 se->SetEndPoint("localhost:9000");
 
-se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string(url));
+se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, url);
 se->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, status_code);
 
 se->EndEvent();
@@ -454,8 +454,8 @@ constexpr int32_t CUSTOM_USER_ID    = 10000;
 constexpr int32_t CUSTOM_SESSION_ID = 10001;
 constexpr int32_t CUSTOM_CACHE_HIT  = 10002;
 
-span->SetAnnotation(CUSTOM_USER_ID, std::string("user-123"));
-span->SetAnnotation(CUSTOM_SESSION_ID, std::string("session-456"));
+span->SetAnnotation(CUSTOM_USER_ID, "user-123");
+span->SetAnnotation(CUSTOM_SESSION_ID, "session-456");
 span->SetAnnotation(CUSTOM_CACHE_HIT, 1);  // 1 = hit, 0 = miss
 ```
 
@@ -513,7 +513,7 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 ### 6.7 Annotation Rules
 
 - The annotation list is **sealed** when its owner ends (`EndEvent()`/`EndSpan()`). A later `SetAnnotation()` logs a warning and does nothing.
-- The value is **moved (or copied) at call time**: the `AnnotationValue` argument does not need to outlive the call.
+- String views are **consumed and copied during the call** and do not need to outlive it. No annotation payload string is materialized for a no-op, unsampled, or already-ended span/event.
 - `SetAnnotation()` never throws; on allocation failure the annotation is dropped with an error log.
 - There is no key de-duplication: recording the same key twice records two annotations.
 - Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [§5](#5-annotations)).
@@ -528,7 +528,7 @@ auto se = span->NewSpanEvent("getUser-" + user_id);
 
 // DO: fixed operation name, variable data as an annotation
 auto se = span->NewSpanEvent("getUser");
-se->SetAnnotation(CUSTOM_USER_ID, std::string(user_id));
+se->SetAnnotation(CUSTOM_USER_ID, user_id);
 ```
 
 The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry the actual request path.

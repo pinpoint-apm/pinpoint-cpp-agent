@@ -37,7 +37,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallUnaryReturn");
-    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("UnaryCallUnaryReturn"));
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, "UnaryCallUnaryReturn");
 
     if (request->msg() == "force-error") {
       scoped->SetError("ForcedGrpcError", "forced integration-test error");
@@ -57,7 +57,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallStreamReturn");
-    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("UnaryCallStreamReturn"));
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, "UnaryCallStreamReturn");
 
     for (int i = 0; i < 3; ++i) {
       grpcdemo::Greeting resp;
@@ -75,7 +75,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallUnaryReturn");
-    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("StreamCallUnaryReturn"));
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, "StreamCallUnaryReturn");
 
     std::string combined;
     grpcdemo::Greeting msg;
@@ -94,7 +94,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallStreamReturn");
-    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("StreamCallStreamReturn"));
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, "StreamCallStreamReturn");
 
     grpcdemo::Greeting request;
     while (stream->Read(&request)) {

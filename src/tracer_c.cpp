@@ -961,7 +961,7 @@ void pt_span_set_annotation_string(pt_span_t span, int32_t key, const char* valu
     pt_api_call(__func__, [&] {
         if (!value) return;
         pt_handle_call(span, [&](pt_span_t valid) {
-            valid->ptr->SetAnnotation(key, std::string(value));
+            valid->ptr->SetAnnotation(key, std::string_view(value));
         });
     });
 }
@@ -970,8 +970,9 @@ void pt_span_set_annotation_string_string(pt_span_t span, int32_t key,
                                           const char* value1, const char* value2) {
     pt_api_call(__func__, [&] {
         pt_handle_call(span, [&](pt_span_t valid) {
-            valid->ptr->SetAnnotation(key, std::make_pair(std::string(value1 ? value1 : ""),
-                                                          std::string(value2 ? value2 : "")));
+            valid->ptr->SetAnnotation(key,
+                                      value1 ? value1 : "",
+                                      value2 ? value2 : "");
         });
     });
 }
@@ -1137,7 +1138,7 @@ void pt_span_event_set_annotation_string(pt_span_event_t se, int32_t key,
     pt_api_call(__func__, [&] {
         if (!value) return;
         pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
-            ev->SetAnnotation(key, std::string(value));
+            ev->SetAnnotation(key, std::string_view(value));
         });
     });
 }
@@ -1146,8 +1147,9 @@ void pt_span_event_set_annotation_string_string(pt_span_event_t se, int32_t key,
                                                 const char* value1, const char* value2) {
     pt_api_call(__func__, [&] {
         pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
-            ev->SetAnnotation(key, std::make_pair(std::string(value1 ? value1 : ""),
-                                                  std::string(value2 ? value2 : "")));
+            ev->SetAnnotation(key,
+                              value1 ? value1 : "",
+                              value2 ? value2 : "");
         });
     });
 }

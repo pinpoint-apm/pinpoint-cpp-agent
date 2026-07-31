@@ -567,11 +567,15 @@ namespace pinpoint {
         std::string GetTraceId() override;
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
-        // Out-of-line: the payload conversion allocates, so it needs the
-        // exception boundary in span.cpp; degrades to a warning no-op once
-        // the span is finished, since a finished span's annotation list may
-        // already be under serialization on the gRPC worker thread.
-        void SetAnnotation(int32_t key, AnnotationValue value) override;
+        // Annotation overloads are out-of-line because string payload copies
+        // and list growth must stay inside the exception boundary in span.cpp.
+        // A finished span is a warning no-op.
+        void SetAnnotation(int32_t key, int32_t value) override;
+        void SetAnnotation(int32_t key, int64_t value) override;
+        void SetAnnotation(int32_t key, std::string_view value) override;
+        void SetAnnotation(int32_t key,
+                           std::string_view value1,
+                           std::string_view value2) override;
         const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }

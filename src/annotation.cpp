@@ -81,7 +81,7 @@ namespace pinpoint {
         }
     }
 
-    void PinpointAnnotation::AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) {
+    void PinpointAnnotation::AppendIntStringString(int32_t key, int32_t i, std::string_view s1, std::string_view s2) {
         if (warnIfSealed()) return;
         try {
             reserveInitial();
