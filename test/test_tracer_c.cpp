@@ -1340,3 +1340,75 @@ TEST_F(TracerCApiTest, UnsampledSpanEventsShareOneHandle) {
     pt_span_end(span);
     pt_span_destroy(span);
 }
+
+// ============================================================================
+// Handle registry concurrency
+//
+// The registry shards handles across shared_mutex-guarded maps; find() runs
+// on every span-level C call from any request thread while insert/erase run
+// once per span, possibly on different threads. These tests pin down the
+// cross-thread guarantees the C API documents: independent lifecycles never
+// interfere, a double destroy is a no-op even when the two destroys race,
+// and operations racing a destroy degrade to safe no-ops.
+// ============================================================================
+
+TEST_F(TracerCApiTest, ConcurrentSpanLifecyclesAreThreadSafe) {
+    constexpr int kThreads = 8;
+    constexpr int kSpansPerThread = 200;
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    std::atomic<int> failures{0};
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([this, &failures] {
+            for (int i = 0; i < kSpansPerThread; ++i) {
+                pt_span_t span = pt_agent_new_span(agent_, "concurrent.op", "/concurrent");
+                if (span == nullptr) {
+                    failures.fetch_add(1);
+                    continue;
+                }
+                pt_span_set_status_code(span, 200);
+                pt_span_end(span);
+                pt_span_destroy(span);
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    EXPECT_EQ(failures.load(), 0);
+}
+
+TEST_F(TracerCApiTest, RacingDoubleDestroyReleasesExactlyOnce) {
+    constexpr int kIterations = 300;
+    for (int i = 0; i < kIterations; ++i) {
+        pt_span_t span = pt_agent_new_span(agent_, "race.op", "/race");
+        ASSERT_NE(span, nullptr);
+        pt_span_end(span);
+
+        std::thread first([span] { pt_span_destroy(span); });
+        std::thread second([span] { pt_span_destroy(span); });
+        first.join();
+        second.join();
+    }
+}
+
+TEST_F(TracerCApiTest, SpanOperationRacingDestroyIsSafeNoOp) {
+    constexpr int kIterations = 200;
+    for (int i = 0; i < kIterations; ++i) {
+        pt_span_t span = pt_agent_new_span(agent_, "race.op", "/race");
+        ASSERT_NE(span, nullptr);
+        pt_span_end(span);
+
+        std::thread reader([span] {
+            for (int j = 0; j < 50; ++j) {
+                (void)pt_span_is_sampled(span);
+            }
+        });
+        pt_span_destroy(span);
+        reader.join();
+
+        // After the destroy won, every op on the stale handle is a no-op.
+        EXPECT_EQ(pt_span_is_sampled(span), 0);
+    }
+}

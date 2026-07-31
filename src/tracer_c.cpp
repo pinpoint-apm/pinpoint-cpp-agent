@@ -48,6 +48,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -168,7 +169,7 @@ public:
     Handle insert(Entry entry) {
         const auto handle = make_owned_handle_token<Handle>();
         auto& shard = shard_for(handle);
-        std::lock_guard<std::mutex> lock(shard.mutex);
+        std::lock_guard<std::shared_mutex> lock(shard.mutex);
         const auto [pos, inserted] = shard.live.emplace(handle, std::move(entry));
         (void)pos;
         if (!inserted) {
@@ -179,7 +180,13 @@ public:
 
     Entry find(Handle handle) {
         auto& shard = shard_for(handle);
-        std::lock_guard<std::mutex> lock(shard.mutex);
+        // Shared lock: find() runs on every span-level C call (5-15 times per
+        // traced request, from every request thread), while insert/erase run
+        // once per span. Concurrent lookups on the same shard must not
+        // serialize behind each other; copying the shared_ptr is safe under
+        // the shared lock because erase() only detaches the entry from the
+        // map — the wrapper itself stays alive through the copied reference.
+        std::shared_lock<std::shared_mutex> lock(shard.mutex);
         const auto found = shard.live.find(handle);
         return found == shard.live.end() ? Entry{} : found->second;
     }
@@ -190,7 +197,7 @@ public:
         auto& shard = shard_for(handle);
         Entry removed;
         {
-            std::lock_guard<std::mutex> lock(shard.mutex);
+            std::lock_guard<std::shared_mutex> lock(shard.mutex);
             const auto found = shard.live.find(handle);
             if (found == shard.live.end()) {
                 return {};
@@ -202,11 +209,18 @@ public:
     }
 
 private:
-    struct Shard {
-        std::mutex mutex;
+    // alignas(64) keeps neighboring shards on separate cache lines, like the
+    // active-span and queue shards, so uncorrelated handles do not ping-pong
+    // one line between request threads.
+    struct alignas(64) Shard {
+        std::shared_mutex mutex;
         std::unordered_map<Handle, Entry> live;
     };
-    static constexpr size_t kShardCount = 8;
+    // 32 shards, in line with the other per-request sharded structures
+    // (caches use 16, active spans 64): tokens are sequential, so shard_for
+    // spreads concurrently-live handles round-robin and the count mostly
+    // bounds same-shard collisions between unrelated request threads.
+    static constexpr size_t kShardCount = 32;
 
     Shard& shard_for(Handle handle) {
         return shards_[(reinterpret_cast<uintptr_t>(handle) >> 1) % kShardCount];
