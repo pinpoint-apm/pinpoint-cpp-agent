@@ -438,4 +438,105 @@ TEST_F(LoggingTest, LogMacrosWork) {
     EXPECT_TRUE(content.find("test_logging.cpp") != std::string::npos);
 }
 
+// ========== LogSiteThrottle / LOG_*_THROTTLED Tests ==========
+
+namespace {
+    size_t count_occurrences(const std::string& haystack, const std::string& needle) {
+        size_t count = 0;
+        for (auto pos = haystack.find(needle); pos != std::string::npos;
+             pos = haystack.find(needle, pos + needle.size())) {
+            ++count;
+        }
+        return count;
+    }
+}
+
+TEST(LogSiteThrottleTest, FirstOccurrenceAlwaysReports) {
+    LogSiteThrottle throttle;
+    EXPECT_EQ(throttle.acquire(), 1u);
+}
+
+TEST(LogSiteThrottleTest, SuppressesRepeatsWithinInterval) {
+    LogSiteThrottle throttle;  // default 60s interval: the test stays inside it
+    ASSERT_EQ(throttle.acquire(), 1u);
+    EXPECT_EQ(throttle.acquire(), 0u);
+    EXPECT_EQ(throttle.acquire(), 0u);
+}
+
+TEST(LogSiteThrottleTest, FoldsSuppressedOccurrencesIntoNextReport) {
+    LogSiteThrottle throttle(std::chrono::milliseconds(50));
+    ASSERT_EQ(throttle.acquire(), 1u);
+    EXPECT_EQ(throttle.acquire(), 0u);
+    EXPECT_EQ(throttle.acquire(), 0u);
+    EXPECT_EQ(throttle.acquire(), 0u);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // The next report covers the three suppressed occurrences plus itself.
+    EXPECT_EQ(throttle.acquire(), 4u);
+}
+
+TEST(LogSiteThrottleTest, ExactlyOneConcurrentCallerWinsTheWindow) {
+    LogSiteThrottle throttle;  // default 60s interval: only the first window grants
+    constexpr int kThreads = 8;
+    constexpr int kCallsPerThread = 100;
+    std::atomic<int> winners{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&throttle, &winners] {
+            for (int i = 0; i < kCallsPerThread; ++i) {
+                if (throttle.acquire() > 0) {
+                    winners.fetch_add(1);
+                }
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    EXPECT_EQ(winners.load(), 1);
+}
+
+TEST_F(LoggingTest, ThrottledMacroLogsOncePerCallSite) {
+    Logger::getInstance().setLogLevel("warning");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+
+    for (int i = 0; i < 10; ++i) {
+        LOG_WARN_THROTTLED("throttled warn once");
+    }
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_EQ(count_occurrences(content, "throttled warn once"), 1u)
+        << "repeats at one call site within the interval must be suppressed";
+}
+
+TEST_F(LoggingTest, ThrottledErrorMacroLogsOncePerCallSite) {
+    Logger::getInstance().setLogLevel("error");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+
+    for (int i = 0; i < 10; ++i) {
+        LOG_ERROR_THROTTLED("throttled error once");
+    }
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_EQ(count_occurrences(content, "throttled error once"), 1u);
+}
+
+TEST_F(LoggingTest, ThrottledLogAppendsFoldedOccurrenceCount) {
+    Logger::getInstance().setLogLevel("warning");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+
+    Logger::getInstance().logWarnThrottled(1, "test.cpp", 1, "single occurrence");
+    Logger::getInstance().logWarnThrottled(5, "test.cpp", 2, "repeated occurrence");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_TRUE(content.find("single occurrence") != std::string::npos);
+    EXPECT_TRUE(content.find("single occurrence [") == std::string::npos)
+        << "a single occurrence must not carry a folded count";
+    EXPECT_TRUE(content.find("repeated occurrence [5 occurrences since last report]")
+                != std::string::npos);
+}
+
 } // namespace pinpoint

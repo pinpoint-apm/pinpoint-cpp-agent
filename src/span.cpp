@@ -342,7 +342,11 @@ namespace pinpoint {
 
         if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
             overflow_++;
-            LOG_WARN("span event maximum depth/sequence exceeded. (depth:{}, seq:{})", depth, seq);
+            // Throttled: an app whose traced call tree routinely exceeds the
+            // limits hits this once per discarded event on its request
+            // threads, and an unthrottled line each time would serialize them
+            // on the logger mutex and its per-line write+flush.
+            LOG_WARN_THROTTLED("span event maximum depth/sequence exceeded. (depth:{}, seq:{})", depth, seq);
             // Overflow is a profiling depth limit, not a sampling decision:
             // like the Java agent's DisableSpanEvent, the returned event
             // records nothing but its InjectContext still propagates the full
