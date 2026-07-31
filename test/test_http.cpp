@@ -55,63 +55,42 @@ private:
     std::map<std::string, std::string> headers_;
 };
 
-class MockAnnotation : public Annotation {
-public:
-    void AppendInt(int32_t key, int32_t i) override {
-        int_values_[key].push_back(i);
-    }
+// Test helpers that read back what http.cpp recorded into a concrete
+// PinpointAnnotation (the public Annotation interface no longer exists).
 
-    void AppendLong(int32_t key, int64_t l) override {
-        long_values_[key].push_back(l);
-    }
-
-    void AppendString(int32_t key, std::string_view s) override {
-        string_values_[key].push_back(std::string(s));
-    }
-
-    void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override {
-        string_string_values_[key].push_back(std::make_pair(std::string(s1), std::string(s2)));
-    }
-
-    void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override {
-        // Store as string for simplification
-        string_values_[key].push_back(std::string(s1) + ":" + std::string(s2));
-    }
-
-    void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) override {
-        // Store as string for simplification - convert bytes to hex string
-        std::string hex_uid;
-        for (auto byte : uid) {
-            hex_uid += std::to_string(static_cast<int>(byte)) + ",";
+// Returns the recorded string-string annotation values grouped by key.
+std::map<int32_t, std::vector<std::pair<std::string, std::string> > >
+string_string_values_of(const PinpointAnnotation& annotation) {
+    std::map<int32_t, std::vector<std::pair<std::string, std::string> > > result;
+    for (const auto& [key, data] : annotation.getAnnotations()) {
+        if (const auto* v = std::get_if<std::pair<std::string, std::string> >(&data.data)) {
+            result[key].push_back(*v);
         }
-        string_values_[key].push_back(hex_uid + ":" + std::string(s1) + ":" + std::string(s2));
     }
+    return result;
+}
 
-    void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override {
-        // Store as string for simplification
-        string_values_[key].push_back(std::string(s));
-    }
-
-    // Getters for verification
-    const std::map<int32_t, std::vector<int> >& GetIntValues() const { return int_values_; }
-    const std::map<int32_t, std::vector<std::string> >& GetStringValues() const { return string_values_; }
-    const std::map<int32_t, std::vector<std::pair<std::string, std::string> > >& GetStringStringValues() const { return string_string_values_; }
-
-    // Helper method to get total count of string-string annotations
-    size_t GetStringStringCount() const {
-        size_t total = 0;
-        for (const auto& pair : string_string_values_) {
-            total += pair.second.size();
+// Returns the total number of recorded string-string annotations.
+size_t string_string_count_of(const PinpointAnnotation& annotation) {
+    size_t total = 0;
+    for (const auto& [key, data] : annotation.getAnnotations()) {
+        if (std::holds_alternative<std::pair<std::string, std::string> >(data.data)) {
+            ++total;
         }
-        return total;
     }
+    return total;
+}
 
-private:
-    std::map<int32_t, std::vector<int32_t> > int_values_;
-    std::map<int32_t, std::vector<int64_t> > long_values_;
-    std::map<int32_t, std::vector<std::string> > string_values_;
-    std::map<int32_t, std::vector<std::pair<std::string, std::string> > > string_string_values_;
-};
+// Returns the number of annotations recorded under the given key.
+size_t annotation_count_of(const PinpointAnnotation& annotation, int32_t key) {
+    size_t total = 0;
+    for (const auto& [anno_key, data] : annotation.getAnnotations()) {
+        if (anno_key == key) {
+            ++total;
+        }
+    }
+    return total;
+}
 
 // Utility functions needed by http.cpp
 bool compare_string(const std::string& a, const std::string& b) {
@@ -751,11 +730,11 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyConfigTest) {
     headers["Authorization"] = "Bearer token123";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should not record any headers with empty config
-    EXPECT_EQ(annotation->GetStringStringCount(), 0) << "Should not record headers with empty config";
+    EXPECT_EQ(string_string_count_of(*annotation), 0) << "Should not record headers with empty config";
 }
 
 // Test HttpHeaderRecorder with specific header configuration
@@ -771,14 +750,14 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecificHeadersTest) {
     headers["Accept"] = "application/json";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only configured headers
-    EXPECT_EQ(annotation->GetStringStringCount(), 2) << "Should record exactly 2 headers";
+    EXPECT_EQ(string_string_count_of(*annotation), 2) << "Should record exactly 2 headers";
     
     // Check that annotations were recorded with the correct key
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(200);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotation with key 200";
     EXPECT_EQ(it->second.size(), 2) << "Should have 2 headers recorded with key 200";
@@ -799,13 +778,13 @@ TEST_F(HttpTest, HttpHeaderRecorderSingleHeaderTest) {
     headers["Cache-Control"] = "no-cache";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only Content-Type header
-    EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record exactly 1 header";
+    EXPECT_EQ(string_string_count_of(*annotation), 1) << "Should record exactly 1 header";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(300);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotation with key 300";
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 300";
@@ -822,13 +801,13 @@ TEST_F(HttpTest, HttpHeaderRecorderMissingHeadersTest) {
     // Missing Authorization and X-Custom-Header
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only the available header (Content-Type)
-    EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record exactly 1 header (only available one)";
+    EXPECT_EQ(string_string_count_of(*annotation), 1) << "Should record exactly 1 header (only available one)";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(400);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotation with key 400";
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 400";
@@ -848,14 +827,14 @@ TEST_F(HttpTest, HttpHeaderRecorderAllHeadersTest) {
     headers["Cache-Control"] = "no-cache";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record all headers
-    EXPECT_EQ(annotation->GetStringStringCount(), 5) << "Should record all 5 headers";
+    EXPECT_EQ(string_string_count_of(*annotation), 5) << "Should record all 5 headers";
     
     // All should have the same annotation key (500)
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(500);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotations with key 500";
     EXPECT_EQ(it->second.size(), 5) << "Should have 5 headers recorded with key 500";
@@ -872,13 +851,13 @@ TEST_F(HttpTest, HttpHeaderRecorderCaseSensitivityTest) {
     headers["content-type"] = "text/plain"; // Different case
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // The behavior depends on the HeaderReader implementation
     // Our mock treats keys as case-sensitive
-    EXPECT_GE(annotation->GetStringStringCount(), 1) << "Should record at least 1 header";
-    EXPECT_LE(annotation->GetStringStringCount(), 2) << "Should record at most 2 headers";
+    EXPECT_GE(string_string_count_of(*annotation), 1) << "Should record at least 1 header";
+    EXPECT_LE(string_string_count_of(*annotation), 2) << "Should record at most 2 headers";
 }
 
 // Test HttpHeaderRecorder with empty header values
@@ -892,13 +871,13 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyValuesTest) {
     headers["X-Normal-Header"] = "normal-value";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record both headers, including the one with empty value
-    EXPECT_EQ(annotation->GetStringStringCount(), 2) << "Should record both headers including empty value";
+    EXPECT_EQ(string_string_count_of(*annotation), 2) << "Should record both headers including empty value";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(700);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotations with key 700";
     EXPECT_EQ(it->second.size(), 2) << "Should have 2 headers recorded with key 700";
@@ -914,13 +893,13 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecialCharactersTest) {
     headers["X-Special-Chars"] = "value with spaces, commas; and: colons=equals";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record header with special characters
-    EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record header with special characters";
+    EXPECT_EQ(string_string_count_of(*annotation), 1) << "Should record header with special characters";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(800);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotation with key 800";
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 800";
@@ -937,14 +916,14 @@ TEST_F(HttpTest, HttpHeaderRecorderMultipleAllConfigTest) {
     headers["Authorization"] = "Bearer token123";
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should NOT behave as HEADERS-ALL since cfg size > 1
     // Only "Content-Type" should be recorded ("HEADERS-ALL" is not a real header name)
-    EXPECT_EQ(annotation->GetStringStringCount(), 1) << "Should record only Content-Type header (HEADERS-ALL requires single element config)";
+    EXPECT_EQ(string_string_count_of(*annotation), 1) << "Should record only Content-Type header (HEADERS-ALL requires single element config)";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(900);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotations with key 900";
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 900";
@@ -973,13 +952,13 @@ TEST_F(HttpTest, HttpHeaderRecorderRealisticHeadersTest) {
     headers["Cookie"] = "session=abc123; preferences=dark_mode"; // Not in config
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should record only configured headers (6 out of 7)
-    EXPECT_EQ(annotation->GetStringStringCount(), 6) << "Should record exactly 6 configured headers";
+    EXPECT_EQ(string_string_count_of(*annotation), 6) << "Should record exactly 6 configured headers";
     
-    const auto& stringStringValues = annotation->GetStringStringValues();
+    const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(1000);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotations with key 1000";
     EXPECT_EQ(it->second.size(), 6) << "Should have 6 headers recorded with key 1000";
@@ -994,11 +973,11 @@ TEST_F(HttpTest, HttpHeaderRecorderNoHeadersTest) {
     std::map<std::string, std::string> headers; // Empty
     MockHeaderReader headerReader(headers);
     
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
     
     // Should not record any headers
-    EXPECT_EQ(annotation->GetStringStringCount(), 0) << "Should not record any headers when none are available";
+    EXPECT_EQ(string_string_count_of(*annotation), 0) << "Should not record any headers when none are available";
 }
 
 // ========== HttpMethodFilter Class Tests ==========
@@ -1371,15 +1350,13 @@ TEST_F(HttpTest, SetProxyHeaderApachePriorityTest) {
         {"Pinpoint-ProxyApp", "t=3000000000 app=OtherApp"}
     };
     MockHeaderReader reader(headers);
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
 
     HttpTracerUtil::setProxyHeader(reader, annotation.get());
 
     // Only Apache header should produce annotation (code=3)
-    const auto& stringValues = annotation->GetStringValues();
-    auto it = stringValues.find(ANNOTATION_HTTP_PROXY_HEADER);
-    ASSERT_NE(it, stringValues.end()) << "Should have proxy header annotation";
-    EXPECT_EQ(it->second.size(), 1) << "Only one proxy header should be recorded";
+    EXPECT_EQ(annotation_count_of(*annotation, ANNOTATION_HTTP_PROXY_HEADER), 1)
+        << "Only one proxy header should be recorded";
 }
 
 // Test setProxyHeader: Nginx takes precedence when Apache is absent
@@ -1389,14 +1366,12 @@ TEST_F(HttpTest, SetProxyHeaderNginxPriorityTest) {
         {"Pinpoint-ProxyApp", "t=9876543210 app=SomeApp"}
     };
     MockHeaderReader reader(headers);
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
 
     HttpTracerUtil::setProxyHeader(reader, annotation.get());
 
-    const auto& stringValues = annotation->GetStringValues();
-    auto it = stringValues.find(ANNOTATION_HTTP_PROXY_HEADER);
-    ASSERT_NE(it, stringValues.end()) << "Should have proxy header annotation";
-    EXPECT_EQ(it->second.size(), 1) << "Only one proxy header should be recorded";
+    EXPECT_EQ(annotation_count_of(*annotation, ANNOTATION_HTTP_PROXY_HEADER), 1)
+        << "Only one proxy header should be recorded";
 }
 
 // Test HttpHeaderRecorder with case-insensitive headers-all variant
@@ -1410,11 +1385,11 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
     headers["X-Custom"] = "value";
     MockHeaderReader headerReader(headers);
 
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
 
     // compare_string is case-insensitive, so "headers-all" should trigger dump_all_headers_
-    EXPECT_EQ(annotation->GetStringStringCount(), 3)
+    EXPECT_EQ(string_string_count_of(*annotation), 3)
         << "headers-all (lowercase) should dump all 3 headers";
 }
 
@@ -1426,10 +1401,10 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllEmptyHeadersTest) {
     std::map<std::string, std::string> headers; // empty
     MockHeaderReader headerReader(headers);
 
-    auto annotation = std::make_shared<MockAnnotation>();
+    auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
 
-    EXPECT_EQ(annotation->GetStringStringCount(), 0)
+    EXPECT_EQ(string_string_count_of(*annotation), 0)
         << "HEADERS-ALL with no headers should record nothing";
 }
 

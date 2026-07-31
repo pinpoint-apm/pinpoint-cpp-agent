@@ -73,7 +73,7 @@ TEST_F(SpanEventTest, ConstructorTest) {
     EXPECT_EQ(span_event.getNextSpanId(), 0) << "Initial next span ID should be 0";
     EXPECT_EQ(span_event.getAsyncId(), NONE_ASYNC_ID) << "Initial async ID should be NONE_ASYNC_ID";
     EXPECT_EQ(span_event.getAsyncSeqGen(), 0) << "Initial async seq gen should be 0";
-    EXPECT_NE(span_event.GetAnnotations(), nullptr) << "Annotations should be initialized";
+    EXPECT_NE(span_event.getAnnotations(), nullptr) << "Annotations should be initialized";
 }
 
 TEST_F(SpanEventTest, ConstructorWithEmptyOperationTest) {
@@ -210,7 +210,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
     
     // Verify annotation contains exception ID
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
     
     // Verify exception was added to parent span
@@ -301,7 +301,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
     // Note: In a real test, we would verify that ANNOTATION_EXCEPTION_ID was added to annotations
     // However, the PinpointAnnotation class doesn't expose a way to read back annotations
     // So we just verify that the exception ID is valid
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should exist";
 }
 
@@ -542,8 +542,8 @@ TEST_F(SpanEventTest, FinishCalculatesElapsedTimeTest) {
 
 // Regression: a finished event may already be under serialization on the gRPC
 // worker thread, so every recording mutator must degrade to a no-op once the
-// event is finished — symmetric with GetAnnotations(). A post-finish mutation
-// would otherwise race the worker's read of the same fields. See
+// event is finished — SetAnnotation included. A post-finish mutation would
+// otherwise race the worker's read of the same fields. See
 // SpanEventImpl::warnIfFinished().
 TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
@@ -556,6 +556,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     span_event.SetEndPoint("ep-before");
     span_event.SetDestination("dest-before");
     span_event.SetError("RuntimeError", "err-before", callstack_reader);
+    span_event.SetAnnotation(100, std::string("before"));
 
     const auto baseline_start = span_event.getStartTime();
     const auto baseline_annotations = span_event.getAnnotations()->getAnnotations().size();
@@ -574,6 +575,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     span_event.SetError("after-only");                                   // 1-arg -> 2-arg
     span_event.SetError("AfterError", "err-after", callstack_reader);    // 3-arg + callstack
     span_event.SetSqlQuery("SELECT * FROM t WHERE id = 1", {});
+    span_event.SetAnnotation(101, std::string("after"));
     MockHeaderReader header_reader;
     header_reader.SetHeader("X-After", "v");
     span_event.RecordHeader(HTTP_REQUEST, header_reader);
@@ -590,7 +592,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
 
     // No annotations / exceptions / headers were appended after finish.
     EXPECT_EQ(span_event.getAnnotations()->getAnnotations().size(), baseline_annotations)
-        << "SetSqlQuery / SetError must not append annotations after finish";
+        << "SetSqlQuery / SetError / SetAnnotation must not append annotations after finish";
     EXPECT_EQ(test_span_->getExceptions().size(), baseline_exceptions)
         << "SetError must not add exceptions after finish";
     EXPECT_EQ(mock_agent_service_->recorded_client_headers_, baseline_headers)
@@ -599,9 +601,6 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
         << "InjectContext must not write propagation headers after finish";
     EXPECT_EQ(span_event.getNextSpanId(), baseline_next_span_id)
         << "InjectContext must not generate a next span id after finish";
-
-    // The public accessor still degrades to a non-null noop after finish.
-    EXPECT_NE(span_event.GetAnnotations(), nullptr);
 }
 
 TEST_F(SpanEventTest, InjectContextNoOpAfterFinishTest) {
@@ -627,8 +626,8 @@ TEST_F(SpanEventTest, AnnotationHandleSealedByFinishTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
 
     // A handle fetched while the event is active stays a live pointer after
-    // finish (unlike GetAnnotations(), which degrades to the noop); appends
-    // through it must be sealed off once the event can sit in a chunk.
+    // finish; appends through it must be sealed off once the event can sit
+    // in a chunk.
     auto* annotations = span_event.getAnnotations();
     annotations->AppendString(100, "before");
 
@@ -641,18 +640,30 @@ TEST_F(SpanEventTest, AnnotationHandleSealedByFinishTest) {
 
 // ========== Annotations Tests ==========
 
-TEST_F(SpanEventTest, GetAnnotationsTest) {
+TEST_F(SpanEventTest, SetAnnotationTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    auto annotations = span_event.GetAnnotations();
-    EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
-    
-    // Test that we get the same instance
-    auto annotations2 = span_event.GetAnnotations();
-    EXPECT_EQ(annotations, annotations2) << "Should return the same annotations instance";
+
+    span_event.SetAnnotation(100, 42);
+    span_event.SetAnnotation(101, int64_t{123456789});
+    span_event.SetAnnotation(102, std::string("value"));
+    span_event.SetAnnotation(103, std::make_pair(std::string("key"), std::string("value")));
+
+    const auto& annotations = span_event.getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 4u) << "All four value shapes should be recorded";
+    EXPECT_EQ(annotations[0].second.type(), ANNOTATION_TYPE_INT);
+    EXPECT_EQ(std::get<int32_t>(annotations[0].second.data), 42);
+    EXPECT_EQ(annotations[1].second.type(), ANNOTATION_TYPE_LONG);
+    EXPECT_EQ(std::get<int64_t>(annotations[1].second.data), 123456789);
+    EXPECT_EQ(annotations[2].second.type(), ANNOTATION_TYPE_STRING);
+    EXPECT_EQ(std::get<std::string>(annotations[2].second.data), "value");
+    EXPECT_EQ(annotations[3].second.type(), ANNOTATION_TYPE_STRING_STRING);
+    const auto& pair_value =
+        std::get<std::pair<std::string, std::string>>(annotations[3].second.data);
+    EXPECT_EQ(pair_value.first, "key");
+    EXPECT_EQ(pair_value.second, "value");
 }
 
-TEST_F(SpanEventTest, GetAnnotationsRawPointerTest) {
+TEST_F(SpanEventTest, GetAnnotationsInternalPointerTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
     auto* annotations = span_event.getAnnotations();
@@ -676,9 +687,8 @@ TEST_F(SpanEventTest, CompleteWorkflowTest) {
     span_event.setAsyncId(42);
     
     // Add some annotations
-    auto annotations = span_event.GetAnnotations();
-    annotations->AppendString(200, "request-url");
-    annotations->AppendInt(300, 200);
+    span_event.SetAnnotation(200, std::string("request-url"));
+    span_event.SetAnnotation(300, 200);
     
     // Record headers
     MockHeaderReader headers;
@@ -765,7 +775,7 @@ TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
     EXPECT_GT(cached_id, 0) << "SQL should be cached with valid ID";
     
     // Verify annotations were added
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
 }
 
@@ -855,7 +865,7 @@ TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
     // Complex SQL should also be cached
     EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "Complex SQL should be cached";
     
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should be created for complex SQL";
 }
 
@@ -997,7 +1007,7 @@ TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
     // The normalizer should process this SQL
     EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL with literals should be processed";
     
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should be created";
 }
 
@@ -1033,7 +1043,7 @@ TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
     EXPECT_EQ(span_event.getEndPoint(), "localhost:3306");
     EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL should be cached";
     
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should be available";
 }
 
@@ -1170,7 +1180,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsEnabledTest) {
     EXPECT_EQ(mock_agent_service_->getSqlIdCounter(), 300)
         << "cacheSql should NOT be called when sql stats is enabled";
 
-    auto annotations = span_event.GetAnnotations();
+    auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr);
 }
 

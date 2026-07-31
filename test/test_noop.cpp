@@ -239,8 +239,8 @@ TEST_F(NoopTest, UnsampledSpanInheritedNoopBehaviorTest) {
     auto trace_id = span.GetTraceId();
     EXPECT_TRUE(trace_id.empty()) << "GetTraceId should return an empty wire id for a non-sampled span";
 
-    auto annotations = span.GetAnnotations();
-    EXPECT_NE(annotations, nullptr) << "GetAnnotations should return a valid Annotation";
+    span.SetAnnotation(1, 42);
+    SUCCEED() << "SetAnnotation should be a safe no-op";
 }
 
 // NoopSpan Tests
@@ -254,8 +254,8 @@ TEST_F(NoopTest, NoopSpanBasicBehaviorTest) {
     auto trace_id = span.GetTraceId();
     EXPECT_TRUE(trace_id.empty()) << "GetTraceId should return an empty wire id for a non-sampled span";
 
-    auto annotations = span.GetAnnotations();
-    EXPECT_NE(annotations, nullptr) << "GetAnnotations should return a valid Annotation";
+    span.SetAnnotation(1, 42);
+    SUCCEED() << "SetAnnotation should be a safe no-op";
 }
 
 TEST_F(NoopTest, NoopSpanAllMethodsTest) {
@@ -285,6 +285,10 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
     span.SetError("TestError", "Test error message");
     span.SetStatusCode(500);
     span.SetUrlStat("/api/test", "GET", 200);
+    span.SetAnnotation(1, 42);
+    span.SetAnnotation(2, int64_t{123456789});
+    span.SetAnnotation(3, std::string("test-string"));
+    span.SetAnnotation(4, std::make_pair(std::string("key"), std::string("value")));
 
     SUCCEED() << "All NoopSpan methods should execute without throwing exceptions";
 }
@@ -294,8 +298,8 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
 TEST_F(NoopTest, NoopSpanEventBasicBehaviorTest) {
     NoopSpanEvent span_event;
 
-    auto annotations = span_event.GetAnnotations();
-    EXPECT_NE(annotations, nullptr) << "GetAnnotations should return a valid Annotation";
+    span_event.SetAnnotation(1, 42);
+    SUCCEED() << "SetAnnotation should be a safe no-op";
 }
 
 TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
@@ -310,6 +314,10 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     span_event.SetError("Test error");
     span_event.SetError("TestError", "Test error message");
     span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1"});
+    span_event.SetAnnotation(1, 42);
+    span_event.SetAnnotation(2, int64_t{123456789});
+    span_event.SetAnnotation(3, std::string("test-string"));
+    span_event.SetAnnotation(4, std::make_pair(std::string("key"), std::string("value")));
 
     MockHeaderReader reader;
     span_event.RecordHeader(HTTP_REQUEST, reader);
@@ -332,29 +340,9 @@ TEST_F(NoopTest, NoopSpanEventSetErrorWithCallStackTest) {
     SUCCEED() << "SetError with CallStackReader should execute without throwing";
 }
 
-// NoopAnnotation Tests
-
-TEST_F(NoopTest, NoopAnnotationAllMethodsTest) {
-    NoopAnnotation annotation;
-
-    // All these should be no-ops and not throw exceptions
-    annotation.AppendInt(1, 42);
-    annotation.AppendLong(1, 123456789LL);
-    annotation.AppendString(2, "test-string");
-    annotation.AppendStringString(3, "key", "value");
-    annotation.AppendIntStringString(4, 100, "key", "value");
-    annotation.AppendSqlUidStringString(5, {0x01, 0x02, 0x03}, "key", "value");
-    annotation.AppendLongIntIntByteByteString(6, 123456789L, 10, 20, 30, 40, "test");
-
-    SUCCEED() << "All NoopAnnotation methods should execute without throwing exceptions";
-}
-
 // Global noop function tests
 
 TEST_F(NoopTest, GlobalNoopFunctionsTest) {
-    auto annotation = noopAnnotation();
-    EXPECT_NE(annotation, nullptr) << "noopAnnotation should return a valid Annotation";
-
     auto span_event = noopSpanEvent();
     EXPECT_NE(span_event, nullptr) << "noopSpanEvent should return a valid SpanEvent";
 
@@ -365,12 +353,10 @@ TEST_F(NoopTest, GlobalNoopFunctionsTest) {
     EXPECT_NE(agent, nullptr) << "noopAgent should return a valid Agent";
 
     // Test that the same instances are returned (singleton behavior)
-    auto annotation2 = noopAnnotation();
     auto span_event2 = noopSpanEvent();
     auto span2 = noopSpan();
     auto agent2 = noopAgent();
 
-    EXPECT_EQ(annotation, annotation2) << "noopAnnotation should return the same instance";
     EXPECT_EQ(span_event, span_event2) << "noopSpanEvent should return the same instance";
     EXPECT_EQ(span.get(), span2.get()) << "noopSpan should return the same instance";
     EXPECT_EQ(agent.get(), agent2.get()) << "noopAgent should return the same instance";
@@ -505,10 +491,6 @@ TEST_F(NoopTest, NoopHolderReturnsSameInstancesTest) {
     auto event1 = noop.spanEvent();
     auto event2 = noop.spanEvent();
     EXPECT_EQ(event1, event2) << "Noop holder should return same spanEvent instance";
-
-    auto anno1 = noop.annotation();
-    auto anno2 = noop.annotation();
-    EXPECT_EQ(anno1, anno2) << "Noop holder should return same annotation instance";
 }
 
 TEST_F(NoopTest, NoopHolderAllInstancesAreValidTest) {
@@ -517,7 +499,6 @@ TEST_F(NoopTest, NoopHolderAllInstancesAreValidTest) {
     EXPECT_NE(noop.agent(), nullptr);
     EXPECT_NE(noop.span(), nullptr);
     EXPECT_NE(noop.spanEvent(), nullptr);
-    EXPECT_NE(noop.annotation(), nullptr);
 
     EXPECT_FALSE(noop.agent()->Enable());
     EXPECT_FALSE(noop.span()->IsSampled());

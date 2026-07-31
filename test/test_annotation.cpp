@@ -23,6 +23,9 @@
 
 namespace pinpoint {
 
+// Alias keeps the comma inside std::pair out of gtest macro argument parsing.
+using StringPair = std::pair<std::string, std::string>;
+
 class AnnotationTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -271,8 +274,8 @@ TEST_F(AnnotationTest, AppendStringStringNormalTest) {
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue1, value1) << "First string should match";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue2, value2) << "Second string should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "First string should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Second string should match";
 }
 
 // Test AppendStringString with empty strings
@@ -289,8 +292,8 @@ TEST_F(AnnotationTest, AppendStringStringEmptyTest) {
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue1, value1) << "First empty string should match";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue2, value2) << "Second empty string should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "First empty string should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Second empty string should match";
 }
 
 // Test AppendStringString with mixed content
@@ -307,8 +310,8 @@ TEST_F(AnnotationTest, AppendStringStringMixedTest) {
     auto& pair = annotations.front();
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue1, value1) << "Header name should match";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(pair.second.data).stringValue2, value2) << "Header value should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "Header name should match";
+    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Header value should match";
 }
 
 // ========== AppendIntStringString Tests ==========
@@ -560,8 +563,8 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     ++it;
     EXPECT_EQ(it->first, 3) << "Third annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_STRING_STRING) << "Third annotation should be string-string type";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(it->second.data).stringValue1, "Key") << "Third annotation first string should match";
-    EXPECT_EQ(std::get<pinpoint::StringStringValue>(it->second.data).stringValue2, "Value") << "Third annotation second string should match";
+    EXPECT_EQ(std::get<StringPair>(it->second.data).first, "Key") << "Third annotation first string should match";
+    EXPECT_EQ(std::get<StringPair>(it->second.data).second, "Value") << "Third annotation second string should match";
     
     // Check fourth annotation (IntStringString)
     ++it;
@@ -767,9 +770,9 @@ TEST_F(AnnotationTest, StringStringFromTemporaryTest) {
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1);
-    auto& ssv = std::get<pinpoint::StringStringValue>(annotations.front().second.data);
-    EXPECT_EQ(ssv.stringValue1, "temp key");
-    EXPECT_EQ(ssv.stringValue2, "temp value");
+    auto& ssv = std::get<StringPair>(annotations.front().second.data);
+    EXPECT_EQ(ssv.first, "temp key");
+    EXPECT_EQ(ssv.second, "temp value");
 }
 
 // Test large number of annotations

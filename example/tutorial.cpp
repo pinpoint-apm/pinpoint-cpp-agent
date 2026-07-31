@@ -40,8 +40,7 @@ int main() {
         HttpHeaderReaderWriter trace_context_writer(headers);
         se->InjectContext(trace_context_writer);
 
-        auto anno = se->GetAnnotations();
-        anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, "localhost:8090/foo");
+        se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string("localhost:8090/foo"));
 
         httplib::Client cli(host);
         auto res = cli.Get("/foo", headers);
@@ -50,7 +49,7 @@ int main() {
                 std::cout << res->body << std::endl;
             }
 
-            anno->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, res->status);
+            se->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, res->status);
         } else {
             auto err = res.error();
             auto err_msg = httplib::to_string(err);

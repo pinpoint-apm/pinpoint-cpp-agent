@@ -414,7 +414,10 @@ TEST(TracerCNullSafetyTest, NullSpanCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_set_url_stat(nullptr, "/", "GET", 200));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_logging(nullptr, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
-    EXPECT_EQ(pt_span_get_annotations(nullptr), nullptr);
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_int(nullptr, PT_ANNOTATION_API, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_long(nullptr, PT_ANNOTATION_API, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_string(nullptr, PT_ANNOTATION_API, "s"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_string_string(nullptr, PT_ANNOTATION_API, "a", "b"));
 }
 
 TEST(TracerCNullSafetyTest, NullSpanEventCalls) {
@@ -432,18 +435,10 @@ TEST(TracerCNullSafetyTest, NullSpanEventCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_event_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_inject_context(nullptr, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_end(nullptr));
-    EXPECT_EQ(pt_span_event_get_annotations(nullptr), nullptr);
-}
-
-TEST(TracerCNullSafetyTest, NullAnnotationCalls) {
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_destroy(nullptr));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_int(nullptr, PT_ANNOTATION_API, 0));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_long(nullptr, PT_ANNOTATION_API, 0));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(nullptr, PT_ANNOTATION_API, "s"));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string_string(nullptr, PT_ANNOTATION_API, "a", "b"));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_int_string_string(nullptr, PT_ANNOTATION_API, 1, "a", "b"));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_sql_uid_string_string(nullptr, PT_ANNOTATION_API, nullptr, 0, "a", "b"));
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_long_int_int_byte_byte_string(nullptr, PT_ANNOTATION_API, 0, 0, 0, 0, 0, "s"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_annotation_int(nullptr, PT_ANNOTATION_API, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_annotation_long(nullptr, PT_ANNOTATION_API, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_annotation_string(nullptr, PT_ANNOTATION_API, "s"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_annotation_string_string(nullptr, PT_ANNOTATION_API, "a", "b"));
 }
 
 TEST_F(TracerCApiTest, ExceptionFirewallSwallowsCallbackExceptions) {
@@ -833,7 +828,7 @@ TEST_F(TracerCApiTest, GetSpanEventReturnsHandle) {
     ASSERT_NE(fetched, nullptr);
 
     // Both handles refer to the same underlying event.
-    EXPECT_EQ(pt_span_event_get_annotations(created) != nullptr, true);
+    EXPECT_EQ(created, fetched);
 
     pt_span_event_end(created);
     pt_span_event_destroy(fetched);
@@ -891,34 +886,16 @@ TEST_F(TracerCApiTest, SpanAnnotationsAllTypes) {
     pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
     ASSERT_NE(span, nullptr);
 
-    pt_annotation_t anno = pt_span_get_annotations(span);
-    ASSERT_NE(anno, nullptr);
-
     // int
-    pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, 200);
+    pt_span_set_annotation_int(span, PT_ANNOTATION_HTTP_STATUS_CODE, 200);
     // long
-    pt_annotation_append_long(anno, PT_ANNOTATION_API, 99999LL);
+    pt_span_set_annotation_long(span, PT_ANNOTATION_API, 99999LL);
     // string
-    pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "http://example.com/api");
+    pt_span_set_annotation_string(span, PT_ANNOTATION_HTTP_URL, "http://example.com/api");
     // string+string
-    pt_annotation_append_string_string(anno, PT_ANNOTATION_HTTP_REQUEST_HEADER,
-                                       "X-Custom", "value");
-    // int+string+string
-    pt_annotation_append_int_string_string(anno, PT_ANNOTATION_HTTP_PROXY_HEADER,
-                                           1, "proxy", "addr");
-    // bytes+string+string (SQL UID must be exactly 16 bytes)
-    unsigned char uid[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03,
-                           0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
-    pt_annotation_append_sql_uid_string_string(anno, PT_ANNOTATION_SQL_UID,
-                                             uid, 16,
-                                             "SELECT 1", "");
-    // long+int+int+byte+byte+string
-    pt_annotation_append_long_int_int_byte_byte_string(
-        anno, PT_ANNOTATION_HTTP_PROXY_HEADER,
-        /*l=*/12345678L, /*i1=*/8080, /*i2=*/0, /*b1=*/1, /*b2=*/0,
-        "endpoint");
+    pt_span_set_annotation_string_string(span, PT_ANNOTATION_HTTP_REQUEST_HEADER,
+                                         "X-Custom", "value");
 
-    pt_annotation_destroy(anno);
     pt_span_end(span);
     pt_span_destroy(span);
 }
@@ -930,32 +907,28 @@ TEST_F(TracerCApiTest, SpanEventAnnotationsAllTypes) {
     pt_span_event_t se   = pt_span_new_event(span, "event");
     ASSERT_NE(se, nullptr);
 
-    pt_annotation_t anno = pt_span_event_get_annotations(se);
-    ASSERT_NE(anno, nullptr);
+    pt_span_event_set_annotation_int(se, PT_ANNOTATION_HTTP_STATUS_CODE, 404);
+    pt_span_event_set_annotation_long(se, PT_ANNOTATION_API, 99999LL);
+    pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL, "http://example.com/");
+    pt_span_event_set_annotation_string_string(se, PT_ANNOTATION_HTTP_REQUEST_HEADER,
+                                               "X-Custom", "value");
 
-    pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, 404);
-    pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "http://example.com/");
-
-    pt_annotation_destroy(anno);
     pt_span_event_end(se);
     pt_span_event_destroy(se);
     pt_span_end(span);
     pt_span_destroy(span);
 }
 
-TEST_F(TracerCApiTest, AnnotationDestroyIsSafeToCallMultipleTimes) {
+TEST_F(TracerCApiTest, AnnotationOnEndedSpanIsSafeNoOp) {
     pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
     ASSERT_NE(span, nullptr);
 
-    pt_annotation_t a1 = pt_span_get_annotations(span);
-    pt_annotation_t a2 = pt_span_get_annotations(span);
-    ASSERT_NE(a1, nullptr);
-    ASSERT_NE(a2, nullptr);
-
-    pt_annotation_destroy(a1);
-    pt_annotation_destroy(a2);
-
     pt_span_end(span);
+
+    // Recording on an ended span is a warning no-op, never a crash.
+    EXPECT_NO_FATAL_FAILURE(
+        pt_span_set_annotation_string(span, PT_ANNOTATION_HTTP_URL, "late"));
+
     pt_span_destroy(span);
 }
 
@@ -1279,38 +1252,30 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     EXPECT_EQ(pt_span_is_sampled(s1), 0);
     EXPECT_EQ(pt_span_get_span_id(s1), 0);
 
-    // ...as do their events and annotations. These handles are pointer casts
-    // of the shared noop singletons, so they too are one stable value each.
+    // ...as do their events. These handles are pointer casts of the shared
+    // noop singletons, so they too are one stable value each.
     pt_span_event_t e1 = pt_span_new_event(s1, "child");
     pt_span_event_t e2 = pt_span_get_event(s1);
     ASSERT_NE(e1, nullptr);
     EXPECT_EQ(e1, e2);
-
-    pt_annotation_t an1 = pt_span_get_annotations(s1);
-    pt_annotation_t an2 = pt_span_event_get_annotations(e1);
-    ASSERT_NE(an1, nullptr);
-    EXPECT_EQ(an1, an2);
 
     // The async child of a noop span is still the same span sentinel.
     pt_span_t async = pt_span_new_async_span(s1, "bg");
     EXPECT_EQ(async, s1);
 
     // Distinct types must not share a handle value: the span sentinel wrapper
-    // and the two singleton pointees are three different addresses.
+    // and the singleton pointee are two different addresses.
     EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(e1));
-    EXPECT_NE(static_cast<const void*>(s1), static_cast<const void*>(an1));
-    EXPECT_NE(static_cast<const void*>(e1), static_cast<const void*>(an1));
 
     // No-op recording on these handles must not crash.
-    EXPECT_NO_FATAL_FAILURE(pt_annotation_append_string(an1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_string(s1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
+    EXPECT_NO_FATAL_FAILURE(pt_span_event_set_annotation_string(e1, PT_ANNOTATION_HTTP_URL, "http://x/y"));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_error(s1, "ignored"));
     EXPECT_NO_FATAL_FAILURE(pt_span_event_end(e1));
     EXPECT_NO_FATAL_FAILURE(pt_span_end(s1));
 
     // Destroy is a safe no-op on every handle, even for duplicates: span
-    // sentinels are never owned, event/annotation handles own nothing.
-    pt_annotation_destroy(an1);
-    pt_annotation_destroy(an2);
+    // sentinels are never owned, event handles own nothing.
     pt_span_event_destroy(e1);
     pt_span_event_destroy(e2);
     pt_span_destroy(async);

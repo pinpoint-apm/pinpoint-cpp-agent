@@ -18,7 +18,9 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 #include "pinpoint/tracer.h"
@@ -36,17 +38,6 @@ namespace pinpoint {
         ANNOTATION_TYPE_INT_STRING_STRING = 4,
         ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING = 5,
         ANNOTATION_TYPE_BYTES_STRING_STRING = 6
-    };
-
-    /**
-     * @brief Container for annotations composed of two string values.
-     */
-    struct StringStringValue {
-        std::string stringValue1;
-        std::string stringValue2;
-
-        StringStringValue(std::string_view strVal1, std::string_view strVal2)
-            : stringValue1(strVal1), stringValue2(strVal2) {}
     };
 
     /**
@@ -124,12 +115,15 @@ namespace pinpoint {
 
     /**
      * @brief Type-safe variant wrapper for all supported annotation value types.
+     *
+     * Superset of the public pinpoint::AnnotationValue: its four alternatives
+     * come first, in the same order, followed by the internal-only formats.
      */
-    using AnnotationValue = std::variant<
+    using AnnotationDataValue = std::variant<
         int32_t,
         int64_t,
         std::string,
-        StringStringValue,
+        std::pair<std::string, std::string>,
         IntStringStringValue,
         LongIntIntByteByteStringValue,
         BytesStringStringValue
@@ -139,7 +133,7 @@ namespace pinpoint {
      * @brief Annotation payload whose type is derived from the stored value.
      */
     struct AnnotationData {
-        AnnotationValue data;
+        AnnotationDataValue data;
 
         explicit AnnotationData(const int32_t intVal)
             : data(intVal) {}
@@ -148,7 +142,15 @@ namespace pinpoint {
         explicit AnnotationData(std::string_view strVal)
             : data(std::string(strVal)) {}
         AnnotationData(std::string_view strVal1, std::string_view strVal2)
-            : data(StringStringValue(strVal1, strVal2)) {}
+            : data(std::pair<std::string, std::string>(strVal1, strVal2)) {}
+        /// @brief Converts a public API value (Span/SpanEvent::SetAnnotation)
+        /// into the internal payload, moving each alternative through.
+        explicit AnnotationData(AnnotationValue&& value)
+            : data(std::visit(
+                  [](auto&& v) -> AnnotationDataValue {
+                      return AnnotationDataValue(std::forward<decltype(v)>(v));
+                  },
+                  std::move(value))) {}
         AnnotationData(const int intVal, std::string_view strVal1, std::string_view strVal2)
             : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
         AnnotationData(const int intVal, std::string&& strVal1, std::string_view strVal2)
@@ -172,26 +174,28 @@ namespace pinpoint {
         AnnotationType type() const {
             // The variant alternatives are declared in exactly the enum's
             // order, so the variant discriminator is the annotation type.
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_INT, AnnotationValue>, int32_t>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_LONG, AnnotationValue>, int64_t>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_STRING, AnnotationValue>, std::string>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_STRING_STRING, AnnotationValue>, StringStringValue>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_INT_STRING_STRING, AnnotationValue>, IntStringStringValue>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING, AnnotationValue>, LongIntIntByteByteStringValue>);
-            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_BYTES_STRING_STRING, AnnotationValue>, BytesStringStringValue>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_INT, AnnotationDataValue>, int32_t>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_LONG, AnnotationDataValue>, int64_t>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_STRING, AnnotationDataValue>, std::string>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_STRING_STRING, AnnotationDataValue>, std::pair<std::string, std::string>>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_INT_STRING_STRING, AnnotationDataValue>, IntStringStringValue>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING, AnnotationDataValue>, LongIntIntByteByteStringValue>);
+            static_assert(std::is_same_v<std::variant_alternative_t<ANNOTATION_TYPE_BYTES_STRING_STRING, AnnotationDataValue>, BytesStringStringValue>);
             return static_cast<AnnotationType>(data.index());
         }
     };
 
     /**
-     * @brief Concrete annotation implementation used by the Pinpoint agent.
+     * @brief Concrete annotation container used by the Pinpoint agent.
      *
      * Accumulates annotation key/value pairs before they are serialized into spans.
+     * Internal-only: user code records annotations through
+     * Span/SpanEvent::SetAnnotation.
      */
-    class PinpointAnnotation final : public Annotation {
+    class PinpointAnnotation final {
     public:
         PinpointAnnotation() {}
-        ~PinpointAnnotation() override = default;
+        ~PinpointAnnotation() = default;
 
         /**
          * @brief Appends an integer value annotation.
@@ -199,21 +203,21 @@ namespace pinpoint {
          * @param key Annotation identifier.
          * @param i Integer value to store.
          */
-        void AppendInt(int32_t key, int32_t i) override;
+        void AppendInt(int32_t key, int32_t i);
         /**
          * @brief Appends a long value annotation.
          *
          * @param key Annotation identifier.
          * @param l Long value to store.
          */
-        void AppendLong(int32_t key, int64_t l) override;
+        void AppendLong(int32_t key, int64_t l);
         /**
          * @brief Appends a string value annotation.
          *
          * @param key Annotation identifier.
          * @param s String value to store.
          */
-        void AppendString(int32_t key, std::string_view s) override;
+        void AppendString(int32_t key, std::string_view s);
         /**
          * @brief Appends an annotation containing two strings.
          *
@@ -221,7 +225,7 @@ namespace pinpoint {
          * @param s1 First string.
          * @param s2 Second string.
          */
-        void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override;
+        void AppendStringString(int32_t key, std::string_view s1, std::string_view s2);
         /**
          * @brief Appends an annotation containing an integer and two strings.
          *
@@ -230,7 +234,7 @@ namespace pinpoint {
          * @param s1 First string.
          * @param s2 Second string.
          */
-        void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override;
+        void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2);
         /**
          * @brief Appends an annotation containing a SQL UID and two strings.
          *
@@ -239,7 +243,7 @@ namespace pinpoint {
          * @param s1 First string.
          * @param s2 Second string.
          */
-        void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) override;
+        void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2);
         /**
          * @brief Appends a detailed network annotation used for RPC metadata.
          *
@@ -251,7 +255,7 @@ namespace pinpoint {
          * @param b2 Second byte payload.
          * @param s String payload.
          */
-        void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override;
+        void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s);
 
         /**
          * @brief Appends a pre-built annotation payload.

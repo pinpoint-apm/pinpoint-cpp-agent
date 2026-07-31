@@ -88,7 +88,7 @@ The suite fails unless all of the following are observed:
 - gRPC unary, server-streaming, client-streaming, and bidirectional-streaming
   calls retain the distributed trace ID;
 - inbound `Pinpoint-Sampled: s0` creates an unsampled downstream span;
-- all annotation payload types, logging context, SQL/SQL-UID metadata,
+- all public annotation value types, logging context, SQL/SQL-UID metadata,
   call-stack exception metadata, and a joined async span are exercised;
 - reduced depth/sequence/chunk limits are crossed without breaking requests;
 - config reload changes counter sampling and both sampled/unsampled decisions

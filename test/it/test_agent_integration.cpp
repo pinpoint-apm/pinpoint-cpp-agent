@@ -949,11 +949,16 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
 
     const SqlUid annotation_uid{0, 1, 2, 3, 4, 5, 6, 7,
                                 8, 9, 10, 11, 12, 13, 14, 15};
-    auto* root_annotations = root->GetAnnotations();
-    root_annotations->AppendInt(9000, 7);
-    root_annotations->AppendLong(9001, INT64_C(9000000000));
-    root_annotations->AppendString(9002, "root-value");
-    root_annotations->AppendStringString(9003, "left", "right");
+    root->SetAnnotation(9000, 7);
+    root->SetAnnotation(9001, INT64_C(9000000000));
+    root->SetAnnotation(9002, std::string("root-value"));
+    root->SetAnnotation(9003, std::make_pair(std::string("left"), std::string("right")));
+    // The remaining collector-side formats are internal-only now; record them
+    // straight into the span's annotation container to keep their wire shapes
+    // covered end to end.
+    auto* root_impl = dynamic_cast<SpanImpl*>(root.get());
+    ASSERT_NE(root_impl, nullptr);
+    auto* root_annotations = root_impl->getSpanData()->getAnnotations();
     root_annotations->AppendIntStringString(9004, 11, "one", "two");
     root_annotations->AppendSqlUidStringString(9005, annotation_uid, "sql", "args");
     root_annotations->AppendLongIntIntByteByteString(
@@ -1015,7 +1020,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     for (int i = 0; i < 3; ++i) {
         auto* event = root->NewSpanEvent("chunk.event." + std::to_string(i));
         ASSERT_NE(event, nullptr);
-        event->GetAnnotations()->AppendInt(9100 + i, i);
+        event->SetAnnotation(9100 + i, i);
         event->EndEvent();
     }
     root->EndSpan();
@@ -1263,7 +1268,7 @@ TEST_F(AgentIntegrationTest,
     inner->SetDestination("inner-before");
     inner->SetEndPoint("inner-before.example.test:11211");
     inner->SetError("BeforeError", "before-error-message");
-    inner->GetAnnotations()->AppendString(9200, "before-annotation");
+    inner->SetAnnotation(9200, std::string("before-annotation"));
 
     // Ending the outer event first implicitly unwinds the inner event. The two
     // completed events also cross EventChunkSize=2 and are handed to the gRPC
@@ -1280,7 +1285,7 @@ TEST_F(AgentIntegrationTest,
     MapCarrier post_finish_headers;
     post_finish_headers.Set("x-client-request", "after-finish-header");
     inner->RecordHeader(HTTP_REQUEST, post_finish_headers);
-    inner->GetAnnotations()->AppendString(9201, "after-annotation");
+    inner->SetAnnotation(9201, std::string("after-annotation"));
 
     auto* later = span->NewSpanEvent("event.later", SERVICE_TYPE_KAFKA);
     ASSERT_NE(later, nullptr);

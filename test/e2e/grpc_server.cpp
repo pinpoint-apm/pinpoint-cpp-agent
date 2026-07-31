@@ -37,8 +37,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallUnaryReturn");
-    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
-                                            "UnaryCallUnaryReturn");
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("UnaryCallUnaryReturn"));
 
     if (request->msg() == "force-error") {
       scoped->SetError("ForcedGrpcError", "forced integration-test error");
@@ -58,8 +57,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::UnaryCallStreamReturn");
-    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
-                                            "UnaryCallStreamReturn");
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("UnaryCallStreamReturn"));
 
     for (int i = 0; i < 3; ++i) {
       grpcdemo::Greeting resp;
@@ -77,8 +75,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallUnaryReturn");
-    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
-                                            "StreamCallUnaryReturn");
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("StreamCallUnaryReturn"));
 
     std::string combined;
     grpcdemo::Greeting msg;
@@ -97,8 +94,7 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
     auto span = GetCurrentSpan();
     pinpoint::helper::ScopedSpanEvent scoped(span, "HelloServiceImpl::StreamCallStreamReturn");
-    scoped->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
-                                            "StreamCallStreamReturn");
+    scoped->SetAnnotation(pinpoint::ANNOTATION_API, std::string("StreamCallStreamReturn"));
 
     grpcdemo::Greeting request;
     while (stream->Read(&request)) {

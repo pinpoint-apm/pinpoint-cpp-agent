@@ -26,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -219,35 +220,20 @@ namespace pinpoint {
 	};
 	
 	/**
-	 * @brief Abstract container for span annotations.
+	 * @brief Value stored in a span or span-event annotation.
+	 *
+	 * The alternatives map to the collector's int, long, string and
+	 * string-string annotation payloads; a string-string payload is a
+	 * std::pair of (first, second) values. Richer collector-side formats
+	 * (SQL ids, proxy-header metadata, ...) are recorded internally by the
+	 * agent itself and are not part of the public API.
 	 */
-    class Annotation {
-    public:
-        virtual ~Annotation() = default;
-
-		/// @brief Records an integer annotation.
-        virtual void AppendInt(int32_t key, int32_t i) = 0;
-		/// @brief Records a long annotation.
-        virtual void AppendLong(int32_t key, int64_t l) = 0;
-		/// @brief Records a string annotation.
-        virtual void AppendString(int32_t key, std::string_view s) = 0;
-		/// @brief Records an annotation with two string values.
-        virtual void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) = 0;
-		/// @brief Records an annotation with an integer and two string values.
-        virtual void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) = 0;
-		/// @brief Records an annotation carrying a SQL UID and two strings.
-        virtual void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) = 0;
-		/// @brief Records a detailed network annotation.
-        virtual void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) = 0;
-    };
-
-	/// @brief Non-owning annotation pointer.
-	///
-	/// The returned annotation object is owned by the parent span data. Ending
-	/// its span or span event seals the container, so later appends are warning
-	/// no-ops, but does not immediately invalidate this pointer. Do not retain
-	/// it beyond the lifetime of the parent span.
-	using AnnotationPtr = Annotation*;
+	using AnnotationValue = std::variant<
+		int32_t,
+		int64_t,
+		std::string,
+		std::pair<std::string, std::string>
+	>;
 
 	class Span;
 	using SpanPtr = std::shared_ptr<Span>;
@@ -284,8 +270,9 @@ namespace pinpoint {
 		///        by this span event into an outbound carrier.
 		virtual void InjectContext(TraceContextWriter& writer) = 0;
 
-		/// @brief Returns the mutable annotation container.
-        virtual AnnotationPtr GetAnnotations() const = 0;
+		/// @brief Records an annotation on this span event. Recording on an
+		///        already-ended event is a warning no-op.
+		virtual void SetAnnotation(int32_t key, AnnotationValue value) = 0;
 		/// @brief Finalizes this span event through its parent span.
 		///        Guarded against duplicate calls: ending an already-ended
 		///        event is a warning no-op, like Span::EndSpan.
@@ -375,8 +362,9 @@ namespace pinpoint {
 		/// @brief Records HTTP headers for the span.
 		virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 
-		/// @brief Returns the span annotations.
-		virtual AnnotationPtr GetAnnotations() const = 0;
+		/// @brief Records an annotation on the span. Recording on an
+		///        already-ended span is a warning no-op.
+		virtual void SetAnnotation(int32_t key, AnnotationValue value) = 0;
 	};
 
 	/**

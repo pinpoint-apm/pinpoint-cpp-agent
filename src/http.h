@@ -26,6 +26,8 @@
 
 namespace pinpoint {
 
+    class PinpointAnnotation;
+
     // HTTP status code range constants
     namespace http_status {
         constexpr int INFORMATIONAL_MIN = 100;
@@ -160,7 +162,7 @@ namespace pinpoint {
          * @param header Header reader callback provided by the user.
          * @param annotation Annotation destination that receives captured key-value pairs.
          */
-        void recordHeader(const HeaderReader& header, AnnotationPtr annotation);
+        void recordHeader(const HeaderReader& header, PinpointAnnotation* annotation);
     private:
         int anno_key_;
         std::vector<std::string> cfg_;
@@ -298,7 +300,7 @@ namespace pinpoint {
          * @param reader Header reader to access HTTP headers.
          * @param annotation Annotation destination for proxy metadata.
          */
-        static void setProxyHeader(const HeaderReader& reader, AnnotationPtr annotation);
+        static void setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation);
     };
 
 }

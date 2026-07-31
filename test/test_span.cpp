@@ -448,7 +448,7 @@ TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
     event_ptr->SetEndPoint("db-host:3306");
     event_ptr->SetDestination("MySQL");
     event_ptr->SetError("SomeError", "boom");
-    event_ptr->GetAnnotations()->AppendString(12, "annotation-value");
+    event_ptr->SetAnnotation(12, std::string("annotation-value"));
     span_data->finishSpanEvent();
 
     const auto sequence = event_ptr->getSequence();
@@ -496,8 +496,7 @@ TEST_F(SpanTest, SpanEventHandleSafeAfterPayloadReleaseTest) {
     se->EndEvent();                    // duplicate end: warn no-op
     se->SetOperationName("too-late");  // mutators: finished_-guarded no-ops
     se->SetEndPoint("too-late:81");
-    EXPECT_EQ(se->GetAnnotations(), noopAnnotation())
-        << "finished event should hand out the noop annotation";
+    se->SetAnnotation(12, 42);         // finished_-guarded no-op
 }
 
 TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
@@ -523,7 +522,7 @@ TEST_F(SpanTest, SpanImplConstructorTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     
     EXPECT_TRUE(span.IsSampled()) << "Span should be sampled";
-    EXPECT_NE(span.GetAnnotations(), nullptr) << "Annotations should be available";
+    EXPECT_NE(span.getSpanData()->getAnnotations(), nullptr) << "Annotations should be available";
     // Span ID might be 0 initially until context is extracted or generated
     EXPECT_GE(span.GetSpanId(), 0) << "Span ID should be non-negative";
 }
@@ -1494,7 +1493,7 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     // Recording is a no-op and must not crash.
     overflowed->SetDestination("downstream:8080");
     overflowed->SetError("ignored");
-    EXPECT_EQ(overflowed->GetAnnotations(), noopAnnotation());
+    overflowed->SetAnnotation(12, 42);
 
     MockTraceContextWriter writer;
     overflowed->InjectContext(writer);

@@ -36,7 +36,7 @@ Pinpoint models each transaction as a tree of **spans**.
 |---|---|
 | **Span** (`pt_span_t`) | Top-level trace segment for an incoming request, job, or logical unit of work. Carries a trace ID and span ID. |
 | **SpanEvent** (`pt_span_event_t`) | A child operation inside a span (DB query, HTTP client call, function block). Multiple events form the call-stack view in the Pinpoint UI. |
-| **Annotation** (`pt_annotation_t`) | Key/value metadata attached to a span or span event (URL, status code, SQL text, etc.). |
+| **Annotation** | Key/value metadata recorded on a span or span event via the typed `pt_span_set_annotation_*()` / `pt_span_event_set_annotation_*()` functions (URL, status code, etc.). |
 | **Agent** (`pt_agent_t`) | Entry point that manages configuration, sampling, and span lifecycle. |
 
 ---
@@ -63,7 +63,7 @@ pt_span_t       → pt_span_destroy()        (call pt_span_end() first)
 
 `pt_agent_destroy()` releases the C handle wrapper. It does not shut down tracing by itself; call `pt_agent_shutdown()` only for an agent you intend to stop.
 
-Span-event and annotation handles are non-owning views. They allocate no resources, and `pt_span_event_destroy()` / `pt_annotation_destroy()` are safe no-ops kept for API symmetry and compatibility. Use these handles only while their parent span/span event is alive and active; do not read, mutate, or store them for work that can run after `pt_span_event_end()`, `pt_span_end()`, or `pt_span_destroy()`.
+Span-event handles are non-owning views. They allocate no resources, and `pt_span_event_destroy()` is a safe no-op kept for API symmetry and compatibility. Use these handles only while their parent span is alive and active; do not read, mutate, or store them for work that can run after `pt_span_event_end()`, `pt_span_end()`, or `pt_span_destroy()`.
 
 ---
 
@@ -386,7 +386,7 @@ pt_span_event_end(se);        /* finalize the event — called on the EVENT hand
 pt_span_event_destroy(se);    /* optional compatibility no-op */
 ```
 
-> `pt_span_event_end()` is called on the **event handle**, not on the parent span. After it returns, do not read or mutate the event handle or annotation handles derived from it. `pt_span_event_destroy()` is optional and does not extend the event lifetime.
+> `pt_span_event_end()` is called on the **event handle**, not on the parent span. After it returns, do not read or mutate the event handle. `pt_span_event_destroy()` is optional and does not extend the event lifetime.
 
 ### Creating an event with an explicit service type
 
@@ -426,7 +426,7 @@ See `example/http_server_c.c` (`record_nested_events`) for an extended nesting e
 
 ## 7. Annotations
 
-Annotations attach structured key/value metadata to spans and span events.
+Annotations attach structured key/value metadata to spans and span events. Each annotation is recorded directly on the span or span-event handle with a typed setter; the supported value shapes are int, long, string, and string+string.
 
 ### Predefined annotation key constants
 
@@ -445,37 +445,33 @@ PT_ANNOTATION_EXCEPTION_ID          /* -52 — Exception info             */
 ### Adding annotations to a span
 
 ```c
-pt_annotation_t anno = pt_span_get_annotations(span);
-
-pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "/api/users/123");
-pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, 200);
-
-pt_annotation_destroy(anno);  /* optional compatibility no-op */
+pt_span_set_annotation_string(span, PT_ANNOTATION_HTTP_URL, "/api/users/123");
+pt_span_set_annotation_int(span, PT_ANNOTATION_HTTP_STATUS_CODE, 200);
 ```
 
 ### Adding annotations to a span event
 
 ```c
-pt_annotation_t anno = pt_span_event_get_annotations(se);
-
-pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "http://downstream/foo");
-pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, status);
-
-pt_annotation_destroy(anno);  /* optional compatibility no-op */
+pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL, "http://downstream/foo");
+pt_span_event_set_annotation_int(se, PT_ANNOTATION_HTTP_STATUS_CODE, status);
 ```
 
 ### Annotation value types
 
 ```c
-pt_annotation_append_int(anno, key, (int32_t)value);
-pt_annotation_append_long(anno, key, (int64_t)value);
-pt_annotation_append_string(anno, key, "string value");
-pt_annotation_append_string_string(anno, key, "s1", "s2");
-pt_annotation_append_int_string_string(anno, key, 42, "s1", "s2");
-/* SQL with binary UID: */
-pt_annotation_append_sql_uid_string_string(anno, PT_ANNOTATION_SQL_UID,
-                                         uid_bytes, uid_len, sql, args);
+pt_span_set_annotation_int(span, key, (int32_t)value);
+pt_span_set_annotation_long(span, key, (int64_t)value);
+pt_span_set_annotation_string(span, key, "string value");
+pt_span_set_annotation_string_string(span, key, "s1", "s2");
+
+/* same shapes on a span event: */
+pt_span_event_set_annotation_int(se, key, (int32_t)value);
+pt_span_event_set_annotation_long(se, key, (int64_t)value);
+pt_span_event_set_annotation_string(se, key, "string value");
+pt_span_event_set_annotation_string_string(se, key, "s1", "s2");
 ```
+
+Richer collector-side formats (SQL ids/UIDs, proxy-header metadata, ...) are recorded internally by the agent itself — e.g. via `pt_span_event_set_sql_query()` — and are not part of the public API.
 
 ### Custom annotation keys
 
@@ -485,7 +481,7 @@ Use large positive integers to avoid collisions with predefined keys:
 #define MY_ANNOTATION_USER_ID    10000
 #define MY_ANNOTATION_SESSION_ID 10001
 
-pt_annotation_append_string(anno, MY_ANNOTATION_USER_ID, user_id);
+pt_span_event_set_annotation_string(se, MY_ANNOTATION_USER_ID, user_id);
 ```
 
 Never record passwords, secrets, or PII in annotations.
@@ -498,7 +494,7 @@ The C API wraps the same span, span event, and annotation implementations as the
 
 ### 8.1 A Span Is Single-Threaded
 
-A span — including every span event and annotation handle derived from it — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked, so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
+A span — including every span event handle derived from it — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked, so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
 
 - The agent binds a span to the first thread that calls `pt_span_new_event()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`.
 - Because binding is lazy, a **complete handoff** is allowed: create the span on thread A, pass the handle to thread B, and never touch it from A again (the async example in [§11](#11-asynchronous-spans) hands the async span to a `pthread` this way).
@@ -509,21 +505,21 @@ A span — including every span event and annotation handle derived from it — 
 `pt_span_end()` and `pt_span_event_end()` are terminal:
 
 - A duplicate end call logs `span (event) is already finished` and does nothing.
-- After the end call, **every recording function** on that object becomes a warning no-op: property setters, error setters, `pt_span_event_set_sql_query()`, `pt_span_event_inject_context()`, header recording, and the `_get_annotations()` functions (which then return a no-op container). The data may already be in flight on the agent's gRPC worker thread. Record status codes, errors, and annotations **before** ending.
+- After the end call, **every recording function** on that object becomes a warning no-op: property setters, error setters, `pt_span_event_set_sql_query()`, `pt_span_event_inject_context()`, header recording, and the `_set_annotation_*()` functions. The data may already be in flight on the agent's gRPC worker thread. Record status codes, errors, and annotations **before** ending.
 - A span destroyed without `pt_span_end()` is **never sent** — its data is lost. `pt_span_destroy()` only releases the handle; it does not submit the span.
-- `pt_span_event_destroy()` and `pt_annotation_destroy()` are compatibility no-ops — they do **not** end the event. Forgetting `pt_span_event_end()` is not fixed by calling destroy.
+- `pt_span_event_destroy()` is a compatibility no-op — it does **not** end the event. Forgetting `pt_span_event_end()` is not fixed by calling destroy.
 
 ### 8.3 End Span Events in Nesting (LIFO) Order
 
 Span events form a stack. Calling `pt_span_event_end()` on an outer event while an inner event is still open implicitly finishes every event nested above it and logs `span event ended out of order`. Likewise, `pt_span_end()` force-finishes all still-open events and logs `N span event(s) not ended by user code`. The trace survives, but implicitly finished events get the wrong end time — their duration silently stretches to the enclosing end call.
 
-### 8.4 Event and Annotation Handles Are Non-Owning Views
+### 8.4 Event Handles Are Non-Owning Views
 
-`pt_span_event_t` and `pt_annotation_t` are raw pointers into storage owned by the parent span:
+`pt_span_event_t` is a raw pointer into storage owned by the parent span:
 
-- They stay valid only until `pt_span_destroy()` releases the parent span. Calling into an already-ended event or a sealed annotation **while the span handle is alive** is a safe warning no-op; calling through a handle **after the span is destroyed** is a use-after-free.
-- Destroy the span only after every derived event/annotation handle is out of use. Do not cache these handles in long-lived structures.
-- Passing `NULL` for an event or annotation handle is silently ignored, and event-creation functions return `NULL` when the span handle is `NULL` or already destroyed — so a crash on a NULL handle points at memory corruption, not at the agent.
+- It stays valid only until `pt_span_destroy()` releases the parent span. Calling into an already-ended event **while the span handle is alive** is a safe warning no-op; calling through a handle **after the span is destroyed** is a use-after-free.
+- Destroy the span only after every derived event handle is out of use. Do not cache these handles in long-lived structures.
+- Passing `NULL` for an event handle is silently ignored, and event-creation functions return `NULL` when the span handle is `NULL` or already destroyed — so a crash on a NULL handle points at memory corruption, not at the agent.
 
 ### 8.5 Event Depth and Count Limits (Overflow)
 
@@ -541,12 +537,12 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 
 `pt_span_get_event()` returns the top of the event stack: the most recently created event that has not ended. When the span is finished or has no active event, it returns a valid handle to a shared no-op event (and logs `abnormal span - has no event`), so the return value cannot be used to detect whether an event is active; `NULL` is returned only for a `NULL`/destroyed span handle or an internal failure. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `pt_span_event_t` returned by `pt_span_new_event()` explicitly.
 
-### 8.7 Annotation Container Rules
+### 8.7 Annotation Rules
 
-- The annotation container is **sealed** when its owner ends (`pt_span_event_end()`/`pt_span_end()`). Appends through a previously obtained `pt_annotation_t` then log `annotation is already finished` and do nothing.
+- The annotation list is **sealed** when its owner ends (`pt_span_event_end()`/`pt_span_end()`). A later `_set_annotation_*()` call logs a warning and does nothing.
 - Values are **copied at append time**: string arguments only need to remain valid for the duration of the call.
-- Append calls never fail visibly; on allocation failure the annotation is dropped with an error log.
-- There is no key de-duplication: appending the same key twice records two annotations.
+- Annotation calls never fail visibly; on allocation failure the annotation is dropped with an error log.
+- There is no key de-duplication: recording the same key twice records two annotations.
 - Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [§7](#7-annotations)).
 
 ### 8.8 Keep Operation and Error Names Low-Cardinality
@@ -561,8 +557,7 @@ pt_span_event_t se = pt_span_new_event(span, op);
 
 /* DO: fixed operation name, variable data as an annotation */
 pt_span_event_t se = pt_span_new_event(span, "getUser");
-pt_annotation_t anno = pt_span_event_get_annotations(se);
-pt_annotation_append_string(anno, MY_ANNOTATION_USER_ID, user_id);
+pt_span_event_set_annotation_string(se, MY_ANNOTATION_USER_ID, user_id);
 ```
 
 The `rpc_point` argument of `pt_agent_new_span*()` is not interned — it may safely carry the actual request path.
@@ -728,18 +723,14 @@ static void call_downstream(pt_span_t span) {
     pt_span_event_inject_context(se, &writer);
 
     /* Annotate the outbound URL */
-    pt_annotation_t anno = pt_span_event_get_annotations(se);
-    pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL,
-                                "http://downstream-host:8090/api");
-    pt_annotation_destroy(anno);
+    pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL,
+                                        "http://downstream-host:8090/api");
 
     /* Issue the request */
     int status = my_http_get(host, "/api", &out);
     my_headers_destroy(&out);
 
-    pt_annotation_t anno2 = pt_span_event_get_annotations(se);
-    pt_annotation_append_int(anno2, PT_ANNOTATION_HTTP_STATUS_CODE, status);
-    pt_annotation_destroy(anno2);
+    pt_span_event_set_annotation_int(se, PT_ANNOTATION_HTTP_STATUS_CODE, status);
 
     pt_span_event_end(se);
     pt_span_event_destroy(se);
@@ -953,14 +944,13 @@ const char* safe_args[] = {"[REDACTED]"};
 pt_span_event_set_sql_query(se, sql, safe_args, 1);
 ```
 
-### Keep annotation handles short-lived
+### Record annotations before the owner ends
 
-`pt_annotation_t` handles are non-owning views. They do not leak if `pt_annotation_destroy()` is omitted, but keeping their scope short avoids accidental use after the parent span or span event is finished:
+Annotations are recorded directly on the span or span-event handle; once the owner ends, further annotation calls are warning no-ops:
 
 ```c
-pt_annotation_t anno = pt_span_event_get_annotations(se);
-pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, url);
-pt_annotation_destroy(anno);   /* optional no-op */
+pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL, url);
+pt_span_event_end(se);   /* annotations recorded after this are dropped */
 ```
 
 ### Shut down cleanly

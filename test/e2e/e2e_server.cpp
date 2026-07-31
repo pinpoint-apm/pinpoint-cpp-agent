@@ -167,15 +167,12 @@ void on_annotated(const httplib::Request& req, httplib::Response& res) {
             ev->SetServiceType(pinpoint::SERVICE_TYPE_CPP_FUNC);
             ev->SetDestination("test-dest-" + std::to_string(i));
             ev->SetEndPoint("test-endpoint-" + std::to_string(i));
-            auto ann = ev->GetAnnotations();
-            if (ann) {
-                ann->AppendString(pinpoint::ANNOTATION_HTTP_URL,
-                                  "/annotated/" + std::to_string(i));
-                ann->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
-                ann->AppendStringString(pinpoint::ANNOTATION_HTTP_REQUEST_HEADER,
-                                        "X-Custom-" + std::to_string(i),
-                                        "value-" + std::to_string(i));
-            }
+            ev->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL,
+                              "/annotated/" + std::to_string(i));
+            ev->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
+            ev->SetAnnotation(pinpoint::ANNOTATION_HTTP_REQUEST_HEADER,
+                              std::make_pair("X-Custom-" + std::to_string(i),
+                                             "value-" + std::to_string(i)));
         }
         ev->EndEvent();
     }
@@ -207,12 +204,9 @@ void on_mixed(const httplib::Request& req, httplib::Response& res) {
         ev->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
         ev->SetDestination("downstream-service");
         ev->SetEndPoint("downstream:8080");
-        auto ann = ev->GetAnnotations();
-        if (ann) {
-            ann->AppendString(pinpoint::ANNOTATION_HTTP_URL,
-                              "http://downstream:8080/api/data");
-            ann->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
-        }
+        ev->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL,
+                          std::string("http://downstream:8080/api/data"));
+        ev->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
     }
     ev->EndEvent();
 
@@ -292,19 +286,11 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
                        std::chrono::milliseconds(2));
     span->SetAcceptorHost(req.get_header_value("Host"));
 
-    const pinpoint::SqlUid sql_uid = {
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
-    auto span_annotations = span->GetAnnotations();
-    span_annotations->AppendInt(9100, 42);
-    span_annotations->AppendLong(9101, 1234567890123LL);
-    span_annotations->AppendString(9102, "cpp-it-feature-span");
-    span_annotations->AppendStringString(9103, "feature-key", "feature-value");
-    span_annotations->AppendIntStringString(9104, 7, "left", "right");
-    span_annotations->AppendSqlUidStringString(
-        9105, sql_uid, "SELECT * FROM feature WHERE id = ?", "17");
-    span_annotations->AppendLongIntIntByteByteString(
-        9106, 123456789LL, 10, 20, 1, 2, "network-detail");
+    span->SetAnnotation(9100, 42);
+    span->SetAnnotation(9101, 1234567890123LL);
+    span->SetAnnotation(9102, std::string("cpp-it-feature-span"));
+    span->SetAnnotation(9103, std::make_pair(std::string("feature-key"),
+                                             std::string("feature-value")));
 
     auto feature_event = span->NewSpanEvent(
         "feature-event-initial", pinpoint::SERVICE_TYPE_CPP_FUNC);
@@ -314,15 +300,11 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
                                 std::chrono::milliseconds(1));
     feature_event->SetDestination("feature-destination");
     feature_event->SetEndPoint("feature-endpoint:1234");
-    auto event_annotations = feature_event->GetAnnotations();
-    event_annotations->AppendInt(9200, -1);
-    event_annotations->AppendLong(9201, -9876543210LL);
-    event_annotations->AppendString(9202, "event-string");
-    event_annotations->AppendStringString(9203, "event-key", "event-value");
-    event_annotations->AppendIntStringString(9204, 99, "event-left", "event-right");
-    event_annotations->AppendSqlUidStringString(9205, sql_uid, "sql", "bind");
-    event_annotations->AppendLongIntIntByteByteString(
-        9206, 5, 6, 7, 8, 9, "event-network");
+    feature_event->SetAnnotation(9200, -1);
+    feature_event->SetAnnotation(9201, -9876543210LL);
+    feature_event->SetAnnotation(9202, std::string("event-string"));
+    feature_event->SetAnnotation(9203, std::make_pair(std::string("event-key"),
+                                                      std::string("event-value")));
     feature_event->EndEvent();
 
     auto sql_event = span->NewSpanEvent("feature-sql", pinpoint::SERVICE_TYPE_MYSQL_QUERY);
@@ -366,8 +348,8 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
     std::thread async_worker([&async_span, &async_complete,
                               &async_trace_matches, &parent_trace_id]() {
         auto event = async_span->NewSpanEvent("feature-async-work");
-        event->GetAnnotations()->AppendString(pinpoint::ANNOTATION_API,
-                                               "feature-async-work");
+        event->SetAnnotation(pinpoint::ANNOTATION_API,
+                             std::string("feature-async-work"));
         event->EndEvent();
         async_trace_matches = async_span->GetTraceId() == parent_trace_id;
         async_span->EndSpan();

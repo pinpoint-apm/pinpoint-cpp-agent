@@ -56,7 +56,7 @@ Trace context (trace ID, span ID, sampling decision, etc.) is propagated across 
 | `Agent` | Entry point that manages configuration, span creation, and shutdown lifecycle. |
 | `Span` | Top-level trace segment for an incoming request or logical operation. |
 | `SpanEvent` | Fine-grained operations inside a span. |
-| `Annotation` | Helper interface to append structured key/value metadata. |
+| `AnnotationValue` | Variant value (`int32_t`, `int64_t`, `std::string`, or `std::pair<std::string, std::string>`) recorded via `SetAnnotation()`. |
 | `TraceContextReader` / `TraceContextWriter` | Context propagation adapters for distributed tracing headers. |
 | `HeaderReader` | Structured access to HTTP headers for recording request/response metadata. |
 | `CallStackReader` | Optional stack trace provider for enriched error reporting. |
@@ -402,24 +402,34 @@ pinpoint::ANNOTATION_HTTP_REQUEST_HEADER    // HTTP request headers
 pinpoint::ANNOTATION_HTTP_RESPONSE_HEADER   // HTTP response headers
 ```
 
+### Annotation Values
+
+`Span::SetAnnotation()` and `SpanEvent::SetAnnotation()` take a key and a `pinpoint::AnnotationValue` — a `std::variant` over the four supported payload shapes:
+
+| Alternative | Collector payload |
+|---|---|
+| `int32_t` | int |
+| `int64_t` | long |
+| `std::string` | string |
+| `std::pair<std::string, std::string>` | string + string |
+
+Richer collector-side formats (SQL ids, proxy-header metadata, ...) are recorded internally by the agent itself and are not part of the public API.
+
 ### Adding Annotations to Spans
 
 ```cpp
-auto annotations = span->GetAnnotations();
-
 // String annotations
-annotations->AppendString(pinpoint::ANNOTATION_API, "getUserById");
-annotations->AppendString(pinpoint::ANNOTATION_HTTP_URL, "http://api.example.com/users/123");
+span->SetAnnotation(pinpoint::ANNOTATION_API, std::string("getUserById"));
+span->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string("http://api.example.com/users/123"));
 
 // Integer annotation
-annotations->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
+span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 
 // Long annotation
-annotations->AppendLong(12345, 1234567890L);
+span->SetAnnotation(12345, int64_t{1234567890});
 
-// Compound forms
-annotations->AppendStringString(100, "key", "value");
-annotations->AppendIntStringString(200, 42, "description", "value");
+// String-pair annotation
+span->SetAnnotation(100, std::make_pair(std::string("key"), std::string("value")));
 ```
 
 ### Adding Annotations to Span Events
@@ -429,9 +439,8 @@ auto se = span->NewSpanEvent("external_call");
 se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
 se->SetEndPoint("localhost:9000");
 
-auto anno = se->GetAnnotations();
-anno->AppendString(pinpoint::ANNOTATION_HTTP_URL, url);
-anno->AppendInt(pinpoint::ANNOTATION_HTTP_STATUS_CODE, status_code);
+se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, std::string(url));
+se->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, status_code);
 
 se->EndEvent();
 ```
@@ -445,10 +454,9 @@ constexpr int32_t CUSTOM_USER_ID    = 10000;
 constexpr int32_t CUSTOM_SESSION_ID = 10001;
 constexpr int32_t CUSTOM_CACHE_HIT  = 10002;
 
-auto annotations = span->GetAnnotations();
-annotations->AppendString(CUSTOM_USER_ID, "user-123");
-annotations->AppendString(CUSTOM_SESSION_ID, "session-456");
-annotations->AppendInt(CUSTOM_CACHE_HIT, 1);  // 1 = hit, 0 = miss
+span->SetAnnotation(CUSTOM_USER_ID, std::string("user-123"));
+span->SetAnnotation(CUSTOM_SESSION_ID, std::string("session-456"));
+span->SetAnnotation(CUSTOM_CACHE_HIT, 1);  // 1 = hit, 0 = miss
 ```
 
 **Guideline**: Carefully sanitize annotations so that sensitive data (passwords, secrets, PII) is never recorded.
@@ -472,18 +480,18 @@ A `Span` instance — including every `SpanEvent` it hands out — must be used 
 `EndSpan()` and `EndEvent()` are terminal:
 
 - A duplicate `EndSpan()`/`EndEvent()` logs `span (event) is already finished` and does nothing.
-- After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `GetAnnotations()` (which then returns a shared no-op annotation). The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
+- After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `SetAnnotation()`. The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
 - A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span. This is why RAII guards (`helper::ScopedSpanEvent`, or a `SpanGuard` as shown in [Best Practices](#14-best-practices)) are the recommended pattern.
 
 ### 6.3 End Span Events in Nesting (LIFO) Order
 
 Span events form a stack. Calling `EndEvent()` on an outer event while an inner event is still open implicitly finishes every event nested above it and logs `span event ended out of order`. Likewise, `EndSpan()` force-finishes all still-open events and logs `N span event(s) not ended by user code`. The trace survives, but implicitly finished events get the wrong end time — their duration silently stretches to the enclosing end call.
 
-### 6.4 `SpanEventPtr` and `AnnotationPtr` Are Non-Owning
+### 6.4 `SpanEventPtr` Is Non-Owning
 
-`SpanEventPtr` and `AnnotationPtr` are raw pointers whose objects are owned by the parent span:
+`SpanEventPtr` is a raw pointer whose object is owned by the parent span:
 
-- They stay valid only while you hold the parent `SpanPtr`. Calling into an already-ended event or a sealed annotation while the span is alive is a safe warning no-op; calling through a pointer that **outlives the span** is a use-after-free.
+- It stays valid only while you hold the parent `SpanPtr`. Calling into an already-ended event while the span is alive is a safe warning no-op; calling through a pointer that **outlives the span** is a use-after-free.
 - Do not cache these pointers in long-lived structures. Obtain them, use them, and let them go within the span's scope.
 
 ### 6.5 Event Depth and Count Limits (Overflow)
@@ -502,12 +510,12 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 
 `GetSpanEvent()` returns the top of the event stack: the most recently created event that has not ended. It never returns null — when the span is finished or has no active event, it returns a shared no-op event and logs `abnormal span - has no event`. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `SpanEventPtr` returned by `NewSpanEvent()` explicitly.
 
-### 6.7 Annotation Container Rules
+### 6.7 Annotation Rules
 
-- The annotation container is **sealed** when its owner ends (`EndEvent()`/`EndSpan()`). Appends through a previously obtained `AnnotationPtr` then log `annotation is already finished` and do nothing.
-- Values are **copied at append time**: `string_view` arguments only need to remain valid for the duration of the call.
-- Append calls never throw; on allocation failure the annotation is dropped with an error log.
-- There is no key de-duplication: appending the same key twice records two annotations.
+- The annotation list is **sealed** when its owner ends (`EndEvent()`/`EndSpan()`). A later `SetAnnotation()` logs a warning and does nothing.
+- The value is **moved (or copied) at call time**: the `AnnotationValue` argument does not need to outlive the call.
+- `SetAnnotation()` never throws; on allocation failure the annotation is dropped with an error log.
+- There is no key de-duplication: recording the same key twice records two annotations.
 - Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [§5](#5-annotations)).
 
 ### 6.8 Keep Operation and Error Names Low-Cardinality
@@ -520,7 +528,7 @@ auto se = span->NewSpanEvent("getUser-" + user_id);
 
 // DO: fixed operation name, variable data as an annotation
 auto se = span->NewSpanEvent("getUser");
-se->GetAnnotations()->AppendString(CUSTOM_USER_ID, user_id);
+se->SetAnnotation(CUSTOM_USER_ID, std::string(user_id));
 ```
 
 The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry the actual request path.

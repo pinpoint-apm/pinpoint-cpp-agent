@@ -27,17 +27,13 @@ namespace pinpoint {
 
     static Noop& getNoop() {
         // Intentionally heap-allocated and never destroyed, mirroring the
-        // Logger and global-agent singletons. noopSpanEvent()/noopAnnotation()/
+        // Logger and global-agent singletons. noopSpanEvent()/
         // unsampledSpanEvent() hand out raw pointers owned by this instance, and
         // a host or detached thread may still trace during process-exit static
         // destruction. A function-local value static would be destroyed by then,
         // turning those late calls into use-after-destruction.
         static Noop* noop = new Noop();
         return *noop;
-    }
-
-    AnnotationPtr noopAnnotation() {
-        return getNoop().annotation();
     }
 
     SpanEventPtr noopSpanEvent() {

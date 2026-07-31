@@ -19,11 +19,11 @@
  * @brief C++ implementation of the pure-C public API declared in tracer_c.h.
  *
  * Agent and span handles are opaque registry tokens; each live registry entry
- * owns a heap wrapper containing a C++ shared_ptr. Span-event and annotation
- * handles are non-owning raw pointers cast directly to the opaque handle type
- * — creating one allocates nothing and destroying one is a no-op. Their
- * pointees are owned by the parent span/span event and must not be used after
- * that owner is destroyed.
+ * owns a heap wrapper containing a C++ shared_ptr. Span-event handles are
+ * non-owning raw pointers cast directly to the opaque handle type — creating
+ * one allocates nothing and destroying one is a no-op. Their pointees are
+ * owned by the parent span and must not be used after that owner is
+ * destroyed.
  *
  * Adapter objects (CContextReader, CHeaderReader, CContextWriter,
  * CCallstackReader) are constructed on the stack at each call site. Their
@@ -302,15 +302,14 @@ static void destroy_handle(pt_span_t handle, pt_span_t noop_handle) {
 // Agent and span handle values are the registry tokens described above; their
 // registry-owned wrappers carry the shared_ptr that keeps the C++ object alive.
 //
-// Span-event and annotation handles wrap non-owning raw pointers: the handle
-// IS the pointer, reinterpret_cast to the opaque handle type. pt_span_event_s
-// and pt_annotation_s are never defined — the cast is only ever reversed,
-// never dereferenced through the handle type. This keeps per-event and
-// per-annotation handle traffic allocation-free (including the per-span
-// disabled event, which cannot be a static sentinel), makes destroy a no-op,
-// and collapses the shared noop/unsampled singletons to one handle value per
-// pointee without any sentinel bookkeeping. A null pointer maps to a null
-// handle.
+// Span-event handles wrap non-owning raw pointers: the handle IS the pointer,
+// reinterpret_cast to the opaque handle type. pt_span_event_s is never
+// defined — the cast is only ever reversed, never dereferenced through the
+// handle type. This keeps per-event handle traffic allocation-free (including
+// the per-span disabled event, which cannot be a static sentinel), makes
+// destroy a no-op, and collapses the shared noop/unsampled singletons to one
+// handle value per pointee without any sentinel bookkeeping. A null pointer
+// maps to a null handle.
 // ============================================================================
 
 static pt_span_event_t make_span_event_handle(pinpoint::SpanEventPtr ptr) {
@@ -321,27 +320,12 @@ static pinpoint::SpanEventPtr span_event_of(pt_span_event_t handle) {
     return reinterpret_cast<pinpoint::SpanEventPtr>(handle);
 }
 
-static pt_annotation_t make_annotation_handle(pinpoint::AnnotationPtr ptr) {
-    return reinterpret_cast<pt_annotation_t>(ptr);
-}
-
-static pinpoint::AnnotationPtr annotation_of(pt_annotation_t handle) {
-    return reinterpret_cast<pinpoint::AnnotationPtr>(handle);
-}
-
-// pt_handle_call overloads for the pointer-cast handles: unwrap and
+// pt_handle_call overload for the pointer-cast handle: unwrap and
 // null-check, then hand the lambda the C++ pointer itself.
 template <typename F>
 static void pt_handle_call(pt_span_event_t handle, F&& fn) {
     if (auto* se = span_event_of(handle)) {
         std::forward<F>(fn)(se);
-    }
-}
-
-template <typename F>
-static void pt_handle_call(pt_annotation_t handle, F&& fn) {
-    if (auto* anno = annotation_of(handle)) {
-        std::forward<F>(fn)(anno);
     }
 }
 
@@ -351,7 +335,7 @@ static void pt_handle_call(pt_annotation_t handle, F&& fn) {
 // The C++ layer treats noop work as free. To preserve that at the C boundary we
 // hand back one static sentinel handle per noop owner type so hot disabled
 // paths skip handle allocation/free and refcount churn on the shared noop
-// singletons. Event/annotation handles need no sentinels — they are pointer
+// singletons. Event handles need no sentinels — they are pointer
 // casts, so singleton pointees collapse to one handle value by construction.
 //
 // Lazy function-local statics give thread-safe initialization (C++11) and the
@@ -957,11 +941,37 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
     });
 }
 
-pt_annotation_t pt_span_get_annotations(pt_span_t span) {
-    return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
-        return pt_handle_call(span, static_cast<pt_annotation_t>(nullptr),
-                              [](pt_span_t valid) {
-            return make_annotation_handle(valid->ptr->GetAnnotations());
+void pt_span_set_annotation_int(pt_span_t span, int32_t key, int32_t value) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetAnnotation(key, value);
+        });
+    });
+}
+
+void pt_span_set_annotation_long(pt_span_t span, int32_t key, int64_t value) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetAnnotation(key, value);
+        });
+    });
+}
+
+void pt_span_set_annotation_string(pt_span_t span, int32_t key, const char* value) {
+    pt_api_call(__func__, [&] {
+        if (!value) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetAnnotation(key, std::string(value));
+        });
+    });
+}
+
+void pt_span_set_annotation_string_string(pt_span_t span, int32_t key,
+                                          const char* value1, const char* value2) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetAnnotation(key, std::make_pair(std::string(value1 ? value1 : ""),
+                                                          std::string(value2 ? value2 : "")));
         });
     });
 }
@@ -1106,93 +1116,38 @@ void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
     });
 }
 
-pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se) {
-    return pt_api_call(__func__, static_cast<pt_annotation_t>(nullptr), [&] {
-        auto* ev = span_event_of(se);
-        return ev ? make_annotation_handle(ev->GetAnnotations())
-                  : static_cast<pt_annotation_t>(nullptr);
-    });
-}
-
-// ============================================================================
-// Annotation operations
-// ============================================================================
-
-void pt_annotation_destroy(pt_annotation_t anno) {
-    // Annotation handles are non-owning pointer casts; there is nothing to
-    // free. Kept as a safe no-op so existing callers remain valid.
-    (void)anno;
-}
-
-void pt_annotation_append_int(pt_annotation_t anno, int32_t key, int32_t value) {
+void pt_span_event_set_annotation_int(pt_span_event_t se, int32_t key, int32_t value) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendInt(key, value);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetAnnotation(key, value);
         });
     });
 }
 
-void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value) {
+void pt_span_event_set_annotation_long(pt_span_event_t se, int32_t key, int64_t value) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendLong(key, value);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetAnnotation(key, value);
         });
     });
 }
 
-void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* value) {
+void pt_span_event_set_annotation_string(pt_span_event_t se, int32_t key,
+                                         const char* value) {
     pt_api_call(__func__, [&] {
         if (!value) return;
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendString(key, value);
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetAnnotation(key, std::string(value));
         });
     });
 }
 
-void pt_annotation_append_string_string(pt_annotation_t anno, int32_t key,
-                                        const char* s1, const char* s2) {
+void pt_span_event_set_annotation_string_string(pt_span_event_t se, int32_t key,
+                                                const char* value1, const char* value2) {
     pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendStringString(key, s1 ? s1 : "", s2 ? s2 : "");
-        });
-    });
-}
-
-void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
-                                            int i, const char* s1, const char* s2) {
-    pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendIntStringString(key, i, s1 ? s1 : "", s2 ? s2 : "");
-        });
-    });
-}
-
-void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t key,
-                                              const unsigned char* uid, int uid_len,
-                                              const char* s1, const char* s2) {
-    pt_api_call(__func__, [&] {
-        if (!uid || uid_len <= 0) return;
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            pinpoint::SqlUid sql_uid{};
-            // Only a fixed-size SQL UID is supported; reject any other length.
-            if (static_cast<size_t>(uid_len) != sql_uid.size()) return;
-            std::memcpy(sql_uid.data(), uid, sql_uid.size());
-            an->AppendSqlUidStringString(key, sql_uid,
-                                         s1 ? s1 : "", s2 ? s2 : "");
-        });
-    });
-}
-
-void pt_annotation_append_long_int_int_byte_byte_string(pt_annotation_t anno,
-                                                        int32_t key,
-                                                        int64_t l,
-                                                        int32_t i1, int32_t i2,
-                                                        int32_t b1, int32_t b2,
-                                                        const char* s) {
-    pt_api_call(__func__, [&] {
-        pt_handle_call(anno, [&](pinpoint::AnnotationPtr an) {
-            an->AppendLongIntIntByteByteString(key, l, i1, i2, b1, b2,
-                                               s ? s : "");
+        pt_handle_call(se, [&](pinpoint::SpanEventPtr ev) {
+            ev->SetAnnotation(key, std::make_pair(std::string(value1 ? value1 : ""),
+                                                  std::string(value2 ? value2 : "")));
         });
     });
 }

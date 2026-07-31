@@ -144,8 +144,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
     pt_span_event_inject_context(se, &ctx_writer);
 
     /* Annotate the outbound URL. */
-    pt_annotation_t anno = pt_span_event_get_annotations(se);
-    pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "localhost:8090/foo");
+    pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL, "localhost:8090/foo");
 
     /* Actually issue the GET. */
     hlc_client_t cli = hlc_client_create(downstream_host);
@@ -157,7 +156,7 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
         if (status == 200) {
             printf("%s\n", hlc_result_body(result));
         }
-        pt_annotation_append_int(anno, PT_ANNOTATION_HTTP_STATUS_CODE, status);
+        pt_span_event_set_annotation_int(se, PT_ANNOTATION_HTTP_STATUS_CODE, status);
     } else {
         const char* err_msg = hlc_result_error_message(result);
         printf("HTTP error: %s\n", err_msg);
@@ -165,7 +164,6 @@ static void on_foo(const hlc_request_t* req, hlc_response_t* res, void* userdata
         pt_span_set_error(span, "http client error");
     }
 
-    pt_annotation_destroy(anno);
     hlc_result_destroy(result);
     hlc_client_destroy(cli);
     hlc_mutable_headers_destroy(out_headers);

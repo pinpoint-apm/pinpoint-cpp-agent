@@ -111,12 +111,10 @@ int main(void) {
     header_map_t context_headers = {0};
     header_map_t logging_headers = {0};
     header_map_t cookie_headers = {0};
-    unsigned char uid[16];
     char trace_id[PT_TRACE_ID_MAX];
     char short_trace_id[8];
     size_t trace_len;
     size_t short_len;
-    size_t i;
     pthread_t worker;
     async_work_t async_work;
     char default_agent_name[32];
@@ -206,18 +204,10 @@ int main(void) {
         span, "127.0.0.1", "localhost:8092", &request_reader, &cookie_reader);
     pt_span_set_logging(span, &logging_writer);
 
-    pt_annotation_t span_annotation = pt_span_get_annotations(span);
-    pt_annotation_append_int(span_annotation, 9300, 42);
-    pt_annotation_append_long(span_annotation, 9301, INT64_C(1234567890123));
-    pt_annotation_append_string(span_annotation, 9302, "c-api-span");
-    pt_annotation_append_string_string(span_annotation, 9303, "left", "right");
-    pt_annotation_append_int_string_string(span_annotation, 9304, 7, "a", "b");
-    for (i = 0; i < sizeof(uid); ++i) uid[i] = (unsigned char)i;
-    pt_annotation_append_sql_uid_string_string(
-        span_annotation, 9305, uid, 16, "SELECT ?", "1");
-    pt_annotation_append_long_int_int_byte_byte_string(
-        span_annotation, 9306, 100, 10, 20, 1, 2, "network");
-    pt_annotation_destroy(span_annotation);
+    pt_span_set_annotation_int(span, 9300, 42);
+    pt_span_set_annotation_long(span, 9301, INT64_C(1234567890123));
+    pt_span_set_annotation_string(span, 9302, "c-api-span");
+    pt_span_set_annotation_string_string(span, 9303, "left", "right");
 
     pt_span_event_t event = pt_span_new_event_with_type(
         span, "c-api-event-initial", PT_SERVICE_TYPE_CPP_HTTP_CLIENT);
@@ -230,17 +220,10 @@ int main(void) {
     pt_span_event_inject_context(event, &context_writer);
     pt_trace_http_client_response(event, 200, &response_reader);
 
-    pt_annotation_t event_annotation = pt_span_event_get_annotations(event);
-    pt_annotation_append_int(event_annotation, 9400, -1);
-    pt_annotation_append_long(event_annotation, 9401, -2);
-    pt_annotation_append_string(event_annotation, 9402, "c-api-event");
-    pt_annotation_append_string_string(event_annotation, 9403, "key", "value");
-    pt_annotation_append_int_string_string(event_annotation, 9404, 9, "x", "y");
-    pt_annotation_append_sql_uid_string_string(
-        event_annotation, 9405, uid, 16, "sql", "args");
-    pt_annotation_append_long_int_int_byte_byte_string(
-        event_annotation, 9406, 5, 6, 7, 8, 9, "details");
-    pt_annotation_destroy(event_annotation);
+    pt_span_event_set_annotation_int(event, 9400, -1);
+    pt_span_event_set_annotation_long(event, 9401, -2);
+    pt_span_event_set_annotation_string(event, 9402, "c-api-event");
+    pt_span_event_set_annotation_string_string(event, 9403, "key", "value");
     pt_span_event_end(event);
     pt_span_event_destroy(event);
 
@@ -287,7 +270,8 @@ int main(void) {
     /* Exercise the public null-handle exception firewall. */
     pt_span_end(NULL);
     pt_span_event_end(NULL);
-    pt_annotation_append_int(NULL, 1, 1);
+    pt_span_set_annotation_int(NULL, 1, 1);
+    pt_span_event_set_annotation_int(NULL, 1, 1);
 
     pt_agent_t global = pt_global_agent();
     if (global == NULL || !pt_agent_is_enabled(global)) {

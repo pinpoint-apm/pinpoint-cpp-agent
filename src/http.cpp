@@ -23,8 +23,10 @@
 
 #include "absl/strings/str_split.h"
 #include "absl/strings/numbers.h"
+#include "annotation.h"
 #include "logging.h"
 #include "pinpoint/tracer.h"
+#include "span.h"
 #include "utility.h"
 #include "http.h"
 
@@ -76,7 +78,7 @@ namespace pinpoint {
           dump_all_headers_(cfg_.size() == 1 && compare_string(cfg_[0], "HEADERS-ALL")) {
     }
 
-    void HttpHeaderRecorder::recordHeader(const HeaderReader& header, AnnotationPtr annotation) {
+    void HttpHeaderRecorder::recordHeader(const HeaderReader& header, PinpointAnnotation* annotation) {
         if (cfg_.empty() || annotation == nullptr) {
             return;
         }
@@ -462,7 +464,7 @@ namespace pinpoint {
         }
     }
 
-    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, AnnotationPtr annotation) {
+    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation) {
         if (annotation == nullptr) {
             return;
         }
@@ -554,7 +556,14 @@ namespace pinpoint {
                 span->SetRemoteAddress(r_addr);
                 span->SetEndPoint(endpoint);
 
-                HttpTracerUtil::setProxyHeader(request_reader, span->GetAnnotations());
+                // The proxy-header annotation uses an internal-only payload
+                // format, so it is recorded straight into the recording
+                // span's annotation container; noop/unsampled spans have
+                // none and record nothing, as before.
+                if (auto* impl = dynamic_cast<SpanImpl*>(span.get())) {
+                    HttpTracerUtil::setProxyHeader(request_reader,
+                                                   impl->getSpanData()->getAnnotations());
+                }
                 span->RecordHeader(HTTP_REQUEST, request_reader);
             }
         }
@@ -590,7 +599,7 @@ namespace pinpoint {
             span_event->SetServiceType(SERVICE_TYPE_CPP_HTTP_CLIENT);
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
-            span_event->GetAnnotations()->AppendString(ANNOTATION_HTTP_URL, url);
+            span_event->SetAnnotation(ANNOTATION_HTTP_URL, std::string(url));
             span_event->RecordHeader(HTTP_REQUEST, request_reader);
         }
 
@@ -606,7 +615,7 @@ namespace pinpoint {
             if (!span_event) {
                 return;
             }
-            span_event->GetAnnotations()->AppendInt(ANNOTATION_HTTP_STATUS_CODE, status_code);
+            span_event->SetAnnotation(ANNOTATION_HTTP_STATUS_CODE, status_code);
             span_event->RecordHeader(HTTP_RESPONSE, response_reader);
         }
     } // namespace helper

@@ -78,14 +78,14 @@ namespace pinpoint {
                 [&](const std::string& v) {
                     annotation_value->set_stringvalue(v);
                 },
-                [&](const StringStringValue& v) {
+                [&](const std::pair<std::string, std::string>& v) {
                     auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s1->set_value(v.stringValue1);
+                    s1->set_value(v.first);
                     ssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s2->set_value(v.stringValue2);
+                    s2->set_value(v.second);
                     ssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
                     annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);

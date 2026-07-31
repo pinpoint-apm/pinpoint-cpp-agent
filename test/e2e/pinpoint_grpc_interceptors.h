@@ -93,11 +93,8 @@ class PinpointClientInterceptor final : public grpc::experimental::Interceptor {
       if (span_event_) {
         span_event_->SetServiceType(pinpoint::SERVICE_TYPE_GRPC_CLIENT);
         span_event_->SetDestination(remote);
-        auto ann = span_event_->GetAnnotations();
-        if (ann) {
-          ann->AppendString(pinpoint::ANNOTATION_HTTP_URL,
-                            "grpc://" + remote + rpc_method);
-        }
+        span_event_->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL,
+                                   "grpc://" + remote + rpc_method);
       }
 
       if (span_event_) {

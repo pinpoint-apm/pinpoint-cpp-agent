@@ -2216,7 +2216,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
     // trace id the way production would before this span is serialized.
     span_data->setTraceId(mock_agent_service_->generateTraceId());
     auto span_event = make_test_span_event_unique(*span_parent, "child-op");
-    span_event->GetAnnotations()->AppendString(201, "event-annotation");
+    span_event->SetAnnotation(201, std::string("event-annotation"));
     span_data->addSpanEvent(std::move(span_event));
     span_data->finishSpanEvent();
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));

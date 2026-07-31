@@ -57,10 +57,12 @@ namespace pinpoint {
         /// by this event (trace id, generated child span id, parent app info)
         /// into an outbound propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
-        // Out-of-line: returns the noop annotation once the event is
-        // finished, since a finished event's annotation list may already be
-        // under serialization on the gRPC worker thread.
-        AnnotationPtr GetAnnotations() const override;
+        /// @brief Records an annotation on this event. Out-of-line: the
+        /// payload conversion allocates, so it needs the exception boundary
+        /// in span_event.cpp, and a finished event's annotation list may
+        /// already be under serialization on the gRPC worker thread, so the
+        /// call degrades to a warning no-op then.
+        void SetAnnotation(int32_t key, AnnotationValue value) override;
         /// @brief Finalizes this event through the parent span. Guarded so a
         /// duplicate call is a warning no-op instead of popping (and thereby
         /// corrupting) another event from the span's event stack.
@@ -157,16 +159,15 @@ namespace pinpoint {
     private:
         /// @brief Lazily allocates the annotation container on first use and
         /// returns it. Subsequent calls reuse the same instance, so callers can
-        /// rely on a non-null result. Kept const (with a mutable backing field)
-        /// so the const GetAnnotations() override can materialize it on demand.
-        PinpointAnnotation* ensureAnnotations() const;
+        /// rely on a non-null result.
+        PinpointAnnotation* ensureAnnotations();
 
         /// @brief Returns true (after logging a warning) once the event has been
         /// finished, signalling that a recording accessor or mutator must
         /// no-op. A finished event may already sit in a chunk under
         /// serialization on the gRPC worker thread, so mutating a field the
         /// worker reads (string reassignment, annotation-list growth) would be
-        /// a data race. Mirrors the guard used by GetAnnotations()/EndEvent().
+        /// a data race. Mirrors the guard used by EndEvent().
         bool warnIfFinished() const;
 
         // Non-owning by design. SpanData owns SpanEventImpl instances and keeps
@@ -198,7 +199,7 @@ namespace pinpoint {
         std::atomic<bool> finished_{false};
         // Created lazily via ensureAnnotations(); stays null until the first
         // annotation is recorded or the container is accessed.
-        mutable std::unique_ptr<PinpointAnnotation> annotations_;
+        std::unique_ptr<PinpointAnnotation> annotations_;
     };
 
     /**
@@ -237,7 +238,7 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override;
 
-        AnnotationPtr GetAnnotations() const override;
+        void SetAnnotation(int32_t key, AnnotationValue value) override {}
         void EndEvent() override;
 
     private:

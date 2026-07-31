@@ -29,10 +29,6 @@
 namespace pinpoint {
 
     /**
-     * @brief Returns a shared noop annotation instance.
-     */
-    AnnotationPtr noopAnnotation();
-    /**
      * @brief Returns a shared noop span event instance.
      */
     SpanEventPtr noopSpanEvent();
@@ -60,30 +56,6 @@ namespace pinpoint {
     AgentPtr noopAgent();
 
     /**
-     * @brief Annotation implementation that ignores all appended values.
-     */
-    class NoopAnnotation final : public Annotation {
-    public:
-        NoopAnnotation() {}
-        ~NoopAnnotation() override {}
-
-        /// @brief No-op append for integer annotations.
-        void AppendInt(int32_t key, int32_t i) override {}
-        /// @brief No-op append for long annotations.
-        void AppendLong(int32_t key, int64_t l) override {}
-        /// @brief No-op append for string annotations.
-        void AppendString(int32_t key, std::string_view s) override {}
-        /// @brief No-op append for string/string annotations.
-        void AppendStringString(int32_t key, std::string_view s1, std::string_view s2) override {}
-        /// @brief No-op append for int/string/string annotations.
-        void AppendIntStringString(int32_t key, int i, std::string_view s1, std::string_view s2) override {}
-        /// @brief No-op append for bytes/string/string annotations.
-        void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) override {}
-        /// @brief No-op append for extended RPC annotations.
-        void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s) override {}
-    };
-
-    /**
      * @brief Span event implementation that ignores all recording operations.
      */
     class NoopSpanEvent : public SpanEvent {
@@ -104,7 +76,7 @@ namespace pinpoint {
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override {}
 
-        AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
+        void SetAnnotation(int32_t key, AnnotationValue value) override {}
         void EndEvent() override {}
     };
 
@@ -149,11 +121,11 @@ namespace pinpoint {
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override {}
         void SetLogging(TraceContextWriter& writer) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
+        void SetAnnotation(int32_t key, AnnotationValue value) override {}
 
         std::string GetTraceId() override { return {}; }
         int64_t GetSpanId() override { return 0; }
         bool IsSampled() override { return false; }
-        AnnotationPtr GetAnnotations() const override { return noopAnnotation(); }
     };
 
     /**
@@ -242,8 +214,7 @@ namespace pinpoint {
             noop_agent_(std::make_shared<NoopAgent>()),
             noop_span_ (std::make_shared<NoopSpan>()),
             noop_event_(std::make_unique<NoopSpanEvent>()),
-            unsampled_event_(std::make_unique<UnsampledSpanEvent>()),
-            noop_annotation_(std::make_unique<NoopAnnotation>())
+            unsampled_event_(std::make_unique<UnsampledSpanEvent>())
         {}
 
         /// @brief Returns the shared noop agent.
@@ -254,8 +225,6 @@ namespace pinpoint {
         SpanEventPtr spanEvent() const { return noop_event_.get(); }
         /// @brief Returns the shared unsampled span event.
         SpanEventPtr unsampledSpanEvent() const { return unsampled_event_.get(); }
-        /// @brief Returns the shared noop annotation.
-        AnnotationPtr annotation() const { return noop_annotation_.get(); }
 
     private:
         Noop(const Noop&) = delete;
@@ -267,6 +236,5 @@ namespace pinpoint {
         SpanPtr noop_span_;
         std::unique_ptr<NoopSpanEvent> noop_event_;
         std::unique_ptr<UnsampledSpanEvent> unsampled_event_;
-        std::unique_ptr<NoopAnnotation> noop_annotation_;
     };
 }

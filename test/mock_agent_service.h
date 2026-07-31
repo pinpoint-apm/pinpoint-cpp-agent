@@ -201,11 +201,11 @@ public:
         return HttpStatusErrors(tokens).isErrorCode(status);
     }
 
-    void recordServerHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const override {
+    void recordServerHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const override {
         recorded_server_headers_++;
     }
 
-    void recordClientHeader(HeaderType which, HeaderReader& reader, AnnotationPtr annotation) const override {
+    void recordClientHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const override {
         recorded_client_headers_++;
     }
 

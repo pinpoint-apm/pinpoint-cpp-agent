@@ -144,7 +144,7 @@ namespace pinpoint {
         }
     }
 
-    PinpointAnnotation* SpanEventImpl::ensureAnnotations() const {
+    PinpointAnnotation* SpanEventImpl::ensureAnnotations() {
         if (!annotations_) {
             annotations_ = std::make_unique<PinpointAnnotation>();
         }
@@ -168,12 +168,10 @@ namespace pinpoint {
         return false;
     }
 
-    AnnotationPtr SpanEventImpl::GetAnnotations() const try {
-        if (warnIfFinished()) {
-            return noopAnnotation();
-        }
-        return ensureAnnotations();
-    } CATCH_AND_LOG_RETURN("get annotations", noopAnnotation())
+    void SpanEventImpl::SetAnnotation(int32_t key, AnnotationValue value) try {
+        if (warnIfFinished()) return;
+        ensureAnnotations()->AppendData(key, AnnotationData(std::move(value)));
+    } CATCH_AND_LOG("set annotation")
 
     void SpanEventImpl::EndEvent() try {
         // Atomic exchange so only the first end proceeds: ending an event
@@ -341,10 +339,6 @@ namespace pinpoint {
         if (warnIfFinished()) return;
         span_->injectContext(writer, generateNextSpanId(), destination_id_);
     } CATCH_AND_LOG("inject context")
-
-    AnnotationPtr DisabledSpanEvent::GetAnnotations() const {
-        return noopAnnotation();
-    }
 
     void DisabledSpanEvent::EndEvent() {
         // The shared per-span instance stands in for every overflowed event,

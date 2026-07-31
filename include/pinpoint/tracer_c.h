@@ -42,9 +42,7 @@
  *   // create a child event
  *   pt_span_event_t se = pt_span_new_event(span, "db_query");
  *   pt_span_event_set_service_type(se, PT_SERVICE_TYPE_MYSQL_QUERY);
- *   pt_annotation_t anno = pt_span_event_get_annotations(se);
- *   pt_annotation_append_string(anno, PT_ANNOTATION_HTTP_URL, "/api/v1");
- *   pt_annotation_destroy(anno);
+ *   pt_span_event_set_annotation_string(se, PT_ANNOTATION_HTTP_URL, "/api/v1");
  *   pt_span_event_end(se);
  *   pt_span_event_destroy(se);
  *
@@ -55,11 +53,11 @@
  *   pt_agent_destroy(agent);
  * @endcode
  *
- * Span-event and annotation handles are non-owning views that hold no
- * resources of their own: pt_span_event_destroy() and pt_annotation_destroy()
- * are safe no-ops kept for API symmetry. Ending a span or event seals its
- * recording state but retains these objects while the parent span is alive.
- * Do not retain a view beyond the parent span's lifetime.
+ * Span-event handles are non-owning views that hold no resources of their
+ * own: pt_span_event_destroy() is a safe no-op kept for API symmetry. Ending
+ * a span or event seals its recording state but retains these objects while
+ * the parent span is alive. Do not retain a view beyond the parent span's
+ * lifetime.
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -143,8 +141,6 @@ typedef struct pt_agent_s*      pt_agent_t;
 typedef struct pt_span_s*       pt_span_t;
 /** Non-owning handle to a span event (child operation). */
 typedef struct pt_span_event_s* pt_span_event_t;
-/** Non-owning handle to the annotation container of a span or span event. */
-typedef struct pt_annotation_s* pt_annotation_t;
 
 /* ========================================================================== */
 /* Trace identifier                                                             */
@@ -685,16 +681,28 @@ void pt_span_record_header(pt_span_t span, pt_header_type_t which,
                            const pt_header_reader_t* reader);
 
 /**
- * @brief Returns the annotation container for this span.
+ * @brief Records an integer annotation on the span.
  *
- * The returned non-owning handle remains valid while the span is alive.
- * Ending the span seals the container, so later appends become warning
- * no-ops. pt_annotation_destroy() is a compatibility no-op and does not
- * extend the lifetime.
+ * Recording on an already-ended span is a warning no-op (the same holds for
+ * the other pt_span_set_annotation_* functions).
  *
- * Mirrors pinpoint::Span::GetAnnotations().
+ * Mirrors pinpoint::Span::SetAnnotation() with an int32_t value.
  */
-pt_annotation_t pt_span_get_annotations(pt_span_t span);
+void pt_span_set_annotation_int(pt_span_t span, int32_t key, int32_t value);
+
+/** Mirrors pinpoint::Span::SetAnnotation() with an int64_t value. */
+void pt_span_set_annotation_long(pt_span_t span, int32_t key, int64_t value);
+
+/** Mirrors pinpoint::Span::SetAnnotation() with a string value. */
+void pt_span_set_annotation_string(pt_span_t span, int32_t key, const char* value);
+
+/**
+ * @brief Records an annotation composed of two strings on the span.
+ *
+ * Mirrors pinpoint::Span::SetAnnotation() with a string-pair value.
+ */
+void pt_span_set_annotation_string_string(pt_span_t span, int32_t key,
+                                          const char* value1, const char* value2);
 
 /* ========================================================================== */
 /* SpanEvent operations                                                         */
@@ -712,10 +720,9 @@ void pt_span_event_destroy(pt_span_event_t se);
  * @brief Pops and finalizes this span event.
  *
  * Records the elapsed time and removes the event from the parent span's event
- * stack. Ending an already-ended event is a warning no-op. The event and its
- * annotation handles remain valid while the parent span is alive, but further
- * recording calls are no-ops; their destroy functions are optional
- * compatibility no-ops.
+ * stack. Ending an already-ended event is a warning no-op. The event handle
+ * remains valid while the parent span is alive, but further recording calls
+ * are no-ops; pt_span_event_destroy() is an optional compatibility no-op.
  *
  * Mirrors pinpoint::SpanEvent::EndEvent().
  */
@@ -792,63 +799,29 @@ void pt_span_event_record_header(pt_span_event_t se, pt_header_type_t which,
 void pt_span_event_inject_context(pt_span_event_t se, pt_context_writer_t* writer);
 
 /**
- * @brief Returns the annotation container for this span event.
+ * @brief Records an integer annotation on the span event.
  *
- * The returned non-owning handle remains valid while the parent span is alive.
- * Ending the span event seals the container, so later appends become warning
- * no-ops. pt_annotation_destroy() is a compatibility no-op and does not
- * extend the lifetime.
+ * Recording on an already-ended event is a warning no-op (the same holds for
+ * the other pt_span_event_set_annotation_* functions).
  *
- * Mirrors pinpoint::SpanEvent::GetAnnotations().
+ * Mirrors pinpoint::SpanEvent::SetAnnotation() with an int32_t value.
  */
-pt_annotation_t pt_span_event_get_annotations(pt_span_event_t se);
+void pt_span_event_set_annotation_int(pt_span_event_t se, int32_t key, int32_t value);
 
-/* ========================================================================== */
-/* Annotation operations                                                        */
-/* ========================================================================== */
+/** Mirrors pinpoint::SpanEvent::SetAnnotation() with an int64_t value. */
+void pt_span_event_set_annotation_long(pt_span_event_t se, int32_t key, int64_t value);
+
+/** Mirrors pinpoint::SpanEvent::SetAnnotation() with a string value. */
+void pt_span_event_set_annotation_string(pt_span_event_t se, int32_t key,
+                                         const char* value);
 
 /**
- * @brief Compatibility no-op for an annotation view handle.
+ * @brief Records an annotation composed of two strings on the span event.
  *
- * Annotation handles are non-owning pointer views. This function does not free
- * memory or extend the parent span/span-event lifetime.
+ * Mirrors pinpoint::SpanEvent::SetAnnotation() with a string-pair value.
  */
-void pt_annotation_destroy(pt_annotation_t anno);
-
-/** Mirrors pinpoint::Annotation::AppendInt(). */
-void pt_annotation_append_int(pt_annotation_t anno, int32_t key, int32_t value);
-
-/** Mirrors pinpoint::Annotation::AppendLong(). */
-void pt_annotation_append_long(pt_annotation_t anno, int32_t key, int64_t value);
-
-/** Mirrors pinpoint::Annotation::AppendString(). */
-void pt_annotation_append_string(pt_annotation_t anno, int32_t key, const char* value);
-
-/** Mirrors pinpoint::Annotation::AppendStringString(). */
-void pt_annotation_append_string_string(pt_annotation_t anno, int32_t key,
-                                        const char* s1, const char* s2);
-
-/** Mirrors pinpoint::Annotation::AppendIntStringString(). */
-void pt_annotation_append_int_string_string(pt_annotation_t anno, int32_t key,
-                                            int i, const char* s1, const char* s2);
-
-/**
- * @brief Mirrors pinpoint::Annotation::AppendSqlUidStringString().
- *
- * @param uid      Pointer to the 16-byte SQL UID.
- * @param uid_len  Length of @p uid in bytes; must be exactly 16. The call is
- *                 ignored if it differs.
- */
-void pt_annotation_append_sql_uid_string_string(pt_annotation_t anno, int32_t key,
-                                              const unsigned char* uid, int uid_len,
-                                              const char* s1, const char* s2);
-
-/** Mirrors pinpoint::Annotation::AppendLongIntIntByteByteString(). */
-void pt_annotation_append_long_int_int_byte_byte_string(pt_annotation_t anno, int32_t key,
-                                                        int64_t l,
-                                                        int32_t i1, int32_t i2,
-                                                        int32_t b1, int32_t b2,
-                                                        const char* s);
+void pt_span_event_set_annotation_string_string(pt_span_event_t se, int32_t key,
+                                                const char* value1, const char* value2);
 
 /* ========================================================================== */
 /* HTTP helper functions                                                        */
