@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <unistd.h>
 #include <grpcpp/client_context.h>
@@ -349,7 +350,20 @@ namespace pinpoint {
         // construction, so the push_back below cannot regrow in practice.
         std::vector<std::shared_ptr<PendingMetaRpc>> completed;
 
-        void completeCall(const std::shared_ptr<PendingMetaRpc>& call, const grpc::Status& status) {
+        void completeCall(const std::shared_ptr<PendingMetaRpc>& call, grpc::Status status) {
+            // The status is taken by value and moved, never copied: a copy
+            // assignment duplicates the error strings and can throw bad_alloc
+            // between the permit release and the notify_all below. gRPC's
+            // callback layer swallows the escaping exception, so the unwind
+            // would silently skip the notify and leave the worker parked in
+            // its bare cv.wait() with a free permit and a non-empty queue —
+            // on a quiet app, metadata upload would stall until the next
+            // enqueue. Moves transfer the strings without allocating; pinned
+            // here so a grpc::Status change that breaks that stops the build
+            // instead of the worker.
+            static_assert(std::is_nothrow_move_assignable<grpc::Status>::value &&
+                              std::is_nothrow_move_constructible<grpc::Status>::value,
+                          "completeCall relies on grpc::Status moves never throwing");
             bool released = false;
             bool outcome_kept = false;
             {
@@ -357,7 +371,7 @@ namespace pinpoint {
                 released = in_flight.erase(call) == 1;
                 if (released) {
                     ++permits;
-                    call->status = status;
+                    call->status = std::move(status);
                     try {
                         completed.push_back(call);
                         outcome_kept = true;
@@ -411,9 +425,11 @@ namespace pinpoint {
 
             // Captures the shared pipeline, never `this`: the callback may
             // fire after this GrpcMetadata (or the whole agent) is destroyed.
+            // The status is taken by value and moved through so completeCall
+            // never copies its strings — see the no-throw contract there.
             auto state = pipeline_;
-            auto on_done = [state, call](const grpc::Status& status) {
-                state->completeCall(call, status);
+            auto on_done = [state, call](grpc::Status status) {
+                state->completeCall(call, std::move(status));
             };
 
             // Registered before the launch: the callback (which may run

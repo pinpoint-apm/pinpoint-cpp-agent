@@ -20,11 +20,13 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <future>
 #include <mutex>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -51,6 +53,56 @@ using ::testing::SetArgPointee;
 using ::testing::SaveArg;
 using ::testing::Invoke;
 using ::testing::InvokeWithoutArgs;
+
+namespace {
+
+// Single-shot allocation-failure injection for the metadata completion
+// no-throw regression test, mirroring test_noop.cpp: arming makes the next
+// operator new on this thread throw bad_alloc. gRPC's own threads allocate
+// through the same replaced operator new but never see the thread-local
+// flag, so only the arming (test) thread is affected.
+thread_local bool fail_next_allocation = false;
+
+void arm_allocation_failure() noexcept {
+    fail_next_allocation = true;
+}
+
+// Disarms and reports whether the armed failure was consumed — i.e. whether
+// the guarded window allocated at all on this thread.
+bool clear_allocation_failure() noexcept {
+    const bool was_consumed = !fail_next_allocation;
+    fail_next_allocation = false;
+    return was_consumed;
+}
+
+}  // namespace
+
+void* operator new(std::size_t size) {
+    if (fail_next_allocation) {
+        fail_next_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) {
+    if (fail_next_allocation) {
+        fail_next_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(size != 0 ? size : 1)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace pinpoint {
 
@@ -367,6 +419,25 @@ public:
             held_.erase(held_.begin() + static_cast<std::ptrdiff_t>(index));
         }
         held(status);
+        return true;
+    }
+
+    // Releases one held callback, moving `status` into the invocation. The
+    // completion no-throw regression test arms a single-shot allocation
+    // failure around this call: the const& variant above would copy the
+    // status strings in test code and consume the failure before it could
+    // reach the production completion path under test.
+    bool releaseHeldCallbackByMove(size_t index, grpc::Status&& status) {
+        std::function<void(grpc::Status)> held;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (index >= held_.size()) {
+                return false;
+            }
+            held = std::move(held_[index]);
+            held_.erase(held_.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+        held(std::move(status));
         return true;
     }
 
@@ -3206,6 +3277,75 @@ TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPerm
 
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
         << "a transient readiness exception must not strand or evict the cache entry";
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataCompletionSurvivesAllocationPressureWithoutLosingWakeup) {
+    GrpcClientTuning tuning;
+    // A single permit and a queued second item: if the completion's notify
+    // were lost, the worker would stay parked in its bare cv.wait() with a
+    // free permit and the waits below would time out.
+    tuning.meta_max_concurrent_requests = 1;
+    tuning.meta_retry_delay = std::chrono::milliseconds(50);
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.alloc.fail"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.alloc.after"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)))
+        << "the first item must be in flight holding the single permit";
+
+    // A failed status whose message outgrows any SSO buffer: completing with
+    // it makes every string copy on the completion path allocate. Built
+    // before arming, so its own allocations run unrestricted.
+    grpc::Status failed_status(grpc::StatusCode::UNAVAILABLE, std::string(192, 'x'));
+
+    // The completion path runs inline on this thread. With the single-shot
+    // failure armed, any allocation between the permit release and the
+    // notify throws bad_alloc — the regression this pins: a copy assignment
+    // of the status there threw, gRPC's callback layer swallowed it, and
+    // the worker stayed parked while the item's outcome was lost.
+    arm_allocation_failure();
+    bool released = false;
+    bool threw = false;
+    try {
+        released = fake->releaseHeldCallbackByMove(0, std::move(failed_status));
+    } catch (...) {
+        threw = true;
+    }
+    const bool allocated_in_completion = clear_allocation_failure();
+    EXPECT_FALSE(threw) << "the completion path must not throw";
+    EXPECT_FALSE(allocated_in_completion)
+        << "the completion path must not allocate on the callback thread";
+    // A throw above happened inside the invoked callback, so either way the
+    // held callback existed; neither means the test setup is broken.
+    ASSERT_TRUE(released || threw) << "the held completion callback must exist";
+
+    // The worker saw the completion: the queued second item launches on the
+    // returned permit.
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)))
+        << "the returned permit and the completion notify must wake the worker for the queued item";
+
+    // Free the second item's permit so the failed first item's retry can
+    // launch: its outcome must have been recorded, not dropped.
+    EXPECT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)));
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 3, std::chrono::seconds(5)))
+        << "the failed completion's outcome must reach the worker and schedule a retry";
+
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
+        << "a completion under allocation pressure must not strand or evict the cache entry";
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {
