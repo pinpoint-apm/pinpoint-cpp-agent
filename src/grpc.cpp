@@ -719,7 +719,9 @@ namespace pinpoint {
             worker_ = std::thread{&ActiveThreadCountStream::run, this};
         }
 
-        void stop() {
+        // Signals the stream to stop without joining, so the shutdown signal
+        // phase stays non-blocking; stop() performs the join.
+        void request_stop() {
             {
                 // Setting the flag under cv_mutex_ prevents a lost wakeup when
                 // run() is between checking the predicate and blocking.
@@ -733,6 +735,10 @@ namespace pinpoint {
                 }
             }
             cv_.notify_all();
+        }
+
+        void stop() {
+            request_stop();
             if (worker_.joinable()) {
                 worker_.join();
             }
@@ -978,6 +984,16 @@ namespace pinpoint {
             active_thread_count_streams_.end());
     }
 
+    void GrpcCommand::request_stop_active_thread_count_streams() {
+        // Signal-only: the streams stay owned by the vector so the joining
+        // stop_active_thread_count_streams() — run by commandWorker() on its
+        // way out, inside the shutdown deadline — still finds and joins them.
+        std::unique_lock<std::mutex> lock(active_streams_mutex_);
+        for (auto& stream : active_thread_count_streams_) {
+            stream->request_stop();
+        }
+    }
+
     void GrpcCommand::stop_active_thread_count_streams() {
         std::vector<std::unique_ptr<ActiveThreadCountStream>> streams;
         {
@@ -1065,7 +1081,7 @@ namespace pinpoint {
 
             const StreamContextGuard context_guard(this, &context);
 
-            // Re-check under the publish: a stopCommandWorker() that ran
+            // Re-check under the publish: a requestStopCommandWorker() that ran
             // between the loop condition above and the guard publishing the
             // context found nothing to TryCancel, so it must be honored here.
             // Otherwise the RPC below would start uncancellable, and its
@@ -1117,7 +1133,7 @@ namespace pinpoint {
         }
     }
 
-    void GrpcCommand::stopCommandWorker() {
+    void GrpcCommand::requestStopCommandWorker() {
         request_stop();
         {
             // Pairs the stop with wait_reconnect_delay()'s predicate so a
@@ -1126,6 +1142,15 @@ namespace pinpoint {
             command_worker_cv_.notify_all();
         }
         cancel_command_stream();
+        // Signal-only: joining the stream threads here would block the
+        // shutdown signal phase on a best-effort TryCancel with no completion
+        // bound. commandWorker() joins them on its way out, which runs under
+        // the shutdown deadline.
+        request_stop_active_thread_count_streams();
+    }
+
+    void GrpcCommand::stopCommandWorker() {
+        requestStopCommandWorker();
         stop_active_thread_count_streams();
     }
 

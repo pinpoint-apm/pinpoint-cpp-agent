@@ -461,7 +461,12 @@ namespace pinpoint {
 
         /// @brief Worker loop that receives collector commands and dispatches them.
         void commandWorker();
-        /// @brief Stops the command stream worker and any active response streams.
+        /// @brief Signals the worker and every active response stream to stop
+        /// without joining anything, so the shutdown signal phase never blocks;
+        /// commandWorker() joins the response streams on its way out.
+        void requestStopCommandWorker();
+        /// @brief Stops the command stream worker and any active response streams,
+        /// joining the response stream threads.
         void stopCommandWorker();
 
     protected:
@@ -495,6 +500,7 @@ namespace pinpoint {
                                                 int32_t sequence_id) const;
         bool add_active_thread_count_stream(int32_t request_id);
         void cleanup_active_thread_count_streams();
+        void request_stop_active_thread_count_streams();
         void stop_active_thread_count_streams();
         bool write_fail_message(const v1::PCmdRequest& request,
                                 grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream,

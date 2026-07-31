@@ -20,6 +20,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -210,6 +211,9 @@ public:
     }
 
     AgentStats& getAgentStats() override {
+        // Lazy init under a lock: concurrent worker threads under test (e.g.
+        // two active-thread-count streams) may call this at the same time.
+        std::lock_guard<std::mutex> lock(lazy_stats_mutex_);
         if (!agent_stats_) {
             agent_stats_ = std::make_unique<AgentStats>(this);
         }
@@ -217,6 +221,7 @@ public:
     }
 
     UrlStats& getUrlStats() override {
+        std::lock_guard<std::mutex> lock(lazy_stats_mutex_);
         if (!url_stats_) {
             url_stats_ = std::make_unique<UrlStats>(this);
         }
@@ -311,6 +316,7 @@ private:
     std::string agent_name_ = "TestAgent";
     std::string service_name_ = "";
     std::shared_ptr<Config> config_ = std::make_shared<Config>();
+    mutable std::mutex lazy_stats_mutex_;
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;
 };

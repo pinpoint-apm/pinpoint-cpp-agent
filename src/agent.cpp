@@ -561,7 +561,7 @@ namespace pinpoint {
         try { grpc_metadata_->stopMetaWorker(); } catch (...) {}
         try { grpc_span_->stopSpanWorker(); } catch (...) {}
         try { grpc_stat_->stopStatsWorker(); } catch (...) {}
-        try { if (grpc_command_) grpc_command_->stopCommandWorker(); } catch (...) {}
+        try { if (grpc_command_) grpc_command_->requestStopCommandWorker(); } catch (...) {}
     }
 
     void AgentImpl::teardown_workers() noexcept {

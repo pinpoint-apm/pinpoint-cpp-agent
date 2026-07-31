@@ -2964,14 +2964,22 @@ TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
         .WillRepeatedly(Invoke(make_idle_cmd_stream));
 
     // The two admitted streams keep running (Write succeeds) so they still
-    // occupy their slots when the third request arrives.
+    // occupy their slots when the third request arrives. The RPCs start
+    // asynchronously on the stream threads, and a stream signaled to stop
+    // before its RPC starts deliberately never starts it — so the test must
+    // wait for both starts before stopping, or Times(2) races the shutdown.
+    std::promise<void> both_streams_started;
+    std::atomic<int> streams_started{0};
     EXPECT_CALL(*mock_command_stub, CommandStreamActiveThreadCountRaw(_, _))
         .Times(2)
-        .WillRepeatedly(InvokeWithoutArgs([] {
+        .WillRepeatedly(InvokeWithoutArgs([&both_streams_started, &streams_started] {
             auto* writer = new NiceMock<MockActiveThreadCountWriter>();
             ON_CALL(*writer, Write(_, _)).WillByDefault(Return(true));
             ON_CALL(*writer, WritesDone()).WillByDefault(Return(true));
             ON_CALL(*writer, Finish()).WillByDefault(Return(grpc::Status::OK));
+            if (streams_started.fetch_add(1) + 1 == 2) {
+                both_streams_started.set_value();
+            }
             return writer;
         }));
 
@@ -2981,6 +2989,8 @@ TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
 
     EXPECT_EQ(fail_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "the third stream must be rejected once the injected cap of 2 is reached";
+    EXPECT_EQ(both_streams_started.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "both admitted streams must start their RPCs before the shutdown races them";
 
     mock_agent_service_->setExiting(true);
     command.stopCommandWorker();
@@ -2989,6 +2999,72 @@ TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
     ASSERT_TRUE(fail_message.has_failmessage());
     EXPECT_EQ(fail_message.failmessage().responseid(), 103);
     EXPECT_EQ(fail_message.failmessage().message().value(), "too many active thread count streams");
+}
+
+TEST_F(GrpcMockTest, RequestStopCommandWorkerDoesNotJoinBlockedActiveThreadCountStream) {
+    GrpcClientTuning tuning;
+    tuning.active_thread_count_flush_interval = std::chrono::milliseconds(20);
+    TestableGrpcCommand command(mock_agent_service_.get(), tuning);
+
+    auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+
+    v1::PCmdRequest atc_request;
+    atc_request.set_requestid(201);
+    atc_request.mutable_commandactivethreadcount();
+
+    auto* stream = new NiceMock<MockCmdStream>();
+    EXPECT_CALL(*stream, Read(_))
+        .WillOnce(DoAll(SetArgPointee<0>(atc_request), Return(true)))
+        .WillRepeatedly(Return(false));
+
+    EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+        .WillOnce(Return(stream))
+        .WillRepeatedly(Invoke(make_idle_cmd_stream));
+
+    // The writer simulates a collector that does not honor cancellation: the
+    // first Write parks the stream thread until the test releases it, so the
+    // thread is provably still running when requestStopCommandWorker() is
+    // called. Before the request/stop split, the signal phase joined this
+    // thread and shutdown hung for as long as the collector stalled.
+    std::promise<void> write_entered;
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    EXPECT_CALL(*mock_command_stub, CommandStreamActiveThreadCountRaw(_, _))
+        .WillOnce(InvokeWithoutArgs([&write_entered, released] {
+            auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+            EXPECT_CALL(*writer, Write(_, _))
+                .WillOnce(InvokeWithoutArgs([&write_entered, released] {
+                    write_entered.set_value();
+                    released.wait();
+                    return false;
+                }))
+                .WillRepeatedly(Return(false));
+            ON_CALL(*writer, WritesDone()).WillByDefault(Return(true));
+            ON_CALL(*writer, Finish()).WillByDefault(Return(grpc::Status::OK));
+            return writer;
+        }));
+
+    command.setMockCommandStub(std::move(mock_command_stub));
+
+    std::thread worker([&command] { command.commandWorker(); });
+
+    ASSERT_EQ(write_entered.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "active thread count stream should have started and entered Write";
+
+    // Run the signal phase from a helper thread: a regression that joins the
+    // blocked stream surfaces as a failed wait_for below (the release after it
+    // unblocks the join, so the test still finishes) instead of a hung test.
+    auto request_stop_done = std::async(std::launch::async, [&command] {
+        command.requestStopCommandWorker();
+    });
+    EXPECT_EQ(request_stop_done.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+        << "requestStopCommandWorker must not join the blocked active thread count stream";
+
+    release.set_value();
+    request_stop_done.wait();
+    mock_agent_service_->setExiting(true);
+    command.stopCommandWorker();
+    if (worker.joinable()) worker.join();
 }
 
 TEST_F(GrpcMockTest, GrpcSpanShutdownHonorsInjectedAwaitTimeout) {
