@@ -130,3 +130,18 @@ The optional argument is the operation count per thread. Each row is the median
 of three runs. `ns/op` is elapsed wall time divided by operations per thread,
 so an unchanged value as thread count rises indicates that the reader path is
 not accumulating cross-core contention.
+
+## Active span registry
+
+Compares the former active-span registry (64-shard `std::unordered_map` keyed
+by span id — one map-node malloc/free per request) with the intrusive-list
+`ActiveSpanRegistry` that replaced it. One measured pair is
+`addActiveSpan` + `dropActiveSpan`, the two registry touches every request
+makes. The legacy implementation is embedded in the benchmark verbatim; the
+new one is included from `src/active_span.h`, so the benchmark measures the
+exact production code. Both registries run against a steady resident
+population of in-flight spans and identical per-thread span-id streams, with
+sampled per-pair latency (p50/p99/max) alongside aggregate throughput. A
+final phase times the `collect()` snapshot scan with 10,000 in-flight spans —
+that scan runs once per stat-collect interval, so it only needs to show no
+regression.

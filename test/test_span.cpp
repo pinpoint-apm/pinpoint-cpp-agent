@@ -1622,7 +1622,11 @@ TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
 
     {
         auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "op", "rpc");
-        stats.addActiveSpan(span->GetSpanId(), now_ms);
+        // Register through the production path: extractContext links the
+        // span's embedded ActiveSpanNode, the same node the destructor
+        // backstop must unlink.
+        MockTraceContextReader reader;
+        span->extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
         int32_t counts[4] = {0, 0, 0, 0};
         stats.collectActiveRequests(counts, now_ms);

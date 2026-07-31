@@ -135,17 +135,20 @@ namespace pinpoint {
         // Guard the deref to stay consistent with the null check on agent_ref_
         // above (agent_ is always the live AgentImpl in production).
         if (agent_ != nullptr) {
-            agent_->getAgentStats().addActiveSpan(span_id_, start_time_);
+            agent_->getAgentStats().addActiveSpan(active_node_, span_id_, start_time_);
         }
     }
 
     UnsampledSpan::~UnsampledSpan() {
-        // Self-heal spans dropped without EndSpan, mirroring ~SpanImpl: the
-        // active-span registration taken in the constructor must not outlive
-        // the span. agent_ stays valid via agent_ref_.
-        if (!finished_.load() && agent_ != nullptr) {
+        // Self-heal spans dropped without EndSpan, mirroring ~SpanImpl — and
+        // the hard backstop for the intrusive node: active_node_ lives inside
+        // this object, so a still-linked node here would leave dangling
+        // pointers in its shard list. Unconditional rather than gated on
+        // finished_; after a normal EndSpan this is one atomic load. agent_
+        // stays valid via agent_ref_.
+        if (agent_ != nullptr) {
             try {
-                agent_->getAgentStats().dropActiveSpan(span_id_);
+                agent_->getAgentStats().dropActiveSpan(active_node_);
             } catch (...) {
             }
         }
@@ -175,7 +178,7 @@ namespace pinpoint {
 
         auto& stats = agent_->getAgentStats();
         stats.collectResponseTime(elapsed_);
-        stats.dropActiveSpan(span_id_);
+        stats.dropActiveSpan(active_node_);
 
         // url_stat_mutex_ pairs with SetUrlStat(): its finished_ check runs
         // under the same lock, so a SetUrlStat racing this consume (documented
@@ -213,13 +216,14 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::releaseActiveSpanOnError() noexcept {
-        // Shared by EndSpan's catch handlers: finished_ is set before they
-        // run, which disables the destructor's self-heal, so release the
-        // active-span registration here instead (a duplicate erase is a
-        // no-op). Same shape as SpanImpl::releaseActiveSpanOnError.
+        // Shared by EndSpan's catch handlers. The destructor would unlink
+        // the node anyway, but user code may hold the span handle long after
+        // a failed EndSpan — unlink now so the span stops counting as an
+        // active request immediately. Idempotent (unlinked node → no-op).
+        // Same shape as SpanImpl::releaseActiveSpanOnError.
         try {
             if (agent_ != nullptr) {
-                agent_->getAgentStats().dropActiveSpan(span_id_);
+                agent_->getAgentStats().dropActiveSpan(active_node_);
             }
         } catch (...) {
         }

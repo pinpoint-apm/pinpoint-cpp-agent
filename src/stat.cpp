@@ -355,47 +355,18 @@ namespace pinpoint {
         shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    AgentStats::ActiveSpanShard& AgentStats::activeSpanShard(int64_t spanId) {
-        const auto shard_index = std::hash<int64_t>{}(spanId) % active_span_shards_.size();
-        return active_span_shards_[shard_index];
+    // Thin delegates: the registry logic lives header-only in active_span.h
+    // so benchmark/active_span_benchmark.cpp measures the production code.
+    void AgentStats::addActiveSpan(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
+        active_spans_.add(node, span_id, start_time);
     }
 
-    void AgentStats::addActiveSpan(int64_t spanId, int64_t start_time) {
-        auto& shard = activeSpanShard(spanId);
-        std::lock_guard<std::mutex> lock(shard.mutex_);
-        // try_emplace, not insert(make_pair(...)): the pair is constructed
-        // directly in the node instead of being built on the stack and moved in.
-        // Runs under the shard lock on every span start.
-        shard.spans_.try_emplace(spanId, start_time);
-    }
-
-    void AgentStats::dropActiveSpan(int64_t spanId) {
-        auto& shard = activeSpanShard(spanId);
-        std::lock_guard<std::mutex> lock(shard.mutex_);
-        shard.spans_.erase(spanId);
+    void AgentStats::dropActiveSpan(ActiveSpanNode& node) {
+        active_spans_.drop(node);
     }
 
     void AgentStats::collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms) {
-        active_requests[0] = 0;
-        active_requests[1] = 0;
-        active_requests[2] = 0;
-        active_requests[3] = 0;
-
-        for (auto& shard : active_span_shards_) {
-            std::lock_guard<std::mutex> lock(shard.mutex_);
-            for (const auto& iter : shard.spans_) {
-                auto active_time = sample_time_ms - iter.second;
-                if (active_time < 1000) {
-                    active_requests[0]++;
-                } else if (active_time < 3000) {
-                    active_requests[1]++;
-                } else if (active_time < 5000) {
-                    active_requests[2]++;
-                } else {
-                    active_requests[3]++;
-                }
-            }
-        }
+        active_spans_.collect(active_requests, sample_time_ms);
     }
 
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {

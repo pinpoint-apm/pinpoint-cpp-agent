@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "active_span.h"
 #include "agent_runtime.h"
 #include "agent_service.h"
 #include "callstack.h"
@@ -637,6 +638,11 @@ namespace pinpoint {
             std::shared_ptr<SpanData> data_;
             std::atomic<int32_t> overflow_;
             std::atomic<bool> finished_;
+            // Registration in the active-request registry (see active_span.h):
+            // linked by extractContext, unlinked by EndSpan; the destructor and
+            // releaseActiveSpanOnError unlink as idempotent backstops. Async
+            // spans never link theirs.
+            ActiveSpanNode active_node_;
             std::optional<UrlStatEntry> url_stat_;
             std::vector<std::unique_ptr<Exception>> exceptions_;
             // Handed out instead of a real event while the event stack is

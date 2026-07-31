@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "pinpoint/tracer.h"
+#include "active_span.h"
 #include "agent_runtime.h"
 #include "agent_service.h"
 #include "url_stat.h"
@@ -171,6 +172,10 @@ namespace pinpoint {
         int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};
+        // Registration in the active-request registry (see active_span.h):
+        // linked by the constructor, unlinked by EndSpan; the destructor and
+        // releaseActiveSpanOnError unlink as idempotent backstops.
+        ActiveSpanNode active_node_;
         // Guards url_stat_ between SetUrlStat() and EndSpan(): unlike the
         // fully-stateful SpanImpl, this span's only mutable state is this one
         // optional, so a mutex is cheap insurance that turns the

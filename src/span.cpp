@@ -275,14 +275,18 @@ namespace pinpoint {
 
     SpanImpl::~SpanImpl() {
         // Self-heal spans dropped without EndSpan (early-return or exception
-        // paths in user code): release the active-span registration taken in
-        // extractContext, or the entry — and the skewed active-request stats
-        // it feeds — survives for the process lifetime. Async spans never
-        // register. agent_ is safe to dereference here because agent_ref_
-        // keeps the agent alive while this span exists.
-        if (!finished_.load() && data_ && !data_->isAsyncSpan()) {
+        // paths in user code), and the hard backstop for the intrusive node:
+        // active_node_ lives inside this object, so a still-linked node here
+        // would leave dangling pointers in its shard list — not just skewed
+        // stats like the old map entry. Unconditional (not gated on
+        // finished_) so it also covers an EndSpan that failed between
+        // setting finished_ and its drop; after a normal EndSpan this is one
+        // atomic load. Async spans never link, same fast path. agent_ is
+        // safe to dereference because agent_ref_ keeps the agent alive while
+        // this span exists.
+        if (agent_ != nullptr) {
             try {
-                agent_->getAgentStats().dropActiveSpan(data_->getSpanId());
+                agent_->getAgentStats().dropActiveSpan(active_node_);
             } catch (...) {
             }
         }
@@ -471,7 +475,7 @@ namespace pinpoint {
             sendExceptions();
         } else {
             auto& stats = agent_->getAgentStats();
-            stats.dropActiveSpan(data_->getSpanId());
+            stats.dropActiveSpan(active_node_);
             stats.collectResponseTime(data_->getElapsed());
             // sendExceptions() must precede sendUrlStat(): the latter resets
             // url_stat_, which getUrlTemplate() reads to tag the exception with
@@ -499,13 +503,14 @@ namespace pinpoint {
     }
 
     void SpanImpl::releaseActiveSpanOnError() noexcept {
-        // Shared by EndSpan's catch handlers: finished_ is set before they
-        // run, which disables the destructor's self-heal, so release the
-        // active-span registration here instead (a duplicate erase is a
-        // no-op).
+        // Shared by EndSpan's catch handlers. The destructor would unlink
+        // the node anyway, but user code may hold the span handle long after
+        // a failed EndSpan — unlink now so the span stops counting as an
+        // active request immediately. Idempotent (unlinked node → no-op),
+        // and async spans never link.
         try {
-            if (data_ && !data_->isAsyncSpan()) {
-                agent_->getAgentStats().dropActiveSpan(data_->getSpanId());
+            if (agent_ != nullptr) {
+                agent_->getAgentStats().dropActiveSpan(active_node_);
             }
         } catch (...) {
         }
@@ -606,7 +611,7 @@ namespace pinpoint {
             data_->setRemoteAddr(v);
         }
 
-        agent_->getAgentStats().addActiveSpan(data_->getSpanId(), data_->getStartTime());
+        agent_->getAgentStats().addActiveSpan(active_node_, data_->getSpanId(), data_->getStartTime());
     }
 
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation) try {

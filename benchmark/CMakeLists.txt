@@ -59,3 +59,16 @@ if(PINPOINT_BENCHMARK_LIBRARY)
   endif()
   target_compile_definitions(raw_sql_cache_benchmark PRIVATE NDEBUG)
 endif()
+
+# Header-only usage of src/active_span.h: compares the former sharded-map
+# active-span registry with the intrusive-list ActiveSpanRegistry.
+add_executable(active_span_benchmark active_span_benchmark.cpp)
+target_include_directories(active_span_benchmark PRIVATE ../src)
+target_link_libraries(active_span_benchmark PRIVATE Threads::Threads)
+set_target_properties(active_span_benchmark PROPERTIES CXX_STANDARD 17)
+if(MSVC)
+  target_compile_options(active_span_benchmark PRIVATE /O2)
+else()
+  target_compile_options(active_span_benchmark PRIVATE -O3)
+endif()
+target_compile_definitions(active_span_benchmark PRIVATE NDEBUG)

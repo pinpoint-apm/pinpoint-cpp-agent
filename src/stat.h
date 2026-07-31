@@ -22,11 +22,11 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
-#include <unordered_map>
 #include <chrono>
 #include <array>
 #include <optional>
 
+#include "active_span.h"
 #include "agent_service.h"
 
 namespace pinpoint {
@@ -67,8 +67,12 @@ namespace pinpoint {
 
         // Public methods for data collection (called by global functions)
         void collectResponseTime(int64_t resTime);
-        void addActiveSpan(int64_t spanId, int64_t start_time);
-        void dropActiveSpan(int64_t spanId);
+        // Links/unlinks the span's embedded registration node (see
+        // active_span.h). span_id only picks the shard; the node carries the
+        // data. dropActiveSpan is idempotent — a second call (destructor
+        // backstop, releaseActiveSpanOnError) is an atomic load and return.
+        void addActiveSpan(ActiveSpanNode& node, int64_t span_id, int64_t start_time);
+        void dropActiveSpan(ActiveSpanNode& node);
         
         // Counter incrementers. Called once per request, so relaxed: these are
         // independent counters with no ordering relationship to other data —
@@ -125,21 +129,7 @@ namespace pinpoint {
         ProcessStatus getProcessStatus();
 
     private:
-        static constexpr size_t kActiveSpanShardCount = 64;
         static constexpr size_t kResponseTimeShardCount = 16;
-
-        // Own cache line per shard, like ResponseTimeShard below. Unpadded the
-        // struct is ~104 bytes at alignof 8, so consecutive shards straddle and
-        // share lines (shard 0 ends inside the line shard 1 starts in). Every
-        // request touches a shard twice — addActiveSpan at span start,
-        // dropActiveSpan at EndSpan — and the shard is picked by the random span
-        // id, so two threads holding *different* shard mutexes would still fight
-        // over one line, giving back half of what the sharding bought. The
-        // padding costs 64 shards * 24 bytes.
-        struct alignas(64) ActiveSpanShard {
-            std::mutex mutex_;
-            std::unordered_map<int64_t, int64_t> spans_;
-        };
 
         // One cache line per shard: every request end updates exactly one
         // shard (picked by thread id), so the per-request RMWs never contend
@@ -152,7 +142,6 @@ namespace pinpoint {
             std::atomic<int64_t> writers_{0};
         };
 
-        ActiveSpanShard& activeSpanShard(int64_t spanId);
         ResponseTimeShard& responseTimeShard();
 
         // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
@@ -178,8 +167,8 @@ namespace pinpoint {
         // one fetch_add here, while response_time_snapshotting_ just above is
         // read twice per request in collectResponseTime — packed together, every
         // counter increment would invalidate the line that read rides on.
-        // active_span_shards_ below carries its own alignment (ActiveSpanShard
-        // is over-aligned), so it cannot share this line either.
+        // active_spans_ below carries its own alignment (its shards are
+        // over-aligned), so it cannot share this line either.
         alignas(64) std::atomic<int64_t> sample_new_{0};
         std::atomic<int64_t> un_sample_new_{0};
         std::atomic<int64_t> sample_cont_{0};
@@ -187,7 +176,7 @@ namespace pinpoint {
         std::atomic<int64_t> skip_new_{0};
         std::atomic<int64_t> skip_cont_{0};
 
-        alignas(64) std::array<ActiveSpanShard, kActiveSpanShardCount> active_span_shards_;
+        ActiveSpanRegistry active_spans_;
         
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};

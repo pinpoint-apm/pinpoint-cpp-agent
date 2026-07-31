@@ -141,29 +141,36 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     int64_t span_id_1 = 12345;
     int64_t span_id_2 = 67890;
     int64_t start_time = 1234567890;
-    
-    // Add active spans directly via AgentStats
-    agent_stats_->addActiveSpan(span_id_1, start_time);
-    agent_stats_->addActiveSpan(span_id_2, start_time + 100);
-    
+
+    // Add active spans directly via AgentStats. In production the node is
+    // embedded in the span object; local nodes stand in for it here and must
+    // be dropped before they go out of scope (see active_span.h).
+    ActiveSpanNode node1, node2;
+    agent_stats_->addActiveSpan(node1, span_id_1, start_time);
+    agent_stats_->addActiveSpan(node2, span_id_2, start_time + 100);
+
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
-    
+
     // Active spans should be reflected in the snapshot
     // The exact distribution depends on implementation but total should be > 0
-    int total_active = snapshot.active_requests_[0] + snapshot.active_requests_[1] + 
+    int total_active = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
                       snapshot.active_requests_[2] + snapshot.active_requests_[3];
     EXPECT_GT(total_active, 0) << "Should have active spans";
-    
+
     // Drop one span
-    agent_stats_->dropActiveSpan(span_id_1);
-    
+    agent_stats_->dropActiveSpan(node1);
+
     agent_stats_->collectAgentStat(snapshot);
-    
+
     // Should have fewer active spans now
-    int new_total_active = snapshot.active_requests_[0] + snapshot.active_requests_[1] + 
+    int new_total_active = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
                           snapshot.active_requests_[2] + snapshot.active_requests_[3];
     EXPECT_LE(new_total_active, total_active) << "Should have same or fewer active spans after dropping";
+
+    // A duplicate drop must be a harmless no-op (destructor-backstop path).
+    agent_stats_->dropActiveSpan(node1);
+    agent_stats_->dropActiveSpan(node2);
 }
 
 TEST_F(StatTest, GetAgentStatSnapshotsTest) {
@@ -317,10 +324,11 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     
     // Add spans with different durations using unique IDs
     int64_t base_id = 10000;  // Use higher IDs to avoid conflicts
-    agent_stats_->addActiveSpan(base_id + 1, now_ms - 500);   // 500ms old - should be in bucket 0
-    agent_stats_->addActiveSpan(base_id + 2, now_ms - 1500);  // 1.5s old - should be in bucket 1
-    agent_stats_->addActiveSpan(base_id + 3, now_ms - 3500);  // 3.5s old - should be in bucket 2
-    agent_stats_->addActiveSpan(base_id + 4, now_ms - 6000);  // 6s old - should be in bucket 3
+    ActiveSpanNode nodes[4];
+    agent_stats_->addActiveSpan(nodes[0], base_id + 1, now_ms - 500);   // 500ms old - should be in bucket 0
+    agent_stats_->addActiveSpan(nodes[1], base_id + 2, now_ms - 1500);  // 1.5s old - should be in bucket 1
+    agent_stats_->addActiveSpan(nodes[2], base_id + 3, now_ms - 3500);  // 3.5s old - should be in bucket 2
+    agent_stats_->addActiveSpan(nodes[3], base_id + 4, now_ms - 6000);  // 6s old - should be in bucket 3
     
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
@@ -341,10 +349,10 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     EXPECT_TRUE(has_distribution) << "Spans should be distributed in time buckets";
     
     // Clean up our test spans
-    agent_stats_->dropActiveSpan(base_id + 1);
-    agent_stats_->dropActiveSpan(base_id + 2);
-    agent_stats_->dropActiveSpan(base_id + 3);
-    agent_stats_->dropActiveSpan(base_id + 4);
+    agent_stats_->dropActiveSpan(nodes[0]);
+    agent_stats_->dropActiveSpan(nodes[1]);
+    agent_stats_->dropActiveSpan(nodes[2]);
+    agent_stats_->dropActiveSpan(nodes[3]);
 }
 
 TEST_F(StatTest, StatSnapshotMemoryLayoutTest) {
@@ -507,30 +515,33 @@ TEST_F(StatTest, ResponseTimeAverageCalculationTest) {
     EXPECT_EQ(snapshot.response_time_max_, 300);
 }
 
-// Test dropping a non-existent span ID (should not crash)
+// Test dropping a never-linked node (async/noop spans; should not crash)
 TEST_F(StatTest, DropNonExistentSpanTest) {
-    agent_stats_->dropActiveSpan(99999);
+    ActiveSpanNode node;
+    agent_stats_->dropActiveSpan(node);
     SUCCEED();
 }
 
-// Test adding duplicate span ID (insert behavior)
+// Test adding the same node twice (re-link guard)
 TEST_F(StatTest, DuplicateSpanIdTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
-    agent_stats_->addActiveSpan(100, now_ms);
-    agent_stats_->addActiveSpan(100, now_ms - 5000); // Same ID, different start time
+    ActiveSpanNode node;
+    agent_stats_->addActiveSpan(node, 100, now_ms);
+    agent_stats_->addActiveSpan(node, 100, now_ms - 5000); // Same node again
 
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
 
-    // std::unordered_map::insert does NOT overwrite existing key,
-    // so only 1 entry should exist
+    // Re-linking a linked node must be a no-op (a span registers exactly
+    // once; the guard turns a contract violation into a kept original entry,
+    // the same tolerance the old map's try_emplace gave a duplicate id).
     int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
                 snapshot.active_requests_[2] + snapshot.active_requests_[3];
-    EXPECT_EQ(total, 1) << "Duplicate spanId insert should keep original entry";
+    EXPECT_EQ(total, 1) << "Duplicate add of a linked node should keep original entry";
 
-    agent_stats_->dropActiveSpan(100);
+    agent_stats_->dropActiveSpan(node);
 }
 
 // Test active request bucket boundary values
@@ -538,14 +549,15 @@ TEST_F(StatTest, ActiveRequestBucketBoundariesTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
+    ActiveSpanNode nodes[4];
     // Bucket 0: < 1000ms
-    agent_stats_->addActiveSpan(1001, now_ms - 999);
+    agent_stats_->addActiveSpan(nodes[0], 1001, now_ms - 999);
     // Bucket 1: >= 1000ms and < 3000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(1002, now_ms - 1000);
+    agent_stats_->addActiveSpan(nodes[1], 1002, now_ms - 1000);
     // Bucket 2: >= 3000ms and < 5000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(1003, now_ms - 3000);
+    agent_stats_->addActiveSpan(nodes[2], 1003, now_ms - 3000);
     // Bucket 3: >= 5000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(1004, now_ms - 5000);
+    agent_stats_->addActiveSpan(nodes[3], 1004, now_ms - 5000);
 
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
@@ -560,10 +572,10 @@ TEST_F(StatTest, ActiveRequestBucketBoundariesTest) {
     // The 5000ms span should be in bucket 3
     EXPECT_GE(snapshot.active_requests_[3], 1) << "5s+ span should be in last bucket";
 
-    agent_stats_->dropActiveSpan(1001);
-    agent_stats_->dropActiveSpan(1002);
-    agent_stats_->dropActiveSpan(1003);
-    agent_stats_->dropActiveSpan(1004);
+    agent_stats_->dropActiveSpan(nodes[0]);
+    agent_stats_->dropActiveSpan(nodes[1]);
+    agent_stats_->dropActiveSpan(nodes[2]);
+    agent_stats_->dropActiveSpan(nodes[3]);
 }
 
 // Test all active spans in a single bucket
@@ -572,8 +584,9 @@ TEST_F(StatTest, AllSpansInOneBucketTest) {
         std::chrono::system_clock::now().time_since_epoch()).count();
 
     // All spans are very recent (< 1s)
+    ActiveSpanNode nodes[5];
     for (int i = 0; i < 5; i++) {
-        agent_stats_->addActiveSpan(2000 + i, now_ms - 10);
+        agent_stats_->addActiveSpan(nodes[i], 2000 + i, now_ms - 10);
     }
 
     AgentStatsSnapshot snapshot;
@@ -585,7 +598,7 @@ TEST_F(StatTest, AllSpansInOneBucketTest) {
     EXPECT_EQ(snapshot.active_requests_[3], 0);
 
     for (int i = 0; i < 5; i++) {
-        agent_stats_->dropActiveSpan(2000 + i);
+        agent_stats_->dropActiveSpan(nodes[i]);
     }
 }
 
@@ -593,10 +606,11 @@ TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
-    agent_stats_->addActiveSpan(3001, now_ms - 100);
-    agent_stats_->addActiveSpan(3002, now_ms - 1200);
-    agent_stats_->addActiveSpan(3003, now_ms - 3200);
-    agent_stats_->addActiveSpan(3004, now_ms - 5200);
+    ActiveSpanNode nodes[4];
+    agent_stats_->addActiveSpan(nodes[0], 3001, now_ms - 100);
+    agent_stats_->addActiveSpan(nodes[1], 3002, now_ms - 1200);
+    agent_stats_->addActiveSpan(nodes[2], 3003, now_ms - 3200);
+    agent_stats_->addActiveSpan(nodes[3], 3004, now_ms - 5200);
 
     int32_t active_requests[4]{};
     agent_stats_->collectActiveRequests(active_requests, now_ms);
@@ -606,10 +620,10 @@ TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
     EXPECT_EQ(active_requests[2], 1);
     EXPECT_EQ(active_requests[3], 1);
 
-    agent_stats_->dropActiveSpan(3001);
-    agent_stats_->dropActiveSpan(3002);
-    agent_stats_->dropActiveSpan(3003);
-    agent_stats_->dropActiveSpan(3004);
+    agent_stats_->dropActiveSpan(nodes[0]);
+    agent_stats_->dropActiveSpan(nodes[1]);
+    agent_stats_->dropActiveSpan(nodes[2]);
+    agent_stats_->dropActiveSpan(nodes[3]);
 }
 
 // Test empty active span map
@@ -627,13 +641,14 @@ TEST_F(StatTest, AddAndDropAllSpansTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
-    agent_stats_->addActiveSpan(3001, now_ms);
-    agent_stats_->addActiveSpan(3002, now_ms);
-    agent_stats_->addActiveSpan(3003, now_ms);
+    ActiveSpanNode nodes[3];
+    agent_stats_->addActiveSpan(nodes[0], 3001, now_ms);
+    agent_stats_->addActiveSpan(nodes[1], 3002, now_ms);
+    agent_stats_->addActiveSpan(nodes[2], 3003, now_ms);
 
-    agent_stats_->dropActiveSpan(3001);
-    agent_stats_->dropActiveSpan(3002);
-    agent_stats_->dropActiveSpan(3003);
+    agent_stats_->dropActiveSpan(nodes[0]);
+    agent_stats_->dropActiveSpan(nodes[1]);
+    agent_stats_->dropActiveSpan(nodes[2]);
 
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
@@ -704,10 +719,13 @@ TEST_F(StatTest, ConcurrentActiveSpanTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
-    auto add_fn = [this, now_ms](int thread_index) {
-        const int base_id = 100000 + thread_index * spans_per_thread;
+    // One node per simulated span, shared by the add and drop phases.
+    std::vector<ActiveSpanNode> nodes(num_threads * spans_per_thread);
+
+    auto add_fn = [this, now_ms, &nodes](int thread_index) {
+        const int base = thread_index * spans_per_thread;
         for (int i = 0; i < spans_per_thread; i++) {
-            agent_stats_->addActiveSpan(base_id + i, now_ms - 10);
+            agent_stats_->addActiveSpan(nodes[base + i], 100000 + base + i, now_ms - 10);
         }
     };
 
@@ -727,10 +745,10 @@ TEST_F(StatTest, ConcurrentActiveSpanTest) {
     EXPECT_EQ(total, num_threads * spans_per_thread);
 
     threads.clear();
-    auto drop_fn = [this](int thread_index) {
-        const int base_id = 100000 + thread_index * spans_per_thread;
+    auto drop_fn = [this, &nodes](int thread_index) {
+        const int base = thread_index * spans_per_thread;
         for (int i = 0; i < spans_per_thread; i++) {
-            agent_stats_->dropActiveSpan(base_id + i);
+            agent_stats_->dropActiveSpan(nodes[base + i]);
         }
     };
 
@@ -855,8 +873,9 @@ TEST_F(StatTest, ManyActiveSpansTest) {
         std::chrono::system_clock::now().time_since_epoch()).count();
 
     const int span_count = 100;
+    std::vector<ActiveSpanNode> nodes(span_count);
     for (int i = 0; i < span_count; i++) {
-        agent_stats_->addActiveSpan(5000 + i, now_ms - 100);
+        agent_stats_->addActiveSpan(nodes[i], 5000 + i, now_ms - 100);
     }
 
     AgentStatsSnapshot snapshot;
@@ -867,7 +886,7 @@ TEST_F(StatTest, ManyActiveSpansTest) {
     EXPECT_EQ(total, span_count);
 
     for (int i = 0; i < span_count; i++) {
-        agent_stats_->dropActiveSpan(5000 + i);
+        agent_stats_->dropActiveSpan(nodes[i]);
     }
 }
 
