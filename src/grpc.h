@@ -121,6 +121,14 @@ namespace pinpoint {
         /// released, and the delay between them.
         int meta_retry_max_attempts{3};
         std::chrono::milliseconds meta_retry_delay{1000};
+        /// Concurrently in-flight metadata RPCs. Unary sends are pipelined
+        /// behind this permit cap instead of serialized one blocking call at
+        /// a time: a high error rate produces one exception metadata per
+        /// errored span, and a serial worker caps throughput at ~1/RTT.
+        int meta_max_concurrent_requests{4};
+        /// Bounded wait for in-flight metadata calls at shutdown before
+        /// TryCancel is requested (and again after that request).
+        std::chrono::milliseconds meta_shutdown_await_timeout{3000};
 
         /// Interval between ping writes on the agent ping stream.
         std::chrono::milliseconds ping_interval{60000};
@@ -377,8 +385,20 @@ namespace pinpoint {
             : meta_type_(meta_type), value_(ExceptionMeta(txid, span_id, url_template, std::move(exceptions))) {}
     };
 
+    // Pipeline state shared between GrpcMetadata, its worker and the async
+    // completion callbacks; definitions live in grpc.cpp.
+    struct MetaPipeline;
+    struct PendingMetaRpc;
+
     /**
      * @brief gRPC client responsible for metadata upload.
+     *
+     * Metadata items are independent unary RPCs (the collector keys each by
+     * its id), so they are pipelined: the worker launches async sends behind
+     * a small in-flight permit cap and processes completions as they arrive,
+     * mirroring GrpcSpan's async batch path. Failed items re-enter the retry
+     * schedule; exhausted items release their cache entry so the id is
+     * regenerated and re-sent later.
      */
     class GrpcMetadata : public GrpcClient {
     public:
@@ -402,33 +422,33 @@ namespace pinpoint {
         void create_stub() override;
 
     private:
-        struct PendingMeta {
-            std::unique_ptr<MetaData> meta;
-            int retry_count{0};
-            std::chrono::steady_clock::time_point available_at{};
-        };
-
         std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
 
-        std::deque<PendingMeta> meta_queue_{};
-        std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue_{};
-        std::mutex meta_queue_mutex_{};
-        std::condition_variable meta_queue_cv_{};
-        bool meta_stop_requested_{false};
+        // Queues, retry schedule, permits, in-flight registry and completed
+        // outcomes, all under the pipeline's one mutex. Heap-resident and
+        // shared with the async completion callbacks — never `this` — so a
+        // callback delivered after this client (or the whole agent) is
+        // destroyed only touches live heap memory (see SpanBatchInflight).
+        std::shared_ptr<MetaPipeline> pipeline_{};
         // Rate-limited overflow reporting (see QueueDropReporter).
         QueueDropReporter meta_drop_reporter_{};
 
-        template<typename Request, typename StubMethod>
-        GrpcRequestStatus send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name);
-        GrpcRequestStatus send_api_meta(ApiMeta& api_meta);
-        GrpcRequestStatus send_error_meta(StringMeta& error_meta);
-        GrpcRequestStatus send_sql_meta(StringMeta& sql_meta);
-        GrpcRequestStatus send_sql_uid_meta(SqlUidMeta& sql_uid_meta);
-        GrpcRequestStatus send_exception_meta(ExceptionMeta& exception_meta);
-        GrpcRequestStatus send_meta(MetaData& meta);
         void release_failed_cache(const MetaData& meta) const;
-        void schedule_retry(PendingMeta&& pending);
-        bool pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock);
+        // Builds the type-specific request and launches the async RPC; the
+        // caller's permit is owned by the completion callback once launched.
+        void launch_meta_rpc(std::unique_ptr<MetaData> meta, int retry_count);
+        // Reclaims the permit of a launch that threw and routes the item
+        // through the normal retry path.
+        void on_launch_failure(const std::shared_ptr<PendingMetaRpc>& call, bool registered,
+                               std::unique_ptr<MetaData> meta, int retry_count);
+        // Handles completed calls: success logs, failure re-enters retry.
+        void process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done);
+        // Schedules the item's next retry, or releases its cache entry once
+        // the retry budget is exhausted. `retry_count` counts this failure.
+        void retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count);
+        // Bounded wait for in-flight calls at shutdown, escalating to
+        // TryCancel (mirrors GrpcSpan::await_in_flight_requests).
+        void await_in_flight_requests();
         // Worker loop body; sendMetaWorker() supervises it and restarts it
         // after a transient exception instead of letting the worker die.
         void run_meta_worker();

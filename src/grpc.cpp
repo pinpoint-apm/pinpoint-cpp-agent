@@ -311,132 +311,167 @@ namespace pinpoint {
 
     //GrpcMetadata
 
+    // Heap-resident state for a single async metadata RPC. Lives as long as
+    // the completion callback's shared_ptr keeps it alive.
+    struct PendingMetaRpc {
+        grpc::ClientContext ctx;
+        google::protobuf::Arena arena;      // owns the request message
+        v1::PResult reply;
+        grpc::Status status;                // set by the completion callback
+        std::unique_ptr<MetaData> meta;     // retained for retry / cache release
+        int retry_count{0};
+        std::string_view operation_name{};  // static literal, for logging
+    };
+
+    // Metadata queued for (re)send.
+    struct PendingMeta {
+        std::unique_ptr<MetaData> meta;
+        int retry_count{0};
+        std::chrono::steady_clock::time_point available_at{};
+    };
+
+    // Every coordination point of the metadata pipeline under one mutex/cv:
+    // producers enqueue, completion callbacks return permits and outcomes,
+    // and the worker waits on the single cv for any of them. Shared by
+    // shared_ptr with the callbacks — never GrpcMetadata's `this` — so a
+    // callback delivered after the client (or the whole agent) is destroyed
+    // only touches live heap memory (mirrors SpanBatchInflight).
+    struct MetaPipeline {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool stop_requested{false};
+        int permits{0};
+        int max_permits{0};
+        std::deque<PendingMeta> queue;
+        std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue;
+        std::unordered_set<std::shared_ptr<PendingMetaRpc>> in_flight;
+        // Outcomes drained by the worker. Reserved well beyond max_permits at
+        // construction, so the push_back below cannot regrow in practice.
+        std::vector<std::shared_ptr<PendingMetaRpc>> completed;
+
+        void completeCall(const std::shared_ptr<PendingMetaRpc>& call, const grpc::Status& status) {
+            bool released = false;
+            bool outcome_kept = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                released = in_flight.erase(call) == 1;
+                if (released) {
+                    ++permits;
+                    call->status = status;
+                    try {
+                        completed.push_back(call);
+                        outcome_kept = true;
+                    } catch (...) {
+                        // Reported below, outside the lock.
+                    }
+                }
+            }
+            if (!released) {
+                LOG_WARN("metadata completion ignored: call is not registered as in-flight");
+                return;
+            }
+            if (!outcome_kept) {
+                // The worker cannot see this outcome: no retry, and the cache
+                // entry stays published (releasing it needs the agent, which
+                // callbacks must not touch).
+                LOG_ERROR("failed to record metadata completion; outcome dropped");
+            }
+            cv.notify_all();
+        }
+    };
+
     GrpcMetadata::GrpcMetadata(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
-        : GrpcClient(METADATA, std::move(config), tuning) {}
+        : GrpcClient(METADATA, std::move(config), tuning) {
+        pipeline_ = std::make_shared<MetaPipeline>();
+        pipeline_->max_permits = std::max(1, tuning_.meta_max_concurrent_requests);
+        pipeline_->permits = pipeline_->max_permits;
+        pipeline_->completed.reserve(static_cast<size_t>(pipeline_->max_permits) * 4);
+    }
 
     void GrpcMetadata::create_stub() {
         set_meta_stub(v1::Metadata::NewStub(channel_));
     }
 
-    template<typename Request, typename StubMethod>
-    GrpcRequestStatus GrpcMetadata::send_meta_helper(StubMethod stub_method, Request& request, std::string_view operation_name) {
-        if (!readyChannel()) {
-            return SEND_FAIL;
-        }
+    void GrpcMetadata::launch_meta_rpc(std::unique_ptr<MetaData> meta, int retry_count) {
+        // The caller holds one permit. Every failure path before the async
+        // call is launched must hand it back and route the item through the
+        // normal retry path; once launched, the completion callback owns the
+        // release. The catch below must be catch-all: a non-std exception
+        // escaping this window would leak the permit permanently, shrinking
+        // the pipeline for the rest of the process lifetime (mirrors
+        // GrpcSpan::send_batch_async).
+        std::shared_ptr<PendingMetaRpc> call;
+        bool registered = false;
+        try {
+            call = std::make_shared<PendingMetaRpc>();
+            call->meta = std::move(meta);
+            call->retry_count = retry_count;
+            build_grpc_context(&call->ctx, 0);
+            set_request_deadline(call->ctx);
 
-        v1::PResult reply;
-        grpc::ClientContext ctx;
+            // Captures the shared pipeline, never `this`: the callback may
+            // fire after this GrpcMetadata (or the whole agent) is destroyed.
+            auto state = pipeline_;
+            auto on_done = [state, call](const grpc::Status& status) {
+                state->completeCall(call, status);
+            };
 
-        // Deliberately NOT under channel_mutex_: meta_stub_ is created by
-        // openChannel() before this worker starts and gRPC stubs are
-        // thread-safe, while holding the mutex across a blocking unary call
-        // would serialize it against readyChannel()'s (potentially long)
-        // backoff loop for no benefit.
-        build_grpc_context(&ctx, 0);
-        set_request_deadline(ctx);
-
-        const grpc::Status status = stub_method(&ctx, request, &reply);
-
-        if (!status.ok()) {
-            LOG_ERROR("failed to send {} metadata: {}, {}",
-                      operation_name, static_cast<int>(status.error_code()), status.error_message());
-            return SEND_FAIL;
-        }
-
-        if (!reply.success()) {
-            LOG_INFO("failed to send {} metadata: PResult.success=false", operation_name);
-            return SEND_FAIL;
-        }
-
-        LOG_DEBUG("success to send {} metadata", operation_name);
-        return SEND_OK;
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_api_meta(ApiMeta& api_meta) {
-        v1::PApiMetaData grpc_api_meta;
-
-        grpc_api_meta.set_apiid(api_meta.id_);
-        grpc_api_meta.set_apiinfo(api_meta.api_str_);
-        grpc_api_meta.set_type(api_meta.type_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PApiMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestApiMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_api_meta, "api");
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_error_meta(StringMeta& error_meta) {
-        v1::PStringMetaData grpc_error_meta;
-
-        grpc_error_meta.set_stringid(error_meta.id_);
-        grpc_error_meta.set_stringvalue(error_meta.str_val_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PStringMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestStringMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_error_meta, "error");
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_sql_meta(StringMeta& sql_meta) {
-        v1::PSqlMetaData grpc_sql_meta;
-
-        grpc_sql_meta.set_sqlid(sql_meta.id_);
-        grpc_sql_meta.set_sql(sql_meta.str_val_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestSqlMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_sql_meta, "sql");
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_sql_uid_meta(SqlUidMeta& sql_uid_meta) {
-        v1::PSqlUidMetaData grpc_sql_uid_meta;
-
-        grpc_sql_uid_meta.set_sqluid(std::string(sql_uid_meta.uid_.begin(), sql_uid_meta.uid_.end()));
-        grpc_sql_uid_meta.set_sql(sql_uid_meta.sql_);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PSqlUidMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestSqlUidMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, grpc_sql_uid_meta, "sql uid");
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_exception_meta(ExceptionMeta& exception_meta) {
-        google::protobuf::Arena arena;
-        auto* grpc_exception_meta = build_exception_metadata(exception_meta.txid_,
-                                                            exception_meta.span_id_,
-                                                            exception_meta.url_template_,
-                                                            exception_meta.exceptions_,
-                                                            &arena);
-
-        auto stub_method = [this](grpc::ClientContext* ctx, const v1::PExceptionMetaData& req, v1::PResult* reply) {
-            return meta_stub_->RequestExceptionMetaData(ctx, req, reply);
-        };
-
-        return send_meta_helper(stub_method, *grpc_exception_meta, "exception");
-    }
-
-    GrpcRequestStatus GrpcMetadata::send_meta(MetaData& meta) {
-        return std::visit([this](auto&& value) {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, ApiMeta>) {
-                return send_api_meta(value);
-            } else if constexpr (std::is_same_v<T, StringMeta>) {
-                if (value.type_ == STRING_META_ERROR) {
-                    return send_error_meta(value);
-                }
-                return send_sql_meta(value);
-            } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
-                return send_sql_uid_meta(value);
-            } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
-                return send_exception_meta(value);
+            // Registered before the launch: the callback (which may run
+            // inline in tests) releases the permit by erasing this entry.
+            {
+                std::lock_guard<std::mutex> lock(pipeline_->mutex);
+                pipeline_->in_flight.insert(call);
+                registered = true;
             }
-            return SEND_FAIL;
-        }, meta.value_);
+
+            // Deliberately NOT under channel_mutex_: meta_stub_ is created by
+            // openChannel() before this worker starts and gRPC stubs are
+            // thread-safe.
+            auto* async_stub = meta_stub_->async();
+            std::visit([&](auto&& value) {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, ApiMeta>) {
+                    call->operation_name = "api";
+                    auto* request = google::protobuf::Arena::Create<v1::PApiMetaData>(&call->arena);
+                    request->set_apiid(value.id_);
+                    request->set_apiinfo(value.api_str_);
+                    request->set_type(value.type_);
+                    async_stub->RequestApiMetaData(&call->ctx, request, &call->reply, on_done);
+                } else if constexpr (std::is_same_v<T, StringMeta>) {
+                    if (value.type_ == STRING_META_ERROR) {
+                        call->operation_name = "error";
+                        auto* request = google::protobuf::Arena::Create<v1::PStringMetaData>(&call->arena);
+                        request->set_stringid(value.id_);
+                        request->set_stringvalue(value.str_val_);
+                        async_stub->RequestStringMetaData(&call->ctx, request, &call->reply, on_done);
+                    } else {
+                        call->operation_name = "sql";
+                        auto* request = google::protobuf::Arena::Create<v1::PSqlMetaData>(&call->arena);
+                        request->set_sqlid(value.id_);
+                        request->set_sql(value.str_val_);
+                        async_stub->RequestSqlMetaData(&call->ctx, request, &call->reply, on_done);
+                    }
+                } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
+                    call->operation_name = "sql uid";
+                    auto* request = google::protobuf::Arena::Create<v1::PSqlUidMetaData>(&call->arena);
+                    request->set_sqluid(std::string(value.uid_.begin(), value.uid_.end()));
+                    request->set_sql(value.sql_);
+                    async_stub->RequestSqlUidMetaData(&call->ctx, request, &call->reply, on_done);
+                } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
+                    call->operation_name = "exception";
+                    auto* request = build_exception_metadata(value.txid_, value.span_id_,
+                                                             value.url_template_, value.exceptions_,
+                                                             &call->arena);
+                    async_stub->RequestExceptionMetaData(&call->ctx, request, &call->reply, on_done);
+                }
+            }, call->meta->value_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("metadata send threw an exception: {}", e.what());
+            on_launch_failure(call, registered, std::move(meta), retry_count);
+        } catch (...) {
+            LOG_ERROR("metadata send threw an unknown exception");
+            on_launch_failure(call, registered, std::move(meta), retry_count);
+        }
     }
 
     void GrpcMetadata::release_failed_cache(const MetaData& meta) const {
@@ -468,13 +503,13 @@ namespace pinpoint {
         const auto max_queue_size = static_cast<size_t>(config_->collector.grpc.channel.sender_queue_size);
         bool enqueue_threw = false;
         try {
-            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
+            std::unique_lock<std::mutex> lock(pipeline_->mutex);
 
-            if (meta_queue_.size() + retry_queue_.size() < max_queue_size) {
+            if (pipeline_->queue.size() + pipeline_->retry_queue.size() < max_queue_size) {
                 // deque::push_back gives the strong guarantee and PendingMeta's
                 // move cannot throw, so `pending` still owns the metadata
                 // whenever this block is left by exception.
-                meta_queue_.push_back(std::move(pending));
+                pipeline_->queue.push_back(std::move(pending));
             }
         } catch (const std::exception &e) {
             enqueue_threw = true;
@@ -505,8 +540,8 @@ namespace pinpoint {
             // releasing the entry would leave spans referencing metadata the
             // collector never receives, for the rest of the process lifetime.
             // Release it so the id is regenerated and re-sent, exactly like
-            // the retry-exhaustion path in run_meta_worker(). Outside
-            // meta_queue_mutex_ for the lock-order reasons documented there.
+            // the retry-exhaustion path in retry_or_drop(). Outside the
+            // pipeline mutex for the lock-order reasons documented there.
             if (agent_ != nullptr) {
                 release_failed_cache(*pending.meta);
             }
@@ -514,60 +549,139 @@ namespace pinpoint {
         }
 
         // Notify after releasing the lock so the woken worker does not
-        // immediately block on meta_queue_mutex_ (matches enqueueSpan).
-        meta_queue_cv_.notify_one();
+        // immediately block on the pipeline mutex (matches enqueueSpan).
+        pipeline_->cv.notify_all();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
     } catch (...) {
         LOG_ERROR("failed to enqueue metadata: unknown exception");
     }
 
-    void GrpcMetadata::schedule_retry(PendingMeta&& pending) {
-        // No notify: this runs on the worker thread — the only waiter on
-        // meta_queue_cv_ — which re-examines the retry queue in
-        // pop_next_meta() right after scheduling.
-        pending.available_at = std::chrono::steady_clock::now() + tuning_.meta_retry_delay;
-        retry_queue_.emplace(pending.available_at, std::move(pending));
+    void GrpcMetadata::on_launch_failure(const std::shared_ptr<PendingMetaRpc>& call,
+                                         bool registered,
+                                         std::unique_ptr<MetaData> meta,
+                                         int retry_count) {
+        // Reclaim the permit exactly once: if the call was never registered
+        // no callback exists for it, and if it is still registered the
+        // callback has not run — remove the entry so it never will. A
+        // registered-and-gone call means the callback already completed it
+        // and released the permit; its outcome sits in `completed` and must
+        // not be double-handled here.
+        bool own_item = false;
+        {
+            std::lock_guard<std::mutex> lock(pipeline_->mutex);
+            if (!registered || pipeline_->in_flight.erase(call) == 1) {
+                ++pipeline_->permits;
+                own_item = true;
+            }
+        }
+        pipeline_->cv.notify_all();
+        if (!own_item) {
+            return;
+        }
+        // Treat a thrown build/launch exception like any other failed RPC so
+        // the item is retried and, after exhaustion, its cache entry is
+        // released. The metadata is owned by the call once it was moved in;
+        // before that, the `meta` parameter still owns it.
+        auto owned = (call != nullptr && call->meta != nullptr) ? std::move(call->meta)
+                                                                : std::move(meta);
+        if (owned != nullptr) {
+            retry_or_drop(std::move(owned), retry_count + 1);
+        }
     }
 
-    bool GrpcMetadata::pop_next_meta(PendingMeta& pending, std::unique_lock<std::mutex>& lock) {
-        while (true) {
-            if (meta_stop_requested_ || agent_->isExiting()) {
-                return false;
+    void GrpcMetadata::retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count) {
+        if (agent_->isExiting()) {
+            return;
+        }
+        if (retry_count > tuning_.meta_retry_max_attempts) {
+            LOG_INFO("drop metadata after retry exhaustion: retryCount={}", retry_count);
+            // Outside the pipeline mutex: removeCache* takes the agent
+            // caches' internal locks, and nesting those under the pipeline
+            // mutex extends enqueueMeta contention on application threads
+            // and is a latent lock-order hazard.
+            release_failed_cache(*meta);
+            return;
+        }
+        LOG_DEBUG("retry metadata send: retryCount={}/{}", retry_count, tuning_.meta_retry_max_attempts);
+        PendingMeta pending{std::move(meta), retry_count,
+                            std::chrono::steady_clock::now() + tuning_.meta_retry_delay};
+        try {
+            std::lock_guard<std::mutex> lock(pipeline_->mutex);
+            pipeline_->retry_queue.emplace(pending.available_at, std::move(pending));
+            // No notify: this runs on the worker thread — the only waiter on
+            // the pipeline cv — which re-examines the retry queue on its next
+            // loop iteration.
+        } catch (...) {
+            // Enqueuing the retry threw (e.g. bad_alloc). The item would
+            // otherwise be destroyed here with its cache id still marked
+            // published, leaving spans referencing metadata the collector
+            // never receives. Release the cache entry so the id is
+            // regenerated and re-sent later. The multimap insertion throws
+            // from node allocation, before the element is moved, so
+            // `pending.meta` is still valid.
+            LOG_ERROR("failed to schedule metadata retry; releasing cache to allow re-send");
+            if (pending.meta) {
+                release_failed_cache(*pending.meta);
             }
+        }
+    }
 
-            if (!meta_queue_.empty()) {
-                pending = std::move(meta_queue_.front());
-                meta_queue_.pop_front();
-                return true;
+    void GrpcMetadata::process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done) {
+        for (auto& call : done) {
+            if (call->status.ok() && call->reply.success()) {
+                LOG_DEBUG("success to send {} metadata", call->operation_name);
+                continue;
             }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (!retry_queue_.empty()) {
-                auto retry = retry_queue_.begin();
-                if (retry->first <= now) {
-                    pending = std::move(retry->second);
-                    retry_queue_.erase(retry);
-                    return true;
-                }
-
-                meta_queue_cv_.wait_until(lock, retry->first, [this] {
-                    return !meta_queue_.empty() || meta_stop_requested_ || agent_->isExiting();
-                });
+            if (!call->status.ok()) {
+                LOG_ERROR("failed to send {} metadata: {}, {}", call->operation_name,
+                          static_cast<int>(call->status.error_code()),
+                          call->status.error_message());
             } else {
-                meta_queue_cv_.wait(lock, [this] {
-                    return !meta_queue_.empty() || !retry_queue_.empty() || meta_stop_requested_ || agent_->isExiting();
-                });
+                LOG_INFO("failed to send {} metadata: PResult.success=false", call->operation_name);
             }
+            retry_or_drop(std::move(call->meta), call->retry_count + 1);
+        }
+    }
+
+    void GrpcMetadata::await_in_flight_requests() {
+        const auto wait_all = [this](std::chrono::milliseconds timeout) {
+            std::unique_lock<std::mutex> lock(pipeline_->mutex);
+            return pipeline_->cv.wait_for(lock, timeout, [this] {
+                return pipeline_->permits >= pipeline_->max_permits;
+            });
+        };
+        if (wait_all(tuning_.meta_shutdown_await_timeout)) {
+            return;
+        }
+
+        // Slow collector: request cancellation for whatever is still in
+        // flight. TryCancel is best-effort, but when honored it avoids waiting
+        // out the full request deadline for callbacks to return their permits.
+        std::vector<std::shared_ptr<PendingMetaRpc>> stragglers;
+        {
+            std::lock_guard<std::mutex> lock(pipeline_->mutex);
+            stragglers.assign(pipeline_->in_flight.begin(), pipeline_->in_flight.end());
+        }
+        LOG_WARN("timed out waiting for in-flight metadata requests; cancelling {} request(s)",
+                 stragglers.size());
+        for (const auto& call : stragglers) {
+            call->ctx.TryCancel();
+        }
+
+        if (!wait_all(tuning_.meta_shutdown_await_timeout)) {
+            // Even now the callbacks stay memory-safe: they reference only
+            // the shared pipeline state, never this client or the agent.
+            LOG_WARN("in-flight metadata requests still pending after cancellation");
         }
     }
 
     void GrpcMetadata::sendMetaWorker() {
         // Supervise the loop body so an unexpected exception cannot kill
         // metadata upload for the process lifetime. Exceptions from an
-        // individual send are contained by run_meta_worker() and converted to
-        // SEND_FAIL, preserving the popped item for the normal retry path.
-        // Only a stop request or agent exit ends the worker.
+        // individual launch are contained by launch_meta_rpc(), which routes
+        // the item through the normal retry path. Only a stop request or
+        // agent exit ends the worker.
         while (true) {
             try {
                 run_meta_worker();
@@ -578,84 +692,96 @@ namespace pinpoint {
                 LOG_ERROR("failed to send grpc meta: unknown exception");
             }
 
-            std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-            if (meta_queue_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
-                    return meta_stop_requested_ || agent_->isExiting();
+            std::unique_lock<std::mutex> lock(pipeline_->mutex);
+            if (pipeline_->cv.wait_for(lock, tuning_.worker_restart_delay, [this] {
+                    return pipeline_->stop_requested || agent_->isExiting();
                 })) {
                 break;
             }
         }
+        // Runs on this worker thread, which the shutdown path joins under its
+        // deadline — the signal phase (stopMetaWorker) stays non-blocking.
+        await_in_flight_requests();
         LOG_INFO("send meta worker end");
     }
 
     void GrpcMetadata::run_meta_worker() {
+        std::vector<std::shared_ptr<PendingMetaRpc>> done;
         while (true) {
-            PendingMeta pending;
+            // The inner loop exits with either completed outcomes swapped
+            // into `done`, or one item popped with a permit held.
+            PendingMeta item;
             {
-                std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-                if (!pop_next_meta(pending, lock)) {
-                    break;
+                std::unique_lock<std::mutex> lock(pipeline_->mutex);
+                while (true) {
+                    if (pipeline_->stop_requested || agent_->isExiting()) {
+                        return;
+                    }
+                    if (!pipeline_->completed.empty()) {
+                        // Swap out and process outside the lock: retry
+                        // scheduling and cache release must not run under the
+                        // pipeline mutex.
+                        done.swap(pipeline_->completed);
+                        break;
+                    }
+                    if (pipeline_->permits > 0) {
+                        if (!pipeline_->queue.empty()) {
+                            item = std::move(pipeline_->queue.front());
+                            pipeline_->queue.pop_front();
+                            --pipeline_->permits;
+                            break;
+                        }
+                        if (!pipeline_->retry_queue.empty() &&
+                            pipeline_->retry_queue.begin()->first <= std::chrono::steady_clock::now()) {
+                            auto retry = pipeline_->retry_queue.begin();
+                            item = std::move(retry->second);
+                            pipeline_->retry_queue.erase(retry);
+                            --pipeline_->permits;
+                            break;
+                        }
+                    }
+                    // Nothing actionable. Wake on enqueue, completion or stop;
+                    // when a permit is free and a retry is scheduled, also
+                    // wake when it becomes due. All conditions are re-checked
+                    // from the top, so a bare wait handles spurious wakeups.
+                    if (pipeline_->permits > 0 && !pipeline_->retry_queue.empty()) {
+                        pipeline_->cv.wait_until(lock, pipeline_->retry_queue.begin()->first);
+                    } else {
+                        pipeline_->cv.wait(lock);
+                    }
                 }
             }
 
-            auto send_status = SEND_FAIL;
-            try {
-                send_status = send_meta(*pending.meta);
-            } catch (const std::exception& e) {
-                // The item has already been removed from the queue. Treat a
-                // thrown send/build exception like any other failed RPC so it
-                // is retried and, after exhaustion, its cache entry is
-                // released. Letting it reach the outer supervisor would
-                // destroy `pending` and permanently suppress re-publication.
-                LOG_ERROR("metadata send threw an exception: {}", e.what());
-            } catch (...) {
-                LOG_ERROR("metadata send threw an unknown exception");
-            }
-
-            const auto sent = send_status == SEND_OK;
-            if (sent) {
+            if (!done.empty()) {
+                process_completed(done);
+                done.clear();
                 continue;
             }
 
-            ++pending.retry_count;
-            if (agent_->isExiting()) {
-                break;
-            }
-
-            if (pending.retry_count <= tuning_.meta_retry_max_attempts) {
-                LOG_DEBUG("retry metadata send: retryCount={}/{}", pending.retry_count, tuning_.meta_retry_max_attempts);
-                try {
-                    std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-                    schedule_retry(std::move(pending));
-                } catch (...) {
-                    // Enqueuing the retry threw (e.g. bad_alloc). The popped item
-                    // would otherwise be destroyed here with its cache id still
-                    // marked published, leaving spans referencing metadata the
-                    // collector never receives. Release the cache entry so the id
-                    // is regenerated and re-sent later. schedule_retry only throws
-                    // from the queue insertion, before `pending` is moved, so
-                    // `pending.meta` is still valid.
-                    LOG_ERROR("failed to schedule metadata retry; releasing cache to allow re-send");
-                    if (pending.meta) {
-                        release_failed_cache(*pending.meta);
-                    }
+            // Outside the pipeline lock: readyChannel() may block through its
+            // whole reconnect backoff while completions keep accumulating.
+            if (!readyChannel()) {
+                // Channel unavailable (or stop requested): hand the permit
+                // back and treat this attempt as failed, exactly like the old
+                // blocking sender did, so the item re-enters the retry path
+                // instead of being lost.
+                {
+                    std::lock_guard<std::mutex> lock(pipeline_->mutex);
+                    ++pipeline_->permits;
                 }
-            } else {
-                LOG_INFO("drop metadata after retry exhaustion: retryCount={}", pending.retry_count);
-                // Outside meta_queue_mutex_: removeCache* takes the agent
-                // caches' internal locks, and nesting those under the queue
-                // mutex extends enqueueMeta contention on application threads
-                // and is a latent lock-order hazard.
-                release_failed_cache(*pending.meta);
+                pipeline_->cv.notify_all();
+                retry_or_drop(std::move(item.meta), item.retry_count + 1);
+                continue;
             }
+            launch_meta_rpc(std::move(item.meta), item.retry_count);
         }
     }
 
     void GrpcMetadata::stopMetaWorker() {
         request_stop();
-        std::unique_lock<std::mutex> lock(meta_queue_mutex_);
-        meta_stop_requested_ = true;
-        meta_queue_cv_.notify_all();
+        std::unique_lock<std::mutex> lock(pipeline_->mutex);
+        pipeline_->stop_requested = true;
+        pipeline_->cv.notify_all();
     }
 
     //GrpcCommand

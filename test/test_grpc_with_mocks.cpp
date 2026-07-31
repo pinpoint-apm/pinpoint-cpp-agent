@@ -16,9 +16,11 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -254,6 +256,274 @@ private:
     std::vector<std::function<void(grpc::Status)>> held_;
 };
 
+// Hand-written fake for the Metadata stub: the generated MockMetadataStub
+// cannot serve the callback-based async()->Request*MetaData path used by
+// GrpcMetadata (its async() returns nullptr), so this fake implements
+// async_interface, records requests per RPC type and lets tests script
+// per-type outcomes and control when each RPC's completion callback runs.
+class FakeMetadataStub : public v1::Metadata::StubInterface {
+public:
+    enum class MetaRpc { API, STRING, SQL, SQL_UID, EXCEPTION };
+    enum class ReplyMode { OK, RESULT_FAIL, ERROR_STATUS, HOLD };
+
+    FakeMetadataStub() : fake_async_(this) {}
+
+    async_interface* async() override { return &fake_async_; }
+
+    // Default outcome for every RPC without a scripted reply.
+    void setReplyMode(ReplyMode mode) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        mode_ = mode;
+    }
+
+    // Scripted per-type outcomes, consumed FIFO before the default mode —
+    // the async equivalent of gmock WillOnce chains.
+    void pushReply(MetaRpc rpc, grpc::Status status, bool result_success) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        scripted_[index(rpc)].push_back(ScriptedReply{std::move(status), result_success, false});
+    }
+
+    void pushThrow(MetaRpc rpc) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        scripted_[index(rpc)].push_back(ScriptedReply{grpc::Status::OK, true, true});
+    }
+
+    size_t requestCount(MetaRpc rpc) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return counts_[index(rpc)];
+    }
+
+    size_t totalRequestCount() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        size_t total = 0;
+        for (const auto count : counts_) total += count;
+        return total;
+    }
+
+    bool waitForRequestCount(MetaRpc rpc, size_t count, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] { return counts_[index(rpc)] >= count; });
+    }
+
+    bool waitForTotalRequestCount(size_t count, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] {
+            size_t total = 0;
+            for (const auto c : counts_) total += c;
+            return total >= count;
+        });
+    }
+
+    v1::PApiMetaData apiRequest(size_t i) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return api_requests_.at(i);
+    }
+    v1::PStringMetaData stringRequest(size_t i) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return string_requests_.at(i);
+    }
+    v1::PSqlMetaData sqlRequest(size_t i) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return sql_requests_.at(i);
+    }
+    v1::PSqlUidMetaData sqlUidRequest(size_t i) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return sql_uid_requests_.at(i);
+    }
+    v1::PExceptionMetaData exceptionRequest(size_t i) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return exception_requests_.at(i);
+    }
+
+    size_t heldCallbackCount() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return held_.size();
+    }
+
+    bool waitForHeldCallbacks(size_t count, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] { return held_.size() >= count; });
+    }
+
+    void releaseHeldCallbacks(const grpc::Status& status) {
+        std::vector<std::function<void(grpc::Status)>> held;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            held.swap(held_);
+        }
+        for (auto& callback : held) {
+            callback(status);
+        }
+    }
+
+    bool releaseHeldCallback(size_t index, const grpc::Status& status) {
+        std::function<void(grpc::Status)> held;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (index >= held_.size()) {
+                return false;
+            }
+            held = std::move(held_[index]);
+            held_.erase(held_.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+        held(status);
+        return true;
+    }
+
+    // Sync surface is unused by the async pipeline.
+    grpc::Status RequestSqlMetaData(grpc::ClientContext*, const v1::PSqlMetaData&, v1::PResult*) override {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "sync unused");
+    }
+    grpc::Status RequestSqlUidMetaData(grpc::ClientContext*, const v1::PSqlUidMetaData&, v1::PResult*) override {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "sync unused");
+    }
+    grpc::Status RequestApiMetaData(grpc::ClientContext*, const v1::PApiMetaData&, v1::PResult*) override {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "sync unused");
+    }
+    grpc::Status RequestStringMetaData(grpc::ClientContext*, const v1::PStringMetaData&, v1::PResult*) override {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "sync unused");
+    }
+    grpc::Status RequestExceptionMetaData(grpc::ClientContext*, const v1::PExceptionMetaData&, v1::PResult*) override {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "sync unused");
+    }
+
+private:
+    struct ScriptedReply {
+        grpc::Status status;
+        bool result_success;
+        bool throws;
+    };
+
+    static size_t index(MetaRpc rpc) { return static_cast<size_t>(rpc); }
+
+    class FakeAsync : public v1::Metadata::StubInterface::async_interface {
+    public:
+        explicit FakeAsync(FakeMetadataStub* owner) : owner_(owner) {}
+        void RequestSqlMetaData(grpc::ClientContext*, const v1::PSqlMetaData* request,
+                                v1::PResult* response, std::function<void(grpc::Status)> on_done) override {
+            owner_->handle(MetaRpc::SQL, owner_->sql_requests_, request, response, std::move(on_done));
+        }
+        void RequestSqlMetaData(grpc::ClientContext*, const v1::PSqlMetaData*, v1::PResult*,
+                                grpc::ClientUnaryReactor*) override {}
+        void RequestSqlUidMetaData(grpc::ClientContext*, const v1::PSqlUidMetaData* request,
+                                   v1::PResult* response, std::function<void(grpc::Status)> on_done) override {
+            owner_->handle(MetaRpc::SQL_UID, owner_->sql_uid_requests_, request, response, std::move(on_done));
+        }
+        void RequestSqlUidMetaData(grpc::ClientContext*, const v1::PSqlUidMetaData*, v1::PResult*,
+                                   grpc::ClientUnaryReactor*) override {}
+        void RequestApiMetaData(grpc::ClientContext*, const v1::PApiMetaData* request,
+                                v1::PResult* response, std::function<void(grpc::Status)> on_done) override {
+            owner_->handle(MetaRpc::API, owner_->api_requests_, request, response, std::move(on_done));
+        }
+        void RequestApiMetaData(grpc::ClientContext*, const v1::PApiMetaData*, v1::PResult*,
+                                grpc::ClientUnaryReactor*) override {}
+        void RequestStringMetaData(grpc::ClientContext*, const v1::PStringMetaData* request,
+                                   v1::PResult* response, std::function<void(grpc::Status)> on_done) override {
+            owner_->handle(MetaRpc::STRING, owner_->string_requests_, request, response, std::move(on_done));
+        }
+        void RequestStringMetaData(grpc::ClientContext*, const v1::PStringMetaData*, v1::PResult*,
+                                   grpc::ClientUnaryReactor*) override {}
+        void RequestExceptionMetaData(grpc::ClientContext*, const v1::PExceptionMetaData* request,
+                                      v1::PResult* response, std::function<void(grpc::Status)> on_done) override {
+            owner_->handle(MetaRpc::EXCEPTION, owner_->exception_requests_, request, response, std::move(on_done));
+        }
+        void RequestExceptionMetaData(grpc::ClientContext*, const v1::PExceptionMetaData*, v1::PResult*,
+                                      grpc::ClientUnaryReactor*) override {}
+
+    private:
+        FakeMetadataStub* owner_;
+    };
+
+    template <typename Request>
+    void handle(MetaRpc rpc, std::vector<Request>& store, const Request* request,
+                v1::PResult* response, std::function<void(grpc::Status)> on_done) {
+        std::function<void(grpc::Status)> to_invoke;
+        grpc::Status status = grpc::Status::OK;
+        bool throw_before_callback = false;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            store.push_back(*request);
+            ++counts_[index(rpc)];
+
+            auto& scripted = scripted_[index(rpc)];
+            if (!scripted.empty()) {
+                auto reply = std::move(scripted.front());
+                scripted.pop_front();
+                if (reply.throws) {
+                    throw_before_callback = true;
+                } else {
+                    status = std::move(reply.status);
+                    response->set_success(reply.result_success);
+                    to_invoke = std::move(on_done);
+                }
+            } else {
+                switch (mode_) {
+                    case ReplyMode::OK:
+                        response->set_success(true);
+                        to_invoke = std::move(on_done);
+                        break;
+                    case ReplyMode::RESULT_FAIL:
+                        response->set_success(false);
+                        to_invoke = std::move(on_done);
+                        break;
+                    case ReplyMode::ERROR_STATUS:
+                        status = grpc::Status(grpc::StatusCode::UNAVAILABLE, "fake unavailable");
+                        to_invoke = std::move(on_done);
+                        break;
+                    case ReplyMode::HOLD:
+                        // The response is pre-filled as a success so a later
+                        // release with Status::OK completes the item; releasing
+                        // with an error status fails it instead.
+                        response->set_success(true);
+                        held_.push_back(std::move(on_done));
+                        break;
+                }
+            }
+        }
+        cv_.notify_all();
+        if (throw_before_callback) {
+            throw std::runtime_error("fake async metadata launch failure");
+        }
+        if (to_invoke) {
+            to_invoke(status);
+        }
+    }
+
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* AsyncRequestSqlMetaDataRaw(
+        grpc::ClientContext*, const v1::PSqlMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* PrepareAsyncRequestSqlMetaDataRaw(
+        grpc::ClientContext*, const v1::PSqlMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* AsyncRequestSqlUidMetaDataRaw(
+        grpc::ClientContext*, const v1::PSqlUidMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* PrepareAsyncRequestSqlUidMetaDataRaw(
+        grpc::ClientContext*, const v1::PSqlUidMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* AsyncRequestApiMetaDataRaw(
+        grpc::ClientContext*, const v1::PApiMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* PrepareAsyncRequestApiMetaDataRaw(
+        grpc::ClientContext*, const v1::PApiMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* AsyncRequestStringMetaDataRaw(
+        grpc::ClientContext*, const v1::PStringMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* PrepareAsyncRequestStringMetaDataRaw(
+        grpc::ClientContext*, const v1::PStringMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* AsyncRequestExceptionMetaDataRaw(
+        grpc::ClientContext*, const v1::PExceptionMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+    grpc::ClientAsyncResponseReaderInterface<v1::PResult>* PrepareAsyncRequestExceptionMetaDataRaw(
+        grpc::ClientContext*, const v1::PExceptionMetaData&, grpc::CompletionQueue*) override { return nullptr; }
+
+    FakeAsync fake_async_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    ReplyMode mode_{ReplyMode::OK};
+    std::array<size_t, 5> counts_{};
+    std::array<std::deque<ScriptedReply>, 5> scripted_{};
+    std::vector<v1::PApiMetaData> api_requests_;
+    std::vector<v1::PStringMetaData> string_requests_;
+    std::vector<v1::PSqlMetaData> sql_requests_;
+    std::vector<v1::PSqlUidMetaData> sql_uid_requests_;
+    std::vector<v1::PExceptionMetaData> exception_requests_;
+    std::vector<std::function<void(grpc::Status)>> held_;
+};
+
 // Testable gRPC classes that inject mock stubs
 class TestableGrpcMetadata : public GrpcMetadata {
 public:
@@ -262,7 +532,7 @@ public:
         setAgentService(agent);
     }
 
-    void setMockMetaStub(std::unique_ptr<v1::MockMetadataStub> mock_stub) {
+    void setMockMetaStub(std::unique_ptr<v1::Metadata::StubInterface> mock_stub) {
         set_meta_stub(std::move(mock_stub));
     }
 
@@ -304,7 +574,7 @@ public:
         set_agent_stub(std::move(mock_stub));
     }
 
-    void setMockMetaStub(std::unique_ptr<v1::MockMetadataStub> mock_stub) {
+    void setMockMetaStub(std::unique_ptr<v1::Metadata::StubInterface> mock_stub) {
         metadata_.setMockMetaStub(std::move(mock_stub));
     }
 
@@ -810,45 +1080,37 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerContainsChannelSetupException) {
 
 TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
-    
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    
-    // Set up expectations for metadata operations
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    
-    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    
-    agent.setMockMetaStub(std::move(mock_meta_stub));
-    
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    agent.setMockMetaStub(std::move(fake_meta_stub));
+
     // Enqueue some metadata
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
     agent.enqueueMeta(std::move(api_meta));
-    
+
     auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
     agent.enqueueMeta(std::move(str_meta));
-    
+
     // Test meta worker operations
     std::thread meta_worker([&agent]() {
         agent.sendMetaWorker();
     });
-    
-    // Give worker time to process queue
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
+
+    EXPECT_TRUE(fake->waitForTotalRequestCount(2, std::chrono::seconds(5)))
+        << "both metadata items should be sent";
+
     // Set agent to exiting state before stopping worker
     mock_agent_service_->setExiting(true);
-    
-    // Stop worker
     agent.stopMetaWorker();
-    
-    // Wait for thread to finish
     if (meta_worker.joinable()) {
         meta_worker.join();
     }
-    
-    SUCCEED() << "Meta worker should process queued metadata with mock stub";
+
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::STRING), 1u);
+    EXPECT_EQ(fake->apiRequest(0).apiinfo(), "test.api");
+    EXPECT_EQ(fake->stringRequest(0).stringvalue(), "test.string");
 }
 
 // GrpcSpan Tests with Mock Stubs
@@ -1112,20 +1374,19 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendApiMetaFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
     // API meta send fails
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "server unavailable")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    fake->pushReply(FakeMetadataStub::MetaRpc::API,
+                    grpc::Status(grpc::StatusCode::UNAVAILABLE, "server unavailable"), false);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     // Enqueue API meta and run worker
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "fail.api"));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1137,18 +1398,17 @@ TEST_F(GrpcMockTest, GrpcAgentSendApiMetaFailureTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendErrorMetaFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "internal error")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->pushReply(FakeMetadataStub::MetaRpc::STRING,
+                    grpc::Status(grpc::StatusCode::INTERNAL, "internal error"), false);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "error msg", STRING_META_ERROR));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::STRING, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1160,18 +1420,17 @@ TEST_F(GrpcMockTest, GrpcAgentSendErrorMetaFailureTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED, "timeout")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->pushReply(FakeMetadataStub::MetaRpc::SQL,
+                    grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED, "timeout"), false);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "SELECT 1", STRING_META_SQL));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1183,19 +1442,18 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaFailureTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::PERMISSION_DENIED, "denied")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->pushReply(FakeMetadataStub::MetaRpc::SQL_UID,
+                    grpc::Status(grpc::StatusCode::PERMISSION_DENIED, "denied"), false);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     SqlUid uid = {1, 2, 3};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1207,12 +1465,11 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaFailureTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestExceptionMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "resource exhausted")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->pushReply(FakeMetadataStub::MetaRpc::EXCEPTION,
+                    grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "resource exhausted"), false);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     TraceId txid{"agent", 100, 0};
     std::vector<std::unique_ptr<Exception>> exceptions;
@@ -1223,7 +1480,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaFailureTest) {
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1239,22 +1496,16 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaFailureTest) {
 TEST_F(GrpcMockTest, GrpcAgentMetaWorkerMixedSuccessFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    // First API meta succeeds, second fails, third succeeds (launch order
+    // follows queue order even though the sends are pipelined).
+    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
+    fake->pushReply(FakeMetadataStub::MetaRpc::API,
+                    grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable"), false);
+    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
 
-    {
-        InSequence seq;
-        // First API meta succeeds
-        EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-            .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-        // Second API meta fails
-        EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-            .WillOnce(Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
-        // Third API meta succeeds (recovery after failure)
-        EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-            .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    }
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.ok"));
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.fail"));
@@ -1262,37 +1513,35 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerMixedSuccessFailureTest) {
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 3, std::chrono::seconds(5)))
+        << "the worker must keep processing items after a failure";
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
 
-    SUCCEED() << "Worker should continue processing after a failure";
+    EXPECT_EQ(fake->apiRequest(0).apiinfo(), "api.ok");
+    EXPECT_EQ(fake->apiRequest(1).apiinfo(), "api.fail");
+    EXPECT_EQ(fake->apiRequest(2).apiinfo(), "api.recover");
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    v1::PResult failed;
-    failed.set_success(false);
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    // PResult.success=false on the first attempt, success on the retry.
+    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, false);
+    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
 
-    std::atomic<int> attempts{0};
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
-                        SetArgPointee<2>(failed), Return(grpc::Status::OK)))
-        .WillOnce(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
-                        SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.retry"));
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
 
     // PResult.success=false must be retried after the (shrunk) retry delay
-    EXPECT_TRUE(wait_for_condition([&attempts] { return attempts.load() >= 2; }, std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
 
     mock_agent_service_->setExiting(true);
     metadata.stopMetaWorker();
@@ -1306,30 +1555,24 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesItemWhenSendThrows) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    std::atomic<int> attempts{0};
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(Invoke([&attempts](grpc::ClientContext*,
-                                    const v1::PApiMetaData&,
-                                    v1::PResult*) -> grpc::Status {
-            ++attempts;
-            throw std::runtime_error("transient metadata send failure");
-        }))
-        .WillOnce(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
-                        SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    // The async launch throws synchronously on the first attempt; the item
+    // must re-enter the retry path (with its permit reclaimed) and succeed.
+    fake->pushThrow(FakeMetadataStub::MetaRpc::API);
+    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.throw.retry"));
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
 
-    EXPECT_TRUE(wait_for_condition(
-        [&attempts] { return attempts.load() >= 2; }, std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
 
     metadata.stopMetaWorker();
     if (meta_worker.joinable()) meta_worker.join();
 
-    EXPECT_EQ(attempts.load(), 2);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u);
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
 }
 
@@ -1357,12 +1600,11 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .Times(4)
-        .WillRepeatedly(Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.exhaust"));
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
@@ -1377,19 +1619,19 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 1);
+    // Initial send + exactly 3 scheduled retries.
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 4u);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEvictsErrorCacheAfterRetryExhaustion) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
-        .Times(4)
-        .WillRepeatedly(Return(
-            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(
         META_STRING, 2, "error.exhaust", STRING_META_ERROR));
 
@@ -1404,19 +1646,18 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsErrorCacheAfterRetryExhaustion) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_error_count_.load(), 1);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::STRING), 4u);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlCacheAfterRetryExhaustion) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
-        .Times(4)
-        .WillRepeatedly(Return(
-            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(
         META_STRING, 3, "SELECT exhaust", STRING_META_SQL));
 
@@ -1431,19 +1672,18 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlCacheAfterRetryExhaustion) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_sql_count_.load(), 1);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL), 4u);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
-        .Times(4)
-        .WillRepeatedly(Return(
-            grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable")));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     const SqlUid uid{0, 1, 2, 3, 4, 5, 6, 7,
                      8, 9, 10, 11, 12, 13, 14, 15};
     metadata.enqueueMeta(std::make_unique<MetaData>(
@@ -1460,6 +1700,7 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_.load(), 1);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 4u);
 }
 
 // ============================================================
@@ -1469,20 +1710,9 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
 TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    EXPECT_CALL(*mock_meta_stub, RequestExceptionMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     // Enqueue all metadata types
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "test.api"));
@@ -1500,13 +1730,17 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(fake->waitForTotalRequestCount(5, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
 
-    SUCCEED() << "All metadata types should be sent successfully";
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::STRING), 1u);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL), 1u);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 1u);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::EXCEPTION), 1u);
 }
 
 // ============================================================
@@ -1516,20 +1750,10 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
 TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesFailureTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "fail")));
-    EXPECT_CALL(*mock_meta_stub, RequestStringMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "fail")));
-    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "fail")));
-    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "fail")));
-    EXPECT_CALL(*mock_meta_stub, RequestExceptionMetaData(_, _, _))
-        .WillOnce(Return(grpc::Status(grpc::StatusCode::INTERNAL, "fail")));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "test.api"));
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 2, "err", STRING_META_ERROR));
@@ -1546,7 +1770,7 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesFailureTest) {
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(fake->waitForTotalRequestCount(5, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
@@ -1596,59 +1820,51 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerDisabledWhenStatAndUrlStatDisabledTest) {
 TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaSuccessTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestSqlMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "SELECT * FROM users", STRING_META_SQL));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
 
-    SUCCEED() << "SQL meta should be sent successfully";
+    EXPECT_EQ(fake->sqlRequest(0).sqlid(), 1);
+    EXPECT_EQ(fake->sqlRequest(0).sql(), "SELECT * FROM users");
 }
 
 TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaSuccessTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestSqlUidMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     SqlUid uid = {0xAA, 0xBB, 0xCC, 0xDD};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "INSERT INTO t VALUES (?)"));
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
 
-    SUCCEED() << "SQL UID meta should be sent successfully";
+    EXPECT_EQ(fake->sqlUidRequest(0).sql(), "INSERT INTO t VALUES (?)");
 }
 
 TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaSuccessTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-
-    EXPECT_CALL(*mock_meta_stub, RequestExceptionMetaData(_, _, _))
-        .WillOnce(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    agent.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    agent.setMockMetaStub(std::move(fake_meta_stub));
 
     TraceId txid{"test-agent", 12345, 1};
     std::vector<std::unique_ptr<Exception>> exceptions;
@@ -1661,13 +1877,14 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaSuccessTest) {
 
     std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
     agent.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
 
-    SUCCEED() << "Exception meta should be sent successfully";
+    ASSERT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::EXCEPTION), 1u);
+    EXPECT_EQ(fake->exceptionRequest(0).uritemplate(), "/api/v2/resource");
 }
 
 // ============================================================
@@ -2705,25 +2922,22 @@ TEST_F(GrpcMockTest, GrpcMetadataResendsAfterChannelRecoveryWithoutCacheEviction
     // survive the outage on the retry schedule and still be delivered.
     metadata.setReadyChannelFailures(2);
 
-    std::atomic<int> sends{0};
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillOnce(DoAll(InvokeWithoutArgs([&sends] { ++sends; }),
-                        SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.outage.recovery"));
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
 
-    EXPECT_TRUE(wait_for_condition([&sends] { return sends.load() >= 1; }, std::chrono::seconds(5)))
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)))
         << "metadata should be re-sent once the channel recovers";
 
     mock_agent_service_->setExiting(true);
     metadata.stopMetaWorker();
     if (meta_worker.joinable()) meta_worker.join();
 
-    EXPECT_EQ(sends.load(), 1);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
         << "metadata delivered after channel recovery must keep its cache entry";
 }
@@ -2811,13 +3025,9 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
 
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    // Only the 2 queued metas may be sent; the third was dropped on enqueue
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .Times(2)
-        .WillRepeatedly(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
 
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "overflow.api.1"));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "overflow.api.2"));
@@ -2825,11 +3035,15 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
 
+    // Only the 2 queued metas may be sent; the third was dropped on enqueue.
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     mock_agent_service_->setExiting(true);
     metadata.stopMetaWorker();
 
     if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {
@@ -2881,15 +3095,11 @@ TEST_F(GrpcMockTest, GrpcMetadataHonorsInjectedRetryLimit) {
     tuning.meta_retry_max_attempts = 1;
     TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
 
-    std::atomic<int> attempts{0};
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    // Initial send + exactly one scheduled retry (instead of the default 3)
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .Times(2)
-        .WillRepeatedly(DoAll(InvokeWithoutArgs([&attempts] { ++attempts; }),
-                              Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "unavailable"))));
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
-    metadata.setMockMetaStub(std::move(mock_meta_stub));
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.injected.retry"));
 
     std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
@@ -2899,15 +3109,88 @@ TEST_F(GrpcMockTest, GrpcMetadataHonorsInjectedRetryLimit) {
         << "the cache entry must be released after the injected retry budget is exhausted";
 
     // Give an unexpected extra retry the chance to fire before stopping, so
-    // the Times(2) expectation would catch it.
+    // the count assertion below would catch it.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     mock_agent_service_->setExiting(true);
     metadata.stopMetaWorker();
     if (meta_worker.joinable()) meta_worker.join();
 
-    EXPECT_EQ(attempts.load(), 2);
+    // Initial send + exactly one scheduled retry (instead of the default 3)
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u);
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 1);
+}
+
+// ============================================================
+// Metadata pipelining: multiple RPCs in flight behind the permit cap
+// ============================================================
+
+TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
+    GrpcClientTuning tuning;
+    tuning.meta_max_concurrent_requests = 2;
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    // Hold every completion: in-flight RPCs stay open until released.
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
+
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "pipeline.1"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "pipeline.2"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "pipeline.3"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    // Both permits go in flight without waiting for either completion — the
+    // serial-sender behavior this pipeline replaced allowed only one.
+    EXPECT_TRUE(fake->waitForHeldCallbacks(2, std::chrono::seconds(5)))
+        << "two sends must be in flight concurrently";
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u)
+        << "the third send must wait for a free permit";
+
+    // Completing one in-flight call frees its permit for the third item.
+    EXPECT_TRUE(fake->releaseHeldCallback(0, grpc::Status::OK));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 3, std::chrono::seconds(5)))
+        << "a released permit must admit the queued item";
+
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {
+    GrpcClientTuning tuning;
+    tuning.meta_shutdown_await_timeout = std::chrono::milliseconds(50);
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    // The in-flight call never completes (a stalled collector that also
+    // ignores TryCancel): shutdown must still finish within the bounded
+    // await instead of hanging on the outstanding permit.
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
+
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "shutdown.hold"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)));
+
+    const auto stop_start = std::chrono::steady_clock::now();
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "shutdown must not wait unbounded for a stalled in-flight metadata call";
+
+    // A late completion after the worker is gone must stay safe: the
+    // callback touches only the shared pipeline state.
+    fake->releaseHeldCallbacks(grpc::Status::OK);
 }
 
 TEST_F(GrpcMockTest, GrpcStatsHonorsInjectedQueueCapacity) {
