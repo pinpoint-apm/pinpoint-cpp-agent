@@ -143,10 +143,11 @@ namespace pinpoint {
         // Self-heal spans dropped without EndSpan, mirroring ~SpanImpl — and
         // the hard backstop for the intrusive node: active_node_ lives inside
         // this object, so a still-linked node here would leave dangling
-        // pointers in its shard list. Unconditional rather than gated on
-        // finished_; after a normal EndSpan this is one atomic load. agent_
-        // stays valid via agent_ref_.
-        if (agent_ != nullptr) {
+        // pointers in its shard list. Check the node itself rather than
+        // finished_: this still covers an EndSpan failure before its drop,
+        // while a normally ended span returns after one atomic load without
+        // dereferencing a potentially non-owning agent_.
+        if (agent_ != nullptr && active_node_.isLinked()) {
             try {
                 agent_->getAgentStats().dropActiveSpan(active_node_);
             } catch (...) {

@@ -693,6 +693,27 @@ TEST_F(NoopTest, UnsampledSpanDestructorDropsActiveSpanWithoutEndSpanTest) {
         << "destructor self-heal must not record a url stat (only EndSpan does)";
 }
 
+TEST_F(NoopTest, FinishedUnsampledSpanDestructorDoesNotReenterAgentStatsTest) {
+    class CountingMockAgentService final : public MockAgentService {
+    public:
+        AgentStats& getAgentStats() override {
+            ++agent_stats_accesses_;
+            return MockAgentService::getAgentStats();
+        }
+
+        int agent_stats_accesses_{0};
+    } service;
+
+    auto span = std::make_unique<UnsampledSpan>(&service);
+    span->EndSpan();
+
+    const auto accesses_after_end = service.agent_stats_accesses_;
+    span.reset();
+
+    EXPECT_EQ(service.agent_stats_accesses_, accesses_after_end)
+        << "an unlinked node must not make the destructor touch a non-owning agent";
+}
+
 TEST_F(NoopTest, UnsampledSpanEventInjectContextDoesNotSetOtherHeadersTest) {
     UnsampledSpan span(mock_agent_service_.get());
     MockTraceContextWriter writer;

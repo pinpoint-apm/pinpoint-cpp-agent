@@ -278,13 +278,12 @@ namespace pinpoint {
         // paths in user code), and the hard backstop for the intrusive node:
         // active_node_ lives inside this object, so a still-linked node here
         // would leave dangling pointers in its shard list — not just skewed
-        // stats like the old map entry. Unconditional (not gated on
-        // finished_) so it also covers an EndSpan that failed between
-        // setting finished_ and its drop; after a normal EndSpan this is one
-        // atomic load. Async spans never link, same fast path. agent_ is
-        // safe to dereference because agent_ref_ keeps the agent alive while
-        // this span exists.
-        if (agent_ != nullptr) {
+        // stats like the old map entry. Check the node itself rather than
+        // finished_: this still covers an EndSpan that failed between setting
+        // finished_ and its drop, while a normally ended or async span returns
+        // after one atomic load without dereferencing agent_. That matters for
+        // non-owning AgentService implementations whose selfRef() is empty.
+        if (agent_ != nullptr && active_node_.isLinked()) {
             try {
                 agent_->getAgentStats().dropActiveSpan(active_node_);
             } catch (...) {

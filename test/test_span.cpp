@@ -1641,6 +1641,29 @@ TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
         << "Destroying a span without EndSpan must still release its active-span entry";
 }
 
+TEST_F(SpanTest, FinishedSpanDestructorDoesNotReenterAgentStatsTest) {
+    class CountingMockAgentService final : public MockAgentService {
+    public:
+        AgentStats& getAgentStats() override {
+            ++agent_stats_accesses_;
+            return MockAgentService::getAgentStats();
+        }
+
+        int agent_stats_accesses_{0};
+    } service;
+
+    auto span = std::make_shared<SpanImpl>(&service, "op", "rpc");
+    MockTraceContextReader reader;
+    span->extractContext(reader, make_extract_trace_id(service, reader));
+    span->EndSpan();
+
+    const auto accesses_after_end = service.agent_stats_accesses_;
+    span.reset();
+
+    EXPECT_EQ(service.agent_stats_accesses_, accesses_after_end)
+        << "an unlinked node must not make the destructor touch a non-owning agent";
+}
+
 TEST_F(SpanTest, SpanImplKeepsAgentServiceAliveTest) {
     class SharedMockAgentService : public MockAgentService,
                                    public std::enable_shared_from_this<SharedMockAgentService> {

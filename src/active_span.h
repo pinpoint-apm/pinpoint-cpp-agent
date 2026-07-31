@@ -40,8 +40,10 @@ namespace pinpoint {
      * Lifetime contract: a linked node must never outlive its owning span —
      * it would leave dangling pointers in the shard list (unlike the old map,
      * where a leaked entry only skewed the stats). Owners enforce this with
-     * an unconditional dropActiveSpan in their destructor, which costs one
-     * atomic load when the node is already unlinked.
+     * a destructor backstop that calls dropActiveSpan only while the node is
+     * still linked. The state check costs one atomic load after normal EndSpan
+     * and, importantly, avoids touching a non-owning AgentService after the
+     * node no longer needs its registry.
      */
     struct ActiveSpanNode {
         // List linkage; guarded by shard_->mutex_ while linked.
@@ -62,6 +64,10 @@ namespace pinpoint {
         ActiveSpanNode() = default;
         ActiveSpanNode(const ActiveSpanNode&) = delete;
         ActiveSpanNode& operator=(const ActiveSpanNode&) = delete;
+
+        bool isLinked() const noexcept {
+            return linked_.load(std::memory_order_acquire);
+        }
     };
 
     // Own cache line per shard, like AgentStats::ResponseTimeShard: every
