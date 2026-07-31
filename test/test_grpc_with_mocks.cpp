@@ -537,6 +537,10 @@ public:
     }
 
     bool readyChannel() override {
+        if (ready_channel_throws_.load() > 0) {
+            ready_channel_throws_.fetch_sub(1);
+            throw std::runtime_error("injected metadata channel setup failure");
+        }
         if (ready_channel_failures_.load() > 0) {
             ready_channel_failures_.fetch_sub(1);
             return false;
@@ -550,6 +554,10 @@ public:
     // (channel down), after which ready_channel_ applies again (recovered).
     void setReadyChannelFailures(int failures) { ready_channel_failures_ = failures; }
 
+    // Models a transient channel setup exception: the next N readiness
+    // checks throw, after which the normal behavior applies again.
+    void setReadyChannelThrows(int throws) { ready_channel_throws_ = throws; }
+
     // Retry-specific tests shrink these so retries fire in milliseconds; the
     // defaults match production so other tests never see an in-test retry.
     // Must be called before the worker thread starts.
@@ -561,6 +569,7 @@ private:
     // atomic so TSan-clean, like ready_channel_failures_.
     std::atomic<bool> ready_channel_{true};
     std::atomic<int> ready_channel_failures_{0};
+    std::atomic<int> ready_channel_throws_{0};
 };
 
 class TestableGrpcAgent : public GrpcAgent {
@@ -3161,6 +3170,42 @@ TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPermit) {
+    GrpcClientTuning tuning;
+    // A single permit: if the throwing readiness check leaked it, no later
+    // item could ever launch and the waits below would time out.
+    tuning.meta_max_concurrent_requests = 1;
+    tuning.meta_retry_delay = std::chrono::milliseconds(50);
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+    // The first readiness check (permit already held) throws; the retry
+    // must find the channel healthy again.
+    metadata.setReadyChannelThrows(1);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.ready.throw"));
+
+    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+
+    // The item survives the exception on the retry path and is delivered.
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)))
+        << "the item dequeued before the throwing readiness check must not be lost";
+
+    // The permit survives too: a second item can still launch.
+    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.after.throw"));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)))
+        << "the single permit must have been handed back after the exception";
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
+        << "a transient readiness exception must not strand or evict the cache entry";
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {

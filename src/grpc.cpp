@@ -760,7 +760,22 @@ namespace pinpoint {
 
             // Outside the pipeline lock: readyChannel() may block through its
             // whole reconnect backoff while completions keep accumulating.
-            if (!readyChannel()) {
+            // Must not throw past this frame: the permit is already held and
+            // the item is owned by this stack frame, so an exception escaping
+            // to the supervisor would destroy the item without releasing its
+            // cache entry AND leak the permit, permanently shrinking the
+            // pipeline (a cap of 1 would stall metadata upload for the
+            // process lifetime). Treat a throwing readiness check like an
+            // unready channel: a failed attempt on the normal retry path.
+            bool channel_ready = false;
+            try {
+                channel_ready = readyChannel();
+            } catch (const std::exception& e) {
+                LOG_ERROR("metadata channel readiness threw an exception: {}", e.what());
+            } catch (...) {
+                LOG_ERROR("metadata channel readiness threw an unknown exception");
+            }
+            if (!channel_ready) {
                 // Channel unavailable (or stop requested): hand the permit
                 // back and treat this attempt as failed, exactly like the old
                 // blocking sender did, so the item re-enters the retry path
