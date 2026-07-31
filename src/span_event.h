@@ -120,16 +120,11 @@ namespace pinpoint {
         /// @brief Returns the generated asynchronous span identifier.
         int64_t getNextSpanId() const { return next_span_id_; }
 
-        /// @brief Returns the mutable annotation container, allocating it on
-        /// first use if it has not been created yet.
-        PinpointAnnotation* getAnnotations() { return ensureAnnotations(); }
-        /// @brief Returns the annotation container, or nullptr when the event
-        /// never recorded one. Read-only counterpart to getAnnotations(): the
-        /// serializer must NOT materialize the container it is only reading,
-        /// or every annotation-free event pays a heap allocation on the gRPC
-        /// worker thread — and that write would target this object's mutable
-        /// field from a thread other than the span's owner.
-        const PinpointAnnotation* annotationsOrNull() const { return annotations_.get(); }
+        /// @brief Returns the annotation container (owned by value; its list
+        /// only allocates on the first append).
+        PinpointAnnotation* getAnnotations() { return &annotations_; }
+        /// @brief Const overload for read-only consumers (the gRPC serializer).
+        const PinpointAnnotation* getAnnotations() const { return &annotations_; }
 
         /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }
@@ -157,11 +152,6 @@ namespace pinpoint {
         int32_t getApiId() const { return api_id_; }
 
     private:
-        /// @brief Lazily allocates the annotation container on first use and
-        /// returns it. Subsequent calls reuse the same instance, so callers can
-        /// rely on a non-null result.
-        PinpointAnnotation* ensureAnnotations();
-
         /// @brief Returns true (after logging a warning) once the event has been
         /// finished, signalling that a recording accessor or mutator must
         /// no-op. A finished event may already sit in a chunk under
@@ -197,9 +187,11 @@ namespace pinpoint {
         // through an internal path (e.g. async-span EndSpan) rejects a later
         // user-level EndEvent.
         std::atomic<bool> finished_{false};
-        // Created lazily via ensureAnnotations(); stays null until the first
-        // annotation is recorded or the container is accessed.
-        std::unique_ptr<PinpointAnnotation> annotations_;
+        // Owned by value: an annotation-free event (the common case) pays no
+        // heap, since the list inside only allocates on the first append.
+        // releaseRetiredPayload() frees that list once the event's chunk is
+        // done with it; the empty husk stays for the tombstone.
+        PinpointAnnotation annotations_;
     };
 
     /**

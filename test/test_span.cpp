@@ -459,7 +459,7 @@ TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
         EXPECT_EQ(event_ptr->getEndPoint(), "db-host:3306");
         EXPECT_EQ(event_ptr->getDestinationId(), "MySQL");
         EXPECT_EQ(event_ptr->getErrorString(), "boom");
-        EXPECT_NE(event_ptr->annotationsOrNull(), nullptr);
+        EXPECT_FALSE(event_ptr->getAnnotations()->getAnnotations().empty());
     }
 
     // Chunk destroyed: the heavy payload is released while the event object
@@ -473,7 +473,7 @@ TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
         << "destination should be released once the chunk is done";
     EXPECT_TRUE(event_ptr->getErrorString().empty())
         << "error string should be released once the chunk is done";
-    EXPECT_EQ(event_ptr->annotationsOrNull(), nullptr)
+    EXPECT_TRUE(event_ptr->getAnnotations()->getAnnotations().empty())
         << "annotation list should be released once the chunk is done";
     EXPECT_EQ(event_ptr->getSequence(), sequence)
         << "numeric identity survives the payload release";

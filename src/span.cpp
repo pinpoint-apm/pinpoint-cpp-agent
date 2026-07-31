@@ -59,7 +59,7 @@ namespace pinpoint {
         event_stack_{},
         finished_events{},
         retired_events_{},
-        annotations_{std::make_unique<PinpointAnnotation>()} {}
+        annotations_{} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
         const auto [sequence, depth] = nextEventSequenceAndDepth();

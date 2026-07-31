@@ -331,8 +331,11 @@ namespace pinpoint {
     	    return finished_events.size();
     	}
 
-        /// @brief Returns the annotation container for the span.
-        PinpointAnnotation* getAnnotations() const { return annotations_.get(); }
+        /// @brief Returns the annotation container for the span (owned by
+        /// value; its list only allocates on the first append).
+        PinpointAnnotation* getAnnotations() { return &annotations_; }
+        /// @brief Const overload for read-only consumers (the gRPC serializer).
+        const PinpointAnnotation* getAnnotations() const { return &annotations_; }
 
     private:
         void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
@@ -400,7 +403,9 @@ namespace pinpoint {
         // not by the full recorded payload.
         std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
 
-    	std::unique_ptr<PinpointAnnotation> annotations_;
+        // Owned by value: a span that records no annotation pays no heap,
+        // since the list inside only allocates on the first append.
+        PinpointAnnotation annotations_;
     };
 
 	/**

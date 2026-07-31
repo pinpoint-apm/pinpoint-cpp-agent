@@ -188,9 +188,11 @@ namespace pinpoint {
     /**
      * @brief Concrete annotation container used by the Pinpoint agent.
      *
-     * Accumulates annotation key/value pairs before they are serialized into spans.
-     * Internal-only: user code records annotations through
-     * Span/SpanEvent::SetAnnotation.
+     * Accumulates annotation key/value pairs before they are serialized into
+     * spans. Internal-only: user code records annotations through
+     * Span/SpanEvent::SetAnnotation. Owned by value inside SpanData and
+     * SpanEventImpl — an annotation-free owner pays no heap, since the list
+     * below only allocates on the first append.
      */
     class PinpointAnnotation final {
     public:
@@ -274,10 +276,26 @@ namespace pinpoint {
          *
          * Called by the owning span/span event when the list is handed to the
          * gRPC layer for serialization. Later Append calls become warn/no-ops:
-         * a handle obtained while the owner was active would otherwise grow
+         * an append path that bypasses the owner's finished guard (e.g. the
+         * proxy-header recording through SpanData) would otherwise grow
          * annotation_list_ concurrently with the worker's iteration.
          */
         void seal() noexcept { sealed_.store(true, std::memory_order_release); }
+
+        /**
+         * @brief Releases the list's heap, leaving an empty (still sealed)
+         * list behind.
+         *
+         * Called by SpanEventImpl::releaseRetiredPayload() once the chunk
+         * holding the owning event is done with it. Destroying the elements
+         * also drops the aliasing shared_ptr pins that SQL annotations hold
+         * on PreparedSql cache entries. Swap-with-temporary, not clear():
+         * clear() keeps the capacity allocated, and releasing that heap is
+         * this function's whole point.
+         */
+        void releaseStorage() noexcept {
+            std::vector<std::pair<int32_t,AnnotationData>>{}.swap(annotation_list_);
+        }
 
         /**
          * @brief Returns the internal annotation list for serialization.
@@ -285,8 +303,7 @@ namespace pinpoint {
          * @return Reference to the stored annotations.
          */
         std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() { return annotation_list_; }
-        /// @brief Const overload for read-only consumers (the gRPC serializer,
-        /// reached through SpanEventImpl::annotationsOrNull()).
+        /// @brief Const overload for read-only consumers (the gRPC serializer).
         const std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() const { return annotation_list_; }
 
     private:

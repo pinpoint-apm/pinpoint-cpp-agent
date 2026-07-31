@@ -144,13 +144,6 @@ namespace pinpoint {
         }
     }
 
-    PinpointAnnotation* SpanEventImpl::ensureAnnotations() {
-        if (!annotations_) {
-            annotations_ = std::make_unique<PinpointAnnotation>();
-        }
-        return annotations_.get();
-    }
-
     bool SpanEventImpl::warnIfFinished() const {
         // A finished event may already sit in a chunk being serialized on the
         // gRPC worker thread; handing out the live annotation container, or
@@ -170,7 +163,7 @@ namespace pinpoint {
 
     void SpanEventImpl::SetAnnotation(int32_t key, AnnotationValue value) try {
         if (warnIfFinished()) return;
-        ensureAnnotations()->AppendData(key, AnnotationData(std::move(value)));
+        annotations_.AppendData(key, AnnotationData(std::move(value)));
     } CATCH_AND_LOG("set annotation")
 
     void SpanEventImpl::EndEvent() try {
@@ -199,13 +192,11 @@ namespace pinpoint {
         // Ended through an internal path (event-stack pop): mark it so a
         // later user-level EndEvent on this event is rejected by the guard.
         finished_.store(true);
-        // Seal the annotation list too: an annotation handle obtained while
-        // the event was active bypasses the finished_ guard above, and the
-        // list may be under serialization on the gRPC worker once this event
-        // reaches a chunk.
-        if (annotations_) {
-            annotations_->seal();
-        }
+        // Seal the annotation list too: an internal append path that bypasses
+        // the finished_ guard above must become a no-op, since the list may
+        // be under serialization on the gRPC worker once this event reaches
+        // a chunk.
+        annotations_.seal();
         span_->decrEventDepth();
         // system_clock can step backwards (NTP); never report a negative
         // elapsed time. Only the low side is clamped: the wire field is
@@ -225,7 +216,7 @@ namespace pinpoint {
         // Also drops the aliasing shared_ptr pins that SQL annotations hold
         // on PreparedSql cache entries (see SetSqlQuery), instead of keeping
         // those cache strings alive until the span data dies.
-        annotations_.reset();
+        annotations_.releaseStorage();
     }
 
     int64_t SpanEventImpl::generateNextSpanId() {
@@ -277,7 +268,7 @@ namespace pinpoint {
             auto exception = std::make_unique<Exception>(std::move(callstack));
             const auto exception_id = exception->getId();
             if (span_->addException(std::move(exception))) {
-                ensureAnnotations()->AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
+                annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
             }
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
@@ -312,7 +303,7 @@ namespace pinpoint {
 
         if (mode == SqlMetaMode::Uid) {
             if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
-                ensureAnnotations()->AppendData(
+                annotations_.AppendData(
                     ANNOTATION_SQL_UID,
                     AnnotationData(*uid, std::move(parameters), std::move(joined_bind_args)));
             }
@@ -320,7 +311,7 @@ namespace pinpoint {
         }
 
         if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
-            ensureAnnotations()->AppendData(
+            annotations_.AppendData(
                 ANNOTATION_SQL_ID,
                 AnnotationData(*sql_id, std::move(parameters), std::move(joined_bind_args)));
         }
@@ -328,7 +319,7 @@ namespace pinpoint {
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         if (warnIfFinished()) return;
-        agent_->recordClientHeader(which, reader, ensureAnnotations());
+        agent_->recordClientHeader(which, reader, &annotations_);
     } CATCH_AND_LOG("record header")
 
     void SpanEventImpl::InjectContext(TraceContextWriter& writer) try {
