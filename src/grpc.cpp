@@ -1112,11 +1112,19 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(active_streams_mutex_);
 
         // The collector may re-issue the command for a request id it already
-        // owns (e.g. after a command-stream reconnect); stop the old stream
-        // so it is swept by the cleanup below.
+        // owns (e.g. after a command-stream reconnect). Signal the old stream
+        // to stop, but never join it here: the join would run under
+        // active_streams_mutex_, which the shutdown signal phase
+        // (request_stop_active_thread_count_streams) must be able to take
+        // without blocking — and a predecessor wedged in a deadline-less
+        // Write()/Finish() that ignores TryCancel has no completion bound.
+        // Once done it is swept by a later cleanup, or joined by
+        // commandWorker() on its way out inside the shutdown deadline; until
+        // then it counts toward the stream cap below, degrading a wedged
+        // re-issue to a logged rejection instead of an unbounded stall.
         for (auto& stream : active_thread_count_streams_) {
             if (stream->request_id() == request_id) {
-                stream->stop();
+                stream->request_stop();
             }
         }
         cleanup_active_thread_count_streams();
@@ -1135,6 +1143,12 @@ namespace pinpoint {
     }
 
     void GrpcCommand::cleanup_active_thread_count_streams() {
+        // Runs under active_streams_mutex_, and erasing joins each swept
+        // stream via its destructor. Sweeping only done() streams keeps that
+        // join near-instant (done_ is the last statement of every run() exit
+        // path, so the thread body has already returned): no join without a
+        // completion bound may ever run under this mutex, or the shutdown
+        // signal phase could block behind it.
         active_thread_count_streams_.erase(
             std::remove_if(active_thread_count_streams_.begin(), active_thread_count_streams_.end(),
                 [](const auto& stream) { return stream->done(); }),

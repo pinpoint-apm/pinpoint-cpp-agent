@@ -3535,6 +3535,98 @@ TEST_F(GrpcMockTest, RequestStopCommandWorkerDoesNotJoinBlockedActiveThreadCount
     if (worker.joinable()) worker.join();
 }
 
+TEST_F(GrpcMockTest, ReissuedActiveThreadCountRequestDoesNotJoinBlockedPredecessor) {
+    GrpcClientTuning tuning;
+    tuning.active_thread_count_flush_interval = std::chrono::milliseconds(20);
+    tuning.max_active_thread_count_streams = 4;
+    TestableGrpcCommand command(mock_agent_service_.get(), tuning);
+
+    auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+
+    auto make_atc_request = [](int32_t request_id) {
+        v1::PCmdRequest request;
+        request.set_requestid(request_id);
+        request.mutable_commandactivethreadcount();
+        return request;
+    };
+
+    // The first stream simulates a collector that stalls mid-stream and does
+    // not honor cancellation: its Write parks until the test releases it.
+    std::promise<void> write_entered;
+    std::shared_future<void> write_entered_seen = write_entered.get_future().share();
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+
+    auto* stream = new NiceMock<MockCmdStream>();
+    EXPECT_CALL(*stream, Read(_))
+        .WillOnce(DoAll(SetArgPointee<0>(make_atc_request(301)), Return(true)))
+        .WillOnce(Invoke([make_atc_request, write_entered_seen](v1::PCmdRequest* request) {
+            // Deliver the duplicate only once the first stream is provably
+            // parked in Write, so the handler faces a live, uncancellable
+            // predecessor for the same request id.
+            write_entered_seen.wait();
+            *request = make_atc_request(301);
+            return true;
+        }))
+        .WillRepeatedly(Return(false));
+
+    EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+        .WillOnce(Return(stream))
+        .WillRepeatedly(Invoke(make_idle_cmd_stream));
+
+    std::promise<void> second_stream_started;
+    EXPECT_CALL(*mock_command_stub, CommandStreamActiveThreadCountRaw(_, _))
+        .Times(2)
+        .WillOnce(InvokeWithoutArgs([&write_entered, released] {
+            auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+            EXPECT_CALL(*writer, Write(_, _))
+                .WillOnce(InvokeWithoutArgs([&write_entered, released] {
+                    write_entered.set_value();
+                    released.wait();
+                    return false;
+                }))
+                .WillRepeatedly(Return(false));
+            ON_CALL(*writer, WritesDone()).WillByDefault(Return(true));
+            ON_CALL(*writer, Finish()).WillByDefault(Return(grpc::Status::OK));
+            return writer;
+        }))
+        .WillOnce(InvokeWithoutArgs([&second_stream_started] {
+            // The replacement stream ends immediately: the test only needs
+            // its RPC to start, which proves the handler got past the wedged
+            // predecessor without joining it.
+            auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+            ON_CALL(*writer, Write(_, _)).WillByDefault(Return(false));
+            ON_CALL(*writer, WritesDone()).WillByDefault(Return(true));
+            ON_CALL(*writer, Finish()).WillByDefault(Return(grpc::Status::OK));
+            second_stream_started.set_value();
+            return writer;
+        }));
+
+    command.setMockCommandStub(std::move(mock_command_stub));
+
+    std::thread worker([&command] { command.commandWorker(); });
+
+    // Before the fix, the handler joined the parked predecessor under
+    // active_streams_mutex_ and the replacement stream could never start.
+    EXPECT_EQ(second_stream_started.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready)
+        << "the re-issued request must start its stream without joining the blocked predecessor";
+
+    // And the registry mutex stays free while the predecessor is wedged, so
+    // the shutdown signal phase cannot block behind the handler either.
+    auto request_stop_done = std::async(std::launch::async, [&command] {
+        command.requestStopCommandWorker();
+    });
+    EXPECT_EQ(request_stop_done.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+        << "the signal phase must not wait behind a join of the blocked stream";
+
+    release.set_value();
+    request_stop_done.wait();
+    mock_agent_service_->setExiting(true);
+    command.stopCommandWorker();
+    if (worker.joinable()) worker.join();
+}
+
 TEST_F(GrpcMockTest, GrpcSpanShutdownHonorsInjectedAwaitTimeout) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->collector.span_batch.size = 1;
