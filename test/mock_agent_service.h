@@ -18,8 +18,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -50,7 +52,13 @@ public:
     const std::string& getAgentId() const override { return agent_id_; }
     const std::string& getAgentName() const override { return agent_name_; }
     const std::string& getServiceName() const override { return service_name_; }
-    std::shared_ptr<const Config> getConfig() const override { return config_; }
+    // Locked so a publishConfig() swap cannot race a worker thread's read of
+    // the handle. Reading the pointed-to Config needs no lock: published
+    // snapshots are never mutated (see publishConfig / mutableConfig).
+    std::shared_ptr<const Config> getConfig() const override {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return config_;
+    }
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {
         if (cfg) {
@@ -209,17 +217,22 @@ public:
         recorded_client_headers_++;
     }
 
+    // Lazily created, but the agent calls these from its worker threads: the
+    // command service builds active-thread-count responses from several stream
+    // threads at once, so a plain check-then-act here is a data race on the
+    // handle (one thread reading it while another stores the new instance).
+    // call_once both serializes construction and publishes it to every reader.
     AgentStats& getAgentStats() override {
-        if (!agent_stats_) {
+        std::call_once(agent_stats_once_, [this]() {
             agent_stats_ = std::make_unique<AgentStats>(this);
-        }
+        });
         return *agent_stats_;
     }
 
     UrlStats& getUrlStats() override {
-        if (!url_stats_) {
+        std::call_once(url_stats_once_, [this]() {
             url_stats_ = std::make_unique<UrlStats>(this);
-        }
+        });
         return *url_stats_;
     }
 
@@ -235,8 +248,23 @@ public:
         cached_start_time_str_ = std::to_string(time);
     }
 
-    // Direct config access for test customization
+    // Direct config access for test customization.
+    //
+    // Setup only: this hands out the live snapshot, so writing through it while
+    // a worker thread can read the config is a data race. Use publishConfig()
+    // for a change that has to land after threads are already running.
     std::shared_ptr<Config>& mutableConfig() { return config_; }
+
+    // Applies a config change the way AgentImpl::reloadConfig() does: build a
+    // new snapshot and publish the pointer, instead of mutating the object that
+    // readers already hold. A worker keeps reading the snapshot it captured
+    // (nobody writes to it), and picks the new one up on its next getConfig().
+    void publishConfig(const std::function<void(Config&)>& mutate) {
+        auto next = std::make_shared<Config>(*getConfig());
+        mutate(*next);
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        config_ = std::move(next);
+    }
 
     // Test helpers - accessors
     int32_t getCachedApiId(const std::string& api_str) const {
@@ -310,9 +338,12 @@ private:
     std::string agent_id_ = "test-agent-001";
     std::string agent_name_ = "TestAgent";
     std::string service_name_ = "";
+    mutable std::mutex config_mutex_;
     std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;
     mutable std::unique_ptr<UrlStats> url_stats_;
+    mutable std::once_flag agent_stats_once_;
+    mutable std::once_flag url_stats_once_;
 };
 
 }  // namespace pinpoint
