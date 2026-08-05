@@ -190,6 +190,36 @@ next to each one; a change smaller than that spread is noise, not a result.
 
 Run on an otherwise idle machine, on mains power.
 
+## Phase 2: HTTP load comparison
+
+`bench_http_server.cpp` serves the endpoint contract of
+`test/e2e/fixed_rps_test.py` (`/simple /deep /wide /annotated /features /mixed
+/error /db-*` plus `/stats` and `/ready`) through the same shim, so one server
+source compiles against both agent versions. `--disable` starts it with
+`Enable: false`: the handlers make identical API calls but get noop spans,
+which is the baseline that separates harness cost from agent overhead.
+
+```bash
+./benchmark/version_compare/run_load_compare.sh \
+  --baseline-server "$BASE/bench-v1.1.0/bench_http_server" \
+  --candidate-server "$BASE/bench-main/bench_http_server" \
+  --collector "$BASE/bench-main/bench_collector" \
+  --load-script test/e2e/fixed_rps_test.py \
+  --rps-list "1000 4000" --duration 30 --repeats 3 \
+  --out ./load_compare_results
+```
+
+The orchestrator interleaves four variants per repetition (each version ×
+enabled/disabled), runs every RPS level against a fresh server and collector,
+samples the server's CPU%/RSS every 0.5 s during each pass, and aggregates with
+`aggregate_load.py`. Read the *agent overhead* rows (enabled − disabled of the
+same binary), not the absolute latencies: the absolute numbers include the
+Python generator and loopback, which are identical across variants.
+
+Keep the offered rate well inside the generator's capacity (it self-reports
+dropped arrivals; ~5000 RPS is the ceiling for the stdlib generator on this
+class of machine) and check the span-delivery table first, same as phase 1.
+
 ## Reading the results
 
 - `ns/op` for the threaded rows is wall time divided by ops *per thread*. A flat

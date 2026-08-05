@@ -67,6 +67,25 @@ if(PP_API_V1)
   target_compile_definitions(api_benchmark PRIVATE PP_API_V1=1)
 endif()
 
+# Phase-2 load-test server: same shim, workload arrives over HTTP from
+# test/e2e/fixed_rps_test.py. httplib comes from the repository this file lives
+# in, so both variants embed the identical HTTP stack.
+add_executable(bench_http_server bench_http_server.cpp)
+target_include_directories(bench_http_server PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../3rd_party
+  ${PINPOINT_SOURCE_DIR}/include)
+target_link_libraries(bench_http_server PRIVATE ${PINPOINT_LIB} ${PINPOINT_DEP_LIBS})
+if(MSVC)
+  target_compile_options(bench_http_server PRIVATE /O2)
+else()
+  target_compile_options(bench_http_server PRIVATE -O3)
+endif()
+target_compile_definitions(bench_http_server PRIVATE NDEBUG)
+if(PP_API_V1)
+  target_compile_definitions(bench_http_server PRIVATE PP_API_V1=1)
+endif()
+
 # The collector is version-independent and only needs to be built once. It links
 # the agent's static library purely to pick up the generated protobuf/gRPC
 # symbols rather than regenerating them.

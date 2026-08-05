@@ -152,7 +152,69 @@ and scaling above.
 - Measured on a laptop. The thread-scaling shape and the allocation counts should
   transfer; absolute nanoseconds should not.
 
+## HTTP load comparison (phase 2)
+
+The API microbenchmark above measures a tight loop; this pass measures a served
+HTTP request. `bench_http_server` (one source, both versions via the shim,
+identical embedded httplib, 8 worker threads) is driven by
+`test/e2e/fixed_rps_test.py --mode mixed` on loopback: 30 s per pass, 3
+interleaved repetitions, four variants — each version with the agent enabled
+and with `Enable: false`. The enabled−disabled delta of the *same binary* is
+the agent's overhead; comparing those deltas across versions cancels the
+harness (Python client, httplib, loopback) out of the comparison.
+
+Validity: enabled variants delivered ~268k span messages per run for ~151k
+requests (chunk splitting plus `/features` async spans put delivery above the
+request count); both `-noagent` variants delivered exactly 0.
+
+### 4000 RPS (the clean pass)
+
+| variant | achieved RPS | p50 ms | p99 ms | CPU % | RSS MiB |
+|---|---:|---:|---:|---:|---:|
+| v1.1.0 | 3,999 | 0.110 | 0.240 | 35.3 | 15.6 |
+| main | 3,999 | 0.100 | 0.260 | 19.6 | 32.9 |
+| v1.1.0 noagent | 3,999 | 0.100 | 0.210 | 12.4 | 11.3 |
+| main noagent | 3,999 | 0.100 | 0.200 | 12.3 | 11.5 |
+
+Agent overhead (enabled − disabled):
+
+| version | Δp50 ms | Δp99 ms | ΔCPU |
+|---|---:|---:|---:|
+| v1.1.0 | +0.010 | +0.030 | **+22.8 pt** |
+| main | +0.000 | +0.060 | **+7.3 pt** |
+
+At 1000 RPS the CPU deltas are +8.9 pt (v1.1.0) vs +3.0 pt (main) — the same
+~3× ratio.
+
+**CPU per request is the phase-2 headline: main's agent costs ~⅓ of v1.1.0's
+CPU at the same offered load.** The two noagent baselines are within 0.1 pt of
+each other, so the delta is all agent.
+
+**The microbenchmark's p99 regression does not materialize at realistic
+rates.** At 4000 RPS the agent adds ≤0.06 ms to p99 on either version. The
+phase-1 tail came from allocator collisions with the sender's batch bursts
+under back-to-back span production (~1 µs apart); at 250 µs between requests
+the sender's bursts are small and rarely collide with the handler thread.
+
+**The RSS gap is an artifact of this harness's queue setting.** main's sharded
+span queue preallocates `shard_count × QueueSize` physical cells; at the
+benchmark's `QueueSize: 65536` that is 32 × 65536 × 8 B ≈ 17 MiB, which is the
+entire 32.9 − 15.6 MiB difference. At the shipped default (1024) the same
+structure costs ~256 KiB.
+
+Caveats:
+
+- The 1000-RPS p99/max columns are polluted by sporadic multi-second stalls
+  with `Connection reset by peer` in the generator log. They hit enabled and
+  disabled variants alike (e.g. max 4.0 s on `main` enabled, 4.0 s on `v1.1.0
+  noagent`), so they are loopback/TCP environment noise, not agent behavior;
+  the 4000-RPS pass was free of them in all 12 runs. Per-version Δp99 at
+  1000 RPS should not be read.
+- gRPC downstream and outbound-HTTP endpoints of the e2e suite are not
+  exercised; they need downstream infrastructure and version-specific APIs.
+
 ## Raw data
 
-- [raw-2026-08-05.tsv](raw-2026-08-05.tsv) — run 1 (7 repetitions)
-- [raw-2026-08-05-run2.tsv](raw-2026-08-05-run2.tsv) — run 2 (7 repetitions)
+- [raw-2026-08-05.tsv](raw-2026-08-05.tsv) — microbenchmark run 1 (7 repetitions)
+- [raw-2026-08-05-run2.tsv](raw-2026-08-05-run2.tsv) — microbenchmark run 2 (7 repetitions)
+- phase-2 logs are regenerable with `run_load_compare.sh` (see README)
