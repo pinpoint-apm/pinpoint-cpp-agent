@@ -1,0 +1,27 @@
+# =============================================================================
+# ThreadSanitizer suppression file
+#
+# Usage:
+#   TSAN_OPTIONS=suppressions=scripts/tsan.supp ctest --preset tsan
+#
+# The `tsan` test preset in CMakePresets.json applies this automatically.
+#
+# Keep this file as small as possible: every entry is a blind spot. Prefer
+# fixing the race. Entries here are limited to behaviour that is deliberate and
+# that TSan has no way to recognise as such.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# abandon_thread() intentionally neither joins nor detaches.
+#
+# See src/utility.cpp: for a std::thread handle inherited across fork(), glibc's
+# pthread_detach dereferences a thread descriptor the child's fork() already
+# reclaimed and segfaults, so the agent ends the thread object's lifetime by
+# reusing its storage instead. The OS thread has already run to completion; only
+# the handle is dropped. TSan's thread-leak detector reports any never-joined
+# thread, so it flags the test that covers this on purpose.
+#
+# Scoped to that one test rather than disabling report_thread_leaks globally,
+# which would hide genuinely leaked worker threads everywhere else.
+# ---------------------------------------------------------------------------
+thread:AbandonThreadDoesNotAllocateAndClearsHandle

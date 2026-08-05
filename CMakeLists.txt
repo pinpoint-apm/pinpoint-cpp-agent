@@ -38,6 +38,73 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# =============================================================================
+# Sanitizers
+# =============================================================================
+# This block must stay ahead of dependency resolution below. add_compile_options()
+# only affects targets created after the call, so enabling the sanitizer later
+# would leave every FetchContent-built dependency uninstrumented, which is worse
+# than it sounds: the instrumented copies of inline C++ symbols (std::string_view,
+# std::char_traits, ...) are weak, so the dynamic linker interposes them into the
+# uninstrumented gRPC libraries. Those instrumented inlines then execute on stack
+# frames ASan has no descriptor for and it misattributes leftover shadow poison,
+# reporting use-after-poison inside gRPC internals. Such reports are not
+# suppressible: ASan's suppression file only understands interceptor_via_fun,
+# interceptor_via_lib and odr_violation, so it cannot silence an error raised by a
+# direct instrumented load check. Giving the sanitizer a whole-program view is the
+# only reliable fix.
+# =============================================================================
+if(SANITIZE)
+  if(BUILD_COVERAGE OR BUILD_PROFILING)
+    message(FATAL_ERROR
+      "SANITIZE cannot be combined with BUILD_COVERAGE or BUILD_PROFILING")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    message(FATAL_ERROR "SANITIZE currently supports Clang/AppleClang and GCC")
+  endif()
+
+  if(SANITIZE STREQUAL "address")
+    set(_pinpoint_sanitize_flags -fsanitize=address)
+  elseif(SANITIZE STREQUAL "thread")
+    set(_pinpoint_sanitize_flags -fsanitize=thread)
+  elseif(SANITIZE STREQUAL "undefined")
+    set(_pinpoint_sanitize_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
+  elseif(SANITIZE STREQUAL "address+undefined")
+    set(_pinpoint_sanitize_flags
+      -fsanitize=address,undefined -fno-sanitize-recover=undefined)
+  else()
+    message(FATAL_ERROR
+      "Unknown SANITIZE value '${SANITIZE}'. "
+      "Use address, thread, undefined, or address+undefined.")
+  endif()
+
+  # A toolchain-provided gRPC/Abseil/protobuf is prebuilt and therefore cannot be
+  # instrumented, which reintroduces the boundary described above. Skip
+  # find_package for them so dependency resolution falls through to the
+  # FetchContent path and rebuilds them from source with the flags below. Turn
+  # this off to keep toolchain packages, accepting third-party false positives.
+  option(SANITIZE_DEPS
+    "Build dependencies from source so the sanitizer covers them too" ON)
+  if(SANITIZE_DEPS)
+    foreach(_pp_pkg IN ITEMS Protobuf gRPC absl yaml-cpp fmt)
+      set(CMAKE_DISABLE_FIND_PACKAGE_${_pp_pkg} ON)
+    endforeach()
+    message(STATUS
+      "Sanitized dependencies enabled: gRPC/Protobuf/absl/yaml-cpp/fmt are built "
+      "from source with ${SANITIZE} instrumentation (first build is slow)")
+  else()
+    message(WARNING
+      "SANITIZE_DEPS=OFF: dependencies stay uninstrumented. Expect third-party "
+      "false positives at the library boundary; see doc/build.md.")
+  endif()
+
+  # Retain symbolized, complete stacks in sanitizer reports and apply the same
+  # instrumentation to both compile and link (the runtime is pulled in at link).
+  add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags})
+  add_link_options(${_pinpoint_sanitize_flags})
+  message(STATUS "Sanitizer enabled: ${SANITIZE}")
+endif()
+
 include(FetchContent)
 
 # =============================================================================
@@ -220,37 +287,6 @@ if(BUILD_PROFILING)
   endif()
   message(STATUS
     "Sampling-profiler build enabled: debug symbols and frame pointers retained")
-endif()
-
-if(SANITIZE)
-  if(BUILD_COVERAGE OR BUILD_PROFILING)
-    message(FATAL_ERROR
-      "SANITIZE cannot be combined with BUILD_COVERAGE or BUILD_PROFILING")
-  endif()
-  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    message(FATAL_ERROR "SANITIZE currently supports Clang/AppleClang and GCC")
-  endif()
-
-  if(SANITIZE STREQUAL "address")
-    set(_pinpoint_sanitize_flags -fsanitize=address)
-  elseif(SANITIZE STREQUAL "thread")
-    set(_pinpoint_sanitize_flags -fsanitize=thread)
-  elseif(SANITIZE STREQUAL "undefined")
-    set(_pinpoint_sanitize_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
-  elseif(SANITIZE STREQUAL "address+undefined")
-    set(_pinpoint_sanitize_flags
-      -fsanitize=address,undefined -fno-sanitize-recover=undefined)
-  else()
-    message(FATAL_ERROR
-      "Unknown SANITIZE value '${SANITIZE}'. "
-      "Use address, thread, undefined, or address+undefined.")
-  endif()
-
-  # Retain symbolized, complete stacks in sanitizer reports and apply the same
-  # instrumentation to both compile and link (the runtime is pulled in at link).
-  add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags})
-  add_link_options(${_pinpoint_sanitize_flags})
-  message(STATUS "Sanitizer enabled: ${SANITIZE}")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
