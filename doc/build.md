@@ -321,6 +321,7 @@ The following CMake options are available:
 | `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
 | `BUILD_PROFILING` | OFF | Preserve symbols and reliable call stacks for sampling profilers |
 | `SANITIZE` | (empty) | Enable a sanitizer: `address`, `thread`, `undefined`, or `address+undefined` |
+| `SANITIZE_DEPS` | ON | With `SANITIZE` set, build gRPC/Protobuf/absl/yaml-cpp/fmt from source so the sanitizer covers them too |
 | `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
 
 Example:
@@ -508,6 +509,31 @@ Point the relevant `*_OPTIONS` variable at a suppression file when a dependency
 trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`
 (the `scripts/grpc_protobuf.supp` Valgrind file is a reference for the kinds of
 gRPC/protobuf noise that tend to need silencing).
+
+Prefer a whole-program instrumented build over suppressions. `SANITIZE_DEPS` is
+ON by default, so the sanitizer presets rebuild gRPC, Protobuf, Abseil, yaml-cpp
+and fmt from source with the same instrumentation, and both `ctest --preset asan`
+and `bazel test --config=asan` pass the full suite. The cost is the first build:
+it compiles the whole dependency graph.
+
+Turning it off (`-DSANITIZE_DEPS=OFF`) keeps toolchain-provided packages and a
+fast build, but reintroduces a mixed-instrumentation process, which produces false
+positives that look alarming and are hard to read. The instrumented copies of
+inline C++ symbols (`std::string_view`, `std::char_traits`, ...) are weak, so the
+dynamic linker interposes them into the uninstrumented gRPC libraries; they then
+execute on stack frames ASan has no descriptor for and it misattributes leftover
+shadow poison, reporting `use-after-poison` inside gRPC internals. The reports are
+recognisable by that misattribution — an access at "offset 544" inside a frame
+whose objects span only 104 bytes — plus ASan's own "this may be a false positive"
+hint.
+
+`scripts/asan.supp` is applied automatically by the `asan` test preset and covers
+part of that noise, but only part: ASan understands `interceptor_via_fun`,
+`interceptor_via_lib` and `odr_violation`, so it can silence errors raised inside
+an interceptor (`memcmp`, `strlen`, ...) and nothing else. Reports coming from a
+*direct* instrumented load check are not suppressible by any suppression entry or
+`ASAN_OPTIONS` setting. That is why `SANITIZE_DEPS=ON` is the default rather than
+a larger suppression list.
 
 ---
 

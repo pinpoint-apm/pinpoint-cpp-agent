@@ -492,7 +492,12 @@ TEST_F(UrlStatTest, StopWorkerAfterUrlStatDisabledByReloadTest) {
     // (started when it was on) is blocked. stopAddUrlStatsWorker must still
     // deliver the wakeup; consulting the live config would skip it and hang
     // shutdown forever.
-    mock_agent_service_->mutableConfig()->http.url_stat.enable = false;
+    //
+    // Publish a new snapshot rather than writing through mutableConfig(): the
+    // worker reads the same flag on its way into the loop, and mutating the
+    // snapshot it holds is a data race that only sleep-based timing hides.
+    mock_agent_service_->publishConfig(
+        [](Config& cfg) { cfg.http.url_stat.enable = false; });
 
     mock_agent_service_->setExiting(true);
     url_stats.stopAddUrlStatsWorker();
