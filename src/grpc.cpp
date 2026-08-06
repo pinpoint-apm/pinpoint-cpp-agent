@@ -346,8 +346,11 @@ namespace pinpoint {
         std::deque<PendingMeta> queue;
         std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue;
         std::unordered_set<std::shared_ptr<PendingMetaRpc>> in_flight;
-        // Outcomes drained by the worker. Reserved well beyond max_permits at
-        // construction, so the push_back below cannot regrow in practice.
+        // Outcomes drained by the worker. Double-buffered against the
+        // worker's `done` vector via swap; both buffers are reserved well
+        // beyond max_permits (here and in run_meta_worker), so the push_back
+        // below cannot regrow in practice — the catch there still covers a
+        // pathological bad_alloc.
         std::vector<std::shared_ptr<PendingMetaRpc>> completed;
 
         void completeCall(const std::shared_ptr<PendingMetaRpc>& call, grpc::Status status) {
@@ -723,6 +726,10 @@ namespace pinpoint {
 
     void GrpcMetadata::run_meta_worker() {
         std::vector<std::shared_ptr<PendingMetaRpc>> done;
+        // The swap below hands this buffer to the pipeline as the next
+        // `completed`; reserving it too keeps both halves of the double
+        // buffer regrow-free, as the reserve at construction intends.
+        done.reserve(static_cast<size_t>(pipeline_->max_permits) * 4);
         while (true) {
             // The inner loop exits with either completed outcomes swapped
             // into `done`, or one item popped with a permit held.
