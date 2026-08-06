@@ -113,6 +113,15 @@ run_variant() {
         grep -q READY "$collector_out" 2>/dev/null && break
         sleep 0.1
     done
+    # Fail fast like run_compare.sh: without a READY collector the enabled
+    # variants either burn a 30s registration timeout per pass or, worse,
+    # register against a stale collector from a crashed earlier invocation —
+    # leaving this run's delivery counters near zero and the span-delivery
+    # table misleading instead of the script failing here.
+    if ! grep -q READY "$collector_out" 2>/dev/null; then
+        echo "collector for $tag never became READY; see $collector_out" >&2
+        exit 1
+    fi
 
     local server_args=(--port "$HTTP_PORT" --pool "$POOL" --host 127.0.0.1 \
         --agent-port "$AGENT_PORT" --span-port "$SPAN_PORT" --stat-port "$STAT_PORT")

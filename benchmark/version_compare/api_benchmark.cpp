@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -114,12 +115,20 @@ namespace pinpoint::benchmark {
         uint64_t checksum = 0;
     };
 
+    // Nearest-rank percentile: the smallest sample with at least `fraction`
+    // of all samples at or below it. Keep this definition in sync with
+    // benchmark/active_span_benchmark.cpp so p99 means the same thing in
+    // both reports (floor(fraction * (n-1)) biases one rank low at the
+    // sample counts used here).
     double percentile(std::vector<uint64_t>& sorted_samples, double fraction) {
         if (sorted_samples.empty()) {
             return 0.0;
         }
-        const auto index = static_cast<size_t>(fraction * static_cast<double>(sorted_samples.size() - 1));
-        return static_cast<double>(sorted_samples[index]);
+        const auto n = sorted_samples.size();
+        auto rank = static_cast<size_t>(
+            std::ceil(fraction * static_cast<double>(n)));
+        rank = std::min(std::max<size_t>(rank, 1), n);
+        return static_cast<double>(sorted_samples[rank - 1]);
     }
 
     // Lazily registered metadata (api ids, string ids, sql ids) is the dominant
@@ -603,6 +612,16 @@ namespace pinpoint::benchmark {
         // s6 reuses); other scenarios trace total latency only.
         g_phase_trace = !options.trace_path.empty() &&
                         options.only_scenario == "s1_span_lifecycle";
+        if (!options.trace_path.empty() && options.only_scenario.empty()) {
+            // Every single-threaded scenario overwrites g_trace, so without
+            // --scenario the dump silently holds whichever ran last — a
+            // plausible-looking file for the wrong workload.
+            std::cerr << "[" << ppc::kApiVariant << "] warning: --trace without "
+                         "--scenario records only the LAST single-threaded "
+                         "scenario; pass --scenario <name> to pick the workload "
+                         "(phase columns need --scenario s1_span_lifecycle)"
+                      << std::endl;
+        }
 
         std::cerr << "[" << ppc::kApiVariant << "] starting agent against "
                   << options.host << " agent=" << options.agent_port

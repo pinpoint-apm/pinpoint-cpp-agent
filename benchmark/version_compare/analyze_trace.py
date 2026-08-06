@@ -75,8 +75,12 @@ def main():
         print("no spikes above threshold")
         return
     total_time_s = samples[-1]["offset_ns"] / 1e9
-    print(f"spikes: {len(spikes)} ({len(spikes) / len(samples) * 100:.2f}% of ops, "
-          f"{len(spikes) / total_time_s:.1f}/s over {total_time_s:.2f}s)")
+    if total_time_s > 0:
+        print(f"spikes: {len(spikes)} ({len(spikes) / len(samples) * 100:.2f}% of ops, "
+              f"{len(spikes) / total_time_s:.1f}/s over {total_time_s:.2f}s)")
+    else:
+        # A one-op (or zero-duration) trace has no meaningful rate.
+        print(f"spikes: {len(spikes)} ({len(spikes) / len(samples) * 100:.2f}% of ops)")
 
     # Spike mass: how much of the total tail time the spikes account for.
     spike_time = sum(latency for _, _, latency in spikes)
@@ -111,8 +115,18 @@ def main():
     # Phase attribution: for spike ops, where did the *excess* time (beyond the
     # phase's own median) go? Concentration in one phase names the mechanism.
     phase_keys = ("new_span_ns", "events_ns", "end_span_ns")
-    if any(samples[0].get(key, 0) for key in phase_keys):
-        normal = [row for row in samples if row["latency_ns"] <= threshold]
+    # Detect phase columns across the whole trace, not just the first sample:
+    # a first op that happened to record 0ns in all three phases must not
+    # silently skip the phase analysis for everything after it.
+    has_phases = any(any(row.get(key, 0) for key in phase_keys) for row in samples)
+    normal = [row for row in samples if row["latency_ns"] <= threshold]
+    if has_phases and not normal:
+        # Possible with an aggressive --spike-factor or a bimodal trace;
+        # statistics.median over the empty set would raise instead of report.
+        print("phase analysis skipped: every op is above the spike threshold "
+              "(lower --spike-factor?)")
+        has_phases = False
+    if has_phases:
         print("phase medians (normal ops):", end=" ")
         phase_median = {}
         for key in phase_keys:

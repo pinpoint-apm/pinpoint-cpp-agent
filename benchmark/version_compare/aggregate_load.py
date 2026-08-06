@@ -170,33 +170,52 @@ def main():
             if not entries:
                 lines.append(f"| {variant} | (no data) | | | | | | | |")
                 continue
-            passes = sum(1 for e in entries if e["passed"])
+            # Medians over PASSED entries only: a failed pass was measured
+            # under whatever load the server actually sustained, not the
+            # offered RPS, so folding it in would let a saturated variant
+            # post better latency/CPU numbers than one that kept up.
+            passed = [e for e in entries if e["passed"]]
+            if not passed:
+                lines.append(f"| {variant} | (all passes failed) | | | | | | "
+                             f"| 0/{len(entries)} |")
+                continue
             lines.append(
                 f"| {variant} "
-                f"| {med([e['achieved_rps'] for e in entries]):,.0f} "
-                f"| {med([e['p50'] for e in entries]):.3f} "
-                f"| {med([e['p95'] for e in entries]):.3f} "
-                f"| {med([e['p99'] for e in entries]):.3f} "
-                f"| {med([e['max'] for e in entries]):.2f} "
-                f"| {med([e.get('cpu_mean', 0) for e in entries]):.1f} "
-                f"| {med([e.get('rss_max_mib', 0) for e in entries]):.1f} "
-                f"| {passes}/{len(entries)} |")
+                f"| {med([e['achieved_rps'] for e in passed]):,.0f} "
+                f"| {med([e['p50'] for e in passed]):.3f} "
+                f"| {med([e['p95'] for e in passed]):.3f} "
+                f"| {med([e['p99'] for e in passed]):.3f} "
+                f"| {med([e['max'] for e in passed]):.2f} "
+                f"| {med([e.get('cpu_mean', 0) for e in passed]):.1f} "
+                f"| {med([e.get('rss_max_mib', 0) for e in passed]):.1f} "
+                f"| {len(passed)}/{len(entries)} |")
+        lines.append("")
+        lines.append("Failed passes (thresholds not met at the offered RPS) are excluded from "
+                     "every median above and below; the `passes` column shows how much data "
+                     "survived.")
         lines.append("")
 
         lines.append("### Agent overhead (enabled − disabled, same binary)")
         lines.append("")
-        lines.append("| version | Δp50 ms | Δp99 ms | ΔCPU % |")
-        lines.append("|---|---:|---:|---:|")
+        lines.append("| version | Δp50 ms | Δp99 ms | ΔCPU % | valid passes (on/off) |")
+        lines.append("|---|---:|---:|---:|---:|")
         for version in (args.baseline, args.candidate):
-            on = data[version][rps]
-            off = data[f"{version}-noagent"][rps]
+            # Same passed-only filter as above: an enabled variant that
+            # saturated below the offered RPS must not have its lighter-load
+            # latencies subtracted against a disabled variant that kept up.
+            on_all = data[version][rps]
+            off_all = data[f"{version}-noagent"][rps]
+            on = [e for e in on_all if e["passed"]]
+            off = [e for e in off_all if e["passed"]]
             if not on or not off:
-                lines.append(f"| {version} | (no data) | | |")
+                lines.append(f"| {version} | (no valid passes) | | "
+                             f"| {len(on)}/{len(on_all)} on, {len(off)}/{len(off_all)} off |")
                 continue
             dp50 = med([e["p50"] for e in on]) - med([e["p50"] for e in off])
             dp99 = med([e["p99"] for e in on]) - med([e["p99"] for e in off])
             dcpu = med([e.get("cpu_mean", 0) for e in on]) - med([e.get("cpu_mean", 0) for e in off])
-            lines.append(f"| {version} | {dp50:+.3f} | {dp99:+.3f} | {dcpu:+.1f} |")
+            lines.append(f"| {version} | {dp50:+.3f} | {dp99:+.3f} | {dcpu:+.1f} "
+                         f"| {len(on)}/{len(on_all)} on, {len(off)}/{len(off_all)} off |")
         lines.append("")
 
     report = "\n".join(lines)

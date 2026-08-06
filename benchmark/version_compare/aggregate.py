@@ -129,31 +129,58 @@ def main():
     lines.append("")
     lines.append("`messages delivered` counts what the collector received. It legitimately exceeds "
                  "the span count, because a span carrying many events is split into a span plus "
-                 "chunk messages. The gate is therefore `delivered >= created`: at or above 100% "
-                 "nothing was dropped, below it the run dropped spans and the timings are void.")
+                 "chunk messages — which also means `delivered >= created` alone leaves slack: a "
+                 "run could drop a share of its spans and still clear 100% on message inflation. "
+                 "The gate is therefore applied per run, and on top of it the two variants must "
+                 "deliver the same message count — equal offered work must produce equal messages.")
     lines.append("")
-    lines.append("| variant | recording spans created | messages delivered | ratio |")
-    lines.append("|---|---:|---:|---:|")
+    lines.append("| variant | spans created (median) | messages delivered (median) | ratio "
+                 "| runs below 100% |")
+    lines.append("|---|---:|---:|---:|---:|")
     delivery_warning = []
+    delivered_medians = {}
     for variant in (args.baseline, args.candidate):
         if variant not in created or variant not in delivered:
             continue
-        created_median = statistics.median(created[variant])
-        delivered_median = statistics.median(delivered[variant])
+        created_runs = created[variant]
+        delivered_runs = delivered[variant]
+        created_median = statistics.median(created_runs)
+        delivered_median = statistics.median(delivered_runs)
+        delivered_medians[variant] = delivered_median
         rate = (delivered_median / created_median * 100.0) if created_median else 0.0
-        lines.append(f"| {variant} | {created_median:,.0f} | {delivered_median:,.0f} | {rate:.1f}% |")
-        if rate < 100.0:
-            delivery_warning.append((variant, rate))
+        # Per run, not median-of-runs: one dropping repetition poisons every
+        # scenario median it contributed to, and a cross-rep median would let
+        # it pass unnoticed.
+        failing_runs = sum(1 for c, d in zip(created_runs, delivered_runs) if d < c)
+        lines.append(f"| {variant} | {created_median:,.0f} | {delivered_median:,.0f} "
+                     f"| {rate:.1f}% | {failing_runs}/{len(delivered_runs)} |")
+        if rate < 100.0 or failing_runs:
+            delivery_warning.append((variant, rate, failing_runs))
     lines.append("")
+    mismatch = None
+    if len(delivered_medians) == 2:
+        base_delivered = delivered_medians[args.baseline]
+        cand_delivered = delivered_medians[args.candidate]
+        if base_delivered != cand_delivered:
+            mismatch = (base_delivered, cand_delivered)
     if delivery_warning:
-        detail = ", ".join(f"{variant} at {rate:.1f}%" for variant, rate in delivery_warning)
+        detail = ", ".join(f"{variant} at {rate:.1f}% with {failing} dropping run(s)"
+                           for variant, rate, failing in delivery_warning)
         lines.append(f"> **The timings below are not comparable.** {detail}. A version that drops "
                      f"spans skips the serialize-and-send work the other version performs, so it "
                      f"measures as faster while delivering less. Lower `--ops` or raise "
-                     f"`--drain-ms` until both versions are at or above 100%.")
+                     f"`--drain-ms` until every run of both versions is at or above 100%.")
+    elif mismatch:
+        lines.append(f"> **Treat the timings below with suspicion: the variants delivered "
+                     f"different message counts** ({args.baseline}: {mismatch[0]:,.0f}, "
+                     f"{args.candidate}: {mismatch[1]:,.0f}) for identical offered work. Either "
+                     f"the lower side dropped spans inside the slack that message inflation "
+                     f"leaves under `delivered >= created`, or the two versions chunk span "
+                     f"events differently — determine which before reading the deltas as "
+                     f"per-span costs.")
     else:
-        lines.append("Neither version dropped spans, so the per-span timings below reflect equal "
-                     "work.")
+        lines.append("Every run delivered at least its created count and both variants delivered "
+                     "identical message counts, so the per-span timings below reflect equal work.")
     lines.append("")
 
     header = (f"| scenario | thr | {args.baseline} ns/op | {args.candidate} ns/op | Δ ns/op | "

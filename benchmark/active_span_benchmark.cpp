@@ -25,6 +25,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -209,8 +210,18 @@ namespace benchmark {
         result.nanoseconds_per_pair =
             static_cast<double>(wall_ns) / static_cast<double>(thread_count * pairs_per_thread);
         if (!merged.empty()) {
-            result.latency_p50 = merged[merged.size() / 2];
-            result.latency_p99 = merged[(merged.size() * 99) / 100];
+            // Nearest-rank percentiles, in sync with the definition in
+            // version_compare/api_benchmark.cpp. The previous (n*99)/100
+            // indexing read one rank high — for n <= 100 it reported the
+            // maximum labeled as p99.
+            const auto nearest_rank = [&merged](double fraction) {
+                auto rank = static_cast<size_t>(
+                    std::ceil(fraction * static_cast<double>(merged.size())));
+                rank = std::min(std::max<size_t>(rank, 1), merged.size());
+                return merged[rank - 1];
+            };
+            result.latency_p50 = nearest_rank(0.50);
+            result.latency_p99 = nearest_rank(0.99);
             result.latency_max = merged.back();
         }
         return result;

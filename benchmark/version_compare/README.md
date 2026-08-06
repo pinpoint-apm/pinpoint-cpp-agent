@@ -62,11 +62,15 @@ check before it shows any timing:
   starts from an empty queue instead of inheriting a backlog.
 - The benchmark reports how many recording spans it created and the collector
   reports how many messages arrived. `aggregate.py` fails the run loudly when
-  either version delivered less than it created.
+  any single repetition of either version delivered less than it created.
 
 Delivered messages legitimately *exceed* the span count: a span carrying many
-events is split into a span plus chunk messages. The gate is
-`delivered >= created`, not `== 100%`.
+events is split into a span plus chunk messages. That inflation also gives
+`delivered >= created` slack — a run could drop a share of its spans and still
+clear 100% — so the gate is applied per run *and* the two variants' delivered
+counts are compared against each other: identical offered work must produce
+identical message counts, and a mismatch is called out in the report even when
+both sides individually cleared the ratio.
 
 The cost of raising the queue is that peak RSS reflects that setting rather than
 a shipped default, so the RSS figures are only meaningful relative to each other.
