@@ -202,19 +202,72 @@ benchmark's `QueueSize: 65536` that is 32 × 65536 × 8 B ≈ 17 MiB, which is t
 entire 32.9 − 15.6 MiB difference. At the shipped default (1024) the same
 structure costs ~256 KiB.
 
+### 1-in-100 sampling (production-like)
+
+The same pass rerun with `Sampling.CounterRate: 100` (~1% of requests recorded,
+the other 99% taking the continue-unsampled path). Delivery scaled as expected:
+~2,670 spans per ~151k-request run for both variants, matching 1% of requests
+times the same ×1.78 chunk/async inflation seen at full sampling; both
+`-noagent` variants delivered 0.
+
+Agent overhead (enabled − disabled), 4000 RPS:
+
+| version | Δp50 ms | Δp99 ms | ΔCPU |
+|---|---:|---:|---:|
+| v1.1.0 | +0.000 | -0.010 | +0.7 pt |
+| main | +0.000 | +0.020 | +0.4 pt |
+
+At 1000 RPS both versions' ΔCPU rounds to −0.1 pt — below the measurement
+floor. **At 1% sampling the agent is effectively free on either version**, and
+the 3× CPU gap measured at full sampling collapses, because it lives almost
+entirely in the record-serialize-send pipeline that unsampled requests never
+enter (the unsampled path itself measured near-identical in the
+microbenchmark: `s2_unsampled` ±3%). The versions differ materially only in
+what recording a span costs — so the higher the sampling rate (or traffic into
+a fixed 1/N), the more main's advantage matters.
+
 Caveats:
 
 - The 1000-RPS p99/max columns are polluted by sporadic multi-second stalls
   with `Connection reset by peer` in the generator log. They hit enabled and
   disabled variants alike (e.g. max 4.0 s on `main` enabled, 4.0 s on `v1.1.0
-  noagent`), so they are loopback/TCP environment noise, not agent behavior;
-  the 4000-RPS pass was free of them in all 12 runs. Per-version Δp99 at
+  noagent`; max 2.1 s on `main-noagent` in the 1%-sampling session), so they
+  are loopback/TCP environment noise, not agent behavior. Per-version Δp99 at
   1000 RPS should not be read.
 - gRPC downstream and outbound-HTTP endpoints of the e2e suite are not
   exercised; they need downstream infrastructure and version-specific APIs.
 
+## Re-measurement against `6da2fdd` (2026-08-06)
+
+main moved from `acf8cff` to `6da2fdd` (active-span registration reworked into
+an intrusive per-shard list, metadata uploads pipelined as async unary calls,
+and this tooling's validity gates tightened to per-run checks with
+cross-variant delivery equality). Both phases were rerun: 7 microbenchmark
+repetitions and the full load pass, all gates green.
+
+What moved:
+
+- **Allocations per op dropped by exactly one in every scenario** (17→16 on
+  the request span, 2→1 on the unsampled path, 244→129 on the 100-event span):
+  the intrusive active-span node removed the per-request hash-map insert that
+  profiling had flagged.
+- **`s4c_sql_miss` narrowed from +89% to +50%** and `s5a_deep_events` measured
+  +1.7% (was +31%) — within its ±35% spread, so the deep-nesting regression is
+  no longer distinguishable from noise in this run.
+- Everything else replicated: thread scaling -39/-50/-46/-56% (1/2/4/8
+  threads), SQL hit -64/-66%, propagation -44%, peak RSS 70.6 vs 163.9 MiB.
+- Phase 2 replicated at 4000 RPS: agent CPU overhead +6.7 pt (main) vs
+  +21.8 pt (v1.1.0), agent Δp99 +0.01 ms vs +0.05 ms. The 1000-RPS deltas
+  (+4.8 vs +12.3 pt) hold at the same ~3× ratio.
+- The single-thread p99 columns remain unstable between runs (`s7` Δp99 was
+  +1% in the 08-05 sessions, +140% here; `s1` +76% → +47%), consistent with
+  the ambient-allocator diagnosis above. Read the threaded p99 rows, the
+  load-test Δp99, and the diagnosis — not any single session's single-thread
+  p99 column.
+
 ## Raw data
 
-- [raw-2026-08-05.tsv](raw-2026-08-05.tsv) — microbenchmark run 1 (7 repetitions)
-- [raw-2026-08-05-run2.tsv](raw-2026-08-05-run2.tsv) — microbenchmark run 2 (7 repetitions)
+- [raw-2026-08-05.tsv](raw-2026-08-05.tsv) — microbenchmark vs `acf8cff`, run 1 (7 repetitions)
+- [raw-2026-08-05-run2.tsv](raw-2026-08-05-run2.tsv) — microbenchmark vs `acf8cff`, run 2 (7 repetitions)
+- [raw-2026-08-06.tsv](raw-2026-08-06.tsv) — microbenchmark vs `6da2fdd` (7 repetitions)
 - phase-2 logs are regenerable with `run_load_compare.sh` (see README)

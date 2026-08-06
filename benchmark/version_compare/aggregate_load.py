@@ -92,6 +92,9 @@ def main():
     parser.add_argument("--repeats", type=int, required=True)
     parser.add_argument("--duration", type=int, default=0)
     parser.add_argument("--mode", default="mixed")
+    parser.add_argument("--sampling-rate", type=int, default=1,
+                        help="counter sampling 1-in-N used by the servers (affects "
+                             "the expected delivery count, not the parsing)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -144,6 +147,12 @@ def main():
                  f"{args.repeats} interleaved repetitions, medians across repetitions. "
                  f"Latency is end-to-end from the Python client on loopback; CPU% and RSS "
                  f"are the server process sampled every 0.5 s during the pass.")
+    if args.sampling_rate > 1:
+        lines.append("")
+        lines.append(f"Counter sampling **1-in-{args.sampling_rate}**: roughly "
+                     f"{100.0 / args.sampling_rate:.1f}% of requests are recorded; the rest "
+                     f"take the continue-unsampled path (a span object is still created and "
+                     f"finished, but nothing is serialized or queued).")
     lines.append("")
 
     lines.append("## Span delivery")
@@ -155,9 +164,15 @@ def main():
         delivered = med(delivery[variant])
         lines.append(f"| {variant} | {served:,.0f} | {delivered:,.0f} |")
     lines.append("")
-    lines.append("A `-noagent` variant delivering ~0 confirms the baseline really ran without "
-                 "an agent. An enabled variant must deliver at least its request count "
-                 "(spans can exceed requests: `/features` adds an async span per hit).")
+    if args.sampling_rate > 1:
+        lines.append(f"A `-noagent` variant delivering ~0 confirms the baseline really ran "
+                     f"without an agent. With 1-in-{args.sampling_rate} sampling an enabled "
+                     f"variant is expected to deliver roughly requests/{args.sampling_rate} "
+                     f"(plus chunk and `/features` async-span inflation on the sampled subset).")
+    else:
+        lines.append("A `-noagent` variant delivering ~0 confirms the baseline really ran without "
+                     "an agent. An enabled variant must deliver at least its request count "
+                     "(spans can exceed requests: `/features` adds an async span per hit).")
     lines.append("")
 
     for rps in rps_values:

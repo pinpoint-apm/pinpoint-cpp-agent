@@ -35,6 +35,7 @@ DURATION=30
 REPEATS=3
 MODE="mixed"
 POOL=8
+SAMPLING_RATE=1
 HTTP_PORT=18090
 AGENT_PORT=19991
 SPAN_PORT=19993
@@ -52,6 +53,7 @@ Options:
   --repeats N             interleaved repetitions (default 3)
   --mode NAME             fixed_rps_test.py workload mode (default mixed)
   --pool N                server worker threads (default 8)
+  --sampling-rate N       counter sampling 1-in-N (default 1 = every request)
   --out DIR               output directory (default ./load_compare_results)
 EOF
 }
@@ -67,6 +69,7 @@ while [[ $# -gt 0 ]]; do
         --repeats) REPEATS="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --pool) POOL="$2"; shift 2 ;;
+        --sampling-rate) SAMPLING_RATE="$2"; shift 2 ;;
         --out) OUT_DIR="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
@@ -124,7 +127,8 @@ run_variant() {
     fi
 
     local server_args=(--port "$HTTP_PORT" --pool "$POOL" --host 127.0.0.1 \
-        --agent-port "$AGENT_PORT" --span-port "$SPAN_PORT" --stat-port "$STAT_PORT")
+        --agent-port "$AGENT_PORT" --span-port "$SPAN_PORT" --stat-port "$STAT_PORT" \
+        --sampling-rate "$SAMPLING_RATE")
     [[ "$mode_flag" == "disabled" ]] && server_args+=(--disable)
     "$server_bin" "${server_args[@]}" > /dev/null 2> "$OUT_DIR/${tag}.server.txt" &
     SERVER_PID=$!
@@ -185,6 +189,7 @@ python3 "$SCRIPT_DIR/aggregate_load.py" \
     --baseline "$BASELINE_LABEL" --candidate "$CANDIDATE_LABEL" \
     --rps-list "$RPS_LIST" --repeats "$REPEATS" \
     --duration "$DURATION" --mode "$MODE" \
+    --sampling-rate "$SAMPLING_RATE" \
     --out "$OUT_DIR/report.md"
 
 echo

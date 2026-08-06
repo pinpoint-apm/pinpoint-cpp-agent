@@ -282,10 +282,12 @@ namespace {
     }
 
     std::string build_config(const std::string& host, int agent_port, int span_port,
-                             int stat_port, bool disabled) {
+                             int stat_port, bool disabled, int counter_rate) {
         // Same key spelling rationale as api_benchmark.cpp: Collector.Grpc*
         // works verbatim in both versions, and Span.QueueSize is capped at
-        // 65536 in both.
+        // 65536 in both. Counter sampling (1-in-N) is used rather than percent
+        // because both versions implement it with the same deterministic
+        // modulo, so the two variants sample the identical subset of requests.
         std::string config =
             "ApplicationName: cpp-load-compare\n";
         if (disabled) {
@@ -299,7 +301,7 @@ namespace {
             "  GrpcStatPort: " + std::to_string(stat_port) + "\n"
             "Sampling:\n"
             "  Type: COUNTER\n"
-            "  CounterRate: 1\n"
+            "  CounterRate: " + std::to_string(counter_rate) + "\n"
             "Span:\n"
             "  QueueSize: 65536\n"
             "Stat:\n"
@@ -319,6 +321,7 @@ int main(int argc, char** argv) {
     int span_port = 9993;
     int stat_port = 9992;
     bool disabled = false;
+    int counter_rate = 1;   // sample 1-in-N transactions; 1 = every request
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -337,12 +340,14 @@ int main(int argc, char** argv) {
             stat_port = std::stoi(next());
         } else if (arg == "--disable") {
             disabled = true;
+        } else if (arg == "--sampling-rate") {
+            counter_rate = std::max(1, std::stoi(next()));
         }
     }
 
     g_disabled_mode.store(disabled);
     g_agent = ppc::StartAgent(
-        build_config(collector_host, agent_port, span_port, stat_port, disabled));
+        build_config(collector_host, agent_port, span_port, stat_port, disabled, counter_rate));
     if (g_agent == nullptr) {
         // v1.1.0's CreateAgent never returns null; the current StartAgent does
         // when Enable is false. The noop GlobalAgent still serves the API.
