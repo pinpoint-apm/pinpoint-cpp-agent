@@ -68,12 +68,45 @@ reflect the raised `Span.QueueSize`, not a shipped default.
 
 **Thread scaling is the headline.** The advantage grows monotonically with thread
 count — -26% at 1 thread, -42% at 2, -52% at 4, -56% at 8 — which is the
-signature of removed shared hot spots rather than a constant-factor win. It lines
-up with `d5c341e` (shard the metadata id caches), `de40e4a` (batch the span queue
-drain), `4541cb8` (cache AtomicSharedPtr snapshots per thread), and `e06ede8`
-(close per-request allocation and false-sharing gaps). The 8-thread rows have the
-tightest spreads in the whole table (±2%/±3%) and p99 improves alongside the
-median at every thread count, so this is the most reliable result here.
+signature of removed shared hot spots rather than a constant-factor win.
+
+How to read those numbers: `s6_threads_N` runs the `s1` workload (one sampled
+span, three events, EndSpan enqueue) on N threads released from a single atomic
+start gate, and `ns/op` is the wall time of the whole scenario divided by ops
+*per thread*. Under perfect scaling N threads doing their 2,500 ops in parallel
+finish in the same wall time as one thread doing 2,500 — a flat `ns/op` across
+thread counts — so any growth is accumulated cross-core contention, not extra
+work. Two derived views of the headline table:
+
+| threads | v1.1.0 ns/op | ×1T | main ns/op | ×1T | v1.1.0 total spans/s | main total spans/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2,912 | 1.00 | 2,152 | 1.00 | 343k | 465k |
+| 2 | 6,379 | 2.19 | 3,684 | 1.71 | 314k | 543k |
+| 4 | 14,386 | 4.94 | 6,912 | 3.21 | 278k | 579k |
+| 8 | 33,694 | **11.57** | 14,668 | **6.82** | **237k** | **545k** |
+
+The `×1T` column is the per-thread cost growth factor. v1.1.0's roughly doubles
+with every doubling of threads — the classic signature of a serialized section
+all threads queue behind. Converted to aggregate throughput (threads ×
+10⁹/ns-per-op), v1.1.0 caps out around 240–340k spans/s and *declines* as
+threads are added, i.e. a global lock has become the whole-process ceiling;
+main holds ~465–580k/s. The serialized sections in question are what the main
+line removed: the single-mutex span queue with a cv notify per enqueue
+(`de40e4a` replaced it with a thread-sharded queue and batch drain), the one
+`shared_mutex` in front of the metadata id caches whose lock word ping-pongs
+between cores even for readers (`d5c341e` sharded it), the per-request config
+snapshot refcount (`4541cb8` made it per-thread), plus false-sharing fixes
+(`e06ede8`).
+
+Reliability: the 8-thread rows have the tightest spreads in the whole table
+(±2%/±3%) — contention is a highly repeatable phenomenon — the 8-thread delta
+reproduced across three independent sessions (-56.5/-56.5/-56.3%), and p99
+improves alongside the median at every thread count, consistent with shorter
+lock waits. Two scope notes: thread counts stop at 8 because the agent's own
+gRPC workers share the 10 performance cores, and these are hot-path creation
+costs — scenario bursts are absorbed by the queue and drained between
+scenarios, so "total spans/s" is the instrumentation cost the application
+threads can bear, not a sustained end-to-end delivery rate.
 
 **The raw SQL cache does what it was built for.** `s4a_sql_hit` -65% and
 `s4b_sql_hit_binds` -61%, with no overlap between the two versions' ranges across
@@ -146,9 +179,8 @@ and scaling above.
   path, or spread batch destruction between collect waits.
 - Side observation from profiling: `AgentStats::addActiveSpan` performs a
   hash-map insert (with allocation) on every `NewSpan` even with
-  `Stat.Enable: false` — a candidate for gating.
-- Thread counts stop at 8 because the agent's own gRPC workers share the 10
-  performance cores; beyond that the numbers measure oversubscription.
+  `Stat.Enable: false` — a candidate for gating. (Addressed upstream by the
+  intrusive active-span rework measured in the `6da2fdd` section below.)
 - Measured on a laptop. The thread-scaling shape and the allocation counts should
   transfer; absolute nanoseconds should not.
 
