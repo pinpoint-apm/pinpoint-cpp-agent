@@ -130,7 +130,7 @@ int main() {
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
 | `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to the agent id when omitted. |
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
-| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars). Unused for v1/v3. |
+| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `"DEFAULT"` | Only used for `UidVersion: v4` (max 254 chars); falls back to `DEFAULT` when unset. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
 
@@ -146,11 +146,12 @@ int main() {
 |---|---|---|---|
 | `ApplicationName` max length | 24 | 254 | 254 |
 | Agent id | auto Base64(UUIDv7) | same as v1 | auto Base64(UUIDv7) |
-| `ServiceName` / `ApiKey` | not used | not used | **required** |
+| `ServiceName` | not used | not used | used (falls back to `DEFAULT`) |
+| `ApiKey` | not used | not used | **required** |
 | gRPC `protocol.version` header | 100 | 100 | 400 |
 | gRPC `servicename` / `apikey` headers | not sent | not sent | sent |
 
-v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid required value (e.g. `ApplicationName`, or `ServiceName`/`ApiKey` for v4) aborts agent startup (the agent degrades to a no-op).
+v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid required value (e.g. `ApplicationName`, or `ApiKey` for v4, or an invalid `ServiceName`) aborts agent startup (the agent degrades to a no-op).
 
 > **Note:** because the agent id is generated afresh on every startup, it changes across restarts — matching the Java agent's v4 behavior. Use `AgentName` for a stable label.
 
@@ -640,7 +641,7 @@ Below is a complete YAML config with all keys and their default values:
 ApplicationName: ""
 AgentName: ""        # falls back to the auto-generated agent id
 UidVersion: "v3"
-ServiceName: ""      # required only for UidVersion: v4
+ServiceName: ""      # used only for UidVersion: v4; falls back to "DEFAULT"
 ApiKey: ""           # required only for UidVersion: v4; masked in logs
 Enable: true
 IsContainer: false   # auto-detected if not set

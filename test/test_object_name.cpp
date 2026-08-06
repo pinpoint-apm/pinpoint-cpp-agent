@@ -297,10 +297,21 @@ TEST(ResolveV4, AgentNameDefaultsToBase64AgentId) {
     EXPECT_EQ(obj->agent_name, obj->agent_id);
 }
 
-TEST(ResolveV4, MissingServiceNameFails) {
+TEST(ResolveV4, ServiceNameDefaultsWhenUnset) {
     ObjectNameInput in;
     in.application_name = "test-app";
     in.api_key = "secret-key";
+
+    const auto obj = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_EQ(obj->service_name, object_name::DEFAULT_SERVICE_NAME);
+}
+
+TEST(ResolveV4, InvalidServiceNameFails) {
+    ObjectNameInput in;
+    in.application_name = "test-app";
+    in.api_key = "secret-key";
+    in.service_name = std::string(object_name::SERVICE_NAME_MAX_LEN + 1, 'a');
     EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value());
 }
 

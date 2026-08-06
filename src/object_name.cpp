@@ -222,13 +222,17 @@ namespace pinpoint {
             }
             obj.application_name = input.application_name;
 
-            // serviceName: required for v4.
-            if (!validate_id(input.service_name, object_name::SERVICE_NAME_MAX_LEN)) {
-                LOG_ERROR("Failed to resolve ServiceName (required for uid.version=v4, max length {})",
+            // serviceName: falls back to "DEFAULT" when unset; a configured
+            // value is still charset/length validated.
+            if (input.service_name.empty()) {
+                obj.service_name = object_name::DEFAULT_SERVICE_NAME;
+            } else if (!validate_id(input.service_name, object_name::SERVICE_NAME_MAX_LEN)) {
+                LOG_ERROR("Failed to resolve ServiceName (max length {})",
                           object_name::SERVICE_NAME_MAX_LEN);
                 return std::nullopt;
+            } else {
+                obj.service_name = input.service_name;
             }
-            obj.service_name = input.service_name;
 
             // apiKey: required for v4, only checked for non-emptiness.
             if (input.api_key.empty()) {
