@@ -774,12 +774,21 @@ private:
 
 class ThrowingReadyGrpcStats : public GrpcStats {
 public:
-    explicit ThrowingReadyGrpcStats(std::shared_ptr<const Config> config)
-        : GrpcStats(std::move(config)) {}
+    explicit ThrowingReadyGrpcStats(std::shared_ptr<const Config> config,
+                                    const GrpcClientTuning& tuning = {})
+        : GrpcStats(std::move(config), tuning) {}
 
     bool readyChannel() override {
+        attempts_.fetch_add(1, std::memory_order_relaxed);
         throw std::runtime_error("injected stats channel setup failure");
     }
+
+    // Distinguishes supervised restart (attempts keep growing) from a worker
+    // that died permanently after the first exception.
+    int attempts() const { return attempts_.load(std::memory_order_relaxed); }
+
+private:
+    std::atomic<int> attempts_{0};
 };
 
 // Models a persistent collector outage: readyChannel() never succeeds but
@@ -897,6 +906,34 @@ static bool wait_for_condition(const std::function<bool()>& condition, std::chro
     }
     return condition();
 }
+
+// Owns a worker thread and guarantees it is stopped and joined on scope exit.
+// A fatal ASSERT between starting the worker and the test's explicit join
+// returns from the test body early, and destroying a joinable std::thread
+// std::terminates — one timed-out wait would take the whole binary (and every
+// remaining test) down with it. The stop callback runs only when the guard
+// itself has to join; the explicit stop-then-join sequences in the test
+// bodies are unaffected (the stop functions are idempotent).
+class ScopedWorker {
+public:
+    ScopedWorker(std::function<void()> stop, std::function<void()> body)
+        : stop_(std::move(stop)), thread_(std::move(body)) {}
+    ~ScopedWorker() {
+        if (thread_.joinable()) {
+            if (stop_) stop_();
+            thread_.join();
+        }
+    }
+    ScopedWorker(const ScopedWorker&) = delete;
+    ScopedWorker& operator=(const ScopedWorker&) = delete;
+
+    bool joinable() const { return thread_.joinable(); }
+    void join() { thread_.join(); }
+
+private:
+    std::function<void()> stop_;
+    std::thread thread_;
+};
 
 class GrpcMockTest : public ::testing::Test {
 protected:
@@ -1122,9 +1159,8 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerTest) {
     agent.setMockAgentStub(std::move(mock_agent_stub));
     
     // Test ping worker operations
-    std::thread ping_worker([&agent]() {
-        agent.sendPingWorker();
-    });
+    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
+                             [&agent] { agent.sendPingWorker(); });
     
     // Give worker time to start and run briefly
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1149,9 +1185,8 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerContainsChannelSetupException) {
 
     // The worker must contain the exception and keep retrying (supervised
     // restart) instead of dying — so it only returns once stopped.
-    std::thread ping_worker([&agent]() {
-        EXPECT_NO_THROW(agent.sendPingWorker());
-    });
+    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
+                             [&agent] { EXPECT_NO_THROW(agent.sendPingWorker()); });
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     agent.stopPingWorker();
     ping_worker.join();
@@ -1173,9 +1208,8 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     agent.enqueueMeta(std::move(str_meta));
 
     // Test meta worker operations
-    std::thread meta_worker([&agent]() {
-        agent.sendMetaWorker();
-    });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                             [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForTotalRequestCount(2, std::chrono::seconds(5)))
         << "both metadata items should be sent";
@@ -1229,9 +1263,8 @@ TEST_F(GrpcMockTest, GrpcSpanWorkerTest) {
     span_client.enqueueSpan(std::move(span_chunk));
     
     // Test span worker operations
-    std::thread span_worker([&span_client]() {
-        span_client.sendSpanWorker();
-    });
+    ScopedWorker span_worker([&span_client] { span_client.stopSpanWorker(); },
+                             [&span_client] { span_client.sendSpanWorker(); });
     
     // Give worker time to process queue
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1326,9 +1359,8 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
     stats_client.enqueueStats(URL_STATS);
     
     // Test stats worker operations
-    std::thread stats_worker([&stats_client]() {
-        stats_client.sendStatsWorker();
-    });
+    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
+                              [&stats_client] { stats_client.sendStatsWorker(); });
     
     // Give worker time to process queue
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1348,17 +1380,27 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
 }
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
-    ThrowingReadyGrpcStats stats_client(mock_agent_service_->getConfig());
+    GrpcClientTuning tuning;
+    tuning.worker_restart_delay = std::chrono::milliseconds(10);
+    ThrowingReadyGrpcStats stats_client(mock_agent_service_->getConfig(), tuning);
     stats_client.setAgentService(mock_agent_service_.get());
 
     // The worker must contain the exception and keep retrying (supervised
     // restart) instead of dying — so it only returns once stopped.
-    std::thread stats_worker([&stats_client]() {
-        EXPECT_NO_THROW(stats_client.sendStatsWorker());
-    });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ScopedWorker stats_worker(
+        [&stats_client] { stats_client.stopStatsWorker(); },
+        [&stats_client] { EXPECT_NO_THROW(stats_client.sendStatsWorker()); });
+
+    // Two attempts distinguish a supervised restart from a worker that died
+    // permanently after the first injected exception (which a plain sleep
+    // plus no-throw check could not tell apart).
+    EXPECT_TRUE(wait_for_condition(
+        [&stats_client] { return stats_client.attempts() >= 2; },
+        std::chrono::seconds(3)))
+        << "the stats worker must restart after a thrown readiness check";
+
     stats_client.stopStatsWorker();
-    stats_worker.join();
+    if (stats_worker.joinable()) stats_worker.join();
     EXPECT_FALSE(mock_agent_service_->isExiting());
 }
 
@@ -1411,10 +1453,14 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
     stats_client.setReadyChannel(false);
 
     // Start workers
-    std::thread ping_worker([&agent]() { agent.sendPingWorker(); });
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
-    std::thread span_worker([&span_client]() { span_client.sendSpanWorker(); });
-    std::thread stats_worker([&stats_client]() { stats_client.sendStatsWorker(); });
+    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
+                     [&agent] { agent.sendPingWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
+    ScopedWorker span_worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
+                     [&stats_client] { stats_client.sendStatsWorker(); });
     
     // Enqueue data
     auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
@@ -1464,7 +1510,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendApiMetaFailureTest) {
     // Enqueue API meta and run worker
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "fail.api"));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1486,7 +1533,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendErrorMetaFailureTest) {
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "error msg", STRING_META_ERROR));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::STRING, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1508,7 +1556,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaFailureTest) {
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "SELECT 1", STRING_META_SQL));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1531,7 +1580,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaFailureTest) {
     SqlUid uid = {1, 2, 3};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1558,7 +1608,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaFailureTest) {
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
     agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/api", std::move(exceptions)));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1591,7 +1642,8 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerMixedSuccessFailureTest) {
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.fail"));
     agent.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "api.recover"));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 3, std::chrono::seconds(5)))
         << "the worker must keep processing items after a failure";
@@ -1618,7 +1670,8 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.retry"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     // PResult.success=false must be retried after the (shrunk) retry delay
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
@@ -1645,7 +1698,8 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesItemWhenSendThrows) {
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.throw.retry"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
 
@@ -1667,7 +1721,8 @@ TEST_F(GrpcMockTest, GrpcMetadataSkipsRpcWhenChannelNotReady) {
     metadata.setMockMetaStub(std::move(mock_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.not.ready"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     mock_agent_service_->setExiting(true);
@@ -1687,7 +1742,8 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.exhaust"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     // Eviction happens only after 3 scheduled retries are exhausted
     EXPECT_TRUE(wait_for_condition(
@@ -1715,7 +1771,8 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsErrorCacheAfterRetryExhaustion) {
     metadata.enqueueMeta(std::make_unique<MetaData>(
         META_STRING, 2, "error.exhaust", STRING_META_ERROR));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(wait_for_condition(
         [this] { return mock_agent_service_->removed_error_count_.load() >= 1; },
@@ -1741,7 +1798,8 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlCacheAfterRetryExhaustion) {
     metadata.enqueueMeta(std::make_unique<MetaData>(
         META_STRING, 3, "SELECT exhaust", STRING_META_SQL));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(wait_for_condition(
         [this] { return mock_agent_service_->removed_sql_count_.load() >= 1; },
@@ -1769,7 +1827,8 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     metadata.enqueueMeta(std::make_unique<MetaData>(
         META_SQL_UID, uid, "SELECT uid_exhaust"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(wait_for_condition(
         [this] { return mock_agent_service_->removed_sql_uid_count_.load() >= 1; },
@@ -1808,7 +1867,8 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
     agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/api", std::move(exceptions)));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForTotalRequestCount(5, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1848,7 +1908,8 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesFailureTest) {
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
     agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/api", std::move(exceptions)));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForTotalRequestCount(5, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1882,7 +1943,8 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerDisabledWhenStatAndUrlStatDisabledTest) {
     stats_client.enqueueStats(URL_STATS);
 
     // sendStatsWorker should return immediately when disabled
-    std::thread stats_worker([&stats_client]() { stats_client.sendStatsWorker(); });
+    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
+                     [&stats_client] { stats_client.sendStatsWorker(); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     mock_agent_service_->setExiting(true);
@@ -1906,7 +1968,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaSuccessTest) {
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "SELECT * FROM users", STRING_META_SQL));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1928,7 +1991,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaSuccessTest) {
     SqlUid uid = {0xAA, 0xBB, 0xCC, 0xDD};
     agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "INSERT INTO t VALUES (?)"));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -1955,7 +2019,8 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaSuccessTest) {
 
     agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 999, "/api/v2/resource", std::move(exceptions)));
 
-    std::thread meta_worker([&agent]() { agent.sendMetaWorker(); });
+    ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
+                     [&agent] { agent.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 1, std::chrono::seconds(5)));
     mock_agent_service_->setExiting(true);
@@ -2121,7 +2186,8 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerEchoTest) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     EXPECT_EQ(echo_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "Echo command should be relayed to CommandEcho RPC";
@@ -2164,7 +2230,8 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerEchoFailureWritesFailMessage) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     EXPECT_EQ(fail_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "CommandEcho failure should produce a fail message on the command stream";
@@ -2204,7 +2271,8 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerUnknownCommandWritesFailMessage) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     EXPECT_EQ(fail_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "Unknown command should produce a NOT_SUPPORTED_REQUEST fail message";
@@ -2251,7 +2319,8 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerActiveThreadCountTest) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     EXPECT_EQ(atc_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "Active thread count command should start a response stream";
@@ -2274,14 +2343,28 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerExitsWhenChannelNotReady) {
     auto mock_command_stub = std::make_unique<StrictMock<v1::MockProfilerCommandServiceStub>>();
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
-    if (worker.joinable()) worker.join();
+    std::atomic<bool> worker_done{false};
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                        [&command, &worker_done] {
+                            command.commandWorker();
+                            worker_done.store(true);
+                        });
 
-    SUCCEED() << "Command worker should exit immediately when the channel is not ready";
+    // Bounded instead of an unconditional join: a regression that keeps the
+    // worker retrying on a not-ready channel must turn this test red, not
+    // hang it forever (the guard stops and joins the worker on scope exit).
+    EXPECT_TRUE(wait_for_condition([&worker_done] { return worker_done.load(); },
+                                   std::chrono::seconds(2)))
+        << "Command worker should exit immediately when the channel is not ready";
 }
 
 TEST_F(GrpcMockTest, GrpcCommandStopWorkerWakesReconnectDelay) {
-    TestableGrpcCommand command(mock_agent_service_.get());
+    // Inflated delays make the assertion below unambiguous: a woken stop
+    // returns in milliseconds, a lost wakeup sleeps out five seconds.
+    GrpcClientTuning tuning;
+    tuning.worker_restart_delay = std::chrono::seconds(5);
+    tuning.reconnect_initial_interval = std::chrono::seconds(5);
+    TestableGrpcCommand command(mock_agent_service_.get(), tuning);
 
     auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
 
@@ -2297,17 +2380,19 @@ TEST_F(GrpcMockTest, GrpcCommandStopWorkerWakesReconnectDelay) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     ASSERT_EQ(stream_opened.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
 
-    // The worker is now in (or heading into) the 1s reconnect delay;
-    // stopCommandWorker must wake it so shutdown does not block.
+    // The worker is now in (or heading into) the injected 5s reconnect
+    // delay; stopCommandWorker must wake it so shutdown does not block.
     mock_agent_service_->setExiting(true);
+    const auto stop_start = std::chrono::steady_clock::now();
     command.stopCommandWorker();
     if (worker.joinable()) worker.join();
-
-    SUCCEED() << "stopCommandWorker should wake the reconnect delay and end the worker";
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_start, std::chrono::seconds(2))
+        << "stopCommandWorker must wake the reconnect delay, not sleep it out";
 }
 
 // ============================================================
@@ -2331,7 +2416,8 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSuccessTest) {
     auto span_data2 = make_test_span_data_ptr(*mock_agent_service_, "batch-op-2");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
         << "A batch should be sent via async SendSpanBatch";
@@ -2363,7 +2449,8 @@ TEST_F(GrpcMockTest, GrpcSpanSendBatchSpanVsSpanChunkTest) {
     auto partial_span = make_test_span_data_ptr(*mock_agent_service_, "partial-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(partial_span, false));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
@@ -2395,7 +2482,8 @@ TEST_F(GrpcMockTest, GrpcSpanBatchCarriesParentServiceNameTest) {
     span_data->setParentServiceName("parent-service");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
@@ -2440,7 +2528,8 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     span_data->getAnnotations()->AppendSqlUidStringString(107, uid, "sql", "args");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
@@ -2518,7 +2607,8 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
     span_data->finishSpanEvent();
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
@@ -2554,7 +2644,8 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSizeSplitTest) {
         span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
     }
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
         << "4 queued chunks with batch size 2 should produce 2 batches";
@@ -2589,7 +2680,8 @@ TEST_F(GrpcMockTest, GrpcSpanQueueOverflowHeadDropTest) {
         span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
     }
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)));
 
@@ -2617,7 +2709,8 @@ TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     // First batch acquires the only permit; its callback is held by the fake
     auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "permit-op-1");
@@ -2660,7 +2753,8 @@ TEST_F(GrpcMockTest, GrpcSpanOutOfOrderCompletionReleasesPermitTest) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     for (int i = 0; i < 3; ++i) {
         auto span_data = make_test_span_data_ptr(
@@ -2694,7 +2788,8 @@ TEST_F(GrpcMockTest, GrpcSpanSynchronousLaunchFailureReleasesPermitTest) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::THROW_BEFORE_CALLBACK);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     auto failed_span_data = make_test_span_data_ptr(*mock_agent_service_, "launch-failure-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(failed_span_data, true));
@@ -2724,7 +2819,8 @@ TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::ERROR_STATUS);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "error-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
@@ -2754,7 +2850,8 @@ TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::OK_PARTIAL_SUCCESS);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     auto span_data1 = make_test_span_data_ptr(*mock_agent_service_, "partial-success-op-1");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data1, true));
@@ -2882,7 +2979,8 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryPacesAndStopsPromptly) {
     grpc_agent.setAgentService(mock_agent_service_.get());
 
     std::atomic<bool> boot_result{true};
-    std::thread boot([&] { boot_result = grpc_agent.registerAgentWithRetry(); });
+    ScopedWorker boot([&grpc_agent] { grpc_agent.stopAgentInfo(); },
+                      [&] { boot_result = grpc_agent.registerAgentWithRetry(); });
 
     ASSERT_TRUE(wait_for_condition([&] { return grpc_agent.calls() >= 1; }, std::chrono::seconds(2)))
         << "boot registration should attempt a send immediately";
@@ -2929,7 +3027,8 @@ TEST_F(GrpcMockTest, GrpcSpanCollectorOutageDropsBatchAndRecoveryResumesSending)
     auto* fake = fake_stub.get();
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     // Outage policy: a batch collected while the channel cannot become ready
     // is dropped (not retried), and the worker keeps running.
@@ -2984,12 +3083,24 @@ TEST_F(GrpcMockTest, GrpcSpanShutdownDuringCollectorOutageDropsRemainingSpans) {
     span_client.stopSpanWorker();
 
     const auto start = std::chrono::steady_clock::now();
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
-    worker.join();
+    std::atomic<bool> worker_done{false};
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                        [&span_client, &worker_done] {
+                            span_client.sendSpanWorker();
+                            worker_done.store(true);
+                        });
+    // Bounded instead of an unconditional join: if the shutdown flush
+    // regresses to blocking on the dead collector — the exact behavior this
+    // test pins — the test must go red on the elapsed assertion, not hang
+    // before reaching it (the guard stops and joins on scope exit).
+    const bool finished = wait_for_condition(
+        [&worker_done] { return worker_done.load(); }, std::chrono::seconds(3));
     const auto elapsed = std::chrono::steady_clock::now() - start;
+    if (finished && worker.joinable()) worker.join();
 
     EXPECT_EQ(fake->batchCount(), 0u)
         << "remaining spans must be dropped, not sent, while the channel is down";
+    EXPECT_TRUE(finished) << "the shutdown flush must finish, not block indefinitely";
     EXPECT_LT(elapsed, std::chrono::seconds(3))
         << "the shutdown flush must not block waiting for a dead collector";
 }
@@ -3008,7 +3119,8 @@ TEST_F(GrpcMockTest, GrpcMetadataResendsAfterChannelRecoveryWithoutCacheEviction
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.outage.recovery"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)))
         << "metadata should be re-sent once the channel recovers";
@@ -3047,7 +3159,8 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerReconnectsAfterCollectorStreamFailure) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     // The reconnect delay is the default exponential backoff (3s initial,
     // ±30% jitter), so allow generous headroom for the second connect.
@@ -3063,7 +3176,8 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerKeepsRetryingWhileCollectorUnreachable) 
     CountingNotReadyGrpcAgent grpc_agent(mock_agent_service_->getConfig());
     grpc_agent.setAgentService(mock_agent_service_.get());
 
-    std::thread ping_worker([&grpc_agent] { grpc_agent.sendPingWorker(); });
+    ScopedWorker ping_worker([&grpc_agent] { grpc_agent.stopPingWorker(); },
+                     [&grpc_agent] { grpc_agent.sendPingWorker(); });
 
     // Each failed stream start consumes one readiness attempt; the supervisor
     // must retry after WORKER_RESTART_DELAY instead of ending the worker for
@@ -3083,7 +3197,8 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerKeepsRetryingWhileCollectorUnreachable) {
     CountingNotReadyGrpcStats stats_client(mock_agent_service_->getConfig());
     stats_client.setAgentService(mock_agent_service_.get());
 
-    std::thread stats_worker([&stats_client] { stats_client.sendStatsWorker(); });
+    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
+                     [&stats_client] { stats_client.sendStatsWorker(); });
 
     EXPECT_TRUE(wait_for_condition(
         [&stats_client] { return stats_client.readyAttempts() >= 2; }, std::chrono::seconds(5)))
@@ -3113,7 +3228,8 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "overflow.api.2"));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "overflow.api.3"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     // Only the 2 queued metas may be sent; the third was dropped on enqueue.
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
@@ -3182,7 +3298,8 @@ TEST_F(GrpcMockTest, GrpcMetadataHonorsInjectedRetryLimit) {
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.injected.retry"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     EXPECT_TRUE(wait_for_condition(
         [this] { return mock_agent_service_->removed_api_count_ >= 1; }, std::chrono::seconds(5)))
@@ -3220,7 +3337,8 @@ TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "pipeline.2"));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "pipeline.3"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     // Both permits go in flight without waiting for either completion — the
     // serial-sender behavior this pipeline replaced allowed only one.
@@ -3260,7 +3378,8 @@ TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPerm
 
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.ready.throw"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     // The item survives the exception on the retry path and is delivered.
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)))
@@ -3296,7 +3415,8 @@ TEST_F(GrpcMockTest, GrpcMetadataCompletionSurvivesAllocationPressureWithoutLosi
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.alloc.fail"));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.alloc.after"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
 
     ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)))
         << "the first item must be in flight holding the single permit";
@@ -3363,7 +3483,8 @@ TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "shutdown.hold"));
 
-    std::thread meta_worker([&metadata]() { metadata.sendMetaWorker(); });
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
     ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)));
 
     const auto stop_start = std::chrono::steady_clock::now();
@@ -3453,7 +3574,8 @@ TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     EXPECT_EQ(fail_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "the third stream must be rejected once the injected cap of 2 is reached";
@@ -3503,7 +3625,9 @@ TEST_F(GrpcMockTest, RequestStopCommandWorkerDoesNotJoinBlockedActiveThreadCount
             EXPECT_CALL(*writer, Write(_, _))
                 .WillOnce(InvokeWithoutArgs([&write_entered, released] {
                     write_entered.set_value();
-                    released.wait();
+                    // Bounded so a test path that never releases the park
+                    // cannot leave this stream thread unjoinable forever.
+                    released.wait_for(std::chrono::seconds(10));
                     return false;
                 }))
                 .WillRepeatedly(Return(false));
@@ -3514,7 +3638,8 @@ TEST_F(GrpcMockTest, RequestStopCommandWorkerDoesNotJoinBlockedActiveThreadCount
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     ASSERT_EQ(write_entered.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "active thread count stream should have started and entered Write";
@@ -3563,8 +3688,14 @@ TEST_F(GrpcMockTest, ReissuedActiveThreadCountRequestDoesNotJoinBlockedPredecess
         .WillOnce(Invoke([make_atc_request, write_entered_seen](v1::PCmdRequest* request) {
             // Deliver the duplicate only once the first stream is provably
             // parked in Write, so the handler faces a live, uncancellable
-            // predecessor for the same request id.
-            write_entered_seen.wait();
+            // predecessor for the same request id. Bounded: if the
+            // predecessor never parks (a production regression), end the
+            // command stream instead of wedging the worker inside this mock
+            // forever — the test then fails its wait below and still joins.
+            if (write_entered_seen.wait_for(std::chrono::seconds(5)) !=
+                std::future_status::ready) {
+                return false;
+            }
             *request = make_atc_request(301);
             return true;
         }))
@@ -3582,7 +3713,9 @@ TEST_F(GrpcMockTest, ReissuedActiveThreadCountRequestDoesNotJoinBlockedPredecess
             EXPECT_CALL(*writer, Write(_, _))
                 .WillOnce(InvokeWithoutArgs([&write_entered, released] {
                     write_entered.set_value();
-                    released.wait();
+                    // Bounded so a test path that never releases the park
+                    // cannot leave this stream thread unjoinable forever.
+                    released.wait_for(std::chrono::seconds(10));
                     return false;
                 }))
                 .WillRepeatedly(Return(false));
@@ -3604,7 +3737,8 @@ TEST_F(GrpcMockTest, ReissuedActiveThreadCountRequestDoesNotJoinBlockedPredecess
 
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     // Before the fix, the handler joined the parked predecessor under
     // active_streams_mutex_ and the replacement stream could never start.
@@ -3642,7 +3776,8 @@ TEST_F(GrpcMockTest, GrpcSpanShutdownHonorsInjectedAwaitTimeout) {
     fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
     span_client.setMockSpanStub(std::move(fake_stub));
 
-    std::thread worker([&span_client] { span_client.sendSpanWorker(); });
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
 
     auto span_data = make_test_span_data_ptr(*mock_agent_service_, "shutdown-await-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
@@ -3669,7 +3804,8 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerRestartHonorsInjectedDelay) {
     ThrowingReadyGrpcAgent agent(mock_agent_service_->getConfig(), tuning);
     agent.setAgentService(mock_agent_service_.get());
 
-    std::thread ping_worker([&agent]() { EXPECT_NO_THROW(agent.sendPingWorker()); });
+    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
+                             [&agent] { EXPECT_NO_THROW(agent.sendPingWorker()); });
 
     // Every attempt throws in readyChannel(). With the production 1s restart
     // delay 8 supervised restarts would need ~7s; the injected 10ms delay
@@ -3700,7 +3836,8 @@ TEST_F(GrpcMockTest, GrpcCommandReconnectHonorsInjectedBackoff) {
         }));
     command.setMockCommandStub(std::move(mock_command_stub));
 
-    std::thread worker([&command] { command.commandWorker(); });
+    ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                     [&command] { command.commandWorker(); });
 
     // With the production 3s initial reconnect interval, 8 connect attempts
     // would need ~21s; the injected 10ms cadence reaches them almost

@@ -53,6 +53,19 @@ protected:
         mock_agent_service_.reset();
     }
 
+    // Publishes a config change and recreates the fixture span under it.
+    // Production spans pin their config snapshot at creation
+    // (SpanImpl::config_), so a reload never changes the behavior of an
+    // already-created span; recording under the new config requires a span
+    // created after the reload. (The old in-place reloadConfig mock leaked
+    // reloads into pinned snapshots — semantics the real agent never had.)
+    void applyConfigToFreshSpan(std::shared_ptr<const Config> cfg) {
+        mock_agent_service_->reloadConfig(std::move(cfg));
+        test_span_ = std::make_shared<SpanImpl>(mock_agent_service_.get(),
+                                                "test-operation", "test-rpc");
+        test_span_data_ = test_span_->getSpanData();
+    }
+
     std::unique_ptr<MockAgentService> mock_agent_service_;
     std::shared_ptr<SpanImpl> test_span_;
     std::shared_ptr<TestSpanData> test_span_data_;
@@ -782,7 +795,7 @@ TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
 TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = false;
-    mock_agent_service_->reloadConfig(config);
+    applyConfigToFreshSpan(config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
@@ -809,7 +822,7 @@ TEST_F(SpanEventTest, SetSqlQueryFormatsVariantParameters) {
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
     config->sql.max_bind_args_size = 1024;
-    mock_agent_service_->reloadConfig(config);
+    applyConfigToFreshSpan(config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     const std::vector<SqlBindValue> args{
@@ -904,7 +917,7 @@ TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
 TEST_F(SpanEventTest, SetSqlQueryRawVariantsShareCanonicalIdAndKeepOwnParametersWhenEnabled) {
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
-    mock_agent_service_->reloadConfig(config);
+    applyConfigToFreshSpan(config);
 
     auto first = make_test_span_event(*test_span_, "test-op1");
     auto second = make_test_span_event(*test_span_, "test-op2");
@@ -940,7 +953,7 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
     config->sql.max_bind_args_size = 4;
-    mock_agent_service_->reloadConfig(config);
+    applyConfigToFreshSpan(config);
 
     auto at_limit = make_test_span_event(*test_span_, "at-limit");
     at_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1234"});
@@ -963,7 +976,7 @@ TEST_F(SpanEventTest, SetSqlQueryDoesNotTraceBindValueWhenLimitIsZero) {
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
     config->sql.max_bind_args_size = 0;
-    mock_agent_service_->reloadConfig(config);
+    applyConfigToFreshSpan(config);
 
     auto span_event = make_test_span_event(*test_span_, "zero-limit");
     span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"1234"});
@@ -1119,7 +1132,7 @@ TEST_F(SpanEventTest, SetErrorWithCallStackDisabledTest) {
     // Disable callstack trace in config
     auto mutable_config = std::make_shared<Config>();
     mutable_config->enable_callstack_trace = false;
-    mock_agent_service_->reloadConfig(mutable_config);
+    applyConfigToFreshSpan(mutable_config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
@@ -1169,7 +1182,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsEnabledTest) {
     // Enable sql stats
     auto mutable_config = std::make_shared<Config>();
     mutable_config->sql.enable_sql_stats = true;
-    mock_agent_service_->reloadConfig(mutable_config);
+    applyConfigToFreshSpan(mutable_config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     span_event.SetSqlQuery("SELECT * FROM users WHERE id = ?", {1});
@@ -1188,7 +1201,7 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsDisabledTest) {
     // Ensure sql stats is disabled (default)
     auto mutable_config = std::make_shared<Config>();
     mutable_config->sql.enable_sql_stats = false;
-    mock_agent_service_->reloadConfig(mutable_config);
+    applyConfigToFreshSpan(mutable_config);
 
     auto span_event = make_test_span_event(*test_span_, "test-op");
     span_event.SetSqlQuery("SELECT * FROM users", {});

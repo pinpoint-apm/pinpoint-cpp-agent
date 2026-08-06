@@ -62,7 +62,13 @@ public:
     int64_t getStartTime() const override { return start_time_; }
     void reloadConfig(std::shared_ptr<const Config> cfg) override {
         if (cfg) {
-            *config_ = *cfg;
+            // Publish a fresh snapshot instead of writing through the live
+            // one: getConfig()'s contract is that published snapshots are
+            // never mutated, so readers holding the old snapshot keep a
+            // consistent view (same shape as publishConfig below).
+            auto next = std::make_shared<Config>(*cfg);
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            config_ = std::move(next);
         }
     }
 
@@ -138,6 +144,10 @@ public:
     std::optional<PreparedSqlRef> prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const override try {
         static const SqlNormalizer normalizer(64 * 1024);
+        // One locked snapshot for the whole call: reading the config_ member
+        // directly would race publishConfig()'s pointer swap on another
+        // thread (and could even drop the last reference mid-read).
+        const auto config = getConfig();
 
         if (mode == SqlMetaMode::Id) {
             auto prepare = [&]() -> PreparedSqlRef {
@@ -154,7 +164,7 @@ public:
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
             };
-            if (config_->sql.enable_raw_sql_cache) {
+            if (config->sql.enable_raw_sql_cache) {
                 const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
                 return raw_sql_id_cache_.get(raw_sql, epoch, prepare).value;
             }
@@ -173,7 +183,7 @@ public:
                 std::move(normalized.parameters),
                 SqlIdentity{*uid}});
         };
-        if (config_->sql.enable_raw_sql_cache) {
+        if (config->sql.enable_raw_sql_cache) {
             const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
             return raw_sql_uid_cache_.get(raw_sql, epoch, prepare).value;
         }
@@ -202,7 +212,10 @@ public:
     bool isStatusFail(int status) const override {
         // Mirror AgentImpl::isStatusFail: use the configurable HttpStatusErrors
         // (default {"5xx"}) so URL-stat failure tracks the same rule as spans.
-        const auto& tokens = config_->http.server.status_errors;
+        // The locked snapshot (not the raw config_ member) keeps the tokens
+        // reference valid across a concurrent publishConfig() swap.
+        const auto config = getConfig();
+        const auto& tokens = config->http.server.status_errors;
         if (tokens.empty()) {
             return false;
         }

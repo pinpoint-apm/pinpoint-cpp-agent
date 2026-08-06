@@ -464,12 +464,16 @@ TEST(LogSiteThrottleTest, SuppressesRepeatsWithinInterval) {
 }
 
 TEST(LogSiteThrottleTest, FoldsSuppressedOccurrencesIntoNextReport) {
-    LogSiteThrottle throttle(std::chrono::milliseconds(50));
+    // The window must be far wider than any plausible scheduler preemption
+    // between the acquire() calls below: with a tight window (e.g. 50ms), a
+    // loaded CI or sanitizer build can stall long enough for a "suppressed"
+    // call to land in a fresh window and spuriously win it.
+    LogSiteThrottle throttle(std::chrono::milliseconds(500));
     ASSERT_EQ(throttle.acquire(), 1u);
     EXPECT_EQ(throttle.acquire(), 0u);
     EXPECT_EQ(throttle.acquire(), 0u);
     EXPECT_EQ(throttle.acquire(), 0u);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
     // The next report covers the three suppressed occurrences plus itself.
     EXPECT_EQ(throttle.acquire(), 4u);
 }
