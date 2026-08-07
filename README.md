@@ -15,6 +15,7 @@ Pinpoint C++ Agent enables you to monitor C++ applications using Pinpoint. Devel
 - Annotations for rich metadata
 - Low-overhead, production-ready design
 - Dynamic agent control (enable/disable at runtime)
+- C++ and plain-C APIs, and a pre-fork (nginx, Apache, uWSGI) integration path
 
 ## Requirements
 
@@ -26,8 +27,6 @@ Pinpoint C++ Agent enables you to monitor C++ applications using Pinpoint. Devel
 | OS | Linux, macOS, Windows |
 
 ## Quick Start
-
-### 1. Install
 
 **CMake (FetchContent)**
 
@@ -43,9 +42,7 @@ FetchContent_MakeAvailable(pinpoint_cpp)
 target_link_libraries(your_target PRIVATE pinpoint_cpp)
 ```
 
-**Bazel**
-
-Add to your `MODULE.bazel` file:
+**Bazel** — add to your `MODULE.bazel`:
 
 ```python
 bazel_dep(name = "pinpoint-cpp", version = "2.0.0")
@@ -58,104 +55,28 @@ git_override(
 )
 ```
 
-Then in your `BUILD` file:
+then depend on `@pinpoint-cpp//:pinpoint-cpp` from your target.
 
-```python
-cc_binary(
-    name = "your_app",
-    srcs = ["main.cpp"],
-    deps = ["@pinpoint-cpp//:pinpoint-cpp"],
-)
-```
-
-### 2. Configure
-
-Create a `pinpoint-config.yaml`:
-
-```yaml
-ApplicationName: "MyAppName"
-Collector:
-  Host: "my.collector.host"
-Sampling:
-  Type: "COUNTER"
-  CounterRate: 1
-Log:
-  Level: "info"
-```
-
-Or use environment variables:
-
-```bash
-export PINPOINT_CPP_APPLICATION_NAME="MyAppName"
-export PINPOINT_CPP_COLLECTOR_HOST="my.collector.host"
-```
-
-### 3. Instrument
-
-```cpp
-#include "pinpoint/tracer.h"
-
-int main() {
-    // Configure and start the agent in the process that records spans.
-    // StartAgent() returns false on a configuration or setup failure.
-    pinpoint::AgentOptions options;
-    options.config_file_path = "pinpoint-config.yaml";
-    if (!pinpoint::StartAgent(options)) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    auto agent = pinpoint::GlobalAgent();
-
-    // Create a span for an incoming request
-    auto span = agent->NewSpan("C++ Server", "/api/endpoint");
-    span->SetRemoteAddress("remote_addr");
-    span->SetEndPoint("localhost:8080");
-
-    // Record a sub-operation
-    auto se = span->NewSpanEvent("processData");
-    // ... your business logic ...
-    se->EndEvent();
-
-    // End the span (sends trace to collector)
-    span->EndSpan();
-
-    agent->Shutdown();
-    return 0;
-}
-```
+Then configure the agent, start it, and create your first span — the
+[Quick Start Guide](doc/quick_start.md) walks through all three steps with
+complete, runnable code.
 
 ## Building from Source
 
 ```bash
 # CMake
-mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
+cmake --preset default
+cmake --build --preset default
+ctest --preset default
 
 # Bazel
 bazel build //...
-```
-
-### Running Tests
-
-```bash
-# CMake
-cd build && ctest --verbose
-
-# Bazel
 bazel test //test/...
 ```
 
-To run the CMake tests with Clang source-based instrumentation and generate
-`llvm-cov` text and HTML reports:
-
-```bash
-cmake --preset coverage
-cmake --build --preset coverage
-```
-
-The HTML report is written to `build/coverage/coverage/html/index.html`.
-
-See the [Build Guide](doc/build.md) for detailed instructions including vcpkg integration, build options, and integration tests.
+See the [Build Guide](doc/build.md) for submodule setup, package managers (vcpkg,
+Conan, system packages), build options, coverage, sanitizers, and the integration
+tests.
 
 ## Documentation
 
@@ -167,28 +88,16 @@ See the [Build Guide](doc/build.md) for detailed instructions including vcpkg in
 | [C API Instrumentation Guide](doc/instrument_c.md) | The same, for plain C via `tracer_c.h` (`pt_*` functions) |
 | [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
 | [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
-| [Troubleshooting](doc/trouble_shooting.md) | Debugging, logging, common issues and solutions |
+| [Troubleshooting](doc/trouble_shooting.md) | Startup contract, logging, common issues and solutions |
 
 ## Examples
 
 The `example/` directory contains complete working examples:
 
-- **[tutorial.cpp](example/tutorial.cpp)** - Basic agent usage and span creation
-- **[http_server.cpp](example/http_server.cpp)** - HTTP server instrumentation with context propagation
-
-## Project Structure
-
-```
-pinpoint-cpp-agent/
-├── include/pinpoint/    # Public headers (tracer.h)
-├── src/                 # Library source files
-├── example/             # Example applications
-├── test/                # Unit and integration tests
-├── doc/                 # Documentation
-├── 3rd_party/           # Vendored dependencies (httplib, MurmurHash3)
-│   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
-└── scripts/             # Valgrind helper scripts
-```
+- **[tutorial.cpp](example/tutorial.cpp)** — basic agent usage and span creation
+- **[http_server.cpp](example/http_server.cpp)** — HTTP server instrumentation with context propagation
+- **[http_server_c.c](example/http_server_c.c)** / **[tutorial_c.c](example/tutorial_c.c)** — the same in plain C
+- **[nginx/](example/nginx/)** — nginx dynamic-module skeleton
 
 ## Dependencies
 

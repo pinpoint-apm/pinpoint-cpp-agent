@@ -8,27 +8,6 @@ The C++ tracer API mirrors the design of the [Pinpoint Go agent](https://github.
 
 ---
 
-## Table of Contents
-
-- [1. Core Concepts](#1-core-concepts)
-- [2. Bootstrapping the Agent](#2-bootstrapping-the-agent)
-- [3. Creating Spans for Incoming Work](#3-creating-spans-for-incoming-work)
-- [4. Recording Span Events](#4-recording-span-events)
-- [5. Annotations](#5-annotations)
-- [6. Usage Cautions: Span, SpanEvent, and Annotation Contracts](#6-usage-cautions-span-spanevent-and-annotation-contracts)
-- [7. Distributed Tracing and Context Propagation](#7-distributed-tracing-and-context-propagation)
-- [8. HTTP Request Tracing](#8-http-request-tracing)
-- [9. Database and Backend Instrumentation](#9-database-and-backend-instrumentation)
-- [10. Error Reporting and Stack Traces](#10-error-reporting-and-stack-traces)
-- [11. Asynchronous and Background Work](#11-asynchronous-and-background-work)
-- [12. Sampling Policy](#12-sampling-policy)
-- [13. HTTP Filtering and Header Recording](#13-http-filtering-and-header-recording)
-- [14. Best Practices](#14-best-practices)
-- [15. Troubleshooting](#15-troubleshooting)
-- [16. Checklist for New Instrumentation](#16-checklist-for-new-instrumentation)
-
----
-
 ## 1. Core Concepts
 
 Pinpoint models each transaction as a collection of **spans**.
@@ -58,7 +37,8 @@ Trace context (trace ID, span ID, sampling decision, etc.) is propagated across 
 | `SpanEvent` | Fine-grained operations inside a span. |
 | `SqlBindValue` | Variant scalar accepted as a SQL bind argument. |
 | `TraceContextReader` / `TraceContextWriter` | Context propagation adapters for distributed tracing headers. |
-| `HeaderReader` | Structured access to HTTP headers for recording request/response metadata. |
+| `HeaderReader` | Structured access to HTTP headers for recording request/response metadata. Derives from `TraceContextReader`, so one implementation covers both roles. |
+| `HeaderReaderWriter` | `HeaderReader` plus `TraceContextWriter`, for carriers you both read and write. |
 | `CallStackReader` | Optional stack trace provider for enriched error reporting. |
 
 Free helpers (`StartAgent`, `GlobalAgent`) and the `AgentOptions` struct make configuration and agent bootstrapping convenient.
@@ -71,21 +51,11 @@ Before you can create spans, you must start an `Agent` instance with `StartAgent
 
 `StartAgent()` creates, configures and starts the agent in the **current process** and installs it as the global agent. Call it in the process that records spans — for pre-fork servers (nginx, Apache prefork, uWSGI) that means each worker calls it after `fork()`, and the master makes no agent API calls at all; see the [Pre-fork Integration Guide](prefork.md).
 
-**`StartAgent()` is asynchronous.** It returns as soon as initialization is *launched*. A background initialization thread then opens the gRPC channels, registers the agent with the collector — retrying indefinitely until the collector accepts it — and starts the worker threads. Only after that registration succeeds does `Enable()` flip to `true`. `StartAgent()` never waits for any of this, so right after it returns `Enable()` is normally still `false`; that is not an error.
-
-**`StartAgent()` returns a `bool`.** `true` means the agent was launched and installed as the global agent — obtain the handle with `GlobalAgent()`. `false` reports a *synchronous* configuration or setup failure (it never throws); nothing is installed as the global agent then, and a later `StartAgent()` call retries from scratch. When it returns `false`, print a message pointing at the agent log, where the failure cause is recorded.
-
-> **`Enable: false` also returns `false`.** A deliberate disable
-> ([config.md](config.md#agent-configuration)) takes the same return path as a
-> failure, and it is the *only* `false` that writes nothing to the agent log. If
-> your deployment disables the agent by configuration, either skip the
-> `StartAgent()` call there or word the message so it does not read as an error
-> — otherwise a correctly configured process logs "failed to start" and the
-> agent log has nothing to explain it.
-
-A `true` return only means initialization was launched — **whether the agent actually came online can only be verified through the agent log**, not through the return value or an immediate `Enable()` call. On success the log shows `AgentInfo sent`; failures appear as error entries such as `agent start failed: ...` or `failed to init grpc workers: ...` (set `Log.Level: "debug"` for more detail).
-
-**A failed agent start never affects the application.** Every API call on a noop or not-yet-enabled agent is safe: spans are noop objects and all operations on them do nothing. The application runs exactly as it would without the agent — the only consequence is that no traces are collected.
+> **The startup contract — asynchronous registration, what a `false` return means,
+> why `Enable()` is not a startup check, and how `Enable: false` takes the same
+> return path — is documented once in
+> [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup).** Read it
+> before wiring `StartAgent()` into your application's error handling.
 
 ### Starting an Agent
 
@@ -115,7 +85,7 @@ int main() {
 back online and only produces noop spans from then on. To stop and later resume
 tracing in a long-running process, build a new agent with `StartAgent()` for each
 cycle — see
-[Stopping and Resuming the Agent](quick_start.md#stopping-and-resuming-the-agent).
+[Stopping and Resuming the Agent](trouble_shooting.md#stopping-and-resuming-the-agent).
 
 ### Sending AgentInfo Metadata
 
@@ -149,9 +119,11 @@ void someFunction() {
 
 ### Checking Agent Status
 
-`Enable()` returns `true` only after the background initialization has registered the agent with the collector. Since `StartAgent()` does not wait for that, checking `Enable()` immediately after `StartAgent()` proves nothing — it is usually still `false` at that moment even when the agent goes on to start successfully. Do **not** use it as a startup success check, and do not exit the application when it is `false`; verify startup through the agent log instead (see above).
-
-Use `Enable()` for one purpose only: as a **fast-fail guard before creating a span**, to skip instrumentation work (span creation, header capture, context extraction) while tracing is off. The request itself is served normally either way:
+`Enable()` is **not** a startup success check — see
+[Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup). Use it for
+one purpose only: as a **fast-fail guard before creating a span**, to skip
+instrumentation work (span creation, header capture, context extraction) while
+tracing is off. The request itself is served normally either way:
 
 ```cpp
 void handleRequest(const Request& req) {
@@ -182,13 +154,6 @@ if (!pinpoint::StartAgent()) {
 auto agent = pinpoint::GlobalAgent();
 ```
 
-### Startup Checklist
-
-1. Collect configuration in `AgentOptions` (file path, YAML string) and/or environment variables.
-2. Call `StartAgent(options)` in the process that records spans, before creating spans. When it returns `false`, print a message pointing at the agent log.
-3. Obtain the agent handle with `GlobalAgent()` and hold it for the lifetime of the process.
-4. Call `Shutdown()` on application exit (see [§14 — Shutdown Cleanly](#14-best-practices)).
-
 ---
 
 ## 3. Creating Spans for Incoming Work
@@ -207,20 +172,18 @@ There are three overloads:
 
 ```cpp
 void handleRequest(const httplib::Request& req, httplib::Response& res) {
-    // 1. Extract upstream context (if any)
-    HttpTraceContextReader reader(req.headers);
     auto agent = pinpoint::GlobalAgent();
 
+    // 1. A HeaderReader is also a TraceContextReader — one object does both
+    HttpHeaderReader reader(req.headers);
+
     // 2. Create span (continues trace if headers exist, otherwise starts new)
-    auto span = agent->NewSpan("HTTP Server", req.path, reader);
+    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
 
     // 3. Record request details
     span->SetRemoteAddress(req.remote_addr);
     span->SetEndPoint(req.get_header_value("Host"));
-
-    // Record request headers (optional)
-    HttpHeaderReader header_reader(req.headers);
-    span->RecordHeader(pinpoint::HTTP_REQUEST, header_reader);
+    span->RecordHeader(pinpoint::HTTP_REQUEST, reader);
 
     // ... process request ...
 
@@ -263,12 +226,13 @@ if (!sampled) {
 ### Key Rules
 
 - Always call `EndSpan()` on **all** code paths (success, error, exception).
-- Prefer RAII or `try`/`catch` to guarantee `EndSpan()` is executed.
+- Prefer RAII or `try`/`catch` to guarantee `EndSpan()` is executed — see the guard in [§6.2](#62-end-exactly-once-and-record-before-ending).
 - Use descriptive `operation` and `rpc_point` names (e.g., `"C++ Web Demo"`, `"/users/:id"`).
 
 ### Thread-Local Storage for Span Context
 
-Use TLS when span access is needed by nested helpers:
+Use TLS when span access is needed by nested helpers, so the span does not have to
+be threaded through every function signature:
 
 ```cpp
 thread_local pinpoint::SpanPtr current_span;
@@ -276,6 +240,9 @@ thread_local pinpoint::SpanPtr current_span;
 void set_span_context(pinpoint::SpanPtr span) { current_span = span; }
 pinpoint::SpanPtr get_span_context() { return current_span; }
 ```
+
+A span is single-threaded ([§6.1](#61-a-span-is-single-threaded)), so a
+thread-local is a natural fit — but clear it when the request ends.
 
 ---
 
@@ -386,9 +353,11 @@ void queryDatabase(pinpoint::SpanPtr span) {
 
 ### Recommendations
 
-- Create **one span event per major logical step**.
+- Create **one span event per major logical step**; avoid an event per trivial
+  function — it costs overhead and clutters the UI.
 - Always pair `NewSpanEvent()` with `EndEvent()` on the returned event — prefer `helper::ScopedSpanEvent` for automatic cleanup.
-- Use appropriate `SERVICE_TYPE_*` constants for downstream services.
+- Use appropriate `SERVICE_TYPE_*` constants for downstream services: correct
+  values improve UI rendering and filtering.
 - Call `EndEvent()` in the same scope or via RAII wrappers to avoid dangling events. Ending an already-ended event is a warning no-op.
 
 ---
@@ -424,33 +393,21 @@ pinpoint::ANNOTATION_HTTP_RESPONSE_HEADER   // HTTP response headers
 
 Richer collector-side formats (SQL ids, proxy-header metadata, ...) are recorded internally by the agent itself and are not part of the public API.
 
-### Adding Annotations to Spans
+### Adding Annotations
 
 ```cpp
-// String annotations
+// On a span
 span->SetAnnotation(pinpoint::ANNOTATION_API, "getUserById");
-span->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, "http://api.example.com/users/123");
-
-// Integer annotation
 span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
+span->SetAnnotation(12345, int64_t{1234567890});   // long
+span->SetAnnotation(100, "key", "value");          // string pair
 
-// Long annotation
-span->SetAnnotation(12345, int64_t{1234567890});
-
-// String-pair annotation
-span->SetAnnotation(100, "key", "value");
-```
-
-### Adding Annotations to Span Events
-
-```cpp
+// On a span event
 auto se = span->NewSpanEvent("external_call");
 se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
 se->SetEndPoint("localhost:9000");
-
 se->SetAnnotation(pinpoint::ANNOTATION_HTTP_URL, url);
 se->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, status_code);
-
 se->EndEvent();
 ```
 
@@ -468,7 +425,8 @@ span->SetAnnotation(CUSTOM_SESSION_ID, "session-456");
 span->SetAnnotation(CUSTOM_CACHE_HIT, 1);  // 1 = hit, 0 = miss
 ```
 
-**Guideline**: Carefully sanitize annotations so that sensitive data (passwords, secrets, PII) is never recorded.
+**Guideline**: Carefully sanitize annotations so that sensitive data (passwords, secrets, PII) is never recorded. The same applies to SQL bind values — pass
+`"[REDACTED]"` rather than the real value when it may be sensitive.
 
 ---
 
@@ -490,7 +448,30 @@ A `Span` instance — including every `SpanEvent` it hands out — must be used 
 
 - A duplicate `EndSpan()`/`EndEvent()` logs `span (event) is already finished` and does nothing.
 - After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `SetAnnotation()`. The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
-- A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span. This is why RAII guards (`helper::ScopedSpanEvent`, or a `SpanGuard` as shown in [Best Practices](#14-best-practices)) are the recommended pattern.
+- A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span.
+
+This is why RAII guards are the recommended pattern:
+`helper::ScopedSpanEvent` for events (see [§4](#4-recording-span-events)), and for
+spans a guard of your own:
+
+```cpp
+class SpanGuard {
+public:
+    explicit SpanGuard(pinpoint::SpanPtr span) : span_(std::move(span)) {}
+    ~SpanGuard() { if (span_) span_->EndSpan(); }
+private:
+    pinpoint::SpanPtr span_;
+};
+
+void handleRequest() {
+    auto agent = pinpoint::GlobalAgent();
+    auto span = agent->NewSpan("Service", "/endpoint");
+    SpanGuard guard(span);
+
+    // Even if an exception is thrown, the span is ended
+    processRequest();
+}
+```
 
 ### 6.3 End Span Events in Nesting (LIFO) Order
 
@@ -588,15 +569,15 @@ pinpoint::HEADER_HOST              // "Pinpoint-Host"
 
 ### Server Side: Extracting Context
 
-When receiving a request, extract the trace context to continue the trace:
+When receiving a request, pass a `TraceContextReader` to `NewSpan()` to continue the trace:
 
 ```cpp
 void handleRequest(const httplib::Request& req) {
-    HttpTraceContextReader reader(req.headers);
+    HttpHeaderReader reader(req.headers);
     auto agent = pinpoint::GlobalAgent();
 
     // NewSpan automatically extracts context if present
-    auto span = agent->NewSpan("Server", req.path, reader);
+    auto span = agent->NewSpan("Server", req.path, req.method, reader);
     // ...
     span->EndSpan();
 }
@@ -614,7 +595,7 @@ void sendRequest(pinpoint::SpanPtr span) {
 
     auto se = span->NewSpanEvent("outgoing-call",
                                  pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
-    HttpTraceContextWriter writer(headers);
+    HttpHeaderReaderWriter writer(headers);
     se->InjectContext(writer);  // adds Pinpoint-* headers
 
     auto res = cli.Get("/target", headers);
@@ -624,98 +605,64 @@ void sendRequest(pinpoint::SpanPtr span) {
 
 ### Implementing Custom Adapters
 
-To integrate with different frameworks or protocols, implement `TraceContextReader` and `TraceContextWriter`:
+The carriers above are your own adapters over your HTTP library's header map.
+Working implementations for `cpp-httplib` ship with the repository — read and copy
+[`example/http_trace_context.h`](../example/http_trace_context.h):
 
-```cpp
-class HttpTraceContextReader : public pinpoint::TraceContextReader {
-public:
-    explicit HttpTraceContextReader(const httplib::Headers& headers)
-        : headers_(headers) {}
+| Class | Implements | Used for |
+|---|---|---|
+| `HttpHeaderReader` | `pinpoint::HeaderReader` (⊃ `TraceContextReader`) | `NewSpan(...)` context extraction and `RecordHeader()` |
+| `HttpHeaderReaderWriter` | `pinpoint::HeaderReaderWriter` | the above plus `InjectContext()` on outbound calls |
 
-    // Returns a view into the header map. The view must stay valid until
-    // the next call on this reader (or until the reader is destroyed), so
-    // point into storage you own — do not return a view of a temporary.
-    std::optional<std::string_view> Get(std::string_view key) const override {
-        auto it = headers_.find(std::string(key));
-        if (it != headers_.end()) {
-            return std::string_view(it->second);
-        }
-        return std::nullopt;
-    }
+To support a different framework or protocol, implement the same three methods
+over your own header type:
 
-private:
-    const httplib::Headers& headers_;
-};
+- `std::optional<std::string_view> Get(std::string_view key) const` — the returned
+  view must stay valid until the next call on this reader, so point into storage
+  you own, never into a temporary.
+- `void ForEach(std::function<bool(std::string_view, std::string_view)>) const` —
+  iterate all headers; stop when the callback returns `false`.
+- `void Set(std::string_view key, std::string_view value)` — writers only.
 
-class HttpTraceContextWriter : public pinpoint::TraceContextWriter {
-public:
-    explicit HttpTraceContextWriter(httplib::Headers& headers)
-        : headers_(headers) {}
+The same pattern applies to message queues, custom RPC frameworks, and binary
+protocols by mapping trace keys to your own metadata format.
 
-    void Set(std::string_view key, std::string_view value) override {
-        headers_.emplace(std::string(key), std::string(value));
-    }
-
-private:
-    httplib::Headers& headers_;
-};
-```
-
-You can apply the same pattern for message queues, custom RPC frameworks, or binary protocols by mapping trace keys to your own metadata format.
+> **Header lookup must be case-insensitive.** The agent asks for the canonical
+> spellings (`Pinpoint-TraceID`, ...), but proxies and HTTP/2 clients re-case
+> header names. A reader backed by a case-sensitive `std::map` silently finds
+> nothing and every request looks like a new transaction.
 
 ---
 
 ## 8. HTTP Request Tracing
 
-### Complete HTTP Server Example
+### Tracing a Server Handler
+
+The complete, compiling version of this pattern is
+[`example/http_server.cpp`](../example/http_server.cpp); wrapping every handler
+once keeps the tracing out of the business logic:
 
 ```cpp
 #include "pinpoint/tracer.h"
-#include "3rd_party/httplib.h"
+#include "http_trace_context.h"
 
-// Thread-local storage for current span
 thread_local pinpoint::SpanPtr current_span;
 
-void set_span_context(pinpoint::SpanPtr span) { current_span = span; }
-pinpoint::SpanPtr get_span_context() { return current_span; }
-
-// Trace incoming request
-pinpoint::SpanPtr trace_request(const httplib::Request& req) {
-    auto agent = pinpoint::GlobalAgent();
-    HttpTraceContextReader trace_reader(req.headers);
-    auto span = agent->NewSpan("C++ Web Server", req.path, req.method, trace_reader);
-
-    span->SetRemoteAddress(req.remote_addr);
-
-    auto end_point = req.get_header_value("Host");
-    if (end_point.empty()) {
-        end_point = req.local_addr + ":" + std::to_string(req.local_port);
-    }
-    span->SetEndPoint(end_point);
-
-    HttpHeaderReader header_reader(req.headers);
-    span->RecordHeader(pinpoint::HTTP_REQUEST, header_reader);
-
-    return span;
-}
-
-// Trace outgoing response
-void trace_response(const httplib::Request& req,
-                    httplib::Response& res,
-                    pinpoint::SpanPtr span) {
-    HttpHeaderReader header_reader(res.headers);
-    span->RecordHeader(pinpoint::HTTP_RESPONSE, header_reader);
-
-    span->SetStatusCode(res.status);
-    span->SetUrlStat(req.matched_route, req.method, res.status);
-    span->EndSpan();
-}
-
-// Wrapper to add tracing to any handler
 httplib::Server::Handler wrap_handler(httplib::Server::Handler handler) {
     return [handler](const httplib::Request& req, httplib::Response& res) {
-        auto span = trace_request(req);
-        set_span_context(span);
+        auto agent = pinpoint::GlobalAgent();
+        HttpHeaderReader req_reader(req.headers);
+        auto span = agent->NewSpan("C++ Web Server", req.path, req.method, req_reader);
+
+        auto end_point = req.get_header_value("Host");
+        if (end_point.empty()) {
+            end_point = req.local_addr + ":" + std::to_string(req.local_port);
+        }
+        span->SetRemoteAddress(req.remote_addr);
+        span->SetEndPoint(end_point);
+        span->RecordHeader(pinpoint::HTTP_REQUEST, req_reader);
+
+        current_span = span;   // handlers reach the span without a parameter
 
         try {
             handler(req, res);
@@ -724,123 +671,33 @@ httplib::Server::Handler wrap_handler(httplib::Server::Handler handler) {
             res.status = 500;
         }
 
-        trace_response(req, res, span);
-        set_span_context(nullptr);
+        HttpHeaderReader res_reader(res.headers);
+        span->RecordHeader(pinpoint::HTTP_RESPONSE, res_reader);
+        span->SetStatusCode(res.status);
+        span->SetUrlStat(req.matched_route, req.method, res.status);
+        span->EndSpan();
+        current_span = nullptr;
     };
 }
-
-// Example handler
-void handle_users(const httplib::Request& req, httplib::Response& res) {
-    auto span = get_span_context();
-    auto se = span->NewSpanEvent("handle_users");
-
-    res.set_content("{\"users\": []}", "application/json");
-    res.status = 200;
-
-    se->EndEvent();
-}
-
-int main() {
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-server", 0);
-    if (!pinpoint::StartAgent()) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    auto agent = pinpoint::GlobalAgent();
-
-    httplib::Server server;
-    server.Get("/users", wrap_handler(handle_users));
-
-    server.listen("0.0.0.0", 8080);
-    agent->Shutdown();
-}
-```
-
-### Implementing HeaderReader
-
-Implement `HeaderReader` to record HTTP request/response headers:
-
-```cpp
-class HttpHeaderReader : public pinpoint::HeaderReader {
-public:
-    HttpHeaderReader(const httplib::Headers& headers) : headers_(headers) {}
-
-    std::optional<std::string_view> Get(std::string_view key) const override {
-        auto it = headers_.find(std::string(key));
-        if (it != headers_.end()) {
-            return std::string_view(it->second);
-        }
-        return std::nullopt;
-    }
-
-    void ForEach(std::function<bool(std::string_view key,
-                                    std::string_view val)> callback) const override {
-        for (const auto& [key, val] : headers_) {
-            if (!callback(key, val)) {
-                break;
-            }
-        }
-    }
-
-private:
-    const httplib::Headers& headers_;
-};
-
-// Usage
-HttpHeaderReader header_reader(request.headers);
-span->RecordHeader(pinpoint::HTTP_REQUEST, header_reader);
-span->RecordHeader(pinpoint::HTTP_RESPONSE, response_header_reader);
 ```
 
 ### HTTP Tracing Helpers
 
-The `helper` namespace provides convenience functions that bundle common HTTP tracing steps into single calls:
+The `helper` namespace bundles the recording steps above into single calls:
 
 ```cpp
-#include "pinpoint/tracer.h"
+// Server request: remote address, endpoint, and request headers in one call
+pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr,
+                                        req.get_header_value("Host"), req_reader);
 
-void handleRequest(const httplib::Request& req, httplib::Response& res) {
-    HttpTraceContextReader trace_reader(req.headers);
-    auto agent = pinpoint::GlobalAgent();
-    auto span = agent->NewSpan("HTTP Server", req.path, req.method, trace_reader);
+// Server response: status code, URL stat, and response headers
+pinpoint::helper::TraceHttpServerResponse(span, req.matched_route, req.method,
+                                          res.status, res_reader);
 
-    // Server request: sets remote address, endpoint, and records request headers in one call
-    HttpHeaderReader request_headers(req.headers);
-    pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, req.get_header_value("Host"), request_headers);
-
-    // With cookie recording
-    // HttpHeaderReader cookie_reader(req.cookies);
-    // pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, endpoint, request_headers, cookie_reader);
-
-    // ... business logic ...
-
-    // Server response: sets status code, records URL stat, and records response headers
-    HttpHeaderReader response_headers(res.headers);
-    pinpoint::helper::TraceHttpServerResponse(span, req.matched_route, req.method, res.status, response_headers);
-
-    span->EndSpan();
-}
+// Client side, on the span event representing the outbound call
+pinpoint::helper::TraceHttpClientRequest(se, "api.example.com", "/users", req_reader);
+pinpoint::helper::TraceHttpClientResponse(se, res.status, res_reader);
 ```
-
-For outgoing HTTP client calls:
-
-```cpp
-void callExternalService(pinpoint::SpanPtr span) {
-    auto se = span->NewSpanEvent("HTTP_CLIENT");
-    se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
-
-    HttpHeaderReader request_headers(headers);
-    pinpoint::helper::TraceHttpClientRequest(se, "api.example.com", "/users", request_headers);
-
-    // ... make HTTP request ...
-
-    HttpHeaderReader response_headers(res.headers);
-    pinpoint::helper::TraceHttpClientResponse(se, res.status, response_headers);
-
-    se->EndEvent();
-}
-```
-
-**Available helper functions:**
 
 | Function | Description |
 |---|---|
@@ -853,14 +710,11 @@ void callExternalService(pinpoint::SpanPtr span) {
 
 ### URL Statistics
 
-Collect URL statistics for monitoring:
-
 ```cpp
-// Set URL pattern, method, and status code
 span->SetUrlStat("/users/:id", "GET", 200);
 ```
 
-This collects statistics normalized by URL pattern, HTTP method, and response status code.
+This collects statistics normalized by URL pattern, HTTP method, and response status code. Enable it with `Http.CollectUrlStat`.
 
 ---
 
@@ -942,7 +796,7 @@ pinpoint::SERVICE_TYPE_CASSANDRA_QUERY  // Cassandra
 - Wrap DB access in helper methods so every query is traced consistently.
 - Use the correct `SERVICE_TYPE_*` constant for the backend.
 - Sanitize SQL text and parameters before recording — never log passwords or secrets.
-- See `example/tutorial.cpp` for a full working example.
+- See [`example/tutorial.cpp`](../example/tutorial.cpp) for a full working example.
 
 ---
 
@@ -996,6 +850,8 @@ try {
 }
 ```
 
+Frames are recorded only when `EnableCallstackTrace: true`.
+
 ### Exception Handling Pattern
 
 ```cpp
@@ -1045,7 +901,8 @@ Tracing asynchronous or background tasks requires careful span lifecycle managem
 
 ### Using Existing Spans with Threads
 
-Since `SpanPtr` is typically a shared pointer, you can pass it to worker threads:
+Since `SpanPtr` is a shared pointer, you can hand it off to a worker thread — as
+long as the original thread never touches it again ([§6.1](#61-a-span-is-single-threaded)):
 
 ```cpp
 void outgoingRequest(pinpoint::SpanPtr span) {
@@ -1071,37 +928,15 @@ void asyncWithThread(const httplib::Request& req, httplib::Response& res) {
 
 ### Async Spans (Fire-and-Forget Work)
 
-Use `Span::NewAsyncSpan()` to trace background tasks that continue after the original request completes:
-
-```cpp
-void backgroundTask(pinpoint::SpanPtr asyncSpan) {
-    auto se = asyncSpan->NewSpanEvent("background_job");
-    // ... do work ...
-    se->EndEvent();
-    asyncSpan->EndSpan();
-}
-
-void handleRequest(const httplib::Request& req) {
-    auto agent = pinpoint::GlobalAgent();
-    auto span = agent->NewSpan("RequestHandler", req.path);
-
-    // Create an async span linked to the current span
-    auto asyncSpan = span->NewAsyncSpan("BackgroundTask");
-
-    std::thread t(backgroundTask, asyncSpan);
-    t.detach();
-
-    span->EndSpan();  // main request finishes immediately
-}
-```
-
-### Safe Async Pattern with Error Handling
+Use `Span::NewAsyncSpan()` to trace background tasks that run **concurrently
+with** or continue after the original request:
 
 ```cpp
 void safeAsyncOperation() {
     auto agent = pinpoint::GlobalAgent();
     auto span = agent->NewSpan("Service", "/endpoint");
 
+    // Create the async child on the parent's own thread, before the parent ends
     auto async_span = span->NewAsyncSpan("async_work");
 
     std::thread([async_span]() {
@@ -1117,7 +952,7 @@ void safeAsyncOperation() {
         }
     }).detach();
 
-    span->EndSpan();
+    span->EndSpan();  // main request finishes immediately
 }
 ```
 
@@ -1159,9 +994,18 @@ When `NewSpan()` is called, the agent follows these steps in order:
    - If `Pinpoint-TraceID` header exists → **continue transaction** — apply continue-transaction sampling logic.
    - If `Pinpoint-TraceID` header does not exist → **new transaction** — apply the configured sampling rate.
 
+| Condition | Transaction Type | Result |
+|---|---|---|
+| Agent disabled | — | NoopSpan (no tracing) |
+| URL excluded | — | NoopSpan (no tracing) |
+| Method excluded | — | NoopSpan (no tracing) |
+| Parent says `s0` | Continue | UnsampledSpan (follows parent) |
+| No trace ID in headers | New | Apply `isNewSampled()` logic |
+| Trace ID exists in headers | Continue | Apply `isContinueSampled()` logic |
+
 ### Sampler Types
 
-The agent supports three sampling strategies. The choice depends on your traffic volume and monitoring objectives.
+The agent supports three sampling strategies. The choice depends on your traffic volume and monitoring objectives. All of them are configured under `Sampling.*` — see the [Configuration Guide](config.md#sampling-configuration) for the keys, ranges and ready-made profiles.
 
 #### 1. CounterSampler (Constant Rate)
 
@@ -1171,12 +1015,6 @@ Samples 1 out of every N transactions using an atomic counter. Simple and predic
 - `CounterRate: 10` — sample **1 in 10** transactions (10%).
 - `CounterRate: 0` — sample **no** transactions (effectively disables tracing).
 
-```yaml
-Sampling:
-  Type: "COUNTER"
-  CounterRate: 10  # Sample 1 out of every 10 new transactions
-```
-
 #### 2. PercentSampler (Deterministic)
 
 Samples a configured percentage of transactions using an atomic counter. The sampling decision is deterministic for a given call sequence while maintaining the configured percentage over time.
@@ -1184,12 +1022,6 @@ Samples a configured percentage of transactions using an atomic counter. The sam
 - `PercentRate: 100` — sample all transactions.
 - `PercentRate: 10.0` — deterministically sample approximately 10% of transactions.
 - Range: clamped to `[0.01, 100]`.
-
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 10.0  # Sample 10% of transactions
-```
 
 #### 3. ThroughputLimitTraceSampler (Adaptive / Throughput-based)
 
@@ -1200,26 +1032,7 @@ The sampler applies two stages of filtering for **new transactions**: first the 
 - `NewThroughput` — maximum new transactions sampled per second. `0` = unlimited.
 - `ContinueThroughput` — maximum continue transactions sampled per second. `0` = unlimited.
 
-The throughput limiter is automatically enabled when either `NewThroughput` or `ContinueThroughput` is set to a value greater than 0.
-
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 100.0       # Base: accept all
-  NewThroughput: 100       # Then cap new transactions at 100/sec
-  ContinueThroughput: 200  # Cap continue transactions at 200/sec
-```
-
-### Sampling Decision Matrix
-
-| Condition | Transaction Type | Result |
-|---|---|---|
-| Agent disabled | — | NoopSpan (no tracing) |
-| URL excluded | — | NoopSpan (no tracing) |
-| Method excluded | — | NoopSpan (no tracing) |
-| Parent says `s0` | Continue | UnsampledSpan (follows parent) |
-| No trace ID in headers | New | Apply `isNewSampled()` logic |
-| Trace ID exists in headers | Continue | Apply `isContinueSampled()` logic |
+The throughput limiter is automatically enabled when either value is greater than 0.
 
 ### Distributed Tracing Behavior
 
@@ -1229,42 +1042,6 @@ In a distributed system, sampling decisions flow from the root service to all do
 - **Downstream services** receiving a request with a trace ID will **continue** the transaction. By default, continue transactions are always sampled (BasicTraceSampler) or subject to the continue throughput limiter (ThroughputLimitTraceSampler).
 - If the parent explicitly marks the trace as unsampled (`Pinpoint-Sampled: s0`), all downstream services will skip sampling regardless of their own configuration.
 
-### Configuration Examples
-
-**Development** — sample all transactions for full visibility:
-
-```yaml
-Sampling:
-  Type: "COUNTER"
-  CounterRate: 1
-```
-
-**Production (low traffic)** — percentage-based sampling:
-
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 20.0  # 20% sampling
-```
-
-**Production (high traffic)** — throughput-limited sampling to control data volume:
-
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 100.0
-  NewThroughput: 100
-  ContinueThroughput: 200
-```
-
-**Troubleshooting** — temporarily sample everything to diagnose issues:
-
-```yaml
-Sampling:
-  Type: "COUNTER"
-  CounterRate: 1  # Sample all, revert after debugging
-```
-
 ### Sampling Best Practices
 
 - **Balance is key**: too low a rate risks missing critical issues; too high a rate incurs performance overhead and storage costs.
@@ -1272,8 +1049,6 @@ Sampling:
 - **Use throughput limiting in production**: it protects the collector and storage from traffic spikes.
 - **Check `span->IsSampled()` before expensive work**: skip heavy data collection (e.g., large payloads, detailed annotations) for unsampled traces to minimize overhead.
 - **Don't set parent sampling to `s0` unless intentional**: this suppresses tracing for the entire downstream call chain.
-
-For the full configuration reference, see [Configuration Guide — Sampling](config.md).
 
 ---
 
@@ -1299,7 +1074,7 @@ Http:
 
 ### HTTP Method Filtering
 
-Exclude specific HTTP methods from being traced:
+Exclude specific HTTP methods from being traced. This applies only when the span is created with the `method` overload of `NewSpan()`:
 
 ```yaml
 Http:
@@ -1326,118 +1101,21 @@ Http:
       - "User-Agent"
 ```
 
-Use `"HEADERS-ALL"` to record all headers (debug only — may produce large payloads).
+Use `"HEADERS-ALL"` to record all headers (debug only — may produce large payloads). Never record sensitive headers (`Authorization`, `Cookie`) in production.
 
 In code, use `RecordHeader` with a `HeaderReader` implementation:
 
 ```cpp
-HttpHeaderReader request_headers(req);
+HttpHeaderReader request_headers(req.headers);
 span->RecordHeader(pinpoint::HTTP_REQUEST, request_headers);
 
-HttpHeaderReader response_headers(res);
+HttpHeaderReader response_headers(res.headers);
 span->RecordHeader(pinpoint::HTTP_RESPONSE, response_headers);
 ```
 
 ---
 
-## 14. Best Practices
-
-### Always End Spans and Events
-
-Use RAII or structured `try`/`catch` to guarantee cleanup:
-
-```cpp
-class SpanGuard {
-public:
-    SpanGuard(pinpoint::SpanPtr span) : span_(span) {}
-    ~SpanGuard() { if (span_) span_->EndSpan(); }
-private:
-    pinpoint::SpanPtr span_;
-};
-
-void handleRequest() {
-    auto agent = pinpoint::GlobalAgent();
-    auto span = agent->NewSpan("Service", "/endpoint");
-    SpanGuard guard(span);
-
-    // Even if exceptions occur, span will be ended
-    processRequest();
-}
-```
-
-### Check Sampling Before Expensive Operations
-
-```cpp
-if (span->IsSampled()) {
-    collectDetailedMetrics();
-    addExtensiveAnnotations();
-}
-```
-
-### Use Thread-Local Storage for Context
-
-Pass span context implicitly using TLS to avoid polluting function signatures:
-
-```cpp
-thread_local pinpoint::SpanPtr current_span;
-
-void setSpan(pinpoint::SpanPtr span) { current_span = span; }
-pinpoint::SpanPtr getSpan() { return current_span; }
-
-void processData() {
-    auto span = getSpan();
-    if (span) {
-        auto se = span->NewSpanEvent("processData");
-        // ...
-        se->EndEvent();
-    }
-}
-```
-
-### Sanitize Sensitive Data
-
-Never log sensitive information in SQL, annotations, or headers:
-
-```cpp
-// DON'T: Record sensitive data
-// span_event->SetSqlQuery(sql, {password});
-
-// DO: Sanitize or omit sensitive data
-span_event->SetSqlQuery(sql, {"[REDACTED]"});
-```
-
-### Use Appropriate Service Types
-
-Correct `SERVICE_TYPE_*` values improve UI rendering and filtering:
-
-```cpp
-pinpoint::SERVICE_TYPE_MYSQL_QUERY       // database
-pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT   // HTTP client
-pinpoint::SERVICE_TYPE_REDIS             // Redis cache
-pinpoint::SERVICE_TYPE_CPP_FUNC          // custom function
-```
-
-### Minimize Performance Impact
-
-- Use sampling in production (not 100%).
-- Avoid creating too many span events for trivial operations.
-- Don't add excessive annotations.
-- Check `IsSampled()` before expensive data collection.
-
-### Shutdown Cleanly
-
-Always call `agent->Shutdown()` on application exit to flush pending spans:
-
-```cpp
-server.listen("localhost", 8089);
-if (agent) {
-    agent->Shutdown();
-}
-```
-
----
-
-## 15. Troubleshooting
+## 14. Troubleshooting
 
 The [Troubleshooting Guide](trouble_shooting.md) owns the full diagnostic
 procedure — agent startup, collector connectivity, memory and CPU, and the
@@ -1446,7 +1124,7 @@ commands to run. This section covers only the failure modes whose cause is in
 
 | Symptom | Instrumentation causes to rule out first |
 |---|---|
-| Spans missing entirely | `EndSpan()` not reached on some path (an early `return`, an exception — see [§14](#14-best-practices) for the RAII guard). A span released without it is never sent ([§6.2](#62-end-exactly-once-and-record-before-ending)). |
+| Spans missing entirely | `EndSpan()` not reached on some path (an early `return`, an exception — use the RAII guard in [§6.2](#62-end-exactly-once-and-record-before-ending)). A span released without it is never sent. |
 | Span appears, data missing | Recorded *after* `EndSpan()`/`EndEvent()`; every setter is a no-op past that point ([§6.2](#62-end-exactly-once-and-record-before-ending)). Check the agent log for `span (event) is already finished`. |
 | Wrong durations, odd nesting | Events ended out of LIFO order, or not at all — the log says `span event ended out of order` / `N span event(s) not ended by user code` ([§6.3](#63-end-span-events-in-nesting-lifo-order)). |
 | Deep call trees truncated | Depth/count overflow: `span event maximum depth/sequence exceeded` ([§6.5](#65-event-depth-and-count-limits-overflow)). Create coarser events or raise the limits. |
@@ -1459,31 +1137,10 @@ agent log usually names the bug before you have to reason about it.
 
 ---
 
-## 16. Checklist for New Instrumentation
-
-1. **Initialize the agent** — configure via YAML and/or environment variables, then call `StartAgent()`; on a `false` return, print a message pointing at the agent log.
-2. **Create a span** — on each incoming request or logical unit of work, call `NewSpan(...)`.
-3. **Record metadata** — set remote address, endpoint, service type, and critical attributes.
-4. **Add span events** — wrap key internal operations (DB, HTTP client, cache, business logic).
-5. **Attach annotations** — record useful, non-sensitive details (URLs, status codes, IDs).
-6. **Propagate context** — implement and use `TraceContextReader`/`Writer` for all outgoing/incoming calls.
-7. **Handle errors** — use `SetError` on spans or span events; use `CallStackReader` with span events when stack frames are needed.
-8. **Support async work** — use shared `SpanPtr` carefully or `NewAsyncSpan()` for background tasks.
-9. **Respect sampling and filters** — configure sampling, URL/method filters, and header recording.
-10. **Shutdown cleanly** — call `agent->Shutdown()` to flush spans on application exit.
-
----
-
 ## Related Documentation
 
-- [Configuration Guide](config.md)
-- [Quick Start Guide](quick_start.md)
-- [Troubleshooting Guide](trouble_shooting.md)
-- Complete examples: see the `example/` directory (`http_server.cpp`, `tutorial.cpp`)
-- API header: `include/pinpoint/tracer.h`
-- GitHub: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent)
-- Pinpoint APM Docs: [https://pinpoint-apm.github.io/pinpoint/](https://pinpoint-apm.github.io/pinpoint/)
-
----
-
-*Apache License 2.0 — See [LICENSE](../LICENSE) for details.*
+- [Configuration Guide](config.md) — every configuration option
+- [Troubleshooting Guide](trouble_shooting.md) — startup contract and diagnostics
+- [C API Guide](instrument_c.md) — the same API for plain C
+- API header: [`include/pinpoint/tracer.h`](../include/pinpoint/tracer.h)
+- Examples: [`example/`](../example/) (`http_server.cpp`, `tutorial.cpp`)

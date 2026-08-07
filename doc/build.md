@@ -4,26 +4,6 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 ---
 
-## Table of Contents
-
-- [Requirements](#requirements)
-- [Getting the Source](#getting-the-source)
-- [Project Structure](#project-structure)
-- [Build with Bazel](#build-with-bazel)
-- [Build with CMake](#build-with-cmake)
-  - [CMake Presets](#cmake-presets)
-  - [Dependency Versions](#dependency-versions)
-  - [Package Managers](#package-managers)
-  - [Compiler Cache (ccache)](#compiler-cache-ccache)
-- [Build Options](#build-options)
-- [Running Tests](#running-tests)
-  - [LLVM Coverage](#llvm-coverage-cmake)
-- [Sanitizers (ASan, TSan, UBSan)](#sanitizers-asan-tsan-ubsan)
-- [Integration Test](#integration-test)
-- [Troubleshooting](#troubleshooting)
-
----
-
 ## Requirements
 
 | Requirement | Version |
@@ -96,55 +76,26 @@ pinpoint-cpp-agent/
 ├── src/                 # Library source files
 ├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
-├── example/             # Example applications
+├── example/             # Example applications (C++, C, nginx module)
+├── benchmark/           # Overhead and version-comparison benchmarks
 ├── test/                # Unit tests
 │   ├── it/              # Integration test against an in-process mock collector
 │   └── e2e/             # Integration test (HTTP + gRPC + SQL tracing)
-└── scripts/             # Valgrind helper scripts
+└── scripts/             # Valgrind / sanitizer helper scripts and suppressions
 ```
 
 ---
 
 ## Build with Bazel
 
-Bazel uses [bzlmod](https://bazel.build/external/module) (`MODULE.bazel`) for dependency management. All external dependencies are resolved automatically from the [Bazel Central Registry](https://registry.bazel.build/).
-
-### Build all targets
+Bazel uses [bzlmod](https://bazel.build/external/module) (`MODULE.bazel`) for dependency management. All external dependencies — and their pinned versions — are declared in `MODULE.bazel` and resolved automatically from the [Bazel Central Registry](https://registry.bazel.build/).
 
 ```bash
-bazel build //...
+bazel build //...                # everything
+bazel build //:pinpoint-cpp      # the library only
+bazel build //example/...        # examples
+bazel build //test/e2e/...       # integration test binaries
 ```
-
-### Build the library only
-
-```bash
-bazel build //:pinpoint-cpp
-```
-
-### Build examples
-
-```bash
-bazel build //example/...
-```
-
-### Build integration test binaries
-
-```bash
-bazel build //test/e2e/...
-```
-
-### Bazel dependencies
-
-Dependencies are declared in `MODULE.bazel`:
-
-| Dependency | Version | Purpose |
-|---|---|---|
-| protobuf | 29.2 | Protocol Buffers serialization |
-| grpc | 1.63.1 | gRPC communication with Pinpoint collector |
-| yaml-cpp | 0.8.0 | YAML configuration parsing |
-| abseil-cpp | 20250127.1 | Abseil C++ common libraries |
-| fmt | 11.1.4 | String formatting |
-| googletest | 1.17.0 | Unit testing framework |
 
 ---
 
@@ -191,20 +142,17 @@ Each preset writes to its own build directory (`build/<preset-name>/`), so you c
 
 ### Dependency Versions
 
-`vcpkg.json` and `conanfile.txt` pin dependency versions to match the ones used by `FetchContent` as closely as possible. Where an exact match is not in the registry, the closest available version is pinned and called out below.
+Dependency versions are pinned in the manifests themselves — `vcpkg.json`,
+`conanfile.txt`, and the `FetchContent_Declare` calls in `CMakeLists.txt` — and
+match each other as closely as the registries allow. Two caveats worth knowing:
 
-| Package | FetchContent | vcpkg | Conan Center |
-|---|---|---|---|
-| gRPC      | `v1.76.0` | `1.76.0` | `1.78.1` ¹ |
-| Protobuf  | bundled with gRPC | transitive via grpc | transitive via grpc (`>=5.27 <7`) |
-| Abseil    | bundled with gRPC | transitive via grpc | transitive via grpc |
-| yaml-cpp  | `0.8.0` | `0.8.0` | `0.8.0` |
-| fmt       | `11.2.0` | `11.2.0` | `11.2.0` |
-| GoogleTest | `v1.17.0` | `1.17.0` | `1.17.0` |
+- Conan Center publishes only a few gRPC versions, so the Conan pin is the
+  closest available one rather than an exact match; the public API is
+  source-compatible with what this project uses.
+- Protobuf and Abseil are transitive dependencies of gRPC in every path; they are
+  not pinned separately.
 
-¹ Conan Center only publishes `1.54.3`, `1.69.0`, and `1.78.1` for gRPC, so the closest version to the FetchContent/vcpkg target (`1.76.0`) is pinned on the Conan side. The public API is source-compatible with what this project uses.
-
-**Bumping vcpkg baseline:** `vcpkg.json` pins `builtin-baseline` to a specific vcpkg commit. If you want to follow vcpkg master, update it via:
+**Bumping the vcpkg baseline:** `vcpkg.json` pins `builtin-baseline` to a specific vcpkg commit. To follow vcpkg master, update it via:
 
 ```bash
 cd $VCPKG_ROOT && git rev-parse HEAD
@@ -385,6 +333,11 @@ ctest --preset default -R test_sampling
 
 Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run against a different build directory.
 
+For the current list of test targets, ask the build system rather than a document:
+`ctest --preset default -N` or `bazel query //test:all`. The agent integration
+test that runs against an in-process mock collector lives in `test/it/` — see
+[`test/it/README.md`](../test/it/README.md).
+
 ### LLVM Coverage (CMake)
 
 The `coverage` preset selects Clang, enables source-based coverage
@@ -421,35 +374,6 @@ cmake -S . -B build/coverage -G Ninja \
   -DBUILD_COVERAGE=ON
 cmake --build build/coverage --target coverage
 ```
-
-### Available unit tests
-
-| Test | Description |
-|---|---|
-| `test_limiter` | Rate limiter logic |
-| `test_sampling` | Sampling strategy |
-| `test_cache` | Cache operations |
-| `test_http` | HTTP header parsing, URL/method filters |
-| `test_annotation` | Annotation handling |
-| `test_callstack` | Call stack tracking |
-| `test_config` | YAML configuration loading |
-| `test_object_name` | Agent identity / ObjectName version handling |
-| `test_sql` | SQL query normalization |
-| `test_stat` | Statistics collection |
-| `test_url_stat` | URL statistics |
-| `test_span_event` | Span event lifecycle |
-| `test_span` | Span lifecycle |
-| `test_noop` | No-op mode behavior |
-| `test_utility` | Span id / UUID generation helpers |
-| `test_logging` | Logger behavior and file handling |
-| `test_atomic_shared_ptr` | Atomic shared-pointer snapshot semantics |
-| `test_sharded_bounded_queue` | Sharded bounded queue |
-| `test_grpc` | gRPC transport |
-| `test_grpc_with_mocks` | gRPC transport with mock services |
-| `test_agent_with_mocks` | Agent lifecycle (start / enable / shutdown) with mock services |
-| `test_fork` | Pre-fork worker lifecycle and inherited-agent guards |
-| `test_tracer_c` | Pure-C API wrapper behavior |
-| `agent_integration_test` | End-to-end agent run against an in-process mock collector (`test/it/`, see [`test/it/README.md`](../test/it/README.md)) |
 
 ---
 
@@ -622,30 +546,12 @@ When the `default` preset cannot find required packages, it downloads and builds
 
 `FORCE_FETCHCONTENT` has been removed, and there is no dedicated force-FetchContent preset in `CMakePresets.json`. Use a package-manager preset for reproducible dependencies, or configure with a clean environment where `find_package(CONFIG)` cannot see system packages so the `default` preset falls back to FetchContent.
 
-```bash
-cmake --preset default
-cmake --build --preset default
-```
-
 ### macOS linker warnings
 
-On macOS, you may see warnings like:
-
-```
-ld: warning: ignoring duplicate libraries: '-lm', '-lpthread'
-```
-
-These warnings are harmless and can be safely ignored.
-
-### Empty table of contents warnings (Bazel)
-
-Warnings such as:
-
-```
-warning: archive library: ... the table of contents is empty
-```
-
-These are expected for some gRPC/protobuf static libraries on macOS and do not affect the build.
+Warnings such as `ld: warning: ignoring duplicate libraries: '-lm', '-lpthread'`
+(CMake) and `warning: archive library: ... the table of contents is empty`
+(Bazel, for some gRPC/protobuf static libraries) are harmless and do not affect
+the build.
 
 ### Valgrind
 

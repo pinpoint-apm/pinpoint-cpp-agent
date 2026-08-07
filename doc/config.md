@@ -1,27 +1,6 @@
 # Pinpoint C++ Agent - Configuration Guide
 
-This document is a consolidated reference for all configuration options available in the Pinpoint C++ Agent (`pinpoint-cpp-agent`).
-
----
-
-## Table of Contents
-
-- [Configuration Methods & Precedence](#configuration-methods--precedence)
-- [Agent Configuration](#agent-configuration)
-- [Logging Configuration](#logging-configuration)
-- [Collector Configuration](#collector-configuration)
-- [gRPC Transport Configuration](#grpc-transport-configuration)
-- [Stat Configuration](#stat-configuration)
-- [Sampling Configuration](#sampling-configuration)
-- [Span Configuration](#span-configuration)
-- [AgentInfo Configuration](#agentinfo-configuration)
-- [HTTP Configuration](#http-configuration)
-- [SQL Configuration](#sql-configuration)
-- [Advanced Configuration](#advanced-configuration)
-- [Configuration Hot Reload](#configuration-hot-reload)
-- [Configuration Examples](#configuration-examples)
-- [Best Practices](#best-practices)
-- [Troubleshooting](#troubleshooting)
+This document is a consolidated reference for all configuration options available in the Pinpoint C++ Agent (`pinpoint-cpp-agent`). Every option is listed once, in the table for its section, with its YAML key, environment variable, type and default.
 
 ---
 
@@ -42,15 +21,10 @@ During startup (`make_config`), the agent loads defaults → reads the optional 
 Create a `pinpoint-config.yaml` file and set its path:
 
 ```cpp
-#include "pinpoint/tracer.h"
-
-int main() {
-    pinpoint::AgentOptions options;
-    options.config_file_path = "/path/to/pinpoint-config.yaml";
-    if (!pinpoint::StartAgent(options)) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    // ...
+pinpoint::AgentOptions options;
+options.config_file_path = "/path/to/pinpoint-config.yaml";
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
 }
 ```
 
@@ -68,19 +42,17 @@ export PINPOINT_CPP_COLLECTOR_HOST="localhost"
 export PINPOINT_CPP_LOG_LEVEL="info"
 ```
 
-Or programmatically:
+Or programmatically, before `StartAgent()`:
 
 ```cpp
-#include <cstdlib>
+setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
+setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
+```
 
-int main() {
-    setenv("PINPOINT_CPP_APPLICATION_NAME", "MyApplication", 1);
-    setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 1);
-    if (!pinpoint::StartAgent()) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    // ...
-}
+List-typed options accept **comma-separated values** in an environment variable:
+
+```bash
+export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent,X-Request-Id"
 ```
 
 #### Customizing the environment variable prefix
@@ -90,34 +62,22 @@ All environment variable names use the `PINPOINT_CPP` prefix by default. Set `Ag
 ```cpp
 pinpoint::AgentOptions options;
 options.env_prefix = "MYAPP";   // read MYAPP_* instead of PINPOINT_CPP_*
-setenv("MYAPP_APPLICATION_NAME", "MyApplication", 1);
-setenv("MYAPP_COLLECTOR_HOST", "localhost", 1);
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
 ```
 
 ### Method 3: Configuration String (Inline YAML)
 
 ```cpp
-#include "pinpoint/tracer.h"
-
-int main() {
-    std::string config = R"(
-        ApplicationName: "MyApplication"
-        Collector:
-          Host: "localhost"
-        Sampling:
-          Type: "PERCENT"
-          PercentRate: 10
-    )";
-
-    pinpoint::AgentOptions options;
-    options.config_yaml = config;
-    if (!pinpoint::StartAgent(options)) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    // ...
+pinpoint::AgentOptions options;
+options.config_yaml = R"(
+    ApplicationName: "MyApplication"
+    Collector:
+      Host: "localhost"
+    Sampling:
+      Type: "PERCENT"
+      PercentRate: 10
+)";
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
 }
 ```
 
@@ -187,6 +147,9 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | `Collector.SpanBatch.FlushIntervalMs` | `PINPOINT_CPP_SPAN_BATCH_FLUSH_INTERVAL_MS` | int | `1000` | Min `1`. Span batch flush interval in milliseconds. |
 | `Collector.SpanBatch.CollectDeadlineMs` | `PINPOINT_CPP_SPAN_BATCH_COLLECT_DEADLINE_MS` | int | `500` | Min `0`. Deadline for collecting a batch before send. |
 | `Collector.SpanBatch.MaxConcurrentRequests` | `PINPOINT_CPP_SPAN_BATCH_MAX_CONCURRENT_REQUESTS` | int | `10` | Min `1`. Max concurrent span-send requests. |
+| `Collector.AgentInfo.RefreshIntervalMs` | `PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS` | int | `86400000` | AgentInfo refresh interval in milliseconds. |
+| `Collector.AgentInfo.SendRetryIntervalMs` | `PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS` | int | `3000` | Retry interval for sending AgentInfo. |
+| `Collector.AgentInfo.MaxTryPerAttempt` | `PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT` | int | `3` | Max send attempts per AgentInfo refresh. |
 
 > **Deprecated aliases.** The earlier keys `Collector.GrpcHost`, `Collector.GrpcAgentPort`, `Collector.GrpcSpanPort`, `Collector.GrpcStatPort` (env `PINPOINT_CPP_GRPC_HOST`, `PINPOINT_CPP_GRPC_AGENT_PORT`, `PINPOINT_CPP_GRPC_SPAN_PORT`, `PINPOINT_CPP_GRPC_STAT_PORT`) are still honored as a fallback for backward compatibility, but are deprecated. Prefer the `Collector.Host` / `Collector.*Port` keys above; when both are set, the preferred key wins.
 
@@ -217,16 +180,6 @@ The C++ agent exposes Java-agent-style gRPC transport options under `Grpc`. Defa
 
 The same `Grpc` channel options are applied to the agent, metadata, span, and stat gRPC channels. Java-specific name resolver providers, custom interceptor injection, Netty channel type, channelz reporter wiring, retry/hedging service config, flow-control window, and write-buffer watermarks do not have a direct equivalent in the current C++ agent implementation.
 
-```yaml
-Collector:
-  Grpc:
-    SslEnable: true
-    TrustCertFilePath: "/etc/pinpoint/collector-ca.pem"
-    SenderQueueSize: 1000
-    MaxSendMessageSize: 4194304
-    MaxReceiveMessageSize: 4194304
-```
-
 ---
 
 ## Stat Configuration
@@ -249,7 +202,7 @@ Collector:
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
-Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`.
+Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`. How the samplers behave, and how the decision propagates across services, is described in [Instrumentation Guide §12](instrument.md#12-sampling-policy).
 
 > Out-of-range values are automatically normalised (clamped) by the agent during `make_config()`.
 
@@ -265,16 +218,6 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
 
 > Negative or invalid values are coerced to safe defaults during `make_config()`.
-
----
-
-## AgentInfo Configuration
-
-| YAML Key | Environment Variable | Type | Default | Notes |
-|---|---|---|---|---|
-| `Collector.AgentInfo.RefreshIntervalMs` | `PINPOINT_CPP_AGENT_INFO_REFRESH_INTERVAL_MS` | int | `86400000` | AgentInfo refresh interval in milliseconds. |
-| `Collector.AgentInfo.SendRetryIntervalMs` | `PINPOINT_CPP_AGENT_INFO_SEND_RETRY_INTERVAL_MS` | int | `3000` | Retry interval for sending AgentInfo. |
-| `Collector.AgentInfo.MaxTryPerAttempt` | `PINPOINT_CPP_AGENT_INFO_MAX_TRY_PER_ATTEMPT` | int | `3` | Max send attempts per AgentInfo refresh. |
 
 ---
 
@@ -310,10 +253,7 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Http.Client.RecordRequestCookie` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
 | `Http.Client.RecordResponseHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 
-> Environment variables for list types accept **comma-separated values**:
-> ```bash
-> export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent,X-Request-Id"
-> ```
+Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are documented in [Instrumentation Guide §13](instrument.md#13-http-filtering-and-header-recording).
 
 ---
 
@@ -364,7 +304,7 @@ Not all configuration options can be changed at runtime. Options that define the
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue` | **Yes** |
 
-The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect. (Non-reloadable fields still require an application restart to actually change.)
+The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect.
 
 ### Components Rebuilt on Reload
 
@@ -384,45 +324,20 @@ All rebuilt components are published together in a **single atomic swap** (threa
 - A **YAML configuration file path** must be set (via `AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
 - The config file must exist at startup; the watcher is not started otherwise.
 
-### Example: Changing Sampling Rate at Runtime
-
-Initial config file:
-
-```yaml
-ApplicationName: "MyApp"
-EnableConfigFileWatcher: true
-Collector:
-  Host: "collector.example.com"
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 100
-```
-
-To reduce sampling to 10% without restart, edit the file in place:
-
-```yaml
-ApplicationName: "MyApp"
-EnableConfigFileWatcher: true
-Collector:
-  Host: "collector.example.com"
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 10
-```
-
-The agent detects the change within ~1 second and applies the new sampling rate, logging `agent config reloaded`. If the same edit also changed a non-reloadable field, a warning notes that the running value was retained; a warning is also logged if the file cannot be parsed.
+Editing `Sampling.PercentRate` in a watched file, for example, is picked up within
+~1 second and logged as `agent config reloaded`; a warning is logged instead if
+the file cannot be parsed or changed a non-reloadable field.
 
 ---
 
 ## Configuration Examples
 
-### Example 1: Development
+### Development
 
 Full sampling, debug logging, local collector.
 
 ```yaml
 ApplicationName: "MyApp-Dev"
-Enable: true
 
 Log:
   Level: "debug"
@@ -430,9 +345,6 @@ Log:
 
 Collector:
   Host: "localhost"
-  AgentPort: 9991
-  SpanPort: 9993
-  StatPort: 9992
 
 Sampling:
   Type: "COUNTER"
@@ -451,14 +363,13 @@ Sql:
 EnableCallstackTrace: true
 ```
 
-### Example 2: Production
+### Production
 
-Percentage sampling, reduced logging, selective header recording.
+Throughput-capped percentage sampling, reduced logging, selective header recording.
 
 ```yaml
 ApplicationName: "MyApp-Prod"
 AgentName: "prod-server-01"
-Enable: true
 
 Log:
   Level: "warn"
@@ -471,11 +382,8 @@ Collector:
 Sampling:
   Type: "PERCENT"
   PercentRate: 10.0
-
-Stat:
-  Enable: true
-  BatchCount: 10
-  BatchInterval: 10000
+  NewThroughput: 500        # omit both for unlimited
+  ContinueThroughput: 1000
 
 Span:
   QueueSize: 2048
@@ -488,94 +396,15 @@ Http:
   Server:
     StatusCodeErrors: ["5xx"]
     ExcludeUrl: ["/health", "/metrics"]
+    ExcludeMethod: ["OPTIONS", "HEAD"]
     RecordRequestHeader: ["Content-Type", "User-Agent"]
     RecordResponseHeader: ["Content-Type"]
 
-EnableCallstackTrace: false
-```
-
-### Example 3: High-Traffic
-
-Throughput-limited percentage sampling, large queues, minimal overhead.
-
-```yaml
-ApplicationName: "HighTrafficApp"
-Enable: true
-
-Log:
-  Level: "error"
-
-Collector:
-  Host: "collector.example.com"
-
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 100.0
-  NewThroughput: 500
-  ContinueThroughput: 1000
-
-Stat:
-  Enable: true
-  BatchCount: 20
-  BatchInterval: 5000
-
-Span:
-  QueueSize: 4096
-  MaxEventDepth: 16
-  MaxEventSequence: 500
-  EventChunkSize: 100
-
-Http:
-  CollectUrlStat: false
-  Server:
-    StatusCodeErrors: ["5xx"]
-    ExcludeUrl: ["/health", "/ping"]
-    ExcludeMethod: ["OPTIONS", "HEAD"]
-    RecordRequestHeader: []
-    RecordResponseHeader: []
-
 Sql:
   MaxBindArgsSize: 512
-  EnableSqlStats: false
   TraceBindValue: false
 
 EnableCallstackTrace: false
-```
-
-### Example 4: Environment Variables Only
-
-```bash
-#!/bin/bash
-
-# Agent
-export PINPOINT_CPP_APPLICATION_NAME="MyApp"
-export PINPOINT_CPP_AGENT_NAME="app-server-01"
-export PINPOINT_CPP_ENABLE="true"
-
-# Collector
-export PINPOINT_CPP_COLLECTOR_HOST="pinpoint-collector"
-export PINPOINT_CPP_COLLECTOR_AGENT_PORT="9991"
-export PINPOINT_CPP_COLLECTOR_SPAN_PORT="9993"
-export PINPOINT_CPP_COLLECTOR_STAT_PORT="9992"
-
-# Logging
-export PINPOINT_CPP_LOG_LEVEL="info"
-export PINPOINT_CPP_LOG_FILE_PATH="/var/log/pinpoint/agent.log"
-
-# Sampling
-export PINPOINT_CPP_SAMPLING_TYPE="PERCENT"
-export PINPOINT_CPP_SAMPLING_PERCENT_RATE="25.0"
-
-# HTTP
-export PINPOINT_CPP_HTTP_COLLECT_URL_STAT="true"
-export PINPOINT_CPP_HTTP_SERVER_STATUS_CODE_ERRORS="4xx,5xx"
-export PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER="Content-Type,User-Agent"
-
-# SQL
-export PINPOINT_CPP_SQL_ENABLE_SQL_STATS="true"
-export PINPOINT_CPP_SQL_TRACE_BIND_VALUE="true"
-
-./my_application
 ```
 
 ---
@@ -612,7 +441,7 @@ export PINPOINT_CPP_SQL_TRACE_BIND_VALUE="true"
 
 ---
 
-## Troubleshooting
+## Symptom → Key Index
 
 Diagnosis lives in the [Troubleshooting Guide](trouble_shooting.md). What
 belongs here is the reverse index — which key to reach for once you know the
@@ -629,108 +458,3 @@ symptom:
 | A setting seems ignored | Set `Log.Level: "debug"` — the agent logs the configuration it **resolved**, after file, env vars and clamping. An env var set only in the environment silently wins over the file ([Precedence](#configuration-methods--precedence)) |
 
 Sizing guidance for each of these is in [Best Practices](#best-practices) above.
-
----
-
-## Full YAML Reference
-
-Below is a complete YAML config with all keys and their default values:
-
-```yaml
-ApplicationName: ""
-AgentName: ""        # falls back to the auto-generated agent id
-UidVersion: "v3"
-ServiceName: ""      # used only for UidVersion: v4; falls back to "DEFAULT"
-ApiKey: ""           # required only for UidVersion: v4; masked in logs
-Enable: true
-IsContainer: false   # auto-detected if not set
-
-Log:
-  Level: "info"
-  FilePath: ""       # empty = stdout/stderr
-  MaxFileSize: 10
-
-Collector:
-  Host: ""
-  AgentPort: 9991
-  SpanPort: 9993
-  StatPort: 9992
-  Grpc:
-    SslEnable: false
-    TrustCertFilePath: ""
-    RootCertFilePath: ""
-    KeepAliveTimeMs: 30000
-    KeepAliveTimeoutMs: 60000
-    KeepAlivePermitWithoutCalls: false
-    MaxSendMessageSize: 4194304
-    MaxReceiveMessageSize: 4194304
-    SenderQueueSize: 1000
-  AgentInfo:
-    RefreshIntervalMs: 86400000
-    SendRetryIntervalMs: 3000
-    MaxTryPerAttempt: 3
-  SpanBatch:
-    Size: 20
-    FlushIntervalMs: 1000
-    CollectDeadlineMs: 500
-    MaxConcurrentRequests: 10
-
-Stat:
-  Enable: true
-  BatchCount: 6
-  BatchInterval: 5000
-
-Sampling:
-  Type: "COUNTER"
-  CounterRate: 1
-  PercentRate: 100
-  NewThroughput: 0
-  ContinueThroughput: 0
-
-Span:
-  QueueSize: 1024
-  MaxEventDepth: 64
-  MaxEventSequence: 5000
-  EventChunkSize: 20
-
-Http:
-  CollectUrlStat: false
-  UrlStatLimit: 1024
-  UrlStatQueueSize: 1024
-  UrlStatEnableTrimPath: true
-  UrlStatTrimPathDepth: 1
-  UrlStatMethodPrefix: false
-  Server:
-    StatusCodeErrors: ["5xx"]
-    ExcludeUrl: []
-    ExcludeMethod: []
-    RecordRequestHeader: []
-    RecordRequestCookie: []
-    RecordResponseHeader: []
-  Client:
-    RecordRequestHeader: []
-    RecordRequestCookie: []
-    RecordResponseHeader: []
-
-Sql:
-  MaxBindArgsSize: 1024
-  EnableSqlStats: false
-  EnableRawSqlCache: true
-  TraceBindValue: true
-
-EnableCallstackTrace: false
-```
-
----
-
-## Related Documentation
-
-- [Quick Start Guide](quick_start.md)
-- [Instrumentation Guide](instrument.md)
-- Code examples: see the `example/` directory in the repository
-- GitHub: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues)
-- Pinpoint APM Docs: [https://pinpoint-apm.github.io/pinpoint/](https://pinpoint-apm.github.io/pinpoint/)
-
----
-
-*Apache License 2.0 — See [LICENSE](../LICENSE) for details.*

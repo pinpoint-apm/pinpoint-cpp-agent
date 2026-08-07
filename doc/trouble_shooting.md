@@ -4,15 +4,41 @@ This guide helps you diagnose and resolve common issues with the Pinpoint C++ Ag
 
 ---
 
-## Table of Contents
+## Verifying Agent Startup
 
-- [Disabling the Agent](#disabling-the-agent)
-- [Logging](#logging)
-- [Common Issues](#common-issues)
-- [Performance Issues](#performance-issues)
-- [Connection Issues](#connection-issues)
-- [Data Collection Issues](#data-collection-issues)
-- [Getting Help](#getting-help)
+This section is the canonical description of the agent's startup contract; the
+other guides link here rather than repeating it.
+
+**`StartAgent()` is asynchronous.** It returns as soon as initialization is
+*launched*: a background thread opens the gRPC channels, registers the agent with
+the collector (retrying indefinitely until the collector accepts it) and starts
+the workers. `Enable()` flips to `true` only after that registration succeeds, so
+it is normally still `false` right after `StartAgent()` returns — that is not an
+error, and checking it there proves nothing. Use `Enable()` only as a fast-fail
+guard before creating a span, never as a startup success check.
+
+**A `false` return is a *synchronous* configuration or setup failure** (it never
+throws). Nothing is installed as the global agent, and a later `StartAgent()`
+call retries from scratch. Print a message pointing at the agent log, where the
+cause is recorded.
+
+**The agent log is the only authoritative startup signal:**
+
+| In the agent log | Meaning |
+|---|---|
+| `AgentInfo sent` | The agent registered with the collector. Startup succeeded. |
+| `agent start failed: ...` | Configuration or setup error; the line names the cause. |
+| `failed to init grpc workers: ...` | gRPC bring-up error. |
+| `failed to send AgentInfo` | The collector is not reachable yet. Retried indefinitely. |
+| *(nothing at all)* | A deliberate `Enable: false` returns `false` and logs nothing — see [Disabling the Agent](#disabling-the-agent). |
+
+Set `Log.Level: "debug"` for the full picture, including the resolved
+configuration. Whatever the log says, **a failed agent start never affects the
+application**: every tracing call degrades to a safe no-op, the application runs
+exactly as it would without the agent, and only the traces are lost.
+
+The C API behaves identically: `pt_start_agent()` returns `0` for a synchronous
+failure and `pt_agent_is_enabled()` returns `1` only after registration.
 
 ---
 
@@ -67,118 +93,65 @@ int main() {
 
 For more information, refer to the [Configuration Guide](config.md).
 
-### Shutdown Function
+---
 
-You can stop the agent at runtime by calling `Agent::Shutdown()`. There is no need to restart your application. After `Shutdown()` is called, the agent stops collecting tracing data and sending it to the collector.
+## Stopping and Resuming the Agent
 
-```cpp
-#include "pinpoint/tracer.h"
+`Shutdown()` stops the agent at runtime with no application restart: it flushes
+pending data, joins the worker threads, and stops sending to the collector. It is
+**terminal for that agent instance** — the same handle can never come back
+online, `Enable()` stays `false`, and every span it returns is a noop span. The
+application itself keeps running normally; it just stops being traced.
 
-int main() {
-    if (!pinpoint::StartAgent()) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-
-    // Your application code
-
-    // Stop the agent when needed
-    pinpoint::GlobalAgent()->Shutdown();
-
-    return 0;
-}
-```
-
-### Dynamic Control Example
-
-You can start and stop the agent dynamically using HTTP endpoints. This is useful for production environments where you want to enable or disable tracing without restarting the application.
-
-There is no need to keep your own agent pointer or lock: `StartAgent()` installs the started agent as the process-wide global agent, `GlobalAgent()` hands it back from anywhere (or the noop agent when none is installed), and both calls are thread-safe.
+To resume tracing later, build a **fresh agent** with `StartAgent()`. No agent
+pointer or lock of your own is needed: `StartAgent()` installs the started agent
+as the process-wide global agent, `GlobalAgent()` hands it back from anywhere (or
+the noop agent when none is installed), and both calls are thread-safe.
 
 ```cpp
-#include "pinpoint/tracer.h"
-#include "3rd_party/httplib.h"
+// Stop tracing. The application keeps working; it is simply no longer traced.
+pinpoint::GlobalAgent()->Shutdown();
 
-void handle_new_agent(const httplib::Request& req, httplib::Response& res) {
-    // StartAgent() installs the agent as the global agent. Calling it again
-    // while an agent is running is safe: it leaves the running agent
-    // untouched and returns true (with a warning log). After a Shutdown()
-    // it builds a fresh agent.
-    pinpoint::AgentOptions options;
-    options.config_file_path = "/path/to/pinpoint-config.yaml";
-    if (!pinpoint::StartAgent(options)) {
-        // A false return is a synchronous configuration/setup failure; the
-        // cause is recorded in the agent log. The application is unaffected
-        // — tracing is simply off.
-        res.status = 500;
-        res.set_content("{\"message\": \"Pinpoint C++ Agent start failed - "
-                        "check the agent log for the cause\"}",
-                        "application/json");
-        return;
-    }
-
-    // StartAgent() is asynchronous: a true return means initialization was
-    // launched, and a background thread registers the agent with the
-    // collector, so Enable() is still false at this point even on a
-    // successful start. Confirm the start via the agent log ("AgentInfo
-    // sent" on success, "agent start failed: ..." on failure).
-    res.status = 202;
-    res.set_content("{\"message\": \"Pinpoint C++ Agent start requested - "
-                    "check the agent log for the result\"}",
-                    "application/json");
+// ... later: resume tracing with a NEW agent ...
+if (!pinpoint::StartAgent(options)) {
+    std::cerr << "failed to restart the pinpoint agent: check the agent log" << std::endl;
 }
-
-void handle_shutdown(const httplib::Request& req, httplib::Response& res) {
-    // Shutting down the global agent also removes it from the singleton, so
-    // GlobalAgent() hands out the noop agent afterwards. When no agent is
-    // installed, GlobalAgent() already returns the noop agent, whose
-    // Shutdown() is a safe no-op — no state tracking is needed.
-    pinpoint::GlobalAgent()->Shutdown();
-
-    res.status = 200;
-    res.set_content("{\"message\": \"Shutdown Pinpoint C++ Agent\"}",
-                    "application/json");
-}
-
-void handle_status(const httplib::Request& req, httplib::Response& res) {
-    // Enable() is true only while the global agent is online (registered
-    // with the collector). It is false while registration is still in
-    // flight, after Shutdown(), and for the noop agent.
-    bool enabled = pinpoint::GlobalAgent()->Enable();
-    res.status = 200;
-    res.set_content("{\"enabled\": " + std::string(enabled ? "true" : "false") + "}",
-                    "application/json");
-}
-
-int main() {
-    httplib::Server server;
-
-    server.Post("/agent/new", handle_new_agent);
-    server.Post("/agent/shutdown", handle_shutdown);
-    server.Get("/agent/status", handle_status);
-
-    std::cout << "Control server running on port 8000" << std::endl;
-    std::cout << "POST /agent/new      - Start agent" << std::endl;
-    std::cout << "POST /agent/shutdown - Stop agent" << std::endl;
-    std::cout << "GET  /agent/status   - Check agent status" << std::endl;
-
-    server.listen("0.0.0.0", 8000);
-
-    return 0;
-}
+auto agent = pinpoint::GlobalAgent();
 ```
 
-Usage:
+What each call guarantees after `Shutdown()`:
 
-```bash
-# Check agent status
-curl http://localhost:8000/agent/status
+| Call | Behavior after `Shutdown()` |
+|---|---|
+| `agent->Enable()` | Always `false`. |
+| `agent->NewSpan(...)` | Returns the shared noop span. Safe to call, records nothing. |
+| `pinpoint::StartAgent(...)` | Builds a fresh agent, installs it as the global agent and returns `true`; returns `false` when the rebuild fails. |
+| `pinpoint::GlobalAgent()` | Returns the noop agent until `StartAgent()` installs a new one. |
 
-# Start the agent
-curl -X POST http://localhost:8000/agent/new
+Points to keep in mind:
 
-# Stop the agent
-curl -X POST http://localhost:8000/agent/shutdown
-```
+- **Never reuse the shut-down handle.** It stays permanently disabled; get the
+  replacement handle from `StartAgent()`. The new agent registers with the
+  collector in the background — watch the agent log (`AgentInfo sent`) if you
+  need confirmation that it came online.
+- **Drop cached agent pointers.** Any `AgentPtr` the application cached — in a
+  thread-local, a service object, a C `pt_agent_t` handle — still points at the
+  dead agent and keeps producing noop spans. Re-fetch with `GlobalAgent()` or the
+  new handle.
+- **Spans that outlive the shutdown are safe.** A span created before `Shutdown()`
+  can still be ended afterwards without crashing; its data is simply dropped.
+- **Each cycle registers as a new agent instance.** Every `StartAgent()`
+  re-resolves the agent identity with a freshly auto-generated agent id. Set
+  `AgentName` for a stable label in the Pinpoint UI across cycles.
+- **Shutdown is synchronous but bounded.** It joins the worker threads while
+  queued spans drain, and returns within a 3-second deadline even if a worker
+  is stuck in an unresponsive RPC (stragglers finish draining on a background
+  thread). Still, do not call it from a latency-sensitive path.
+- **Calling `StartAgent()` while an agent is running** is safe: it leaves the
+  running agent untouched and returns `true` with a warning log.
+
+In C the same cycle is `pt_agent_shutdown()` + `pt_agent_destroy()` followed by a
+new `pt_start_agent()`; see the [C API guide](instrument_c.md#3-bootstrapping-the-agent).
 
 ---
 
@@ -239,11 +212,8 @@ For more information, refer to the [Configuration Guide](config.md).
 # Tail the log file in real time
 tail -f /var/log/pinpoint/agent.log
 
-# View recent logs
-tail -n 100 /var/log/pinpoint/agent.log
-
 # Search for errors
-grep "ERROR" /var/log/pinpoint/agent.log
+grep -i error /var/log/pinpoint/agent.log
 ```
 
 ### Debug Mode
@@ -271,23 +241,10 @@ EnableCallstackTrace: true
 - Application runs but no data appears in Pinpoint UI.
 - Agent initialization fails.
 
-**Diagnosis:**
-
-`StartAgent()` returning `false` reports a synchronous configuration or setup failure — the cause is recorded in the agent log; have your application print a "check the agent log" message in that case. A `true` return only means initialization was launched: `StartAgent()` is asynchronous and returns before the agent has connected to the collector, and `Enable()` flips to `true` only after the background registration succeeds. Checking `Enable()` right after `StartAgent()` therefore always looks like a failure and diagnoses nothing. Check the **agent log** instead:
-
-```
-AgentInfo sent                       # startup succeeded
-agent start failed: ...              # configuration / setup error
-failed to init grpc workers: ...     # gRPC bring-up error
-failed to send AgentInfo             # collector not reachable yet (retried indefinitely)
-```
-
-A failed agent start never breaks the application — all tracing calls degrade to safe noops and the app runs normally; only the traces are missing. `Enable()` itself is meant only as a fast-fail guard before span creation (to skip instrumentation while tracing is off), not as a startup check.
-
-An **empty** agent log next to a `false` return points at `Enable: false` (in the
-config file or `PINPOINT_CPP_ENABLE`) rather than a broken configuration — that
-is the one path that returns `false` without logging anything. Check it first;
-see [Disabling the Agent](#disabling-the-agent).
+**Diagnosis:** read the agent log — see [Verifying Agent Startup](#verifying-agent-startup)
+for what each entry means and why `Enable()` right after `StartAgent()` diagnoses
+nothing. An **empty** agent log next to a `false` return points at `Enable: false`
+rather than a broken configuration; check that first.
 
 **Solutions:**
 
@@ -299,12 +256,7 @@ see [Disabling the Agent](#disabling-the-agent).
      Host: "localhost"       # Required
    ```
 
-2. **Verify Collector Connection:**
-
-   ```bash
-   telnet pinpoint-collector 9991
-   nslookup pinpoint-collector
-   ```
+2. **Verify Collector Connection** — see [Connection Issues](#connection-issues).
 
 3. **Check Permissions** — ensure the log directory is writable:
 
@@ -312,13 +264,7 @@ see [Disabling the Agent](#disabling-the-agent).
    ls -la /var/log/pinpoint/
    ```
 
-4. **Review Logs:**
-
-   ```bash
-   grep -i error /var/log/pinpoint/agent.log
-   ```
-
-5. **Check the *resolved* configuration** — with `Log.Level: "debug"` the agent
+4. **Check the *resolved* configuration** — with `Log.Level: "debug"` the agent
    logs the configuration it actually resolved at startup, after the file,
    environment variables and defaults have been merged. This is the fastest way
    to catch a setting that never took effect: a typo'd YAML key, a stale
@@ -341,18 +287,9 @@ see [Disabling the Agent](#disabling-the-agent).
      CounterRate: 1  # Sample all transactions
    ```
 
-2. **Verify Spans Are Ended:**
-
-   ```cpp
-   void handleRequest() {
-       auto agent = pinpoint::GlobalAgent();
-       auto span = agent->NewSpan("Service", "/endpoint");
-
-       // Process request
-
-       span->EndSpan();  // Make sure this is called!
-   }
-   ```
+2. **Verify Spans Are Ended** — `EndSpan()` must run on every code path; a span
+   released without it is never sent. See
+   [Missing Spans](#missing-spans) below.
 
 3. **Check Application Name** — `ApplicationName` must be set in configuration.
 
@@ -362,56 +299,47 @@ see [Disabling the Agent](#disabling-the-agent).
    and spans still be rejected downstream. Review the Pinpoint **collector**
    logs for errors before assuming the agent is at fault.
 
-### Issue 3: Memory Leaks
+### Issue 3: High Memory Usage
 
 **Symptoms:**
 - Application memory usage grows over time.
 
 **Solutions:**
 
-1. **Always End Spans** — use the RAII pattern to guarantee cleanup:
+1. **Always End Spans** — an unended span holds its buffered events and
+   exceptions for as long as it lives. Use the RAII guard shown in
+   [instrument.md §6.2](instrument.md#62-end-exactly-once-and-record-before-ending).
 
-   ```cpp
-   class SpanGuard {
-   public:
-       explicit SpanGuard(pinpoint::SpanPtr span) : span_(std::move(span)) {}
-       ~SpanGuard() { if (span_) span_->EndSpan(); }
-   private:
-       pinpoint::SpanPtr span_;
-   };
-   ```
-
-2. **Reduce Queue Sizes:**
+2. **Reduce buffer sizes and collection limits:**
 
    ```yaml
    Span:
-     QueueSize: 1024  # Reduce if necessary
+     QueueSize: 512            # Reduce from default 1024
+     MaxEventDepth: 32         # Limit depth
+     MaxEventSequence: 500     # Reduce from default 5000
+
+   Http:
+     UrlStatLimit: 512         # Reduce from default 1024
    ```
 
-3. **Limit Event Collection:**
-
-   ```yaml
-   Span:
-     MaxEventDepth: 32      # Limit depth
-     MaxEventSequence: 1000 # Limit events per span
-   ```
-
-### Issue 4: High CPU Usage
+### Issue 4: High CPU Usage or Slow Responses
 
 **Symptoms:**
-- Application CPU usage is higher than expected.
+- Application CPU usage or request latency is higher than expected.
 
 **Solutions:**
 
-1. **Reduce Sampling:**
+1. **Reduce sampling**, or cap it by throughput:
 
    ```yaml
    Sampling:
      Type: "PERCENT"
-     PercentRate: 10.0  # Sample only 10%
+     PercentRate: 10.0         # Sample only 10%
+     NewThroughput: 100        # Or: accept all, cap at 100 new tx/sec
+     ContinueThroughput: 200
    ```
 
-2. **Disable Unnecessary Features:**
+2. **Disable what you do not read:**
 
    ```yaml
    Http:
@@ -425,64 +353,18 @@ see [Disabling the Agent](#disabling-the-agent).
      Enable: false
    ```
 
-3. **Optimize Span Collection:**
+3. **Reduce the work per transaction** — trace only the paths that matter, prefer
+   fewer coarser span events over very fine-grained ones, and cut the volume and
+   size of annotations and recorded headers (`HEADERS-ALL` is a debugging
+   setting, not a production one).
 
-   ```yaml
-   Span:
-     MaxEventDepth: 16
-     EventChunkSize: 50
+4. **Skip expensive collection on unsampled spans:**
+
+   ```cpp
+   if (span->IsSampled()) {
+       collectDetailedMetrics();
+   }
    ```
-
----
-
-## Performance Issues
-
-### High Memory Usage
-
-Reduce buffer sizes and collection limits:
-
-```yaml
-Span:
-  QueueSize: 512            # Reduce from default 1024
-  MaxEventSequence: 500     # Reduce from default 5000
-
-Http:
-  UrlStatLimit: 512         # Reduce from default 1024
-```
-
-### Slow Application Response
-
-Reduce the amount of work per transaction:
-
-- Trace only the paths that matter; not every function needs a span event.
-- Prefer fewer, coarser span events over very fine-grained ones for trivial work.
-- Cut the volume and size of annotations and recorded headers (`HEADERS-ALL` is a
-  debugging setting, not a production one).
-- Disable what you do not read: `Http.CollectUrlStat`, `Sql.EnableSqlStats`,
-  `Stat.Enable`.
-
-Use throughput-limited sampling to limit overhead:
-
-```yaml
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 100.0
-  NewThroughput: 100        # Limit new transaction sampling
-  ContinueThroughput: 200
-```
-
-Avoid expensive operations on unsampled spans:
-
-```cpp
-auto span = agent->NewSpan("Service", "/endpoint");
-
-// Check if sampled before expensive operations
-if (span->IsSampled()) {
-    collectDetailedMetrics();
-}
-
-span->EndSpan();
-```
 
 ---
 
@@ -505,24 +387,8 @@ span->EndSpan();
      StatPort: 9992
    ```
 
-2. **Test Network Connectivity:**
-
-   ```bash
-   # Test connection to collector
-   telnet pinpoint-collector.example.com 9991
-
-   # Check firewall rules
-   sudo iptables -L
-
-   # Test DNS resolution
-   nslookup pinpoint-collector.example.com
-   ```
-
-3. **Check Collector Status:**
-
-   ```bash
-   curl http://pinpoint-collector:8080/health
-   ```
+2. **Test Network Connectivity** to each gRPC port (9991–9993), e.g.
+   `telnet pinpoint-collector.example.com 9991` and `nslookup pinpoint-collector.example.com`.
 
 **Solutions:**
 
@@ -530,21 +396,6 @@ span->EndSpan();
 2. Configure firewall rules to allow traffic on gRPC ports (9991–9993).
 3. Check network policies (e.g., in Kubernetes).
 4. Verify the collector is running and healthy.
-
-### gRPC Connection Timeout
-
-Run network diagnostics:
-
-```bash
-# Check network latency
-ping pinpoint-collector
-
-# Trace route
-traceroute pinpoint-collector
-
-# Check MTU issues
-ping -M do -s 1472 pinpoint-collector
-```
 
 ---
 
@@ -599,12 +450,12 @@ ping -M do -s 1472 pinpoint-collector
 
    ```cpp
    // Server: Extract context
-   HttpTraceContextReader reader(req.headers);
+   HttpHeaderReader reader(req.headers);
    auto span = agent->NewSpan("Service", "/endpoint", reader);
 
    // Client: Inject context through the span event for the outbound call
    auto se = span->NewSpanEvent("outgoing-call");
-   HttpTraceContextWriter writer(headers);
+   HttpHeaderReaderWriter writer(headers);
    se->InjectContext(writer);
    ```
 
@@ -623,8 +474,8 @@ ping -M do -s 1472 pinpoint-collector
    wire and proxies and HTTP/2 clients routinely re-case them (`pinpoint-traceid`).
    A reader backed by a case-sensitive container silently finds nothing and every
    request looks like a new transaction. `httplib::Headers` is case-insensitive by
-   default, which is why the examples in the
-   [Instrumentation Guide](instrument.md#implementing-custom-adapters) work as
+   default, which is why
+   [`example/http_trace_context.h`](../example/http_trace_context.h) works as
    written; a plain `std::map<std::string, std::string>` does **not** — normalise
    the key inside your `Get()`.
 
@@ -632,88 +483,7 @@ ping -M do -s 1472 pinpoint-collector
 
 ## Getting Help
 
-### Before Asking for Help
-
-1. **Enable Debug Logging:**
-
-   ```yaml
-   Log:
-     Level: "debug"
-   ```
-
-2. **Collect Information:**
-   - Agent version
-   - Configuration (sanitized — remove secrets)
-   - Error messages from logs
-   - Steps to reproduce
-
-3. **Check Documentation:**
-   - [Quick Start Guide](quick_start.md)
-   - [Configuration Guide](config.md)
-   - [Instrumentation Guide](instrument.md)
-
-### Reporting Issues
-
-When reporting issues on [GitHub](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues), include:
-
-1. **Environment** — OS and version, C++ compiler and version, Pinpoint collector version, agent version.
-
-2. **Configuration** (sanitized):
-
-   ```yaml
-   ApplicationName: "MyApp"
-   Log:
-     Level: "debug"
-   # ... other relevant settings
-   ```
-
-3. **Error Messages:**
-
-   ```text
-   [ERROR] Failed to connect to collector: ...
-   ```
-
-4. **Reproduction Steps** — how to reproduce the issue, expected behavior, actual behavior.
-
-5. **Code Sample** — minimal code that reproduces the issue.
-
-### Community Resources
-
-- **GitHub Issues**: [pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues)
-- **Pinpoint Documentation**: [pinpoint-apm.github.io](https://pinpoint-apm.github.io/pinpoint/)
-- **Main Pinpoint Project**: [github.com/pinpoint-apm/pinpoint](https://github.com/pinpoint-apm/pinpoint)
-
-### Useful Debugging Commands
-
-```bash
-# Check agent logs
-tail -f /var/log/pinpoint/agent.log | grep -i error
-
-# Monitor memory usage
-watch -n 1 'ps aux | grep my_application'
-
-# Check network connections to collector ports
-netstat -an | grep 999[1-3]
-
-# Verify collector connectivity
-curl -v telnet://pinpoint-collector:9991
-
-# Check application performance
-top -p $(pidof my_application)
-
-# Monitor file descriptors
-lsof -p $(pidof my_application) | wc -l
-```
-
----
-
-## Related Documentation
-
-- [Quick Start Guide](quick_start.md) — Getting started with Pinpoint C++ Agent
-- [Configuration Guide](config.md) — Detailed configuration reference
-- [Instrumentation Guide](instrument.md) — How to instrument your application
-- Examples: see the `example/` directory in the repository
-
----
-
-*Apache License 2.0 — See [LICENSE](../LICENSE) for details.*
+Enable `Log.Level: "debug"`, then open an issue at
+[pinpoint-apm/pinpoint-cpp-agent](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues)
+with the agent version, your sanitized configuration, the relevant log lines,
+and minimal reproduction steps.
