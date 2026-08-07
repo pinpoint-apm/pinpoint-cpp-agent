@@ -22,7 +22,7 @@ Pinpoint C++ Agent enables you to monitor C++ applications using Pinpoint. Devel
 |---|---|
 | Pinpoint Collector | 2.4.0+ |
 | C++ Compiler | C++17 (GCC 8+, Clang 6+) |
-| Build System | Bazel 7.0+ or CMake 3.20+ |
+| Build System | Bazel 7.0+ or CMake 3.21+ |
 | OS | Linux, macOS, Windows |
 
 ## Quick Start
@@ -45,13 +45,16 @@ target_link_libraries(your_target PRIVATE pinpoint_cpp)
 
 **Bazel**
 
-Add to your `WORKSPACE` file:
+Add to your `MODULE.bazel` file:
 
 ```python
-http_archive(
-    name = "pinpoint_cpp",
-    urls = ["https://github.com/pinpoint-apm/pinpoint-cpp-agent/archive/main.zip"],
-    strip_prefix = "pinpoint-cpp-agent-main",
+bazel_dep(name = "pinpoint-cpp", version = "2.0.0")
+
+# Not published to the Bazel Central Registry yet — point at the repository.
+git_override(
+    module_name = "pinpoint-cpp",
+    remote = "https://github.com/pinpoint-apm/pinpoint-cpp-agent.git",
+    branch = "main",
 )
 ```
 
@@ -61,7 +64,7 @@ Then in your `BUILD` file:
 cc_binary(
     name = "your_app",
     srcs = ["main.cpp"],
-    deps = ["@pinpoint_cpp//:pinpoint_cpp"],
+    deps = ["@pinpoint-cpp//:pinpoint-cpp"],
 )
 ```
 
@@ -74,7 +77,7 @@ ApplicationName: "MyAppName"
 Collector:
   Host: "my.collector.host"
 Sampling:
-  Type: "COUNTING"
+  Type: "COUNTER"
   CounterRate: 1
 Log:
   Level: "info"
