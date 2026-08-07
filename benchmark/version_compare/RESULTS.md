@@ -135,8 +135,8 @@ batch-burst mechanism diagnosed below.
 **Single-thread p99 is worse and unstable — diagnosed.** Where medians improved,
 tails often regressed (`s1` +76%, `s5a` +297%, `s5b` +111%), and these columns do
 not replicate between runs. A targeted investigation (per-op trace with phase
-decomposition, batch-size sweep, allocator-zone toggle; tools:
-`api_benchmark --scenario --trace`, `analyze_trace.py`) established the cause:
+decomposition, batch-size sweep, allocator-zone toggle; tool:
+`api_benchmark --scenario --trace`) established the cause:
 
 - The stalls are 10–70 µs windows in which the application thread runs the *same
   work slower* (identical allocs/op), in runs of consecutive operations, landing
@@ -299,7 +299,6 @@ What moved:
 
 ## Raw data
 
-- [raw-2026-08-05.tsv](raw-2026-08-05.tsv) — microbenchmark vs `acf8cff`, run 1 (7 repetitions)
-- [raw-2026-08-05-run2.tsv](raw-2026-08-05-run2.tsv) — microbenchmark vs `acf8cff`, run 2 (7 repetitions)
-- [raw-2026-08-06.tsv](raw-2026-08-06.tsv) — microbenchmark vs `6da2fdd` (7 repetitions)
+- [raw-2026-08-06.tsv](raw-2026-08-06.tsv) — microbenchmark vs `6da2fdd` (7 repetitions);
+  the superseded 08-05 session TSVs are in git history
 - phase-2 logs are regenerable with `run_load_compare.sh` (see README)

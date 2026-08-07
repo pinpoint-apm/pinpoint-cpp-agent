@@ -81,7 +81,7 @@ pinpoint-cpp-agent/
 ├── test/                # Unit tests
 │   ├── it/              # Integration test against an in-process mock collector
 │   └── e2e/             # Integration test (HTTP + gRPC + SQL tracing)
-└── scripts/             # Valgrind / sanitizer helper scripts and suppressions
+└── scripts/             # Sanitizer suppression files
 ```
 
 ---
@@ -443,9 +443,7 @@ bazel test --config=ubsan //test:all
 ### Suppressing third-party false positives
 
 Point the relevant `*_OPTIONS` variable at a suppression file when a dependency
-trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`
-(the `scripts/grpc_protobuf.supp` Valgrind file is a reference for the kinds of
-gRPC/protobuf noise that tend to need silencing).
+trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`.
 
 Prefer a whole-program instrumented build over suppressions. `SANITIZE_DEPS` is
 ON by default, so the sanitizer presets rebuild gRPC, Protobuf, Abseil, yaml-cpp
@@ -552,17 +550,3 @@ Warnings such as `ld: warning: ignoring duplicate libraries: '-lm', '-lpthread'`
 (CMake) and `warning: archive library: ... the table of contents is empty`
 (Bazel, for some gRPC/protobuf static libraries) are harmless and do not affect
 the build.
-
-### Valgrind
-
-Helper scripts for running tests under Valgrind are available in `scripts/`:
-
-```bash
-# Run unit tests under Valgrind
-./scripts/run_valgrind_tests.sh
-
-# Run integration tests under Valgrind
-./scripts/run_valgrind_it_test.sh
-```
-
-A suppression file for known gRPC/protobuf false positives is provided at `scripts/grpc_protobuf.supp`.
