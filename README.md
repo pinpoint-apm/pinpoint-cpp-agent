@@ -75,7 +75,7 @@ bazel test //test/...
 ```
 
 See the [Build Guide](doc/build.md) for submodule setup, package managers (vcpkg,
-Conan, system packages), build options, coverage, sanitizers, and the integration
+system packages), build options, coverage, sanitizers, and the integration
 tests.
 
 ## Documentation

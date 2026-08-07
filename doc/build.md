@@ -68,7 +68,6 @@ pinpoint-cpp-agent/
 ├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
 ├── CMakePresets.json    # CMake: standard, debug, coverage, profiling, sanitizer presets
 ├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
-├── conanfile.txt        # Conan 2 requirements (used by the `conan` preset)
 ├── include/             # Public headers
 │   └── pinpoint/
 │       ├── tracer.h
@@ -117,7 +116,6 @@ cmake --list-presets
 |---|---|
 | `default` | `find_package` against system / `CMAKE_PREFIX_PATH`, FetchContent fallback |
 | `vcpkg` | vcpkg toolchain (requires `VCPKG_ROOT` env var) |
-| `conan` | Conan 2 toolchain (requires `conan install` first) |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
 | `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
 | `coverage` | `default` deps; Clang `Debug` build with source-based coverage; the build step also runs the tests and writes the reports (see [LLVM Coverage](#llvm-coverage-cmake)) |
@@ -142,15 +140,11 @@ Each preset writes to its own build directory (`build/<preset-name>/`), so you c
 
 ### Dependency Versions
 
-Dependency versions are pinned in the manifests themselves — `vcpkg.json`,
-`conanfile.txt`, and the `FetchContent_Declare` calls in `CMakeLists.txt` — and
-match each other as closely as the registries allow. Two caveats worth knowing:
-
-- Conan Center publishes only a few gRPC versions, so the Conan pin is the
-  closest available one rather than an exact match; the public API is
-  source-compatible with what this project uses.
-- Protobuf and Abseil are transitive dependencies of gRPC in every path; they are
-  not pinned separately.
+Dependency versions are pinned in the manifests themselves — `vcpkg.json` and
+the `FetchContent_Declare` calls in `CMakeLists.txt` — and match each other as
+closely as the registries allow. One caveat worth knowing: Protobuf and Abseil
+are transitive dependencies of gRPC in every path; they are not pinned
+separately.
 
 **Bumping the vcpkg baseline:** `vcpkg.json` pins `builtin-baseline` to a specific vcpkg commit. To follow vcpkg master, update it via:
 
@@ -187,7 +181,7 @@ cmake --preset default
 cmake --build --preset default
 ```
 
-> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` or `conan` preset, or let the `default` preset fall back to FetchContent when packages are not found.
+> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` preset, or let the `default` preset fall back to FetchContent when packages are not found.
 
 **Fedora / RHEL (dnf):**
 
@@ -223,25 +217,7 @@ cmake --build --preset vcpkg
 
 The `vcpkg` preset picks `$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake` as its toolchain file. Classic mode (`vcpkg install grpc protobuf ...`) still works if you prefer it — just delete `vcpkg.json` first.
 
-#### Conan 2
-
-Dependencies are declared in `conanfile.txt` (root of the repo).
-
-```bash
-pip install "conan>=2.0"
-conan profile detect --force   # first time only
-
-conan install . \
-  --output-folder=build/conan \
-  --build=missing \
-  -s build_type=Release \
-  -c tools.cmake.cmaketoolchain:generator=Ninja
-
-cmake --preset conan
-cmake --build --preset conan
-```
-
-The `conan` preset expects `build/conan/conan_toolchain.cmake` to exist, which is produced by the `conan install` step above.
+Any other package manager that produces a CMake toolchain file (Conan, Nix, Spack, ...) can be plugged in via `-DCMAKE_TOOLCHAIN_FILE=...` on the `default` preset; the project has no manifest for them.
 
 ### Compiler Cache (ccache)
 
@@ -331,7 +307,7 @@ ctest --preset default --verbose
 ctest --preset default -R test_sampling
 ```
 
-Substitute the preset name (`vcpkg`, `conan`, `debug`, `debug-cached`) to run against a different build directory.
+Substitute the preset name (`vcpkg`, `debug`, `debug-cached`) to run against a different build directory.
 
 For the current list of test targets, ask the build system rather than a document:
 `ctest --preset default -N` or `bazel query //test:all`. The agent integration

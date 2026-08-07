@@ -30,13 +30,6 @@
             "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
         },
         {
-            "name": "conan",
-            "inherits": "base",
-            "displayName": "Conan 2 toolchain",
-            "description": "Resolve dependencies via Conan 2. Run `conan install . -of build/conan --build=missing` first.",
-            "toolchainFile": "${sourceDir}/build/conan/conan_toolchain.cmake"
-        },
-        {
             "name": "debug",
             "inherits": "default",
             "displayName": "Debug build (system)",
@@ -131,10 +124,6 @@
             "configurePreset": "vcpkg"
         },
         {
-            "name": "conan",
-            "configurePreset": "conan"
-        },
-        {
             "name": "debug",
             "configurePreset": "debug"
         },
@@ -187,16 +176,6 @@
         {
             "name": "vcpkg",
             "configurePreset": "vcpkg",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            }
-        },
-        {
-            "name": "conan",
-            "configurePreset": "conan",
             "output": {
                 "outputOnFailure": true
             },
