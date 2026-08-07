@@ -6,6 +6,7 @@ module(
 
 bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "rules_shell", version = "0.2.0")
 bazel_dep(name = "protobuf", version = "29.2", repo_name = "com_google_protobuf")
 bazel_dep(name = "grpc", version = "1.63.1", repo_name = "com_github_grpc_grpc")
 bazel_dep(name = "yaml-cpp", version = "0.8.0", repo_name = "com_github_jbeder_yaml_cpp")
