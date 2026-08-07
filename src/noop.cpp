@@ -40,71 +40,22 @@ namespace pinpoint {
         return getNoop().spanEvent();
     }
 
-    namespace {
+    SpanPtr noopSpan() {
         // Per-thread localized owner of the one noop span. noopSpan() is
         // returned on every filtered / disabled-agent / failed-admission
         // request (see AgentImpl::NewSpan), and copying one process-wide
-        // shared_ptr there puts an atomic increment plus a later decrement on a
-        // single control block for every such request — the same cache line
+        // shared_ptr there puts an atomic increment plus a later decrement on
+        // a single control block for every such request — the same cache line
         // ping-pong across cores that AtomicSharedPtr's ThreadCached mode
         // exists to remove. localize_shared() keeps the pointee identical (so
-        // `.get()` and `==` against the singleton still hold) while giving each
-        // thread its own control block to hammer.
-        //
-        // Split into a trivially-destructible slot plus a separate reclaim
-        // guard, exactly like AtomicSharedPtr::ThreadCacheSlot and
-        // HttpUrlFilter::MatchScratchSlot, and for the same reason: noopSpan()
-        // must stay callable while the calling thread is already running its
-        // thread_local destructors — a host thread_local that records a final
-        // span reaches here then — and a block-scope thread_local *with* a
-        // destructor must not be entered again once destroyed
-        // ([basic.start.term]). The slot has no destructor, so it is never
-        // "destroyed"; only the SpanPtr it points at is reclaimed, by the guard.
-        struct NoopSpanSlot {
-            SpanPtr* local = nullptr;
-            // Set by the guard: from then on noopSpan() takes the leak path
-            // instead of re-registering a guard (impossible once TLS
-            // destructors have started).
-            bool reclaimed = false;
-        };
-
-        NoopSpanSlot& noop_span_slot() noexcept {
-            // Trivially destructible and constant-initialized: safe to touch at
-            // any point of the thread's lifetime.
-            static thread_local NoopSpanSlot slot;
-            return slot;
-        }
-
-        struct NoopSpanReclaim {
-            ~NoopSpanReclaim() {
-                auto& slot = noop_span_slot();
-                delete slot.local;
-                slot.local = nullptr;
-                slot.reclaimed = true;
-            }
-        };
-    }
-
-    SpanPtr noopSpan() {
-        auto& slot = noop_span_slot();
-        if (slot.local != nullptr) {
-            // Steady state: one refcount bump on this thread's own control
-            // block, and nothing on this path can throw.
-            return *slot.local;
-        }
+        // `.get()` and `==` against the singleton still hold) while giving
+        // each thread its own control block to hammer. thread_local_lazy
+        // keeps this callable during the thread's own TLS teardown; a
+        // teardown re-entry leaks one aliased owner, which keeps the immortal
+        // noop span alive either way.
         try {
-            auto localized = localize_shared(getNoop().span());
-            slot.local = new SpanPtr(std::move(localized));
-            if (!slot.reclaimed) {
-                static thread_local NoopSpanReclaim reclaim;
-                (void)reclaim;
-            }
-            // Otherwise this is teardown re-entry: the guard already ran and
-            // cannot be registered again, so the replacement is deliberately
-            // leaked — bounded at one aliased owner per thread that traces
-            // during its own exit, and it keeps the immortal noop span alive
-            // either way.
-            return *slot.local;
+            return thread_local_lazy<SpanPtr>(
+                [] { return new SpanPtr(localize_shared(getNoop().span())); });
         } catch (...) {
             // Localizing is a pure optimization, so a failure to set it up
             // (realistically only bad_alloc) must not change what the caller

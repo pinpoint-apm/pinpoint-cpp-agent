@@ -122,39 +122,10 @@ namespace pinpoint {
         }
     }
 
-    HttpUrlFilter::MatchScratchSlot& HttpUrlFilter::match_scratch_slot() {
-        // Trivially destructible and constant-initialized: safe to touch at
-        // any point of the thread's lifetime, including from other
-        // thread_local destructors after this thread's TLS teardown began
-        // (see the slot declaration in http.h).
-        static thread_local MatchScratchSlot slot;
-        return slot;
-    }
-
-    HttpUrlFilter::MatchScratchReclaim::~MatchScratchReclaim() {
-        auto& slot = match_scratch_slot();
-        delete slot.scratch;
-        slot.scratch = nullptr;
-        slot.reclaimed = true;
-    }
-
     HttpUrlFilter::MatchScratch& HttpUrlFilter::match_scratch() {
-        auto& slot = match_scratch_slot();
-        if (slot.scratch == nullptr) {
-            slot.scratch = new MatchScratch();
-            if (!slot.reclaimed) {
-                // Normal first use on this thread: register the guard that
-                // reclaims the scratch at thread exit.
-                static thread_local MatchScratchReclaim reclaim;
-                (void)reclaim;
-            } else {
-                // Teardown re-entry: the guard already ran and cannot be
-                // registered again, so this replacement scratch is
-                // deliberately leaked — bounded at one small buffer pair per
-                // thread that runs the URL filter again during its own exit.
-            }
-        }
-        return *slot.scratch;
+        // A teardown re-entry leaks one small buffer pair per thread that
+        // runs the URL filter again during its own exit (thread_local_lazy).
+        return thread_local_lazy<MatchScratch>([] { return new MatchScratch(); });
     }
 
     bool HttpUrlFilter::isFiltered(std::string_view url) const {

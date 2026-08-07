@@ -174,4 +174,50 @@ namespace pinpoint {
         std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
     };
 
+    /**
+     * @brief Lazily heap-creates one instance per thread (and per call site)
+     * via `make` (returning a `new`ed T*) and caches it in a
+     * trivially-destructible TLS slot, with a separate guard reclaiming it at
+     * thread exit.
+     *
+     * Split this way so calls during thread teardown stay defined behavior: a
+     * block-scope thread_local with a destructor must not be passed through
+     * again once destroyed ([basic.start.term]) — yet a host thread_local
+     * destructor that records a final span during thread exit re-enters these
+     * paths exactly then (TLS destruction runs in reverse construction order,
+     * so a host object constructed before this slot's first use is destroyed
+     * after it). The slot has no destructor, so it is never "destroyed" and
+     * stays valid for the whole thread lifetime; only the object it points at
+     * is reclaimed, by the guard. Once the guard has run, a re-entering call
+     * gets a replacement that is deliberately leaked — bounded at one per
+     * thread that re-enters during its own exit. An exception from `make`
+     * propagates and nothing is cached.
+     */
+    template <typename T, typename Make>
+    T& thread_local_lazy(Make&& make) {
+        struct Slot {
+            T* value = nullptr;
+            bool reclaimed = false;  // set once the reclaim guard has run
+        };
+        static thread_local Slot slot;
+        if (slot.value == nullptr) {
+            slot.value = make();
+            if (!slot.reclaimed) {
+                // Normal first use on this thread: register the guard that
+                // reclaims the object at thread exit. (Unreachable once TLS
+                // destructors have started — hence the reclaimed leak path.)
+                struct Reclaim {
+                    ~Reclaim() {
+                        delete slot.value;
+                        slot.value = nullptr;
+                        slot.reclaimed = true;
+                    }
+                };
+                static thread_local Reclaim reclaim;
+                (void)reclaim;
+            }
+        }
+        return *slot.value;
+    }
+
 }

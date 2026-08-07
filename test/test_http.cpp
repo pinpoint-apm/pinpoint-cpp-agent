@@ -586,8 +586,8 @@ namespace {
     // Constructed BEFORE the filter's first use on the thread, so TLS
     // destruction (reverse construction order) runs this destructor AFTER
     // the filter's per-thread match scratch has been reclaimed — the filter
-    // must still be safe to call at that point (see MatchScratchSlot in
-    // http.h). The pre-fix use-after-destruction ordering materializes on
+    // must still be safe to call at that point (see thread_local_lazy in
+    // utility.h). The pre-fix use-after-destruction ordering materializes on
     // glibc, whose __cxa_thread_atexit runs TLS destructors strictly LIFO;
     // Apple's runtime happens not to produce it, so on macOS this test
     // documents the contract rather than reproducing the crash.

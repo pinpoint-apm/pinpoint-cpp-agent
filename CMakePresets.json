@@ -75,42 +75,42 @@
             }
         },
         {
-            "name": "asan",
+            "name": "sanitize-base",
+            "hidden": true,
             "inherits": "default",
-            "displayName": "AddressSanitizer (ASan)",
-            "description": "Debug build with -fsanitize=address to catch use-after-free, heap/stack overflow, and leaks. Resolves dependencies like the default preset.",
+            "description": "Shared shape of the sanitizer presets: Debug, tests only, shared lib. Resolves dependencies like the default preset.",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "SANITIZE": "address",
                 "BUILD_EXAMPLES": "OFF",
                 "BUILD_SHARED_LIBS": "ON",
                 "BUILD_STATIC_LIBS": "OFF"
+            }
+        },
+        {
+            "name": "asan",
+            "inherits": "sanitize-base",
+            "displayName": "AddressSanitizer (ASan)",
+            "description": "Debug build with -fsanitize=address to catch use-after-free, heap/stack overflow, and leaks.",
+            "cacheVariables": {
+                "SANITIZE": "address"
             }
         },
         {
             "name": "tsan",
-            "inherits": "default",
+            "inherits": "sanitize-base",
             "displayName": "ThreadSanitizer (TSan)",
             "description": "Debug build with -fsanitize=thread to catch data races across the agent's worker threads, queues and caches.",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "SANITIZE": "thread",
-                "BUILD_EXAMPLES": "OFF",
-                "BUILD_SHARED_LIBS": "ON",
-                "BUILD_STATIC_LIBS": "OFF"
+                "SANITIZE": "thread"
             }
         },
         {
             "name": "ubsan",
-            "inherits": "default",
+            "inherits": "sanitize-base",
             "displayName": "UndefinedBehaviorSanitizer (UBSan)",
             "description": "Debug build with -fsanitize=undefined (halts on first error) to catch UB such as out-of-range float-to-int casts and signed overflow.",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "SANITIZE": "undefined",
-                "BUILD_EXAMPLES": "OFF",
-                "BUILD_SHARED_LIBS": "ON",
-                "BUILD_STATIC_LIBS": "OFF"
+                "SANITIZE": "undefined"
             }
         }
     ],
@@ -164,80 +164,55 @@
     ],
     "testPresets": [
         {
-            "name": "default",
-            "configurePreset": "default",
+            "name": "test-base",
+            "hidden": true,
             "output": {
                 "outputOnFailure": true
             },
             "execution": {
                 "stopOnFailure": false
             }
+        },
+        {
+            "name": "default",
+            "inherits": "test-base",
+            "configurePreset": "default"
         },
         {
             "name": "vcpkg",
-            "configurePreset": "vcpkg",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            }
+            "inherits": "test-base",
+            "configurePreset": "vcpkg"
         },
         {
             "name": "debug",
-            "configurePreset": "debug",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            }
+            "inherits": "test-base",
+            "configurePreset": "debug"
         },
         {
             "name": "debug-cached",
-            "configurePreset": "debug-cached",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            }
+            "inherits": "test-base",
+            "configurePreset": "debug-cached"
         },
         {
             "name": "asan",
+            "inherits": "test-base",
             "configurePreset": "asan",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            },
             "environment": {
                 "ASAN_OPTIONS": "abort_on_error=1:suppressions=${sourceDir}/scripts/asan.supp"
             }
         },
         {
             "name": "tsan",
+            "inherits": "test-base",
             "configurePreset": "tsan",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            },
             "environment": {
                 "TSAN_OPTIONS": "halt_on_error=1:suppressions=${sourceDir}/scripts/tsan.supp"
             }
         },
         {
             "name": "ubsan",
+            "inherits": "test-base",
             "configurePreset": "ubsan",
-            "output": {
-                "outputOnFailure": true
-            },
-            "execution": {
-                "stopOnFailure": false
-            },
             "environment": {
                 "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
             }
