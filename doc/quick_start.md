@@ -92,6 +92,7 @@ Log:
 Set the configuration file path in your application:
 
 ```cpp
+#include "httplib.h"
 #include "pinpoint/tracer.h"
 
 int main() {
@@ -102,7 +103,9 @@ int main() {
     }
     auto agent = pinpoint::GlobalAgent();
 
-    // Your application code
+    httplib::Server server;
+    server.Get("/users", on_users);   // your traced handler
+    server.listen("0.0.0.0", 8090);   // returns when the server stops
 
     agent->Shutdown();
     return 0;
@@ -148,13 +151,15 @@ For a complete list of configuration options, see the [Configuration Guide](conf
 
 ## Basic Usage
 
-The typical workflow follows five steps:
+The examples below instrument an HTTP server built with
+[cpp-httplib](https://github.com/yhirose/cpp-httplib), the same library the
+programs in `example/` use. The typical workflow follows five steps:
 
 1. **Initialize** — call `StartAgent()` with your configuration at application startup, in the process that records spans (for pre-fork servers: in each worker, see the [Pre-fork Integration Guide](prefork.md)).
-2. **Trace** — use `Agent::NewSpan` to start tracing a transaction.
+2. **Trace** — use `Agent::NewSpan` at the top of each request handler to start tracing a transaction.
 3. **Record work** — create span events and annotations for sub-operations.
-4. **End** — call `EndSpan()` when the transaction completes.
-5. **Shutdown** — call `agent->Shutdown()` before the application exits.
+4. **End** — call `EndSpan()` before the handler returns, on every code path.
+5. **Shutdown** — call `agent->Shutdown()` after the server stops listening.
 
 > `StartAgent()` returns before the agent has registered with the collector, and
 > `Shutdown()` is terminal for an agent instance. Both contracts — including how
@@ -166,6 +171,7 @@ The typical workflow follows five steps:
 ### Initialize the Agent
 
 ```cpp
+#include "httplib.h"
 #include "pinpoint/tracer.h"
 
 int main() {
@@ -178,7 +184,9 @@ int main() {
     }
     auto agent = pinpoint::GlobalAgent();
 
-    // Your application code here
+    httplib::Server server;
+    server.Get("/users", on_users);
+    server.listen("0.0.0.0", 8090);
 
     agent->Shutdown();
     return 0;
@@ -187,19 +195,29 @@ int main() {
 
 ### Create a Span
 
-A **Span** represents a single operation or request:
+A **Span** represents a single operation or request — for an HTTP server, one
+inbound request. `HttpHeaderReader` comes from
+[`example/http_trace_context.h`](../example/http_trace_context.h); it implements
+`pinpoint::HeaderReader`, which also serves as the `TraceContextReader` that
+joins this span to the caller's trace:
 
 ```cpp
-void handleRequest() {
+#include "http_trace_context.h"
+
+void on_users(const httplib::Request& req, httplib::Response& res) {
     auto agent = pinpoint::GlobalAgent();
 
-    auto span = agent->NewSpan("MyOperation", "/api/endpoint");
+    // Extract the trace context from the inbound request headers
+    HttpHeaderReader reader(req.headers);
+    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
 
-    span->SetRemoteAddress("192.168.1.100");
-    span->SetEndPoint("localhost:8080");
+    span->SetRemoteAddress(req.remote_addr);
+    span->SetEndPoint(req.get_header_value("Host"));
 
     // Your business logic here
+    res.set_content("hello, users!", "text/plain");
 
+    span->SetStatusCode(res.status);
     span->EndSpan();
 }
 ```
@@ -209,9 +227,10 @@ void handleRequest() {
 **SpanEvents** represent sub-operations within a span:
 
 ```cpp
-void handleRequest() {
+void on_users(const httplib::Request& req, httplib::Response& res) {
     auto agent = pinpoint::GlobalAgent();
-    auto span = agent->NewSpan("MyOperation", "/api/endpoint");
+    HttpHeaderReader reader(req.headers);
+    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
 
     // Create a span event for a database operation
     auto dbEvent = span->NewSpanEvent("queryDatabase");
@@ -222,6 +241,9 @@ void handleRequest() {
     // Execute database query ...
 
     dbEvent->EndEvent();
+
+    res.set_content(R"({"users":[]})", "application/json");
+    span->SetStatusCode(res.status);
     span->EndSpan();
 }
 ```
@@ -239,31 +261,47 @@ span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 
 ## Running Your First Traced Application
 
-Here is a complete minimal example:
+Here is a complete minimal HTTP server, traced end to end:
 
 ```cpp
 #include <iostream>
-#include <thread>
-#include <chrono>
+
+#include "httplib.h"
 #include "pinpoint/tracer.h"
+#include "http_trace_context.h"   // HttpHeaderReader, from example/
 
-void doWork() {
+void on_users(const httplib::Request& req, httplib::Response& res) {
     auto agent = pinpoint::GlobalAgent();
-    auto span = agent->NewSpan("MyService", "/work");
 
-    span->SetRemoteAddress("client-address");
-    span->SetEndPoint("localhost:8080");
+    // Join the caller's trace using the inbound headers
+    HttpHeaderReader req_reader(req.headers);
+    auto span = agent->NewSpan("MyService", req.path, req.method, req_reader);
 
-    // Simulate some work
-    auto spanEvent = span->NewSpanEvent("processData");
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    spanEvent->EndEvent();
+    auto end_point = req.get_header_value("Host");
+    if (end_point.empty()) {
+        end_point = req.local_addr + ":" + std::to_string(req.local_port);
+    }
+    // Records the remote address, endpoint and request headers in one call
+    pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, end_point, req_reader);
 
-    // Add result annotations
-    span->SetAnnotation(pinpoint::ANNOTATION_API, "doWork");
-    span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
+    // Sub-operation: a database query
+    auto se = span->NewSpanEvent("queryDatabase");
+    se->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
+    se->SetDestination("test_db");
+    se->SetEndPoint("localhost:3306");
+    se->SetSqlQuery("SELECT * FROM users", {});
+    // ... execute the query ...
+    se->EndEvent();
 
-    span->EndSpan();
+    res.set_content(R"({"users":[]})", "application/json");
+
+    HttpHeaderReader res_reader(res.headers);
+    span->RecordHeader(pinpoint::HTTP_RESPONSE, res_reader);
+
+    span->SetAnnotation(pinpoint::ANNOTATION_API, "getUserInfo");
+    span->SetStatusCode(res.status);
+    span->SetUrlStat(req.path, req.method, res.status);
+    span->EndSpan();   // must run on every path, including error returns
 }
 
 int main() {
@@ -276,14 +314,11 @@ int main() {
     }
     auto agent = pinpoint::GlobalAgent();
 
-    std::cout << "Pinpoint agent starting" << std::endl;
+    httplib::Server server;
+    server.Get("/users", on_users);
 
-    // Simulate multiple requests
-    for (int i = 0; i < 5; i++) {
-        std::cout << "Processing request " << (i + 1) << std::endl;
-        doWork();
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    std::cout << "listening on 0.0.0.0:8090" << std::endl;
+    server.listen("0.0.0.0", 8090);   // blocks until the server stops
 
     std::cout << "Shutting down agent..." << std::endl;
     agent->Shutdown();
@@ -292,54 +327,26 @@ int main() {
 }
 ```
 
+See the full working program — several handlers, nested span events, URL
+statistics — in [`example/http_server.cpp`](../example/http_server.cpp).
+
 ### Build and Run
 
+cpp-httplib is header-only and is not installed with the agent, so point the
+compiler at it and at `http_trace_context.h`:
+
 ```bash
-# Compile your application
-g++ -std=c++17 -o my_app my_app.cpp -lpinpoint_cpp
-
-# Run your application
-./my_app
+g++ -std=c++17 -o my_app my_app.cpp -lpinpoint_cpp -pthread \
+    -I/path/to/pinpoint-cpp-agent/3rd_party \
+    -I/path/to/pinpoint-cpp-agent/example
 ```
 
----
-
-## Example: HTTP Server
-
-This example shows how to instrument an HTTP server to trace incoming requests,
-including context propagation. `HttpHeaderReader` comes from
-[`example/http_trace_context.h`](../example/http_trace_context.h) — it implements
-`pinpoint::HeaderReader`, which also serves as the `TraceContextReader`.
-
-See full example: [`example/http_server.cpp`](../example/http_server.cpp)
-
-```cpp
-#include "pinpoint/tracer.h"
-#include "http_trace_context.h"
-
-void handle_users(const httplib::Request& req, httplib::Response& res) {
-    auto agent = pinpoint::GlobalAgent();
-
-    // Extract trace context from incoming request headers
-    HttpHeaderReader reader(req.headers);
-    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
-
-    span->SetEndPoint(req.get_header_value("Host"));
-    span->SetRemoteAddress(req.remote_addr);
-
-    // Record request headers (optional)
-    span->RecordHeader(pinpoint::HTTP_REQUEST, reader);
-
-    // Start a sub-operation (SpanEvent)
-    auto se = span->NewSpanEvent("process_logic");
-
-    // ... business logic ...
-
-    se->EndEvent();
-    span->SetStatusCode(res.status);
-    span->EndSpan();
-}
+```bash
+./my_app & curl http://localhost:8090/users
 ```
+
+The request appears in the Pinpoint Web UI as a transaction for
+`my-first-app`.
 
 ---
 
