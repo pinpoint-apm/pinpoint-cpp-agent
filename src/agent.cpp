@@ -627,33 +627,6 @@ namespace pinpoint {
         }
     }
 
-    bool AgentImpl::leak_agent_for_stragglers(bool may_defer_destroy) noexcept {
-        // Resource exhaustion left no helper thread to bound (or even watch)
-        // the joins, and joining inline would reintroduce the unbounded
-        // shutdown. Leak the whole object instead: the stop signals are
-        // already sent, so the workers wind down on their own, and everything
-        // they dereference (this agent and its members) simply stays alive
-        // forever. Arranging that requires the power to prevent destruction —
-        // available while shared-owned (SharedDeleter consults
-        // leak_on_release_ at final release) or when the SharedDeleter itself
-        // is the caller (may_defer_destroy). An object that is neither dies
-        // with its scope no matter what, so the leak cannot be arranged for
-        // it and the caller must join inline.
-        if (!may_defer_destroy && weak_from_this().expired()) {
-            return false;
-        }
-        leak_on_release_.store(true);
-        // The thread handles are deliberately left joinable: a leaked object
-        // never runs its destructors, so nothing ever joins or terminates on
-        // them, and touching the handles here could race the init thread
-        // still assigning the worker members.
-        try {
-            LOG_WARN("agent shutdown: teardown thread unavailable; leaking the agent "
-                     "and letting its workers wind down unjoined");
-        } catch (...) {}
-        return true;
-    }
-
     bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
         // The workers run member functions of this agent and its gRPC clients
         // and dereference `this` (isExiting/getConfig/getAgentStats); they
@@ -720,13 +693,10 @@ namespace pinpoint {
             });
         } catch (...) {
             // Allocation or thread creation (EAGAIN) failed: no runner can
-            // bound the joins. Leak the agent instead of joining unbounded;
-            // only an object that is neither shared-owned nor deleter-owned
-            // (it dies with its scope regardless) still requires the inline
-            // join for lifetime safety.
-            if (leak_agent_for_stragglers(may_defer_destroy)) {
-                return may_defer_destroy;
-            }
+            // bound the joins, so tear down inline. Unbounded, but the stop
+            // signals are already sent and a process too resource-exhausted
+            // to spawn one thread during shutdown is past caring about the
+            // deadline.
             try { LOG_WARN("agent shutdown: teardown thread unavailable, tearing down inline"); } catch (...) {}
             teardown_workers();
             return false;
@@ -972,12 +942,6 @@ namespace pinpoint {
         if (agent->do_shutdown(true)) {
             return;
         }
-        // A resource-exhausted shutdown (now or earlier) abandoned the
-        // workers without joining them; they dereference the object
-        // indefinitely, so it must be leaked, never destroyed.
-        if (agent->leak_on_release_.load()) {
-            return;
-        }
         delete agent;
     }
 
@@ -1034,10 +998,10 @@ namespace pinpoint {
         // A never-launched agent (Start() never ran, or its synchronous
         // failure already reset started_ and stopped the watcher) has no init
         // thread and no workers, so the blocking teardown cannot actually
-        // block. Run it inline: this skips the deadline runner thread — and
-        // the leak fallback its creation failure would force — which matters
-        // on the StartAgent() failure path, where the failure may itself have
-        // been thread-creation exhaustion. Reading started_ here is stable:
+        // block. Run it inline: this skips the deadline runner thread, which
+        // matters on the StartAgent() failure path, where the failure may
+        // itself have been thread-creation exhaustion. Reading started_ here
+        // is stable:
         // the lifecycle lock above waited out any in-flight Start(), and
         // later Start() calls refuse on shutting_down_ before touching it.
         if (!started_) {

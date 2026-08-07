@@ -20,7 +20,6 @@
 #include <atomic>
 #include <memory>
 #include <optional>
-#include <stack>
 #include <string>
 #include <thread>
 #include <utility>
@@ -43,72 +42,6 @@ namespace pinpoint {
     constexpr int SPAN_ERR_TRUE = 1;
     constexpr int32_t SPAN_LOGGING_FLAG_OFF = 0;
     constexpr int32_t SPAN_LOGGING_FLAG_ON = 1;
-
-    /**
-     * @brief Stack wrapper used to manage nested span events.
-     *
-     * This class is NOT thread-safe on its own, and does not need to be: a span
-     * is owned by a single thread (see the Span thread-safety contract in
-     * pinpoint/tracer.h), so all access happens on that one thread.
-     */
-    class EventStack {
-    public:
-        EventStack() = default;
-
-        /**
-         * @brief Pushes a span event onto the internal stack.
-         *
-         * @param item Span event to add.
-         * @note Must be called on the span's owning thread.
-         */
-        void push(std::unique_ptr<SpanEventImpl> item) {
-            stack_.push(std::move(item));
-        }
-
-        /**
-         * @brief Removes and returns the most recent span event.
-         *
-         * @return Span event that was at the top of the stack, or nullptr if the stack is empty.
-         * @note Must be called on the span's owning thread.
-         */
-        std::unique_ptr<SpanEventImpl> pop() {
-            if (stack_.empty()) {
-                return nullptr;
-            }
-            auto item = std::move(stack_.top());
-            stack_.pop();
-            return item;
-        }
-
-        /**
-         * @brief Returns (without removing) the top span event.
-         * @return Span event at the top of the stack, or nullptr if the stack is empty.
-         * @note Must be called on the span's owning thread.
-         */
-        SpanEventImpl* top() {
-            if (stack_.empty()) {
-                return nullptr;
-            }
-            return stack_.top().get();
-        }
-
-        /// @brief Returns the number of events contained in the stack.
-        /// @note Must be called on the span's owning thread.
-        size_t size() const {
-            return stack_.size();
-        }
-
-    private:
-        // Vector backing instead of std::stack's default std::deque: on
-        // libstdc++ a default-constructed deque allocates its iterator map
-        // plus a 512-byte block up front, charged to every span's
-        // constructor even when no event is ever recorded. A
-        // default-constructed vector allocates nothing, and nesting depth is
-        // capped by span.max_event_depth, so growth reallocations are rare
-        // and move only a handful of pointers.
-        std::stack<std::unique_ptr<SpanEventImpl>,
-                   std::vector<std::unique_ptr<SpanEventImpl>>> stack_;
-    };
 
     /**
      * @brief Holds mutable state until a span is converted into delivery chunks.
@@ -307,7 +240,7 @@ namespace pinpoint {
     	size_t finishOpenSpanEvents();
     	/// @brief Returns the current active span event, or nullptr if the stack is empty.
     	SpanEventImpl* topSpanEvent() {
-    	    return event_stack_.top();
+    	    return event_stack_.empty() ? nullptr : event_stack_.back().get();
     	}
 
         /**
@@ -380,13 +313,31 @@ namespace pinpoint {
     	int32_t async_id_;
     	int32_t async_sequence_;
 
-    	EventStack event_stack_;
+    	/// @brief Removes and returns the most recent open span event, or
+    	/// nullptr if none is open. Must be called on the span's owning thread.
+    	std::unique_ptr<SpanEventImpl> popSpanEvent() {
+    	    if (event_stack_.empty()) {
+    	        return nullptr;
+    	    }
+    	    auto se = std::move(event_stack_.back());
+    	    event_stack_.pop_back();
+    	    return se;
+    	}
+
+        // LIFO stack of the open (nested) span events, back() being the most
+        // recent. A vector, not a deque or std::stack's default deque backing:
+        // on libstdc++ a default-constructed deque allocates its iterator map
+        // plus a 512-byte block up front, charged to every span's constructor
+        // even when no event is ever recorded, while a default-constructed
+        // vector allocates nothing; nesting depth is capped by
+        // span.max_event_depth, so growth reallocations are rare.
+        std::vector<std::unique_ptr<SpanEventImpl>> event_stack_;
         // Kept sequence-ordered as events finish so chunks do not need to sort.
         // Not mutex-guarded: a span is single-threaded (see the Span thread-safety
         // contract in pinpoint/tracer.h), so the stack and this list are only ever
         // touched by the span's owning thread.
         // A vector, not a deque: the deque paid its map + first-block
-        // allocation in every span's constructor (see EventStack), while a
+        // allocation in every span's constructor (see event_stack_), while a
         // vector starts allocation-free and keeps its capacity across chunk
         // flushes (takeFinishedEvents clears it). The front/middle inserts
         // in storeFinishedEvent are the rare out-of-order finishes and move

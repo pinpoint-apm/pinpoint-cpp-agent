@@ -63,114 +63,6 @@ static TraceId make_extract_trace_id(AgentService& agent, TraceContextReader& re
     return hdr.has_value() ? TraceId::parseTraceId(hdr.value()) : agent.generateTraceId();
 }
 
-// ========== EventStack Tests ==========
-
-TEST_F(SpanTest, EventStackBasicOperationsTest) {
-    EventStack stack;
-    
-    EXPECT_EQ(stack.size(), 0) << "Initial stack should be empty";
-    
-    // Create test span events
-    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
-    auto event1 = make_test_span_event_unique(*span, "event1");
-    auto event2 = make_test_span_event_unique(*span, "event2");
-    auto* event1_ptr = event1.get();
-    auto* event2_ptr = event2.get();
-    
-    // Test push
-    stack.push(std::move(event1));
-    EXPECT_EQ(stack.size(), 1) << "Stack size should be 1 after first push";
-    
-    stack.push(std::move(event2));
-    EXPECT_EQ(stack.size(), 2) << "Stack size should be 2 after second push";
-    
-    // Test top
-    auto top_event = stack.top();
-    EXPECT_EQ(top_event, event2_ptr) << "Top should return the last pushed event";
-    EXPECT_EQ(stack.size(), 2) << "Top should not change stack size";
-    
-    // Test pop
-    auto popped_event = stack.pop();
-    EXPECT_EQ(popped_event.get(), event2_ptr) << "Pop should return the last pushed event";
-    EXPECT_EQ(stack.size(), 1) << "Stack size should be 1 after pop";
-    
-    auto second_pop = stack.pop();
-    EXPECT_EQ(second_pop.get(), event1_ptr) << "Second pop should return first event";
-    EXPECT_EQ(stack.size(), 0) << "Stack should be empty after popping all events";
-}
-
-TEST_F(SpanTest, EventStackConcurrentAccessTest) {
-    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
-    EventStack stack;
-    std::mutex stack_mutex;  // External mutex (mirrors SpanData::span_event_lock_)
-
-    constexpr int num_push_threads = 2;
-    constexpr int num_pop_threads = 2;
-    constexpr int events_per_thread = 10;
-    std::atomic<int> push_count(0);
-    std::atomic<int> pop_count(0);
-
-    // Pre-create all events on the main thread to avoid data races on
-    // MockAgentService (cacheApi / cached_apis_ is not thread-safe).
-    std::vector<std::vector<std::unique_ptr<SpanEventImpl>>> pre_created(num_push_threads);
-    for (int t = 0; t < num_push_threads; t++) {
-        for (int i = 0; i < events_per_thread; i++) {
-            pre_created[t].push_back(
-                make_test_span_event_unique(*span, "event" + std::to_string(t * events_per_thread + i)));
-        }
-    }
-
-    std::vector<std::thread> threads;
-
-    // Push threads
-    for (int t = 0; t < num_push_threads; t++) {
-        threads.emplace_back([&stack, &stack_mutex, &push_count, &events = pre_created[t]]() {
-            for (int i = 0; i < events_per_thread; i++) {
-                {
-                    std::lock_guard<std::mutex> lock(stack_mutex);
-                    stack.push(std::move(events[i]));
-                }
-                push_count++;
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
-            }
-        });
-    }
-
-    // Wait a bit for some pushes to complete
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    // Pop threads
-    constexpr int total_to_pop = events_per_thread;  // pop half the total pushed
-    for (int t = 0; t < num_pop_threads; t++) {
-        threads.emplace_back([&stack, &stack_mutex, &pop_count]() {
-            while (pop_count < total_to_pop) {
-                {
-                    std::lock_guard<std::mutex> lock(stack_mutex);
-                    if (stack.size() > 0) {
-                        stack.pop();
-                        pop_count++;
-                    }
-                }
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
-            }
-        });
-    }
-
-    // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
-
-    // Drain remaining events so they are destroyed while span_data is alive
-    while (stack.size() > 0) {
-        stack.pop();
-    }
-    pre_created.clear();
-
-    EXPECT_GT(push_count.load(), 0) << "Should have pushed some events";
-    EXPECT_GT(pop_count.load(), 0) << "Should have popped some events";
-}
-
 // ========== SpanData Tests ==========
 
 TEST_F(SpanTest, SpanDataConstructorTest) {
@@ -1129,18 +1021,6 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
 
     prepare_event->EndEvent();
     parent.EndSpan();
-}
-
-// ========== EventStack Edge Case Tests ==========
-
-TEST_F(SpanTest, EventStackPopOnEmptyReturnsNullptrTest) {
-    EventStack stack;
-    EXPECT_EQ(stack.pop(), nullptr) << "Pop on empty stack should return nullptr";
-}
-
-TEST_F(SpanTest, EventStackTopOnEmptyReturnsNullptrTest) {
-    EventStack stack;
-    EXPECT_EQ(stack.top(), nullptr) << "Top on empty stack should return nullptr";
 }
 
 // ========== parseTraceId Edge Case Tests ==========

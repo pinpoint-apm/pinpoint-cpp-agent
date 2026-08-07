@@ -67,12 +67,12 @@ namespace pinpoint {
         se->setDepth(depth);
  
         auto* event = se.get();
-        event_stack_.push(std::move(se));
+        event_stack_.push_back(std::move(se));
         return event;
     }
 
     void SpanData::finishSpanEvent() {
-        auto se = event_stack_.pop();
+        auto se = popSpanEvent();
         if (se) {
             se->finish();
             storeFinishedEvent(std::move(se));
@@ -86,7 +86,7 @@ namespace pinpoint {
             finishSpanEvent();
             return;
         }
-        if (event_stack_.top() != expected) {
+        if (topSpanEvent() != expected) {
             LOG_WARN("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
         }
         // `expected` is always on the stack when this is reached: every pop
@@ -94,7 +94,7 @@ namespace pinpoint {
         // rejects an already-popped event before delegating here. So this
         // loop is a single pop in the well-nested case and stops at
         // `expected` when unwinding out-of-order ends.
-        while (auto se = event_stack_.pop()) {
+        while (auto se = popSpanEvent()) {
             const bool found = se.get() == expected;
             se->finish();
             storeFinishedEvent(std::move(se));
@@ -107,7 +107,7 @@ namespace pinpoint {
 
     size_t SpanData::finishOpenSpanEvents() {
         size_t count = 0;
-        while (auto se = event_stack_.pop()) {
+        while (auto se = popSpanEvent()) {
             se->finish();
             storeFinishedEvent(std::move(se));
             ++count;

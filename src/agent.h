@@ -72,7 +72,7 @@ namespace pinpoint {
 		/// terminal teardown before destruction when the last reference is
 		/// dropped without an explicit Shutdown(), and skips destruction
 		/// entirely when the teardown runner took ownership of the object
-		/// (deferred destroy) or when a resource-exhausted shutdown leaked it.
+		/// (deferred destroy).
 		struct SharedDeleter {
 			void operator()(AgentImpl* agent) const noexcept;
 		};
@@ -353,14 +353,6 @@ namespace pinpoint {
     	/// the caller (may_defer_destroy). Returns true when destruction was
     	/// deferred — the caller must then not destroy the object.
     	bool teardown_workers_with_deadline(bool may_defer_destroy) noexcept;
-    	/// @brief Resource-exhaustion fallback when the teardown helper thread
-    	/// cannot be created: intentionally leaks this agent (leak_on_release_)
-    	/// instead of joining unbounded — the already-signaled workers wind
-    	/// down on their own against a permanently live object. Returns false
-    	/// when the leak cannot be arranged (an object neither shared-owned
-    	/// nor deleter-owned dies with its scope regardless), in which case
-    	/// the caller must fall back to the inline join.
-    	bool leak_agent_for_stragglers(bool may_defer_destroy) noexcept;
     	/// @brief Joins the init thread and every gRPC worker thread.
     	void wait_grpc_workers();
     	/// @brief Performs the actual shutdown work (workers, watcher, logger)
@@ -370,16 +362,9 @@ namespace pinpoint {
     	///        and can skip destroying it (the SharedDeleter): a teardown
     	///        that outlives the deadline is then handed the object for a
     	///        deferred destroy instead of an unbounded join.
-    	/// @return true when the object's destruction was deferred or leaked;
+    	/// @return true when the object's destruction was deferred;
     	///         the caller must not destroy it.
     	bool do_shutdown(bool may_defer_destroy) noexcept;
-
-    	// Sticky "never destroy this object" marker, set when a
-    	// resource-exhausted shutdown had to abandon its workers without
-    	// joining them: the workers dereference this object indefinitely, so
-    	// SharedDeleter consults this flag at final release and leaks the
-    	// object instead of destroying it under them.
-    	std::atomic<bool> leak_on_release_{false};
     };
 
     // Test helpers for managing the global agent singleton

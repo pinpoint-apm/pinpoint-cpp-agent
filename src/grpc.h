@@ -455,22 +455,6 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Dispatcher for collector-originated profiler commands.
-     */
-    class GrpcCommandDispatcher {
-    public:
-        using Handler = std::function<bool(const v1::PCmdRequest&, grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>*)>;
-
-        void registerHandler(int32_t command_code, Handler handler);
-        bool handle(const v1::PCmdRequest& request,
-                    grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) const;
-        std::vector<int32_t> supportedCommandCodes() const;
-
-    private:
-        std::unordered_map<int32_t, Handler> handlers_{};
-    };
-
-    /**
      * @brief gRPC client responsible for the profiler command stream.
      */
     class GrpcCommand : public GrpcClient {
@@ -499,7 +483,6 @@ namespace pinpoint {
         class ActiveThreadCountStream;
 
         std::unique_ptr<v1::ProfilerCommandService::StubInterface> command_stub_{};
-        GrpcCommandDispatcher dispatcher_{};
 
         std::mutex command_worker_mutex_{};
         std::condition_variable command_worker_cv_{};
@@ -509,7 +492,11 @@ namespace pinpoint {
         std::mutex active_streams_mutex_{};
         std::vector<std::unique_ptr<ActiveThreadCountStream>> active_thread_count_streams_{};
 
-        void register_default_handlers();
+        // Routes a collector command to its handler, or writes a
+        // NOT_SUPPORTED_REQUEST fail message for an unknown code. Returns
+        // false when the stream write failed.
+        bool dispatch_command(const v1::PCmdRequest& request,
+                              grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
         bool handle_echo(const v1::PCmdRequest& request,
                          grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
         bool handle_active_thread_count(const v1::PCmdRequest& request,

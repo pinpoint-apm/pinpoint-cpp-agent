@@ -142,25 +142,15 @@ namespace pinpoint {
             if (view_ == nullptr && other.view_ == nullptr) {
                 return url_ == other.url_;
             }
-            if (view_ != nullptr && other.view_ == nullptr) {
-                return matches_view(other.url_, *view_);
+            // View keys are stack-local lookup keys and never stored in the
+            // map, so find() only ever compares view-vs-owned; two view keys
+            // can only meet as the same object.
+            if (view_ != nullptr && other.view_ != nullptr) {
+                return view_ == other.view_;
             }
-            if (view_ == nullptr && other.view_ != nullptr) {
-                return matches_view(url_, *other.view_);
-            }
-
-            // Two view keys are not used by UrlStatMap::find(), but retaining
-            // the full equivalence relation keeps UrlKey safe as a key type.
-            const auto size = url_size();
-            if (size != other.url_size()) {
-                return false;
-            }
-            for (size_t i = 0; i < size; ++i) {
-                if (url_at(i) != other.url_at(i)) {
-                    return false;
-                }
-            }
-            return true;
+            const auto& owned = view_ == nullptr ? url_ : other.url_;
+            const auto& view = view_ == nullptr ? *other.view_ : *view_;
+            return matches_view(owned, view);
         }
 
         std::string url_;
@@ -237,28 +227,6 @@ namespace pinpoint {
                 offset += part.size();
             }
             return true;
-        }
-
-        size_t url_size() const noexcept {
-            if (view_ == nullptr) {
-                return url_.size();
-            }
-            return view_url_size(*view_);
-        }
-
-        char url_at(size_t index) const noexcept {
-            if (view_ == nullptr) {
-                return url_[index];
-            }
-            const auto fragments = view_fragments(*view_);
-            for (size_t i = 0; i < fragments.count; ++i) {
-                const auto part = fragments.parts[i];
-                if (index < part.size()) {
-                    return part[index];
-                }
-                index -= part.size();
-            }
-            return '\0';
         }
 
         size_t url_hash() const noexcept {

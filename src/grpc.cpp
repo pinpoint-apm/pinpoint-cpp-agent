@@ -829,9 +829,19 @@ namespace pinpoint {
             return static_cast<int32_t>(request.command_case());
         }
 
-        std::string support_command_code_header(const std::vector<int32_t>& command_codes) {
+        // The commands dispatch_command() routes — keep in sync with its
+        // switch. Ascending order: the support-command-code metadata header
+        // lists codes sorted.
+        constexpr int32_t kSupportedCommandCodes[] = {
+            static_cast<int32_t>(v1::ECHO),
+            static_cast<int32_t>(v1::ACTIVE_THREAD_COUNT),
+        };
+        static_assert(kSupportedCommandCodes[0] < kSupportedCommandCodes[1],
+                      "support-command-code header lists codes in ascending order");
+
+        std::string support_command_code_header() {
             std::string value;
-            for (auto code : command_codes) {
+            for (auto code : kSupportedCommandCodes) {
                 if (!value.empty()) {
                     value.append(";");
                 }
@@ -839,35 +849,6 @@ namespace pinpoint {
             }
             return value;
         }
-    }
-
-    void GrpcCommandDispatcher::registerHandler(int32_t command_code, Handler handler) {
-        handlers_[command_code] = std::move(handler);
-    }
-
-    std::vector<int32_t> GrpcCommandDispatcher::supportedCommandCodes() const {
-        std::vector<int32_t> codes;
-        codes.reserve(handlers_.size());
-        for (const auto& [code, handler] : handlers_) {
-            codes.push_back(code);
-        }
-        std::sort(codes.begin(), codes.end());
-        return codes;
-    }
-
-    bool GrpcCommandDispatcher::handle(
-            const v1::PCmdRequest& request,
-            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) const {
-        const auto code = command_code(request);
-        const auto handler = handlers_.find(code);
-        if (handler == handlers_.end()) {
-            v1::PCmdMessage fail_message;
-            auto* fail = fail_message.mutable_failmessage();
-            fail->set_responseid(request.requestid());
-            fail->mutable_message()->set_value("NOT_SUPPORTED_REQUEST");
-            return stream == nullptr || stream->Write(fail_message);
-        }
-        return handler->second(request, stream);
     }
 
     class GrpcCommand::ActiveThreadCountStream {
@@ -1013,9 +994,7 @@ namespace pinpoint {
     };
 
     GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
-        : GrpcClient(AGENT, std::move(config), tuning) {
-        register_default_handlers();
-    }
+        : GrpcClient(AGENT, std::move(config), tuning) {}
 
     void GrpcCommand::create_stub() {
         set_command_stub(v1::ProfilerCommandService::NewStub(channel_));
@@ -1025,17 +1004,18 @@ namespace pinpoint {
         stopCommandWorker();
     }
 
-    void GrpcCommand::register_default_handlers() {
-        dispatcher_.registerHandler(static_cast<int32_t>(v1::ECHO),
-            [this](const v1::PCmdRequest& request,
-                   grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+    bool GrpcCommand::dispatch_command(
+            const v1::PCmdRequest& request,
+            grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+        // Keep the cases in sync with kSupportedCommandCodes above.
+        switch (command_code(request)) {
+            case static_cast<int32_t>(v1::ECHO):
                 return handle_echo(request, stream);
-            });
-        dispatcher_.registerHandler(static_cast<int32_t>(v1::ACTIVE_THREAD_COUNT),
-            [this](const v1::PCmdRequest& request,
-                   grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream) {
+            case static_cast<int32_t>(v1::ACTIVE_THREAD_COUNT):
                 return handle_active_thread_count(request, stream);
-            });
+            default:
+                return write_fail_message(request, stream, "NOT_SUPPORTED_REQUEST");
+        }
     }
 
     void GrpcCommand::build_command_context(grpc::ClientContext* context, unsigned long socket_id) const {
@@ -1254,8 +1234,7 @@ namespace pinpoint {
 
             grpc::ClientContext context;
             build_command_context(&context, ++socket_id_);
-            const auto command_codes = dispatcher_.supportedCommandCodes();
-            context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header(command_codes));
+            context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header());
 
             const StreamContextGuard context_guard(this, &context);
 
@@ -1283,7 +1262,7 @@ namespace pinpoint {
                     reconnect_backoff.reset();
                     LOG_DEBUG("received command request: requestId={}, commandCode={}",
                               request.requestid(), command_code(request));
-                    const auto handled = dispatcher_.handle(request, stream.get());
+                    const auto handled = dispatch_command(request, stream.get());
                     request.Clear();
                     if (!handled) {
                         LOG_INFO("command stream write failed while handling request");
