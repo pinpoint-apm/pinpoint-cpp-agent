@@ -45,7 +45,8 @@ int main() {
     setenv("PINPOINT_CPP_ENABLE", "false", 1);
 
     // Tracing is disabled: StartAgent() returns false, no agent is
-    // installed, and no tracing data is collected.
+    // installed, and no tracing data is collected. Do NOT print a
+    // "failed to start" message for this return value — see the note below.
     pinpoint::StartAgent();
 
     // Your application code
@@ -53,6 +54,16 @@ int main() {
     return 0;
 }
 ```
+
+> **A deliberate disable returns `false`, just like a failure.** `Enable: false`
+> and a real configuration error are indistinguishable from the return value
+> alone, and the disable is the one case that writes **nothing** to the agent
+> log — so the usual "check the agent log" message points at an empty log. In a
+> deployment that may be configured with `Enable: false`, either skip the
+> `StartAgent()` call when you know tracing is off, or word the message so it
+> does not read as an error (e.g. "pinpoint tracing is not active"). Everything
+> else keeps working: `GlobalAgent()` hands out the noop agent and every tracing
+> call is a safe no-op.
 
 For more information, refer to the [Configuration Guide](config.md).
 
@@ -273,6 +284,11 @@ failed to send AgentInfo             # collector not reachable yet (retried inde
 
 A failed agent start never breaks the application — all tracing calls degrade to safe noops and the app runs normally; only the traces are missing. `Enable()` itself is meant only as a fast-fail guard before span creation (to skip instrumentation while tracing is off), not as a startup check.
 
+An **empty** agent log next to a `false` return points at `Enable: false` (in the
+config file or `PINPOINT_CPP_ENABLE`) rather than a broken configuration — that
+is the one path that returns `false` without logging anything. Check it first;
+see [Disabling the Agent](#disabling-the-agent).
+
 **Solutions:**
 
 1. **Check Configuration** — ensure required fields are set:
@@ -280,7 +296,7 @@ A failed agent start never breaks the application — all tracing calls degrade 
    ```yaml
    ApplicationName: "MyApp"  # Required
    Collector:
-     GrpcHost: "localhost"   # Required
+     Host: "localhost"       # Required
    ```
 
 2. **Verify Collector Connection:**
@@ -301,6 +317,14 @@ A failed agent start never breaks the application — all tracing calls degrade 
    ```bash
    grep -i error /var/log/pinpoint/agent.log
    ```
+
+5. **Check the *resolved* configuration** — with `Log.Level: "debug"` the agent
+   logs the configuration it actually resolved at startup, after the file,
+   environment variables and defaults have been merged. This is the fastest way
+   to catch a setting that never took effect: a typo'd YAML key, a stale
+   `PINPOINT_CPP_*` variable in the environment overriding the file, or a value
+   clamped into range. Compare it against what you intended, not against your
+   config file.
 
 ### Issue 2: No Data in Pinpoint UI
 
@@ -333,6 +357,10 @@ A failed agent start never breaks the application — all tracing calls degrade 
 3. **Check Application Name** — `ApplicationName` must be set in configuration.
 
 4. **Wait for Collection** — data may take 5–10 seconds to appear depending on the stat collection interval.
+
+5. **Check the collector side** — the agent log can show a clean `AgentInfo sent`
+   and spans still be rejected downstream. Review the Pinpoint **collector**
+   logs for errors before assuming the agent is at fault.
 
 ### Issue 3: Memory Leaks
 
@@ -424,6 +452,15 @@ Http:
 
 ### Slow Application Response
 
+Reduce the amount of work per transaction:
+
+- Trace only the paths that matter; not every function needs a span event.
+- Prefer fewer, coarser span events over very fine-grained ones for trivial work.
+- Cut the volume and size of annotations and recorded headers (`HEADERS-ALL` is a
+  debugging setting, not a production one).
+- Disable what you do not read: `Http.CollectUrlStat`, `Sql.EnableSqlStats`,
+  `Stat.Enable`.
+
 Use throughput-limited sampling to limit overhead:
 
 ```yaml
@@ -462,10 +499,10 @@ span->EndSpan();
 
    ```yaml
    Collector:
-     GrpcHost: "pinpoint-collector.example.com"
-     GrpcAgentPort: 9991
-     GrpcSpanPort: 9993
-     GrpcStatPort: 9992
+     Host: "pinpoint-collector.example.com"
+     AgentPort: 9991
+     SpanPort: 9993
+     StatPort: 9992
    ```
 
 2. **Test Network Connectivity:**
@@ -524,13 +561,19 @@ ping -M do -s 1472 pinpoint-collector
 
 2. **Verify Span Ending** — ensure `EndSpan()` is called on every code path.
 
-3. **Check Excluded URLs** — temporarily remove exclusions:
+3. **Check Excluded URLs and Methods** — temporarily remove both exclusions; a
+   filter match produces a noop span, so the transaction disappears entirely:
 
    ```yaml
    Http:
      Server:
        ExcludeUrl: []
+       ExcludeMethod: []
    ```
+
+   Note that `ExcludeMethod` only applies when the span is created with the
+   `NewSpan(operation, rpc_point, method, reader)` overload — without the method
+   argument there is nothing to match.
 
 ### Incomplete Traces
 
@@ -573,6 +616,17 @@ ping -M do -s 1472 pinpoint-collector
    ```
 
 3. **Check for Header Stripping** — gateways or proxies may strip or rewrite Pinpoint headers.
+
+4. **Check your reader's header lookup is case-insensitive** — the agent asks
+   your `TraceContextReader` for the canonical spellings (`Pinpoint-TraceID`,
+   `Pinpoint-Sampled`, ...), but HTTP header names are case-insensitive on the
+   wire and proxies and HTTP/2 clients routinely re-case them (`pinpoint-traceid`).
+   A reader backed by a case-sensitive container silently finds nothing and every
+   request looks like a new transaction. `httplib::Headers` is case-insensitive by
+   default, which is why the examples in the
+   [Instrumentation Guide](instrument.md#implementing-custom-adapters) work as
+   written; a plain `std::map<std::string, std::string>` does **not** — normalise
+   the key inside your `Get()`.
 
 ---
 

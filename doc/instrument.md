@@ -75,6 +75,14 @@ Before you can create spans, you must start an `Agent` instance with `StartAgent
 
 **`StartAgent()` returns a `bool`.** `true` means the agent was launched and installed as the global agent — obtain the handle with `GlobalAgent()`. `false` reports a *synchronous* configuration or setup failure (it never throws); nothing is installed as the global agent then, and a later `StartAgent()` call retries from scratch. When it returns `false`, print a message pointing at the agent log, where the failure cause is recorded.
 
+> **`Enable: false` also returns `false`.** A deliberate disable
+> ([config.md](config.md#agent-configuration)) takes the same return path as a
+> failure, and it is the *only* `false` that writes nothing to the agent log. If
+> your deployment disables the agent by configuration, either skip the
+> `StartAgent()` call there or word the message so it does not read as an error
+> — otherwise a correctly configured process logs "failed to start" and the
+> agent log has nothing to explain it.
+
 A `true` return only means initialization was launched — **whether the agent actually came online can only be verified through the agent log**, not through the return value or an immediate `Enable()` call. On success the log shows `AgentInfo sent`; failures appear as error entries such as `agent start failed: ...` or `failed to init grpc workers: ...` (set `Log.Level: "debug"` for more detail).
 
 **A failed agent start never affects the application.** Every API call on a noop or not-yet-enabled agent is safe: spans are noop objects and all operations on them do nothing. The application runs exactly as it would without the agent — the only consequence is that no traces are collected.
@@ -179,7 +187,7 @@ auto agent = pinpoint::GlobalAgent();
 1. Collect configuration in `AgentOptions` (file path, YAML string) and/or environment variables.
 2. Call `StartAgent(options)` in the process that records spans, before creating spans. When it returns `false`, print a message pointing at the agent log.
 3. Obtain the agent handle with `GlobalAgent()` and hold it for the lifetime of the process.
-4. Call `Shutdown()` on application exit (see [§11](#11-asynchronous-and-background-work)).
+4. Call `Shutdown()` on application exit (see [§14 — Shutdown Cleanly](#14-best-practices)).
 
 ---
 
@@ -189,10 +197,11 @@ Create a span at the **entry point** of each transaction: HTTP/gRPC server handl
 
 ### Span Creation Methods
 
-There are two main overloads:
+There are three overloads:
 
 - `Agent::NewSpan(operation, rpc_point)` — starts a **new** transaction.
 - `Agent::NewSpan(operation, rpc_point, TraceContextReader& reader)` — continues a transaction when upstream trace headers are present. Falls back to a new transaction if headers are missing.
+- `Agent::NewSpan(operation, rpc_point, method, TraceContextReader& reader)` — same, plus the HTTP method, so the `Http.Server.ExcludeMethod` filter can apply. Prefer this one in HTTP servers.
 
 ### Example: HTTP Server Handler
 
@@ -1272,7 +1281,7 @@ For the full configuration reference, see [Configuration Guide — Sampling](con
 
 ### URL Filtering
 
-Exclude URL patterns (health checks, static files, etc.) from tracing. Patterns support Ant-style wildcards (`*` for single path segment, `**` for multiple segments):
+Exclude URL patterns (health checks, static files, etc.) from tracing. Patterns support Ant-style wildcards: `?` matches one character, `*` matches any run of characters, and `**` matches across path segments. Neither `?` nor `*` crosses a `/`:
 
 ```yaml
 Http:
@@ -1280,8 +1289,13 @@ Http:
     ExcludeUrl:
       - "/health"
       - "/static/**"
-      - "*.css"
+      - "/**/*.css"
 ```
+
+> A pattern must match the **whole** path, so it has to account for the leading
+> `/`. A bare suffix pattern like `"*.css"` never matches `/static/main.css` —
+> `*` cannot consume the `/` separators. Use `"/**/*.css"` for "any `.css` at
+> any depth".
 
 ### HTTP Method Filtering
 
@@ -1425,35 +1439,23 @@ if (agent) {
 
 ## 15. Troubleshooting
 
-### Spans Not Appearing
+The [Troubleshooting Guide](trouble_shooting.md) owns the full diagnostic
+procedure — agent startup, collector connectivity, memory and CPU, and the
+commands to run. This section covers only the failure modes whose cause is in
+**your instrumentation code**, and where to look for each.
 
-- Confirm from the agent log that startup succeeded (`AgentInfo sent`); errors such as `agent start failed` or `failed to send AgentInfo` mean the agent never came online — the application still runs, but nothing is traced.
-- Check that `EndSpan()` is called for every created span.
-- Verify sampling rate is greater than zero.
-- Ensure collector host/port and network connectivity are correct.
-- Set `Log.Level: "debug"` and review startup logs.
+| Symptom | Instrumentation causes to rule out first |
+|---|---|
+| Spans missing entirely | `EndSpan()` not reached on some path (an early `return`, an exception — see [§14](#14-best-practices) for the RAII guard). A span released without it is never sent ([§6.2](#62-end-exactly-once-and-record-before-ending)). |
+| Span appears, data missing | Recorded *after* `EndSpan()`/`EndEvent()`; every setter is a no-op past that point ([§6.2](#62-end-exactly-once-and-record-before-ending)). Check the agent log for `span (event) is already finished`. |
+| Wrong durations, odd nesting | Events ended out of LIFO order, or not at all — the log says `span event ended out of order` / `N span event(s) not ended by user code` ([§6.3](#63-end-span-events-in-nesting-lifo-order)). |
+| Deep call trees truncated | Depth/count overflow: `span event maximum depth/sequence exceeded` ([§6.5](#65-event-depth-and-count-limits-overflow)). Create coarser events or raise the limits. |
+| Traces break at a service boundary | `InjectContext()` skipped on the outbound call — including on unsampled spans, where skipping it makes downstream agents start a brand-new trace ([§6.11](#611-noop-and-unsampled-spans-are-deliberately-silent)). Both sides must be wired: inject on the client, extract on the server ([§7](#7-distributed-tracing-and-context-propagation)). |
+| Collector flooded with metadata | High-cardinality `operation` / `error_name` strings; put the variable part in an annotation instead ([§6.8](#68-keep-operation-and-error-names-low-cardinality)). |
+| Crashes or corrupt traces under load | A span used from more than one thread — the log says `span accessed from another thread`. Hand off completely, or use `NewAsyncSpan()` ([§6.1](#61-a-span-is-single-threaded)). |
 
-### High Memory Usage
-
-- Reduce `Span.QueueSize` (e.g., `512`).
-- Lower `Span.MaxEventSequence` (e.g., `1000`).
-- Reduce `Http.UrlStatLimit` (e.g., `512`).
-
-### Performance Issues
-
-- Lower the sampling rate or use throughput-limited sampling.
-- Avoid creating extremely fine-grained span events for trivial work.
-- Reduce the volume and size of annotations and recorded headers.
-- Disable `CollectUrlStat` and `EnableSqlStats` if not needed.
-
-For more detailed troubleshooting, see the [Troubleshooting Guide](trouble_shooting.md).
-
-### Distributed Tracing Not Working
-
-- Verify trace headers are **both** injected on the client and extracted on the server.
-- Confirm `TraceContextReader`/`Writer` implementations use the exact header names expected by the agent.
-- Check for gateways or proxies that might strip or rewrite Pinpoint headers.
-- Ensure header name matching is case-sensitive as required.
+Set `Log.Level: "debug"`: the contract violations above are all logged, so the
+agent log usually names the bug before you have to reason about it.
 
 ---
 

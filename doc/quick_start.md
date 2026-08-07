@@ -86,10 +86,10 @@ ApplicationName: "MyApplication"
 AgentName: "my-agent-name"  # Optional label; the agent id is always auto-generated
 
 Collector:
-  GrpcHost: "localhost"      # Your Pinpoint collector host
-  GrpcAgentPort: 9991        # gRPC agent port
-  GrpcSpanPort: 9993         # gRPC span port
-  GrpcStatPort: 9992         # gRPC stat port
+  Host: "localhost"          # Your Pinpoint collector host
+  AgentPort: 9991            # gRPC agent port
+  SpanPort: 9993             # gRPC span port
+  StatPort: 9992             # gRPC stat port
 
 Sampling:
   Type: "COUNTER"
@@ -124,10 +124,10 @@ int main() {
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
 export PINPOINT_CPP_AGENT_NAME="my-agent-name"
-export PINPOINT_CPP_GRPC_HOST="localhost"
-export PINPOINT_CPP_GRPC_AGENT_PORT="9991"
-export PINPOINT_CPP_GRPC_SPAN_PORT="9993"
-export PINPOINT_CPP_GRPC_STAT_PORT="9992"
+export PINPOINT_CPP_COLLECTOR_HOST="localhost"
+export PINPOINT_CPP_COLLECTOR_AGENT_PORT="9991"
+export PINPOINT_CPP_COLLECTOR_SPAN_PORT="9993"
+export PINPOINT_CPP_COLLECTOR_STAT_PORT="9992"
 ```
 
 You can also point to a config file via environment variable:
@@ -147,7 +147,7 @@ int main() {
     std::string config = R"(
         ApplicationName: "MyApplication"
         Collector:
-          GrpcHost: "localhost"
+          Host: "localhost"
     )";
 
     pinpoint::AgentOptions options;
@@ -215,7 +215,11 @@ int main() {
 > thread connects to the collector, registers the agent (retrying until it
 > succeeds) and starts the workers. A `false` return reports a *synchronous*
 > configuration or setup failure — print a message pointing at the agent log,
-> as in the example above. A `true` return means initialization was launched,
+> as in the example above. (One `false` is not a failure: a deliberate
+> `Enable: false` also returns `false`, and it is the only one that leaves no
+> trace in the agent log. See the
+> [Configuration Guide](config.md#agent-configuration).) A `true` return means
+> initialization was launched,
 > NOT that registration already succeeded: `Enable()` flips to `true` only
 > after that registration completes, so it is normally still `false`
 > immediately after `StartAgent()` returns — checking it there is meaningless.
@@ -368,7 +372,7 @@ void doWork() {
 int main() {
     // Configure via environment or file
     setenv("PINPOINT_CPP_APPLICATION_NAME", "my-first-app", 0);
-    setenv("PINPOINT_CPP_GRPC_HOST", "localhost", 0);
+    setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 0);
 
     // Create and start agent. StartAgent() returns immediately while the
     // agent registers with the collector in the background — check the agent
@@ -521,36 +525,30 @@ Now that you have a basic understanding of the Pinpoint C++ Agent, you can:
 
 ## Troubleshooting
 
-### Agent Not Starting
+**Start with the agent log.** Almost every first-run problem is answered there,
+and the log is the *only* authoritative signal — `StartAgent()` returns before
+registration completes, so `Enable()` right after it is normally still `false`
+even on a healthy start:
 
-If the agent fails to start (remember: the application itself keeps working —
-a failed agent start only means no traces are collected):
+| In the agent log | Meaning |
+|---|---|
+| `AgentInfo sent` | The agent registered with the collector. Startup succeeded. |
+| `agent start failed: ...` | Configuration or setup error; the line names the cause. |
+| `failed to send AgentInfo` | The collector is not reachable yet. Retried indefinitely. |
+| *(nothing at all)* | Check `Enable` — a deliberate `Enable: false` returns `false` from `StartAgent()` and logs nothing. |
 
-1. Check the agent log for startup errors (`agent start failed`, `failed to send AgentInfo`); on success the log shows `AgentInfo sent`. Set `Log.Level: "debug"` for verbose output. This is the authoritative way to check start success — `Enable()` right after `StartAgent()` is normally still `false` because registration runs in the background.
-2. Check that the collector host and ports are correct.
-3. Verify network connectivity to the Pinpoint collector.
-4. Ensure `ApplicationName` is set correctly.
+Set `Log.Level: "debug"` for the full picture, including the resolved
+configuration. Whatever the log says, **your application keeps working**: a
+failed agent start costs you traces, nothing else.
 
-### No Data in Pinpoint UI
+Nothing in the UI despite `AgentInfo sent`? The three usual causes are sampling
+(`CounterRate: 1` samples everything — use it while testing), a span that is
+never ended (`EndSpan()` must run on every code path), and the collection
+interval (wait a few seconds).
 
-If you don't see data in Pinpoint:
-
-1. Verify from the agent log that collector registration completed (`AgentInfo sent`); `Enable()` becomes `true` only after that point.
-2. Check sampling configuration — use `CounterRate: 1` (sample all) for initial testing.
-3. Ensure spans are properly ended with `EndSpan()`.
-4. Wait a few seconds for data to appear (there is a collection interval).
-5. Check Pinpoint collector logs for errors.
-
-### Performance Impact
-
-To minimize performance impact:
-
-1. Use appropriate sampling rates (not 100% in production).
-2. Avoid excessive annotations.
-3. Only trace critical paths.
-4. Monitor agent overhead and adjust configuration (queue sizes, URL stats, SQL stats).
-
-For more detailed troubleshooting, see the [Instrumentation Guide](instrument.md#15-troubleshooting).
+For everything else — connection failures, memory or CPU concerns, missing
+distributed traces, and the diagnostic commands to run — see the
+[Troubleshooting Guide](trouble_shooting.md).
 
 ---
 

@@ -128,6 +128,14 @@ failure; nothing is installed as the global agent then, and a later
 `pt_start_agent()` call retries from scratch. When it returns `0`, print a
 message pointing at the agent log, where the failure cause is recorded.
 
+> **`Enable: false` also returns `0`.** A deliberate disable
+> ([config.md](config.md#agent-configuration)) takes the same return path as a
+> failure, and it is the *only* `0` that writes nothing to the agent log. If
+> your deployment disables the agent by configuration, either skip the
+> `pt_start_agent()` call there or word the message so it does not read as an
+> error — otherwise a correctly configured process logs "failed to start" and
+> the agent log has nothing to explain it.
+
 **`pt_start_agent()` is asynchronous.** It returns as soon as initialization is
 launched: a background thread opens the gRPC channels, registers the agent with
 the collector (retrying until the collector accepts it) and starts the workers.
@@ -599,6 +607,7 @@ PT_HEADER_FLAG                  /* "Pinpoint-Flags"          */
 PT_HEADER_PARENT_APP_NAME       /* "Pinpoint-pAppName"       */
 PT_HEADER_PARENT_APP_TYPE       /* "Pinpoint-pAppType"       */
 PT_HEADER_PARENT_APP_NAMESPACE  /* "Pinpoint-pAppNamespace"  */
+PT_HEADER_PARENT_SERVICE_NAME   /* "Pinpoint-pServiceName"   */
 PT_HEADER_HOST                  /* "Pinpoint-Host"           */
 ```
 

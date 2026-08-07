@@ -130,9 +130,9 @@ int main() {
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
 | `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to the agent id when omitted. |
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
-| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `"DEFAULT"` | Only used for `UidVersion: v4` (max 254 chars); falls back to `DEFAULT` when unset. Unused for v1/v3. |
+| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | Only used for `UidVersion: v4` (max 254 chars); an unset value resolves to `DEFAULT` at startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
-| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. |
+| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](trouble_shooting.md#disabling-the-agent). |
 
 > **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
 
@@ -288,8 +288,8 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
 | `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered while waiting for aggregation; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. |
 | `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. |
-| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | URL path depth for normalisation (e.g., depth 2: `/api/users` → `/api/*`). Requires `UrlStatEnableTrimPath: true`. |
-| `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with HTTP method (e.g., `GET:/api/users`). |
+| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is (depth `2`: `/api/users` → `/api/users`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
+| `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
 
 ### Server-side Tracing
 
@@ -614,22 +614,21 @@ export PINPOINT_CPP_SQL_TRACE_BIND_VALUE="true"
 
 ## Troubleshooting
 
-### Agent Not Connecting
-1. Verify `Collector.Host` and port values match the collector cluster.
-2. Set `Log.Level: "debug"` and review startup logs — `make_config()` prints the resolved configuration.
+Diagnosis lives in the [Troubleshooting Guide](trouble_shooting.md). What
+belongs here is the reverse index — which key to reach for once you know the
+symptom:
 
-### High Memory Usage
-- Reduce `Span.QueueSize` (e.g., `512`).
-- Lower `Span.MaxEventSequence` (e.g., `1000`).
-- Reduce `Http.UrlStatLimit` (e.g., `512`).
+| Symptom | Keys to change |
+|---|---|
+| Agent never connects | `Collector.Host`, `Collector.*Port` ([Collector](#collector-configuration)) |
+| Nothing is traced at all | `Enable` — `false` disables the agent and makes `StartAgent()` return `false` ([Agent](#agent-configuration)) |
+| Transactions missing | `Sampling.CounterRate: 1` to sample all; clear `Http.Server.ExcludeUrl` / `ExcludeMethod` ([Sampling](#sampling-configuration), [HTTP](#http-configuration)) |
+| Memory too high | Lower `Span.QueueSize`, `Span.MaxEventSequence`, `Http.UrlStatLimit` ([Span](#span-configuration), [HTTP](#http-configuration)) |
+| CPU / latency overhead | Lower `Sampling.PercentRate` or set `NewThroughput` / `ContinueThroughput`; turn off `Http.CollectUrlStat`, `Sql.EnableSqlStats`, `Stat.Enable` |
+| Traces truncated | Raise `Span.MaxEventDepth` / `MaxEventSequence` (`-1` = unlimited) ([Span](#span-configuration)) |
+| A setting seems ignored | Set `Log.Level: "debug"` — the agent logs the configuration it **resolved**, after file, env vars and clamping. An env var set only in the environment silently wins over the file ([Precedence](#configuration-methods--precedence)) |
 
-### Performance Impact
-- Lower sampling rate: `PercentRate: 5.0`.
-- Disable `CollectUrlStat`, `EnableSqlStats`, and/or `Stat.Enable`.
-
-### Missing Transactions
-- Set `Sampling.CounterRate: 1` to sample all.
-- Temporarily clear `Http.Server.ExcludeUrl` and `ExcludeMethod`.
+Sizing guidance for each of these is in [Best Practices](#best-practices) above.
 
 ---
 

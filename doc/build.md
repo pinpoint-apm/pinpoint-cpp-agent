@@ -98,6 +98,7 @@ pinpoint-cpp-agent/
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
 ├── example/             # Example applications
 ├── test/                # Unit tests
+│   ├── it/              # Integration test against an in-process mock collector
 │   └── e2e/             # Integration test (HTTP + gRPC + SQL tracing)
 └── scripts/             # Valgrind helper scripts
 ```
@@ -141,7 +142,7 @@ Dependencies are declared in `MODULE.bazel`:
 | protobuf | 29.2 | Protocol Buffers serialization |
 | grpc | 1.63.1 | gRPC communication with Pinpoint collector |
 | yaml-cpp | 0.8.0 | YAML configuration parsing |
-| abseil-cpp | 20240722.0 | Abseil C++ common libraries |
+| abseil-cpp | 20250127.1 | Abseil C++ common libraries |
 | fmt | 11.1.4 | String formatting |
 | googletest | 1.17.0 | Unit testing framework |
 
@@ -168,6 +169,7 @@ cmake --list-presets
 | `conan` | Conan 2 toolchain (requires `conan install` first) |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
 | `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
+| `coverage` | `default` deps; Clang `Debug` build with source-based coverage; the build step also runs the tests and writes the reports (see [LLVM Coverage](#llvm-coverage-cmake)) |
 | `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
 | `asan` | `default` deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
 | `tsan` | `default` deps; `Debug` build instrumented with ThreadSanitizer (`-fsanitize=thread`) |
@@ -182,6 +184,10 @@ ctest --preset default
 ```
 
 Each preset writes to its own build directory (`build/<preset-name>/`), so you can keep several configurations side by side.
+
+> `coverage` and `profiling` have no matching **test** preset: `coverage` runs the
+> tests as part of its build step, and `profiling` is meant to be driven by a
+> profiler. Every other preset above has one, so `ctest --preset <name>` works.
 
 ### Dependency Versions
 
@@ -423,7 +429,7 @@ cmake --build build/coverage --target coverage
 | `test_limiter` | Rate limiter logic |
 | `test_sampling` | Sampling strategy |
 | `test_cache` | Cache operations |
-| `test_http` | HTTP header parsing |
+| `test_http` | HTTP header parsing, URL/method filters |
 | `test_annotation` | Annotation handling |
 | `test_callstack` | Call stack tracking |
 | `test_config` | YAML configuration loading |
@@ -434,9 +440,16 @@ cmake --build build/coverage --target coverage
 | `test_span_event` | Span event lifecycle |
 | `test_span` | Span lifecycle |
 | `test_noop` | No-op mode behavior |
+| `test_utility` | Span id / UUID generation helpers |
+| `test_logging` | Logger behavior and file handling |
+| `test_atomic_shared_ptr` | Atomic shared-pointer snapshot semantics |
+| `test_sharded_bounded_queue` | Sharded bounded queue |
 | `test_grpc` | gRPC transport |
 | `test_grpc_with_mocks` | gRPC transport with mock services |
+| `test_agent_with_mocks` | Agent lifecycle (start / enable / shutdown) with mock services |
+| `test_fork` | Pre-fork worker lifecycle and inherited-agent guards |
 | `test_tracer_c` | Pure-C API wrapper behavior |
+| `agent_integration_test` | End-to-end agent run against an in-process mock collector (`test/it/`, see [`test/it/README.md`](../test/it/README.md)) |
 
 ---
 

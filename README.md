@@ -160,7 +160,8 @@ See the [Build Guide](doc/build.md) for detailed instructions including vcpkg in
 |---|---|
 | [Quick Start Guide](doc/quick_start.md) | Step-by-step setup with full examples |
 | [Configuration Guide](doc/config.md) | All configuration options, environment variables, and best practices |
-| [Instrumentation Guide](doc/instrument.md) | API reference: spans, span events, annotations, distributed tracing |
+| [Instrumentation Guide](doc/instrument.md) | C++ API reference: spans, span events, annotations, distributed tracing |
+| [C API Instrumentation Guide](doc/instrument_c.md) | The same, for plain C via `tracer_c.h` (`pt_*` functions) |
 | [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
 | [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
 | [Troubleshooting](doc/trouble_shooting.md) | Debugging, logging, common issues and solutions |
