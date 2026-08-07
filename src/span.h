@@ -39,7 +39,6 @@ namespace pinpoint {
     // Span status and flag constants
     constexpr int SPAN_FLAG_NONE = 0;
     constexpr int SPAN_ERR_NONE = 0;
-    constexpr int SPAN_ERR_TRUE = 1;
     constexpr int32_t SPAN_LOGGING_FLAG_OFF = 0;
     constexpr int32_t SPAN_LOGGING_FLAG_ON = 1;
 
@@ -277,16 +276,16 @@ namespace pinpoint {
     	TraceId trace_id_;
     	// Lazily-built toString() cache; see getTraceIdWire().
     	std::string trace_id_wire_;
-    	int64_t span_id_;
+    	int64_t span_id_{};
 
-    	int64_t parent_span_id_;
+    	int64_t parent_span_id_{-1};
     	std::string parent_app_name_;
-    	int32_t parent_app_type_;
+    	int32_t parent_app_type_{1};
     	std::string parent_app_namespace_;
     	std::string parent_service_name_;
 
     	int32_t app_type_;
-    	int32_t service_type_;
+    	int32_t service_type_{defaults::SPAN_SERVICE_TYPE};
     	std::string operation_;
     	int32_t api_id_;
 
@@ -297,21 +296,21 @@ namespace pinpoint {
 
         // Atomic so overflow checks and event position reservation never race
         // concurrent NewSpanEvent calls.
-    	std::atomic<int32_t> event_sequence_;
-    	std::atomic<int32_t> event_depth_;
+    	std::atomic<int32_t> event_sequence_{0};
+    	std::atomic<int32_t> event_depth_{1};
 
-    	int32_t logging_flag_;
-    	int flags_;
-    	int err_;
-    	int32_t error_func_id_;
+    	int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
+    	int flags_{SPAN_FLAG_NONE};
+    	int err_{SPAN_ERR_NONE};
+    	int32_t error_func_id_{};
     	std::string error_string_;
 
     	int64_t start_time_;
     	std::chrono::system_clock::time_point end_time_;
-    	int32_t elapsed_;
+    	int32_t elapsed_{};
 
-    	int32_t async_id_;
-    	int32_t async_sequence_;
+    	int32_t async_id_{NONE_ASYNC_ID};
+    	int32_t async_sequence_{};
 
     	/// @brief Removes and returns the most recent open span event, or
     	/// nullptr if none is open. Must be called on the span's owning thread.
@@ -503,7 +502,7 @@ namespace pinpoint {
     	 * handle, which guards against duplicate ends before delegating here.
     	 * A null `se` keeps the plain pop-top behavior.
     	 */
-    	void endSpanEvent(SpanEventImpl* se = nullptr);
+    	void endSpanEvent(SpanEventImpl* se);
     	/**
     	 * @brief Consumes one pending overflow placeholder.
     	 *

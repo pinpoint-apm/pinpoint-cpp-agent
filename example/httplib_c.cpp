@@ -98,20 +98,12 @@ extern "C" int hlc_server_listen(hlc_server_t server, const char* host, int port
     return server->server.listen(host, port) ? 1 : 0;
 }
 
-extern "C" void hlc_server_stop(hlc_server_t server) {
-    if (server) server->server.stop();
-}
-
 // ============================================================================
 // Request accessors
 // ============================================================================
 
 extern "C" const char* hlc_request_path(const hlc_request_t* req) {
     return (req && req->req) ? req->req->path.c_str() : "";
-}
-
-extern "C" const char* hlc_request_method(const hlc_request_t* req) {
-    return (req && req->req) ? req->req->method.c_str() : "";
 }
 
 extern "C" const char* hlc_request_remote_addr(const hlc_request_t* req) {
@@ -153,17 +145,6 @@ extern "C" void hlc_response_set_content(hlc_response_t* res,
                                          const char*     mime_type) {
     if (!res || !res->res || !content) return;
     res->res->set_content(content, mime_type ? mime_type : "text/plain");
-}
-
-extern "C" void hlc_response_set_status(hlc_response_t* res, int status) {
-    if (res && res->res) res->res->status = status;
-}
-
-extern "C" void hlc_response_set_header(hlc_response_t* res,
-                                        const char*     key,
-                                        const char*     value) {
-    if (!res || !res->res || !key || !value) return;
-    res->res->set_header(key, value);
 }
 
 extern "C" void* hlc_response_headers_handle(const hlc_response_t* res) {
@@ -247,13 +228,6 @@ extern "C" int hlc_result_status(const hlc_result_t result) {
 
 extern "C" const char* hlc_result_body(const hlc_result_t result) {
     return (result && result->result) ? result->result->body.c_str() : "";
-}
-
-extern "C" void* hlc_result_headers_handle(const hlc_result_t result) {
-    if (!result || !result->result) return nullptr;
-    // Cast away the logical const — the pointer is treated as read-only by
-    // the C header accessors (hlc_headers_get / hlc_headers_for_each).
-    return const_cast<httplib::Headers*>(&result->result->headers);
 }
 
 extern "C" const char* hlc_result_error_message(const hlc_result_t result) {

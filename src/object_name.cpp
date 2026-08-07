@@ -22,6 +22,7 @@
 
 #include "absl/random/random.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/match.h"
 
 #include "logging.h"
 #include "utility.h"
@@ -29,23 +30,10 @@
 namespace pinpoint {
 
     NameVersion parse_name_version(std::string_view value) {
-        auto iequals = [](std::string_view a, std::string_view b) {
-            if (a.size() != b.size()) {
-                return false;
-            }
-            for (size_t i = 0; i < a.size(); ++i) {
-                if (std::tolower(static_cast<unsigned char>(a[i])) !=
-                    std::tolower(static_cast<unsigned char>(b[i]))) {
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        if (iequals(value, "v1")) {
+        if (absl::EqualsIgnoreCase(value, "v1")) {
             return NameVersion::kV1;
         }
-        if (iequals(value, "v4")) {
+        if (absl::EqualsIgnoreCase(value, "v4")) {
             return NameVersion::kV4;
         }
         // "v3", unknown, or empty all fall back to v3 (Java NameVersion.getVersion).

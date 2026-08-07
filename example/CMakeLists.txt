@@ -1,13 +1,3 @@
-if (BUILD_SHARED_LIBS)
-    set(PINPOINT_CPP_LIBRARY pinpoint_cpp)
-else()
-    set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
-endif()
-
-# tutorial/tutorial_c now run the async span on a dedicated thread
-# (std::thread / pthreads), which needs the platform threading library.
-find_package(Threads REQUIRED)
-
 add_executable(tutorial tutorial.cpp)
 target_link_libraries(tutorial ${PINPOINT_CPP_LIBRARY} Threads::Threads)
 

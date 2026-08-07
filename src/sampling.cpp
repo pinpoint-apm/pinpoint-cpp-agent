@@ -49,22 +49,6 @@ namespace pinpoint {
         return static_cast<int>(r) < rate_;
     }
 
-    bool BasicTraceSampler::isNewSampled() noexcept {
-        const auto sampled = sampler_ ? sampler_->isSampled() : false;
-        auto& stats = agent_->getAgentStats();
-        if (sampled) {
-            stats.incrSampleNew();
-        } else {
-            stats.incrUnsampleNew();
-        }
-        return sampled;
-    }
-
-    bool BasicTraceSampler::isContinueSampled() noexcept {
-        agent_->getAgentStats().incrSampleCont();
-        return true;
-    }
-
     bool ThroughputLimitTraceSampler::isNewSampled() noexcept {
         auto sampled = sampler_ ? sampler_->isSampled() : false;
         auto& stats = agent_->getAgentStats();

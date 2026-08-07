@@ -108,16 +108,6 @@ namespace pinpoint {
         return *cached_ip_addr;
     }
 
-    namespace {
-        // Helper for case-insensitive character comparison
-        struct char_iequal {
-            bool operator()(unsigned char c1, unsigned char c2) const {
-                // Use unsigned char to avoid UB with std::toupper
-                return std::toupper(c1) == std::toupper(c2);
-            }
-        };
-    }
-
     void abandon_thread(std::thread& t) noexcept {
         if (!t.joinable()) {
             return;
@@ -133,12 +123,31 @@ namespace pinpoint {
         ::new (static_cast<void*>(&t)) std::thread();
     }
 
-    bool compare_string(std::string_view str1, std::string_view str2) {
-        if (str1.size() != str2.size()) {
-            return false;
+    size_t utf8SafeCutLength(std::string_view s, size_t max_len) {
+        if (s.length() <= max_len) {
+            return s.length();
         }
-
-        return std::equal(str1.begin(), str1.end(), str2.begin(), char_iequal());
+        size_t back = 0;
+        while (back < 3 && back < max_len &&
+               (static_cast<unsigned char>(s[max_len - 1 - back]) & 0xC0) == 0x80) {
+            ++back;
+        }
+        if (back >= max_len) {
+            return max_len;
+        }
+        const auto lead = static_cast<unsigned char>(s[max_len - 1 - back]);
+        size_t expected = 1;
+        if ((lead & 0xF8) == 0xF0) {
+            expected = 4;
+        } else if ((lead & 0xF0) == 0xE0) {
+            expected = 3;
+        } else if ((lead & 0xE0) == 0xC0) {
+            expected = 2;
+        }
+        if (expected > back + 1) {
+            return max_len - (back + 1);
+        }
+        return max_len;
     }
 
     std::optional<int> stoi_(std::string_view str) {

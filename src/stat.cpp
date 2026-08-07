@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sys/times.h>
+#include <memory>
 #include <mutex>
 #include <cctype>
 #include <unistd.h>
@@ -45,14 +46,7 @@ namespace pinpoint {
         sc_nprocessors_onln_ = sysconf(_SC_NPROCESSORS_ONLN);
     }
 
-    // RAII wrapper for FILE*
-    struct FileCloser {
-        FILE* fp;
-        explicit FileCloser(FILE* f) : fp(f) {}
-        ~FileCloser() { if (fp) fclose(fp); }
-        FileCloser(const FileCloser&) = delete;
-        FileCloser& operator=(const FileCloser&) = delete;
-    };
+    using FileCloser = std::unique_ptr<FILE, int (*)(FILE*)>;
 
     // Constants for buffer sizes (Linux /proc readers only)
 #ifndef __APPLE__
@@ -94,7 +88,7 @@ namespace pinpoint {
 #else
         FILE *fd = fopen("/proc/stat", "r");
         if (fd != nullptr) {
-            FileCloser closer(fd);  // RAII: Automatically closes on scope exit
+            const FileCloser closer(fd, fclose);
 
             char buf[kProcStatBufferSize] = {};
             // glibc's clock_t is signed; scan into unsigned long (what %lu
@@ -216,7 +210,7 @@ namespace pinpoint {
         if (fd == nullptr) {
             return status;
         }
-        FileCloser closer(fd);  // RAII: Automatically closes on scope exit
+        const FileCloser closer(fd, fclose);
 
         char buf[kProcStatusBufferSize] = {};
         int found = 0;

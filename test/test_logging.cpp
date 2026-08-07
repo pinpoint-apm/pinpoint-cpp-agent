@@ -514,19 +514,6 @@ TEST_F(LoggingTest, ThrottledMacroLogsOncePerCallSite) {
         << "repeats at one call site within the interval must be suppressed";
 }
 
-TEST_F(LoggingTest, ThrottledErrorMacroLogsOncePerCallSite) {
-    Logger::getInstance().setLogLevel("error");
-    Logger::getInstance().setFileLogger(log_file_.string(), 10);
-
-    for (int i = 0; i < 10; ++i) {
-        LOG_ERROR_THROTTLED("throttled error once");
-    }
-    Logger::getInstance().shutdown();
-
-    auto content = read_file(log_file_.string());
-    EXPECT_EQ(count_occurrences(content, "throttled error once"), 1u);
-}
-
 TEST_F(LoggingTest, ThrottledLogAppendsFoldedOccurrenceCount) {
     Logger::getInstance().setLogLevel("warning");
     Logger::getInstance().setFileLogger(log_file_.string(), 10);

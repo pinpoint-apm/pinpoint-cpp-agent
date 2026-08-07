@@ -123,19 +123,7 @@ namespace pinpoint {
         agent_(span->getAgent()),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
-        sequence_{0},
-        depth_{0},
-        start_time_{to_milli_seconds(std::chrono::system_clock::now())},
-        start_elapsed_{0},
-        elapsed_{0},
-        next_span_id_{0},
-        endpoint_{},
-        destination_id_{},
-        error_func_id_{0},
-        error_string_{},
-        async_id_{NONE_ASYNC_ID},
-        async_seq_gen_{0},
-        api_id_{0} {
+        start_time_{to_milli_seconds(std::chrono::system_clock::now())} {
         assert(span_ != nullptr);
         assert(agent_ != nullptr);
 

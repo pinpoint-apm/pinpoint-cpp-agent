@@ -29,37 +29,10 @@ namespace pinpoint {
     static std::atomic<int32_t> async_id_gen{1};
 
     SpanData::SpanData(std::string_view operation, int32_t app_type, int32_t api_id) :
-        trace_id_{},
-        span_id_{},
-        parent_span_id_{-1},
-        parent_app_name_{},
-        parent_app_type_{1},
-        parent_app_namespace_{},
-        parent_service_name_{},
         app_type_{app_type},
-        service_type_{defaults::SPAN_SERVICE_TYPE},
         operation_{operation},
         api_id_{api_id},
-        rpc_name_{},
-        endpoint_{},
-        remote_addr_{},
-        acceptor_host_{},
-        event_sequence_{0},
-        event_depth_(1),
-        logging_flag_{SPAN_LOGGING_FLAG_OFF},
-        flags_{SPAN_FLAG_NONE},
-        err_{SPAN_ERR_NONE},
-        error_func_id_{},
-        error_string_{},
-        start_time_{to_milli_seconds(std::chrono::system_clock::now())},
-        end_time_{},
-        elapsed_{},
-        async_id_{NONE_ASYNC_ID},
-        async_sequence_{},
-        event_stack_{},
-        finished_events{},
-        retired_events_{},
-        annotations_{} {}
+        start_time_{to_milli_seconds(std::chrono::system_clock::now())} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
         const auto [sequence, depth] = nextEventSequenceAndDepth();
@@ -82,10 +55,6 @@ namespace pinpoint {
     }
 
     void SpanData::finishSpanEvent(SpanEventImpl* expected) {
-        if (expected == nullptr) {
-            finishSpanEvent();
-            return;
-        }
         if (topSpanEvent() != expected) {
             LOG_WARN("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
         }
@@ -261,11 +230,6 @@ namespace pinpoint {
                 LOG_WARN("span is already finished"); \
                 return (retval); \
             } \
-        } while(0)
-
-    #define CHECK_OVERFLOW() \
-        do { \
-            if (overflow_ > 0) { return; } \
         } while(0)
 
     #define CHECK_OVERFLOW_WITH_RETURN(retval) \

@@ -615,7 +615,6 @@ namespace pinpoint {
         void run_agent_info_worker();
         bool send_agent_info_once();
         bool send_agent_info_with_retries(int max_try_count);
-        bool wait_agent_info_retry(std::chrono::milliseconds delay);
         bool wait_agent_info_until(std::chrono::steady_clock::time_point deadline);
         bool should_stop_agent_info() const;
 

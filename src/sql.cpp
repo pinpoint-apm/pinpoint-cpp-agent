@@ -15,6 +15,7 @@
  */
 
 #include "sql.h"
+#include "utility.h"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -29,41 +30,6 @@ namespace pinpoint {
         char lookAhead1(std::string_view sql, size_t index) {
             ++index;
             return index < sql.length() ? sql[index] : '\0';
-        }
-
-        // Returns the largest length <= max_len that does not split a
-        // multibyte UTF-8 sequence. A byte-count cut landing mid-character
-        // would produce invalid UTF-8, which flows into protobuf string
-        // fields (SQL metadata) that require valid UTF-8 — the collector may
-        // reject or mangle such metadata. Walks back over at most 3
-        // continuation bytes; if the lead byte's sequence runs past the cut,
-        // the whole partial character is dropped. Malformed input (stray
-        // continuation bytes) is trimmed conservatively, never extended.
-        size_t utf8SafeCutLength(std::string_view sql, size_t max_len) {
-            if (sql.length() <= max_len) {
-                return sql.length();
-            }
-            size_t back = 0;
-            while (back < 3 && back < max_len &&
-                   (static_cast<unsigned char>(sql[max_len - 1 - back]) & 0xC0) == 0x80) {
-                ++back;
-            }
-            if (back >= max_len) {
-                return max_len;
-            }
-            const auto lead = static_cast<unsigned char>(sql[max_len - 1 - back]);
-            size_t expected = 1;
-            if ((lead & 0xF8) == 0xF0) {
-                expected = 4;
-            } else if ((lead & 0xF0) == 0xE0) {
-                expected = 3;
-            } else if ((lead & 0xE0) == 0xC0) {
-                expected = 2;
-            }
-            if (expected > back + 1) {
-                return max_len - (back + 1);
-            }
-            return max_len;
         }
 
         bool isDigit(char c) {
@@ -210,27 +176,10 @@ namespace pinpoint {
                     }
                     break;
 
-                case ' ': case '\t': case '\n': case '\r':
-                case '*': case '+': case '%': case '=': case '<': case '>':
-                case '&': case '|': case '^': case '~': case '!':
-                case '(': case ')': case ',': case ';':
-                    number_token_start_enable = true;
-                    result.normalized_sql += c;
-                    break;
-
-                case '$':
-                    if (next_c >= '0' && next_c <= '9') {
-                        number_token_start_enable = false;
-                    }
-                    result.normalized_sql += c;
-                    break;
-
-                case '.': case '_': case '@': case ':':
-                    number_token_start_enable = false;
-                    result.normalized_sql += c;
-                    break;
-
                 default:
+                    // Whitespace, operators, '$', '.', '_', '@' and ':' all
+                    // land here too; updateNumberTokenStartEnable carries
+                    // their per-character rules.
                     number_token_start_enable = updateNumberTokenStartEnable(c, next_c, number_token_start_enable);
                     result.normalized_sql += c;
                     break;

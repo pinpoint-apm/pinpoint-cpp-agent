@@ -159,40 +159,6 @@ TEST(UtilityTest, AbandonThreadDoesNotAllocateAndClearsHandle) {
     EXPECT_FALSE(still_joinable);
 }
 
-// ========== compare_string Tests ==========
-
-TEST(UtilityTest, CompareStringExactMatch) {
-    EXPECT_TRUE(compare_string("hello", "hello"));
-}
-
-TEST(UtilityTest, CompareStringCaseInsensitive) {
-    EXPECT_TRUE(compare_string("Hello", "hello"));
-    EXPECT_TRUE(compare_string("HELLO", "hello"));
-    EXPECT_TRUE(compare_string("HeLLo", "hEllO"));
-}
-
-TEST(UtilityTest, CompareStringDifferentStrings) {
-    EXPECT_FALSE(compare_string("hello", "world"));
-    EXPECT_FALSE(compare_string("hello", "hell"));
-}
-
-TEST(UtilityTest, CompareStringDifferentLengths) {
-    EXPECT_FALSE(compare_string("hello", "helloo"));
-    EXPECT_FALSE(compare_string("", "a"));
-    EXPECT_FALSE(compare_string("a", ""));
-}
-
-TEST(UtilityTest, CompareStringEmpty) {
-    EXPECT_TRUE(compare_string("", ""));
-}
-
-TEST(UtilityTest, CompareStringSpecialChars) {
-    EXPECT_TRUE(compare_string("hello-world_123", "hello-world_123"));
-    EXPECT_TRUE(compare_string("Hello-World_123", "hello-world_123"));
-    // Non-alpha chars must match exactly
-    EXPECT_FALSE(compare_string("hello-world", "hello_world"));
-}
-
 // ========== stoi_ Tests ==========
 
 TEST(UtilityTest, StoiValidIntegers) {

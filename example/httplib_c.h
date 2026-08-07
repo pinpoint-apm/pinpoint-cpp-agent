@@ -110,18 +110,12 @@ void hlc_server_get(hlc_server_t   server,
  */
 int hlc_server_listen(hlc_server_t server, const char* host, int port);
 
-/** Requests that the server stop accepting connections. */
-void hlc_server_stop(hlc_server_t server);
-
 /* ========================================================================== */
 /* Request accessors                                                            */
 /* ========================================================================== */
 
 /** Returns the request path (e.g. "/foo"), NUL-terminated. */
 const char* hlc_request_path(const hlc_request_t* req);
-
-/** Returns the HTTP method (e.g. "GET"), NUL-terminated. */
-const char* hlc_request_method(const hlc_request_t* req);
 
 /** Returns the remote peer address. */
 const char* hlc_request_remote_addr(const hlc_request_t* req);
@@ -158,14 +152,6 @@ void* hlc_request_headers_handle(const hlc_request_t* req);
 void hlc_response_set_content(hlc_response_t* res,
                               const char*     content,
                               const char*     mime_type);
-
-/** Sets the HTTP response status code. */
-void hlc_response_set_status(hlc_response_t* res, int status);
-
-/** Adds (or replaces) a response header. */
-void hlc_response_set_header(hlc_response_t* res,
-                             const char*     key,
-                             const char*     value);
 
 /**
  * @brief Returns an opaque handle for the response header map.
@@ -278,12 +264,6 @@ int hlc_result_status(const hlc_result_t result);
 
 /** Response body (NUL-terminated); empty string on error. */
 const char* hlc_result_body(const hlc_result_t result);
-
-/**
- * @brief Returns an opaque handle over the response headers map.
- *        Valid only while @p result is alive.  NULL on transport failure.
- */
-void* hlc_result_headers_handle(const hlc_result_t result);
 
 /**
  * @brief Returns a human-readable error message, or empty string on success.

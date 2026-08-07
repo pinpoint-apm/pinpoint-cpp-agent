@@ -1422,7 +1422,7 @@ namespace pinpoint {
             } catch (...) {
                 LOG_ERROR("register agent unknown exception");
             }
-            if (wait_agent_info_retry(retry_backoff.next_delay())) {
+            if (wait_agent_info_until(std::chrono::steady_clock::now() + retry_backoff.next_delay())) {
                 return false;
             }
         }
@@ -1503,17 +1503,12 @@ namespace pinpoint {
             if (send_agent_info_once()) {
                 return true;
             }
-            if (try_count + 1 < max_try_count && wait_agent_info_retry(retry_interval)) {
+            if (try_count + 1 < max_try_count &&
+                wait_agent_info_until(std::chrono::steady_clock::now() + retry_interval)) {
                 return false;
             }
         }
         return false;
-    }
-
-    bool GrpcAgent::wait_agent_info_retry(std::chrono::milliseconds delay) {
-        std::unique_lock<std::mutex> lock(agent_info_mutex_);
-        agent_info_cv_.wait_for(lock, delay, [this] { return should_stop_agent_info(); });
-        return should_stop_agent_info();
     }
 
     bool GrpcAgent::wait_agent_info_until(std::chrono::steady_clock::time_point deadline) {
@@ -2158,7 +2153,7 @@ namespace pinpoint {
         // queue intact instead of losing a chunk between dequeue and push_back.
         remaining.reserve(remaining.size() + span_queue_.capacity());
         std::unique_ptr<SpanChunk> span;
-        while (span_queue_.try_dequeue_after_stop(span)) {
+        while (span_queue_.try_dequeue(span)) {
             remaining.push_back(std::move(span));
         }
         if (!remaining.empty()) {

@@ -24,6 +24,8 @@
 
 #include "utility.h"
 
+#include "utility.h"
+
 namespace pinpoint {
  
     /**
@@ -113,26 +115,10 @@ namespace pinpoint {
         static constexpr size_t kMaxFrameStringLength = 1024;
         static constexpr size_t kMaxErrorMessageLength = 4096;
 
+        // The strings end up in protobuf string fields, which require valid
+        // UTF-8: never cut mid-character.
         static std::string truncated(std::string_view s, size_t max_length) {
-            if (s.size() > max_length) {
-                s = s.substr(0, max_length);
-                // The strings end up in protobuf string fields, which require
-                // valid UTF-8: if the cut split a multi-byte sequence, drop
-                // the incomplete trailing character.
-                size_t tail = 0;
-                while (tail < s.size() && tail < 3 &&
-                       (static_cast<unsigned char>(s[s.size() - 1 - tail]) & 0xC0) == 0x80) {
-                    ++tail;
-                }
-                if (tail < s.size()) {
-                    const auto lead = static_cast<unsigned char>(s[s.size() - 1 - tail]);
-                    const size_t expected = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-                    if (expected > tail + 1) {
-                        s.remove_suffix(tail + 1);
-                    }
-                }
-            }
-            return std::string(s);
+            return std::string(s.substr(0, utf8SafeCutLength(s, max_length)));
         }
 
         std::string error_message_;

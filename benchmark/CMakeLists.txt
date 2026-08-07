@@ -1,8 +1,3 @@
-find_package(Threads REQUIRED)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 # Performance numbers from unoptimized Debug executables are misleading.
 if(MSVC)
   add_compile_options(/O2)

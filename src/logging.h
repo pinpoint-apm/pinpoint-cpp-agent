@@ -107,19 +107,13 @@ namespace pinpoint {
             log(LogLevel::kError, file, line, format, std::forward<Args>(args)...);
         }
 
-        /// @brief Variants behind the LOG_*_THROTTLED macros: identical to
-        /// logWarn/logError, except that when `occurrences` > 1 the line
-        /// notes how many duplicates the call site's throttle folded into it.
+        /// @brief Variant behind the LOG_WARN_THROTTLED macro: identical to
+        /// logWarn, except that when `occurrences` > 1 the line notes how
+        /// many duplicates the call site's throttle folded into it.
         template <typename... Args>
         void logWarnThrottled(uint64_t occurrences, std::string_view file, int line,
                               fmt::string_view format, Args&&... args) {
             log(LogLevel::kWarn, occurrences, file, line, format, std::forward<Args>(args)...);
-        }
-
-        template <typename... Args>
-        void logErrorThrottled(uint64_t occurrences, std::string_view file, int line,
-                               fmt::string_view format, Args&&... args) {
-            log(LogLevel::kError, occurrences, file, line, format, std::forward<Args>(args)...);
         }
 
         /// @brief Level predicates used by the LOG_* macros to skip argument
@@ -293,8 +287,8 @@ namespace pinpoint {
             } \
         } while (0)
 
-    // LOG_WARN/LOG_ERROR variants rate-limited per call site (each expansion
-    // owns a static LogSiteThrottle): at most one line per
+    // LOG_WARN variant rate-limited per call site (each expansion owns a
+    // static LogSiteThrottle): at most one line per
     // LogSiteThrottle::kDefaultInterval, with suppressed repeats folded into
     // the next granted line's count. Use for warnings that can recur once per
     // request on application threads — API misuse (already-finished span
@@ -303,7 +297,6 @@ namespace pinpoint {
     // would serialize the host's request threads on the logger mutex and its
     // per-line write+flush. Suppressed calls cost one relaxed increment, one
     // clock read and one relaxed load.
-    /// @brief Rate-limited LOG_WARN; see the note above.
     #define LOG_WARN_THROTTLED(...) \
         do { \
             ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
@@ -312,18 +305,6 @@ namespace pinpoint {
                 const auto _pp_occurrences = _pp_throttle.acquire(); \
                 if (_pp_occurrences > 0) { \
                     _pp_logger.logWarnThrottled(_pp_occurrences, ::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
-                } \
-            } \
-        } while (0)
-    /// @brief Rate-limited LOG_ERROR; see the note above.
-    #define LOG_ERROR_THROTTLED(...) \
-        do { \
-            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.errorEnabled()) { \
-                static ::pinpoint::LogSiteThrottle _pp_throttle; \
-                const auto _pp_occurrences = _pp_throttle.acquire(); \
-                if (_pp_occurrences > 0) { \
-                    _pp_logger.logErrorThrottled(_pp_occurrences, ::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
                 } \
             } \
         } while (0)

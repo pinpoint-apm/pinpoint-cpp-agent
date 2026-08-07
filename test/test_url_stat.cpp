@@ -427,7 +427,7 @@ TEST_F(UrlStatTest, UrlStatsConstructorTest) {
 TEST_F(UrlStatTest, UrlStatsEnqueueTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
-    auto stat = std::make_unique<UrlStatEntry>("/api/test", "POST", 201);
+    UrlStatEntry stat{"/api/test", "POST", 201};
     url_stats.enqueueUrlStats(std::move(stat));
     
     SUCCEED() << "Enqueue should not crash";
@@ -437,7 +437,7 @@ TEST_F(UrlStatTest, UrlStatsEnqueueWithDisabledConfigTest) {
     mock_agent_service_->mutableConfig()->http.url_stat.enable = false;
     UrlStats url_stats(mock_agent_service_.get());
     
-    auto stat = std::make_unique<UrlStatEntry>("/api/test", "POST", 201);
+    UrlStatEntry stat{"/api/test", "POST", 201};
     url_stats.enqueueUrlStats(std::move(stat));
     
     SUCCEED() << "Enqueue with disabled config should not crash";
@@ -593,12 +593,12 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
     // Create and enqueue multiple stats
-    auto stat1 = std::make_unique<UrlStatEntry>("/api/users", "GET", 200);
-    stat1->elapsed_ = 100;
-    auto stat2 = std::make_unique<UrlStatEntry>("/api/posts", "POST", 201);
-    stat2->elapsed_ = 200;
-    auto stat3 = std::make_unique<UrlStatEntry>("/api/users", "GET", 500);
-    stat3->elapsed_ = 300;
+    UrlStatEntry stat1{"/api/users", "GET", 200};
+    stat1.elapsed_ = 100;
+    UrlStatEntry stat2{"/api/posts", "POST", 201};
+    stat2.elapsed_ = 200;
+    UrlStatEntry stat3{"/api/users", "GET", 500};
+    stat3.elapsed_ = 300;
     
     url_stats.enqueueUrlStats(std::move(stat1));
     url_stats.enqueueUrlStats(std::move(stat2));
@@ -638,8 +638,8 @@ TEST_F(UrlStatTest, ConcurrentEnqueueTest) {
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([&url_stats, t]() {
             for (int i = 0; i < stats_per_thread; i++) {
-                auto stat = std::make_unique<UrlStatEntry>("/api/test" + std::to_string(t) + "/" + std::to_string(i), "GET", 200);
-                stat->elapsed_ = 100 + i;
+                UrlStatEntry stat{"/api/test" + std::to_string(t) + "/" + std::to_string(i), "GET", 200};
+                stat.elapsed_ = 100 + i;
                 url_stats.enqueueUrlStats(std::move(stat));
             }
         });
@@ -1193,20 +1193,12 @@ TEST_F(UrlStatTest, EnqueueOverflowTest) {
 
     // Queue size is set to 100 in mock config
     for (int i = 0; i < 150; i++) {
-        auto stat = std::make_unique<UrlStatEntry>("/api/test" + std::to_string(i), "GET", 200);
-        stat->elapsed_ = 100;
+        UrlStatEntry stat{"/api/test" + std::to_string(i), "GET", 200};
+        stat.elapsed_ = 100;
         url_stats.enqueueUrlStats(std::move(stat));
     }
 
     // Should not crash; excess entries are silently dropped
-    SUCCEED();
-}
-
-// Test enqueueUrlStats with null pointer (should not crash)
-TEST_F(UrlStatTest, EnqueueNullptrTest) {
-    UrlStats url_stats(mock_agent_service_.get());
-
-    url_stats.enqueueUrlStats(nullptr);
     SUCCEED();
 }
 

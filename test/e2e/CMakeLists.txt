@@ -1,9 +1,3 @@
-if (BUILD_SHARED_LIBS)
-    set(PINPOINT_CPP_LIBRARY pinpoint_cpp)
-else()
-    set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
-endif()
-
 # =============================================================================
 # gRPC proto library (testapp.proto)
 # =============================================================================
@@ -33,8 +27,6 @@ target_include_directories(it_test_proto PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-set_target_properties(it_test_proto PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
-
 # =============================================================================
 # gRPC server (standalone)
 # =============================================================================
@@ -45,7 +37,6 @@ target_include_directories(grpc_server PRIVATE
 )
 
 target_link_libraries(grpc_server ${PINPOINT_CPP_LIBRARY} it_test_proto gRPC::grpc++_reflection)
-set_target_properties(grpc_server PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
 
 # =============================================================================
 # HTTP downstream server (real distributed HTTP context propagation)
@@ -57,8 +48,6 @@ target_include_directories(http_downstream_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(http_downstream_server ${PINPOINT_CPP_LIBRARY})
-set_target_properties(http_downstream_server PROPERTIES
-    CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
 
 # =============================================================================
 # it_test_server (HTTP + gRPC client + SQL tracing)
@@ -74,8 +63,6 @@ target_link_libraries(it_test_server
     ${PINPOINT_CPP_LIBRARY}
     it_test_proto
 )
-set_target_properties(it_test_server PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
-
 # =============================================================================
 # Standalone public API/lifecycle scenarios
 # =============================================================================
@@ -93,8 +80,6 @@ if(UNIX)
     add_executable(fork_scenario fork_scenario.cpp)
     target_include_directories(fork_scenario PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(fork_scenario ${PINPOINT_CPP_LIBRARY} Threads::Threads)
-    set_target_properties(fork_scenario PROPERTIES
-        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
 endif()
 
 # The live suite depends on the configured dev collector and is intentionally

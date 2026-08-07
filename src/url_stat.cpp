@@ -195,17 +195,6 @@ namespace pinpoint {
         return result;
     }
 
-    void UrlStats::enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept try {
-        if (!stats) {
-            return;
-        }
-        enqueueUrlStats(std::move(*stats));
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to enqueue url stats: unknown exception");
-    }
-
     UrlStats::QueueShard& UrlStats::queueShard() {
         // Hashed once per thread: each application thread sticks to one shard
         // for its lifetime, so concurrent enqueues spread across shard mutexes

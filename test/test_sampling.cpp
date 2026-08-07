@@ -286,41 +286,42 @@ TEST_F(SamplingTest, PercentSamplerThreadSafetyTest) {
         << "Expected rate " << expected_rate << " but got " << actual_rate;
 }
 
-// BasicTraceSampler Tests
+// Pass-through (no-limiter) trace sampler tests: with both throughputs 0,
+// ThroughputLimitTraceSampler delegates straight to the underlying Sampler.
 
-// Test BasicTraceSampler with null sampler
-TEST_F(SamplingTest, BasicTraceSamplerNullSamplerTest) {
-    BasicTraceSampler trace_sampler(mock_service_.get(), nullptr);
-    
+// Test the pass-through sampler with a null sampler
+TEST_F(SamplingTest, PassThroughTraceSamplerNullSamplerTest) {
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
+
     // Should always return false for new samples when sampler is null
     EXPECT_FALSE(trace_sampler.isNewSampled());
     EXPECT_FALSE(trace_sampler.isNewSampled());
-    
+
     // Should always return true for continue samples
     EXPECT_TRUE(trace_sampler.isContinueSampled());
     EXPECT_TRUE(trace_sampler.isContinueSampled());
 }
 
-// Test BasicTraceSampler with CounterSampler
-TEST_F(SamplingTest, BasicTraceSamplerWithCounterSamplerTest) {
+// Test the pass-through sampler with CounterSampler
+TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2);
-    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler));
-    
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
+
     // Test pattern: false, true, false, true, ...
     EXPECT_FALSE(trace_sampler.isNewSampled());
     EXPECT_TRUE(trace_sampler.isNewSampled());
     EXPECT_FALSE(trace_sampler.isNewSampled());
     EXPECT_TRUE(trace_sampler.isNewSampled());
-    
+
     // Continue samples should always be true
     EXPECT_TRUE(trace_sampler.isContinueSampled());
     EXPECT_TRUE(trace_sampler.isContinueSampled());
 }
 
-// Test BasicTraceSampler with PercentSampler
-TEST_F(SamplingTest, BasicTraceSamplerWithPercentSamplerTest) {
+// Test the pass-through sampler with PercentSampler
+TEST_F(SamplingTest, PassThroughTraceSamplerWithPercentSamplerTest) {
     auto percent_sampler = std::make_unique<PercentSampler>(10.0); // 10.0 input = 10% sampling
-    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(percent_sampler));
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(percent_sampler), 0, 0);
     
     // Test over many calls to check approximate rate
     int true_count = 0;
@@ -529,10 +530,10 @@ TEST_F(SamplingTest, PercentSamplerHalfRateTest) {
 
 // AgentStats Counter Verification Tests
 
-// Test that BasicTraceSampler correctly increments sample_new stats
-TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewSampledTest) {
+// Test that the pass-through sampler correctly increments sample_new stats
+TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewSampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
-    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler));
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 5; ++i) {
@@ -546,10 +547,10 @@ TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewSampledTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
 }
 
-// Test that BasicTraceSampler correctly increments unsample_new stats
-TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewUnsampledTest) {
+// Test that the pass-through sampler correctly increments unsample_new stats
+TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewUnsampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
-    BasicTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler));
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 5; ++i) {
@@ -562,9 +563,9 @@ TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementNewUnsampledTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 5) << "Should have 5 unsampled new traces";
 }
 
-// Test that BasicTraceSampler correctly increments sample_cont stats
-TEST_F(SamplingTest, BasicTraceSamplerStatsIncrementContTest) {
-    BasicTraceSampler trace_sampler(mock_service_.get(), nullptr);
+// Test that the pass-through sampler correctly increments sample_cont stats
+TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementContTest) {
+    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 7; ++i) {

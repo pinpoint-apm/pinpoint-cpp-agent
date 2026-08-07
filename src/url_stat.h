@@ -336,12 +336,7 @@ namespace pinpoint {
                           std::chrono::milliseconds send_interval = URL_STAT_SEND_INTERVAL);
         ~UrlStats() = default;
 
-        /**
-         * @brief Queues a URL statistic for aggregation.
-         *
-         * @param stats URL statistic entry (ownership transferred).
-         */
-        void enqueueUrlStats(std::unique_ptr<UrlStatEntry> stats) noexcept;
+        /// @brief Queues a URL statistic for aggregation.
         void enqueueUrlStats(UrlStatEntry stats) noexcept;
         /**
          * @brief Queues a URL statistic using the caller's config snapshot.

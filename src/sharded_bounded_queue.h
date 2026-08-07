@@ -40,7 +40,7 @@ namespace pinpoint {
      *
      * Concurrency contract: multi-producer, SINGLE consumer. Any number of
      * threads may enqueue concurrently, but the dequeue methods (try_dequeue,
-     * try_dequeue_batch, try_dequeue_after_stop) must only ever be called by
+     * try_dequeue_batch) must only ever be called by
      * one consumer thread — consumer_cursor_ is deliberately a plain field
      * (see its comment), so two concurrent dequeuers are a data race (UB),
      * not merely an unspecified dequeue order. The production consumer is the
@@ -180,11 +180,6 @@ namespace pinpoint {
                 }
             }
             return taken;
-        }
-
-        /// @brief Explicit shutdown drain entry point for the quiescent queue.
-        bool try_dequeue_after_stop(T& value) {
-            return dequeue_from_active_shards(value);
         }
 
         size_t capacity() const noexcept { return capacity_; }

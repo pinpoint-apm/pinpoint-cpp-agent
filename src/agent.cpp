@@ -28,6 +28,8 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include "absl/strings/match.h"
+
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
@@ -392,19 +394,17 @@ namespace pinpoint {
         // Rebuild sampler
         if (!old_cfg || sampling_config_changed(*old_cfg, c)) {
             std::unique_ptr<Sampler> sampler;
-            if (compare_string(c.sampling.type, PERCENT_SAMPLING)) {
+            if (absl::EqualsIgnoreCase(c.sampling.type, PERCENT_SAMPLING)) {
                 sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
             } else {
                 sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
             }
 
-            if (c.sampling.new_throughput > 0 || c.sampling.cont_throughput > 0) {
-                rt->sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                            c.sampling.new_throughput,
-                                                                            c.sampling.cont_throughput);
-            } else {
-                rt->sampler = std::make_shared<BasicTraceSampler>(this, std::move(sampler));
-            }
+            // Non-positive throughput creates no limiter, so the default
+            // config gets the plain pass-through sampler.
+            rt->sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
+                                                                        c.sampling.new_throughput,
+                                                                        c.sampling.cont_throughput);
         } else {
             rt->sampler = old_rt->sampler;
         }

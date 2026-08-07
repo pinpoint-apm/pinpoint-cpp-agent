@@ -85,13 +85,18 @@ namespace pinpoint {
     void abandon_thread(std::thread& t) noexcept;
 
     /**
-     * @brief Case-insensitive string comparison helper that avoids allocation.
+     * @brief Returns the largest length <= max_len that does not split a
+     * multibyte UTF-8 sequence.
      *
-     * @param str1 First string.
-     * @param str2 Second string.
-     * @return `true` if both strings are equal (ignoring case).
+     * A byte-count cut landing mid-character would produce invalid UTF-8,
+     * which flows into protobuf string fields (SQL metadata, callstack
+     * frames) that require valid UTF-8 — the collector may reject or mangle
+     * such data. Walks back over at most 3 continuation bytes; if the lead
+     * byte's sequence runs past the cut, the whole partial character is
+     * dropped. Malformed input (stray continuation bytes) is trimmed
+     * conservatively, never extended.
      */
-    bool compare_string(std::string_view str1, std::string_view str2);
+    size_t utf8SafeCutLength(std::string_view s, size_t max_len);
 
     /**
      * @brief Rate-limited reporter for queue-overflow drops.

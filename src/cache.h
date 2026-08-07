@@ -87,26 +87,6 @@ namespace pinpoint {
         }
     };
 
-    struct StringCacheKeyTraits {
-        using LookupKey = std::string_view;
-        using StoredKey = std::string;
-        using MapKey = std::string_view;
-        using Hash = std::hash<MapKey>;
-        using Equal = std::equal_to<MapKey>;
-
-        static MapKey lookup_key(LookupKey key) noexcept {
-            return key;
-        }
-
-        static StoredKey store(LookupKey key) {
-            return std::string(key);
-        }
-
-        static MapKey map_key(const StoredKey& key) noexcept {
-            return std::string_view(key);
-        }
-    };
-
     /**
      * Hash-carrying twins of the string/api cache keys, mirroring
      * RawSqlCacheKey/RawSqlCacheStoredKey below: the sharded caches hash a key
@@ -259,7 +239,7 @@ namespace pinpoint {
      * @tparam ValueType Type of values stored in the cache.
      * @tparam KeyTraits Converts lookup keys into owned storage and map keys.
      */
-    template<typename ValueType, typename KeyTraits = StringCacheKeyTraits>
+    template<typename ValueType, typename KeyTraits>
     class LruCacheImpl {
     private:
         // Declared before the member functions: insert_or_promote() names

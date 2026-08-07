@@ -447,6 +447,15 @@ endif()
 
 install(DIRECTORY include/pinpoint DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
+# Shared by the test / example / benchmark subtrees: the library name to
+# link against, and the platform threading library.
+if(BUILD_SHARED_LIBS)
+  set(PINPOINT_CPP_LIBRARY pinpoint_cpp)
+else()
+  set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
+endif()
+find_package(Threads REQUIRED)
+
 # Testing
 if (BUILD_TESTING)
   include(CTest)

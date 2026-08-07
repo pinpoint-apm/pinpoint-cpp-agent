@@ -243,47 +243,32 @@ SpanHandleRegistry& span_handle_registry() {
 }
 }  // namespace
 
-template <typename F>
-static void pt_handle_call(pt_agent_t handle, F&& fn) {
+// Overload-selected per handle type so the two pt_handle_call templates
+// below stay generic over agents and spans.
+static auto& handle_registry_for(pt_agent_t) { return agent_handle_registry(); }
+static auto& handle_registry_for(pt_span_t) { return span_handle_registry(); }
+static pt_agent_t noop_sentinel_for(pt_agent_t) { return noop_agent_sentinel(); }
+static pt_span_t noop_sentinel_for(pt_span_t) { return noop_span_sentinel(); }
+
+template <typename Handle, typename F>
+static void pt_handle_call(Handle handle, F&& fn) {
     if (handle == nullptr) return;
-    if (handle == noop_agent_sentinel()) {
+    if (handle == noop_sentinel_for(handle)) {
         std::forward<F>(fn)(handle);
         return;
     }
-    if (auto owned = agent_handle_registry().find(handle); owned && owned->ptr) {
+    if (auto owned = handle_registry_for(handle).find(handle); owned && owned->ptr) {
         std::forward<F>(fn)(owned.get());
     }
 }
 
-template <typename R, typename F>
-static R pt_handle_call(pt_agent_t handle, R fallback, F&& fn) {
+template <typename Handle, typename R, typename F>
+static R pt_handle_call(Handle handle, R fallback, F&& fn) {
     if (handle == nullptr) return fallback;
-    if (handle == noop_agent_sentinel()) {
+    if (handle == noop_sentinel_for(handle)) {
         return std::forward<F>(fn)(handle);
     }
-    auto owned = agent_handle_registry().find(handle);
-    return owned && owned->ptr ? std::forward<F>(fn)(owned.get()) : fallback;
-}
-
-template <typename F>
-static void pt_handle_call(pt_span_t handle, F&& fn) {
-    if (handle == nullptr) return;
-    if (handle == noop_span_sentinel()) {
-        std::forward<F>(fn)(handle);
-        return;
-    }
-    if (auto owned = span_handle_registry().find(handle); owned && owned->ptr) {
-        std::forward<F>(fn)(owned.get());
-    }
-}
-
-template <typename R, typename F>
-static R pt_handle_call(pt_span_t handle, R fallback, F&& fn) {
-    if (handle == nullptr) return fallback;
-    if (handle == noop_span_sentinel()) {
-        return std::forward<F>(fn)(handle);
-    }
-    auto owned = span_handle_registry().find(handle);
+    auto owned = handle_registry_for(handle).find(handle);
     return owned && owned->ptr ? std::forward<F>(fn)(owned.get()) : fallback;
 }
 

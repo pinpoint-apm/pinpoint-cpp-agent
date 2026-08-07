@@ -34,6 +34,7 @@
 #include <unordered_map>
 #include <unistd.h>
 
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
@@ -277,7 +278,7 @@ namespace pinpoint {
             return exact;
         }
         for (const auto& kv : yaml) {
-            if (kv.first.IsScalar() && compare_string(kv.first.Scalar(), cname)) {
+            if (kv.first.IsScalar() && absl::EqualsIgnoreCase(kv.first.Scalar(), cname)) {
                 return kv.second;
             }
         }
@@ -531,30 +532,24 @@ namespace pinpoint {
     }
 
     static void load_env_grpc_channel(const std::string& prefix,
-                                      Config::GrpcChannelOptions& options,
-                                      const char* keepalive_time_env,
-                                      const char* keepalive_timeout_env,
-                                      const char* keepalive_permit_env,
-                                      const char* max_send_env,
-                                      const char* max_receive_env,
-                                      const char* sender_queue_env) {
-        if(auto e = get_env(prefix, keepalive_time_env)) {
+                                      Config::GrpcChannelOptions& options) {
+        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_TIME_MS)) {
             options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
         }
-        if(auto e = get_env(prefix, keepalive_timeout_env)) {
+        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_TIMEOUT_MS)) {
             options.keepalive_timeout_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_timeout_ms);
         }
-        if(auto e = get_env(prefix, keepalive_permit_env)) {
+        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS)) {
             options.keepalive_permit_without_calls =
                 safe_env_stob(e.name.c_str(), e.value, options.keepalive_permit_without_calls);
         }
-        if(auto e = get_env(prefix, max_send_env)) {
+        if(auto e = get_env(prefix, env::GRPC_MAX_SEND_MESSAGE_SIZE)) {
             options.max_send_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_send_message_size);
         }
-        if(auto e = get_env(prefix, max_receive_env)) {
+        if(auto e = get_env(prefix, env::GRPC_MAX_RECEIVE_MESSAGE_SIZE)) {
             options.max_receive_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_receive_message_size);
         }
-        if(auto e = get_env(prefix, sender_queue_env)) {
+        if(auto e = get_env(prefix, env::GRPC_SENDER_QUEUE_SIZE)) {
             options.sender_queue_size = safe_env_stoi(e.name.c_str(), e.value, options.sender_queue_size);
         }
     }
@@ -690,13 +685,7 @@ namespace pinpoint {
         if(auto e = get_env(prefix, env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
             config.collector.grpc.ssl.root_cert_file_path = std::string(e.value);
         }
-        load_env_grpc_channel(prefix, config.collector.grpc.channel,
-                              env::GRPC_KEEPALIVE_TIME_MS,
-                              env::GRPC_KEEPALIVE_TIMEOUT_MS,
-                              env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS,
-                              env::GRPC_MAX_SEND_MESSAGE_SIZE,
-                              env::GRPC_MAX_RECEIVE_MESSAGE_SIZE,
-                              env::GRPC_SENDER_QUEUE_SIZE);
+        load_env_grpc_channel(prefix, config.collector.grpc.channel);
 
         if(auto e = get_env(prefix, env::IS_CONTAINER)) {
             config.is_container = safe_env_stob(e.name.c_str(), e.value, config.is_container);
@@ -830,31 +819,31 @@ namespace pinpoint {
         return port;
     }
 
-    static void validate_grpc_channel(Config::GrpcChannelOptions& options, const char* name,
-                                      const Config::GrpcChannelOptions& defaults) {
+    static void validate_grpc_channel(Config::GrpcChannelOptions& options) {
+        const Config::GrpcChannelOptions defaults;
         if (options.keepalive_time_ms < 0) {
-            LOG_WARN("{} grpc keepalive time {}ms is invalid, using default: {}ms",
-                     name, options.keepalive_time_ms, defaults.keepalive_time_ms);
+            LOG_WARN("grpc keepalive time {}ms is invalid, using default: {}ms",
+                     options.keepalive_time_ms, defaults.keepalive_time_ms);
             options.keepalive_time_ms = defaults.keepalive_time_ms;
         }
         if (options.keepalive_timeout_ms < 0) {
-            LOG_WARN("{} grpc keepalive timeout {}ms is invalid, using default: {}ms",
-                     name, options.keepalive_timeout_ms, defaults.keepalive_timeout_ms);
+            LOG_WARN("grpc keepalive timeout {}ms is invalid, using default: {}ms",
+                     options.keepalive_timeout_ms, defaults.keepalive_timeout_ms);
             options.keepalive_timeout_ms = defaults.keepalive_timeout_ms;
         }
         if (options.max_send_message_size < UNLIMITED_SIZE) {
-            LOG_WARN("{} grpc max send message size {} is invalid, using default: {}",
-                     name, options.max_send_message_size, defaults.max_send_message_size);
+            LOG_WARN("grpc max send message size {} is invalid, using default: {}",
+                     options.max_send_message_size, defaults.max_send_message_size);
             options.max_send_message_size = defaults.max_send_message_size;
         }
         if (options.max_receive_message_size < UNLIMITED_SIZE) {
-            LOG_WARN("{} grpc max receive message size {} is invalid, using default: {}",
-                     name, options.max_receive_message_size, defaults.max_receive_message_size);
+            LOG_WARN("grpc max receive message size {} is invalid, using default: {}",
+                     options.max_receive_message_size, defaults.max_receive_message_size);
             options.max_receive_message_size = defaults.max_receive_message_size;
         }
         if (options.sender_queue_size < MIN_GRPC_QUEUE_SIZE || options.sender_queue_size > MAX_GRPC_QUEUE_SIZE) {
-            LOG_WARN("{} grpc sender queue size {} is out of range ({}-{}), using default: {}",
-                     name, options.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE, defaults.sender_queue_size);
+            LOG_WARN("grpc sender queue size {} is out of range ({}-{}), using default: {}",
+                     options.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE, defaults.sender_queue_size);
             options.sender_queue_size = defaults.sender_queue_size;
         }
     }
@@ -1127,7 +1116,7 @@ namespace pinpoint {
             config->http.url_stat.queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
         }
 
-        validate_grpc_channel(config->collector.grpc.channel, "grpc", Config::GrpcChannelOptions());
+        validate_grpc_channel(config->collector.grpc.channel);
 
         // Auto-detect only on the first load. On a reload the value is already
         // seeded from the running config (env- or file-sourced) at the top of

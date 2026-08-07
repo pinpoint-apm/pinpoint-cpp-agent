@@ -170,19 +170,19 @@ namespace pinpoint {
         AgentService* agent_;
         int32_t service_type_;
         std::string operation_;
-        int32_t sequence_;
-        int32_t depth_;
+        int32_t sequence_{0};
+        int32_t depth_{0};
         int64_t start_time_;
-        int32_t start_elapsed_;
-        int32_t elapsed_;
-        int64_t next_span_id_;
+        int32_t start_elapsed_{0};
+        int32_t elapsed_{0};
+        int64_t next_span_id_{0};
         std::string endpoint_;
         std::string destination_id_;
-        int32_t error_func_id_;
+        int32_t error_func_id_{0};
         std::string error_string_;
-        int32_t async_id_;
-        int32_t async_seq_gen_;
-        int32_t api_id_;
+        int32_t async_id_{NONE_ASYNC_ID};
+        int32_t async_seq_gen_{0};
+        int32_t api_id_{0};
         // Defensive idempotency guard for EndEvent, same shape as
         // SpanImpl::finished_: the atomic exchange lets only the first end
         // proceed; it is NOT a concurrency guarantee (events follow the span's

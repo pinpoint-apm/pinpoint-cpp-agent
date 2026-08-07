@@ -1,9 +1,3 @@
-if(BUILD_SHARED_LIBS)
-  set(PINPOINT_CPP_LIBRARY pinpoint_cpp)
-else()
-  set(PINPOINT_CPP_LIBRARY pinpoint_cpp-static)
-endif()
-
 include(FetchContent)
 
 find_package(GTest CONFIG QUIET)
@@ -19,8 +13,6 @@ if(NOT GTest_FOUND)
 else()
   message(STATUS "Using system GoogleTest")
 endif()
-
-find_package(Threads REQUIRED)
 
 function(add_pinpoint_test name)
   add_executable(${name} ${name}.cpp)

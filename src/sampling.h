@@ -122,21 +122,10 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Pass-through trace sampler that delegates to the underlying `Sampler`.
-     */
-    class BasicTraceSampler final : public TraceSampler {
-    public:
-        BasicTraceSampler(AgentService* agent, std::unique_ptr<Sampler> sampler)
-            : TraceSampler(agent) {
-            sampler_ = std::move(sampler);
-        }
-
-        bool isNewSampled() noexcept override;
-        bool isContinueSampled() noexcept override;
-    };
-
-    /**
      * @brief Trace sampler with throughput limits for new and continuing traces.
+     *
+     * A non-positive limit creates no limiter for that side, so
+     * `{agent, sampler, 0, 0}` is the plain pass-through sampler.
      */
     class ThroughputLimitTraceSampler final : public TraceSampler {
     public:

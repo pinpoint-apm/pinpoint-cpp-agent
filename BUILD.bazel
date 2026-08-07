@@ -30,8 +30,6 @@ EOF
 cc_library(
     name = "version",
     hdrs = [":generate_version_h"],
-    include_prefix = "",
-    strip_include_prefix = "",
 )
 
 cc_library(

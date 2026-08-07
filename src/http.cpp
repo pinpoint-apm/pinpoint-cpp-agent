@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/numbers.h"
 #include "annotation.h"
@@ -39,15 +40,15 @@ namespace pinpoint {
             }
         };
         for (const auto& token : tokens){
-            if (compare_string(token, "5xx")) {
+            if (absl::EqualsIgnoreCase(token, "5xx")) {
                 set_range(http_status::SERVER_ERROR_MIN, http_status::SERVER_ERROR_MAX);
-            } else if (compare_string(token, "4xx")) {
+            } else if (absl::EqualsIgnoreCase(token, "4xx")) {
                 set_range(http_status::CLIENT_ERROR_MIN, http_status::CLIENT_ERROR_MAX);
-            } else if (compare_string(token, "3xx")) {
+            } else if (absl::EqualsIgnoreCase(token, "3xx")) {
                 set_range(http_status::REDIRECTION_MIN, http_status::REDIRECTION_MAX);
-            } else if (compare_string(token, "2xx")) {
+            } else if (absl::EqualsIgnoreCase(token, "2xx")) {
                 set_range(http_status::SUCCESS_MIN, http_status::SUCCESS_MAX);
-            } else if (compare_string(token, "1xx")) {
+            } else if (absl::EqualsIgnoreCase(token, "1xx")) {
                 set_range(http_status::INFORMATIONAL_MIN, http_status::INFORMATIONAL_MAX);
             } else {
                 auto result = stoi_(token);
@@ -75,7 +76,7 @@ namespace pinpoint {
     HttpHeaderRecorder::HttpHeaderRecorder(int anno_key, std::vector<std::string> cfg) 
         : anno_key_(anno_key), 
           cfg_(std::move(cfg)),
-          dump_all_headers_(cfg_.size() == 1 && compare_string(cfg_[0], "HEADERS-ALL")) {
+          dump_all_headers_(cfg_.size() == 1 && absl::EqualsIgnoreCase(cfg_[0], "HEADERS-ALL")) {
     }
 
     void HttpHeaderRecorder::recordHeader(const HeaderReader& header, PinpointAnnotation* annotation) {
@@ -101,18 +102,6 @@ namespace pinpoint {
         bool contains_wildcard(std::string_view value) {
             return value.find('*') != std::string_view::npos || value.find('?') != std::string_view::npos;
         }
-
-        bool starts_with(std::string_view value, std::string_view prefix) {
-            return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
-        }
-
-        std::string to_string(std::string_view value) {
-            return std::string(value.data(), value.size());
-        }
-
-        std::string_view as_view(const std::string& value) {
-            return std::string_view(value.data(), value.size());
-        }
     }
 
     HttpUrlFilter::HttpUrlFilter(const std::vector<std::string>& cfg) {
@@ -132,17 +121,17 @@ namespace pinpoint {
         for (const auto& pattern : patterns_) {
             switch (pattern.kind) {
             case PatternKind::Exact:
-                if (url.size() == pattern.pattern.size() && url.compare(as_view(pattern.pattern)) == 0) {
+                if (url == pattern.pattern) {
                     return true;
                 }
                 break;
             case PatternKind::Prefix:
-                if (starts_with(url, as_view(pattern.literal_prefix))) {
+                if (absl::StartsWith(url, pattern.literal_prefix)) {
                     return true;
                 }
                 break;
             case PatternKind::SegmentPrefix:
-                if (starts_with(url, as_view(pattern.literal_prefix)) &&
+                if (absl::StartsWith(url, pattern.literal_prefix) &&
                     url.find('/', pattern.literal_prefix.size()) == std::string_view::npos) {
                     return true;
                 }
@@ -167,7 +156,7 @@ namespace pinpoint {
         CompiledPattern compiled;
         compiled.pattern = pattern;
 
-        const std::string_view pattern_view = as_view(compiled.pattern);
+        const std::string_view pattern_view = compiled.pattern;
         if (!contains_wildcard(pattern_view)) {
             compiled.kind = PatternKind::Exact;
             compiled.literal_prefix = compiled.pattern;
@@ -181,7 +170,7 @@ namespace pinpoint {
             const auto prefix = pattern_view.substr(0, pattern_view.size() - 2);
             if (!contains_wildcard(prefix)) {
                 compiled.kind = PatternKind::Prefix;
-                compiled.literal_prefix = to_string(prefix);
+                compiled.literal_prefix = std::string(prefix);
                 return compiled;
             }
         }
@@ -192,7 +181,7 @@ namespace pinpoint {
             const auto prefix = pattern_view.substr(0, pattern_view.size() - 1);
             if (!contains_wildcard(prefix)) {
                 compiled.kind = PatternKind::SegmentPrefix;
-                compiled.literal_prefix = to_string(prefix);
+                compiled.literal_prefix = std::string(prefix);
                 return compiled;
             }
         }
@@ -200,7 +189,7 @@ namespace pinpoint {
         compiled.kind = PatternKind::Ant;
         const auto prefix_end = pattern_view.find_first_of("*?");
         if (prefix_end != std::string_view::npos && prefix_end > 0) {
-            compiled.literal_prefix = to_string(pattern_view.substr(0, prefix_end));
+            compiled.literal_prefix = std::string(pattern_view.substr(0, prefix_end));
         }
 
         for (size_t i = 0; i < pattern_view.size();) {
@@ -236,7 +225,7 @@ namespace pinpoint {
         if (U < pattern.min_length) {
             return false;
         }
-        if (!pattern.literal_prefix.empty() && !starts_with(url, as_view(pattern.literal_prefix))) {
+        if (!pattern.literal_prefix.empty() && !absl::StartsWith(url, pattern.literal_prefix)) {
             return false;
         }
 
@@ -299,7 +288,7 @@ namespace pinpoint {
     bool HttpMethodFilter::isFiltered(std::string_view method) const {
         return std::any_of(methods_.begin(), methods_.end(),
             [method](const auto& filtered_method) {
-                return compare_string(method, filtered_method);
+                return absl::EqualsIgnoreCase(method, filtered_method);
             });
     }
 

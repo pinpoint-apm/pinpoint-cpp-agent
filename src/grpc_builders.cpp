@@ -33,6 +33,19 @@
 
 namespace pinpoint {
     namespace {
+        // Shared by build_span_event and build_grpc_span: fills the
+        // exceptioninfo field from the recorded error func id and message.
+        template <typename Proto>
+        void set_exception_info(Proto* dst, int32_t func_id, const std::string& err_str,
+                                google::protobuf::Arena* arena) {
+            auto* except_info = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
+            except_info->set_intvalue(func_id);
+
+            auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
+            s->set_value(err_str);
+            except_info->unsafe_arena_set_allocated_stringvalue(s);
+            dst->unsafe_arena_set_allocated_exceptioninfo(except_info);
+        }
         template<class... Ts>
         struct overloaded : Ts... { using Ts::operator()...; };
         template<class... Ts>
@@ -186,13 +199,7 @@ namespace pinpoint {
             }
 
             if (const auto& err_str = se->getErrorString(); !err_str.empty()) {
-                auto* except_info = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
-                except_info->set_intvalue(se->getErrorFuncId());
-
-                auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                s->set_value(err_str);
-                except_info->unsafe_arena_set_allocated_stringvalue(s);
-                span_event->unsafe_arena_set_allocated_exceptioninfo(except_info);
+                set_exception_info(span_event, se->getErrorFuncId(), err_str, arena);
             }
         }
 
@@ -338,13 +345,7 @@ namespace pinpoint {
         }
 
         if (const auto& err_str = span->getErrorString(); !err_str.empty()) {
-            auto* except_info = google::protobuf::Arena::Create<v1::PIntStringValue>(arena);
-            except_info->set_intvalue(span->getErrorFuncId());
-
-            auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s->set_value(err_str);
-            except_info->unsafe_arena_set_allocated_stringvalue(s);
-            grpc_span->unsafe_arena_set_allocated_exceptioninfo(except_info);
+            set_exception_info(grpc_span, span->getErrorFuncId(), err_str, arena);
         }
 
         return grpc_span;

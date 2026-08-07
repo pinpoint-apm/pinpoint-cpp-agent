@@ -1039,7 +1039,7 @@ The throughput limiter is automatically enabled when either value is greater tha
 In a distributed system, sampling decisions flow from the root service to all downstream services:
 
 - The **root service** (no parent trace context) makes the initial sampling decision based on its configured sampler.
-- **Downstream services** receiving a request with a trace ID will **continue** the transaction. By default, continue transactions are always sampled (BasicTraceSampler) or subject to the continue throughput limiter (ThroughputLimitTraceSampler).
+- **Downstream services** receiving a request with a trace ID will **continue** the transaction. By default, continue transactions are always sampled; when `Sampling.ContinueThroughput` is set they are subject to the continue throughput limiter.
 - If the parent explicitly marks the trace as unsampled (`Pinpoint-Sampled: s0`), all downstream services will skip sampling regardless of their own configuration.
 
 ### Sampling Best Practices

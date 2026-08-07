@@ -2,28 +2,10 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])  # Apache 2
 
-# Test library with common dependencies
+# Test library with common dependencies (gtest and gmock tests alike;
+# gtest_main provides both)
 cc_library(
     name = "test_common",
-    testonly = True,
-    hdrs = [
-        "mock_agent_service.h",
-        "mock_helpers.h",
-    ],
-    includes = [
-        ".",
-        "../src",
-    ],
-    deps = [
-        "//:pinpoint-cpp",
-        "@googletest//:gtest",
-        "@googletest//:gtest_main",
-    ],
-)
-
-# Test library for gmock tests
-cc_library(
-    name = "test_gmock",
     testonly = True,
     hdrs = [
         "mock_agent_service.h",
@@ -163,7 +145,7 @@ cc_test(
     name = "test_grpc",
     size = "small",
     srcs = ["test_grpc.cpp"],
-    deps = [":test_gmock"],
+    deps = [":test_common"],
 )
 
 # gRPC tests with mocks
@@ -171,7 +153,7 @@ cc_test(
     name = "test_grpc_with_mocks",
     size = "small",
     srcs = ["test_grpc_with_mocks.cpp"],
-    deps = [":test_gmock"],
+    deps = [":test_common"],
 )
 
 # C API tests
@@ -181,7 +163,7 @@ cc_test(
     srcs = ["test_tracer_c.cpp"],
     deps = [
         ":c_api_test_helpers",
-        ":test_gmock",
+        ":test_common",
     ],
 )
 
