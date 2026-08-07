@@ -208,8 +208,9 @@ namespace pinpoint {
         // handle) must stay Uncached.
         AtomicSharedPtr<const AgentRuntime, SnapshotCache::ThreadCached> runtime_;
 
-    	// Identity fields snapshotted once at construction. Config::isReloadable()
-    	// guarantees these never change while this agent lives, so they are served
+    	// Identity fields snapshotted once at construction.
+    	// Config::retainNonReloadableFrom() keeps them fixed across reloads, so
+    	// they never change while this agent lives and are served
     	// directly — without a runtime snapshot lookup, shared_ptr copy, or string
     	// copy — on the per-request hot path (e.g. InjectContext, SpanData ctor,
     	// generateTraceId).

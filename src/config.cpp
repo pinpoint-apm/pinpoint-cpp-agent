@@ -29,7 +29,9 @@
 #include <memory>
 #include <sstream>
 #include <algorithm>
+#include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unistd.h>
 
 #include "absl/strings/str_cat.h"
@@ -1158,140 +1160,53 @@ namespace pinpoint {
     }
 
     namespace {
-        template <typename T>
-        std::string config_value_to_string(const T& value) {
-            YAML::Emitter emitter;
-            emitter << value;
-            return emitter.c_str();
-        }
-
-        std::string config_value_to_string(const std::vector<std::string>& values) {
-            YAML::Emitter emitter;
-            emitter << YAML::Flow << YAML::BeginSeq;
-            for (const auto& value : values) {
-                emitter << value;
-            }
-            emitter << YAML::EndSeq;
-            return emitter.c_str();
-        }
-
-        template <typename T>
-        void add_non_default_config(std::vector<std::string>& config_strings,
-                                    const char* key,
-                                    const T& value,
-                                    const T& default_value) {
-            if (value != default_value) {
-                config_strings.push_back(absl::StrCat(key, "=", config_value_to_string(value)));
+        // Flattens the nested map emitted by to_config_string() into
+        // ("Dotted.Key", "<emitted value>") pairs in document order.
+        void flatten_config(const YAML::Node& node, const std::string& prefix,
+                            std::vector<std::pair<std::string, std::string>>& out) {
+            for (const auto& kv : node) {
+                auto key = kv.first.as<std::string>();
+                if (!prefix.empty()) {
+                    key = absl::StrCat(prefix, ".", key);
+                }
+                if (kv.second.IsMap()) {
+                    flatten_config(kv.second, key, out);
+                } else {
+                    YAML::Emitter emitter;
+                    emitter << YAML::Flow << kv.second;
+                    out.emplace_back(std::move(key), emitter.c_str());
+                }
             }
         }
     }
 
     std::vector<std::string> to_non_default_config_strings(const Config& config) {
-        const Config default_config;
+        // Diffing against a default-constructed Config keeps this list in
+        // lockstep with to_config_string(): a field added there is reported
+        // here automatically. Identity and endpoint fields are excluded —
+        // they are always explicitly set, so reporting them as "non-default"
+        // would be noise.
+        static constexpr std::string_view always_set[] = {
+            "ApplicationName", "AgentName", "ServiceName", "ApiKey",
+            "Enable", "IsContainer", "Collector.Host",
+            "Collector.AgentPort", "Collector.SpanPort", "Collector.StatPort",
+        };
+
+        std::vector<std::pair<std::string, std::string>> current, defaults;
+        flatten_config(YAML::Load(to_config_string(config)), "", current);
+        flatten_config(YAML::Load(to_config_string(Config{})), "", defaults);
+        const std::unordered_map<std::string, std::string> default_values(defaults.begin(), defaults.end());
+
         std::vector<std::string> config_strings;
-        config_strings.reserve(64);
-
-        add_non_default_config(config_strings, "UidVersion", config.uid_version_, default_config.uid_version_);
-        add_non_default_config(config_strings, "Log.Level", config.log.level, default_config.log.level);
-        add_non_default_config(config_strings, "Log.FilePath", config.log.file_path, default_config.log.file_path);
-        add_non_default_config(config_strings, "Log.MaxFileSize", config.log.max_file_size, default_config.log.max_file_size);
-        add_non_default_config(config_strings, "Collector.Grpc.TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path,
-                               default_config.collector.grpc.ssl.trust_cert_file_path);
-        add_non_default_config(config_strings, "Collector.Grpc.RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path,
-                               default_config.collector.grpc.ssl.root_cert_file_path);
-        add_non_default_config(config_strings, "Collector.Grpc.SslEnable", config.collector.grpc.ssl.enable,
-                               default_config.collector.grpc.ssl.enable);
-        add_non_default_config(config_strings, "Collector.Grpc.KeepAliveTimeMs", config.collector.grpc.channel.keepalive_time_ms,
-                               default_config.collector.grpc.channel.keepalive_time_ms);
-        add_non_default_config(config_strings, "Collector.Grpc.KeepAliveTimeoutMs", config.collector.grpc.channel.keepalive_timeout_ms,
-                               default_config.collector.grpc.channel.keepalive_timeout_ms);
-        add_non_default_config(config_strings, "Collector.Grpc.KeepAlivePermitWithoutCalls",
-                               config.collector.grpc.channel.keepalive_permit_without_calls,
-                               default_config.collector.grpc.channel.keepalive_permit_without_calls);
-        add_non_default_config(config_strings, "Collector.Grpc.MaxSendMessageSize", config.collector.grpc.channel.max_send_message_size,
-                               default_config.collector.grpc.channel.max_send_message_size);
-        add_non_default_config(config_strings, "Collector.Grpc.MaxReceiveMessageSize", config.collector.grpc.channel.max_receive_message_size,
-                               default_config.collector.grpc.channel.max_receive_message_size);
-        add_non_default_config(config_strings, "Collector.Grpc.SenderQueueSize", config.collector.grpc.channel.sender_queue_size,
-                               default_config.collector.grpc.channel.sender_queue_size);
-        add_non_default_config(config_strings, "Stat.Enable", config.stat.enable, default_config.stat.enable);
-        add_non_default_config(config_strings, "Stat.BatchCount", config.stat.batch_count, default_config.stat.batch_count);
-        add_non_default_config(config_strings, "Stat.BatchInterval", config.stat.collect_interval,
-                               default_config.stat.collect_interval);
-        add_non_default_config(config_strings, "Sampling.Type", config.sampling.type, default_config.sampling.type);
-        add_non_default_config(config_strings, "Sampling.CounterRate", config.sampling.counter_rate,
-                               default_config.sampling.counter_rate);
-        add_non_default_config(config_strings, "Sampling.PercentRate", config.sampling.percent_rate,
-                               default_config.sampling.percent_rate);
-        add_non_default_config(config_strings, "Sampling.NewThroughput", config.sampling.new_throughput,
-                               default_config.sampling.new_throughput);
-        add_non_default_config(config_strings, "Sampling.ContinueThroughput", config.sampling.cont_throughput,
-                               default_config.sampling.cont_throughput);
-        add_non_default_config(config_strings, "Span.QueueSize", config.span.queue_size, default_config.span.queue_size);
-        add_non_default_config(config_strings, "Span.MaxEventDepth", config.span.max_event_depth,
-                               default_config.span.max_event_depth);
-        add_non_default_config(config_strings, "Span.MaxEventSequence", config.span.max_event_sequence,
-                               default_config.span.max_event_sequence);
-        add_non_default_config(config_strings, "Span.EventChunkSize", config.span.event_chunk_size,
-                               default_config.span.event_chunk_size);
-        add_non_default_config(config_strings, "Collector.SpanBatch.Size", config.collector.span_batch.size,
-                               default_config.collector.span_batch.size);
-        add_non_default_config(config_strings, "Collector.SpanBatch.FlushIntervalMs", config.collector.span_batch.flush_interval_ms,
-                               default_config.collector.span_batch.flush_interval_ms);
-        add_non_default_config(config_strings, "Collector.SpanBatch.CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms,
-                               default_config.collector.span_batch.collect_deadline_ms);
-        add_non_default_config(config_strings, "Collector.SpanBatch.MaxConcurrentRequests",
-                               config.collector.span_batch.max_concurrent_requests,
-                               default_config.collector.span_batch.max_concurrent_requests);
-        add_non_default_config(config_strings, "Collector.AgentInfo.RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms,
-                               default_config.collector.agent_info.refresh_interval_ms);
-        add_non_default_config(config_strings, "Collector.AgentInfo.SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms,
-                               default_config.collector.agent_info.send_retry_interval_ms);
-        add_non_default_config(config_strings, "Collector.AgentInfo.MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt,
-                               default_config.collector.agent_info.max_try_per_attempt);
-        add_non_default_config(config_strings, "Http.CollectUrlStat", config.http.url_stat.enable,
-                               default_config.http.url_stat.enable);
-        add_non_default_config(config_strings, "Http.UrlStatLimit", config.http.url_stat.limit,
-                               default_config.http.url_stat.limit);
-        add_non_default_config(config_strings, "Http.UrlStatQueueSize", config.http.url_stat.queue_size,
-                               default_config.http.url_stat.queue_size);
-        add_non_default_config(config_strings, "Http.UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path,
-                               default_config.http.url_stat.enable_trim_path);
-        add_non_default_config(config_strings, "Http.UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth,
-                               default_config.http.url_stat.trim_path_depth);
-        add_non_default_config(config_strings, "Http.UrlStatMethodPrefix", config.http.url_stat.method_prefix,
-                               default_config.http.url_stat.method_prefix);
-        add_non_default_config(config_strings, "Http.Server.StatusCodeErrors", config.http.server.status_errors,
-                               default_config.http.server.status_errors);
-        add_non_default_config(config_strings, "Http.Server.ExcludeUrl", config.http.server.exclude_url,
-                               default_config.http.server.exclude_url);
-        add_non_default_config(config_strings, "Http.Server.ExcludeMethod", config.http.server.exclude_method,
-                               default_config.http.server.exclude_method);
-        add_non_default_config(config_strings, "Http.Server.RecordRequestHeader", config.http.server.rec_request_header,
-                               default_config.http.server.rec_request_header);
-        add_non_default_config(config_strings, "Http.Server.RecordRequestCookie", config.http.server.rec_request_cookie,
-                               default_config.http.server.rec_request_cookie);
-        add_non_default_config(config_strings, "Http.Server.RecordResponseHeader", config.http.server.rec_response_header,
-                               default_config.http.server.rec_response_header);
-        add_non_default_config(config_strings, "Http.Client.RecordRequestHeader", config.http.client.rec_request_header,
-                               default_config.http.client.rec_request_header);
-        add_non_default_config(config_strings, "Http.Client.RecordRequestCookie", config.http.client.rec_request_cookie,
-                               default_config.http.client.rec_request_cookie);
-        add_non_default_config(config_strings, "Http.Client.RecordResponseHeader", config.http.client.rec_response_header,
-                               default_config.http.client.rec_response_header);
-        add_non_default_config(config_strings, "Sql.MaxBindArgsSize", config.sql.max_bind_args_size,
-                               default_config.sql.max_bind_args_size);
-        add_non_default_config(config_strings, "Sql.EnableSqlStats", config.sql.enable_sql_stats,
-                               default_config.sql.enable_sql_stats);
-        add_non_default_config(config_strings, "Sql.EnableRawSqlCache", config.sql.enable_raw_sql_cache,
-                               default_config.sql.enable_raw_sql_cache);
-        add_non_default_config(config_strings, "Sql.TraceBindValue", config.sql.trace_bind_value,
-                               default_config.sql.trace_bind_value);
-        add_non_default_config(config_strings, "EnableCallstackTrace", config.enable_callstack_trace,
-                               default_config.enable_callstack_trace);
-        add_non_default_config(config_strings, "EnableConfigFileWatcher", config.enable_config_file_watcher,
-                               default_config.enable_config_file_watcher);
-
+        for (const auto& [key, value] : current) {
+            if (std::find(std::begin(always_set), std::end(always_set), key) != std::end(always_set)) {
+                continue;
+            }
+            const auto it = default_values.find(key);
+            if (it == default_values.end() || it->second != value) {
+                config_strings.push_back(absl::StrCat(key, "=", value));
+            }
+        }
         return config_strings;
     }
 
@@ -1497,92 +1412,39 @@ namespace pinpoint {
         return true;
     }
 
-    static bool same_grpc_channel(const Config::GrpcChannelOptions& lhs,
-                                  const Config::GrpcChannelOptions& rhs) {
-        return std::tie(lhs.keepalive_time_ms,
-                        lhs.keepalive_timeout_ms,
-                        lhs.keepalive_permit_without_calls,
-                        lhs.max_send_message_size,
-                        lhs.max_receive_message_size,
-                        lhs.sender_queue_size) ==
-               std::tie(rhs.keepalive_time_ms,
-                        rhs.keepalive_timeout_ms,
-                        rhs.keepalive_permit_without_calls,
-                        rhs.max_send_message_size,
-                        rhs.max_receive_message_size,
-                        rhs.sender_queue_size);
-    }
-
-    static bool same_grpc_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.collector.grpc.ssl.enable,
-                        lhs.collector.grpc.ssl.trust_cert_file_path,
-                        lhs.collector.grpc.ssl.root_cert_file_path) ==
-               std::tie(rhs.collector.grpc.ssl.enable,
-                        rhs.collector.grpc.ssl.trust_cert_file_path,
-                        rhs.collector.grpc.ssl.root_cert_file_path) &&
-               same_grpc_channel(lhs.collector.grpc.channel, rhs.collector.grpc.channel);
-    }
-
-    // Every setting under `collector` is non-reloadable: the endpoint, gRPC
-    // transport, agent-info refresh and span-batch tuning are all wired into the
-    // running gRPC connection/streams at startup.
-    static bool same_collector_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.collector.host,
-                        lhs.collector.agent_port,
-                        lhs.collector.span_port,
-                        lhs.collector.stat_port,
-                        lhs.collector.agent_info.refresh_interval_ms,
-                        lhs.collector.agent_info.send_retry_interval_ms,
-                        lhs.collector.agent_info.max_try_per_attempt,
-                        lhs.collector.span_batch.size,
-                        lhs.collector.span_batch.flush_interval_ms,
-                        lhs.collector.span_batch.collect_deadline_ms,
-                        lhs.collector.span_batch.max_concurrent_requests) ==
-               std::tie(rhs.collector.host,
-                        rhs.collector.agent_port,
-                        rhs.collector.span_port,
-                        rhs.collector.stat_port,
-                        rhs.collector.agent_info.refresh_interval_ms,
-                        rhs.collector.agent_info.send_retry_interval_ms,
-                        rhs.collector.agent_info.max_try_per_attempt,
-                        rhs.collector.span_batch.size,
-                        rhs.collector.span_batch.flush_interval_ms,
-                        rhs.collector.span_batch.collect_deadline_ms,
-                        rhs.collector.span_batch.max_concurrent_requests) &&
-               same_grpc_config(lhs, rhs);
-    }
-
-    static bool same_stat_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.stat.enable, lhs.stat.batch_count, lhs.stat.collect_interval) ==
-               std::tie(rhs.stat.enable, rhs.stat.batch_count, rhs.stat.collect_interval);
-    }
-
-    static bool same_url_stat_config(const Config& lhs, const Config& rhs) {
-        return std::tie(lhs.http.url_stat.enable,
-                        lhs.http.url_stat.limit,
-                        lhs.http.url_stat.queue_size,
-                        lhs.http.url_stat.enable_trim_path,
-                        lhs.http.url_stat.trim_path_depth,
-                        lhs.http.url_stat.method_prefix) ==
-               std::tie(rhs.http.url_stat.enable,
-                        rhs.http.url_stat.limit,
-                        rhs.http.url_stat.queue_size,
-                        rhs.http.url_stat.enable_trim_path,
-                        rhs.http.url_stat.trim_path_depth,
-                        rhs.http.url_stat.method_prefix);
+    // A tuple of references to every non-reloadable field, so each field is
+    // named once. Everything under `collector` is non-reloadable: the
+    // endpoint, gRPC transport, agent-info refresh and span-batch tuning are
+    // all wired into the running gRPC connection/streams at startup.
+    static auto non_reloadable_fields(const Config& c) {
+        return std::tie(c.app_name_, c.agent_id_, c.agent_name_,
+                        c.uid_version_, c.service_name_, c.api_key_, c.object_name_version_,
+                        c.span.queue_size, c.enable_config_file_watcher,
+                        c.collector.host, c.collector.agent_port, c.collector.span_port, c.collector.stat_port,
+                        c.collector.agent_info.refresh_interval_ms,
+                        c.collector.agent_info.send_retry_interval_ms,
+                        c.collector.agent_info.max_try_per_attempt,
+                        c.collector.span_batch.size, c.collector.span_batch.flush_interval_ms,
+                        c.collector.span_batch.collect_deadline_ms,
+                        c.collector.span_batch.max_concurrent_requests,
+                        c.collector.grpc.ssl.enable,
+                        c.collector.grpc.ssl.trust_cert_file_path,
+                        c.collector.grpc.ssl.root_cert_file_path,
+                        c.collector.grpc.channel.keepalive_time_ms,
+                        c.collector.grpc.channel.keepalive_timeout_ms,
+                        c.collector.grpc.channel.keepalive_permit_without_calls,
+                        c.collector.grpc.channel.max_send_message_size,
+                        c.collector.grpc.channel.max_receive_message_size,
+                        c.collector.grpc.channel.sender_queue_size,
+                        c.stat.enable, c.stat.batch_count, c.stat.collect_interval,
+                        c.http.url_stat.enable, c.http.url_stat.limit, c.http.url_stat.queue_size,
+                        c.http.url_stat.enable_trim_path, c.http.url_stat.trim_path_depth,
+                        c.http.url_stat.method_prefix);
     }
 
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
-        return std::tie(app_name_, agent_id_, agent_name_,
-                        uid_version_, service_name_, api_key_, object_name_version_,
-                        span.queue_size, enable_config_file_watcher) ==
-               std::tie(old->app_name_, old->agent_id_, old->agent_name_,
-                        old->uid_version_, old->service_name_, old->api_key_, old->object_name_version_,
-                        old->span.queue_size, old->enable_config_file_watcher) &&
-               same_collector_config(*this, *old) &&
-               same_stat_config(*this, *old) &&
-               same_url_stat_config(*this, *old);
+        return non_reloadable_fields(*this) == non_reloadable_fields(*old);
     }
 
     void Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {

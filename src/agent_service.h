@@ -147,7 +147,8 @@
       virtual std::shared_ptr<AgentService> selfRef() noexcept { return nullptr; }
  
       // These identity fields are immutable for the agent's lifetime:
-      // Config::isReloadable() rejects any reload that would change them, so a
+      // Config::retainNonReloadableFrom() overwrites any reload that tries to
+      // change them with the running values, so a
       // const-reference return is safe and lets per-request hot-path callers
       // (e.g. SpanEvent::InjectContext) avoid a string copy. Implementations must
       // back them with storage that outlives the agent, not a temporary.

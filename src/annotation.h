@@ -299,6 +299,12 @@ namespace pinpoint {
         const std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() const { return annotation_list_; }
 
     private:
+        // Shared body of every Append overload: seal guard, initial reserve,
+        // emplace, with allocation failures logged and swallowed. Defined in
+        // annotation.cpp — all instantiations live there.
+        template <typename... Args>
+        void append(int32_t key, Args&&... args);
+
         // Most span events carry only a handful of annotations; reserving a
         // few slots up front skips the 1->2->4 growth reallocations.
         void reserveInitial() {

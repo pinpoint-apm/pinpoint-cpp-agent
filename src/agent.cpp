@@ -107,8 +107,8 @@ namespace pinpoint {
         // cfg is a programming error, not a runtime condition to tolerate.
         assert(cfg);
 
-        // Snapshot the immutable identity fields once. isReloadable() guarantees
-        // they never change for this agent, so the per-request getters below can
+        // Snapshot the immutable identity fields once. retainNonReloadableFrom()
+        // keeps them fixed across reloads, so the per-request getters below can
         // serve them without touching the atomic runtime_.
         app_type_ = app_type;
         app_name_ = cfg->app_name_;
