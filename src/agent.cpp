@@ -786,12 +786,23 @@ namespace pinpoint {
         // either builds its own agent via Start() or is short-lived. Done
         // here rather than in do_shutdown() so the pointers stay valid while
         // the object is alive (see the forked-child branch there).
+        //
+        // The stats aggregators go the same way, for a second reason: their
+        // shards (UrlStats::QueueShard, AgentStats::ResponseTimeShard) hold
+        // condition variables that the abandoned url_stat/agent_stat workers
+        // were waiting on when fork() ran. The waiter count lives in the
+        // condvar and is inherited, so glibc's pthread_cond_destroy blocks
+        // forever waiting for waiters that do not exist in this process.
+        // Member destruction runs after this body, so releasing here is what
+        // keeps that destructor from ever running.
         if (owner_pid_ != 0 && owner_pid_ != getpid()) {
             (void)grpc_agent_.release();
             (void)grpc_metadata_.release();
             (void)grpc_span_.release();
             (void)grpc_stat_.release();
             (void)grpc_command_.release();
+            (void)url_stats_.release();
+            (void)agent_stats_.release();
         }
     }
 
