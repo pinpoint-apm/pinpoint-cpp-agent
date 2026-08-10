@@ -696,32 +696,18 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::sendMetaWorker() {
-        // Supervise the loop body so an unexpected exception cannot kill
-        // metadata upload for the process lifetime. Exceptions from an
+        // Supervised (see superviseWorker) so an unexpected exception cannot
+        // kill metadata upload for the process lifetime. Exceptions from an
         // individual launch are contained by launch_meta_rpc(), which routes
         // the item through the normal retry path. Only a stop request or
         // agent exit ends the worker.
-        while (true) {
-            try {
-                run_meta_worker();
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("failed to send grpc meta: exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("failed to send grpc meta: unknown exception");
-            }
-
-            std::unique_lock<std::mutex> lock(pipeline_->mutex);
-            if (pipeline_->cv.wait_for(lock, tuning_.worker_restart_delay, [this] {
-                    return pipeline_->stop_requested || agent_->isExiting();
-                })) {
-                break;
-            }
-        }
+        superviseWorker("send meta worker", tuning_.worker_restart_delay,
+                        pipeline_->mutex, pipeline_->cv,
+                        [this] { return pipeline_->stop_requested || agent_->isExiting(); },
+                        [this] { run_meta_worker(); });
         // Runs on this worker thread, which the shutdown path joins under its
         // deadline — the signal phase (stopMetaWorker) stays non-blocking.
         await_in_flight_requests();
-        LOG_INFO("send meta worker end");
     }
 
     void GrpcMetadata::run_meta_worker() {
@@ -1168,26 +1154,17 @@ namespace pinpoint {
     }
 
     void GrpcCommand::commandWorker() {
-        // Supervise the loop body: a transient exception (e.g. one escaping a
-        // command handler) must not kill the worker for the process lifetime —
-        // the collector could never reach this agent again. Only a stop
-        // request or agent exit ends the worker.
-        while (!stopping()) {
-            try {
-                run_command_worker();
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("grpc command worker exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("grpc command worker unknown exception");
-            }
-
-            if (wait_reconnect_delay(tuning_.worker_restart_delay)) {
-                break;
-            }
+        // Supervised (see superviseWorker): a transient exception (e.g. one
+        // escaping a command handler) must not kill the worker for the process
+        // lifetime — the collector could never reach this agent again. Only a
+        // stop request or agent exit ends the worker.
+        if (!stopping()) {
+            superviseWorker("grpc command worker", tuning_.worker_restart_delay,
+                            command_worker_mutex_, command_worker_cv_,
+                            [this] { return stopping(); },
+                            [this] { run_command_worker(); });
         }
         stop_active_thread_count_streams();
-        LOG_INFO("grpc command worker end");
     }
 
     void GrpcCommand::run_command_worker() {
@@ -1507,28 +1484,15 @@ namespace pinpoint {
     }
 
     void GrpcAgent::agent_info_worker() {
-        // Supervise the loop body like the other grpc workers: a transient
-        // exception (e.g. bad_alloc while building AgentInfo under memory
-        // pressure) must not kill the periodic re-send scheduler for the
-        // process lifetime. Only a stop request or agent exit ends the worker.
-        while (true) {
-            try {
-                run_agent_info_worker();
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("AgentInfo scheduler exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("AgentInfo scheduler unknown exception");
-            }
-
-            // Pace crash restarts before re-entering the periodic loop.
-            std::unique_lock<std::mutex> lock(agent_info_mutex_);
-            if (agent_info_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
-                    return should_stop_agent_info();
-                })) {
-                break;
-            }
-        }
+        // Supervised (see superviseWorker) like the other grpc workers: a
+        // transient exception (e.g. bad_alloc while building AgentInfo under
+        // memory pressure) must not kill the periodic re-send scheduler for
+        // the process lifetime. Only a stop request or agent exit ends the
+        // worker; crash restarts are paced by the restart delay.
+        superviseWorker("AgentInfo scheduler", tuning_.worker_restart_delay,
+                        agent_info_mutex_, agent_info_cv_,
+                        [this] { return should_stop_agent_info(); },
+                        [this] { run_agent_info_worker(); });
     }
 
     void GrpcAgent::run_agent_info_worker() {
