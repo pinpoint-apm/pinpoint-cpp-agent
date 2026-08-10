@@ -30,22 +30,28 @@ cc_library(
 
 # Unit tests that follow the one-source/one-binary pattern.
 _TESTS = [
+    "test_agent_with_mocks",
     "test_annotation",
+    "test_atomic_shared_ptr",
     "test_cache",
     "test_callstack",
     "test_config",
+    "test_fork",
     "test_grpc",
     "test_grpc_with_mocks",
     "test_http",
     "test_limiter",
+    "test_logging",
     "test_noop",
     "test_object_name",
     "test_sampling",
+    "test_sharded_bounded_queue",
     "test_span",
     "test_span_event",
     "test_sql",
     "test_stat",
     "test_url_stat",
+    "test_utility",
 ]
 
 [
