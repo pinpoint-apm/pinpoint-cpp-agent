@@ -16,6 +16,7 @@
 
 #include "../src/logging.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>

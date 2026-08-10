@@ -16,6 +16,7 @@
 
 #include "../src/callstack.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <string>
 #include <memory>
 #include <thread>
