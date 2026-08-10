@@ -126,141 +126,19 @@ namespace pinpoint {
 
     /**
      * @brief Key identifying URL statistics by pattern and tick.
-     *
-     * Stored keys own url_. UrlStatSnapshot uses the private View form only as
-     * a synchronous C++17 unordered_map lookup key, so a hit can hash and
-     * compare the method/path fragments without first materializing a string.
      */
     struct UrlKey {
-        UrlKey(std::string url, int64_t tick)
-            : url_{std::move(url)}, tick_{tick} {}
-
-        bool operator==(const UrlKey& other) const noexcept {
-            if (tick_ != other.tick_) {
-                return false;
-            }
-            if (view_ == nullptr && other.view_ == nullptr) {
-                return url_ == other.url_;
-            }
-            // View keys are stack-local lookup keys and never stored in the
-            // map, so find() only ever compares view-vs-owned; two view keys
-            // can only meet as the same object.
-            if (view_ != nullptr && other.view_ != nullptr) {
-                return view_ == other.view_;
-            }
-            const auto& owned = view_ == nullptr ? url_ : other.url_;
-            const auto& view = view_ == nullptr ? *other.view_ : *view_;
-            return matches_view(owned, view);
-        }
-
         std::string url_;
         int64_t tick_;
 
-    private:
-        struct View {
-            std::string_view method;
-            std::string_view path;
-            bool method_prefix;
-            bool wildcard;
-        };
-
-        friend class UrlStatSnapshot;
-        friend struct UrlKeyHash;
-
-        UrlKey(const View& view, int64_t tick)
-            : url_{}, tick_{tick}, view_{&view} {}
-
-        static UrlKey lookup(const View& view, int64_t tick) {
-            return UrlKey{view, tick};
+        bool operator==(const UrlKey& other) const noexcept {
+            return tick_ == other.tick_ && url_ == other.url_;
         }
-        // The lookup key stores the View's address, so a temporary argument
-        // would dangle before the find() it was built for.
-        static UrlKey lookup(View&&, int64_t) = delete;
-
-        // The view-key byte sequence, decomposed: [method ' ']path['*'].
-        // Every view-form operation below (size, compare, hash, indexed
-        // access) iterates this one decomposition, so it is the single
-        // view-side encoding of the key format that build_url_stat_key()
-        // materializes on the owned side.
-        struct ViewFragments {
-            std::array<std::string_view, 4> parts;
-            size_t count{0};
-        };
-
-        static ViewFragments view_fragments(const View& view) noexcept {
-            ViewFragments fragments;
-            if (view.method_prefix) {
-                fragments.parts[fragments.count++] = view.method;
-                fragments.parts[fragments.count++] = " ";
-            }
-            fragments.parts[fragments.count++] = view.path;
-            if (view.wildcard) {
-                fragments.parts[fragments.count++] = "*";
-            }
-            return fragments;
-        }
-
-        static size_t view_url_size(const View& view) noexcept {
-            const auto fragments = view_fragments(view);
-            size_t size = 0;
-            for (size_t i = 0; i < fragments.count; ++i) {
-                size += fragments.parts[i].size();
-            }
-            return size;
-        }
-
-        static bool matches_view(const std::string& owned, const View& view) noexcept {
-            // The size equality makes the fragment sizes sum exactly to
-            // owned.size(), so each std::equal below stays in bounds.
-            if (owned.size() != view_url_size(view)) {
-                return false;
-            }
-
-            const auto fragments = view_fragments(view);
-            size_t offset = 0;
-            for (size_t i = 0; i < fragments.count; ++i) {
-                const auto part = fragments.parts[i];
-                const auto begin = owned.begin() + static_cast<std::ptrdiff_t>(offset);
-                if (!std::equal(part.begin(), part.end(), begin)) {
-                    return false;
-                }
-                offset += part.size();
-            }
-            return true;
-        }
-
-        size_t url_hash() const noexcept {
-            // FNV-1a can be continued across the non-contiguous fragments,
-            // unlike std::hash<std::string>. Both owning and view forms pass
-            // the exact same logical byte sequence through it.
-            std::uint64_t hash = 14695981039346656037ULL;
-            const auto append = [&hash](std::string_view part) {
-                for (const char c : part) {
-                    hash ^= static_cast<unsigned char>(c);
-                    hash *= 1099511628211ULL;
-                }
-            };
-
-            if (view_ == nullptr) {
-                append(url_);
-            } else {
-                const auto fragments = view_fragments(*view_);
-                for (size_t i = 0; i < fragments.count; ++i) {
-                    append(fragments.parts[i]);
-                }
-            }
-            return static_cast<size_t>(hash);
-        }
-
-        // Non-null only for the private, stack-scoped lookup key used by
-        // UrlStatSnapshot::add(). Keys inserted into UrlStatMap always own
-        // url_ and leave this null.
-        const View* view_{nullptr};
     };
 
     struct UrlKeyHash {
         size_t operator()(const UrlKey& key) const noexcept {
-            const auto url_hash = key.url_hash();
+            const auto url_hash = std::hash<std::string>{}(key.url_);
             const auto tick_hash = std::hash<int64_t>{}(key.tick_);
             return url_hash ^ (tick_hash + 0x9e3779b97f4a7c15ULL + (url_hash << 6) + (url_hash >> 2));
         }

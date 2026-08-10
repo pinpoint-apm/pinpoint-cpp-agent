@@ -42,7 +42,6 @@ public:
     MockAgentService()
         : is_exiting_(false),
           start_time_(1234567890),
-          cached_start_time_str_(std::to_string(start_time_)),
           trace_id_counter_(0) {}
 
     // AgentService interface implementation
@@ -50,7 +49,6 @@ public:
     const std::string& getAppName() const override { return app_name_; }
     int32_t getAppType() const override { return app_type_; }
     const std::string& getAgentId() const override { return agent_id_; }
-    const std::string& getAgentName() const override { return agent_name_; }
     const std::string& getServiceName() const override { return service_name_; }
     // Locked so a publishConfig() swap cannot race a worker thread's read of
     // the handle. Reading the pointed-to Config needs no lock: published
@@ -254,12 +252,8 @@ public:
     void setAppName(const std::string& name) { app_name_ = name; }
     void setAppType(int32_t type) { app_type_ = type; }
     void setAgentId(const std::string& id) { agent_id_ = id; }
-    void setAgentName(const std::string& name) { agent_name_ = name; }
     void setServiceName(const std::string& name) { service_name_ = name; }
-    void setStartTime(int64_t time) {
-        start_time_ = time;
-        cached_start_time_str_ = std::to_string(time);
-    }
+    void setStartTime(int64_t time) { start_time_ = time; }
 
     // Direct config access for test customization.
     //
@@ -300,9 +294,6 @@ public:
         force_sql_id_failure_.store(fail, std::memory_order_relaxed);
     }
     size_t getRecordedSpansCount() const { return recorded_spans_.size(); }
-    const SpanChunk* getLastRecordedSpan() const {
-        return recorded_spans_.empty() ? nullptr : recorded_spans_.back().get();
-    }
 
     // Test-observable state
     mutable std::vector<std::unique_ptr<SpanChunk>> recorded_spans_;
@@ -344,12 +335,10 @@ private:
     // before workers start.
     std::atomic<bool> is_exiting_;
     int64_t start_time_;
-    std::string cached_start_time_str_;
     int64_t trace_id_counter_;
     std::string app_name_ = "TestApp";
     int32_t app_type_ = 1300;
     std::string agent_id_ = "test-agent-001";
-    std::string agent_name_ = "TestAgent";
     std::string service_name_ = "";
     mutable std::mutex config_mutex_;
     std::shared_ptr<Config> config_ = std::make_shared<Config>();

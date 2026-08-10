@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 
 namespace pinpoint {
@@ -46,8 +47,8 @@ namespace pinpoint {
         std::shared_ptr<HttpUrlFilter> http_url_filter;
         std::shared_ptr<HttpMethodFilter> http_method_filter;
         std::shared_ptr<HttpStatusErrors> http_status_errors;
-        std::shared_ptr<HttpHeaderRecorder> http_srv_header_recorder[3];
-        std::shared_ptr<HttpHeaderRecorder> http_cli_header_recorder[3];
+        std::array<std::shared_ptr<HttpHeaderRecorder>, 3> http_srv_header_recorder;
+        std::array<std::shared_ptr<HttpHeaderRecorder>, 3> http_cli_header_recorder;
     };
 
 }  // namespace pinpoint

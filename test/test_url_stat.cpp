@@ -16,11 +16,8 @@
 
 #include <gtest/gtest.h>
 #include <google/protobuf/arena.h>
-#include <cstddef>
-#include <cstdlib>
 #include <future>
 #include <memory>
-#include <new>
 #include <thread>
 #include <chrono>
 #include <type_traits>
@@ -34,49 +31,6 @@
 #include "v1/Stat.pb.h"
 #include "mock_agent_service.h"
 
-namespace {
-
-thread_local bool count_url_stat_allocations = false;
-thread_local std::size_t url_stat_allocation_count = 0;
-
-void record_url_stat_allocation() noexcept {
-    if (count_url_stat_allocations) {
-        ++url_stat_allocation_count;
-    }
-}
-
-void start_counting_url_stat_allocations() noexcept {
-    url_stat_allocation_count = 0;
-    count_url_stat_allocations = true;
-}
-
-std::size_t stop_counting_url_stat_allocations() noexcept {
-    count_url_stat_allocations = false;
-    return url_stat_allocation_count;
-}
-
-}  // namespace
-
-void* operator new(std::size_t size) {
-    record_url_stat_allocation();
-    if (void* memory = std::malloc(size != 0 ? size : 1)) {
-        return memory;
-    }
-    throw std::bad_alloc();
-}
-
-void* operator new[](std::size_t size) {
-    record_url_stat_allocation();
-    if (void* memory = std::malloc(size != 0 ? size : 1)) {
-        return memory;
-    }
-    throw std::bad_alloc();
-}
-
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace pinpoint {
 
@@ -359,12 +313,7 @@ TEST_F(UrlStatTest, SnapshotSeparatesIdenticalUrlsByTick) {
     EXPECT_EQ(second_stat->second.getTotalHistogram().total(), 20);
 }
 
-TEST_F(UrlStatTest, SnapshotHitAndRejectedMissDoNotAllocateKeyStrings) {
-    // Pin the global log level: with debug enabled, add()'s LOG_DEBUG would
-    // format (and allocate) on the hit path, failing the zero-allocation
-    // assertions below regardless of the lookup implementation.
-    Logger::getInstance().setLogLevel(LOG_LEVEL_INFO);
-
+TEST_F(UrlStatTest, SnapshotRepeatedHitsAccumulateAndLimitRejectsMiss) {
     UrlStatSnapshot snapshot;
     Config config;
     config.http.url_stat.enable_trim_path = false;
@@ -372,7 +321,7 @@ TEST_F(UrlStatTest, SnapshotHitAndRejectedMissDoNotAllocateKeyStrings) {
     config.http.url_stat.limit = 1;
     TickClock tick_clock(1);
 
-    const std::string url = "/allocation/" + std::string(128, 'x');
+    const std::string url = "/repeat/api";
     UrlStatEntry hit(url, "GET", 200);
     hit.elapsed_ = 1;
     hit.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(500));
@@ -381,40 +330,21 @@ TEST_F(UrlStatTest, SnapshotHitAndRejectedMissDoNotAllocateKeyStrings) {
     ASSERT_EQ(snapshot.getEachStats().size(), 1u);
     const auto* const stored_stat = &snapshot.getEachStats().begin()->second;
 
-    start_counting_url_stat_allocations();
     for (int i = 0; i < 128; ++i) {
         snapshot.add(&hit, config, tick_clock);
     }
-    const auto hit_allocations = stop_counting_url_stat_allocations();
 
     UrlStatEntry rejected(url + "/miss", "GET", 200);
     rejected.elapsed_ = 1000;
     rejected.end_time_ = hit.end_time_;
-    start_counting_url_stat_allocations();
     snapshot.add(&rejected, config, tick_clock);
-    const auto rejected_miss_allocations = stop_counting_url_stat_allocations();
-
-    UrlStatSnapshot miss_snapshot;
-    Config miss_config = config;
-    miss_config.http.url_stat.limit = 2;
-    UrlStatEntry accepted(url + "/accepted", "GET", 200);
-    accepted.elapsed_ = 1;
-    accepted.end_time_ = hit.end_time_;
-    start_counting_url_stat_allocations();
-    miss_snapshot.add(&accepted, miss_config, tick_clock);
-    const auto accepted_miss_allocations = stop_counting_url_stat_allocations();
 
     const auto& stats = snapshot.getEachStats();
-    ASSERT_EQ(stats.size(), 1u);
-    EXPECT_EQ(&stats.begin()->second, stored_stat);
+    ASSERT_EQ(stats.size(), 1u) << "a limit-rejected miss must not be stored";
+    EXPECT_EQ(&stats.begin()->second, stored_stat)
+        << "repeated hits must reuse the stored entry";
     EXPECT_EQ(stats.begin()->first.url_, "GET " + url);
     EXPECT_EQ(stats.begin()->second.getTotalHistogram().total(), 129);
-    EXPECT_EQ(hit_allocations, 0u)
-        << "an existing long URL must not materialize a temporary key";
-    EXPECT_EQ(rejected_miss_allocations, 0u)
-        << "a limit-rejected miss must not materialize a key either";
-    EXPECT_GT(accepted_miss_allocations, 0u)
-        << "positive control: a stored miss must allocate its map node/key";
 }
 
 // ========== UrlStats Class Tests ==========

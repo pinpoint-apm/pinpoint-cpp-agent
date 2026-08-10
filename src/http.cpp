@@ -40,16 +40,12 @@ namespace pinpoint {
             }
         };
         for (const auto& token : tokens){
-            if (absl::EqualsIgnoreCase(token, "5xx")) {
-                set_range(http_status::SERVER_ERROR_MIN, http_status::SERVER_ERROR_MAX);
-            } else if (absl::EqualsIgnoreCase(token, "4xx")) {
-                set_range(http_status::CLIENT_ERROR_MIN, http_status::CLIENT_ERROR_MAX);
-            } else if (absl::EqualsIgnoreCase(token, "3xx")) {
-                set_range(http_status::REDIRECTION_MIN, http_status::REDIRECTION_MAX);
-            } else if (absl::EqualsIgnoreCase(token, "2xx")) {
-                set_range(http_status::SUCCESS_MIN, http_status::SUCCESS_MAX);
-            } else if (absl::EqualsIgnoreCase(token, "1xx")) {
-                set_range(http_status::INFORMATIONAL_MIN, http_status::INFORMATIONAL_MAX);
+            // "1xx".."5xx" (case-insensitive) selects a whole status class.
+            if (token.size() == 3 && '1' <= token[0] && token[0] <= '5' &&
+                (token[1] == 'x' || token[1] == 'X') &&
+                (token[2] == 'x' || token[2] == 'X')) {
+                const int base = (token[0] - '0') * 100;
+                set_range(base, base + 99);
             } else {
                 auto result = stoi_(token);
                 if (result.has_value()) {

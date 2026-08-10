@@ -254,38 +254,23 @@ namespace pinpoint {
     // skipped entirely for disabled levels — notably LOG_DEBUG, which is off
     // by default yet appears on hot paths. Arguments must therefore be free of
     // side effects, which holds across the codebase.
+    /// @brief Common body of the leveled LOG_* macros: check the level
+    /// predicate, then forward to the matching Logger method.
+    #define PP_LOG(predicate, method, ...) \
+        do { \
+            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
+            if (_pp_logger.predicate()) { \
+                _pp_logger.method(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+            } \
+        } while (0)
     /// @brief Writes a debug-level log entry using the global logger.
-    #define LOG_DEBUG(...) \
-        do { \
-            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.debugEnabled()) { \
-                _pp_logger.logDebug(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
-            } \
-        } while (0)
+    #define LOG_DEBUG(...) PP_LOG(debugEnabled, logDebug, __VA_ARGS__)
     /// @brief Writes an info-level log entry using the global logger.
-    #define LOG_INFO(...) \
-        do { \
-            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.infoEnabled()) { \
-                _pp_logger.logInfo(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
-            } \
-        } while (0)
+    #define LOG_INFO(...) PP_LOG(infoEnabled, logInfo, __VA_ARGS__)
     /// @brief Writes a warning-level log entry using the global logger.
-    #define LOG_WARN(...) \
-        do { \
-            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.warnEnabled()) { \
-                _pp_logger.logWarn(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
-            } \
-        } while (0)
+    #define LOG_WARN(...) PP_LOG(warnEnabled, logWarn, __VA_ARGS__)
     /// @brief Writes an error-level log entry using the global logger.
-    #define LOG_ERROR(...) \
-        do { \
-            ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.errorEnabled()) { \
-                _pp_logger.logError(::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
-            } \
-        } while (0)
+    #define LOG_ERROR(...) PP_LOG(errorEnabled, logError, __VA_ARGS__)
 
     // LOG_WARN variant rate-limited per call site (each expansion owns a
     // static LogSiteThrottle): at most one line per

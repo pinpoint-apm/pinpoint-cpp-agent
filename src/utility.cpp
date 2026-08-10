@@ -16,17 +16,16 @@
 
 #include <algorithm>
 #include <array>
-#include <cstring>
 #include <limits>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <new>
 #include <random>
-#include <cctype>
 #include <sys/socket.h>
 
 #include "absl/strings/numbers.h"
+#include "logging.h"
 #include "utility.h"
 #include "MurmurHash3.h"
 
@@ -48,6 +47,28 @@ namespace pinpoint {
         return std::chrono::duration_cast<std::chrono::milliseconds>(tm.time_since_epoch()).count();
     }
 
+    void superviseWorker(std::string_view name, std::chrono::milliseconds interval,
+                         std::mutex& mutex, std::condition_variable& cond_var,
+                         const std::function<bool()>& is_exiting,
+                         const std::function<void()>& body) {
+        while (true) {
+            try {
+                body();
+                break;
+            } catch (const std::exception& e) {
+                LOG_ERROR("{} exception = {}", name, e.what());
+            } catch (...) {
+                LOG_ERROR("{} unknown exception", name);
+            }
+
+            std::unique_lock<std::mutex> lock(mutex);
+            if (cond_var.wait_for(lock, interval, is_exiting)) {
+                break;
+            }
+        }
+        LOG_INFO("{} end", name);
+    }
+
     std::string get_host_name() {
         std::array<char, kHostNameMaxLength> host_name{};
 
@@ -61,13 +82,10 @@ namespace pinpoint {
     }
 
     static std::string resolve_host_ip_addr() {
-        std::array<char, kHostNameMaxLength> host_name{};
-
-        if (gethostname(host_name.data(), host_name.size()) != 0) {
+        const auto host = get_host_name();
+        if (host == "unknown") {  // get_host_name()'s failure sentinel
             return "0.0.0.0";
         }
-
-        host_name[kHostNameMaxLength - 1] = '\0';
 
         // Use getaddrinfo instead of deprecated gethostbyname
         struct addrinfo hints{};
@@ -76,7 +94,7 @@ namespace pinpoint {
         hints.ai_family = AF_INET;  // IPv4
         hints.ai_socktype = SOCK_STREAM;
 
-        if (getaddrinfo(host_name.data(), nullptr, &hints, &result) != 0 || !result) {
+        if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || !result) {
             return "0.0.0.0";
         }
 

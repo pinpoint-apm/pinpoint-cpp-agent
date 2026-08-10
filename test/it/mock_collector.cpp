@@ -335,16 +335,6 @@ struct MockCollector::Impl {
                 CollectorRpc::CommandActiveThreadDump, context, nullptr);
         }
 
-        grpc::Status CommandActiveThreadLightDump(
-                grpc::ServerContext* context,
-                const v1::PCmdActiveThreadLightDumpRes* request,
-                google::protobuf::Empty*) override {
-            owner_.record(&CollectorSnapshot::active_thread_light_dump_responses,
-                          *request, copy_metadata(*context));
-            return owner_.complete_unary(
-                CollectorRpc::CommandActiveThreadLightDump, context, nullptr);
-        }
-
     private:
         Impl& owner_;
     };

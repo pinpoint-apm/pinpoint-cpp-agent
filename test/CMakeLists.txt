@@ -18,6 +18,8 @@ function(add_pinpoint_test name)
   add_executable(${name} ${name}.cpp)
   target_link_libraries(${name} PRIVATE ${ARGN})
   add_test(NAME ${name} COMMAND ${name})
+  # The coverage target builds every registered test target via this list.
+  set_property(GLOBAL APPEND PROPERTY PINPOINT_TEST_TARGETS ${name})
 endfunction()
 
 add_pinpoint_test(test_atomic_shared_ptr

@@ -22,6 +22,7 @@ target_link_libraries(agent_integration_test PRIVATE
     GTest::gtest_main
 )
 add_test(NAME agent_integration_test COMMAND agent_integration_test)
+set_property(GLOBAL APPEND PROPERTY PINPOINT_TEST_TARGETS agent_integration_test)
 set_tests_properties(agent_integration_test PROPERTIES
     LABELS "integration;mock-collector"
     TIMEOUT 90

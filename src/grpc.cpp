@@ -17,7 +17,9 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -31,6 +33,7 @@
 #include <grpcpp/client_context.h>
 
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "version.h"
 #include "logging.h"
 #include "stat.h"
@@ -205,7 +208,7 @@ namespace pinpoint {
 
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
-                        int64_t start_time, int32_t app_type, unsigned long socket_id) {
+                        int64_t start_time, int32_t app_type) {
         std::vector<std::pair<std::string, std::string>> headers;
         headers.emplace_back(METADATA_APPLICATION_NAME, config.app_name_);
         headers.emplace_back(METADATA_AGENT_ID, std::string(agent_id));
@@ -222,9 +225,6 @@ namespace pinpoint {
             // v1/v3 (ClientHeaderFactoryV1): agentname only when present.
             headers.emplace_back(METADATA_AGENT_NAME, config.agent_name_);
         }
-        if (socket_id > 0) {
-            headers.emplace_back(METADATA_SOCKET_ID, std::to_string(socket_id));
-        }
         return headers;
     }
 
@@ -238,7 +238,7 @@ namespace pinpoint {
         // GrpcCommand: command worker + active-thread-count streams).
         std::call_once(grpc_metadata_once_, [this] {
             grpc_metadata_cache_ = build_grpc_metadata(*config_, agent_->getAgentId(),
-                                                       agent_->getStartTime(), agent_->getAppType(), 0);
+                                                       agent_->getStartTime(), agent_->getAppType());
         });
         for (const auto& [key, value] : grpc_metadata_cache_) {
             context->AddMetadata(key, value);
@@ -840,14 +840,7 @@ namespace pinpoint {
                       "support-command-code header lists codes in ascending order");
 
         std::string support_command_code_header() {
-            std::string value;
-            for (auto code : kSupportedCommandCodes) {
-                if (!value.empty()) {
-                    value.append(";");
-                }
-                value.append(std::to_string(code));
-            }
-            return value;
+            return absl::StrJoin(kSupportedCommandCodes, ";");
         }
     }
 
@@ -911,7 +904,7 @@ namespace pinpoint {
 
         void run() try {
             auto context = std::make_unique<grpc::ClientContext>();
-            owner_->build_command_context(context.get(), socket_id_);
+            owner_->build_grpc_context(context.get(), socket_id_);
             {
                 std::unique_lock<std::mutex> lock(context_mutex_);
                 context_ = std::move(context);
@@ -1018,10 +1011,6 @@ namespace pinpoint {
         }
     }
 
-    void GrpcCommand::build_command_context(grpc::ClientContext* context, unsigned long socket_id) const {
-        build_grpc_context(context, socket_id);
-    }
-
     bool GrpcCommand::write_fail_message(
             const v1::PCmdRequest& request,
             grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream,
@@ -1048,7 +1037,7 @@ namespace pinpoint {
         google::protobuf::Empty reply;
         v1::PCmdEchoResponse response;
 
-        build_command_context(&ctx, 0);
+        build_grpc_context(&ctx, 0);
         set_request_deadline(ctx);
 
         response.mutable_commonresponse()->set_responseid(request.requestid());
@@ -1233,7 +1222,7 @@ namespace pinpoint {
             }
 
             grpc::ClientContext context;
-            build_command_context(&context, ++socket_id_);
+            build_grpc_context(&context, ++socket_id_);
             context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header());
 
             const StreamContextGuard context_guard(this, &context);
@@ -1761,9 +1750,8 @@ namespace pinpoint {
             }
 
             std::unique_lock<std::mutex> lock(ping_worker_mutex_);
-            if (ping_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
-                    return ping_stop_requested_ || agent_->isExiting();
-                })) {
+            if (ping_cv_.wait_for(lock, tuning_.worker_restart_delay,
+                                  [this] { return stopping(); })) {
                 break;
             }
         }
@@ -1786,7 +1774,7 @@ namespace pinpoint {
             }
 
             lock.lock();
-            if (ping_cv_.wait_for(lock, tuning_.ping_interval, [this]{ return ping_stop_requested_ || agent_->isExiting(); })) {
+            if (ping_cv_.wait_for(lock, tuning_.ping_interval, [this]{ return stopping(); })) {
                 lock.unlock();
                 finish_ping_stream();
                 return true;
@@ -1797,8 +1785,9 @@ namespace pinpoint {
     void GrpcAgent::stopPingWorker() {
         request_stop();
         {
+            // Notify under the wait mutex: a worker between its stopping()
+            // check and blocking on the CV cannot miss the wakeup.
             std::unique_lock<std::mutex> lock(ping_worker_mutex_);
-            ping_stop_requested_ = true;
             ping_cv_.notify_one();
         }
         // The worker may be blocked in write_and_await_ping_stream() waiting
@@ -1879,14 +1868,6 @@ namespace pinpoint {
         return inflight_->cv.wait_for(lock, timeout, [this]{
             return inflight_->permits >= inflight_->max_permits;
         });
-    }
-
-    void GrpcSpan::release_permit() {
-        {
-            std::lock_guard<std::mutex> lock(inflight_->mutex);
-            ++inflight_->permits;
-        }
-        inflight_->cv.notify_one();
     }
 
     void GrpcSpan::enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept try {
@@ -2455,7 +2436,7 @@ namespace pinpoint {
         StatsType stats;
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            if (stats_stop_requested_ || agent_->isExiting() || stats_queue_.empty()) {
+            if (stopping() || stats_queue_.empty()) {
                 LOG_DEBUG("stats - queue empty");
                 return STREAM_CONTINUE;
             }
@@ -2480,12 +2461,12 @@ namespace pinpoint {
         // allocations across consecutive failures (compounding memory pressure
         // in exactly the OOM scenario that triggers this path).
         arena_.Reset();
-        return STREAM_EXCEPTION;
+        // Treated like an empty queue: the worker waits for the next payload.
+        return STREAM_CONTINUE;
     }
 
     void GrpcStats::enqueueStats(const StatsType stats) noexcept try {
-        const auto& config = config_;
-        if (!config->stat.enable && !config->http.url_stat.enable) {
+        if (stats_disabled()) {
             return;
         }
 
@@ -2557,8 +2538,7 @@ namespace pinpoint {
         // UrlStats::addUrlStatsWorker), so a worker that returns here can
         // never be needed later. config_ is the pinned boot snapshot, so
         // stopStatsWorker's identical gate always agrees with this one.
-        const auto& config = config_;
-        if (!config->stat.enable && !config->http.url_stat.enable) {
+        if (stats_disabled()) {
             return;
         }
 
@@ -2584,9 +2564,8 @@ namespace pinpoint {
             }
 
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            if (stats_queue_cv_.wait_for(lock, tuning_.worker_restart_delay, [this] {
-                    return stats_stop_requested_ || agent_->isExiting();
-                })) {
+            if (stats_queue_cv_.wait_for(lock, tuning_.worker_restart_delay,
+                                         [this] { return stopping(); })) {
                 break;
             }
         }
@@ -2602,12 +2581,12 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(stats_queue_mutex_);
         while (true) {
             stats_queue_cv_.wait(lock, [this]{
-                return !stats_queue_.empty() || stats_stop_requested_ || agent_->isExiting();
+                return !stats_queue_.empty() || stopping();
             });
-            const bool stopping = stats_stop_requested_ || agent_->isExiting();
+            const bool stop = stopping();
             lock.unlock();
 
-            if (stopping) {
+            if (stop) {
                 finish_stats_stream();
                 return true;
             }
@@ -2627,15 +2606,15 @@ namespace pinpoint {
     }
 
     void GrpcStats::stopStatsWorker() {
-        const auto& config = config_;
-        if (!config->stat.enable && !config->http.url_stat.enable) {
+        if (stats_disabled()) {
             return;
         }
 
         request_stop();
         {
+            // Notify under the wait mutex: a worker between its stopping()
+            // check and blocking on the CV cannot miss the wakeup.
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            stats_stop_requested_ = true;
             stats_queue_cv_.notify_one();
         }
         // The worker may be blocked in write_and_await_stats_stream() waiting

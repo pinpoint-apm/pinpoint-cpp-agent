@@ -84,9 +84,6 @@ namespace pinpoint {
         void incrSkipNew() { skip_new_.fetch_add(1, std::memory_order_relaxed); }
         void incrSkipCont() { skip_cont_.fetch_add(1, std::memory_order_relaxed); }
 
-        // Access to snapshots (test-only: unsynchronized reference — the
-        // worker overwrites these slots under mutex_)
-        std::vector<AgentStatsSnapshot>& getSnapshots() { return agent_stats_snapshots_; }
         /**
          * @brief Returns a copy of the snapshot batch, taken under the stats mutex.
          *
@@ -108,8 +105,6 @@ namespace pinpoint {
         /// @brief One supervised run of the collect loop; agentStatsWorker
         /// restarts it after a transient exception.
         void runAgentStatsWorker(const Config& config);
-        void pauseResponseTimeUpdates();
-        void resumeResponseTimeUpdates();
         void collectAndResetResponseTime(int64_t& avg, int64_t& max);
         
         // System metrics structures
@@ -133,13 +128,11 @@ namespace pinpoint {
 
         // One cache line per shard: every request end updates exactly one
         // shard (picked by thread id), so the per-request RMWs never contend
-        // across shards. writers_ shares its shard's line on purpose — it is
-        // only ever touched by the same threads that update that shard.
+        // across shards.
         struct alignas(64) ResponseTimeShard {
             std::atomic<int64_t> acc_response_time_{0};
             std::atomic<int64_t> request_count_{0};
             std::atomic<int64_t> max_response_time_{0};
-            std::atomic<int64_t> writers_{0};
         };
 
         ResponseTimeShard& responseTimeShard();
@@ -160,15 +153,9 @@ namespace pinpoint {
         std::optional<clock_t> last_proc_cpu_time_{};
         
         std::array<ResponseTimeShard, kResponseTimeShardCount> response_time_shards_;
-        std::atomic<bool> response_time_snapshotting_{false};
-        std::mutex response_time_snapshot_mutex_;
-        
-        // Sampler counters isolated on their own cache line. Each request does
-        // one fetch_add here, while response_time_snapshotting_ just above is
-        // read twice per request in collectResponseTime — packed together, every
-        // counter increment would invalidate the line that read rides on.
-        // active_spans_ below carries its own alignment (its shards are
-        // over-aligned), so it cannot share this line either.
+
+        // Sampler counters isolated on their own cache line so their
+        // per-request fetch_adds never share a line with neighboring members.
         alignas(64) std::atomic<int64_t> sample_new_{0};
         std::atomic<int64_t> un_sample_new_{0};
         std::atomic<int64_t> sample_cont_{0};

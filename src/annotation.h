@@ -53,8 +53,6 @@ namespace pinpoint {
 
         IntStringStringValue(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
             : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
-        IntStringStringValue(const int32_t intVal, std::string&& strVal1, std::string_view strVal2)
-            : intValue(intVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
         // strVal2 by value so a caller-owned bind-value string (see
         // SpanEventImpl::SetSqlQuery) moves in without copying up to
         // max_bind_args_size bytes; a literal still builds one std::string as
@@ -98,8 +96,6 @@ namespace pinpoint {
 
         BytesStringStringValue(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
             : bytesValue(bytesVal), stringValue1(strVal1), stringValue2(strVal2) {}
-        BytesStringStringValue(SqlUid bytesVal, std::string&& strVal1, std::string_view strVal2)
-            : bytesValue(bytesVal), stringValue1(std::move(strVal1)), stringValue2(strVal2) {}
         // strVal2 by value; see IntStringStringValue above.
         BytesStringStringValue(SqlUid bytesVal,
                                std::shared_ptr<const std::string> strVal1,
@@ -145,8 +141,6 @@ namespace pinpoint {
             : data(std::pair<std::string, std::string>(strVal1, strVal2)) {}
         AnnotationData(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
             : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
-        AnnotationData(const int32_t intVal, std::string&& strVal1, std::string_view strVal2)
-            : data(IntStringStringValue(intVal, std::move(strVal1), strVal2)) {}
         AnnotationData(const int32_t intVal,
                        std::shared_ptr<const std::string> strVal1,
                        std::string strVal2)
@@ -156,8 +150,6 @@ namespace pinpoint {
             : data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
         AnnotationData(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
             : data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
-        AnnotationData(SqlUid bytesVal, std::string&& strVal1, std::string_view strVal2)
-            : data(BytesStringStringValue(bytesVal, std::move(strVal1), strVal2)) {}
         AnnotationData(SqlUid bytesVal,
                        std::shared_ptr<const std::string> strVal1,
                        std::string strVal2)

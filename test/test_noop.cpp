@@ -106,7 +106,6 @@ protected:
         mock_agent_service_->setExiting(false);
         mock_agent_service_->setAppName("mock-app");
         mock_agent_service_->setAgentId("mock-agent");
-        mock_agent_service_->setAgentName("mock-agent-name");
         mock_agent_service_->setStartTime(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
@@ -599,33 +598,9 @@ TEST_F(NoopTest, NoopAgentReturnedSpansAreNoopTest) {
     EXPECT_FALSE(span3->IsSampled());
 }
 
-// Noop holder class tests
-
-TEST_F(NoopTest, NoopHolderReturnsSameInstancesTest) {
-    Noop noop;
-
-    auto agent1 = noop.agent();
-    auto agent2 = noop.agent();
-    EXPECT_EQ(agent1.get(), agent2.get()) << "Noop holder should return same agent instance";
-
-    auto span1 = noop.span();
-    auto span2 = noop.span();
-    EXPECT_EQ(span1.get(), span2.get()) << "Noop holder should return same span instance";
-
-    auto event1 = noop.spanEvent();
-    auto event2 = noop.spanEvent();
-    EXPECT_EQ(event1, event2) << "Noop holder should return same spanEvent instance";
-}
-
-TEST_F(NoopTest, NoopHolderAllInstancesAreValidTest) {
-    Noop noop;
-
-    EXPECT_NE(noop.agent(), nullptr);
-    EXPECT_NE(noop.span(), nullptr);
-    EXPECT_NE(noop.spanEvent(), nullptr);
-
-    EXPECT_FALSE(noop.agent()->Enable());
-    EXPECT_FALSE(noop.span()->IsSampled());
+TEST_F(NoopTest, NoopSingletonsBehaveAsNoopTest) {
+    EXPECT_FALSE(noopAgent()->Enable());
+    EXPECT_FALSE(noopSpan()->IsSampled());
 }
 
 // UnsampledSpan additional tests

@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <limits>
 
 namespace pinpoint {
 
@@ -64,24 +63,10 @@ namespace pinpoint {
         }
 
         bool parseIndex(std::string_view text, size_t& index) {
-            if (text.empty()) {
-                return false;
-            }
-
-            size_t value = 0;
-            for (char ch : text) {
-                if (!isDigit(ch)) {
-                    return false;
-                }
-                const size_t digit = static_cast<size_t>(ch - '0');
-                if (value > (std::numeric_limits<size_t>::max() - digit) / 10) {
-                    return false;
-                }
-                value = (value * 10) + digit;
-            }
-
-            index = value;
-            return true;
+            // from_chars matches the previous hand-rolled semantics: empty
+            // input and overflow both fail, leading zeros are accepted.
+            const auto r = std::from_chars(text.data(), text.data() + text.size(), index);
+            return r.ec == std::errc{} && r.ptr == text.data() + text.size();
         }
     } // namespace
 

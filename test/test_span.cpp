@@ -108,9 +108,6 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     
     span_data.setParentAppName("ParentApp");
     EXPECT_EQ(span_data.getParentAppName(), "ParentApp");
-    
-    span_data.setParentAppNamespace("ParentNamespace");
-    EXPECT_EQ(span_data.getParentAppNamespace(), "ParentNamespace");
 
     EXPECT_EQ(span_data.getParentServiceName(), "") << "parent service name should default to empty";
     span_data.setParentServiceName("ParentService");
@@ -244,14 +241,15 @@ TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     EXPECT_EQ(top_event, event2_ptr) << "Top event should be the last added";
 
     // Finish span events
-    span_data->finishSpanEvent();
+    span_data->finishSpanEvent(span_data->topSpanEvent());
     EXPECT_EQ(span_data->getFinishedEventsCount(), 1) << "Should have 1 finished event";
 
-    span_data->finishSpanEvent();
+    span_data->finishSpanEvent(span_data->topSpanEvent());
     EXPECT_EQ(span_data->getFinishedEventsCount(), 2) << "Should have 2 finished events";
 
     // Take finished events (moves them out, leaving the vector empty)
-    auto taken = span_data->takeFinishedEvents();
+    std::vector<SpanEventImpl*> taken;
+    span_data->takeFinishedEvents(taken);
     ASSERT_EQ(taken.size(), 2) << "Should have taken 2 finished events";
     EXPECT_EQ(taken[0], event1_ptr) << "Finished events should be returned in sequence order";
     EXPECT_EQ(taken[1], event2_ptr) << "Finished events should be returned in sequence order";
@@ -304,9 +302,8 @@ TEST_F(SpanTest, SpanChunkWithEventsTest) {
     
     span_data->addSpanEvent(std::move(event1));
     span_data->addSpanEvent(std::move(event2));
-    span_data->finishSpanEvent();
-    span_data->finishSpanEvent();
-    
+    span_data->finishOpenSpanEvents();
+
     SpanChunk chunk(span_data, false);
     
     EXPECT_FALSE(chunk.isFinal()) << "Should not be final chunk";
@@ -341,7 +338,7 @@ TEST_F(SpanTest, SpanChunkDestructorReleasesRetiredPayloadTest) {
     event_ptr->SetDestination("MySQL");
     event_ptr->SetError("SomeError", "boom");
     event_ptr->SetAnnotation(12, "annotation-value");
-    span_data->finishSpanEvent();
+    span_data->finishSpanEvent(span_data->topSpanEvent());
 
     const auto sequence = event_ptr->getSequence();
     {
@@ -398,8 +395,8 @@ TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
     // Add some events
     auto event1 = make_test_span_event_unique(*span, "event1");
     span_data->addSpanEvent(std::move(event1));
-    span_data->finishSpanEvent();
-    
+    span_data->finishSpanEvent(span_data->topSpanEvent());
+
     SpanChunk chunk(span_data, true);
     
     // Test optimization (should not crash)
@@ -1185,7 +1182,8 @@ TEST_F(SpanTest, SpanDataFinishSpanEventOnEmptyStackTest) {
     SpanData span_data = make_test_span_data(*mock_agent_service_, "test-op");
 
     // Should not crash — logs a warning, finished_events unchanged
-    span_data.finishSpanEvent();
+    // (topSpanEvent() is nullptr on an empty stack)
+    span_data.finishSpanEvent(span_data.topSpanEvent());
     EXPECT_EQ(span_data.getFinishedEventsCount(), 0)
         << "No event should be finished when stack is empty";
 }
@@ -1649,7 +1647,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
-    reader.SetContext(HEADER_PARENT_APP_NAMESPACE, "ParentNamespace");
     reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
 
     span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
@@ -1659,8 +1656,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
     auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
     EXPECT_EQ(data->getParentServiceName(), "parent-service")
         << "Pinpoint-pServiceName header should populate the span's parentServiceName";
-    EXPECT_EQ(data->getParentAppNamespace(), "ParentNamespace")
-        << "Pinpoint-pAppNamespace header should populate the span's parentAppNamespace";
 }
 
 // ========== SpanEventImpl InjectContext After Span Finished ==========
@@ -1722,10 +1717,8 @@ TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {
     span_data->addSpanEvent(std::move(event2));
     span_data->addSpanEvent(std::move(event3));
 
-    // Finish in reverse order (stack LIFO)
-    span_data->finishSpanEvent(); // event3
-    span_data->finishSpanEvent(); // event2
-    span_data->finishSpanEvent(); // event1
+    // Finish in reverse order (stack LIFO: event3, event2, event1)
+    span_data->finishOpenSpanEvents();
 
     SpanChunk chunk(span_data, true);
     EXPECT_EQ(chunk.getSpanEventChunk().size(), 3);
@@ -1754,7 +1747,7 @@ TEST_F(SpanTest, SpanChunkOptimizeNonFinalKeyTimeTest) {
 
     auto event = make_test_span_event_unique(*span, "e1");
     span_data->addSpanEvent(std::move(event));
-    span_data->finishSpanEvent();
+    span_data->finishSpanEvent(span_data->topSpanEvent());
 
     SpanChunk chunk(span_data, false);
     chunk.optimizeSpanEvents();

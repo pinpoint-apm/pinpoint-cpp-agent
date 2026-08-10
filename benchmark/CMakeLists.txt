@@ -20,19 +20,11 @@ add_executable(atomic_shared_ptr_benchmark atomic_shared_ptr_benchmark.cpp)
 target_include_directories(atomic_shared_ptr_benchmark PRIVATE ../src)
 target_link_libraries(atomic_shared_ptr_benchmark PRIVATE Threads::Threads)
 
-if(TARGET pinpoint_cpp)
-  set(PINPOINT_BENCHMARK_LIBRARY pinpoint_cpp)
-elseif(TARGET pinpoint_cpp-static)
-  set(PINPOINT_BENCHMARK_LIBRARY pinpoint_cpp-static)
-endif()
-
-if(PINPOINT_BENCHMARK_LIBRARY)
-  add_executable(raw_sql_cache_benchmark raw_sql_cache_benchmark.cpp)
-  target_include_directories(raw_sql_cache_benchmark PRIVATE ../src)
-  target_link_libraries(raw_sql_cache_benchmark PRIVATE
-    ${PINPOINT_BENCHMARK_LIBRARY}
-    Threads::Threads)
-endif()
+add_executable(raw_sql_cache_benchmark raw_sql_cache_benchmark.cpp)
+target_include_directories(raw_sql_cache_benchmark PRIVATE ../src)
+target_link_libraries(raw_sql_cache_benchmark PRIVATE
+  ${PINPOINT_CPP_LIBRARY}
+  Threads::Threads)
 
 # Header-only usage of src/active_span.h: compares the former sharded-map
 # active-span registry with the intrusive-list ActiveSpanRegistry.

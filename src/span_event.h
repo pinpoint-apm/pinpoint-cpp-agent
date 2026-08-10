@@ -126,8 +126,6 @@ namespace pinpoint {
         /// @brief Returns the annotation container (owned by value; its list
         /// only allocates on the first append).
         PinpointAnnotation* getAnnotations() { return &annotations_; }
-        /// @brief Const overload for read-only consumers (the gRPC serializer).
-        const PinpointAnnotation* getAnnotations() const { return &annotations_; }
 
         /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }

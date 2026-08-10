@@ -23,8 +23,7 @@
 #include <string>
 #include <string_view>
 #include "pinpoint/tracer.h"
-#include "utility.h"
- 
+
  namespace pinpoint {
  
    struct Config;
@@ -159,8 +158,6 @@
       /// @brief Returns the resolved agent identifier used as the collector
       ///        instance key.
       virtual const std::string& getAgentId() const = 0;
-      /// @brief Returns the human-readable agent name.
-      virtual const std::string& getAgentName() const = 0;
       /// @brief Returns the agent's own service name. Only populated for uid
       ///        version v4; empty for v1/v3 (mirrors Java ObjectName.getServiceName).
       virtual const std::string& getServiceName() const = 0;

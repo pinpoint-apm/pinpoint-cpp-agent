@@ -44,16 +44,6 @@ namespace pinpoint {
         return event;
     }
 
-    void SpanData::finishSpanEvent() {
-        auto se = popSpanEvent();
-        if (se) {
-            se->finish();
-            storeFinishedEvent(std::move(se));
-        } else {
-            LOG_WARN("finishSpanEvent: abnormal span - has no event");
-        }
-    }
-
     void SpanData::finishSpanEvent(SpanEventImpl* expected) {
         if (topSpanEvent() != expected) {
             LOG_WARN("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
@@ -216,21 +206,18 @@ namespace pinpoint {
         }
     }
 
-    #define CHECK_FINISHED() \
-        do { \
-            if (finished_) { \
-                LOG_WARN("span is already finished"); \
-                return; \
-            } \
-        } while(0)
-
+    // retval unparenthesized so an empty argument yields a plain `return;`;
+    // every current argument is a single call expression, so no precedence
+    // pitfall.
     #define CHECK_FINISHED_WITH_RETURN(retval) \
         do { \
             if (finished_) { \
                 LOG_WARN("span is already finished"); \
-                return (retval); \
+                return retval; \
             } \
         } while(0)
+
+    #define CHECK_FINISHED() CHECK_FINISHED_WITH_RETURN()
 
     #define CHECK_OVERFLOW_WITH_RETURN(retval) \
         do { \
@@ -552,10 +539,6 @@ namespace pinpoint {
             }
         }
 
-        if (const auto parent_app_namespace = reader.Get(HEADER_PARENT_APP_NAMESPACE); parent_app_namespace.has_value()) {
-            data_->setParentAppNamespace(parent_app_namespace.value());
-        }
-
         if (const auto parent_service_name = reader.Get(HEADER_PARENT_SERVICE_NAME); parent_service_name.has_value()) {
             data_->setParentServiceName(parent_service_name.value());
         }
@@ -615,10 +598,6 @@ namespace pinpoint {
         return async_span;
     } CATCH_AND_LOG_RETURN("new async span", noopSpan())
 
-    void SpanImpl::decrEventDepth() {
-        data_->decrEventDepth();
-    }
-
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
         CHECK_FINISHED();
         // Gate at entry creation: with URL stats disabled (the default) the
@@ -661,7 +640,6 @@ namespace pinpoint {
     } CATCH_AND_LOG("set acceptor host")
 
     void SpanImpl::SetError(std::string_view error_message) {
-        CHECK_FINISHED();
         SetError("Error", error_message);
     }
 
@@ -703,9 +681,6 @@ namespace pinpoint {
         return data_->getTraceIdWire();
     } CATCH_AND_LOG_RETURN("get trace id", std::string{})
 
-	const std::string LOG_TRACE_ID_KEY = "PtxId";
-	const std::string LOG_SPAN_ID_KEY = "PspanId";
-
     void SpanImpl::sendUrlStat() {
         if (!url_stat_) {
             return;
@@ -740,8 +715,8 @@ namespace pinpoint {
         char span_id[32];
         const auto res = std::to_chars(span_id, span_id + sizeof(span_id), data_->getSpanId());
 
-        writer.Set(LOG_TRACE_ID_KEY, data_->getTraceIdWire());
-        writer.Set(LOG_SPAN_ID_KEY, std::string_view(span_id, static_cast<size_t>(res.ptr - span_id)));
+        writer.Set("PtxId", data_->getTraceIdWire());
+        writer.Set("PspanId", std::string_view(span_id, static_cast<size_t>(res.ptr - span_id)));
     } CATCH_AND_LOG("set logging")
 
 }  // namespace pinpoint

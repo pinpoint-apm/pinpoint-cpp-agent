@@ -120,7 +120,7 @@ namespace pinpoint {
 
     SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation) :
         span_(span),
-        agent_(span->getAgent()),
+        agent_(span->agent_),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         operation_{operation},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {
@@ -202,7 +202,7 @@ namespace pinpoint {
         // be under serialization on the gRPC worker once this event reaches
         // a chunk.
         annotations_.seal();
-        span_->decrEventDepth();
+        span_->data_->decrEventDepth();
         // system_clock can step backwards (NTP); never report a negative
         // elapsed time. Only the low side is clamped: the wire field is
         // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a

@@ -49,7 +49,7 @@ namespace pinpoint {
         return static_cast<int>(r) < rate_;
     }
 
-    bool ThroughputLimitTraceSampler::isNewSampled() noexcept {
+    bool TraceSampler::isNewSampled() noexcept {
         auto sampled = sampler_ ? sampler_->isSampled() : false;
         auto& stats = agent_->getAgentStats();
         
@@ -71,7 +71,7 @@ namespace pinpoint {
         return sampled;
     }
 
-    bool ThroughputLimitTraceSampler::isContinueSampled() noexcept {
+    bool TraceSampler::isContinueSampled() noexcept {
         auto sampled = true;
         auto& stats = agent_->getAgentStats();
         

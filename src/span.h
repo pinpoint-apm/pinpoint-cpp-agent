@@ -102,11 +102,6 @@ namespace pinpoint {
         /// @brief Returns the parent application name.
         std::string& getParentAppName() { return parent_app_name_; }
 
-        /// @brief Sets the parent application namespace.
-        void setParentAppNamespace(std::string_view parent_app_namespace) { parent_app_namespace_ = parent_app_namespace; }
-        /// @brief Returns the parent application namespace.
-        std::string& getParentAppNamespace() { return parent_app_namespace_; }
-
         /// @brief Sets the parent service name.
         void setParentServiceName(std::string_view parent_service_name) { parent_service_name_ = parent_service_name; }
         /// @brief Returns the parent service name.
@@ -213,10 +208,6 @@ namespace pinpoint {
     	 */
     	SpanEventImpl* addSpanEvent(std::unique_ptr<SpanEventImpl> se);
     	/**
-    	 * @brief Finalizes the top span event and moves it into the finished list.
-    	 */
-    	void finishSpanEvent();
-    	/**
     	 * @brief Finalizes span events down to and including `expected`.
     	 *
     	 * A well-nested trace always has `expected` on top, so this is a
@@ -253,12 +244,6 @@ namespace pinpoint {
          * touch freed memory.
          */
         void takeFinishedEvents(std::vector<SpanEventImpl*>& out);
-        /// @brief Drains finished span events, returning borrowed pointers.
-        std::vector<SpanEventImpl*> takeFinishedEvents() {
-            std::vector<SpanEventImpl*> events;
-            takeFinishedEvents(events);
-            return events;
-        }
         /// @brief Returns the number of finished span events.
     	size_t getFinishedEventsCount() const {
     	    return finished_events.size();
@@ -267,8 +252,6 @@ namespace pinpoint {
         /// @brief Returns the annotation container for the span (owned by
         /// value; its list only allocates on the first append).
         PinpointAnnotation* getAnnotations() { return &annotations_; }
-        /// @brief Const overload for read-only consumers (the gRPC serializer).
-        const PinpointAnnotation* getAnnotations() const { return &annotations_; }
 
     private:
         void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
@@ -281,7 +264,6 @@ namespace pinpoint {
     	int64_t parent_span_id_{-1};
     	std::string parent_app_name_;
     	int32_t parent_app_type_{1};
-    	std::string parent_app_namespace_;
     	std::string parent_service_name_;
 
     	int32_t app_type_;
@@ -500,7 +482,6 @@ namespace pinpoint {
     	 * Impl-level only (no public Span counterpart): called by
     	 * SpanEventImpl::EndEvent — user code ends an event through the event
     	 * handle, which guards against duplicate ends before delegating here.
-    	 * A null `se` keeps the plain pop-top behavior.
     	 */
     	void endSpanEvent(SpanEventImpl* se);
     	/**
@@ -646,8 +627,6 @@ namespace pinpoint {
                 exceptions_.push_back(std::move(exception));
                 return true;
             }
-            AgentService* getAgent() const { return agent_; }
-            void decrEventDepth();
 	};
 
 }  // namespace pinpoint

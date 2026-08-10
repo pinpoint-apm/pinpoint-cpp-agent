@@ -46,7 +46,6 @@ cc_proto_library(
 cc_grpc_library(
     name = "annotation_grpc_cc",
     srcs = [":annotation_proto"],
-    generate_mocks = True,
     grpc_only = True,
     deps = [":annotation_proto_cc"],
 )
@@ -65,7 +64,6 @@ cc_proto_library(
 cc_grpc_library(
     name = "thread_dump_grpc_cc",
     srcs = [":thread_dump_proto"],
-    generate_mocks = True,
     grpc_only = True,
     deps = [":thread_dump_proto_cc"],
 )
@@ -88,7 +86,6 @@ cc_proto_library(
 cc_grpc_library(
     name = "cmd_grpc_cc",
     srcs = [":cmd_proto"],
-    generate_mocks = True,
     grpc_only = True,
     deps = [":cmd_proto_cc"],
 )
@@ -108,7 +105,6 @@ cc_proto_library(
 cc_grpc_library(
     name = "span_grpc_cc",
     srcs = [":span_proto"],
-    generate_mocks = True,
     grpc_only = True,
     deps = [":span_proto_cc"],
 )
@@ -128,7 +124,6 @@ cc_proto_library(
 cc_grpc_library(
     name = "stat_grpc_cc",
     srcs = [":stat_proto"],
-    generate_mocks = True,
     grpc_only = True,
     deps = [":stat_proto_cc"],
 )

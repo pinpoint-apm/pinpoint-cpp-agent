@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
 
-set(CMAKE_VERBOSE_MAKEFILE ON)
-
 # =============================================================================
 # ccache auto-detection
 # =============================================================================
@@ -151,10 +149,7 @@ if(NOT (gRPC_FOUND AND Protobuf_FOUND AND absl_FOUND))
 
   # Alias raw targets to the namespaced names find_package(CONFIG) would create,
   # so the rest of this file can use a single target naming convention.
-  foreach(_pp_grpc_target IN ITEMS
-            grpc grpc++ grpc++_reflection gpr
-            grpc_unsecure grpc++_unsecure
-            grpc++_error_details grpcpp_channelz)
+  foreach(_pp_grpc_target IN ITEMS grpc++ grpc++_reflection)
     if(TARGET ${_pp_grpc_target} AND NOT TARGET gRPC::${_pp_grpc_target})
       add_library(gRPC::${_pp_grpc_target} ALIAS ${_pp_grpc_target})
     endif()
@@ -398,7 +393,6 @@ set(SRCS src/agent.cpp
          src/stat.cpp
          src/url_stat.cpp
          src/http.cpp
-         src/cache.cpp
          src/utility.cpp
          src/sql.cpp
          src/tracer_c.cpp
@@ -474,58 +468,20 @@ endif()
 # runs CTest with a collision-safe profile filename, merges the raw profiles,
 # and writes both a text summary and an HTML report.
 if(PINPOINT_LLVM_COVERAGE_ENABLED)
-  if(BUILD_SHARED_LIBS)
-    set(_pinpoint_coverage_binary_target pinpoint_cpp)
-  elseif(BUILD_STATIC_LIBS)
-    set(_pinpoint_coverage_binary_target pinpoint_cpp-static)
-  else()
-    message(FATAL_ERROR
-      "BUILD_COVERAGE requires BUILD_SHARED_LIBS or BUILD_STATIC_LIBS")
-  endif()
-
   set(LLVM_COVERAGE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/coverage" CACHE PATH
       "Directory for llvm-cov profiles and reports")
 
-  # A custom target does not implicitly build CTest executables. Collect the
-  # in-tree targets whose names match registered CTest tests. Link dependencies
-  # are then built normally, while opt-in live test applications stay excluded.
-  function(_pinpoint_collect_test_targets directory result)
-    set(_collected_targets)
-
-    get_property(_directory_tests DIRECTORY "${directory}" PROPERTY TESTS)
-    foreach(_test IN LISTS _directory_tests)
-      if(TARGET "${_test}")
-        get_target_property(_target_source_dir "${_test}" SOURCE_DIR)
-        file(TO_CMAKE_PATH "${_target_source_dir}/" _target_source_dir)
-        file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}/test/" _test_source_dir)
-        string(FIND "${_target_source_dir}" "${_test_source_dir}" _test_prefix)
-
-        if(_test_prefix EQUAL 0)
-          list(APPEND _collected_targets "${_test}")
-        endif()
-      endif()
-    endforeach()
-
-    get_property(_subdirectories DIRECTORY "${directory}"
-                 PROPERTY SUBDIRECTORIES)
-    foreach(_subdirectory IN LISTS _subdirectories)
-      _pinpoint_collect_test_targets("${_subdirectory}" _subdirectory_targets)
-      list(APPEND _collected_targets ${_subdirectory_targets})
-    endforeach()
-
-    list(REMOVE_DUPLICATES _collected_targets)
-    set(${result} "${_collected_targets}" PARENT_SCOPE)
-  endfunction()
-
-  _pinpoint_collect_test_targets("${PROJECT_SOURCE_DIR}/test"
-                                  _pinpoint_test_targets)
+  # A custom target does not implicitly build CTest executables. Test targets
+  # register themselves on this global property (add_pinpoint_test and the it
+  # suite); opt-in live test applications stay excluded.
+  get_property(_pinpoint_test_targets GLOBAL PROPERTY PINPOINT_TEST_TARGETS)
 
   add_custom_target(coverage
     COMMAND "${CMAKE_COMMAND}"
       "-DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}"
       "-DLLVM_COV_EXECUTABLE=${LLVM_COV_EXECUTABLE}"
       "-DLLVM_PROFDATA_EXECUTABLE=${LLVM_PROFDATA_EXECUTABLE}"
-      "-DCOVERAGE_BINARY=$<TARGET_FILE:${_pinpoint_coverage_binary_target}>"
+      "-DCOVERAGE_BINARY=$<TARGET_FILE:${PINPOINT_CPP_LIBRARY}>"
       "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
       "-DOUTPUT_DIR=${LLVM_COVERAGE_OUTPUT_DIR}"
       "-DCOVERAGE_CONFIG=$<CONFIG>"
@@ -535,6 +491,6 @@ if(PINPOINT_LLVM_COVERAGE_ENABLED)
     VERBATIM)
 
   add_dependencies(coverage
-    ${_pinpoint_coverage_binary_target}
+    ${PINPOINT_CPP_LIBRARY}
     ${_pinpoint_test_targets})
 endif()

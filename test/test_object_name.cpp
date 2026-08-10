@@ -185,7 +185,6 @@ TEST(ResolveV1V3, ProvidedAgentIdUsed) {
     EXPECT_EQ(obj->version, 1);
     EXPECT_EQ(obj->agent_id, "my-agent-id");
     EXPECT_EQ(obj->application_name, "test-app");
-    EXPECT_EQ(obj->protocol_version(), 100);
     EXPECT_FALSE(obj->is_v4());
 }
 
@@ -238,13 +237,12 @@ TEST(ResolveV4, HappyPath) {
     ASSERT_TRUE(obj.has_value());
     EXPECT_EQ(obj->version, 4);
     EXPECT_TRUE(obj->is_v4());
-    EXPECT_EQ(obj->protocol_version(), 400);
     EXPECT_EQ(obj->agent_id.size(), 22u);
     EXPECT_EQ(obj->agent_name, "my-agent");
     EXPECT_EQ(obj->service_name, "test-service");
     EXPECT_EQ(obj->api_key, "secret-key");
-    // agent_id must be base64 of the generated UUID.
-    EXPECT_EQ(base64_encode_uuid(obj->agent_uuid), obj->agent_id);
+    // agent_id must be base64 of a generated UUID (i.e. decodable).
+    EXPECT_TRUE(base64_decode_uuid(obj->agent_id).has_value());
 }
 
 // An input id that is not a base64-encoded UUID is regenerated: only the
@@ -266,7 +264,7 @@ TEST(ResolveV4, NonUuidAgentIdInputRegenerated) {
 
 // A decodable input id is kept: this is how a config reload carries the
 // running agent's generated id through resolution instead of minting a new
-// one. The stored UUID must stay consistent with the kept id.
+// one. The kept id must stay a decodable base64 UUID.
 TEST(ResolveV4, GeneratedAgentIdInputKeptOnReresolve) {
     ObjectNameInput in;
     in.application_name = "test-app";
@@ -280,9 +278,7 @@ TEST(ResolveV4, GeneratedAgentIdInputKeptOnReresolve) {
     const auto again = resolve_object_name(NameVersion::kV4, in);
     ASSERT_TRUE(again.has_value());
     EXPECT_EQ(again->agent_id, first->agent_id);
-    EXPECT_EQ(again->agent_uuid.msb, first->agent_uuid.msb);
-    EXPECT_EQ(again->agent_uuid.lsb, first->agent_uuid.lsb);
-    EXPECT_EQ(base64_encode_uuid(again->agent_uuid), again->agent_id);
+    EXPECT_TRUE(base64_decode_uuid(again->agent_id).has_value());
 }
 
 TEST(ResolveV4, AgentNameDefaultsToBase64AgentId) {

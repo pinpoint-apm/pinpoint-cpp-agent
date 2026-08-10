@@ -22,15 +22,6 @@
 
 namespace pinpoint {
 
-    // Histogram bucket thresholds (in milliseconds)
-    constexpr int32_t BUCKET_THRESHOLD_100MS = 100;
-    constexpr int32_t BUCKET_THRESHOLD_300MS = 300;
-    constexpr int32_t BUCKET_THRESHOLD_500MS = 500;
-    constexpr int32_t BUCKET_THRESHOLD_1S = 1000;
-    constexpr int32_t BUCKET_THRESHOLD_3S = 3000;
-    constexpr int32_t BUCKET_THRESHOLD_5S = 5000;
-    constexpr int32_t BUCKET_THRESHOLD_8S = 8000;
-
     struct TrimmedUrlPath {
         std::string_view path;
         bool wildcard;
@@ -109,19 +100,15 @@ namespace pinpoint {
     int64_t TickClock::tick(const std::chrono::system_clock::time_point end_time) const {
         const auto end_millis = std::chrono::duration_cast<std::chrono::milliseconds>(end_time.time_since_epoch());
         const auto interval = std::chrono::milliseconds(interval_ * 1000);
-        const auto cutoff = std::chrono::duration_cast<std::chrono::milliseconds>(end_millis % interval);
-        return end_millis.count() - cutoff.count();
+        return (end_millis - end_millis % interval).count();
     }
 
-    static constexpr int getBucket(int32_t elapsed) noexcept {
-        if (elapsed < BUCKET_THRESHOLD_100MS) return 0;
-        if (elapsed < BUCKET_THRESHOLD_300MS) return 1;
-        if (elapsed < BUCKET_THRESHOLD_500MS) return 2;
-        if (elapsed < BUCKET_THRESHOLD_1S) return 3;
-        if (elapsed < BUCKET_THRESHOLD_3S) return 4;
-        if (elapsed < BUCKET_THRESHOLD_5S) return 5;
-        if (elapsed < BUCKET_THRESHOLD_8S) return 6;
-        return 7;
+    static int getBucket(int32_t elapsed) noexcept {
+        // Histogram bucket upper bounds (in milliseconds); elapsed >= 8000ms
+        // lands in the final bucket (index 7).
+        static constexpr int32_t bounds[]{100, 300, 500, 1000, 3000, 5000, 8000};
+        return static_cast<int>(
+            std::upper_bound(std::begin(bounds), std::end(bounds), elapsed) - std::begin(bounds));
     }
 
     void UrlStatHistogram::add(int32_t elapsed) {
@@ -149,20 +136,12 @@ namespace pinpoint {
         const auto trimmed = config.http.url_stat.enable_trim_path
             ? trim_url_path_view(us->url_pattern_, config.http.url_stat.trim_path_depth)
             : TrimmedUrlPath{us->url_pattern_, false};
-        const UrlKey::View key_view{
-            us->method_,
-            trimmed.path,
-            config.http.url_stat.method_prefix,
-            trimmed.wildcard};
-        const auto lookup_key = UrlKey::lookup(key_view, tick);
-        LOG_DEBUG("url stats snapshot add : {}{}{}{}, {}",
-                  config.http.url_stat.method_prefix ? std::string_view{us->method_} : std::string_view{},
-                  config.http.url_stat.method_prefix ? std::string_view{" "} : std::string_view{},
-                  trimmed.path,
-                  trimmed.wildcard ? std::string_view{"*"} : std::string_view{},
-                  tick);
+        auto key = UrlKey{
+            build_url_stat_key(*us, trimmed, config.http.url_stat.method_prefix),
+            tick};
+        LOG_DEBUG("url stats snapshot add : {}, {}", key.url_, tick);
 
-        auto found = urlMap_.find(lookup_key);
+        auto found = urlMap_.find(key);
         if (found == urlMap_.end()) {
             if (urlMap_.size() >= static_cast<size_t>(config.http.url_stat.limit)) {
                 return;
@@ -171,9 +150,6 @@ namespace pinpoint {
                 constexpr size_t kMaxInitialReserve = 4096;
                 urlMap_.reserve(std::min(static_cast<size_t>(config.http.url_stat.limit), kMaxInitialReserve));
             }
-            auto key = UrlKey{
-                build_url_stat_key(*us, trimmed, config.http.url_stat.method_prefix),
-                tick};
             found = urlMap_.try_emplace(std::move(key), tick).first;
         }
 
@@ -316,26 +292,11 @@ namespace pinpoint {
             return;
         }
 
-        // Supervise the loop body so an unexpected exception (e.g. bad_alloc
-        // while aggregating a snapshot) cannot kill URL-stat aggregation for
-        // the process lifetime, mirroring the gRPC workers. Restarts are
-        // paced by the send interval; only agent exit ends the worker.
-        while (true) {
-            try {
-                runAddUrlStatsWorker(*config);
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("add url stats worker exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("add url stats worker unknown exception");
-            }
-
-            std::unique_lock<std::mutex> lock(add_mutex_);
-            if (add_cond_var_.wait_for(lock, send_interval_, [this] { return agent_->isExiting(); })) {
-                break;
-            }
-        }
-        LOG_INFO("add url stats worker end");
+        // Supervised (see superviseWorker), mirroring the gRPC workers.
+        // Restarts are paced by the send interval; only agent exit ends it.
+        superviseWorker("add url stats worker", send_interval_, add_mutex_, add_cond_var_,
+                        [this] { return agent_->isExiting(); },
+                        [&] { runAddUrlStatsWorker(*config); });
     }
 
     void UrlStats::runAddUrlStatsWorker(const Config& config) {
@@ -381,23 +342,9 @@ namespace pinpoint {
 
         // Supervised like addUrlStatsWorker: a transient exception must not
         // end periodic URL-stat sending for the process lifetime.
-        while (true) {
-            try {
-                runSendUrlStatsWorker();
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("send url stats worker exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("send url stats worker unknown exception");
-            }
-
-            std::unique_lock<std::mutex> lock(send_mutex_);
-            if (send_cond_var_.wait_for(lock, send_interval_, [this] { return agent_->isExiting(); })) {
-                break;
-            }
-        }
-
-        LOG_INFO("send url stats worker end");
+        superviseWorker("send url stats worker", send_interval_, send_mutex_, send_cond_var_,
+                        [this] { return agent_->isExiting(); },
+                        [this] { runSendUrlStatsWorker(); });
     }
 
     void UrlStats::runSendUrlStatsWorker() {

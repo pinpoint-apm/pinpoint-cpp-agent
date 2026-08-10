@@ -119,19 +119,14 @@ namespace pinpoint {
     struct HashedStringCacheKeyTraits {
         using LookupKey = HashedStringCacheKey;
         using StoredKey = HashedStringCacheStoredKey;
-        using MapKey = HashedStringCacheKey;
         using Hash = HashedStringCacheKeyHash;
         using Equal = HashedStringCacheKeyEqual;
-
-        static MapKey lookup_key(LookupKey key) noexcept {
-            return key;
-        }
 
         static StoredKey store(LookupKey key) {
             return HashedStringCacheStoredKey{std::string(key.str), key.hash};
         }
 
-        static MapKey map_key(const StoredKey& key) noexcept {
+        static LookupKey map_key(const StoredKey& key) noexcept {
             return HashedStringCacheKey{key.str, key.hash};
         }
     };
@@ -163,19 +158,14 @@ namespace pinpoint {
     struct HashedApiCacheKeyTraits {
         using LookupKey = HashedApiCacheKey;
         using StoredKey = HashedApiCacheStoredKey;
-        using MapKey = HashedApiCacheKey;
         using Hash = HashedApiCacheKeyHash;
         using Equal = HashedApiCacheKeyEqual;
-
-        static MapKey lookup_key(LookupKey key) noexcept {
-            return key;
-        }
 
         static StoredKey store(LookupKey key) {
             return HashedApiCacheStoredKey{std::string(key.api_str), key.api_type, key.hash};
         }
 
-        static MapKey map_key(const StoredKey& key) noexcept {
+        static LookupKey map_key(const StoredKey& key) noexcept {
             return HashedApiCacheKey{key.api_str, key.api_type, key.hash};
         }
     };
@@ -300,12 +290,11 @@ namespace pinpoint {
          */
         template<typename Generator>
         LruCacheResult<ValueType> get(LookupKey key, Generator&& generator) {
-            const auto map_key = KeyTraits::lookup_key(key);
             bool hit_while_full = false;
             {
                 // Fast path: a shared lock lets concurrent hits proceed in parallel.
                 std::shared_lock<std::shared_mutex> lock(mutex_);
-                const auto it = cache_map_.find(map_key);
+                const auto it = cache_map_.find(key);
                 if (it != cache_map_.end()) {
                     if (cache_map_.size() < max_size_) {
                         // Below capacity: nothing can be evicted, so LRU order does
@@ -333,7 +322,7 @@ namespace pinpoint {
                 // have been evicted between the two locks, so re-resolve; if it is
                 // gone, fall through to regenerate it below.
                 std::unique_lock<std::shared_mutex> lock(mutex_);
-                const auto it = cache_map_.find(map_key);
+                const auto it = cache_map_.find(key);
                 if (it != cache_map_.end()) {
                     cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
                     it->second->last_promoted.store(next_op_seq(), std::memory_order_relaxed);
@@ -377,7 +366,7 @@ namespace pinpoint {
             std::list<Node> removed;
             std::unique_lock<std::shared_mutex> lock(mutex_);
 
-            const auto it = cache_map_.find(KeyTraits::lookup_key(key));
+            const auto it = cache_map_.find(key);
             if (it != cache_map_.end()) {
                 removed.splice(removed.begin(), cache_list_, it->second);
                 cache_map_.erase(it);
@@ -446,7 +435,7 @@ namespace pinpoint {
             return op_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
         }
 
-        using MapType = std::unordered_map<typename KeyTraits::MapKey,
+        using MapType = std::unordered_map<LookupKey,
                                           typename std::list<Node>::iterator,
                                           typename KeyTraits::Hash,
                                           typename KeyTraits::Equal>;
@@ -608,20 +597,15 @@ namespace pinpoint {
     struct RawSqlCacheKeyTraits {
         using LookupKey = RawSqlCacheKey;
         using StoredKey = RawSqlCacheStoredKey;
-        using MapKey = RawSqlCacheKey;
         using Hash = RawSqlCacheKeyHash;
         using Equal = RawSqlCacheKeyEqual;
-
-        static MapKey lookup_key(LookupKey key) noexcept {
-            return key;
-        }
 
         static StoredKey store(LookupKey key) {
             return RawSqlCacheStoredKey{
                 std::string(key.raw_sql), key.metadata_epoch, key.hash};
         }
 
-        static MapKey map_key(const StoredKey& key) noexcept {
+        static LookupKey map_key(const StoredKey& key) noexcept {
             return RawSqlCacheKey{
                 key.raw_sql, key.metadata_epoch, key.hash};
         }
@@ -785,7 +769,11 @@ namespace pinpoint {
          * @param key Normalized SQL string (no allocation on cache hit).
          * @return Cache result containing UID bytes and whether the entry existed.
          */
-        SqlUidCacheResult get(std::string_view key);
+        SqlUidCacheResult get(std::string_view key) {
+            return cache_.get(key, [&key]() {
+                return generate_sql_uid(key);
+            });
+        }
 
         /**
          * @brief Removes a cached SQL UID entry.

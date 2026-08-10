@@ -233,17 +233,14 @@ namespace pinpoint {
     }
 
     void AgentStats::resetAgentStats() {
-        {
-            std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
-            pauseResponseTimeUpdates();
-            for (auto& shard : response_time_shards_) {
-                shard.acc_response_time_.store(0, std::memory_order_relaxed);
-                shard.request_count_.store(0, std::memory_order_relaxed);
-                shard.max_response_time_.store(0, std::memory_order_relaxed);
-            }
-            resumeResponseTimeUpdates();
+        // Concurrent samples racing this reset merely land in the next
+        // collection window — nothing is lost, so no writer gate is needed.
+        for (auto& shard : response_time_shards_) {
+            shard.acc_response_time_.store(0, std::memory_order_relaxed);
+            shard.request_count_.store(0, std::memory_order_relaxed);
+            shard.max_response_time_.store(0, std::memory_order_relaxed);
         }
-        
+
         sample_new_.store(0, std::memory_order_relaxed);
         un_sample_new_.store(0, std::memory_order_relaxed);
         sample_cont_.store(0, std::memory_order_relaxed);
@@ -252,28 +249,10 @@ namespace pinpoint {
         skip_cont_.store(0, std::memory_order_relaxed);
     }
 
-    void AgentStats::pauseResponseTimeUpdates() {
-        // seq_cst pairs with the writer's fetch_add/load in collectResponseTime.
-        // Both sides write one flag and then read the other's (store-buffering
-        // pattern); with only acquire/release, this thread could read
-        // writers_ == 0 while a writer simultaneously reads snapshotting_ ==
-        // false — letting an update slip into the snapshot window.
-        response_time_snapshotting_.store(true, std::memory_order_seq_cst);
-        for (auto& shard : response_time_shards_) {
-            while (shard.writers_.load(std::memory_order_seq_cst) != 0) {
-                std::this_thread::yield();
-            }
-        }
-    }
-
-    void AgentStats::resumeResponseTimeUpdates() {
-        response_time_snapshotting_.store(false, std::memory_order_release);
-    }
-
     void AgentStats::collectAndResetResponseTime(int64_t& avg, int64_t& max) {
-        std::lock_guard<std::mutex> lock(response_time_snapshot_mutex_);
-        pauseResponseTimeUpdates();
-
+        // No writer gate: exchange() hands every sample to exactly one
+        // collection — a sample racing the snapshot just lands in the next
+        // 5s window instead of this one, which monitoring tolerates.
         int64_t request_count = 0;
         int64_t acc_response_time = 0;
         max = 0;
@@ -286,7 +265,6 @@ namespace pinpoint {
             }
         }
 
-        resumeResponseTimeUpdates();
         avg = request_count > 0 ? acc_response_time / request_count : 0;
     }
 
@@ -321,21 +299,6 @@ namespace pinpoint {
 
     void AgentStats::collectResponseTime(int64_t response_time) {
         auto& shard = responseTimeShard();
-        for (;;) {
-            while (response_time_snapshotting_.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
-            }
-
-            // seq_cst pairs with pauseResponseTimeUpdates (see comment there):
-            // the increment must be globally visible before snapshotting_ is
-            // re-read, or this writer could slip past a concurrent pause.
-            shard.writers_.fetch_add(1, std::memory_order_seq_cst);
-            if (!response_time_snapshotting_.load(std::memory_order_seq_cst)) {
-                break;
-            }
-            shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
-        }
-
         shard.acc_response_time_.fetch_add(response_time, std::memory_order_relaxed);
         shard.request_count_.fetch_add(1, std::memory_order_relaxed);
 
@@ -345,8 +308,6 @@ namespace pinpoint {
                                                                std::memory_order_relaxed,
                                                                std::memory_order_relaxed)) {
         }
-
-        shard.writers_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
     // Thin delegates: the registry logic lives header-only in active_span.h
@@ -403,29 +364,14 @@ namespace pinpoint {
             return;
         }
 
-        // Supervise the loop body so an unexpected exception (e.g. bad_alloc
-        // while collecting a snapshot) cannot kill agent-stat reporting for
-        // the process lifetime, mirroring the gRPC workers (sendMetaWorker,
-        // GrpcStats::sendStatsWorker). Restarts are paced by the collect
-        // interval; only agent exit ends the worker.
-        while (true) {
-            try {
-                runAgentStatsWorker(*config);
-                break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("agent stats worker exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("agent stats worker unknown exception");
-            }
-
-            std::unique_lock<std::mutex> lock(mutex_);
-            if (cond_var_.wait_for(lock, std::chrono::milliseconds(config->stat.collect_interval),
-                                   [this] { return agent_->isExiting(); })) {
-                break;
-            }
-        }
-
-        LOG_INFO("agent stats worker end");
+        // Supervised (see superviseWorker), mirroring the gRPC workers
+        // (sendMetaWorker, GrpcStats::sendStatsWorker). Restarts are paced by
+        // the collect interval; only agent exit ends the worker.
+        superviseWorker("agent stats worker",
+                        std::chrono::milliseconds(config->stat.collect_interval),
+                        mutex_, cond_var_,
+                        [this] { return agent_->isExiting(); },
+                        [&] { runAgentStatsWorker(*config); });
     }
 
     void AgentStats::runAgentStatsWorker(const Config& config) {

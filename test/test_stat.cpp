@@ -174,17 +174,18 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
 }
 
 TEST_F(StatTest, GetAgentStatSnapshotsTest) {
-    // Test that we can get the snapshots vector
-    std::vector<AgentStatsSnapshot>& snapshots = agent_stats_->getSnapshots();
-    
+    // Test that we can copy the snapshots batch
+    auto snapshots = agent_stats_->copySnapshots();
+
     size_t initial_size = snapshots.size();
-    
+
     // Collect some stats
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
-    
-    // The snapshots vector should be accessible
-    EXPECT_GE(snapshots.size(), initial_size) << "Snapshots vector should be accessible";
+
+    // The snapshots batch should be accessible
+    EXPECT_GE(agent_stats_->copySnapshots().size(), initial_size)
+        << "Snapshots batch should be accessible";
 }
 
 // ========== AgentStats Class Tests ==========
@@ -839,32 +840,6 @@ TEST_F(StatTest, AllCountersMixedIncrementTest) {
     EXPECT_EQ(snapshot.num_unsample_cont_, 40);
     EXPECT_EQ(snapshot.num_skip_new_, 50);
     EXPECT_EQ(snapshot.num_skip_cont_, 60);
-}
-
-// Test getSnapshots returns modifiable reference
-TEST_F(StatTest, GetSnapshotsModifiableTest) {
-    auto& snapshots = agent_stats_->getSnapshots();
-    size_t original_size = snapshots.size();
-
-    snapshots.resize(original_size + 3);
-    EXPECT_EQ(agent_stats_->getSnapshots().size(), original_size + 3);
-}
-
-// Test copySnapshots returns an independent copy of the batch
-TEST_F(StatTest, CopySnapshotsIndependentTest) {
-    auto& snapshots = agent_stats_->getSnapshots();
-    snapshots.resize(2);
-    snapshots[0].sample_time_ = 111;
-    snapshots[1].sample_time_ = 222;
-
-    auto copy = agent_stats_->copySnapshots();
-    ASSERT_EQ(copy.size(), 2u);
-    EXPECT_EQ(copy[0].sample_time_, 111);
-    EXPECT_EQ(copy[1].sample_time_, 222);
-
-    // The copy must not alias the worker's slots.
-    snapshots[0].sample_time_ = 999;
-    EXPECT_EQ(copy[0].sample_time_, 111);
 }
 
 // Test many active spans

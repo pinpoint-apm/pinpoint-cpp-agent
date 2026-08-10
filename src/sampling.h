@@ -96,43 +96,16 @@ namespace pinpoint {
 
 
     /**
-     * @brief Base class that differentiates between new and continued trace sampling.
-     */
-    class TraceSampler {
-    public:
-        explicit TraceSampler(AgentService* agent) : agent_(agent) {}
-        virtual ~TraceSampler() = default;
-
-        /**
-         * @brief Determines if a new trace should be sampled.
-         */
-        virtual bool isNewSampled() noexcept = 0;
-        /**
-         * @brief Determines if a continued trace should be sampled.
-         */
-        virtual bool isContinueSampled() noexcept = 0;
-
-    protected:
-        // Non-owning. AgentImpl owns the sampler (sampler_ AtomicSharedPtr
-        // member) and only drives it from NewSpan while the caller holds the
-        // agent alive, so agent_ never dangles. A shared_ptr here would form a
-        // cycle and leak the agent.
-        AgentService* agent_;
-        std::unique_ptr<Sampler> sampler_{nullptr};
-    };
-
-    /**
      * @brief Trace sampler with throughput limits for new and continuing traces.
      *
      * A non-positive limit creates no limiter for that side, so
      * `{agent, sampler, 0, 0}` is the plain pass-through sampler.
      */
-    class ThroughputLimitTraceSampler final : public TraceSampler {
+    class TraceSampler final {
     public:
-        ThroughputLimitTraceSampler(AgentService* agent, std::unique_ptr<Sampler> sampler, 
-                                     const int new_tps, const int continue_tps)
-            : TraceSampler(agent) {
-            sampler_ = std::move(sampler);
+        TraceSampler(AgentService* agent, std::unique_ptr<Sampler> sampler,
+                     const int new_tps, const int continue_tps)
+            : agent_(agent), sampler_(std::move(sampler)) {
             if (new_tps > 0) {
                 new_limiter_ = std::make_unique<RateLimiter>(new_tps);
             }
@@ -141,10 +114,18 @@ namespace pinpoint {
             }
         }
 
-        bool isNewSampled() noexcept override;
-        bool isContinueSampled() noexcept override;
+        /// @brief Determines if a new trace should be sampled.
+        bool isNewSampled() noexcept;
+        /// @brief Determines if a continued trace should be sampled.
+        bool isContinueSampled() noexcept;
 
     private:
+        // Non-owning. AgentImpl owns the sampler (sampler_ AtomicSharedPtr
+        // member) and only drives it from NewSpan while the caller holds the
+        // agent alive, so agent_ never dangles. A shared_ptr here would form a
+        // cycle and leak the agent.
+        AgentService* agent_;
+        std::unique_ptr<Sampler> sampler_;
         std::unique_ptr<RateLimiter> new_limiter_{nullptr};
         std::unique_ptr<RateLimiter> cont_limiter_{nullptr};
     };

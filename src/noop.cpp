@@ -25,19 +25,21 @@
 
 namespace pinpoint {
 
-    static Noop& getNoop() {
-        // Intentionally heap-allocated and never destroyed, mirroring the
-        // Logger and global-agent singletons. noopSpanEvent()/
-        // unsampledSpanEvent() hand out raw pointers owned by this instance, and
-        // a host or detached thread may still trace during process-exit static
-        // destruction. A function-local value static would be destroyed by then,
-        // turning those late calls into use-after-destruction.
-        static Noop* noop = new Noop();
-        return *noop;
-    }
+    // The noop singletons below are intentionally heap-allocated and never
+    // destroyed, mirroring the Logger and global-agent singletons.
+    // noopSpanEvent()/unsampledSpanEvent() hand out raw pointers, and a host
+    // or detached thread may still trace during process-exit static
+    // destruction. A function-local value static would be destroyed by then,
+    // turning those late calls into use-after-destruction.
 
     SpanEventPtr noopSpanEvent() {
-        return getNoop().spanEvent();
+        static auto* event = new NoopSpanEvent();
+        return event;
+    }
+
+    static SpanPtr& noopSpanHolder() {
+        static auto* span = new SpanPtr(std::make_shared<NoopSpan>());
+        return *span;
     }
 
     SpanPtr noopSpan() {
@@ -55,31 +57,32 @@ namespace pinpoint {
         // noop span alive either way.
         try {
             return thread_local_lazy<SpanPtr>(
-                [] { return new SpanPtr(localize_shared(getNoop().span())); });
+                [] { return new SpanPtr(localize_shared(noopSpanHolder())); });
         } catch (...) {
             // Localizing is a pure optimization, so a failure to set it up
             // (realistically only bad_alloc) must not change what the caller
             // gets. Fall back to a copy of the shared holder: contended, but
             // correct, and identical to the behavior before this thread-local
-            // owner existed — including that getNoop()'s own first-call
+            // owner existed — including that the holder's own first-call
             // allocation is the one remaining path that can throw from here.
-            return getNoop().span();
+            return noopSpanHolder();
         }
     }
 
     SpanEventPtr unsampledSpanEvent() {
-        return getNoop().unsampledSpanEvent();
+        static auto* event = new UnsampledSpanEvent();
+        return event;
     }
 
     AgentPtr noopAgent() {
-        return getNoop().agent();
+        static auto* agent = new AgentPtr(std::make_shared<NoopAgent>());
+        return *agent;
     }
 
     UnsampledSpan::UnsampledSpan(AgentService *agent,
                                  std::shared_ptr<const AgentRuntime> runtime) : NoopSpan(),
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
-        url_stat_(),
         runtime_(std::move(runtime)),
         agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
         agent_(agent) {

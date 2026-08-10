@@ -16,7 +16,6 @@
 
 #include "object_name.h"
 
-#include <cctype>
 #include <chrono>
 #include <unistd.h>
 
@@ -189,16 +188,14 @@ namespace pinpoint {
 
             // agentId: auto-generated as base64(UUIDv7). A decodable input id
             // only arrives on a config reload (the running agent's own
-            // generated id) and is kept — together with its UUID — so the
-            // identity stays stable instead of tripping the non-reloadable
-            // -change warning with a freshly minted id.
-            if (const auto uuid = base64_decode_uuid(input.agent_id)) {
-                obj.agent_uuid = *uuid;
+            // generated id) and is kept so the identity stays stable instead
+            // of tripping the non-reloadable-change warning with a freshly
+            // minted id. base64_decode_uuid() serves purely as validation.
+            if (base64_decode_uuid(input.agent_id)) {
                 obj.agent_id = input.agent_id;
                 LOG_INFO("v4 resolved AgentId='{}'", obj.agent_id);
             } else {
-                obj.agent_uuid = generate_uuid_v7();
-                obj.agent_id = base64_encode_uuid(obj.agent_uuid);
+                obj.agent_id = new_base64_uid();
                 LOG_INFO("v4 auto generated AgentId='{}'", obj.agent_id);
             }
 

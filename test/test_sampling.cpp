@@ -287,11 +287,11 @@ TEST_F(SamplingTest, PercentSamplerThreadSafetyTest) {
 }
 
 // Pass-through (no-limiter) trace sampler tests: with both throughputs 0,
-// ThroughputLimitTraceSampler delegates straight to the underlying Sampler.
+// TraceSampler delegates straight to the underlying Sampler.
 
 // Test the pass-through sampler with a null sampler
 TEST_F(SamplingTest, PassThroughTraceSamplerNullSamplerTest) {
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
 
     // Should always return false for new samples when sampler is null
     EXPECT_FALSE(trace_sampler.isNewSampled());
@@ -305,7 +305,7 @@ TEST_F(SamplingTest, PassThroughTraceSamplerNullSamplerTest) {
 // Test the pass-through sampler with CounterSampler
 TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2);
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
 
     // Test pattern: false, true, false, true, ...
     EXPECT_FALSE(trace_sampler.isNewSampled());
@@ -321,7 +321,7 @@ TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
 // Test the pass-through sampler with PercentSampler
 TEST_F(SamplingTest, PassThroughTraceSamplerWithPercentSamplerTest) {
     auto percent_sampler = std::make_unique<PercentSampler>(10.0); // 10.0 input = 10% sampling
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(percent_sampler), 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(percent_sampler), 0, 0);
     
     // Test over many calls to check approximate rate
     int true_count = 0;
@@ -346,12 +346,12 @@ TEST_F(SamplingTest, PassThroughTraceSamplerWithPercentSamplerTest) {
     }
 }
 
-// ThroughputLimitTraceSampler Tests
+// TraceSampler Tests
 
-// Test ThroughputLimitTraceSampler with no limiters
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerNoLimitersTest) {
+// Test TraceSampler with no limiters
+TEST_F(SamplingTest, TraceSamplerNoLimitersTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0); // No limiters
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0); // No limiters
     
     // Should follow sampler behavior without rate limiting
     for (int i = 0; i < 10; ++i) {
@@ -360,11 +360,11 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerNoLimitersTest) {
     }
 }
 
-// Test ThroughputLimitTraceSampler with new_tps limiter
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerNewLimiterTest) {
+// Test TraceSampler with new_tps limiter
+TEST_F(SamplingTest, TraceSamplerNewLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 3;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     
     // First new_tps calls should be allowed, then blocked
     for (int i = 0; i < new_tps; ++i) {
@@ -382,11 +382,11 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerNewLimiterTest) {
     }
 }
 
-// Test ThroughputLimitTraceSampler with continue_tps limiter
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerContinueLimiterTest) {
+// Test TraceSampler with continue_tps limiter
+TEST_F(SamplingTest, TraceSamplerContinueLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int continue_tps = 2;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
     
     // New samples should not be limited (no new limiter)
     for (int i = 0; i < 10; ++i) {
@@ -404,12 +404,12 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerContinueLimiterTest) {
     }
 }
 
-// Test ThroughputLimitTraceSampler with both limiters
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerBothLimitersTest) {
+// Test TraceSampler with both limiters
+TEST_F(SamplingTest, TraceSamplerBothLimitersTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 2;
     const int continue_tps = 3;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, continue_tps);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, continue_tps);
     
     // Test new samples with limiter
     for (int i = 0; i < new_tps; ++i) {
@@ -424,10 +424,10 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerBothLimitersTest) {
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Additional continue call should be blocked";
 }
 
-// Test ThroughputLimitTraceSampler with sampler that blocks
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerWithBlockingSamplerTest) {
+// Test TraceSampler with sampler that blocks
+TEST_F(SamplingTest, TraceSamplerWithBlockingSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // 0% sampling (always blocks)
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
     
     // Should be blocked by sampler before reaching rate limiter
     for (int i = 0; i < 5; ++i) {
@@ -533,7 +533,7 @@ TEST_F(SamplingTest, PercentSamplerHalfRateTest) {
 // Test that the pass-through sampler correctly increments sample_new stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewSampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 5; ++i) {
@@ -550,7 +550,7 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewSampledTest) {
 // Test that the pass-through sampler correctly increments unsample_new stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewUnsampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 5; ++i) {
@@ -565,7 +565,7 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewUnsampledTest) {
 
 // Test that the pass-through sampler correctly increments sample_cont stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementContTest) {
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
+    TraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 7; ++i) {
@@ -577,11 +577,11 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementContTest) {
     EXPECT_EQ(snapshot.num_sample_cont_, 7) << "Should have 7 sampled continue traces";
 }
 
-// Test ThroughputLimitTraceSampler skip_new stats when rate limited
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipNewTest) {
+// Test TraceSampler skip_new stats when rate limited
+TEST_F(SamplingTest, TraceSamplerStatsSkipNewTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
     const int new_tps = 2;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     auto& stats = mock_service_->getAgentStats();
 
     // First 2 pass, next 3 get rate limited (skipped)
@@ -596,11 +596,11 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipNewTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
 }
 
-// Test ThroughputLimitTraceSampler skip_cont stats when rate limited
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipContTest) {
+// Test TraceSampler skip_cont stats when rate limited
+TEST_F(SamplingTest, TraceSamplerStatsSkipContTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1);
     const int continue_tps = 3;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
     auto& stats = mock_service_->getAgentStats();
 
     // First 3 pass, next 4 get rate limited
@@ -614,10 +614,10 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsSkipContTest) {
     EXPECT_EQ(snapshot.num_skip_cont_, 4) << "Should have 4 skipped continue traces";
 }
 
-// Test ThroughputLimitTraceSampler unsample_new stats when sampler rejects
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsUnsampleNewTest) {
+// Test TraceSampler unsample_new stats when sampler rejects
+TEST_F(SamplingTest, TraceSamplerStatsUnsampleNewTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
     auto& stats = mock_service_->getAgentStats();
 
     for (int i = 0; i < 5; ++i) {
@@ -631,9 +631,9 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerStatsUnsampleNewTest) {
     EXPECT_EQ(snapshot.num_skip_new_, 0) << "Should have 0 skipped (rate limiter never reached)";
 }
 
-// Test ThroughputLimitTraceSampler with null sampler
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerNullSamplerTest) {
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), nullptr, 5, 5);
+// Test TraceSampler with null sampler
+TEST_F(SamplingTest, TraceSamplerNullSamplerTest) {
+    TraceSampler trace_sampler(mock_service_.get(), nullptr, 5, 5);
 
     // Null sampler should always return false for new samples
     for (int i = 0; i < 5; ++i) {
@@ -658,11 +658,11 @@ TEST_F(SamplingTest, CounterSamplerRate2PatternTest) {
     }
 }
 
-// Test ThroughputLimitTraceSampler with CounterSampler rate 2 + new limiter
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerPartialSamplingWithLimiterTest) {
+// Test TraceSampler with CounterSampler rate 2 + new limiter
+TEST_F(SamplingTest, TraceSamplerPartialSamplingWithLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2); // 50% sampling
     const int new_tps = 2;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
 
     // Pattern: sampler alternates false/true, rate limiter allows first 2 true results
     // Call 1: sampler=false -> false
@@ -680,10 +680,10 @@ TEST_F(SamplingTest, ThroughputLimitTraceSamplerPartialSamplingWithLimiterTest) 
 }
 
 // Test refill behavior after time passes
-TEST_F(SamplingTest, ThroughputLimitTraceSamplerRefillTest) {
+TEST_F(SamplingTest, TraceSamplerRefillTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 2;
-    ThroughputLimitTraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
+    TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     
     // Exhaust the rate limiter
     for (int i = 0; i < new_tps; ++i) {

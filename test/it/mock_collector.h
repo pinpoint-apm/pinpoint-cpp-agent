@@ -49,7 +49,6 @@ enum class CollectorRpc {
     CommandEcho,
     CommandStreamActiveThreadCount,
     CommandActiveThreadDump,
-    CommandActiveThreadLightDump,
 };
 
 /** A copy of the client metadata attached to one gRPC call. */
@@ -109,7 +108,6 @@ struct CollectorSnapshot {
     std::vector<RpcMetadata> active_thread_count_streams;
     std::vector<Received<v1::PCmdActiveThreadCountRes>> active_thread_count_responses;
     std::vector<Received<v1::PCmdActiveThreadDumpRes>> active_thread_dump_responses;
-    std::vector<Received<v1::PCmdActiveThreadLightDumpRes>> active_thread_light_dump_responses;
 };
 
 /**

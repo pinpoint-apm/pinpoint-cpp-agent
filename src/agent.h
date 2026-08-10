@@ -161,7 +161,9 @@ namespace pinpoint {
     	const std::string& getAppName() const override;
     	int32_t getAppType() const override;
     	const std::string& getAgentId() const override;
-    	const std::string& getAgentName() const override;
+    	// Not part of AgentService: nothing reads the agent name through the
+    	// interface (the gRPC header is built from the config directly).
+    	const std::string& getAgentName() const;
     	const std::string& getServiceName() const override;
 
     	std::shared_ptr<const Config> getConfig() const override;
@@ -190,6 +192,8 @@ namespace pinpoint {
     	bool isStatusFail(int status) const override;
     	void recordServerHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const override;
     	void recordClientHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const override;
+    	void recordHttpHeader(bool server, HeaderType which, HeaderReader& reader,
+    	                      PinpointAnnotation* annotation) const;
 
     	AgentStats& getAgentStats() override { return *agent_stats_; }
     	UrlStats& getUrlStats() override { return *url_stats_; }

@@ -31,9 +31,7 @@ namespace pinpoint {
         // Extracted numeric literals and string literals in order (comma-separated)
         std::string parameters;
         // Index of the next parameter to be added
-        int param_index;
-
-        SqlNormalizeResult() : normalized_sql(), parameters(), param_index(0) {}
+        int param_index{0};
     };
 
     /**

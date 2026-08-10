@@ -56,10 +56,6 @@ namespace pinpoint {
         // ObjectName versions (Java ObjectName.VERSION_V1 / VERSION_V4).
         constexpr int VERSION_V1 = 1;
         constexpr int VERSION_V4 = 4;
-
-        // protocol.version gRPC header wire values (Java ProtocolVersion: V1=1_00, V4=4_00).
-        constexpr int PROTOCOL_VERSION_V1 = 100;
-        constexpr int PROTOCOL_VERSION_V4 = 400;
     }
 
     /**
@@ -116,8 +112,8 @@ namespace pinpoint {
     /**
      * @brief Resolved agent self-identity.
      *
-     * version is 1 for v1/v3 and 4 for v4. service_name / api_key / agent_uuid are
-     * only populated for v4. api_key is never exposed by to_string().
+     * version is 1 for v1/v3 and 4 for v4. service_name / api_key are only
+     * populated for v4. api_key is never exposed by to_string().
      */
     struct ObjectName {
         int version = object_name::VERSION_V1;
@@ -126,12 +122,8 @@ namespace pinpoint {
         std::string application_name;
         std::string service_name;
         std::string api_key;
-        Uuid agent_uuid{};
 
         bool is_v4() const { return version == object_name::VERSION_V4; }
-        int protocol_version() const {
-            return is_v4() ? object_name::PROTOCOL_VERSION_V4 : object_name::PROTOCOL_VERSION_V1;
-        }
         std::string to_string() const; // masks api_key
     };
 

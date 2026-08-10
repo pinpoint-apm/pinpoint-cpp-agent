@@ -20,17 +20,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <map>
-#include <functional>
 #include <memory>
 #include <mutex>
-#include <deque>
 #include <queue>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -58,7 +54,7 @@ namespace pinpoint {
     /**
      * @brief State machine transitions used while streaming data to the collector.
      */
-    enum GrpcStreamStatus {STREAM_WRITE, STREAM_CONTINUE, STREAM_DONE, STREAM_EXCEPTION};
+    enum GrpcStreamStatus {STREAM_WRITE, STREAM_CONTINUE, STREAM_DONE};
     /**
      * @brief Identifies the type of gRPC client sharing common facilities.
      */
@@ -78,7 +74,7 @@ namespace pinpoint {
      */
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
-                        int64_t start_time, int32_t app_type, unsigned long socket_id);
+                        int64_t start_time, int32_t app_type);
 
     /**
      * @brief Internal timing and capacity knobs shared by the gRPC clients.
@@ -501,7 +497,6 @@ namespace pinpoint {
                          grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
         bool handle_active_thread_count(const v1::PCmdRequest& request,
                                         grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest>* stream);
-        void build_command_context(grpc::ClientContext* context, unsigned long socket_id) const;
         void build_active_thread_count_response(v1::PCmdActiveThreadCountRes* response,
                                                 int32_t request_id,
                                                 int32_t sequence_id) const;
@@ -582,7 +577,6 @@ namespace pinpoint {
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
         std::condition_variable ping_cv_{};
-        bool ping_stop_requested_{false};
         unsigned long socket_id_{0};
         // Set once per ping stream session when the stream starts shutting
         // down, so StartWritesDone()/RemoveHold() run exactly once no matter
@@ -735,7 +729,6 @@ namespace pinpoint {
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
         bool try_acquire_permit(std::chrono::milliseconds timeout);
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
-        void release_permit();
         void await_in_flight_requests();
         void flush_remaining(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);
         // Worker loop body; sendSpanWorker() supervises it and restarts it
@@ -750,7 +743,7 @@ namespace pinpoint {
     public:
         explicit GrpcStats(std::shared_ptr<const Config> config,
                            const GrpcClientTuning& tuning = {});
-        ~GrpcStats() override { arena_.Reset(); }
+        ~GrpcStats() override = default;
 
         /**
          * @brief Queues a statistics payload to be sent.
@@ -786,13 +779,18 @@ namespace pinpoint {
         std::condition_variable stats_queue_cv_{};
         // Rate-limited overflow reporting (see QueueDropReporter).
         QueueDropReporter stats_drop_reporter_{};
-        bool stats_stop_requested_{false};
         std::atomic<bool> force_stats_queue_empty_{false};
         // Set once per stats stream session when the stream starts shutting
         // down, so StartWritesDone()/RemoveHold() run exactly once no matter
         // which of the write-failure / write-timeout / finish paths fires
         // first (mirrors GrpcAgent::ping_stream_closing_).
         std::atomic<bool> stats_stream_closing_{false};
+
+        /// @brief True when both stat and URL-stat reporting are disabled
+        /// (boot-time, non-reloadable flags).
+        bool stats_disabled() const {
+            return !config_->stat.enable && !config_->http.url_stat.enable;
+        }
 
         bool start_stats_stream();
         GrpcStreamStatus write_and_await_stats_stream();

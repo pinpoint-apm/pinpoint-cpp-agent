@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #include <cstdlib>
-#include <cstdio>
-#include <iostream>
 #include <fstream>
-#include <random>
 #include <string>
 #include <chrono>
 #include <condition_variable>
@@ -54,12 +52,6 @@ namespace pinpoint {
                                           : options.env_prefix;
     }
 
-    // Builds the full env var name from a suffix (e.g. "APPLICATION_NAME") by
-    // prepending the active prefix: "<prefix>_<suffix>".
-    static std::string resolve_env_name(const std::string& prefix, const char* suffix) {
-        return prefix + "_" + suffix;
-    }
-
     // Result of looking up a prefix-resolved env var: the fully resolved name
     // (for accurate logging) and the value (null when unset).
     struct ResolvedEnv {
@@ -69,7 +61,8 @@ namespace pinpoint {
     };
 
     static ResolvedEnv get_env(const std::string& prefix, const char* suffix) {
-        std::string name = resolve_env_name(prefix, suffix);
+        // Full env var name: "<prefix>_<suffix>" (e.g. "PINPOINT_CPP_APPLICATION_NAME").
+        std::string name = prefix + "_" + suffix;
         const char* value = std::getenv(name.c_str());
         return {std::move(name), value};
     }
@@ -116,18 +109,10 @@ namespace pinpoint {
 
     // Poll interval applied to the NEXT started watcher; each watcher thread
     // captures its value at start, so a running watcher is unaffected.
-    // Guarded by config_watcher_mutex().
-    static std::chrono::milliseconds& config_watcher_poll_interval() {
-        static auto* interval = new std::chrono::milliseconds(kDefaultConfigWatcherPollInterval);
-        return *interval;
-    }
-
-    // Guards the poll-interval knob above; watcher instance state is guarded
-    // by each instance's own mutex_.
-    static std::mutex& config_watcher_mutex() {
-        static auto* mutex = new std::mutex();
-        return *mutex;
-    }
+    // Constant-initialized and trivially destructible, so it is safe to touch
+    // during process teardown.
+    static std::atomic<std::chrono::milliseconds::rep> config_watcher_poll_interval_ms{
+        kDefaultConfigWatcherPollInterval.count()};
 
     // Reads the whole config file; empty (with an error log) when unreadable.
     static std::string read_config_file(const std::string& config_file_path) {
@@ -141,15 +126,8 @@ namespace pinpoint {
     }
 
     void set_config_watcher_poll_interval(std::chrono::milliseconds interval) {
-        std::lock_guard<std::mutex> lock(config_watcher_mutex());
-        config_watcher_poll_interval() = interval.count() > 0
-            ? interval
-            : kDefaultConfigWatcherPollInterval;
-    }
-
-    static std::chrono::milliseconds config_watcher_poll_interval_copy() {
-        std::lock_guard<std::mutex> lock(config_watcher_mutex());
-        return config_watcher_poll_interval();
+        config_watcher_poll_interval_ms.store(
+            (interval.count() > 0 ? interval : kDefaultConfigWatcherPollInterval).count());
     }
 
     ConfigFileWatcher::ConfigFileWatcher(std::string file_path, std::function<void()> reload)
@@ -193,7 +171,7 @@ namespace pinpoint {
         // Captured once: the watcher keeps this tick for its lifetime, so a
         // later set_config_watcher_poll_interval() cannot race the running
         // thread.
-        const auto tick = config_watcher_poll_interval_copy();
+        const auto tick = std::chrono::milliseconds(config_watcher_poll_interval_ms.load());
 
         thread_ = std::thread([path = file_path_, reload = reload_, stop, tick]() {
             // Seed with the non-throwing overload: the throwing form could
@@ -285,62 +263,45 @@ namespace pinpoint {
         return YAML::Node(YAML::NodeType::Undefined);
     }
 
-    // Each getter guards the whole lookup, not just the conversion: yaml-cpp
+    // The getter guards the whole lookup, not just the conversion: yaml-cpp
     // throws from the subscript itself (BadSubscript on scalar nodes) and from
     // element-level conversions (TypedBadConversion<Element> inside vector
     // decoding), all of which derive from YAML::Exception. A malformed config
     // must degrade to defaults, never throw into the embedding application.
-    static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
+    template <typename T>
+    static T get_yaml(const YAML::Node& yaml, std::string_view cname, T default_value,
+                      const char* type_name) {
         try {
             if (auto node = find_node(yaml, cname)) {
-                return node.as<bool>();
+                return node.as<T>();
             }
         } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as boolean: {}. Using default value: {}",
-                     std::string(cname), e.what(), default_value);
+            LOG_WARN("Failed to read '{}' as {}: {}. Using default value",
+                     std::string(cname), type_name, e.what());
         }
 
         return default_value;
     }
 
-    static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
-        try {
-            if (auto node = find_node(yaml, cname)) {
-                return node.as<std::string>();
-            }
-        } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as string: {}. Using default value: '{}'",
-                     std::string(cname), e.what(), default_value);
-        }
+    static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
+        return get_yaml(yaml, cname, default_value, "boolean");
+    }
 
-        return default_value;
+    static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
+        return get_yaml(yaml, cname, std::move(default_value), "string");
     }
 
     static std::vector<std::string> get_string_vector(const YAML::Node& yaml, std::string_view cname,
                                                       std::vector<std::string> default_value) {
-        try {
-            if (auto node = find_node(yaml, cname)) {
-                return node.as<std::vector<std::string>>();
-            }
-        } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as string vector: {}. Using default value",
-                     std::string(cname), e.what());
-        }
-
-        return default_value;
+        return get_yaml(yaml, cname, std::move(default_value), "string vector");
     }
 
     static int get_int(const YAML::Node& yaml, std::string_view cname, int default_value) {
-        try {
-            if (auto node = find_node(yaml, cname)) {
-                return node.as<int>();
-            }
-        } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as int: {}. Using default value: {}",
-                     std::string(cname), e.what(), default_value);
-        }
+        return get_yaml(yaml, cname, default_value, "int");
+    }
 
-        return default_value;
+    static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
+        return get_yaml(yaml, cname, default_value, "double");
     }
 
     static void load_grpc_channel_yaml(const YAML::Node& grpc, Config::GrpcChannelOptions& options) {
@@ -363,19 +324,6 @@ namespace pinpoint {
 
             load_grpc_channel_yaml(grpc, config.collector.grpc.channel);
         }
-    }
-
-    static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
-        try {
-            if (auto node = find_node(yaml, cname)) {
-                return node.as<double>();
-            }
-        } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as double: {}. Using default value: {}",
-                     std::string(cname), e.what(), default_value);
-        }
-
-        return default_value;
     }
 
     // Every getter falls back to the current member value, never a hardcoded
@@ -498,37 +446,27 @@ namespace pinpoint {
             get_boolean(yaml, "EnableConfigFileWatcher", config.enable_config_file_watcher);
     }
 
-    static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
-        auto result = stob_(env_value);
-        if (result.has_value()) {
+    template <typename T, typename Parse>
+    static T safe_env_parse(Parse parse, const char* desc, const char* env_name,
+                            const char* env_value, T default_value) {
+        if (auto result = parse(env_value)) {
             return result.value();
-        } else {
-            LOG_WARN("Failed to parse boolean value '{}' for environment variable '{}'. Using default value: {}", 
-                     env_value, env_name, default_value);
-            return default_value;
         }
+        LOG_WARN("{} value '{}' for environment variable '{}'. Using default value: {}",
+                 desc, env_value, env_name, default_value);
+        return default_value;
+    }
+
+    static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
+        return safe_env_parse(stob_, "Failed to parse boolean", env_name, env_value, default_value);
     }
 
     static int safe_env_stoi(const char* env_name, const char* env_value, int default_value) {
-        auto result = stoi_(env_value);
-        if (result.has_value()) {
-            return result.value();
-        } else {
-            LOG_WARN("Invalid integer value '{}' for environment variable '{}'. Using default value: {}", 
-                     env_value, env_name, default_value);
-            return default_value;
-        }
+        return safe_env_parse(stoi_, "Invalid integer", env_name, env_value, default_value);
     }
 
     static double safe_env_stod(const char* env_name, const char* env_value, double default_value) {
-        auto result = stod_(env_value);
-        if (result.has_value()) {
-            return result.value();
-        } else {
-            LOG_WARN("Invalid double value '{}' for environment variable '{}'. Using default value: {}", 
-                     env_value, env_name, default_value);
-            return default_value;
-        }
+        return safe_env_parse(stod_, "Invalid double", env_name, env_value, default_value);
     }
 
     static void load_env_grpc_channel(const std::string& prefix,
@@ -764,19 +702,9 @@ namespace pinpoint {
     }
 
     static bool is_container_env() {
-        FILE* f = fopen("/.dockerenv", "r");
-        if (f != nullptr) {
-            fclose(f);
-            return true;
-        }
-
-        const char *tmp = std::getenv("KUBERNETES_SERVICE_HOST");
-        std::string env_var(tmp ? tmp : "");
-        if (!env_var.empty()) {
-            return true;
-        }
-
-        return false;
+        std::error_code ec;
+        const char* k = std::getenv("KUBERNETES_SERVICE_HOST");
+        return std::filesystem::exists("/.dockerenv", ec) || (k && *k);
     }
 
     std::string resolve_config_file_path(const AgentOptions& options) {
@@ -855,9 +783,6 @@ namespace pinpoint {
     // Sibling pre-fork workers can thereby write separate log files — the
     // built-in size rotation is not multi-process safe on a shared file.
     static std::string expand_log_file_path(const std::string& path) {
-        if (path.find('%') == std::string::npos) {
-            return path;
-        }
         const std::string pid = std::to_string(static_cast<long>(getpid()));
         return absl::StrReplaceAll(path, {{"%pid%", pid}});
     }
@@ -1303,64 +1228,21 @@ namespace pinpoint {
         emitter << YAML::Key << "Server";
         emitter << YAML::BeginMap;
 
-        emitter << YAML::Key << "StatusCodeErrors" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.status_errors) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "ExcludeUrl" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.exclude_url) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "ExcludeMethod" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.exclude_method) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.rec_request_header) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.rec_request_cookie) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.server.rec_response_header) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
+        // yaml-cpp's stlemitter.h emits std::vector as BeginSeq/elements/EndSeq,
+        // identical to an explicit loop.
+        emitter << YAML::Key << "StatusCodeErrors" << YAML::Value << config.http.server.status_errors;
+        emitter << YAML::Key << "ExcludeUrl" << YAML::Value << config.http.server.exclude_url;
+        emitter << YAML::Key << "ExcludeMethod" << YAML::Value << config.http.server.exclude_method;
+        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << config.http.server.rec_request_header;
+        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << config.http.server.rec_request_cookie;
+        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << config.http.server.rec_response_header;
         emitter << YAML::EndMap;
 
         emitter << YAML::Key << "Client";
         emitter << YAML::BeginMap;
-
-        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.client.rec_request_header) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.client.rec_request_cookie) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
-        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << YAML::BeginSeq;
-        for (const auto& s : config.http.client.rec_response_header) {
-            emitter << s;
-        }
-        emitter << YAML::EndSeq;
-
+        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << config.http.client.rec_request_header;
+        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << config.http.client.rec_request_cookie;
+        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << config.http.client.rec_response_header;
         emitter << YAML::EndMap;
         emitter << YAML::EndMap;
 

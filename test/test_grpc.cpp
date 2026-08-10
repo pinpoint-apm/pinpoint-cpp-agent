@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -71,7 +72,6 @@ protected:
         mock_agent_service_->setAppName("test-app");
         mock_agent_service_->setAppType(1300);
         mock_agent_service_->setAgentId("test-agent-id");
-        mock_agent_service_->setAgentName("test-agent-name");
 
         const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
         certificate_path_ = std::filesystem::temp_directory_path() /
@@ -409,7 +409,6 @@ TEST_F(GrpcTest, GrpcEnumValuesTest) {
     EXPECT_EQ(STREAM_WRITE, 0);
     EXPECT_EQ(STREAM_CONTINUE, 1);
     EXPECT_EQ(STREAM_DONE, 2);
-    EXPECT_EQ(STREAM_EXCEPTION, 3);
     
     // Test ClientType enum
     EXPECT_EQ(AGENT, 0);
@@ -824,10 +823,9 @@ namespace {
 
 std::map<std::string, std::string> metadata_map(const Config& config,
                                                 int64_t start_time,
-                                                unsigned long socket_id,
                                                 int32_t app_type = APP_TYPE_CPP) {
     std::map<std::string, std::string> m;
-    for (const auto& [k, v] : build_grpc_metadata(config, config.agent_id_, start_time, app_type, socket_id)) {
+    for (const auto& [k, v] : build_grpc_metadata(config, config.agent_id_, start_time, app_type)) {
         m[k] = v;
     }
     return m;
@@ -842,7 +840,7 @@ TEST(GrpcMetadataTest, V1V3CommonHeaders) {
     config.agent_name_ = "agent-name";
     config.object_name_version_ = 1; // v1/v3
 
-    const auto m = metadata_map(config, 12345, 0);
+    const auto m = metadata_map(config, 12345);
     EXPECT_EQ(m.at("applicationname"), "my-app");
     EXPECT_EQ(m.at("agentid"), "agent-1");
     EXPECT_EQ(m.at("agentname"), "agent-name");
@@ -861,7 +859,7 @@ TEST(GrpcMetadataTest, V1V3AgentNameOmittedWhenEmpty) {
     config.object_name_version_ = 1;
     // agent_name_ left empty
 
-    const auto m = metadata_map(config, 1, 0);
+    const auto m = metadata_map(config, 1);
     EXPECT_EQ(m.count("agentname"), 0u);
     EXPECT_EQ(m.at("protocol.version"), "100");
 }
@@ -875,7 +873,7 @@ TEST(GrpcMetadataTest, V4Headers) {
     config.api_key_ = "secret-key";
     config.object_name_version_ = 4;
 
-    const auto m = metadata_map(config, 999, 0);
+    const auto m = metadata_map(config, 999);
     EXPECT_EQ(m.at("protocol.version"), "400");
     EXPECT_EQ(m.at("agentname"), "agent-name"); // always sent for v4
     EXPECT_EQ(m.at("servicename"), "my-service");
@@ -883,14 +881,15 @@ TEST(GrpcMetadataTest, V4Headers) {
     EXPECT_EQ(m.at("agentid"), "AZLxoH6LfD2fLhorPE1ebw");
 }
 
-TEST(GrpcMetadataTest, SocketIdIncludedWhenPositive) {
+TEST(GrpcMetadataTest, SocketIdNeverInBaseHeaderSet) {
     Config config;
     config.app_name_ = "my-app";
     config.agent_id_ = "agent-1";
     config.object_name_version_ = 1;
 
-    EXPECT_EQ(metadata_map(config, 1, 0).count("socketid"), 0u);
-    EXPECT_EQ(metadata_map(config, 1, 7).at("socketid"), "7");
+    // The socketid header is appended per-context by build_grpc_context(),
+    // never by the socket-id-independent base header set.
+    EXPECT_EQ(metadata_map(config, 1).count("socketid"), 0u);
 }
 
 } // namespace pinpoint

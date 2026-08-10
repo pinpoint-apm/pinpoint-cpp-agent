@@ -61,9 +61,6 @@ namespace pinpoint {
      */
     class NoopSpanEvent : public SpanEvent {
     public:
-        NoopSpanEvent() {}
-        ~NoopSpanEvent() override {}
-
         void SetServiceType(int32_t type) override {}
         void SetOperationName(std::string_view operation) override {}
         void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
@@ -96,9 +93,6 @@ namespace pinpoint {
      */
     class UnsampledSpanEvent final : public NoopSpanEvent {
     public:
-        UnsampledSpanEvent() {}
-        ~UnsampledSpanEvent() override {}
-
         void InjectContext(TraceContextWriter& writer) override;
     };
 
@@ -107,9 +101,6 @@ namespace pinpoint {
      */
     class NoopSpan : public Span {
     public:
-        NoopSpan() = default;
-        ~NoopSpan() override {}
-
         SpanEventPtr NewSpanEvent(std::string_view operation) override { return noopSpanEvent(); }
         SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return noopSpanEvent(); }
         SpanEventPtr GetSpanEvent() override { return noopSpanEvent(); }
@@ -196,9 +187,6 @@ namespace pinpoint {
      */
     class NoopAgent final : public Agent {
     public:
-        NoopAgent() {}
-        ~NoopAgent() override {}
-
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) override { return noopSpan(); }
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point,
             TraceContextReader& reader) override { return noopSpan(); }
@@ -214,42 +202,7 @@ namespace pinpoint {
      */
     class NoopTraceContextReader final : public TraceContextReader {
     public:
-        NoopTraceContextReader() = default;
-        ~NoopTraceContextReader() override = default;
-
         std::optional<std::string_view> Get(std::string_view key) const override { return std::nullopt; }
     };
 
-    /**
-     * @brief Convenience holder for all noop implementations.
-     */
-    class Noop {
-    public:
-        Noop() :
-            noop_agent_(std::make_shared<NoopAgent>()),
-            noop_span_ (std::make_shared<NoopSpan>()),
-            noop_event_(std::make_unique<NoopSpanEvent>()),
-            unsampled_event_(std::make_unique<UnsampledSpanEvent>())
-        {}
-
-        /// @brief Returns the shared noop agent.
-        AgentPtr agent() const { return noop_agent_; }
-        /// @brief Returns the shared noop span.
-        SpanPtr span() const { return noop_span_; }
-        /// @brief Returns the shared noop span event.
-        SpanEventPtr spanEvent() const { return noop_event_.get(); }
-        /// @brief Returns the shared unsampled span event.
-        SpanEventPtr unsampledSpanEvent() const { return unsampled_event_.get(); }
-
-    private:
-        Noop(const Noop&) = delete;
-        Noop& operator=(const Noop&) = delete;
-        Noop(Noop&&) = delete;
-        Noop& operator=(Noop&&) = delete;
-
-        AgentPtr noop_agent_;
-        SpanPtr noop_span_;
-        std::unique_ptr<NoopSpanEvent> noop_event_;
-        std::unique_ptr<UnsampledSpanEvent> unsampled_event_;
-    };
 }

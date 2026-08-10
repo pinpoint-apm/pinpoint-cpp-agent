@@ -18,7 +18,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <optional>
 #include <thread>
@@ -178,6 +181,29 @@ namespace pinpoint {
         std::atomic<uint64_t> last_reported_{0};
         std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
     };
+
+    /**
+     * @brief Supervises a background worker: runs `body`, and if it escapes
+     * with an exception, logs it and restarts the body after `interval` (or
+     * immediately ends on exit). A normal return ends the worker. Logs
+     * "<name> end" when the worker finishes, so an unexpected exception
+     * (e.g. bad_alloc while aggregating) cannot kill a periodic worker for
+     * the process lifetime.
+     *
+     * @param name Worker name used in the log messages.
+     * @param interval Restart pacing between supervised runs.
+     * @param mutex / cond_var The worker's own synchronization pair, so the
+     *        restart wait wakes on the worker's stop notification.
+     * @param is_exiting Predicate consulted by the restart wait.
+     * @param body One supervised run of the worker loop.
+     *
+     * Defined in utility.cpp (std::function is fine on this cold path) so
+     * this header does not drag logging.h/fmt into every includer.
+     */
+    void superviseWorker(std::string_view name, std::chrono::milliseconds interval,
+                         std::mutex& mutex, std::condition_variable& cond_var,
+                         const std::function<bool()>& is_exiting,
+                         const std::function<void()>& body);
 
     /**
      * @brief Lazily heap-creates one instance per thread (and per call site)

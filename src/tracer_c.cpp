@@ -281,16 +281,10 @@ static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result
     return pt_handle_call(handle, fallback, std::forward<F>(fn));
 }
 
-static void destroy_handle(pt_agent_t handle, pt_agent_t noop_handle) {
+template <typename Handle>
+static void destroy_handle(Handle handle, Handle noop_handle) {
     if (handle == nullptr || handle == noop_handle) return;
-    if (!agent_handle_registry().erase(handle)) {
-        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
-    }
-}
-
-static void destroy_handle(pt_span_t handle, pt_span_t noop_handle) {
-    if (handle == nullptr || handle == noop_handle) return;
-    if (!span_handle_registry().erase(handle)) {
+    if (!handle_registry_for(handle).erase(handle)) {
         LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
     }
 }

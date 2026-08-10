@@ -24,8 +24,6 @@
 
 #include "utility.h"
 
-#include "utility.h"
-
 namespace pinpoint {
  
     /**
@@ -46,7 +44,6 @@ namespace pinpoint {
         CallStack(std::string_view error_message) : error_message_(truncated(error_message, kMaxErrorMessageLength)),
                                                error_time_{to_milli_seconds(std::chrono::system_clock::now())},
                                                stack_{} {}
-        //~CallStack() = default;
 
         /**
          * @brief Adds a frame to the call stack.
@@ -132,7 +129,6 @@ namespace pinpoint {
     class Exception {
     public:
         Exception(std::unique_ptr<CallStack> callstack) : id_{exception_id_gen.fetch_add(1)}, callstack_(std::move(callstack)) {}
-        //~Exception() = default;
 
         /**
          * @brief Returns the generated exception identifier.

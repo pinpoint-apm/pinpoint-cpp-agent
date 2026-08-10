@@ -960,7 +960,6 @@ protected:
         mock_agent_service_->setAppName("test-app");
         mock_agent_service_->setAppType(1300);
         mock_agent_service_->setAgentId("test-agent-id");
-        mock_agent_service_->setAgentName("test-agent-name");
     }
 
     void TearDown() override {
@@ -2510,7 +2509,7 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {
     auto span_event = make_test_span_event_unique(*span_parent, "child-op");
     span_event->SetAnnotation(201, "event-annotation");
     span_data->addSpanEvent(std::move(span_event));
-    span_data->finishSpanEvent();
+    span_data->finishSpanEvent(span_data->topSpanEvent());
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
     ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },

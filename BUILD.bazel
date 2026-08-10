@@ -11,18 +11,11 @@ genrule(
     outs = ["version.h"],
     cmd = """
         VERSION=$$(grep 'version = ' $(location MODULE.bazel) | head -1 | sed 's/.*version = "\\(.*\\)".*/\\1/')
-        MAJOR=$$(echo $$VERSION | cut -d. -f1)
-        MINOR=$$(echo $$VERSION | cut -d. -f2)
-        PATCH=$$(echo $$VERSION | cut -d. -f3)
         BUILD=$$(cat $(location build_number.txt) | tr -d '[:space:]')
         cat > $@ <<EOF
 #pragma once
 
 #define VERSION_STRING  "$$VERSION.$$BUILD"
-#define VERSION_MAJOR "$$MAJOR"
-#define VERSION_MINOR "$$MINOR"
-#define VERSION_PATCH "$$PATCH"
-#define BUILD_NUMBER "$$BUILD"
 EOF
     """,
 )

@@ -28,20 +28,10 @@ namespace pinpoint {
 
     class PinpointAnnotation;
 
-    // HTTP status code range constants
     namespace http_status {
-        constexpr int INFORMATIONAL_MIN = 100;
-        constexpr int INFORMATIONAL_MAX = 199;
-        constexpr int SUCCESS_MIN = 200;
-        constexpr int SUCCESS_MAX = 299;
-        constexpr int REDIRECTION_MIN = 300;
-        constexpr int REDIRECTION_MAX = 399;
-        constexpr int CLIENT_ERROR_MIN = 400;
-        constexpr int CLIENT_ERROR_MAX = 499;
-        constexpr int SERVER_ERROR_MIN = 500;
-        constexpr int SERVER_ERROR_MAX = 599;
-        // Size of the direct-lookup error table: covers every standard code.
-        constexpr int TABLE_SIZE = SERVER_ERROR_MAX + 1;
+        // Size of the direct-lookup error table: covers every standard code
+        // (the highest status class is 5xx).
+        constexpr int TABLE_SIZE = 600;
     }
 
     /**

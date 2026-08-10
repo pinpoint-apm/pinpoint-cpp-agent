@@ -66,8 +66,6 @@ target_link_libraries(it_test_server
 # =============================================================================
 # Standalone public API/lifecycle scenarios
 # =============================================================================
-find_package(Threads REQUIRED)
-
 add_executable(c_api_scenario c_api_scenario.c)
 target_link_libraries(c_api_scenario ${PINPOINT_CPP_LIBRARY} Threads::Threads)
 set_target_properties(c_api_scenario PROPERTIES

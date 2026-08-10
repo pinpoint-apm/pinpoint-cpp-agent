@@ -18,7 +18,6 @@
 #include <csignal>
 #include <string>
 #include <exception>
-#include <iterator>
 #include <utility>
 #include <condition_variable>
 #include <mutex>
@@ -320,35 +319,22 @@ namespace pinpoint {
     }
 
     void AgentImpl::build_header_recorders(AgentRuntime& rt, const Config& cfg) {
-        struct HeaderRecorderConfig {
-            HeaderType type;
+        const struct {
             int32_t annotation_key;
             const std::vector<std::string>& config_value;
+            std::shared_ptr<HttpHeaderRecorder>& dst;
+        } rows[] = {
+            {ANNOTATION_HTTP_REQUEST_HEADER,  cfg.http.server.rec_request_header,  rt.http_srv_header_recorder[HTTP_REQUEST]},
+            {ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.server.rec_response_header, rt.http_srv_header_recorder[HTTP_RESPONSE]},
+            {ANNOTATION_HTTP_COOKIE,          cfg.http.server.rec_request_cookie,  rt.http_srv_header_recorder[HTTP_COOKIE]},
+            {ANNOTATION_HTTP_REQUEST_HEADER,  cfg.http.client.rec_request_header,  rt.http_cli_header_recorder[HTTP_REQUEST]},
+            {ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.client.rec_response_header, rt.http_cli_header_recorder[HTTP_RESPONSE]},
+            {ANNOTATION_HTTP_COOKIE,          cfg.http.client.rec_request_cookie,  rt.http_cli_header_recorder[HTTP_COOKIE]},
         };
 
-        const HeaderRecorderConfig server_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg.http.server.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.server.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg.http.server.rec_request_cookie}
-        };
-
-        const HeaderRecorderConfig client_configs[] = {
-            {HTTP_REQUEST, ANNOTATION_HTTP_REQUEST_HEADER, cfg.http.client.rec_request_header},
-            {HTTP_RESPONSE, ANNOTATION_HTTP_RESPONSE_HEADER, cfg.http.client.rec_response_header},
-            {HTTP_COOKIE, ANNOTATION_HTTP_COOKIE, cfg.http.client.rec_request_cookie}
-        };
-
-        for (const auto& recorder_cfg : server_configs) {
-            if (!recorder_cfg.config_value.empty()) {
-                rt.http_srv_header_recorder[recorder_cfg.type] =
-                    std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
-            }
-        }
-
-        for (const auto& recorder_cfg : client_configs) {
-            if (!recorder_cfg.config_value.empty()) {
-                rt.http_cli_header_recorder[recorder_cfg.type] =
-                    std::make_shared<HttpHeaderRecorder>(recorder_cfg.annotation_key, recorder_cfg.config_value);
+        for (const auto& row : rows) {
+            if (!row.config_value.empty()) {
+                row.dst = std::make_shared<HttpHeaderRecorder>(row.annotation_key, row.config_value);
             }
         }
     }
@@ -402,46 +388,33 @@ namespace pinpoint {
 
             // Non-positive throughput creates no limiter, so the default
             // config gets the plain pass-through sampler.
-            rt->sampler = std::make_shared<ThroughputLimitTraceSampler>(this, std::move(sampler),
-                                                                        c.sampling.new_throughput,
-                                                                        c.sampling.cont_throughput);
+            rt->sampler = std::make_shared<TraceSampler>(this, std::move(sampler),
+                                                         c.sampling.new_throughput,
+                                                         c.sampling.cont_throughput);
         } else {
             rt->sampler = old_rt->sampler;
         }
 
-        // Rebuild HTTP filters
-        if (!old_cfg || old_cfg->http.server.exclude_url != c.http.server.exclude_url) {
-            if (!c.http.server.exclude_url.empty()) {
-                rt->http_url_filter = std::make_shared<HttpUrlFilter>(c.http.server.exclude_url);
-            }
-        } else {
-            rt->http_url_filter = old_rt->http_url_filter;
-        }
+        // Rebuild HTTP filters (changed slice → rebuild, empty config → null,
+        // unchanged → share the previous runtime's component)
+        rt->http_url_filter = (!old_cfg || old_cfg->http.server.exclude_url != c.http.server.exclude_url)
+            ? (c.http.server.exclude_url.empty() ? nullptr : std::make_shared<HttpUrlFilter>(c.http.server.exclude_url))
+            : old_rt->http_url_filter;
 
-        if (!old_cfg || old_cfg->http.server.exclude_method != c.http.server.exclude_method) {
-            if (!c.http.server.exclude_method.empty()) {
-                rt->http_method_filter = std::make_shared<HttpMethodFilter>(c.http.server.exclude_method);
-            }
-        } else {
-            rt->http_method_filter = old_rt->http_method_filter;
-        }
+        rt->http_method_filter = (!old_cfg || old_cfg->http.server.exclude_method != c.http.server.exclude_method)
+            ? (c.http.server.exclude_method.empty() ? nullptr : std::make_shared<HttpMethodFilter>(c.http.server.exclude_method))
+            : old_rt->http_method_filter;
 
-        if (!old_cfg || old_cfg->http.server.status_errors != c.http.server.status_errors) {
-            if (!c.http.server.status_errors.empty()) {
-                rt->http_status_errors = std::make_shared<HttpStatusErrors>(c.http.server.status_errors);
-            }
-        } else {
-            rt->http_status_errors = old_rt->http_status_errors;
-        }
+        rt->http_status_errors = (!old_cfg || old_cfg->http.server.status_errors != c.http.server.status_errors)
+            ? (c.http.server.status_errors.empty() ? nullptr : std::make_shared<HttpStatusErrors>(c.http.server.status_errors))
+            : old_rt->http_status_errors;
 
         // Rebuild header recorders
         if (!old_cfg || header_recorder_config_changed(*old_cfg, c)) {
             build_header_recorders(*rt, c);
         } else {
-            for (size_t i = 0; i < 3; ++i) {
-                rt->http_srv_header_recorder[i] = old_rt->http_srv_header_recorder[i];
-                rt->http_cli_header_recorder[i] = old_rt->http_cli_header_recorder[i];
-            }
+            rt->http_srv_header_recorder = old_rt->http_srv_header_recorder;
+            rt->http_cli_header_recorder = old_rt->http_cli_header_recorder;
         }
 
         return rt;
@@ -827,18 +800,8 @@ namespace pinpoint {
     }
 
 	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
-        SpanPtr span;
-
-        // Cheap pre-filter only: the funnel end (the method+reader overload
-        // below) performs the authoritative tracing_active() check, so the
-        // pid guard runs once per span, not once per overload hop.
-        if (enabled_) {
-            NoopTraceContextReader reader;
-            span = NewSpan(operation, rpc_point, reader);
-        } else {
-            span = noopSpan();
-        }
-        return span;
+        NoopTraceContextReader reader;
+        return NewSpan(operation, rpc_point, reader);
     }
 
     SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
@@ -912,14 +875,7 @@ namespace pinpoint {
     }
 
 	bool AgentImpl::Enable() {
-    	// Same fork-inheritance guard as the span path (tracing_active()),
-    	// but checked before enabled_: an inherited agent must report
-    	// disabled even while a torn-down enabled_ flag is still flipping.
-    	if (owner_pid_ != 0 && owner_pid_ != getpid()) {
-    		warn_fork_inheritance();
-    		return false;
-    	}
-    	return enabled_;
+    	return tracing_active();
 	}
 
     void AgentImpl::Shutdown() noexcept {
@@ -1378,7 +1334,8 @@ namespace pinpoint {
         return false;
     }
 
-    void AgentImpl::recordServerHeader(const HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const {
+    void AgentImpl::recordHttpHeader(const bool server, const HeaderType which,
+                                     HeaderReader& reader, PinpointAnnotation* annotation) const {
         if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
             return;
         }
@@ -1387,22 +1344,19 @@ namespace pinpoint {
         // recordHeader() runs host code (reader.Get()), and a re-entrant load
         // of runtime_ racing a config reload would refresh the TLS entry the
         // snapshot lives in, destroying a merely-referenced recorder mid-call.
-        const auto recorder = runtime->http_srv_header_recorder[which];
+        const auto recorder = server ? runtime->http_srv_header_recorder[which]
+                                     : runtime->http_cli_header_recorder[which];
         if (recorder) {
             recorder->recordHeader(reader, annotation);
         }
     }
 
+    void AgentImpl::recordServerHeader(const HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const {
+        recordHttpHeader(true, which, reader, annotation);
+    }
+
     void AgentImpl::recordClientHeader(const HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const {
-        if (!enabled_ || which < HTTP_REQUEST || which > HTTP_COOKIE) {
-            return;
-        }
-        const auto& runtime = runtime_.load_cached_ref();
-        // Owning copy for the same reason as recordServerHeader() above.
-        const auto recorder = runtime->http_cli_header_recorder[which];
-        if (recorder) {
-            recorder->recordHeader(reader, annotation);
-        }
+        recordHttpHeader(false, which, reader, annotation);
     }
 
     static std::shared_ptr<AgentImpl> make_agent(std::shared_ptr<const Config> cfg,
