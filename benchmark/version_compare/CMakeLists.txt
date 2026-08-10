@@ -8,12 +8,18 @@
 #   cmake -S benchmark/version_compare -B <out> \
 #     -DPINPOINT_SOURCE_DIR=<agent worktree> \
 #     -DPINPOINT_BUILD_DIR=<configured+built agent build dir> \
-#     -DCMAKE_PREFIX_PATH=<shared dependency prefix> \
+#     [-DCMAKE_TOOLCHAIN_FILE=<vcpkg toolchain>] \
 #     -DPP_API_V1=ON|OFF [-DBUILD_COLLECTOR=ON]
 #
 # PP_API_V1=ON selects the v1.1.0 spelling of the public API in pp_compat.h.
 
 cmake_minimum_required(VERSION 3.20)
+
+# Reuse the repository manifest when this standalone project is configured with
+# the vcpkg toolchain. Without that toolchain, dependencies are built from the
+# pinned FetchContent sources below.
+set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
+    "Directory containing the Pinpoint vcpkg manifest")
 project(pinpoint-version-compare LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -47,11 +53,8 @@ find_library(PINPOINT_LIB
   NO_DEFAULT_PATH REQUIRED)
 
 find_package(Threads REQUIRED)
-find_package(Protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
-find_package(absl CONFIG REQUIRED)
-find_package(yaml-cpp CONFIG REQUIRED)
-find_package(fmt CONFIG REQUIRED)
+set(PINPOINT_FORCE_FETCHCONTENT OFF)
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/PinpointDependencies.cmake")
 
 set(PINPOINT_DEP_LIBS
   gRPC::grpc++

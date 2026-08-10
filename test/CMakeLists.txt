@@ -1,8 +1,10 @@
 include(FetchContent)
 
-find_package(GTest CONFIG QUIET)
-if(NOT GTest_FOUND)
-  message(STATUS "GoogleTest not found on system, fetching from source...")
+if(PINPOINT_DEPENDENCY_PROVIDER STREQUAL "vcpkg")
+  pinpoint_find_vcpkg_package(GTest)
+  message(STATUS "Using GoogleTest from the vcpkg toolchain")
+else()
+  message(STATUS "Building GoogleTest from source with FetchContent")
   FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
@@ -10,8 +12,6 @@ if(NOT GTest_FOUND)
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
-else()
-  message(STATUS "Using system GoogleTest")
 endif()
 
 function(add_pinpoint_test name)

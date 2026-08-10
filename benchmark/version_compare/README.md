@@ -111,43 +111,35 @@ to the measured loop.
 Dependency versions must be pinned across both builds. Left to their own
 CMakeLists, v1.1.0 fetches gRPC v1.63.1 and the current tree fetches v1.76.0,
 which would confound every number that touches serialization or transport.
-Build the dependencies once and point both agent builds at that prefix.
+Check out the current dependency sources once and point both FetchContent builds
+at those source trees. Each agent still compiles its own copy, with identical
+source inputs and build settings.
 
 ```bash
 BASE=/tmp/pp-compare            # scratch location for worktrees and builds
-GRPC_SRC=/path/to/grpc          # v1.76.0 checkout with submodules
 
 git worktree add --detach "$BASE/wt/v1.1.0" v1.1.0
 git worktree add --detach "$BASE/wt/main" main
+git clone --branch v1.76.0 --depth 1 --recurse-submodules \
+  https://github.com/grpc/grpc.git "$BASE/src/grpc"
+git clone --branch 0.8.0 --depth 1 \
+  https://github.com/jbeder/yaml-cpp.git "$BASE/src/yaml-cpp"
+git clone --branch 11.2.0 --depth 1 \
+  https://github.com/fmtlib/fmt.git "$BASE/src/fmt"
 ```
 
-```bash
-cmake -S "$GRPC_SRC" -B "$BASE/grpc-rel" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$BASE/deps" \
-  -DCMAKE_CXX_STANDARD=17 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF -DgRPC_BUILD_CSHARP_EXT=OFF \
-  -DgRPC_ABSL_PROVIDER=module -DgRPC_PROTOBUF_PROVIDER=module \
-  -DgRPC_ZLIB_PROVIDER=module -DgRPC_CARES_PROVIDER=module \
-  -DgRPC_RE2_PROVIDER=module -DgRPC_SSL_PROVIDER=module \
-  -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_INSTALL=ON \
-  -Dutf8_range_ENABLE_INSTALL=ON -DABSL_ENABLE_INSTALL=ON \
-  -DABSL_PROPAGATE_CXX_STD=ON
-cmake --build "$BASE/grpc-rel" --target install -j 12
-```
-
-Install yaml-cpp 0.8.0 and fmt 11.2.0 into the same `$BASE/deps` prefix, then
-configure both agents identically. v1.1.0 needs `-DVCPKG_DETECTED=ON`: its
-non-vcpkg branch assumes the FetchContent layout and refers to a raw
-`grpc_cpp_plugin` target that a `find_package`-provided gRPC does not define.
+Configure both agents identically, overriding the FetchContent source locations:
 
 ```bash
 for V in main v1.1.0; do
-  EXTRA=""; [ "$V" = "v1.1.0" ] && EXTRA="-DVCPKG_DETECTED=ON"
   cmake -S "$BASE/wt/$V" -B "$BASE/build-$V" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$BASE/deps" \
+    -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_STANDARD=17 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DFETCHCONTENT_SOURCE_DIR_GRPC="$BASE/src/grpc" \
+    -DFETCHCONTENT_SOURCE_DIR_YAML-CPP="$BASE/src/yaml-cpp" \
+    -DFETCHCONTENT_SOURCE_DIR_FMT="$BASE/src/fmt" \
     -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
-    -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON $EXTRA
+    -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON
   cmake --build "$BASE/build-$V" -j 12
 done
 ```
@@ -156,7 +148,10 @@ Then build the benchmark against each:
 
 ```bash
 cmake -S benchmark/version_compare -B "$BASE/bench-main" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$BASE/deps" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFETCHCONTENT_SOURCE_DIR_GRPC="$BASE/src/grpc" \
+  -DFETCHCONTENT_SOURCE_DIR_YAML-CPP="$BASE/src/yaml-cpp" \
+  -DFETCHCONTENT_SOURCE_DIR_FMT="$BASE/src/fmt" \
   -DPINPOINT_SOURCE_DIR="$BASE/wt/main" -DPINPOINT_BUILD_DIR="$BASE/build-main" \
   -DPP_API_V1=OFF -DBUILD_COLLECTOR=ON
 cmake --build "$BASE/bench-main" -j 12
@@ -164,7 +159,10 @@ cmake --build "$BASE/bench-main" -j 12
 
 ```bash
 cmake -S benchmark/version_compare -B "$BASE/bench-v1.1.0" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$BASE/deps" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFETCHCONTENT_SOURCE_DIR_GRPC="$BASE/src/grpc" \
+  -DFETCHCONTENT_SOURCE_DIR_YAML-CPP="$BASE/src/yaml-cpp" \
+  -DFETCHCONTENT_SOURCE_DIR_FMT="$BASE/src/fmt" \
   -DPINPOINT_SOURCE_DIR="$BASE/wt/v1.1.0" -DPINPOINT_BUILD_DIR="$BASE/build-v1.1.0" \
   -DPP_API_V1=ON
 cmake --build "$BASE/bench-v1.1.0" -j 12

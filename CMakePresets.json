@@ -19,8 +19,8 @@
         {
             "name": "default",
             "inherits": "base",
-            "displayName": "System / PATH find_package",
-            "description": "Resolve dependencies via CMAKE_PREFIX_PATH and system find_package; falls back to FetchContent."
+            "displayName": "FetchContent source build",
+            "description": "Build all CMake dependencies from pinned sources with FetchContent. System packages are ignored."
         },
         {
             "name": "vcpkg",
@@ -32,7 +32,7 @@
         {
             "name": "debug",
             "inherits": "default",
-            "displayName": "Debug build (system)",
+            "displayName": "Debug build (FetchContent)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
             }
@@ -78,7 +78,7 @@
             "name": "sanitize-base",
             "hidden": true,
             "inherits": "default",
-            "description": "Shared shape of the sanitizer presets: Debug, tests only, shared lib. Resolves dependencies like the default preset.",
+            "description": "Shared shape of the sanitizer presets: Debug, tests only, shared lib. Builds dependencies from source with FetchContent.",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "BUILD_EXAMPLES": "OFF",

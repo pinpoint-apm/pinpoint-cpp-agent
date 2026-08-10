@@ -32,6 +32,11 @@ set(SANITIZE "" CACHE STRING
 set_property(CACHE SANITIZE PROPERTY STRINGS
   "" "address" "thread" "undefined" "address+undefined")
 
+# Sanitized builds normally compile third-party code with the same
+# instrumentation. The dependency module consumes this flag when it selects
+# between the active vcpkg toolchain and FetchContent.
+set(PINPOINT_FORCE_FETCHCONTENT OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -76,17 +81,14 @@ if(SANITIZE)
       "Use address, thread, undefined, or address+undefined.")
   endif()
 
-  # A toolchain-provided gRPC/Abseil/protobuf is prebuilt and therefore cannot be
-  # instrumented, which reintroduces the boundary described above. Skip
-  # find_package for them so dependency resolution falls through to the
-  # FetchContent path and rebuilds them from source with the flags below. Turn
-  # this off to keep toolchain packages, accepting third-party false positives.
+  # A vcpkg-provided gRPC/Abseil/protobuf is prebuilt and therefore cannot be
+  # instrumented, which reintroduces the boundary described above. Force the
+  # FetchContent provider so dependencies are rebuilt with the flags below.
+  # Turn this off to keep vcpkg packages, accepting third-party false positives.
   option(SANITIZE_DEPS
     "Build dependencies from source so the sanitizer covers them too" ON)
   if(SANITIZE_DEPS)
-    foreach(_pp_pkg IN ITEMS Protobuf gRPC absl yaml-cpp fmt)
-      set(CMAKE_DISABLE_FIND_PACKAGE_${_pp_pkg} ON)
-    endforeach()
+    set(PINPOINT_FORCE_FETCHCONTENT ON)
     message(STATUS
       "Sanitized dependencies enabled: gRPC/Protobuf/absl/yaml-cpp/fmt are built "
       "from source with ${SANITIZE} instrumentation (first build is slow)")
@@ -103,94 +105,14 @@ if(SANITIZE)
   message(STATUS "Sanitizer enabled: ${SANITIZE}")
 endif()
 
-include(FetchContent)
-
 # =============================================================================
 # Dependency resolution
 # =============================================================================
-# Packages are located via find_package(CONFIG). Any package manager that
-# integrates with CMake (vcpkg, Conan, system packages, Nix, Spack, ...) can
-# be plugged in at configure time via CMAKE_TOOLCHAIN_FILE or CMAKE_PREFIX_PATH.
-# If a package cannot be found, FetchContent is used to build it from source.
-#
-# To keep the rest of this file toolchain-agnostic, FetchContent-built targets
-# are aliased to the same namespaced names that find_package(CONFIG) provides
-# (e.g. gRPC::grpc++).
+# Only an active vcpkg toolchain may provide packages. Without it, pinned
+# dependency sources are always built through FetchContent; system packages and
+# other package managers are intentionally ignored.
 # =============================================================================
-
-find_package(Protobuf CONFIG QUIET)
-find_package(gRPC     CONFIG QUIET)
-find_package(absl     CONFIG QUIET)
-
-if(NOT (gRPC_FOUND AND Protobuf_FOUND AND absl_FOUND))
-  message(STATUS "gRPC/Protobuf/absl not found via toolchain, fetching from source...")
-
-  FetchContent_Declare(
-    gRPC
-    GIT_REPOSITORY https://github.com/grpc/grpc.git
-    GIT_TAG        v1.76.0
-  )
-  set(FETCHCONTENT_QUIET OFF)
-  set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(gRPC_BUILD_CSHARP_EXT OFF CACHE BOOL "" FORCE)
-  set(gRPC_ABSL_PROVIDER "module" CACHE STRING "" FORCE)
-  set(gRPC_PROTOBUF_PROVIDER "module" CACHE STRING "" FORCE)
-  set(gRPC_ZLIB_PROVIDER "module" CACHE STRING "" FORCE)
-  set(gRPC_CARES_PROVIDER "module" CACHE STRING "" FORCE)
-  set(gRPC_RE2_PROVIDER "module" CACHE STRING "" FORCE)
-  set(gRPC_SSL_PROVIDER "module" CACHE STRING "" FORCE)
-  set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
-  set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-  set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(gRPC)
-
-  # Alias raw targets to the namespaced names find_package(CONFIG) would create,
-  # so the rest of this file can use a single target naming convention.
-  foreach(_pp_grpc_target IN ITEMS grpc++ grpc++_reflection)
-    if(TARGET ${_pp_grpc_target} AND NOT TARGET gRPC::${_pp_grpc_target})
-      add_library(gRPC::${_pp_grpc_target} ALIAS ${_pp_grpc_target})
-    endif()
-  endforeach()
-  if(TARGET grpc_cpp_plugin AND NOT TARGET gRPC::grpc_cpp_plugin)
-    add_executable(gRPC::grpc_cpp_plugin ALIAS grpc_cpp_plugin)
-  endif()
-
-  include(${grpc_SOURCE_DIR}/third_party/protobuf/cmake/protobuf-generate.cmake)
-else()
-  message(STATUS "Using toolchain-provided gRPC/Protobuf/absl")
-  include(${Protobuf_DIR}/../protobuf-generate.cmake OPTIONAL)
-  if(NOT COMMAND protobuf_generate)
-    include(FindProtobuf)
-  endif()
-endif()
-
-find_package(yaml-cpp CONFIG QUIET)
-if(NOT yaml-cpp_FOUND)
-  message(STATUS "yaml-cpp not found via toolchain, fetching from source...")
-  FetchContent_Declare(
-    yaml-cpp
-    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG        0.8.0
-  )
-  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(yaml-cpp)
-endif()
-
-find_package(fmt CONFIG QUIET)
-if(NOT fmt_FOUND)
-  message(STATUS "fmt not found via toolchain, fetching from source...")
-  FetchContent_Declare(
-    fmt
-    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-    GIT_TAG        11.2.0
-  )
-  FetchContent_MakeAvailable(fmt)
-endif()
+include(cmake/PinpointDependencies.cmake)
 
 list(APPEND LINK_LIBS
   protobuf::libprotobuf

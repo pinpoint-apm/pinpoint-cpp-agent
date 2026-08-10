@@ -74,8 +74,8 @@ bazel build //...
 bazel test //test/...
 ```
 
-See the [Build Guide](doc/build.md) for submodule setup, package managers (vcpkg,
-system packages), build options, coverage, sanitizers, and the integration
+See the [Build Guide](doc/build.md) for submodule setup, vcpkg and FetchContent
+dependency builds, build options, coverage, sanitizers, and the integration
 tests.
 
 ## Documentation

@@ -100,7 +100,11 @@ bazel build //test/e2e/...       # integration test binaries
 
 ## Build with CMake
 
-`CMakeLists.txt` is toolchain-agnostic: dependencies are located via `find_package(CONFIG)`, and any package manager that integrates with CMake (vcpkg, Conan, system packages, Nix, Spack, ...) can be plugged in at configure time via `CMAKE_TOOLCHAIN_FILE` or `CMAKE_PREFIX_PATH`. If a package is not found, CMake falls back to building it from source via `FetchContent`.
+The CMake build supports exactly two dependency providers. When the vcpkg
+toolchain is active, packages come from the repository's `vcpkg.json` manifest.
+Without that toolchain, all library dependencies are built from pinned sources
+via `FetchContent`. System packages, `CMAKE_PREFIX_PATH`, and other CMake package
+managers are intentionally not used.
 
 Common configurations are packaged as presets in `CMakePresets.json`.
 
@@ -114,15 +118,15 @@ cmake --list-presets
 
 | Preset | Toolchain / source of dependencies |
 |---|---|
-| `default` | `find_package` against system / `CMAKE_PREFIX_PATH`, FetchContent fallback |
+| `default` | Build pinned dependency sources with FetchContent |
 | `vcpkg` | vcpkg toolchain (requires `VCPKG_ROOT` env var) |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
-| `debug-cached` | Debug build using `default` plus a shared FetchContent cache under `$HOME/.cache/cmake-fetchcontent` |
-| `coverage` | `default` deps; Clang `Debug` build with source-based coverage; the build step also runs the tests and writes the reports (see [LLVM Coverage](#llvm-coverage-cmake)) |
+| `debug-cached` | Debug FetchContent build with a shared cache under `$HOME/.cache/cmake-fetchcontent` |
+| `coverage` | FetchContent deps; Clang `Debug` build with source-based coverage; the build step also runs the tests and writes the reports (see [LLVM Coverage](#llvm-coverage-cmake)) |
 | `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
-| `asan` | `default` deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
-| `tsan` | `default` deps; `Debug` build instrumented with ThreadSanitizer (`-fsanitize=thread`) |
-| `ubsan` | `default` deps; `Debug` build instrumented with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
+| `asan` | FetchContent deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
+| `tsan` | FetchContent deps; `Debug` build instrumented with ThreadSanitizer (`-fsanitize=thread`) |
+| `ubsan` | FetchContent deps; `Debug` build instrumented with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
 
 Configure + build + test using a preset:
 
@@ -140,8 +144,8 @@ Each preset writes to its own build directory (`build/<preset-name>/`), so you c
 
 ### Dependency Versions
 
-Dependency versions are pinned in the manifests themselves — `vcpkg.json` and
-the `FetchContent_Declare` calls in `CMakeLists.txt` — and match each other as
+Dependency versions are pinned in `vcpkg.json` and the
+`FetchContent_Declare` calls in `cmake/PinpointDependencies.cmake`, and match as
 closely as the registries allow. One caveat worth knowing: Protobuf and Abseil
 are transitive dependencies of gRPC in every path; they are not pinned
 separately.
@@ -153,54 +157,7 @@ cd $VCPKG_ROOT && git rev-parse HEAD
 # paste into "builtin-baseline" in vcpkg.json
 ```
 
-### Package Managers
-
-#### System packages / `CMAKE_PREFIX_PATH`
-
-Install the required packages through your package manager and use the `default` preset.
-
-**macOS (Homebrew):**
-
-```bash
-brew install grpc protobuf abseil fmt yaml-cpp ninja
-cmake --preset default
-cmake --build --preset default
-```
-
-**Debian / Ubuntu (apt):**
-
-```bash
-sudo apt update
-sudo apt install -y \
-  cmake ninja-build pkg-config \
-  libgrpc++-dev protobuf-compiler-grpc \
-  libprotobuf-dev protobuf-compiler \
-  libabsl-dev libfmt-dev libyaml-cpp-dev \
-  libgtest-dev libgmock-dev
-cmake --preset default
-cmake --build --preset default
-```
-
-> Ubuntu 22.04 ships gRPC 1.30 and Protobuf 3.12, which satisfy the agent's build requirements. On older distros where `libabsl-dev` / `libgrpc++-dev` are missing or too old, use the `vcpkg` preset, or let the `default` preset fall back to FetchContent when packages are not found.
-
-**Fedora / RHEL (dnf):**
-
-```bash
-sudo dnf install -y \
-  cmake ninja-build pkgconf-pkg-config \
-  grpc-devel grpc-plugins \
-  protobuf-devel protobuf-compiler \
-  abseil-cpp-devel fmt-devel yaml-cpp-devel \
-  gtest-devel gmock-devel
-cmake --preset default
-cmake --build --preset default
-```
-
-If the packages live in a non-standard prefix, set `CMAKE_PREFIX_PATH`:
-
-```bash
-cmake --preset default -DCMAKE_PREFIX_PATH=/opt/my-libs
-```
+### Dependency Providers
 
 #### vcpkg
 
@@ -215,9 +172,16 @@ cmake --preset vcpkg
 cmake --build --preset vcpkg
 ```
 
-The `vcpkg` preset picks `$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake` as its toolchain file. Classic mode (`vcpkg install grpc protobuf ...`) still works if you prefer it — just delete `vcpkg.json` first.
+The `vcpkg` preset picks `$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake` as
+its toolchain file. The manifest includes GoogleTest, so test dependencies use
+the same provider as production dependencies.
 
-Any other package manager that produces a CMake toolchain file (Conan, Nix, Spack, ...) can be plugged in via `-DCMAKE_TOOLCHAIN_FILE=...` on the `default` preset; the project has no manifest for them.
+#### FetchContent
+
+Use any preset without the vcpkg toolchain (including `default`) to download and
+build the pinned sources. GoogleTest is also built with FetchContent when tests
+are enabled. Installed system libraries are ignored even when they are visible
+through the default CMake search paths or `CMAKE_PREFIX_PATH`.
 
 ### Compiler Cache (ccache)
 
@@ -381,12 +345,12 @@ ctest --preset ubsan          # the matching UBSAN_OPTIONS is applied automatica
 Swap `ubsan` for `asan` or `tsan`. Each preset writes to its own `build/<preset>/`
 directory. These are `Debug` builds with examples off that build only the shared
 library, mirroring the `coverage` preset. Like `coverage` and `profiling`, they
-resolve dependencies through the `default` source (system / `CMAKE_PREFIX_PATH`,
-with a FetchContent fallback); to reuse a package manager, pass its toolchain —
-e.g. with vcpkg:
+build dependencies from source with FetchContent. To keep vcpkg packages
+uninstrumented instead, pass its toolchain and disable `SANITIZE_DEPS`:
 
 ```bash
-cmake --preset ubsan --toolchain "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --preset ubsan --toolchain "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DSANITIZE_DEPS=OFF
 cmake --build --preset ubsan
 ctest --preset ubsan
 ```
@@ -427,10 +391,11 @@ and fmt from source with the same instrumentation, and both `ctest --preset asan
 and `bazel test --config=asan` pass the full suite. The cost is the first build:
 it compiles the whole dependency graph.
 
-Turning it off (`-DSANITIZE_DEPS=OFF`) keeps toolchain-provided packages and a
-fast build, but reintroduces a mixed-instrumentation process, which produces false
-positives that look alarming and are hard to read. The instrumented copies of
-inline C++ symbols (`std::string_view`, `std::char_traits`, ...) are weak, so the
+Turning it off (`-DSANITIZE_DEPS=OFF`) keeps vcpkg-provided packages when the
+vcpkg toolchain is active, but reintroduces a mixed-instrumentation process,
+which produces false positives that look alarming and are hard to read. The
+instrumented copies of inline C++ symbols (`std::string_view`,
+`std::char_traits`, ...) are weak, so the
 dynamic linker interposes them into the uninstrumented gRPC libraries; they then
 execute on stack frames ASan has no descriptor for and it misattributes leftover
 shadow poison, reporting `use-after-poison` inside gRPC internals. The reports are
@@ -512,13 +477,18 @@ The test script supports several modes and options:
 
 The first Bazel build downloads and compiles all external dependencies (gRPC, protobuf, etc.), which can take several minutes. Subsequent builds use the cache and are much faster.
 
-### CMake: FetchContent fallback is slow
+### CMake: the first FetchContent build is slow
 
-When the `default` preset cannot find required packages, it downloads and builds missing dependencies from source via FetchContent on the first run. Use a package manager (vcpkg / Conan / Homebrew / apt / ...) for pre-built packages to avoid this overhead. After the first configure, `ccache` will also dramatically speed up subsequent rebuilds.
+The `default` preset downloads and builds all dependencies from source on the
+first run. Use the `vcpkg` preset for managed packages, or `debug-cached` to
+reuse a shared FetchContent cache. After the first configure, `ccache` also
+speeds up subsequent rebuilds.
 
 ### Migrating from `FORCE_FETCHCONTENT=ON`
 
-`FORCE_FETCHCONTENT` has been removed, and there is no dedicated force-FetchContent preset in `CMakePresets.json`. Use a package-manager preset for reproducible dependencies, or configure with a clean environment where `find_package(CONFIG)` cannot see system packages so the `default` preset falls back to FetchContent.
+`FORCE_FETCHCONTENT` has been removed. FetchContent is now automatic whenever
+the vcpkg toolchain is not active; no clean environment or search-path changes
+are needed.
 
 ### macOS linker warnings
 
