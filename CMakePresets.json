@@ -78,14 +78,16 @@
             "name": "sanitize-base",
             "hidden": true,
             "inherits": "default",
-            "description": "Shared shape of the sanitizer presets: Debug, tests only. Builds dependencies from source with FetchContent.",
+            "description": "Shared shape of the sanitizer presets: Debug, tests only. Builds dependencies from source with FetchContent. Compiles run fully parallel; links are pooled because each instrumented test executable pulls in the whole static gRPC/Abseil/BoringSSL closure and a machine-wide -j exhausts memory.",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "BUILD_EXAMPLES": "OFF",
                 "BUILD_SHARED_LIBS": "ON",
                 "BUILD_STATIC_LIBS": "OFF",
                 "protobuf_BUILD_SHARED_LIBS": "ON",
-                "YAML_BUILD_SHARED_LIBS": "ON"
+                "YAML_BUILD_SHARED_LIBS": "ON",
+                "CMAKE_JOB_POOLS": "sanitize_link=2",
+                "CMAKE_JOB_POOL_LINK": "sanitize_link"
             }
         },
         {
@@ -159,18 +161,15 @@
         },
         {
             "name": "asan",
-            "configurePreset": "asan",
-            "jobs": 1
+            "configurePreset": "asan"
         },
         {
             "name": "tsan",
-            "configurePreset": "tsan",
-            "jobs": 1
+            "configurePreset": "tsan"
         },
         {
             "name": "ubsan",
-            "configurePreset": "ubsan",
-            "jobs": 1
+            "configurePreset": "ubsan"
         }
     ],
     "testPresets": [

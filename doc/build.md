@@ -368,11 +368,13 @@ ctest --preset ubsan          # the matching UBSAN_OPTIONS is applied automatica
 Swap `ubsan` for `asan` or `tsan`. Each preset writes to its own `build/<preset>/`
 directory. These are `Debug` builds with examples off. ASan uses static linkage
 to prevent ODR reports when gRPC's generated UPB globals appear in more than one
-shared dependency; TSan and UBSan retain shared linkage. The sanitizer build
-presets also use one build job because several concurrent instrumented links can
-exhaust memory in constrained CI containers. The instrumented integration test
-uses a fifteen-minute timeout and scales its collector waits for the same
-environment. Like `coverage` and `profiling`, they
+shared dependency; TSan and UBSan retain shared linkage. Compiles run at the
+generator's default job count like every other preset, but the presets pin links
+to a two-job Ninja pool (`CMAKE_JOB_POOLS`): each instrumented test executable
+links the whole static gRPC/Abseil/BoringSSL closure, and letting a machine-wide
+`-j` reach the link phase peaks past 17 GiB and gets `ld` OOM-killed. The
+instrumented integration test uses a fifteen-minute timeout and scales its
+collector waits for the same environment. Like `coverage` and `profiling`, they
 build dependencies from source with FetchContent. To keep vcpkg packages
 uninstrumented instead, pass its toolchain and disable `SANITIZE_DEPS`:
 
