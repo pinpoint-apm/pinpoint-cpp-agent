@@ -11,6 +11,8 @@
 
 #include "MurmurHash3.h"
 
+#include <string.h>
+
 //-----------------------------------------------------------------------------
 // Platform-specific functions and macros
 
@@ -54,14 +56,23 @@ inline uint64_t rotl64 ( uint64_t x, int8_t r )
 // Block read - if your platform needs to do endian-swapping or can only
 // handle aligned reads, do the conversion here
 
+// Local change from upstream: the key is an arbitrary byte pointer, so p is not
+// guaranteed to be 4/8-byte aligned and `p[i]` is undefined behaviour that UBSan
+// reports (load of misaligned address). memcpy compiles to the same single load
+// on every platform we build for.
+
 FORCE_INLINE uint32_t getblock32 ( const uint32_t * p, int i )
 {
-  return p[i];
+  uint32_t v;
+  memcpy(&v, p + i, sizeof(v));
+  return v;
 }
 
 FORCE_INLINE uint64_t getblock64 ( const uint64_t * p, int i )
 {
-  return p[i];
+  uint64_t v;
+  memcpy(&v, p + i, sizeof(v));
+  return v;
 }
 
 //-----------------------------------------------------------------------------
