@@ -98,9 +98,21 @@ if(SANITIZE)
       "false positives at the library boundary; see doc/build.md.")
   endif()
 
+  # The instrumentation above also covers protoc and grpc_cpp_plugin, which this
+  # build then runs to generate the .pb.cc sources. Protobuf keeps an over-aligned
+  # ThreadCache in thread_local storage, an alignment macOS TLS does not honour, so
+  # an instrumented protoc aborts before emitting anything. Drop the alignment check
+  # for the fetched dependencies; see scripts/ubsan.ignorelist. Compile-only, and
+  # Clang-only: GCC has no equivalent flag.
+  if(SANITIZE MATCHES "undefined" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(_pinpoint_ubsan_ignorelist
+      -fsanitize-ignorelist=${CMAKE_CURRENT_SOURCE_DIR}/scripts/ubsan.ignorelist)
+  endif()
+
   # Retain symbolized, complete stacks in sanitizer reports and apply the same
   # instrumentation to both compile and link (the runtime is pulled in at link).
-  add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags})
+  add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags}
+    ${_pinpoint_ubsan_ignorelist})
   set(_pinpoint_sanitize_link_flags ${_pinpoint_sanitize_flags})
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Ubuntu's Clang defaults to libgcc, but ARM64 libgcc does not provide every

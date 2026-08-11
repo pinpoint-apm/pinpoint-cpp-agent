@@ -56,6 +56,9 @@ inline uint64_t rotl64 ( uint64_t x, int8_t r )
 // Block read - if your platform needs to do endian-swapping or can only
 // handle aligned reads, do the conversion here
 
+// The key is an arbitrary byte pointer, so it is not guaranteed to be 4/8-byte
+// aligned. Reading it through an integer pointer is undefined behaviour; memcpy
+// compiles to the same single load on every platform we build for.
 FORCE_INLINE uint32_t getblock32 ( const uint8_t * p, int i )
 {
   uint32_t value;
