@@ -9,6 +9,7 @@ cc_library(
     testonly = True,
     srcs = ["mock_collector.cpp"],
     hdrs = ["mock_collector.h"],
+    local_defines = ["PINPOINT_SANITIZER_TIMEOUT_SCALE=3"],
     deps = [
         "//3rd_party:service_grpc_cc",
         "@com_github_grpc_grpc//:grpc++",
@@ -20,6 +21,8 @@ cc_test(
     size = "medium",
     timeout = "moderate",
     srcs = ["test_agent_integration.cpp"],
+    data = ["//scripts:tsan.supp"],
+    local_defines = ["PINPOINT_SANITIZER_TIMEOUT_SCALE=3"],
     deps = [
         ":mock_collector",
         "//:pinpoint-cpp",

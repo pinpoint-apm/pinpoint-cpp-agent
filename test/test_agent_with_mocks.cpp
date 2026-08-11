@@ -725,10 +725,12 @@ public:
     }
 
     void release() {
-        {
-            std::lock_guard<std::mutex> lock(m_);
-            released_ = true;
-        }
+        // Keep the condition variable protected until notification returns.
+        // Once the waiter observes released_, the teardown reaper may join it
+        // and destroy this mock immediately; notifying after unlocking would
+        // therefore race with condition_variable destruction under TSan.
+        std::lock_guard<std::mutex> lock(m_);
+        released_ = true;
         cv_.notify_all();
     }
 

@@ -92,10 +92,28 @@ void* operator new[](std::size_t size) {
     throw std::bad_alloc();
 }
 
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    try {
+        return ::operator new(size);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    try {
+        return ::operator new[](size);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
+void operator delete[](void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
 
 namespace pinpoint {
 

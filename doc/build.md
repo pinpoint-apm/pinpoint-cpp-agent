@@ -17,6 +17,29 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 ---
 
+## Docker build and test environment
+
+The repository's single Dockerfile contains GCC, Clang/LLVM (including the
+sanitizer runtimes), CMake, Ninja, ccache, Bazel, and a pinned vcpkg checkout.
+Build it once, then select the build mode with the first container argument:
+
+```bash
+docker build -t pinpoint-cpp-agent-test .
+docker run --rm pinpoint-cpp-agent-test default
+docker run --rm pinpoint-cpp-agent-test vcpkg
+docker run --rm pinpoint-cpp-agent-test bazel
+docker run --rm pinpoint-cpp-agent-test asan
+docker run --rm pinpoint-cpp-agent-test tsan
+docker run --rm pinpoint-cpp-agent-test ubsan
+```
+
+The remaining modes are `debug`, `debug-cached`, `coverage`, `profiling`,
+`bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. Run the image
+with `help` to print the complete list. The source tree is copied into the image;
+rebuild the image after changing source files.
+
+---
+
 ## Getting the Source
 
 The Protobuf/gRPC service definitions live in a git submodule
@@ -126,7 +149,7 @@ cmake --list-presets
 | `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
 | `asan` | FetchContent deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
 | `tsan` | FetchContent deps; `Debug` build instrumented with ThreadSanitizer (`-fsanitize=thread`) |
-| `ubsan` | FetchContent deps; `Debug` build instrumented with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
+| `ubsan` | FetchContent deps; Clang `Debug` build instrumented with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
 
 Configure + build + test using a preset:
 
@@ -343,8 +366,13 @@ ctest --preset ubsan          # the matching UBSAN_OPTIONS is applied automatica
 ```
 
 Swap `ubsan` for `asan` or `tsan`. Each preset writes to its own `build/<preset>/`
-directory. These are `Debug` builds with examples off that build only the shared
-library, mirroring the `coverage` preset. Like `coverage` and `profiling`, they
+directory. These are `Debug` builds with examples off. ASan uses static linkage
+to prevent ODR reports when gRPC's generated UPB globals appear in more than one
+shared dependency; TSan and UBSan retain shared linkage. The sanitizer build
+presets also use one build job because several concurrent instrumented links can
+exhaust memory in constrained CI containers. The instrumented integration test
+uses a fifteen-minute timeout and scales its collector waits for the same
+environment. Like `coverage` and `profiling`, they
 build dependencies from source with FetchContent. To keep vcpkg packages
 uninstrumented instead, pass its toolchain and disable `SANITIZE_DEPS`:
 
@@ -355,9 +383,13 @@ cmake --build --preset ubsan
 ctest --preset ubsan
 ```
 
-The equivalent manual configuration uses the `SANITIZE` cache variable, which
-accepts `address`, `thread`, `undefined`, or `address+undefined` (ASan and UBSan
-can be combined) and cannot be combined with `BUILD_COVERAGE` or `BUILD_PROFILING`:
+The `ubsan` preset selects Clang because GCC 13 cannot compile the vendored
+Abseil hash policy constexpr expressions when undefined-behavior instrumentation
+is enabled. On Linux, sanitizer links select compiler-rt explicitly; install
+`libclang-rt-dev` when using Clang outside the provided image. The equivalent
+manual configuration uses the `SANITIZE` cache variable, which accepts
+`address`, `thread`, `undefined`, or `address+undefined` (ASan and UBSan can be
+combined) and cannot be combined with `BUILD_COVERAGE` or `BUILD_PROFILING`:
 
 ```bash
 cmake -S . -B build/ubsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSANITIZE=undefined
@@ -378,7 +410,11 @@ bazel test --config=ubsan //test:all
 > Bazel applies `--copt` to every C++ target in the graph, so the first sanitized
 > run rebuilds the external dependencies (gRPC, Abseil, ...) with instrumentation.
 > This is intentional — it gives TSan a fully instrumented view and avoids false
-> positives at library boundaries — but makes the first build slow.
+> positives at library boundaries — but makes the first build slow. Bazel ASan
+> uses static linking to avoid duplicate generated UPB globals, while Bazel UBSan
+> selects Clang and compiler-rt for the same GCC 13 and ARM64 constraints as the
+> CMake preset. Sanitizer tests use a fifteen-minute timeout; the TSan suppression
+> file is included in the test runfiles.
 
 ### Suppressing third-party false positives
 

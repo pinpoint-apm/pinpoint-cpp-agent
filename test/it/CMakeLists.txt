@@ -21,9 +21,20 @@ target_link_libraries(agent_integration_test PRIVATE
     pinpoint_mock_collector
     GTest::gtest_main
 )
+if(SANITIZE)
+    target_compile_definitions(pinpoint_mock_collector PRIVATE PINPOINT_SANITIZER_TIMEOUT_SCALE=3)
+    target_compile_definitions(agent_integration_test PRIVATE PINPOINT_SANITIZER_TIMEOUT_SCALE=3)
+endif()
 add_test(NAME agent_integration_test COMMAND agent_integration_test)
 set_property(GLOBAL APPEND PROPERTY PINPOINT_TEST_TARGETS agent_integration_test)
+set(_pinpoint_agent_integration_timeout 90)
+if(SANITIZE)
+    # Fully instrumented static gRPC/Protobuf dependencies are substantially
+    # slower in resource-constrained CI containers.
+    set(_pinpoint_agent_integration_timeout 900)
+endif()
 set_tests_properties(agent_integration_test PROPERTIES
     LABELS "integration;mock-collector"
-    TIMEOUT 90
+    TIMEOUT ${_pinpoint_agent_integration_timeout}
 )
+unset(_pinpoint_agent_integration_timeout)

@@ -101,7 +101,14 @@ if(SANITIZE)
   # Retain symbolized, complete stacks in sanitizer reports and apply the same
   # instrumentation to both compile and link (the runtime is pulled in at link).
   add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags})
-  add_link_options(${_pinpoint_sanitize_flags})
+  set(_pinpoint_sanitize_link_flags ${_pinpoint_sanitize_flags})
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Ubuntu's Clang defaults to libgcc, but ARM64 libgcc does not provide every
+    # compiler builtin emitted by UBSan (for example __muloti4). Use the
+    # compiler-rt builtins shipped alongside Clang's sanitizer runtimes.
+    list(APPEND _pinpoint_sanitize_link_flags --rtlib=compiler-rt)
+  endif()
+  add_link_options(${_pinpoint_sanitize_link_flags})
   message(STATUS "Sanitizer enabled: ${SANITIZE}")
 endif()
 

@@ -28,6 +28,18 @@
 #include <vector>
 #include <string_view>
 
+#if defined(__SANITIZE_ADDRESS__)
+#define PINPOINT_HAS_LSAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define PINPOINT_HAS_LSAN 1
+#endif
+#endif
+
+#if defined(PINPOINT_HAS_LSAN)
+#include <sanitizer/lsan_interface.h>
+#endif
+
 #include "pinpoint/tracer.h"  // pinpoint::SqlUid
 
 namespace pinpoint {
@@ -246,9 +258,21 @@ namespace pinpoint {
                 };
                 static thread_local Reclaim reclaim;
                 (void)reclaim;
+#if defined(PINPOINT_HAS_LSAN)
+            } else {
+                // Re-entry after the TLS reclaim guard has run intentionally
+                // keeps this replacement alive until the OS releases the
+                // thread. Tell LeakSanitizer about that documented lifetime so
+                // it still reports every other unreachable allocation.
+                __lsan_ignore_object(slot.value);
+#endif
             }
         }
         return *slot.value;
     }
 
 }
+
+#if defined(PINPOINT_HAS_LSAN)
+#undef PINPOINT_HAS_LSAN
+#endif

@@ -806,6 +806,9 @@ CollectorSnapshot MockCollector::snapshot() const {
 bool MockCollector::WaitFor(
         const std::function<bool(const CollectorSnapshot&)>& predicate,
         std::chrono::milliseconds timeout) const {
+#if defined(PINPOINT_SANITIZER_TIMEOUT_SCALE)
+    timeout *= PINPOINT_SANITIZER_TIMEOUT_SCALE;
+#endif
     return impl_->wait_for(predicate, timeout);
 }
 

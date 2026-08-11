@@ -59,6 +59,7 @@ _TESTS = [
         name = n,
         size = "small",
         srcs = [n + ".cpp"],
+        data = ["//scripts:tsan.supp"],
         deps = [":test_common"],
     )
     for n in _TESTS
@@ -69,6 +70,7 @@ cc_test(
     name = "test_tracer_c",
     size = "small",
     srcs = ["test_tracer_c.cpp"],
+    data = ["//scripts:tsan.supp"],
     deps = [
         ":c_api_test_helpers",
         ":test_common",

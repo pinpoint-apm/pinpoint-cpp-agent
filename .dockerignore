@@ -1,0 +1,10 @@
+# Build products are recreated inside the image.
+/build/
+
+# Docker does not need Git history; the checked-out IDL submodule is copied as
+# ordinary source files.
+/.git/
+
+# Local editor and test artefacts.
+.DS_Store
+*.log

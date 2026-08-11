@@ -96,6 +96,9 @@ private:
 
 bool wait_until(const std::function<bool()>& predicate,
                 std::chrono::milliseconds timeout = kWaitTimeout) {
+#if defined(PINPOINT_SANITIZER_TIMEOUT_SCALE)
+    timeout *= PINPOINT_SANITIZER_TIMEOUT_SCALE;
+#endif
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (predicate()) {
@@ -497,7 +500,7 @@ protected:
             << "    Size: 4\n"
             << "    FlushIntervalMs: 50\n"
             << "    CollectDeadlineMs: 20\n"
-            << "    MaxConcurrentRequests: 2\n"
+            << "    MaxConcurrentRequests: " << SpanBatchMaxConcurrentRequests() << "\n"
             << "Stat:\n"
             << "  Enable: " << (StatEnable() ? "true" : "false") << "\n"
             << "  BatchCount: 1\n"
@@ -553,6 +556,7 @@ protected:
     virtual int MaxEventDepth() const { return 16; }
     virtual int MaxEventSequence() const { return 128; }
     virtual int SpanQueueSize() const { return 128; }
+    virtual int SpanBatchMaxConcurrentRequests() const { return 2; }
     virtual bool EnableSqlStats() const { return true; }
     virtual bool TraceBindValue() const { return true; }
     virtual bool StatEnable() const { return true; }
@@ -716,6 +720,10 @@ protected:
 class SmallSpanQueueIntegrationTest : public AgentIntegrationTest {
 protected:
     int SpanQueueSize() const override { return 8; }
+    // One worker-owned batch plus the eight-element queue can produce three
+    // sends after recovery. Keep permit backpressure out of this queue-policy
+    // test so sanitizer callback latency cannot discard the third batch.
+    int SpanBatchMaxConcurrentRequests() const override { return 3; }
 };
 
 class PercentSamplingIntegrationTest : public AgentIntegrationTest {
@@ -2358,16 +2366,25 @@ TEST_F(SmallSpanQueueIntegrationTest,
 
     // After recovery the retained tail of the queue and fresh spans arrive
     // (the worker leaves its reconnect backoff once the channel is ready).
-    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+    const bool recovered_tail_arrived = collector_.WaitFor([](const auto& snapshot) {
         return find_span_by_rpc(snapshot, "/queue-recovered").has_value() &&
                find_span_by_rpc(snapshot, "/queue-outage-30").has_value();
-    }, std::chrono::seconds(20)));
+    }, std::chrono::seconds(20));
+
+    const auto snapshot = collector_.snapshot();
+    std::vector<std::string> received_rpcs;
+    for (const auto& message : all_span_messages(snapshot)) {
+        if (message.has_span() && message.span().has_acceptevent()) {
+            received_rpcs.push_back(message.span().acceptevent().rpc());
+        }
+    }
+    ASSERT_TRUE(recovered_tail_arrived)
+        << "received span RPCs: " << ::testing::PrintToString(received_rpcs);
 
     // Overflow policy: at most QueueSize (8) queued spans plus one batch
     // (SpanBatch.Size 4) already held by the worker can survive the outage.
     // The newest span is always among the survivors (head-drop discards the
     // oldest), and everything else was dropped instead of growing the queue.
-    const auto snapshot = collector_.snapshot();
     size_t survivors = 0;
     for (int i = 1; i <= kOutageSpans; ++i) {
         survivors += count_spans_by_rpc(snapshot,
