@@ -319,6 +319,24 @@ bool has_uri_stat(const CollectorSnapshot& snapshot, std::string_view uri) {
     return false;
 }
 
+// Agent stats flush on a fixed tick, so batches whose interval closed before a
+// sampled transaction started carry a zero count. Callers that want to inspect
+// the transaction counts must pick the batch that actually carries them rather
+// than whichever batch arrived first.
+const v1::PAgentStat* sampled_new_agent_stat(const CollectorSnapshot& snapshot) {
+    for (const auto& received : snapshot.stats) {
+        if (!received.message.has_agentstatbatch()) {
+            continue;
+        }
+        for (const auto& stat : received.message.agentstatbatch().agentstat()) {
+            if (stat.has_transaction() && stat.transaction().samplednewcount() >= 1) {
+                return &stat;
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::vector<RpcResult> results_for(const CollectorSnapshot& snapshot,
                                    CollectorRpc rpc) {
     std::vector<RpcResult> results;
@@ -1172,28 +1190,21 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
     }
     ASSERT_TRUE(saw_url_stat);
 
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return sampled_new_agent_stat(snapshot) != nullptr;
+    }, kWaitTimeout));
+
     const auto snapshot = collector_.snapshot();
     ASSERT_FALSE(snapshot.stat_streams.empty());
     expect_common_metadata(snapshot.stat_streams.front(), false, impl_->getAgentId());
 
-    bool checked_agent_stat = false;
-    for (const auto& received : snapshot.stats) {
-        if (!received.message.has_agentstatbatch() ||
-            received.message.agentstatbatch().agentstat().empty()) {
-            continue;
-        }
-        const auto& stat = received.message.agentstatbatch().agentstat(0);
-        EXPECT_GT(stat.timestamp(), 0);
-        EXPECT_EQ(stat.collectinterval(), 1000);
-        ASSERT_TRUE(stat.has_transaction());
-        EXPECT_GE(stat.transaction().samplednewcount(), 1);
-        ASSERT_TRUE(stat.has_responsetime());
-        ASSERT_TRUE(stat.has_totalthread());
-        EXPECT_GT(stat.totalthread().totalthreadcount(), 0);
-        checked_agent_stat = true;
-        break;
-    }
-    EXPECT_TRUE(checked_agent_stat);
+    const auto* agent_stat = sampled_new_agent_stat(snapshot);
+    ASSERT_NE(agent_stat, nullptr);
+    EXPECT_GT(agent_stat->timestamp(), 0);
+    EXPECT_EQ(agent_stat->collectinterval(), 1000);
+    ASSERT_TRUE(agent_stat->has_responsetime());
+    ASSERT_TRUE(agent_stat->has_totalthread());
+    EXPECT_GT(agent_stat->totalthread().totalthreadcount(), 0);
 
     bool checked_url_stat = false;
     for (const auto& received : snapshot.stats) {
