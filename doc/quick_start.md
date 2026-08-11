@@ -216,6 +216,9 @@ void on_users(const httplib::Request& req, httplib::Response& res) {
 
     // Your business logic here
     res.set_content("hello, users!", "text/plain");
+    // httplib fills res.status only after the handler returns (it is still -1
+    // here), so set it explicitly before recording it on the span.
+    res.status = 200;
 
     span->SetStatusCode(res.status);
     span->EndSpan();
@@ -243,6 +246,7 @@ void on_users(const httplib::Request& req, httplib::Response& res) {
     dbEvent->EndEvent();
 
     res.set_content(R"({"users":[]})", "application/json");
+    res.status = 200;  // see note above: res.status is -1 until the handler returns
     span->SetStatusCode(res.status);
     span->EndSpan();
 }
@@ -264,6 +268,7 @@ span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
 Here is a complete minimal HTTP server, traced end to end:
 
 ```cpp
+#include <cstdlib>   // setenv
 #include <iostream>
 
 #include "httplib.h"
@@ -294,6 +299,9 @@ void on_users(const httplib::Request& req, httplib::Response& res) {
     se->EndEvent();
 
     res.set_content(R"({"users":[]})", "application/json");
+    // httplib fills res.status only after the handler returns; set it
+    // explicitly so the span records the real status instead of -1.
+    res.status = 200;
 
     HttpHeaderReader res_reader(res.headers);
     span->RecordHeader(pinpoint::HTTP_RESPONSE, res_reader);
