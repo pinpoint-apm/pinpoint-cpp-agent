@@ -146,6 +146,10 @@ uint64_t parse_operations(int argc, char** argv) {
 int run(int argc, char** argv) {
     const uint64_t operations = parse_operations(argc, argv);
     LegacyAtomicSharedPtr legacy(std::make_shared<const uint64_t>(7));
+    // Uncached shows why ThreadCached exists: every load bumps the same
+    // control-block refcount, so it degrades toward the legacy shared_mutex
+    // holder as threads are added, while ThreadCached stays flat.
+    AtomicSharedPtr<const uint64_t> uncached(std::make_shared<const uint64_t>(7));
     AtomicSharedPtr<const uint64_t, SnapshotCache::ThreadCached> cached(
         std::make_shared<const uint64_t>(7));
 
@@ -155,6 +159,7 @@ int run(int argc, char** argv) {
                  "stable values mean contention does not grow with thread count.\n\n"
               << std::setw(7) << "threads"
               << std::setw(18) << "legacy ns/op"
+              << std::setw(18) << "uncached load"
               << std::setw(18) << "cached load"
               << std::setw(18) << "cached ref"
               << std::setw(15) << "load speedup"
@@ -163,6 +168,8 @@ int run(int argc, char** argv) {
     for (const size_t threads : thread_counts()) {
         const auto legacy_result = run_median(
             threads, operations, [] {}, [&] { return *legacy.load(); });
+        const auto uncached_result = run_median(
+            threads, operations, [] {}, [&] { return *uncached.load(); });
         const auto cached_value_result = run_median(
             threads, operations,
             [&] { (void)cached.load_cached_ref(); },
@@ -175,6 +182,7 @@ int run(int argc, char** argv) {
         std::cout << std::fixed << std::setprecision(2)
                   << std::setw(7) << threads
                   << std::setw(18) << legacy_result.contended_ns_per_op
+                  << std::setw(18) << uncached_result.contended_ns_per_op
                   << std::setw(18) << cached_value_result.contended_ns_per_op
                   << std::setw(18) << cached_ref_result.contended_ns_per_op
                   << std::setw(14)
