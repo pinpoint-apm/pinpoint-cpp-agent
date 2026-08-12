@@ -26,9 +26,7 @@
 
 namespace pinpoint {
  
-    /**
-     * @brief Captures a single frame in a collected call stack.
-     */
+    /// @brief Captures a single frame in a collected call stack.
     typedef struct {
         std::string module;
         std::string function;
@@ -36,23 +34,14 @@ namespace pinpoint {
         int line;
     } StackFrame;
  
-    /**
-     * @brief Collects stack frames and contextual information for a captured exception.
-     */
+    /// @brief Collects stack frames and contextual information for a captured exception.
     class CallStack {
     public:
         CallStack(std::string_view error_message) : error_message_(truncated(error_message, kMaxErrorMessageLength)),
                                                error_time_{to_milli_seconds(std::chrono::system_clock::now())},
                                                stack_{} {}
 
-        /**
-         * @brief Adds a frame to the call stack.
-         *
-         * @param module Module or library name.
-         * @param function Function name.
-         * @param file Source file path.
-         * @param line Line number within the file.
-         */
+        /// @brief Adds a frame to the call stack.
         void push(std::string_view module, std::string_view function, std::string_view file, int line) {
             // Frames come from user-controlled readers with no depth limit of
             // their own; cap both the frame count and the per-field string
@@ -78,23 +67,17 @@ namespace pinpoint {
             return error_message_;
         }
 
-        /**
-         * @brief Returns the timestamp of the error in milliseconds.
-         */
+        /// @brief Returns the timestamp of the error in milliseconds.
         int64_t getErrorTime() const {
             return error_time_;
         }
 
-        /**
-         * @brief Returns the collected stack frames.
-         */
+        /// @brief Returns the collected stack frames.
         const std::vector<StackFrame>& getStack() const {
             return stack_;
         }
 
-        /**
-         * @brief Convenience accessor for the module name of the top frame.
-         */
+        /// @brief Convenience accessor for the module name of the top frame.
         const std::string& getModuleName() const {
             static const std::string empty;
             if (stack_.empty()) {
@@ -123,20 +106,14 @@ namespace pinpoint {
         std::vector<StackFrame> stack_;
     };
 
-    /**
-     * @brief Wraps a captured call stack with an identifier suitable for transmission.
-     */
+    /// @brief Wraps a captured call stack with an identifier suitable for transmission.
     class Exception {
     public:
         Exception(std::unique_ptr<CallStack> callstack) : id_{exception_id_gen.fetch_add(1)}, callstack_(std::move(callstack)) {}
 
-        /**
-         * @brief Returns the generated exception identifier.
-         */
+        /// @brief Returns the generated exception identifier.
         int64_t getId() const { return id_; }
-        /**
-         * @brief Returns a reference to the captured call stack.
-         */
+        /// @brief Returns a reference to the captured call stack.
         const CallStack& getCallStack() const { return *callstack_; }
 
         // 64-bit to match the PException.exceptionId proto field: a 32-bit

@@ -27,9 +27,7 @@
 
 namespace pinpoint {
 
-    /**
-     * @brief Enumerates the supported annotation payload formats.
-     */
+    /// @brief Enumerates the supported annotation payload formats.
     enum AnnotationType {
         ANNOTATION_TYPE_INT = 0,
         ANNOTATION_TYPE_LONG = 1,
@@ -40,9 +38,7 @@ namespace pinpoint {
         ANNOTATION_TYPE_BYTES_STRING_STRING = 6
     };
 
-    /**
-     * @brief Container for annotations carrying an int and two strings.
-     */
+    /// @brief Container for annotations carrying an int and two strings.
     struct IntStringStringValue {
         int32_t intValue;
         std::string stringValue1;
@@ -70,9 +66,7 @@ namespace pinpoint {
         }
     };
 
-    /**
-     * @brief Container for complex annotations that track timing and network details.
-     */
+    /// @brief Container for complex annotations that track timing and network details.
     struct LongIntIntByteByteStringValue {
         int64_t longValue;
         int32_t intValue1;
@@ -85,9 +79,7 @@ namespace pinpoint {
             : longValue(longVal), intValue1(intVal1), intValue2(intVal2),byteValue1(byteVal1), byteValue2(byteVal2), stringValue(strVal) {}
     };
 
-    /**
-     * @brief Container for annotations with binary payloads and additional strings.
-     */
+    /// @brief Container for annotations with binary payloads and additional strings.
     struct BytesStringStringValue {
         SqlUid bytesValue;
         std::string stringValue1;
@@ -125,9 +117,7 @@ namespace pinpoint {
         BytesStringStringValue
     >;
 
-    /**
-     * @brief Annotation payload whose type is derived from the stored value.
-     */
+    /// @brief Annotation payload whose type is derived from the stored value.
     struct AnnotationData {
         AnnotationDataValue data;
 
@@ -197,37 +187,15 @@ namespace pinpoint {
          * @param l Long value to store.
          */
         void AppendLong(int32_t key, int64_t l);
-        /**
-         * @brief Appends an annotation containing two strings.
-         *
-         * @param key Annotation identifier.
-         * @param s1 First string.
-         * @param s2 Second string.
-         */
+        /// @brief Appends an annotation containing two strings.
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2);
-        /**
-         * @brief Appends a detailed network annotation used for RPC metadata.
-         *
-         * @param key Annotation identifier.
-         * @param l Long payload (typically elapsed time).
-         * @param i1 First integer payload.
-         * @param i2 Second integer payload.
-         * @param b1 First byte payload.
-         * @param b2 Second byte payload.
-         * @param s String payload.
-         */
+        /// @brief Appends a detailed network annotation used for RPC metadata
+        ///        (@p l is typically the elapsed time).
         void AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1, int32_t b2, std::string_view s);
 
-        /**
-         * @brief Appends a pre-built annotation payload.
-         *
-         * Lets internal callers move large strings (e.g. normalized SQL
-         * parameters) into the annotation instead of copying them through
-         * the string_view Append overloads.
-         *
-         * @param key Annotation identifier.
-         * @param data Annotation payload (moved).
-         */
+        /// @brief Appends a pre-built payload, letting internal callers move
+        ///        large strings (e.g. normalized SQL parameters) in instead of
+        ///        copying them through the string_view overloads.
         void AppendData(int32_t key, AnnotationData&& data);
 
         /**
@@ -242,15 +210,13 @@ namespace pinpoint {
         void seal() noexcept { sealed_.store(true, std::memory_order_release); }
 
         /**
-         * @brief Releases the list's heap, leaving an empty (still sealed)
-         * list behind.
+         * @brief Releases the list's heap, leaving an empty (still sealed) list.
          *
-         * Called by SpanEventImpl::releaseRetiredPayload() once the chunk
-         * holding the owning event is done with it. Destroying the elements
-         * also drops the aliasing shared_ptr pins that SQL annotations hold
-         * on PreparedSql cache entries. Swap-with-temporary, not clear():
-         * clear() keeps the capacity allocated, and releasing that heap is
-         * this function's whole point.
+         * Called by SpanEventImpl::releaseRetiredPayload() once the chunk is
+         * done with the owning event. Destroying the elements also drops the
+         * aliasing shared_ptr pins SQL annotations hold on PreparedSql cache
+         * entries. Swap-with-temporary, not clear(): clear() keeps the capacity
+         * allocated, and releasing that heap is the whole point.
          */
         void releaseStorage() noexcept {
             std::vector<std::pair<int32_t,AnnotationData>>{}.swap(annotation_list_);

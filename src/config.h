@@ -64,13 +64,11 @@ namespace pinpoint {
     }
 
     /**
-     * @brief Environment variable name suffixes that override configuration values.
+     * @brief Environment variable name suffixes that override config values.
      *
-     * The constants below hold only the suffix (without a prefix). At read time
-     * the agent builds the full name as `<prefix>_<suffix>`, where the prefix is
-     * `DEFAULT_PREFIX` (`PINPOINT_CPP`) unless overridden via
-     * `AgentOptions::env_prefix`. E.g. `APPLICATION_NAME` is read from
-     * `PINPOINT_CPP_APPLICATION_NAME` by default.
+     * Suffix only: the full name is built as `<prefix>_<suffix>`, the prefix
+     * being `DEFAULT_PREFIX` (`PINPOINT_CPP`) unless `AgentOptions::env_prefix`
+     * overrides it — e.g. `PINPOINT_CPP_APPLICATION_NAME`.
      */
     namespace env {
         constexpr const char* DEFAULT_PREFIX = "PINPOINT_CPP";
@@ -303,37 +301,28 @@ namespace pinpoint {
          */
         bool check() const;
 
-        /**
-         * @brief Determines whether a config reload is allowed.
-         *
-         * @param old Existing config.
-         * @return true if reload is allowed.
-         */
+        /// @brief Whether a reload from @p old is allowed.
         bool isReloadable(const std::shared_ptr<const Config>& old) const;
 
         /**
-         * @brief Copies the non-reloadable fields (identity, the whole collector
-         * section, stat, http url_stat, span queue size and the config-file
-         * watcher toggle) from an existing config into this one.
+         * @brief Copies the non-reloadable fields (identity, the whole
+         * collector section, stat, http url_stat, span queue size and the
+         * config-file watcher toggle) from @p old into this one.
          *
-         * These fields cannot change while the agent is running. When a new
-         * config is built for a reload it may carry different values for them;
-         * this method overwrites them with the running values so the reload
-         * never disturbs the live agent, and logs a warning naming the change
-         * when one was attempted. No-op when @p old is null.
-         *
-         * @param old Currently active config to retain values from.
+         * These cannot change while the agent runs, but a config built for a
+         * reload may carry different values, so they are overwritten with the
+         * running ones — the reload never disturbs the live agent — and an
+         * attempted change is logged by name. No-op when @p old is null.
          */
         void retainNonReloadableFrom(const std::shared_ptr<const Config>& old);
     };
 
     /**
-     * @brief Overrides the config-file watcher poll interval.
+     * @brief Overrides the config-file watcher poll interval. Test helper.
      *
      * Applies to watchers started by subsequent `ConfigFileWatcher::start()`
      * calls; a running watcher keeps the interval it started with. A
-     * non-positive value resets to the production default (1s). Intended for
-     * tests, which would otherwise wait out full 1s polling ticks.
+     * non-positive value resets to the production default (1s).
      */
     void set_config_watcher_poll_interval(std::chrono::milliseconds interval);
 
@@ -397,43 +386,30 @@ namespace pinpoint {
      *        sources named by @p options and environment overrides.
      *
      * The YAML source is the file named by `resolve_config_file_path(options)`
-     * (re-read on every call), falling back to `options.config_yaml` when no
-     * file is configured. On the first load (@p old is nullptr) environment
-     * overrides are applied and the logger is configured immediately. When
-     * @p old — the running agent's config — is given, the sources are being
-     * re-read for a reload: the config is seeded from @p old so keys absent
-     * from the file keep their running values (env-sourced ones included)
-     * instead of reverting to defaults, environment variables are not
-     * re-read, the non-reloadable fields are retained from @p old, and the
-     * global logger is reconfigured for the log settings that actually
-     * changed. Either way the returned config is final: reload callers pass
-     * it straight to `reloadConfig()`.
+     * (re-read on every call), falling back to `options.config_yaml`. On the
+     * first load (@p old is nullptr) environment overrides are applied and the
+     * logger configured immediately. Given @p old — the running agent's config
+     * — this is a reload: the config is seeded from @p old so keys absent from
+     * the file keep their running values (env-sourced included) instead of
+     * reverting to defaults, environment variables are not re-read, the
+     * non-reloadable fields are retained, and the logger is reconfigured for
+     * the settings that actually changed. Either way the result is final —
+     * reload callers pass it straight to `reloadConfig()`.
      *
-     * @param options Configuration sources and identity inputs.
-     * @param old Currently active config when rebuilding for a reload,
-     *        nullptr on the first load.
-     * @return Resolved configuration ready to be consumed by the agent, or
-     *         nullptr when construction failed entirely.
+     * @return Resolved configuration, or nullptr when construction failed.
      */
     std::shared_ptr<Config> make_config(const AgentOptions& options,
                                         const std::shared_ptr<const Config>& old = nullptr);
 
     /**
-     * @brief Serializes a `Config` object back into its YAML representation.
-     *        Runtime-generated AgentId state is omitted, and an AgentName that
-     *        defaulted to AgentId is emitted as empty so a fresh load preserves
-     *        the fallback semantics.
+     * @brief Serializes a `Config` back into its YAML representation.
      *
-     * @param config Configuration instance to serialize.
-     * @return YAML string.
+     * Runtime-generated AgentId state is omitted, and an AgentName that
+     * defaulted to AgentId is emitted as empty so a fresh load preserves the
+     * fallback semantics.
      */
     std::string to_config_string(const Config& config);
 
-    /**
-     * @brief Returns only config entries whose values differ from defaults.
-     *
-     * @param config Configuration instance to compare with defaults.
-     * @return List of config entries formatted as `Key=Value`.
-     */
+    /// @brief Config entries whose values differ from defaults, as `Key=Value`.
     std::vector<std::string> to_non_default_config_strings(const Config& config);
 }  // namespace pinpoint

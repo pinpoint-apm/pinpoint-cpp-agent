@@ -82,9 +82,7 @@ namespace pinpoint {
          *        disables rotation.
          */
         void setFileLogger(const std::string& log_file_path, const int max_size);
-        /**
-         * @brief Flushes pending log messages and releases file resources.
-         */
+        /// @brief Flushes pending log messages and releases file resources.
         void shutdown();
 
         template <typename... Args>
@@ -190,14 +188,12 @@ namespace pinpoint {
      * @brief Per-call-site rate limiter behind the LOG_*_THROTTLED macros.
      *
      * Some misuse/malformed-input warnings can fire once per request on
-     * application threads (an already-finished span touched again, a call
-     * tree over the depth limit, a malformed incoming trace header). Every
-     * emitted line takes the process-global logger mutex and issues a
-     * synchronous write+flush, so an application that keeps hitting such a
-     * path serializes its request threads on the logger. This mirrors
-     * QueueDropReporter (utility.h) for log sites: at most one line per
-     * interval is granted, and suppressed repeats are counted and folded
-     * into the next granted line.
+     * application threads (a finished span touched again, a call tree over the
+     * depth limit, a malformed trace header). Every emitted line takes the
+     * process-global logger mutex and does a synchronous write+flush, so an
+     * application that keeps hitting one serializes its request threads on the
+     * logger. Mirrors QueueDropReporter (utility.h): at most one line per
+     * interval, with suppressed repeats folded into the next granted line.
      */
     class LogSiteThrottle {
     public:
@@ -239,9 +235,7 @@ namespace pinpoint {
         std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
     };
 
-    /**
-     * @brief Flushes pending log messages and releases logger resources.
-     */
+    /// @brief Flushes pending log messages and releases logger resources.
     void shutdown_logger();
 
     constexpr static std::string_view kFileName(std::string_view path) {

@@ -39,9 +39,7 @@
    class AgentStats;
    class UrlStats;
  
-   /**
-    * @brief Identifies the type of statistics pushed to the collector.
-    */
+   /// @brief Identifies the type of statistics pushed to the collector.
    enum StatsType {AGENT_STATS, URL_STATS};
 
    /**
@@ -52,11 +50,9 @@
     * form (`agentId^startTime^sequence`) as a std::string.
     */
    struct TraceId {
-      // Held by shared_ptr so copying a TraceId — which happens when SpanData
-      // stores it, when NewAsyncSpan clones the parent's, and when it is queued
-      // in an ExceptionMeta — never re-copies the agent-id bytes.
-      // generateTraceId hands out the agent's id; parseTraceId owns the id it
-      // decodes from an inbound header. May be null (default/unset).
+      // Held by shared_ptr so the copies (SpanData storing it, NewAsyncSpan
+      // cloning the parent's, ExceptionMeta queueing it) never re-copy the
+      // agent-id bytes. May be null (default/unset).
       std::shared_ptr<const std::string> AgentId;
       /// Epoch time (milliseconds) when the agent started.
       int64_t StartTime = 0;
@@ -66,7 +62,7 @@
       TraceId() = default;
       TraceId(std::shared_ptr<const std::string> agent_id, int64_t start_time, int64_t sequence)
          : AgentId(std::move(agent_id)), StartTime(start_time), Sequence(sequence) {}
-      // Convenience for call sites that hold the id by value/view (tests, mocks,
+      // For call sites holding the id by value/view (tests, mocks,
       // parseTraceId): copies the bytes into a fresh shared string.
       TraceId(std::string_view agent_id, int64_t start_time, int64_t sequence)
          : AgentId(std::make_shared<const std::string>(agent_id)),
@@ -91,14 +87,11 @@
       ///        turns it into a noop span instead of recording it.
       bool empty() const noexcept { return AgentId == nullptr; }
 
-      /**
-       * @brief Serializes the trace identifier to the wire format (`agentId^startTime^sequence`).
-       */
+      /// @brief Serializes to the wire format (`agentId^startTime^sequence`).
       std::string toString() const {
-         // Built with to_chars + a single reserved string instead of an
-         // ostringstream: this runs on every InjectContext()/SetLogging()
-         // (i.e. every outbound call on a traced request), and ostringstream
-         // pays for locale, a virtual streambuf and multiple allocations.
+         // to_chars + one reserved string, not an ostringstream: this runs on
+         // every outbound call of a traced request, and ostringstream pays for
+         // locale, a virtual streambuf and multiple allocations.
          const std::string_view agent = agentId();
          char num[20];  // widest int64_t is 20 chars incl. sign
          std::string out;
@@ -115,187 +108,96 @@
    };
 
    /**
-    * @brief Abstract service boundary used by collectors and workers to report data.
-    *
-    * `AgentService` exposes the minimal set of hooks needed by the agent subsystems
-    * (gRPC clients, URL statistics, samplers, etc.) without leaking the concrete agent
-    * implementation.
+    * @brief Abstract service boundary used by collectors and workers to report
+    *        data, exposing the hooks the agent subsystems (gRPC clients, URL
+    *        statistics, samplers) need without leaking the concrete agent.
     */
    class AgentService {
    public:
-      /// Virtual destructor for interface.
       virtual ~AgentService() = default;
- 
-      /**
-       * @brief Indicates whether the agent is terminating and rejecting new work.
-       *
-       * @return `true` when the shutdown sequence is in progress.
-       */
+
+      /// @brief True once the shutdown sequence is in progress.
       virtual bool isExiting() const = 0;
 
       /**
-       * @brief Returns a shared handle that keeps the agent alive.
+       * @brief Shared handle that keeps the agent alive.
        *
        * Production spans capture a non-null handle so user code holding a span
-       * (or C span handle) past release of the last external agent reference
-       * keeps the agent alive.
-       *
-       * @return Shared pointer to this service, or nullptr when the instance
-       *         is not owned by a shared_ptr (e.g. test fixtures).
+       * past release of the last external agent reference keeps the agent
+       * alive. Null when the instance is not shared_ptr-owned (test fixtures).
        */
       virtual std::shared_ptr<AgentService> selfRef() noexcept { return nullptr; }
- 
+
       // These identity fields are immutable for the agent's lifetime:
       // Config::retainNonReloadableFrom() overwrites any reload that tries to
-      // change them with the running values, so a
-      // const-reference return is safe and lets per-request hot-path callers
-      // (e.g. SpanEvent::InjectContext) avoid a string copy. Implementations must
-      // back them with storage that outlives the agent, not a temporary.
-      /// @brief Returns the configured application name.
+      // change them with the running values, so returning a const reference is
+      // safe and lets per-request hot paths avoid a string copy.
+      // Implementations must back them with storage outliving the agent.
       virtual const std::string& getAppName() const = 0;
-      /// @brief Returns the configured application type.
       virtual int32_t getAppType() const = 0;
-      /// @brief Returns the resolved agent identifier used as the collector
-      ///        instance key.
+      /// @brief Agent identifier used as the collector instance key.
       virtual const std::string& getAgentId() const = 0;
-      /// @brief Returns the agent's own service name. Only populated for uid
-      ///        version v4; empty for v1/v3 (mirrors Java ObjectName.getServiceName).
+      /// @brief Only populated for uid version v4; empty for v1/v3 (mirrors
+      ///        Java ObjectName.getServiceName).
       virtual const std::string& getServiceName() const = 0;
-      /// @brief Returns the resolved runtime configuration.
       virtual std::shared_ptr<const Config> getConfig() const = 0;
-      /// @brief Returns the agent's start timestamp (epoch milliseconds).
+      /// @brief Agent start timestamp (epoch milliseconds).
       virtual int64_t getStartTime() const = 0;
-      /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
+      /// @brief Reloads config-dependent helpers (samplers, filters, recorders).
       virtual void reloadConfig(std::shared_ptr<const Config> cfg) = 0;
 
-      /**
-       * @brief Generates a new distributed trace identifier.
-       *
-       * @return Newly generated `TraceId`.
-       */
       virtual TraceId generateTraceId() = 0;
-      /**
-       * @brief Queues a span chunk for asynchronous collector delivery.
-       *
-       * @param span Span chunk ownership is transferred to the implementation.
-       */
+      /// @brief Queues a span chunk for asynchronous collector delivery.
       virtual void recordSpan(std::unique_ptr<SpanChunk> span) const = 0;
-      /**
-       * @brief Queues a per-request URL statistic for aggregation.
-       *
-       * @param stat URL statistic record to be transferred.
-       */
+      /// @brief Queues a per-request URL statistic for aggregation.
       virtual void recordUrlStat(UrlStatEntry stat) const = 0;
       /**
        * @brief Queues a URL statistic using the caller's config snapshot.
        *
-       * Overload for hot-path callers (spans) that already hold a config
-       * snapshot: skips the atomic config load the single-argument overload
-       * pays per record. `config` only has to stay alive for the duration of
-       * the call. The default implementation (defined in agent.cpp — the
-       * inline body would need UrlStatEntry complete) forwards to the
-       * single-argument overload so mocks and test doubles keep working
-       * unchanged.
-       *
-       * @param stat URL statistic record to be transferred.
-       * @param config The caller's config snapshot.
+       * For hot-path callers (spans) that already hold a snapshot: skips the
+       * atomic config load the single-argument overload pays per record.
+       * `config` need only outlive the call. The default implementation lives
+       * in agent.cpp (an inline body would need UrlStatEntry complete) and
+       * forwards to the single-argument overload, so mocks keep working.
        */
       virtual void recordUrlStat(UrlStatEntry stat, const Config& config) const;
-      /**
-       * @brief Queues exceptions captured during span processing for delivery.
-       */
+      /// @brief Queues exceptions captured during span processing.
       virtual void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const = 0;
-      /**
-       * @brief Queues agent- or URL-level statistics for collector delivery.
-       *
-       * @param stats Statistic type selector.
-       */
+      /// @brief Queues agent- or URL-level statistics for delivery.
       virtual void recordStats(StatsType stats) const = 0;
- 
-      /**
-       * @brief Stores an API string and returns its cached numeric identifier.
-       *
-       * @param api_str API signature.
-       * @param api_type API type classification.
-       * @return Numeric identifier for the API string.
-       */
+
+      /// @brief Stores an API string and returns its cached numeric identifier.
       virtual int32_t cacheApi(std::string_view api_str, int32_t api_type) const = 0;
-      /// @brief Removes a previously cached API entry.
       virtual void removeCacheApi(const ApiMeta& api_meta) const = 0;
-      /**
-       * @brief Stores an error string and returns its cached numeric identifier.
-       *
-       * @param error_name Error description.
-       * @return Numeric identifier for the error string.
-       */
+      /// @brief Stores an error string and returns its cached identifier.
       virtual int32_t cacheError(std::string_view error_name) const = 0;
-      /// @brief Removes a previously cached error string.
       virtual void removeCacheError(const StringMeta& error_meta) const = 0;
-      /**
-       * @brief Stores an SQL string and returns its cached numeric identifier.
-       *
-       * @param sql_query SQL statement to cache.
-       * @return Numeric identifier for the SQL string.
-       */
+      /// @brief Stores an SQL string and returns its cached identifier.
       virtual int32_t cacheSql(std::string_view sql_query) const = 0;
       /**
-       * Resolves a raw SQL statement to its normalized form, extracted literal
-       * parameters, and collector identity. Implementations may cache by the
-       * raw statement; returned shared ownership keeps cached strings alive for
-       * asynchronous span serialization.
+       * @brief Resolves a raw SQL statement to its normalized form, extracted
+       *        literal parameters, and collector identity.
+       *
+       * Implementations may cache by the raw statement; the returned shared
+       * ownership keeps cached strings alive for asynchronous serialization.
        */
       virtual std::optional<std::shared_ptr<const PreparedSql>> prepareSql(
           std::string_view raw_sql, SqlMetaMode mode) const = 0;
-      /// @brief Removes a previously cached SQL string.
       virtual void removeCacheSql(const StringMeta& sql_meta) const = 0;
-      /**
-       * @brief Stores the normalized SQL UID and returns its cached byte sequence.
-       *
-       * @param sql Normalized SQL query to cache.
-       * @return 16-byte UID identifying the query, or std::nullopt when the agent
-       *         is disabled or UID generation fails.
-       */
+      /// @brief Caches the normalized SQL UID. Returns the 16-byte UID, or
+      ///        nullopt when the agent is disabled or generation fails.
       virtual std::optional<SqlUid> cacheSqlUid(std::string_view sql) const = 0;
-      /// @brief Removes a previously cached SQL UID entry.
       virtual void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const = 0;
- 
-      /**
-       * @brief Determines whether a HTTP status is considered a failure.
-       *
-       * @param status HTTP status code.
-       * @return `true` if the status should be treated as failure.
-       */
+
+      /// @brief Whether an HTTP status should be treated as a failure.
       virtual bool isStatusFail(int status) const = 0;
-      /**
-       * @brief Records server-side headers into the supplied annotation.
-       *
-       * @param which Which header set to capture.
-       * @param reader Header accessor provided by user code.
-       * @param annotation Destination annotation aggregator.
-       */
+      /// @brief Records server-side headers into the supplied annotation.
       virtual void recordServerHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const = 0;
-      /**
-       * @brief Records client-side headers into the supplied annotation.
-       *
-       * @param which Which header set to capture.
-       * @param reader Header accessor provided by user code.
-       * @param annotation Destination annotation aggregator.
-       */
+      /// @brief Records client-side headers into the supplied annotation.
       virtual void recordClientHeader(HeaderType which, HeaderReader& reader, PinpointAnnotation* annotation) const = 0;
 
-      /**
-       * @brief Returns a reference to the AgentStats instance.
-       *
-       * @return Reference to AgentStats for direct stat collection.
-       */
       virtual AgentStats& getAgentStats() = 0;
-
-      /**
-       * @brief Returns a reference to the UrlStats instance.
-       *
-       * @return Reference to UrlStats for URL stat management.
-       */
       virtual UrlStats& getUrlStats() = 0;
    };
 

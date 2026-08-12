@@ -47,32 +47,28 @@ namespace pinpoint {
         // and YAML parsing.
         std::mutex global_agent_mutex;
 
-        // The holder is intentionally heap-allocated and never destroyed so
-        // its own static destruction cannot release the last AgentImpl.
-        // Tearing the agent down during __cxa_atexit (thread joins, gRPC
-        // channel teardown, logging through possibly-destroyed singletons) is
-        // unsafe for a library embedded in a host application. A global agent
-        // is therefore torn down through explicit Shutdown(); a non-global
-        // instance can still die when its last owner releases it.
+        // Heap-allocated and never destroyed so its own static destruction
+        // cannot release the last AgentImpl: tearing the agent down during
+        // __cxa_atexit (thread joins, gRPC channel teardown, logging through
+        // possibly-destroyed singletons) is unsafe for a library embedded in a
+        // host application. A global agent is torn down through explicit
+        // Shutdown(); a non-global instance can still die with its last owner.
         //
-        // SnapshotCache::Uncached (the AtomicSharedPtr default) is load-bearing
-        // for the same invariant: a ThreadCached holder would pin the agent in
-        // every reader thread's TLS until that thread's next load or exit,
-        // deferring the final release — and ~AgentImpl — into thread/process
-        // teardown, exactly where the leak above forbids it.
+        // SnapshotCache::Uncached (the default) is load-bearing for the same
+        // invariant: a ThreadCached holder would pin the agent in every reader
+        // thread's TLS until its next load or exit, deferring the final
+        // release — and ~AgentImpl — into thread/process teardown.
         AtomicSharedPtr<AgentImpl>& global_agent() {
             static auto* holder = new AtomicSharedPtr<AgentImpl>();
             return *holder;
         }
 
-        // Hard wall-clock bound for the blocking phase of do_shutdown().
-        // gRPC cancellation is best-effort (TryCancel gives no completion
-        // bound) and the config watcher can sit in a filesystem call on a
-        // hung mount, so the joins themselves cannot be made individually
-        // bounded; instead the whole blocking teardown runs under this
-        // deadline and is handed to a detached reaper when it expires (see
-        // teardown_workers_with_deadline()). Overridable for tests via
-        // set_agent_shutdown_deadline().
+        // Hard wall-clock bound for the blocking phase of do_shutdown(). gRPC
+        // cancellation is best-effort and the config watcher can sit in a
+        // filesystem call on a hung mount, so the joins cannot be bounded
+        // individually; the whole blocking teardown runs under this deadline
+        // and is handed to a detached reaper when it expires (see
+        // teardown_workers_with_deadline()).
         constexpr std::chrono::milliseconds kDefaultShutdownDeadline{3000};
         std::atomic<std::chrono::milliseconds::rep> shutdown_deadline_ms{
             kDefaultShutdownDeadline.count()};
@@ -147,15 +143,13 @@ namespace pinpoint {
     namespace {
         // Blocks (nearly) all signals on the calling thread for the enclosing
         // scope, restoring the previous mask on exit. Threads created inside
-        // the scope inherit the blocked mask, and threads THEY create — gRPC's
-        // internal threads and the worker pool spawned by the init thread —
-        // inherit it transitively. Signal-driven hosts (an nginx worker's
-        // event loop relies on a process-directed signal interrupting its own
-        // epoll_wait) therefore keep receiving signals on a host thread,
-        // never on an agent thread. The synchronous fatal signals — the
-        // hardware faults and seccomp's SIGSYS — stay unblocked: a crash (or
-        // seccomp violation) inside an agent thread must still raise the
-        // normal fatal signal instead of undefined behavior.
+        // the scope inherit the mask, and threads THEY create — gRPC's
+        // internals and the init thread's worker pool — inherit it
+        // transitively, so signal-driven hosts (an nginx worker relying on a
+        // process-directed signal to interrupt its own epoll_wait) keep
+        // receiving signals on a host thread. The synchronous fatal signals —
+        // hardware faults and seccomp's SIGSYS — stay unblocked: a crash
+        // inside an agent thread must still raise the normal fatal signal.
         class ScopedSignalBlock {
         public:
             ScopedSignalBlock() noexcept {
@@ -224,13 +218,12 @@ namespace pinpoint {
 
         owner_pid_ = current_pid();
 
-        // NOTE on gRPC and fork(): the constructor triggers no grpc_init — no
-        // channel, stub or credentials are built until openChannel() runs from
-        // init_grpc_workers below — so this Start() performs this process's
-        // first, fresh gRPC initialization. This is gRPC's own "instantiate
-        // gRPC objects only after fork()" pattern, which needs no
-        // pthread_atfork handlers or GRPC_ENABLE_FORK_SUPPORT. (It assumes the
-        // HOST application likewise does not use gRPC before forking.)
+        // gRPC and fork(): the constructor triggers no grpc_init — nothing is
+        // built until openChannel() runs from init_grpc_workers below — so
+        // this Start() performs the process's first, fresh gRPC init. That is
+        // gRPC's own "instantiate gRPC objects only after fork()" pattern,
+        // needing no pthread_atfork handlers or GRPC_ENABLE_FORK_SUPPORT. (It
+        // assumes the HOST likewise does not use gRPC before forking.)
 
         // Every agent thread descends from the two spawns below, so blocking
         // signals for the rest of this function keeps process-directed
@@ -246,14 +239,11 @@ namespace pinpoint {
         const auto watch_path = resolve_config_file_path(options_);
         if (!watch_path.empty() && getConfig()->enable_config_file_watcher) {
             config_watcher_ = std::make_unique<ConfigFileWatcher>(watch_path, [this] {
-                // make_config(options_, old) returns the final reload config:
-                // non-reloadable fields retained from the running config and
-                // the logger already reconfigured. It re-reads the config
-                // file itself, so no separate read is needed here. This runs
-                // on the watcher thread; teardown_workers() joins the watcher
-                // while the agent is still guaranteed alive (by the shutdown
-                // caller or the deadline runner's keep-alive), so `this`
-                // stays valid for the whole callback.
+                // make_config(options_, old) returns the final reload config —
+                // non-reloadable fields retained, logger already reconfigured
+                // — and re-reads the file itself. Runs on the watcher thread;
+                // teardown_workers() joins the watcher while the agent is
+                // still guaranteed alive, so `this` stays valid throughout.
                 auto new_cfg = make_config(options_, getConfig());
                 if (new_cfg) {
                     reloadConfig(std::move(new_cfg));
@@ -611,34 +601,28 @@ namespace pinpoint {
     }
 
     bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
-        // The workers run member functions of this agent and its gRPC clients
-        // and dereference `this` (isExiting/getConfig/getAgentStats); they
-        // must be joined, never detached, before the members they use are
-        // destroyed — abandoning a straggler around the object's destruction
-        // would be a use-after-free. Unary calls have deadlines and the stop
-        // signals request stream cancellation, but gRPC TryCancel() is
-        // best-effort and callback completion has no hard wall-clock bound,
-        // so the joins themselves are unbounded. To still bound shutdown, the
-        // whole blocking teardown runs on a helper thread: if it beats the
-        // deadline the helper is joined and shutdown completes as before;
-        // otherwise the helper is detached and the object's lifetime is
-        // secured for it — via a keep-alive self-reference (Shutdown() path)
-        // or by deferring destruction to the helper (SharedDeleter path).
+        // The workers dereference `this` (isExiting/getConfig/getAgentStats),
+        // so they must be joined, never detached, before the members they use
+        // are destroyed — abandoning a straggler would be a use-after-free.
+        // But TryCancel() is best-effort and callback completion has no hard
+        // wall-clock bound, so the joins are unbounded. To still bound
+        // shutdown, the whole blocking teardown runs on a helper thread: beat
+        // the deadline and the helper is joined as before; otherwise it is
+        // detached and the object's lifetime secured for it — via a keep-alive
+        // self-reference (Shutdown()) or a deferred destroy (SharedDeleter).
         struct TeardownState {
             std::mutex m;
             std::condition_variable cv;
             bool finished{false};
             bool abandoned{false};
             // At most one of the two is set when the deadline expires.
-            // keep_alive keeps this agent (and every member the
-            // still-draining workers use) alive until the detached runner
-            // finishes; it is released when the runner drops its state
-            // reference, which may run the SharedDeleter on the runner
-            // thread — by then every worker is joined, so destruction is
-            // benign. delete_when_done instead hands the runner ownership of
-            // an object whose final reference is already gone (SharedDeleter
-            // caller): the runner deletes it after the joins — a leak only
-            // if the stragglers never finish.
+            // keep_alive holds this agent (and every member the draining
+            // workers use) alive until the detached runner finishes; releasing
+            // it may run the SharedDeleter on the runner thread, benign there
+            // since every worker is joined by then. delete_when_done instead
+            // hands the runner ownership of an object whose final reference is
+            // already gone: it deletes after the joins — a leak only if the
+            // stragglers never finish.
             std::shared_ptr<AgentImpl> keep_alive;
             bool delete_when_done{false};
         };
@@ -701,12 +685,10 @@ namespace pinpoint {
         }
 
         // Deadline expired. Detaching requires securing the object for the
-        // runner: a keep-alive self-reference while shared-owned (Shutdown()
-        // path), or handing the runner ownership when the SharedDeleter is
-        // the caller. An object that is neither (a stack-constructed
-        // instance — none exist in this codebase; every shared agent comes
-        // from createShared()) dies with its scope no matter what, so the
-        // unbounded join remains its only lifetime-safe option.
+        // runner: a keep-alive self-reference while shared-owned (Shutdown()),
+        // or handing over ownership when the SharedDeleter is the caller. An
+        // object that is neither dies with its scope regardless, so the
+        // unbounded join stays its only lifetime-safe option.
         std::shared_ptr<AgentImpl> keep_alive = weak_from_this().lock();
         if (keep_alive == nullptr && !may_defer_destroy) {
             try {
@@ -761,30 +743,24 @@ namespace pinpoint {
         // process is likely on its way down and we don't want to block.
         abandon_grpc_workers();
 
-        // Destroying in a forked child gRPC clients created in the parent is
-        // unsafe: they own internal threads (e.g. GrpcAgent's AgentInfo
-        // scheduler, the command dispatcher) that do not exist in this
-        // process, and their destructors would join the dead handles and
-        // abort. Intentionally leak the client objects instead — the child
-        // either builds its own agent via Start() or is short-lived. Done
-        // here rather than in do_shutdown() so the pointers stay valid while
-        // the object is alive (see the forked-child branch there).
+        // Destroying parent-created gRPC clients in a forked child is unsafe:
+        // they own internal threads that do not exist in this process, and
+        // their destructors would join the dead handles and abort. Leak the
+        // client objects instead — the child either builds its own agent via
+        // Start() or is short-lived. Done here rather than in do_shutdown() so
+        // the pointers stay valid while the object is alive.
         //
-        // The stats aggregators go the same way, for a second reason: they
-        // own condition variables the abandoned url_stat/agent_stat workers
-        // were waiting on when fork() ran. The waiter count lives in the
-        // condvar and is inherited, so glibc's pthread_cond_destroy blocks
-        // forever waiting for waiters that do not exist in this process.
-        // They are shared-owned now (every AgentRuntime generation carries
-        // them — see build_runtime), so nulling this member alone is not
-        // enough: runtime snapshots inherited from the parent — the runtime_
-        // holder, live spans, TLS caches — hold them too, and whichever
-        // reference is released LAST in this process would run those
-        // destructors. Leak one extra strong reference instead, so no
-        // release here can ever be the last one. nothrow keeps the noexcept
-        // contract; if even this tiny allocation fails the leak is skipped
-        // and the old exposure returns — a hang only if this child later
-        // drops every inherited reference.
+        // The stats aggregators go the same way, for a second reason: they own
+        // condition variables the abandoned url_stat/agent_stat workers were
+        // waiting on when fork() ran. The waiter count lives in the condvar and
+        // is inherited, so glibc's pthread_cond_destroy blocks forever on
+        // waiters that do not exist here. They are shared-owned (every
+        // AgentRuntime generation carries them), so nulling this member is not
+        // enough — inherited snapshots in the runtime_ holder, live spans and
+        // TLS caches hold them too, and whichever reference dies LAST would run
+        // those destructors. Leak one extra strong reference so no release here
+        // can be the last. nothrow keeps the noexcept contract; if even this
+        // allocation fails the leak is skipped and the old exposure returns.
         if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             (void)grpc_agent_.release();
             (void)grpc_metadata_.release();
@@ -802,16 +778,14 @@ namespace pinpoint {
             return false;
         }
         // One pid read per span creation, only on the enabled path — served
-        // from current_pid()'s fork-hooked cache, so it is a relaxed atomic
-        // load rather than the syscall getpid() is on Linux (see utility.h).
-        // An agent inherited across fork() carries the parent's
-        // enabled_ == true, but its worker threads do not exist in this
-        // process: recording would enqueue real spans into queues nothing
-        // drains — silently, since even the queue-drop reporter runs on the
-        // missing worker thread. Reading owner_pid_ is race-free: it is
+        // from current_pid()'s fork-hooked cache, so a relaxed atomic load
+        // rather than the syscall getpid() is on Linux (see utility.h). An
+        // agent inherited across fork() carries the parent's enabled_ == true,
+        // but its worker threads do not exist here: recording would enqueue
+        // spans into queues nothing drains, silently, since even the drop
+        // reporter runs on the missing worker. Race-free: owner_pid_ is
         // written before the init thread that publishes enabled_ = true is
-        // spawned, so any thread observing enabled_ == true also observes the
-        // final owner_pid_.
+        // spawned.
         if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             warn_fork_inheritance();
             return false;
@@ -952,23 +926,20 @@ namespace pinpoint {
             // The watcher thread does not exist in this process either; its
             // stop() abandons the inherited dead handle via its own pid guard.
             try { if (config_watcher_) config_watcher_->stop(); } catch (...) {}
-            // The gRPC clients inherited from the parent are intentionally
-            // leaked, but not here: releasing the unique_ptrs would null them
-            // while a racing thread that loaded enabled_ == true just before
-            // the store above may still be about to dereference grpc_span_ /
-            // grpc_metadata_ (recordSpan, cacheApi, ...) — a null operator->
-            // crash in the host. The release is deferred to ~AgentImpl, so
-            // the pointers stay valid for the whole lifetime of this object.
+            // The inherited gRPC clients are intentionally leaked, but not
+            // here: nulling the unique_ptrs while a racing thread that read
+            // enabled_ == true just before the store above is about to
+            // dereference grpc_span_ / grpc_metadata_ would crash the host on
+            // a null operator->. Deferred to ~AgentImpl instead, so the
+            // pointers stay valid for this object's whole lifetime.
             return false;
         }
 
-        // Serialization is achieved: acquiring the lock above waited out any
-        // in-flight Start() and published its writes, and later Start() calls
-        // refuse on shutting_down_. Release it before the teardown — on the
-        // deferred-destroy path the teardown runner may delete this object as
-        // soon as ownership is handed over, and this frame must not be
-        // holding a member mutex when that happens (unlocking a destroyed
-        // mutex is undefined behavior).
+        // Serialization is achieved: the lock above waited out any in-flight
+        // Start() and published its writes, and later calls refuse on
+        // shutting_down_. Release it before the teardown — on the
+        // deferred-destroy path the runner may delete this object as soon as
+        // ownership is handed over, and unlocking a destroyed mutex is UB.
         if (lifecycle_lock.owns_lock()) {
             lifecycle_lock.unlock();
         }
@@ -976,15 +947,14 @@ namespace pinpoint {
         try { LOG_INFO("agent shutdown"); } catch (...) {}
         request_stop_workers();
 
-        // A never-launched agent (Start() never ran, or its synchronous
-        // failure already reset started_ and stopped the watcher) has no init
-        // thread and no workers, so the blocking teardown cannot actually
-        // block. Run it inline: this skips the deadline runner thread, which
-        // matters on the StartAgent() failure path, where the failure may
-        // itself have been thread-creation exhaustion. Reading started_ here
-        // is stable:
-        // the lifecycle lock above waited out any in-flight Start(), and
-        // later Start() calls refuse on shutting_down_ before touching it.
+        // A never-launched agent (Start() never ran, or its synchronous failure
+        // already reset started_ and stopped the watcher) has no init thread
+        // and no workers, so the blocking teardown cannot block. Run it inline
+        // to skip the deadline runner thread — which matters on the
+        // StartAgent() failure path, where the failure may itself have been
+        // thread-creation exhaustion. Reading started_ is stable: the lifecycle
+        // lock waited out any in-flight Start(), and later calls refuse on
+        // shutting_down_ before touching it.
         if (!started_) {
             teardown_workers();
             try { shutdown_logger(); } catch (...) {}
@@ -1379,13 +1349,12 @@ namespace pinpoint {
                 return true;
             }
 
-            // Neither a shut-down agent nor one whose async initialization
-            // failed is restartable: drop it from the singleton and fall
-            // through to build a fresh agent. (Clearing the singleton here
-            // also keeps GlobalAgent() degrading to the noop agent if the
-            // rebuild below fails.) Resetting what may be the last reference
-            // tears the dead agent down through its SharedDeleter, joining
-            // any workers a partial initialization did spawn.
+            // Neither a shut-down agent nor one whose async init failed is
+            // restartable: drop it from the singleton and build a fresh one.
+            // (Clearing it here also keeps GlobalAgent() degrading to the noop
+            // agent if the rebuild fails.) Resetting what may be the last
+            // reference tears the dead agent down through its SharedDeleter,
+            // joining any workers a partial initialization spawned.
             if (agent->initFailed()) {
                 LOG_WARN("global agent failed to initialize; replacing it with a new agent");
             } else {
@@ -1405,12 +1374,10 @@ namespace pinpoint {
         }
         agent->setOptions(options);
         // Publish only a successfully launched agent. A synchronous Start()
-        // failure (watcher allocation, init-thread creation) must not install
-        // a permanently cold instance: every later StartAgent() would treat
-        // it as the running agent and never call Start() again. Returning
-        // false instead leaves the singleton empty, so the next StartAgent()
-        // call rebuilds and retries from scratch. The failed agent is
-        // destroyed here through its never-started cold teardown.
+        // failure must not install a permanently cold instance: every later
+        // StartAgent() would treat it as the running agent and never call
+        // Start() again. Leaving the singleton empty makes the next call
+        // rebuild and retry from scratch.
         if (!agent->Start()) {
             return false;
         }

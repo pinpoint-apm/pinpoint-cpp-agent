@@ -45,33 +45,16 @@
 
 namespace pinpoint {
 
-    /**
-     * @brief Generates a pseudo-random span identifier.
-     *
-     * @return 64-bit span ID. As with any finite random identifier, collisions
-     *         are possible.
-     */
+    /// @brief Pseudo-random 64-bit span id; collisions are possible.
     int64_t generate_span_id();
-    /**
-     * @brief Converts a system clock time point to epoch milliseconds.
-     *
-     * @param tm Time point to convert.
-     * @return Milliseconds since epoch.
-     */
+    /// @brief Converts a system clock time point to epoch milliseconds.
     int64_t to_milli_seconds(const std::chrono::system_clock::time_point& tm);
 
-    /**
-     * @brief Produces a deterministic UID for a normalized SQL string.
-     *
-     * @param sql Normalized SQL string.
-     * @return 16-byte MurmurHash3 fingerprint. Different SQL strings can
-     *         theoretically collide.
-     */
+    /// @brief Deterministic 16-byte MurmurHash3 UID for a normalized SQL
+    ///        string; distinct strings can theoretically collide.
     SqlUid generate_sql_uid(std::string_view sql);
 
-    /// @brief Returns the host name of the running process.
     std::string get_host_name();
-    /// @brief Returns the host IP address of the running process.
     std::string get_host_ip_addr();
 
     /// @brief Safe string-to-int conversion returning `std::nullopt` on error.
@@ -88,19 +71,16 @@ namespace pinpoint {
      *        fork handler keeps current.
      *
      * The fork-inheritance guards compare a stored owner pid against the
-     * running process on paths as hot as span admission
-     * (AgentImpl::tracing_active, once per NewSpan). That comparison is only
-     * as cheap as reading the current pid, and getpid() is not uniformly
-     * cheap: glibc dropped its pid cache in 2.25 and the call is not in the
-     * vDSO, so on Linux it is a real syscall — measured at ~139 ns, against
-     * ~1 ns for the relaxed atomic load here — while Darwin still caches it
-     * and shows ~2 ns. Reading it from here costs the same everywhere.
+     * running process on paths as hot as span admission (once per NewSpan), and
+     * getpid() is not uniformly cheap: glibc dropped its pid cache in 2.25 and
+     * the call is not in the vDSO, so on Linux it is a real syscall (~139 ns
+     * against ~1 ns for the relaxed atomic load here; Darwin still caches it at
+     * ~2 ns). Reading it from here costs the same everywhere.
      *
-     * Correctness across fork() is preserved by a pthread_atfork child
-     * handler, which runs in the child before fork() returns there, so the
-     * child never observes the parent's pid. If that handler cannot be
-     * registered the cache is bypassed entirely and every call goes to
-     * getpid(): slower, never stale.
+     * Correctness across fork() comes from a pthread_atfork child handler,
+     * which runs before fork() returns in the child, so the child never
+     * observes the parent's pid. If that handler cannot be registered the cache
+     * is bypassed and every call goes to getpid(): slower, never stale.
      */
     pid_t current_pid() noexcept;
 
@@ -109,15 +89,14 @@ namespace pinpoint {
      *        tolerating handles inherited across fork().
      *
      * The joinable object's storage is reused for a default-constructed empty
-     * std::thread without invoking the old object's destructor. This leaves
-     * @p t non-joinable without allocating memory or making a pthread call.
-     * detach() must never be used here: for a handle inherited across fork()
-     * the thread does not exist in the child, and while macOS pthread_detach
-     * fails cleanly with ESRCH (making std::thread::detach() throw catchably),
-     * glibc unconditionally dereferences the thread descriptor — memory the
-     * child's fork() has already reclaimed — and crashes. Cost of the leak: a
+     * std::thread without running the old object's destructor, leaving @p t
+     * non-joinable with no allocation and no pthread call. detach() must never
+     * be used here: for a handle inherited across fork() the thread does not
+     * exist in the child, and while macOS pthread_detach fails cleanly with
+     * ESRCH, glibc unconditionally dereferences the thread descriptor — memory
+     * the child's fork() already reclaimed — and crashes. Cost of the leak: a
      * LIVE abandoned thread keeps its native resources until process exit; a
-     * fork-dead handle leaks only the stale handle state.
+     * fork-dead handle leaks only stale handle state.
      */
     void abandon_thread(std::thread& t) noexcept;
 
@@ -140,12 +119,9 @@ namespace pinpoint {
      *
      * Producers call record() on every dropped item, from any thread; at most
      * one report per interval is granted, carrying the cumulative drop count.
-     * This mirrors the span queue's once-per-interval drop report
-     * (GrpcSpan::maybe_log_span_queue_drops) for the metadata, stats and
-     * url-stat queues: during a collector outage an unlimited WARN per
-     * dropped item would flood the log from request threads, while the
-     * previous per-drop DEBUG line was invisible at the default level —
-     * outage data loss went unreported either way.
+     * During a collector outage an unlimited WARN per dropped item would flood
+     * the log from request threads, while a DEBUG line would be invisible at
+     * the default level — either way outage data loss goes unreported.
      */
     class QueueDropReporter {
     public:

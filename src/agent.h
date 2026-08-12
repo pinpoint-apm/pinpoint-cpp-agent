@@ -40,10 +40,9 @@
 namespace pinpoint {
 
     /**
-     * @brief Concrete agent implementation that wires together configuration, samplers and transports.
-     *
-     * `AgentImpl` orchestrates span creation, metadata caching, gRPC workers and statistics collection.
-     * It implements both `Agent` (SDK surface) and `AgentService` (internal service boundary).
+     * @brief Concrete agent: orchestrates span creation, metadata caching,
+     *        gRPC workers and statistics collection, implementing both `Agent`
+     *        (SDK surface) and `AgentService` (internal boundary).
      */
     class AgentImpl final : public Agent, public AgentService,
                             public std::enable_shared_from_this<AgentImpl> {
@@ -51,14 +50,8 @@ namespace pinpoint {
 		/// Capacity of each metadata cache (api/error/sql/sql-uid/raw-sql).
 		static constexpr size_t kDefaultCacheSize = 1024;
 
-		/**
-		 * @brief Constructs an agent using the provided configuration.
-		 *
-		 * @param options Resolved agent configuration.
-		 * @param cache_size Capacity of each metadata cache; the default is
-		 *        the production value, tests inject small sizes to exercise
-		 *        eviction-driven id reissue.
-		 */
+		/// @brief @p cache_size defaults to the production value; tests inject
+		/// small sizes to exercise eviction-driven id reissue.
 		AgentImpl(std::shared_ptr<const Config> options,
 				  std::unique_ptr<GrpcAgent> grpc_agent,
 				  std::unique_ptr<GrpcMetadata> grpc_metadata,
@@ -80,59 +73,36 @@ namespace pinpoint {
 
 		/// @brief Creates a shared agent whose final release stays bounded:
 		/// dropping the last reference without Shutdown() runs the teardown
-		/// under the shutdown deadline, and when the deadline expires the
-		/// teardown runner assumes ownership and destroys the agent only
-		/// after the straggling workers finish (a leak if they never do).
-		/// StartAgent() and the tests create every shared agent through this
-		/// factory; a shared agent built without it keeps the unbounded-join
-		/// destructor fallback.
+		/// under the shutdown deadline, and once that expires the teardown
+		/// runner takes ownership and destroys the agent only after the
+		/// straggling workers finish (a leak if they never do). A shared agent
+		/// built without this factory keeps the unbounded-join fallback.
 		template <typename... Args>
 		static std::shared_ptr<AgentImpl> createShared(Args&&... args) {
 			return std::shared_ptr<AgentImpl>(new AgentImpl(std::forward<Args>(args)...),
 			                                  SharedDeleter{});
 		}
 
-		/**
-		 * @brief Creates a new span for an outbound operation.
-		 *
-		 * @param operation Logical operation name.
-		 * @param rpc_point RPC endpoint or service name.
-		 */
+		/// @brief Creates a new span for an outbound operation.
 		SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) override;
-		/**
-		 * @brief Creates a span and extracts the context from an incoming request.
-		 *
-		 * @param operation Logical operation name.
-		 * @param rpc_point RPC endpoint or service name.
-		 * @param reader Trace context reader provided by user code.
-		 */
+		/// @brief Creates a span and extracts the context from @p reader.
 		SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) override;
-    	/**
-    	 * @brief Creates a span for HTTP requests while recording request method.
-    	 *
-    	 * @param operation Operation name.
-    	 * @param rpc_point RPC endpoint.
-    	 * @param method HTTP method name.
-    	 * @param reader Trace context reader provided by user code.
-    	 */
+    	/// @brief Creates an HTTP span, also recording the request method.
     	SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
 		/// @brief Injects the StartAgent() options used by the config-file
 		/// watcher and config reloads. Called by StartAgent() before Start();
 		/// an agent built without options (tests) runs without a watcher.
 		void setOptions(AgentOptions options) { options_ = std::move(options); }
-		/// @brief Begins bringing the agent online in the current process:
-		/// starts the config watcher (when enabled via EnableConfigFileWatcher)
-		/// and an initialization thread that opens
-		/// channels and launches workers. Returns without waiting for
-		/// collector registration.
+		/// @brief Begins bringing the agent online: starts the config watcher
+		/// (when enabled) and an init thread that opens channels and launches
+		/// workers. Does not wait for collector registration.
 		///
-		/// Returns true when initialization was launched — or already had
-		/// been by an earlier call (idempotent success). Returns false when
-		/// refused (shut down — shutting_down_ is never cleared, so such an
-		/// instance stays offline for good — or inherited across fork()) and
-		/// when synchronous setup failed; a setup failure resets started_,
-		/// and StartAgent() publishes the agent as the global instance only
-		/// on success, so the next StartAgent() call retries from scratch.
+		/// True when initialization was launched, or already had been
+		/// (idempotent). False when refused — shut down (terminal:
+		/// shutting_down_ is never cleared) or inherited across fork() — and
+		/// when synchronous setup failed. A setup failure resets started_, and
+		/// StartAgent() publishes the global instance only on success, so the
+		/// next call retries from scratch.
 		bool Start() noexcept;
 		/// @brief Returns whether the agent is enabled for tracing. Always
 		/// false (with a one-time error log) for an agent inherited across
@@ -141,12 +111,10 @@ namespace pinpoint {
 		/// @brief True when this agent was started in the current process (or
 		/// not started at all); false for a handle inherited across fork().
 		bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == current_pid(); }
-		/// @brief True when the asynchronous initialization launched by
-		/// Start() failed terminally (channel bring-up or worker spawn threw
-		/// on the init thread). Such an agent can never come online — unlike
-		/// a registration retry, nothing re-runs init_grpc_workers — so
-		/// StartAgent() replaces it with a fresh agent instead of keeping
-		/// it as the running instance forever.
+		/// @brief True when Start()'s async initialization failed terminally
+		/// (channel bring-up or worker spawn threw on the init thread). Nothing
+		/// re-runs init_grpc_workers, so such an agent can never come online
+		/// and StartAgent() replaces it with a fresh one.
 		bool initFailed() const { return init_failed_; }
 		/// @brief Initiates a graceful shutdown of the agent. Terminal: this
 		/// instance cannot be restarted, callers must build a new one through
@@ -203,14 +171,13 @@ namespace pinpoint {
 
         // Single source of truth for the config and its derived components
         // (see AgentRuntime). A generation-validated thread-local snapshot
-        // yields a mutually consistent view without a shared lock on the
-        // unchanged per-request path. ThreadCached is safe for this holder
-        // because AgentRuntime is passive data: a reader thread's TLS may pin
-        // a snapshot past this agent's destruction, and destroying it that
-        // late touches no agent state. Its per-thread localized control block
-        // also keeps owning NewSpan() copies from contending across request
-        // threads. Holders of active objects (e.g. the global AgentImpl
-        // handle) must stay Uncached.
+        // gives a mutually consistent view without a shared lock on the
+        // unchanged per-request path, and its per-thread control block keeps
+        // owning NewSpan() copies from contending across request threads.
+        // ThreadCached is safe here because AgentRuntime is passive data: a
+        // reader's TLS may pin a snapshot past this agent's destruction, and
+        // destroying it that late touches no agent state. Holders of active
+        // objects (e.g. the global AgentImpl handle) must stay Uncached.
         AtomicSharedPtr<const AgentRuntime, SnapshotCache::ThreadCached> runtime_;
 
     	// Identity fields snapshotted once at construction.
@@ -250,13 +217,11 @@ namespace pinpoint {
     	std::unique_ptr<GrpcStats> grpc_stat_{};
 		std::unique_ptr<GrpcCommand> grpc_command_{};
 		// Shared, not unique: every AgentRuntime generation carries these two
-		// sinks (build_runtime), so spans reach them through the runtime
-		// snapshot they already hold instead of keeping the whole agent
-		// alive (see AgentRuntime::stats). The last release can therefore
-		// happen after ~AgentImpl — a late span, or a thread's cached
-		// runtime snapshot dying at thread exit — by which point the workers
-		// are long joined and both objects are passive data (atomic shards,
-		// queues, an idle registry, unused mutexes/condvars), safe to
+		// sinks (build_runtime), so spans reach them through the snapshot they
+		// already hold instead of keeping the whole agent alive. The last
+		// release can therefore happen after ~AgentImpl — a late span, or a
+		// thread's cached snapshot dying at thread exit — by which point the
+		// workers are joined and both objects are passive data, safe to
 		// destroy there.
     	std::shared_ptr<UrlStats> url_stats_{};
     	std::shared_ptr<AgentStats> agent_stats_{};
@@ -272,24 +237,21 @@ namespace pinpoint {
     	std::thread agent_stat_thread_;
 
     	// Serializes reloadConfig() writers. Building a new AgentRuntime is a
-    	// load-build-store read-modify-write of runtime_: two concurrent
-    	// reloads — e.g. a test-driven reload racing the config-file watcher
-    	// thread — could otherwise both build from the same old runtime
-		// and lose one of the updates. Readers do not take this mutex; an
-		// unchanged generation-cache hit also avoids AtomicSharedPtr's shared
-		// source (which may itself use a shared_mutex on C++17 platforms).
+    	// load-build-store on runtime_, so two concurrent reloads could both
+    	// build from the same old runtime and lose one update. Readers do not
+		// take this mutex; an unchanged generation-cache hit also avoids
+		// AtomicSharedPtr's shared source.
     	std::mutex reload_mutex_;
 
         int64_t start_time_{};
     	std::atomic<uint64_t> trace_id_sequence_{};
     	std::atomic<bool> enabled_{false};
     	std::atomic<bool> shutting_down_{false};
-    	// Start() flips started_ and records owner_pid_ (the pid that brought
-    	// the agent online). The supported model starts the agent in the
-    	// process that uses it (StartAgent() per worker); owner_pid_ exists to
-    	// keep MISUSE crash-free: when a started agent is inherited across
-    	// fork(), Start()/Enable() refuse with a one-time error log and
-    	// teardown abandons the inherited dead thread handles instead of
+    	// Start() flips started_ and records owner_pid_. The supported model
+    	// starts the agent in the process that uses it (StartAgent() per
+    	// worker); owner_pid_ exists to keep MISUSE crash-free: an agent
+    	// inherited across fork() refuses Start()/Enable() with a one-time
+    	// error log, and teardown abandons the dead thread handles instead of
     	// joining them. Atomic because Enable() reads it without a lock.
     	std::atomic<bool> started_{false};
     	std::atomic<pid_t> owner_pid_{0};
@@ -310,11 +272,10 @@ namespace pinpoint {
     	std::unique_ptr<ConfigFileWatcher> config_watcher_;
 
     	// Serializes Start() against do_shutdown(). Without it a concurrent
-    	// Shutdown() races Start()'s writes to owner_pid_ and init_thread_
-    	// (both plain members), or completes teardown first — after which the
-    	// init thread and workers Start() spawns would never be joined and
-    	// would dereference a destroyed agent. Start() checks shutting_down_
-    	// under this lock and refuses to bring a torn-down agent back up.
+    	// Shutdown() races Start()'s writes to owner_pid_ and init_thread_, or
+    	// finishes teardown first — after which the threads Start() spawns are
+    	// never joined and dereference a destroyed agent. Start() checks
+    	// shutting_down_ under this lock and refuses to revive a torn-down agent.
     	std::mutex lifecycle_mutex_;
 
     	/// @brief Builds a new AgentRuntime for cfg, rebuilding only the
@@ -338,13 +299,11 @@ namespace pinpoint {
     	/// @brief Logs, once per agent, that this handle was inherited across
     	/// fork() and cannot be used in this process.
     	void warn_fork_inheritance() const noexcept;
-    	/// @brief True when spans may be recorded right now: the agent is
-    	/// enabled AND running in the process that started it. The pid check
-    	/// runs only on the enabled path (disabled agents pay nothing), so an
-    	/// agent inherited across fork() hands out noop spans (with a one-time
-    	/// error log via warn_fork_inheritance()) instead of recording into
-    	/// queues whose worker threads do not exist in this process. Sole
-    	/// admission check of the NewSpan funnel.
+    	/// @brief Sole admission check of the NewSpan funnel: true when the
+    	/// agent is enabled AND running in the process that started it. The pid
+    	/// check runs only on the enabled path, so an agent inherited across
+    	/// fork() hands out noop spans instead of recording into queues whose
+    	/// worker threads do not exist in this process.
     	bool tracing_active() const noexcept;
     	/// @brief Abandons (never joins or detaches — see abandon_thread())
     	/// every worker thread handle. Used when tearing down an agent inherited
@@ -373,12 +332,11 @@ namespace pinpoint {
     	/// @brief Performs the actual shutdown work (workers, watcher, logger)
     	/// without touching the global_agent singleton. Safe to call from the
     	/// destructor — does not lock global_agent_mutex, never throws.
-    	/// @param may_defer_destroy true only when the caller owns the object
-    	///        and can skip destroying it (the SharedDeleter): a teardown
-    	///        that outlives the deadline is then handed the object for a
-    	///        deferred destroy instead of an unbounded join.
-    	/// @return true when the object's destruction was deferred;
-    	///         the caller must not destroy it.
+    	/// @param may_defer_destroy true only for the SharedDeleter, which owns
+    	///        the object: a teardown outliving the deadline is then handed
+    	///        the object for a deferred destroy instead of an unbounded join.
+    	/// @return true when destruction was deferred; the caller must not
+    	///         destroy the object.
     	bool do_shutdown(bool may_defer_destroy) noexcept;
     };
 

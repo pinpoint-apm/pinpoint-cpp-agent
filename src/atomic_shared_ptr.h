@@ -39,28 +39,25 @@ namespace pinpoint {
      *
      * ThreadCached: unchanged values are served from a generation-validated
      * thread-local snapshot, and load_cached_ref() becomes available. Each
-     * cache entry owns the source snapshot through a separate, per-thread
-     * control block. An owning load() therefore changes only that thread's
-     * local refcount on the unchanged path instead of ping-ponging the shared
-     * source control block between reader cores.
+     * cache entry owns the snapshot through its own per-thread control block,
+     * so an owning load() on the unchanged path touches only that thread's
+     * refcount instead of ping-ponging the shared control block between cores.
      *
      * The cache pins each reader thread's last snapshot until that thread's
-     * next load of the same holder or its exit, so the pointee's destructor
-     * can run during thread or process teardown, long after the holder
-     * released it. Opt in only when the pointee is passive data that is safe
-     * to destroy there — never for objects whose teardown must stay explicit,
-     * such as the global AgentImpl holder (see global_agent() in agent.cpp).
+     * next load of the same holder or its exit, so the pointee's destructor can
+     * run during thread or process teardown, long after the holder released it.
+     * Opt in only when the pointee is passive data that is safe to destroy
+     * there — never for objects whose teardown must stay explicit, such as the
+     * global AgentImpl holder (see global_agent() in agent.cpp).
      *
      * Retention that opt-in accepts: after a store(), threads that never load
-     * this holder again keep the previous snapshot alive until they exit, and
-     * a destroyed holder's per-thread entries are only reclaimed when a new
+     * this holder again keep the previous snapshot until they exit, and a
+     * destroyed holder's per-thread entries are reclaimed only when a new
      * holder of the same T reuses its address or the thread exits. Keep
-     * ThreadCached holders few, long-lived, and their snapshots bounded in
-     * size, or that memory lingers for the lifetime of every reader thread.
-     * A load that runs while the calling thread is already tearing down its
-     * TLS (a host thread_local destructor recording a final span) stays
-     * defined behavior but leaks one small replacement map for that thread —
-     * see thread_cache().
+     * ThreadCached holders few, long-lived and their snapshots small, or that
+     * memory lingers for every reader thread's lifetime. A load during the
+     * calling thread's own TLS teardown stays defined but leaks one small
+     * replacement map for that thread — see thread_cache().
      */
     enum class SnapshotCache { Uncached, ThreadCached };
 
@@ -68,21 +65,19 @@ namespace pinpoint {
      * @brief Returns a shared_ptr to the same object through a fresh, private
      *        control block.
      *
-     * The result aliases `source`: it stores the exact same pointer (including
-     * const qualification), so `.get()` and every `==` comparison against the
-     * original still hold, while copies and destructions of the result — and of
-     * anything copied from it — do their refcount RMWs on a control block only
-     * this caller has. That is the point: a shared_ptr handed out from one
-     * process-wide holder makes every copy an atomic RMW on one cache line,
-     * which ping-pongs across cores as soon as more than one thread does it.
-     * Localizing once per thread turns that shared traffic into thread-local
-     * traffic, at the cost of one control-block allocation per thread and one
-     * retained reference to `source` for as long as the result lives.
+     * The result aliases `source` — same pointer, same const qualification, so
+     * `.get()` and every `==` against the original still hold — while its
+     * copies and destructions do their refcount RMWs on a control block only
+     * this caller has. That is the point: copies of a shared_ptr from one
+     * process-wide holder all RMW one cache line, which ping-pongs across cores
+     * the moment two threads do it. Localizing once per thread makes that
+     * traffic thread-local, at the cost of one control-block allocation per
+     * thread and one retained reference to `source`.
      *
      * Callers are expected to keep the result in per-thread storage; see
-     * AtomicSharedPtr's ThreadCached mode and noopSpan() for the two users, and
-     * their slot/guard machinery for the thread-teardown rules that come with
-     * holding a shared_ptr in a thread_local.
+     * AtomicSharedPtr's ThreadCached mode and noopSpan(), and their slot/guard
+     * machinery for the thread-teardown rules that come with holding a
+     * shared_ptr in a thread_local.
      */
     template <typename T>
     std::shared_ptr<T> localize_shared(std::shared_ptr<T> source) {

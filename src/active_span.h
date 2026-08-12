@@ -30,20 +30,18 @@ namespace pinpoint {
     /**
      * @brief Intrusive registration node for the active-request histogram.
      *
-     * Embedded in SpanImpl and UnsampledSpan so that registering a span with
-     * AgentStats (addActiveSpan/dropActiveSpan) links/unlinks this node in a
-     * shard's doubly-linked list instead of inserting into a map — no heap
-     * allocation on the per-request hot path. The agent is a guest in the
-     * host application's process and cannot choose its allocator, so a
-     * malloc/free pair per request has unpredictable cost across hosts.
+     * Embedded in SpanImpl and UnsampledSpan, so registering with AgentStats
+     * (addActiveSpan/dropActiveSpan) links/unlinks this node in a shard's
+     * doubly-linked list instead of inserting into a map — no heap allocation
+     * on the per-request hot path. The agent is a guest in the host's process
+     * and cannot choose its allocator, so a malloc/free pair per request has
+     * unpredictable cost across hosts.
      *
-     * Lifetime contract: a linked node must never outlive its owning span —
-     * it would leave dangling pointers in the shard list (unlike the old map,
-     * where a leaked entry only skewed the stats). Owners enforce this with
-     * a destructor backstop that calls dropActiveSpan only while the node is
-     * still linked. The state check costs one atomic load after normal EndSpan
-     * and, importantly, avoids touching a non-owning AgentService after the
-     * node no longer needs its registry.
+     * Lifetime contract: a linked node must never outlive its owning span, or
+     * it leaves dangling pointers in the shard list. Owners enforce this with a
+     * destructor backstop calling dropActiveSpan only while still linked — one
+     * atomic load after a normal EndSpan, and it avoids touching a non-owning
+     * AgentService once the node no longer needs the registry.
      */
     struct ActiveSpanNode {
         // List linkage; guarded by shard_->mutex_ while linked.

@@ -47,17 +47,11 @@
 #include "utility.h"
 
 namespace pinpoint {
-    /**
-     * @brief Return codes used by gRPC request helpers.
-     */
+    /// @brief Return codes used by gRPC request helpers.
     enum GrpcRequestStatus {SEND_OK, SEND_FAIL};
-    /**
-     * @brief State machine transitions used while streaming data to the collector.
-     */
+    /// @brief State machine transitions used while streaming to the collector.
     enum GrpcStreamStatus {STREAM_WRITE, STREAM_CONTINUE, STREAM_DONE};
-    /**
-     * @brief Identifies the type of gRPC client sharing common facilities.
-     */
+    /// @brief Identifies the type of gRPC client sharing common facilities.
     enum ClientType {AGENT, METADATA, SPAN, STATS};
 
     /**
@@ -66,11 +60,10 @@ namespace pinpoint {
      * Mirrors Java's ClientHeaderFactoryV1 / ClientHeaderFactoryV4: v1/v3 send
      * protocol.version=100 (agentname only when present), v4 sends
      * protocol.version=400 plus agentname (always), servicename and apikey.
-     * Extracted as a pure function so the per-version header set is unit-testable.
+     * A pure function so the per-version header set is unit-testable.
      *
-     * @p agent_id is passed separately (rather than read from @p config) so
-     * the value always comes from the agent's resolved identity snapshot,
-     * which the gRPC clients read through AgentService::getAgentId().
+     * @p agent_id is passed separately rather than read from @p config so it
+     * always comes from the agent's resolved identity snapshot.
      */
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
@@ -145,9 +138,7 @@ namespace pinpoint {
         size_t max_stats_queue_size{2};
     };
 
-    /**
-     * @brief Exponential backoff with jitter for reconnect attempts.
-     */
+    /// @brief Exponential backoff with jitter for reconnect attempts.
     class ExponentialBackoff {
     public:
         explicit ExponentialBackoff(const GrpcClientTuning& tuning)
@@ -173,46 +164,28 @@ namespace pinpoint {
     };
 
     /**
-     * @brief Base client that encapsulates channel management shared by all gRPC workers.
+     * @brief Base client encapsulating the channel management shared by all
+     *        gRPC workers.
      */
     class GrpcClient {
     public:
-        /**
-         * @brief Constructs a client for the given client type.
-         *
-         * @param client_type Which collector service this client targets.
-         * @param config Agent configuration (collector address, batch sizes).
-         * @param tuning Transport-internal knobs; defaults are the production
-         *        values, tests inject shortened ones (see GrpcClientTuning).
-         */
         GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
                    const GrpcClientTuning& tuning = {});
-        /**
-         * @brief Injects the agent service.
-         *
-         * @param agent Owning agent service.
-         */
         void setAgentService(AgentService* agent);
         virtual ~GrpcClient() = default;
         /**
          * @brief Opens the gRPC channel and creates the client stub.
          *
-         * Deferred out of the constructor so that agent construction stays
-         * "cold": `grpc::CreateCustomChannel()` triggers `grpc_init` and starts
-         * gRPC's own background threads, which must not happen until the agent
-         * is started in the process that will actually use it (StartAgent()
-         * runs in each worker, after any fork). Idempotent: a second call
-         * while a channel already exists is a no-op.
+         * Deferred out of the constructor so agent construction stays "cold":
+         * `grpc::CreateCustomChannel()` triggers `grpc_init` and starts gRPC's
+         * own background threads, which must not happen until the agent is
+         * started in the process that will use it (StartAgent() runs in each
+         * worker, after any fork). Idempotent.
          */
         void openChannel();
-        /**
-         * @brief Ensures the gRPC channel is connected and ready for use.
-         *
-         * @return `true` once the channel is ready; `false` if the client is
-         *         stopping first.
-         */
+        /// @brief Blocks until the channel is ready; false if the client is
+        ///        stopping first.
         virtual bool readyChannel();
-        /// @brief Releases the current channel handle.
         void closeChannel() {
             std::unique_lock<std::mutex> lock(channel_mutex_);
             channel_.reset();
@@ -247,14 +220,12 @@ namespace pinpoint {
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
         ExponentialBackoff channel_ready_backoff_;
 
-        // Per-client stop, set by this client's stopXWorker(). Today
-        // do_shutdown() always sets the agent-wide exiting flag before the
-        // stop methods run, so the workers terminate either way — but the
-        // wait loops (readyChannel's unbounded retry, the reconnect delays)
-        // must not depend on that call-ordering contract: honoring the
-        // per-client flag keeps a lone stopXWorker() call from joining a
-        // thread that can block indefinitely during a collector outage.
-        // Never reset: a stopped client is terminal, like agent shutdown.
+        // Per-client stop, set by this client's stopXWorker(). do_shutdown()
+        // sets the agent-wide exiting flag first, so workers terminate either
+        // way, but the wait loops (readyChannel's unbounded retry, the
+        // reconnect delays) must not depend on that call ordering: honoring
+        // this flag keeps a lone stopXWorker() from joining a thread that can
+        // block indefinitely during a collector outage. Never reset.
         std::atomic<bool> stop_requested_{false};
 
         void request_stop() { stop_requested_.store(true, std::memory_order_relaxed); }
@@ -263,17 +234,11 @@ namespace pinpoint {
             return stop_requested_.load(std::memory_order_relaxed) || agent_->isExiting();
         }
 
-        /**
-         * @brief Blocks until the channel becomes ready or the delay is exceeded.
-         */
+        /// @brief Blocks until the channel is ready or the delay is exceeded.
         bool wait_channel_ready(std::chrono::milliseconds delay) const;
 
-        /**
-         * @brief Creates the concrete service stub from `channel_`.
-         *
-         * Called by openChannel() after the channel is built. Each derived
-         * client binds its own generated stub type here.
-         */
+        /// @brief Creates the concrete service stub from `channel_`. Called by
+        ///        openChannel(); each derived client binds its own stub type.
         virtual void create_stub() = 0;
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
@@ -281,15 +246,12 @@ namespace pinpoint {
         /// @brief Applies the tuned unary request deadline to @p context.
         void set_request_deadline(grpc::ClientContext& context) const;
 
-        /**
-         * @brief Notifies derived clients that channel recovery took long enough to stale client-owned queues.
-         */
+        /// @brief Notifies derived clients that channel recovery took long
+        ///        enough to stale client-owned queues.
         virtual void on_slow_channel_recovery(std::chrono::seconds) {}
     };
 
-    /**
-     * @brief Metadata describing an API string cached on the collector.
-     */
+    /// @brief Metadata describing an API string cached on the collector.
     struct ApiMeta {
         int32_t id_;
         int32_t type_;
@@ -299,17 +261,13 @@ namespace pinpoint {
             : id_(id), type_(type), api_str_(api_str) {}
     };
 
-    /**
-     * @brief Type tag for cached string metadata.
-     */
+    /// @brief Type tag for cached string metadata.
     enum StringMetaType {
         STRING_META_ERROR,
         STRING_META_SQL
     };
 
-    /**
-     * @brief Metadata describing a cached string value (error or SQL).
-     */
+    /// @brief Metadata describing a cached string value (error or SQL).
     struct StringMeta {
         int32_t id_;
         std::string str_val_;
@@ -319,9 +277,7 @@ namespace pinpoint {
             : id_(id), str_val_(str_val), type_(type) {}
     };
 
-    /**
-     * @brief Metadata describing a cached SQL UID.
-     */
+    /// @brief Metadata describing a cached SQL UID.
     struct SqlUidMeta {
         SqlUid uid_;
         std::string sql_;
@@ -330,9 +286,7 @@ namespace pinpoint {
             : uid_(uid), sql_(sql) {}
     };
 
-    /**
-     * @brief Metadata bundle carrying exception call stacks for a completed span.
-     */
+    /// @brief Metadata bundle carrying exception call stacks for a span.
     struct ExceptionMeta {
         TraceId txid_;
         int64_t span_id_;
@@ -342,28 +296,19 @@ namespace pinpoint {
         ExceptionMeta(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
             : txid_(txid), span_id_(span_id), url_template_(url_template), exceptions_(std::move(exceptions)) {}
         
-        // Delete copy constructor and copy assignment
         ExceptionMeta(const ExceptionMeta&) = delete;
         ExceptionMeta& operator=(const ExceptionMeta&) = delete;
-        
-        // Default move constructor and move assignment
+
         ExceptionMeta(ExceptionMeta&&) = default;
         ExceptionMeta& operator=(ExceptionMeta&&) = default;
     };
 
-    /**
-     * @brief Type-safe variant covering all metadata variants queued by the agent.
-     */
     using MetaValue = std::variant<ApiMeta, StringMeta, SqlUidMeta, ExceptionMeta>;
 
-    /**
-     * @brief Type discriminator for metadata payloads.
-     */
+    /// @brief Type discriminator for metadata payloads.
     enum MetaType {META_API, META_STRING, META_SQL_UID, META_EXCEPTION};
-    
-    /**
-     * @brief Metadata item queued for transmission to the collector.
-     */
+
+    /// @brief Metadata item queued for transmission to the collector.
     struct MetaData {
         MetaType meta_type_;
         MetaValue value_;
@@ -402,15 +347,10 @@ namespace pinpoint {
                               const GrpcClientTuning& tuning = {});
         ~GrpcMetadata() override = default;
 
-        /**
-         * @brief Adds metadata to the outbound queue.
-         *
-         * @param meta Metadata payload (ownership transferred).
-         */
+        /// @brief Adds metadata to the outbound queue (ownership transferred).
         void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
         /// @brief Worker loop that sends metadata payloads.
         void sendMetaWorker();
-        /// @brief Stops the metadata worker loop.
         void stopMetaWorker();
 
     protected:
@@ -445,14 +385,11 @@ namespace pinpoint {
         // Bounded wait for in-flight calls at shutdown, escalating to
         // TryCancel (mirrors GrpcSpan::await_in_flight_requests).
         void await_in_flight_requests();
-        // Worker loop body; sendMetaWorker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; sendMetaWorker() restarts it after a transient exception.
         void run_meta_worker();
     };
 
-    /**
-     * @brief gRPC client responsible for the profiler command stream.
-     */
+    /// @brief gRPC client responsible for the profiler command stream.
     class GrpcCommand : public GrpcClient {
     public:
         explicit GrpcCommand(std::shared_ptr<const Config> config,
@@ -509,23 +446,18 @@ namespace pinpoint {
                                 std::string_view message) const;
         void cancel_command_stream();
         bool wait_reconnect_delay(std::chrono::milliseconds delay);
-        // Worker loop body; commandWorker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; commandWorker() restarts it after a transient exception.
         void run_command_worker();
     };
 
-    /**
-     * @brief gRPC client responsible for agent registration and ping.
-     */
+    /// @brief gRPC client responsible for agent registration and ping.
     class GrpcAgent : public GrpcClient, public grpc::ClientBidiReactor<v1::PPing, v1::PPing> {
     public:
         explicit GrpcAgent(std::shared_ptr<const Config> config,
                            const GrpcClientTuning& tuning = {});
         ~GrpcAgent() override;
 
-        /**
-         * @brief Registers the agent with the collector and starts ping streaming.
-         */
+        /// @brief Registers with the collector and starts ping streaming.
         virtual GrpcRequestStatus registerAgent();
 
         /// @brief Boot-phase registration: sends AgentInfo repeatedly until the
@@ -536,17 +468,16 @@ namespace pinpoint {
 
         /// @brief Worker loop that periodically sends ping requests.
         void sendPingWorker();
-        /// @brief Stops the ping worker loop.
         void stopPingWorker();
         /// @brief Starts the periodic AgentInfo re-send scheduler.
         void startAgentInfo();
-        /// @brief Non-blocking half of stopAgentInfo(): records the stop
-        /// request and wakes a blocked registerAgentWithRetry() or scheduler
-        /// wait without joining anything. Used by the shutdown signal phase
-        /// so every worker winds down in parallel before the joins.
+        /// @brief Non-blocking half of stopAgentInfo(): records the stop and
+        /// wakes a blocked registerAgentWithRetry() or scheduler wait without
+        /// joining. Used by the shutdown signal phase so every worker winds
+        /// down in parallel before the joins.
         void requestStopAgentInfo();
-        /// @brief Stops the periodic AgentInfo re-send scheduler and wakes a
-        /// blocked registerAgentWithRetry(); joins the scheduler thread.
+        /// @brief Stops the scheduler and wakes a blocked
+        /// registerAgentWithRetry(); joins the scheduler thread.
         void stopAgentInfo();
         /// @brief Sets server metadata included in AgentInfo.
         void setServerMetaData(std::string_view server_info,
@@ -554,11 +485,8 @@ namespace pinpoint {
                                const std::vector<std::string>& libs);
 
         //grpc::ClientBidiReactor
-        /// @brief Notification invoked after each write completes.
         void OnWriteDone(bool ok) override;
-        /// @brief Notification invoked when a server ping response is available.
         void OnReadDone(bool ok) override;
-        /// @brief Final notification when the stream terminates.
         void OnDone(const grpc::Status& s) override;
 
     protected:
@@ -597,15 +525,13 @@ namespace pinpoint {
         void finish_ping_stream();
         void drain_ping_stream_on_error() noexcept;
         GrpcStreamStatus write_and_await_ping_stream();
-        // Worker loop body; sendPingWorker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; sendPingWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
         // start failed, so the supervisor retries with a fresh stream.
         bool run_ping_worker();
 
         void agent_info_worker();
-        // Worker loop body; agent_info_worker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; agent_info_worker() restarts it after a transient exception.
         void run_agent_info_worker();
         bool send_agent_info_once();
         bool send_agent_info_with_retries(int max_try_count);
@@ -619,57 +545,26 @@ namespace pinpoint {
      * @brief gRPC client that sends span batches to the collector via the
      *        unary @c SendSpanBatch RPC.
      *
-     * Mirrors the policy implemented in the Java agent's
-     * @c SpanBatchGrpcDataSender. Configuration lives under
-     * @c Config::span::batch (size / flush_interval_ms /
-     * collect_deadline_ms / max_concurrent_requests).
+     * Mirrors the Java agent's @c SpanBatchGrpcDataSender; configuration lives
+     * under @c Config::span::batch.
      *
-     * ### Hybrid batch collection (size or time bounded)
-     * - The worker blocks up to @c flush_interval_ms waiting for the first
-     *   queued chunk.
-     * - Once the first chunk arrives, more chunks are gathered until either
-     *   the batch reaches @c size or @c collect_deadline_ms elapses since
-     *   the first chunk — whichever comes first.
-     *
-     * ### Asynchronous unary transmission
-     * - Each batch is sent via @c span_stub_->async()->SendSpanBatch() with
-     *   a completion callback.
-     * - Per-call state (ClientContext, arena, request, reply) is owned by a
-     *   @c shared_ptr captured into the callback, so it remains alive through
-     *   callback completion.
-     *
-     * ### Concurrency control (permit-based semaphore)
-     * - At most @c max_concurrent_requests SendSpanBatch RPCs may be
-     *   in flight at the same time.
-     * - If no permit is available within @c flush_interval_ms the batch is
-     *   dropped and the event is logged at INFO.
-     *
-     * ### Queue overflow policy
-     * - The configured capacity is assigned to producer shards as transferable
-     *   quotas. When a shard's quota is full, @c enqueueSpan replaces that
-     *   shard's *oldest* chunk (head-drop), matching Java's preference for
-     *   retaining the newest telemetry without returning to a process-wide
-     *   lock. FIFO order is preserved per shard; cross-shard order is
-     *   intentionally unspecified.
-     * - By default once per minute, the worker logs the cumulative
-     *   oldest-drop count at WARN only when it has increased since the
-     *   previous report.
-     *
-     * ### partial_success handling
-     * - Successful responses with @c rejected_spans > 0 are logged at WARN.
-     * - Responses with no rejected spans but a non-empty @c error_message
-     *   are logged at INFO.
-     * - Rejected spans are not retried or re-queued (observability only).
-     *
-     * ### Shutdown
-     * - On exit the worker drains any remaining chunks and, if the channel
-     *   is already connected, sends them in batches of at most @c size. It
-     *   then waits up to @c span_shutdown_await_timeout for in-flight permits,
-     *   requests best-effort cancellation with TryCancel when calls remain,
-     *   and waits for the same interval once more.
-     * - Completion callbacks share state with the client only through a
-     *   @c shared_ptr (no raw @c this capture), so a callback that fires
-     *   after the GrpcSpan instance is destroyed remains memory-safe.
+     * - **Batching (size or time bounded).** The worker blocks up to
+     *   @c flush_interval_ms for the first chunk, then gathers more until the
+     *   batch reaches @c size or @c collect_deadline_ms elapses.
+     * - **Async unary send.** Per-call state (context, arena, request, reply)
+     *   is owned by a @c shared_ptr captured into the completion callback —
+     *   never a raw @c this — so a callback firing after this client is
+     *   destroyed stays memory-safe.
+     * - **Concurrency.** At most @c max_concurrent_requests RPCs in flight; a
+     *   batch that cannot get a permit within @c flush_interval_ms is dropped.
+     * - **Overflow.** Capacity is split into transferable per-shard quotas;
+     *   a full shard head-drops its oldest chunk, keeping the newest telemetry
+     *   without a process-wide lock. FIFO per shard; cross-shard order is
+     *   unspecified. Cumulative drops are logged at most once per minute.
+     * - **partial_success.** Rejected spans are logged, never retried.
+     * - **Shutdown.** Drains remaining chunks (if the channel is connected),
+     *   waits @c span_shutdown_await_timeout for in-flight permits, TryCancels
+     *   what remains, then waits once more.
      */
     struct SpanBatchInflight;
 
@@ -679,20 +574,14 @@ namespace pinpoint {
                           const GrpcClientTuning& tuning = {});
         ~GrpcSpan() override = default;
 
-        /**
-         * @brief Adds a span chunk to the outbound queue.
-         *
-         * On overflow the oldest chunk in the producer's shard is dropped to
-         * make room (head-drop), retaining the newest telemetry.
-         *
-         * @param span Span chunk payload (ownership transferred).
-         */
+        /// @brief Adds a span chunk to the outbound queue (ownership
+        ///        transferred). On overflow the oldest chunk in the producer's
+        ///        shard is head-dropped, retaining the newest telemetry.
         void enqueueSpan(std::unique_ptr<SpanChunk> span) noexcept;
         /// @brief Worker loop that drains the queue and sends spans in batches.
         void sendSpanWorker();
-        /// @brief Signals the worker loop to stop; when the channel is already
-        ///        connected, the loop attempts to send pending spans before
-        ///        exiting.
+        /// @brief Signals the worker to stop; on a connected channel it sends
+        ///        pending spans before exiting.
         void stopSpanWorker();
 
     protected:
@@ -731,35 +620,25 @@ namespace pinpoint {
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
         void await_in_flight_requests();
         void flush_remaining(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);
-        // Worker loop body; sendSpanWorker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; sendSpanWorker() restarts it after a transient exception.
         void run_span_worker(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);
     };
 
-    /**
-     * @brief gRPC client that streams agent and URL statistics to the collector.
-     */
+    /// @brief gRPC client that streams agent and URL statistics to the collector.
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
         explicit GrpcStats(std::shared_ptr<const Config> config,
                            const GrpcClientTuning& tuning = {});
         ~GrpcStats() override = default;
 
-        /**
-         * @brief Queues a statistics payload to be sent.
-         *
-         * @param stats Type selector that determines which payload to build.
-         */
+        /// @brief Queues a statistics payload; @p stats selects which to build.
         void enqueueStats(StatsType stats) noexcept;
         /// @brief Worker loop that streams statistics.
         void sendStatsWorker();
-        /// @brief Stops the statistics worker loop.
         void stopStatsWorker();
 
         //grpc::ClientWriteReactor
-        /// @brief Invoked when a write completes on the stream.
         void OnWriteDone(bool ok) override;
-        /// @brief Called when the stream finishes.
         void OnDone(const grpc::Status& status) override;
 
     protected:
@@ -800,8 +679,7 @@ namespace pinpoint {
 
         GrpcStreamStatus next_write();
         void empty_stats_queue() noexcept;
-        // Worker loop body; sendStatsWorker() supervises it and restarts it
-        // after a transient exception instead of letting the worker die.
+        // Worker loop body; sendStatsWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
         // start failed, so the supervisor retries with a fresh stream.
         bool run_stats_worker();

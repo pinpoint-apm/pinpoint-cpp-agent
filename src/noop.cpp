@@ -45,16 +45,14 @@ namespace pinpoint {
     SpanPtr noopSpan() {
         // Per-thread localized owner of the one noop span. noopSpan() is
         // returned on every filtered / disabled-agent / failed-admission
-        // request (see AgentImpl::NewSpan), and copying one process-wide
-        // shared_ptr there puts an atomic increment plus a later decrement on
-        // a single control block for every such request — the same cache line
-        // ping-pong across cores that AtomicSharedPtr's ThreadCached mode
-        // exists to remove. localize_shared() keeps the pointee identical (so
-        // `.get()` and `==` against the singleton still hold) while giving
-        // each thread its own control block to hammer. thread_local_lazy
-        // keeps this callable during the thread's own TLS teardown; a
-        // teardown re-entry leaks one aliased owner, which keeps the immortal
-        // noop span alive either way.
+        // request, and copying one process-wide shared_ptr there would put an
+        // increment and decrement on a single control block per request — the
+        // cache-line ping-pong ThreadCached exists to remove. localize_shared()
+        // keeps the pointee identical (so `.get()` and `==` against the
+        // singleton still hold) while giving each thread its own control block.
+        // thread_local_lazy keeps this callable during the thread's own TLS
+        // teardown; a re-entry there leaks one aliased owner of an immortal
+        // object.
         try {
             return thread_local_lazy<SpanPtr>(
                 [] { return new SpanPtr(localize_shared(noopSpanHolder())); });
@@ -84,15 +82,14 @@ namespace pinpoint {
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         runtime_(std::move(runtime)),
-        // With a runtime snapshot that carries the stats sinks (every
+        // With a runtime snapshot carrying the stats sinks (every
         // build_runtime() snapshot does), this span never touches the agent
-        // after construction: everything EndSpan and the destructor need —
-        // AgentStats, the url-stat sink, the status-error set — is owned by
-        // runtime_, which the span already holds through a thread-localized
-        // control block. Skipping selfRef() here removes a per-request CAS
-        // on the agent's single shared control block: unsampled spans are
-        // the majority path whenever sampling is on, and that one CAS was
-        // measured as half the four-thread cost of this path
+        // after construction: AgentStats, the url-stat sink and the
+        // status-error set all belong to runtime_, which the span holds through
+        // a thread-localized control block. Skipping selfRef() removes a
+        // per-request CAS on the agent's single shared control block —
+        // unsampled spans are the majority path when sampling is on, and that
+        // CAS measured as half this path's four-thread cost
         // (span_lifecycle_benchmark). Without the sinks (tests, hand-built
         // runtimes) the legacy keep-alive covers the agent_ fallbacks below.
         agent_ref_(runtime_ && runtime_->stats && runtime_->url_stats
@@ -116,16 +113,14 @@ namespace pinpoint {
     }
 
     UnsampledSpan::~UnsampledSpan() {
-        // Self-heal spans dropped without EndSpan, mirroring ~SpanImpl — and
-        // the hard backstop for the intrusive node: active_node_ lives inside
-        // this object, so a still-linked node here would leave dangling
-        // pointers in its shard list. Check the node itself rather than
-        // finished_: this still covers an EndSpan failure before its drop,
-        // while a normally ended span returns after one atomic load — without
-        // resolving the sink, so a non-owning test agent_ is never touched.
-        // The registry outlives this unlink on every path: runtime_ owns the
-        // AgentStats it lives in, or the fallback's agent_ref_/test caller
-        // keeps the agent alive.
+        // Self-heals spans dropped without EndSpan, mirroring ~SpanImpl, and is
+        // the hard backstop for the intrusive node: a still-linked node here
+        // would leave dangling pointers in its shard list. Checking the node
+        // rather than finished_ still covers an EndSpan failure before its
+        // drop, while a normally ended span returns after one atomic load
+        // without resolving the sink, so a non-owning test agent_ is never
+        // touched. The registry outlives this unlink either way: runtime_ owns
+        // the AgentStats, or the fallback's agent_ref_ keeps the agent alive.
         if (active_node_.isLinked()) {
             if (auto* stats = statsSink()) {
                 try {

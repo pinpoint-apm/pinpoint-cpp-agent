@@ -231,11 +231,10 @@ namespace pinpoint {
     void GrpcClient::build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const {
         assert(agent_ != nullptr && "setAgentService() must be called before build_grpc_context()");
         // The socket-id-independent headers are immutable once the agent is
-        // started (agent id / start time / app type are all fixed before any
-        // worker runs), and this runs for every unary request — build them
-        // once and reuse. call_once because some clients build contexts from
-        // more than one thread (GrpcAgent: ping + AgentInfo workers,
-        // GrpcCommand: command worker + active-thread-count streams).
+        // started, and this runs for every unary request — build once, reuse.
+        // call_once because some clients build contexts from more than one
+        // thread (GrpcAgent: ping + AgentInfo; GrpcCommand: command worker +
+        // active-thread-count streams).
         std::call_once(grpc_metadata_once_, [this] {
             grpc_metadata_cache_ = build_grpc_metadata(*config_, agent_->getAgentId(),
                                                        agent_->getStartTime(), agent_->getAppType());
@@ -332,11 +331,10 @@ namespace pinpoint {
     };
 
     // Every coordination point of the metadata pipeline under one mutex/cv:
-    // producers enqueue, completion callbacks return permits and outcomes,
-    // and the worker waits on the single cv for any of them. Shared by
-    // shared_ptr with the callbacks — never GrpcMetadata's `this` — so a
-    // callback delivered after the client (or the whole agent) is destroyed
-    // only touches live heap memory (mirrors SpanBatchInflight).
+    // producers enqueue, completion callbacks return permits and outcomes, and
+    // the worker waits on the single cv for any of them. Shared with the
+    // callbacks by shared_ptr — never GrpcMetadata's `this` — so a callback
+    // delivered after the client is destroyed only touches live heap memory.
     struct MetaPipeline {
         std::mutex mutex;
         std::condition_variable cv;
@@ -354,16 +352,13 @@ namespace pinpoint {
         std::vector<std::shared_ptr<PendingMetaRpc>> completed;
 
         void completeCall(const std::shared_ptr<PendingMetaRpc>& call, grpc::Status status) {
-            // The status is taken by value and moved, never copied: a copy
-            // assignment duplicates the error strings and can throw bad_alloc
-            // between the permit release and the notify_all below. gRPC's
-            // callback layer swallows the escaping exception, so the unwind
-            // would silently skip the notify and leave the worker parked in
-            // its bare cv.wait() with a free permit and a non-empty queue —
-            // on a quiet app, metadata upload would stall until the next
-            // enqueue. Moves transfer the strings without allocating; pinned
-            // here so a grpc::Status change that breaks that stops the build
-            // instead of the worker.
+            // Taken by value and moved, never copied: a copy assignment
+            // duplicates the error strings and can throw between the permit
+            // release and the notify_all below. gRPC's callback layer swallows
+            // the escaping exception, so the unwind would skip the notify and
+            // park the worker in its bare cv.wait() with a free permit and a
+            // non-empty queue. Pinned here so a grpc::Status change that
+            // breaks the noexcept move stops the build, not the worker.
             static_assert(std::is_nothrow_move_assignable<grpc::Status>::value &&
                               std::is_nothrow_move_constructible<grpc::Status>::value,
                           "completeCall relies on grpc::Status moves never throwing");
@@ -410,13 +405,11 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::launch_meta_rpc(std::unique_ptr<MetaData> meta, int retry_count) {
-        // The caller holds one permit. Every failure path before the async
-        // call is launched must hand it back and route the item through the
-        // normal retry path; once launched, the completion callback owns the
-        // release. The catch below must be catch-all: a non-std exception
-        // escaping this window would leak the permit permanently, shrinking
-        // the pipeline for the rest of the process lifetime (mirrors
-        // GrpcSpan::send_batch_async).
+        // The caller holds one permit. Every failure path before the launch
+        // must hand it back and route the item through the normal retry path;
+        // once launched, the completion callback owns the release. The catch
+        // must be catch-all: a non-std exception escaping here would leak the
+        // permit permanently, shrinking the pipeline for the process lifetime.
         std::shared_ptr<PendingMetaRpc> call;
         bool registered = false;
         try {
@@ -543,24 +536,22 @@ namespace pinpoint {
 
         if (pending.meta != nullptr) {
             // Dropped on overflow, or never enqueued because the insertion
-            // threw. Reported outside the lock, at WARN so outage data loss
-            // is visible at the default log level, rate-limited so a full
-            // queue cannot flood the log from request threads. The label
-            // names the current drop's cause; the count is cumulative across
-            // both causes.
+            // threw. Reported outside the lock, at WARN so outage data loss is
+            // visible by default, rate-limited so a full queue cannot flood
+            // the log. The label names this drop's cause; the count is
+            // cumulative across both.
             if (const auto dropped = meta_drop_reporter_.record()) {
                 LOG_WARN("metadata {}: {} dropped in total (max queue size {})",
                          enqueue_threw ? "enqueue failed" : "queue overflow",
                          dropped, max_queue_size);
             }
             // The producer registered the id in the agent caches before
-            // enqueueing (see AgentImpl::cacheApi), and a cache hit
-            // suppresses re-publication — dropping the message without
-            // releasing the entry would leave spans referencing metadata the
-            // collector never receives, for the rest of the process lifetime.
-            // Release it so the id is regenerated and re-sent, exactly like
-            // the retry-exhaustion path in retry_or_drop(). Outside the
-            // pipeline mutex for the lock-order reasons documented there.
+            // enqueueing (see AgentImpl::cacheApi) and a cache hit suppresses
+            // re-publication, so dropping without releasing the entry would
+            // leave spans referencing metadata the collector never receives.
+            // Release it so the id is regenerated and re-sent, like the
+            // retry-exhaustion path in retry_or_drop(). Outside the pipeline
+            // mutex for the lock-order reasons documented there.
             if (agent_ != nullptr) {
                 release_failed_cache(*pending.meta);
             }
@@ -628,13 +619,12 @@ namespace pinpoint {
             // the pipeline cv — which re-examines the retry queue on its next
             // loop iteration.
         } catch (...) {
-            // Enqueuing the retry threw (e.g. bad_alloc). The item would
-            // otherwise be destroyed here with its cache id still marked
-            // published, leaving spans referencing metadata the collector
-            // never receives. Release the cache entry so the id is
-            // regenerated and re-sent later. The multimap insertion throws
-            // from node allocation, before the element is moved, so
-            // `pending.meta` is still valid.
+            // Enqueuing the retry threw. The item would otherwise be destroyed
+            // with its cache id still marked published, leaving spans
+            // referencing metadata the collector never receives — release the
+            // entry so the id is regenerated and re-sent. The multimap
+            // insertion throws from node allocation, before the element is
+            // moved, so `pending.meta` is still valid.
             LOG_ERROR("failed to schedule metadata retry; releasing cache to allow re-send");
             if (pending.meta) {
                 release_failed_cache(*pending.meta);
@@ -764,13 +754,11 @@ namespace pinpoint {
             }
 
             // Outside the pipeline lock: readyChannel() may block through its
-            // whole reconnect backoff while completions keep accumulating.
-            // Must not throw past this frame: the permit is already held and
-            // the item is owned by this stack frame, so an exception escaping
-            // to the supervisor would destroy the item without releasing its
-            // cache entry AND leak the permit, permanently shrinking the
-            // pipeline (a cap of 1 would stall metadata upload for the
-            // process lifetime). Treat a throwing readiness check like an
+            // whole reconnect backoff while completions accumulate. Must not
+            // throw past this frame — the permit is held and the item owned
+            // here, so an escaping exception would destroy the item without
+            // releasing its cache entry AND leak the permit, permanently
+            // shrinking the pipeline. Treat a throwing readiness check like an
             // unready channel: a failed attempt on the normal retry path.
             bool channel_ready = false;
             try {
@@ -1069,15 +1057,13 @@ namespace pinpoint {
     bool GrpcCommand::add_active_thread_count_stream(int32_t request_id) {
         std::unique_lock<std::mutex> lock(active_streams_mutex_);
 
-        // The collector may re-issue the command for a request id it already
+        // The collector may re-issue a command for a request id it already
         // owns (e.g. after a command-stream reconnect). Signal the old stream
         // to stop, but never join it here: the join would run under
-        // active_streams_mutex_, which the shutdown signal phase
-        // (request_stop_active_thread_count_streams) must be able to take
-        // without blocking — and a predecessor wedged in a deadline-less
-        // Write()/Finish() that ignores TryCancel has no completion bound.
-        // Once done it is swept by a later cleanup, or joined by
-        // commandWorker() on its way out inside the shutdown deadline; until
+        // active_streams_mutex_, which the shutdown signal phase must be able
+        // to take without blocking, and a predecessor wedged in a
+        // deadline-less Write()/Finish() has no completion bound. A later
+        // cleanup sweeps it, or commandWorker() joins it on its way out; until
         // then it counts toward the stream cap below, degrading a wedged
         // re-issue to a logged rejection instead of an unbounded stall.
         for (auto& stream : active_thread_count_streams_) {
@@ -1110,9 +1096,8 @@ namespace pinpoint {
         // Runs under active_streams_mutex_, and erasing joins each swept
         // stream via its destructor. Sweeping only done() streams keeps that
         // join near-instant (done_ is the last statement of every run() exit
-        // path, so the thread body has already returned): no join without a
-        // completion bound may ever run under this mutex, or the shutdown
-        // signal phase could block behind it.
+        // path): no join without a completion bound may run under this mutex,
+        // or the shutdown signal phase could block behind it.
         active_thread_count_streams_.erase(
             std::remove_if(active_thread_count_streams_.begin(), active_thread_count_streams_.end(),
                 [](const auto& stream) { return stream->done(); }),
@@ -1188,11 +1173,9 @@ namespace pinpoint {
 
         // readyChannel() backs off only while the channel itself is down. A
         // fixed short delay here would churn once a second forever when the
-        // channel is READY but the collector terminates the stream
-        // immediately (auth/api-key rejection, version mismatch, port
-        // pointing at a non-command service) — two INFO lines per second for
-        // the process lifetime. Back off exponentially instead, resetting
-        // once the stream demonstrably works (a command is read).
+        // channel is READY but the collector terminates the stream at once
+        // (auth rejection, version mismatch, wrong port). Back off
+        // exponentially instead, resetting once a command is read.
         ExponentialBackoff reconnect_backoff{tuning_};
 
         while (!stopping()) {
@@ -1207,13 +1190,11 @@ namespace pinpoint {
             const StreamContextGuard context_guard(this, &context);
 
             // Re-check under the publish: a requestStopCommandWorker() that ran
-            // between the loop condition above and the guard publishing the
-            // context found nothing to TryCancel, so it must be honored here.
-            // Otherwise the RPC below would start uncancellable, and its
-            // deadline-less Finish() could block on an unresponsive peer
-            // while agent shutdown hangs in the unconditional worker join —
-            // the same window the active-thread-count stream closes after
-            // publishing its own context.
+            // between the loop condition and the guard publishing the context
+            // found nothing to TryCancel, so it must be honored here.
+            // Otherwise the RPC starts uncancellable and its deadline-less
+            // Finish() could block on an unresponsive peer while shutdown
+            // hangs in the worker join.
             if (stopping()) {
                 break;
             }
@@ -1340,12 +1321,12 @@ namespace pinpoint {
         v1::PResult reply;
 
         // Deliberately NOT under channel_mutex_: agent_stub_ is created by
-        // openChannel() before any AgentInfo send runs and gRPC stubs are
-        // thread-safe. Holding the mutex across this blocking unary call would
-        // stall the ping worker's readyChannel() for up to the request
-        // deadline — and conversely readyChannel()'s unbounded backoff loop
-        // would park this thread on the mutex for a whole collector outage,
-        // uninterruptible by stopAgentInfo().
+        // openChannel() before any AgentInfo send and gRPC stubs are
+        // thread-safe. Holding the mutex across this blocking call would stall
+        // the ping worker's readyChannel() for up to the request deadline —
+        // and conversely readyChannel()'s unbounded backoff would park this
+        // thread for a whole collector outage, uninterruptible by
+        // stopAgentInfo().
         build_grpc_context(&ctx, 0);
 
         google::protobuf::Arena arena;
@@ -1365,18 +1346,16 @@ namespace pinpoint {
     }
 
     bool GrpcAgent::registerAgentWithRetry() {
-        // Boot-phase registration: keep trying until the collector accepts
-        // the AgentInfo. Supervised per attempt — a transient exception (e.g.
-        // bad_alloc while building AgentInfo under memory pressure) is
-        // retried like a failed send, so the agent still comes up once the
-        // condition clears. Only stopAgentInfo() or agent exit ends the loop.
+        // Boot-phase registration: keep trying until the collector accepts the
+        // AgentInfo. Supervised per attempt, so a transient exception is
+        // retried like a failed send. Only stopAgentInfo() or agent exit ends
+        // the loop.
         const auto retry_interval = std::chrono::milliseconds(config_->collector.agent_info.send_retry_interval_ms);
         // Jittered, non-escalating delay (multiplier 1.0 keeps the base
-        // interval): sibling pre-fork workers start simultaneously, and an
-        // identical fixed retry interval would send every worker's
-        // registration to the collector in lockstep for the whole outage.
-        // Constructed here — in the worker's init thread, always post-fork —
-        // so each worker seeds its own jitter sequence.
+        // interval): sibling pre-fork workers start simultaneously, and a
+        // fixed interval would put every worker's registration in lockstep for
+        // the whole outage. Constructed here — the worker's init thread,
+        // always post-fork — so each worker seeds its own jitter sequence.
         ExponentialBackoff retry_backoff(retry_interval, 1.0,
                                          tuning_.reconnect_randomization_factor,
                                          retry_interval * 2);
@@ -1534,14 +1513,12 @@ namespace pinpoint {
             grpc_status_ = STREAM_CONTINUE;
         }
         // The published "live call" state above assumes the start calls below
-        // cannot fail. Should one throw anyway (e.g. bad_alloc under memory
-        // pressure), no OnDone will ever arrive for this reactor, so restore
-        // STREAM_DONE before unwinding — otherwise finish_ping_stream() and
-        // drain_ping_stream_on_error() would wait forever for it and hang
-        // shutdown. Rethrow rather than return false: the worker loops treat
-        // false as "stopping" and exit for the process lifetime, while the
-        // supervisor (sendPingWorker) retries a thrown transient failure
-        // after the worker restart delay.
+        // cannot fail. Should one throw anyway, no OnDone ever arrives for this
+        // reactor, so restore STREAM_DONE before unwinding — otherwise
+        // finish_ping_stream() and drain_ping_stream_on_error() wait forever
+        // and hang shutdown. Rethrow rather than return false: the worker
+        // loops read false as "stopping" and exit for the process lifetime,
+        // while the supervisor retries a thrown transient failure.
         try {
             agent_stub_->async()->PingSession(stream_context_.get(), this);
 
@@ -2227,10 +2204,9 @@ namespace pinpoint {
         // See start_ping_stream(): if a start call below throws, no OnDone will
         // arrive for this reactor, so restore STREAM_DONE to keep
         // finish_stats_stream()/drain_stats_stream_on_error() from hanging.
-        // Rethrow rather than return false: the worker loops treat false as
+        // Rethrow rather than return false: the worker loops read false as
         // "stopping" and exit for the process lifetime, while the supervisor
-        // (sendStatsWorker) retries a thrown transient failure after the
-        // worker restart delay.
+        // retries a thrown transient failure.
         try {
             stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
 
@@ -2564,13 +2540,12 @@ namespace pinpoint {
             stats_queue_cv_.notify_one();
         }
         // The worker may be blocked in write_and_await_stats_stream() waiting
-        // for a write completion that a stalled collector never delivers; only
-        // stream activity can wake that wait. Request cancellation to prompt
-        // the pending operation and OnDone; TryCancel itself provides no hard
-        // completion bound. Taken after releasing
-        // stats_queue_mutex_: the worker acquires stats_queue_mutex_ while
-        // holding stream_mutex_ (next_write), so nesting them here in the
-        // opposite order would risk deadlock.
+        // for a write completion a stalled collector never delivers; only
+        // stream activity wakes that wait. Request cancellation to prompt the
+        // pending operation and OnDone (TryCancel provides no hard completion
+        // bound). Taken after releasing stats_queue_mutex_: the worker takes
+        // that lock while holding stream_mutex_ (next_write), so the opposite
+        // nesting here would risk deadlock.
         std::unique_lock<std::mutex> lock(stream_mutex_);
         if (stream_context_ != nullptr && grpc_status_ != STREAM_DONE) {
             stream_context_->TryCancel();

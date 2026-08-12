@@ -104,17 +104,17 @@ static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
 // Owned-handle registry
 //
 // Agent and span handles are the only heap-owned handles, and the classic C
-// misuse — destroying one twice — would be a double delete (heap corruption
-// inside the host application). Tracking raw wrapper addresses is insufficient:
-// after one is deleted, the allocator can reuse that address for a new handle,
-// and a stale second destroy would then delete the new live handle (ABA).
+// misuse — destroying one twice — would be a double delete inside the host.
+// Tracking raw wrapper addresses is not enough: the allocator can reuse a freed
+// address for a new handle, so a stale second destroy would kill the live one
+// (ABA).
 //
-// Expose monotonically-generated, never-reused odd pointer tokens instead.
-// They are opaque identity values and are never dereferenced; the registry maps
-// each token to a shared wrapper. A lookup copies that shared_ptr under the
-// shard lock, so a concurrent destroy can remove the token without freeing the
-// wrapper out from under a call already in progress. Odd values cannot collide
-// with the aligned addresses of the two leaked noop sentinels.
+// Expose monotonically-generated, never-reused odd pointer tokens instead: they
+// are opaque identity values, never dereferenced, and the registry maps each to
+// a shared wrapper. A lookup copies that shared_ptr under the shard lock, so a
+// concurrent destroy can remove the token without freeing the wrapper out from
+// under a call in progress. Odd values cannot collide with the aligned
+// addresses of the two leaked noop sentinels.
 // ============================================================================
 
 struct pt_agent_s { pinpoint::AgentPtr ptr; };
@@ -299,12 +299,11 @@ static void destroy_handle(Handle handle, Handle noop_handle) {
 // registry-owned wrappers carry the shared_ptr that keeps the C++ object alive.
 //
 // Span-event handles wrap non-owning raw pointers: the handle IS the pointer,
-// reinterpret_cast to the opaque handle type. pt_span_event_s is never
-// defined — the cast is only ever reversed, never dereferenced through the
-// handle type. This keeps per-event handle traffic allocation-free (including
-// the per-span disabled event, which cannot be a static sentinel), makes
-// destroy a no-op, and collapses the shared noop/unsampled singletons to one
-// handle value per pointee without any sentinel bookkeeping. A null pointer
+// reinterpret_cast to the opaque type. pt_span_event_s is never defined — the
+// cast is only reversed, never dereferenced. This keeps per-event handle
+// traffic allocation-free (including the per-span disabled event, which cannot
+// be a static sentinel), makes destroy a no-op, and collapses the shared
+// noop/unsampled singletons to one handle value per pointee. A null pointer
 // maps to a null handle.
 // ============================================================================
 
@@ -328,16 +327,15 @@ static void pt_handle_call(pt_span_event_t handle, F&& fn) {
 // ============================================================================
 // Static noop sentinel handles (agent and span only)
 //
-// The C++ layer treats noop work as free. To preserve that at the C boundary we
+// The C++ layer treats noop work as free. To preserve that at the C boundary,
 // hand back one static sentinel handle per noop owner type so hot disabled
-// paths skip handle allocation/free and refcount churn on the shared noop
-// singletons. Event handles need no sentinels — they are pointer
-// casts, so singleton pointees collapse to one handle value by construction.
+// paths skip handle allocation and refcount churn. Event handles need no
+// sentinels — being pointer casts, singleton pointees already collapse to one
+// handle value.
 //
-// Lazy function-local statics give thread-safe initialization (C++11) and the
-// correct teardown order: each sentinel is constructed after the noop singleton
-// it references (noopXxx() is called during the sentinel's own init), so it is
-// destroyed first and its reference keeps the singleton alive until then.
+// Lazy function-local statics give thread-safe init and the correct teardown
+// order: each sentinel is constructed after the noop singleton it references,
+// so it is destroyed first and keeps that singleton alive until then.
 // ============================================================================
 
 // Wrap a C++ result in a fresh registry token, unless it is the shared noop
@@ -364,9 +362,8 @@ static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
 // Trampoline helpers
 //
 // C++ std::function closures cannot be converted to plain C function pointers.
-// We use a small context struct placed on the caller's stack together with a
-// file-scope trampoline function, so the trampoline bridge does not allocate
-// a separate callback context.
+// A small context struct on the caller's stack plus a file-scope trampoline
+// bridges them without allocating a separate callback context.
 // ============================================================================
 
 // Both trampolines are invoked from inside the USER's C for_each loop, so a

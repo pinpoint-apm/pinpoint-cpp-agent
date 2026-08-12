@@ -33,9 +33,7 @@ namespace pinpoint {
      */
     enum class NameVersion { kV1, kV3, kV4 };
 
-    /**
-     * @brief Parse the uid version string. Case-insensitive. Unknown/empty -> v3.
-     */
+    /// @brief Parse the uid version string. Case-insensitive. Unknown/empty -> v3.
     NameVersion parse_name_version(std::string_view value);
 
     namespace object_name {
@@ -58,9 +56,7 @@ namespace pinpoint {
         constexpr int VERSION_V4 = 4;
     }
 
-    /**
-     * @brief 128-bit UUID stored as most/least significant bits (big-endian layout).
-     */
+    /// @brief 128-bit UUID stored as most/least significant bits (big-endian layout).
     struct Uuid {
         uint64_t msb = 0;
         uint64_t lsb = 0;

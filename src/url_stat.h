@@ -45,9 +45,7 @@ namespace pinpoint {
     constexpr auto URL_STAT_TICK_INTERVAL = std::chrono::seconds(30);
     constexpr auto URL_STAT_SEND_INTERVAL = std::chrono::seconds(30);
 
-    /**
-     * @brief Maintains a fixed interval clock used to bucketize URL statistics.
-     */
+    /// @brief Fixed-interval clock used to bucketize URL statistics.
     class TickClock {
     public:
         // Clamped to >= 1: tick() computes `end_millis % interval`, so a
@@ -55,20 +53,14 @@ namespace pinpoint {
         // Production always passes the URL_STAT_TICK_INTERVAL constant; the
         // clamp guards the test-injection path (see UrlStats' ctor).
         explicit TickClock(int64_t interval) : interval_(interval > 0 ? interval : 1) {}
-        /**
-         * @brief Returns the tick for the supplied end time.
-         *
-         * @param end_time Span completion time.
-         */
+        /// @brief Returns the tick for a span's completion time.
         int64_t tick(std::chrono::system_clock::time_point end_time) const;
 
     private:
         int64_t interval_;
     };
 
-    /**
-     * @brief Histogram aggregating elapsed times for URL statistics.
-     */
+    /// @brief Histogram aggregating elapsed times for URL statistics.
     class UrlStatHistogram {
     public:
         UrlStatHistogram() : total_(0), max_(0) {
@@ -76,18 +68,11 @@ namespace pinpoint {
         }
         ~UrlStatHistogram() = default;
 
-        /**
-         * @brief Adds an elapsed time sample to the histogram.
-         *
-         * @param elapsed Sample duration in milliseconds.
-         */
+        /// @brief Adds an elapsed-time sample (milliseconds).
         void add(int32_t elapsed);
-        /// @brief Returns the total accumulated elapsed time.
         int64_t total() const { return total_; }
-        /// @brief Returns the maximum observed elapsed time.
         int64_t max() const { return max_; }
-        /// @brief Returns the bucket value at the specified index.
-        int32_t histogram(int index) const { 
+        int32_t histogram(int index) const {
             if (index < 0 || index >= URL_STATS_BUCKET_SIZE) {
                 return 0;
             }
@@ -101,21 +86,16 @@ namespace pinpoint {
     };
 
 
-    /**
-     * @brief Statistics tracked for a single URL pattern and tick.
-     */
+    /// @brief Statistics tracked for a single URL pattern and tick.
     class EachUrlStat {
     public:
         explicit EachUrlStat(int64_t tick) : tickTime_(tick) {}
         ~EachUrlStat() = default;
 
-        /// @brief Returns the histogram aggregating all responses.
         UrlStatHistogram& getTotalHistogram() { return totalHistogram_; }
         const UrlStatHistogram& getTotalHistogram() const { return totalHistogram_; }
-        /// @brief Returns the histogram aggregating failed responses.
         UrlStatHistogram& getFailHistogram() { return failedHistogram_; }
         const UrlStatHistogram& getFailHistogram() const { return failedHistogram_; }
-        /// @brief Returns the tick value associated with this statistic.
         int64_t tick() const { return tickTime_; }
 
     private:
@@ -124,9 +104,7 @@ namespace pinpoint {
         int64_t tickTime_;
     };
 
-    /**
-     * @brief Key identifying URL statistics by pattern and tick.
-     */
+    /// @brief Key identifying URL statistics by pattern and tick.
     struct UrlKey {
         std::string url_;
         int64_t tick_;
@@ -144,9 +122,7 @@ namespace pinpoint {
         }
     };
 
-    /**
-     * @brief Raw runtime information for a single URL invocation.
-     */
+    /// @brief Raw runtime information for a single URL invocation.
     struct UrlStatEntry {
         std::string url_pattern_;
         std::string method_;
@@ -160,9 +136,7 @@ namespace pinpoint {
                   failed_{false}, end_time_{}, elapsed_{} {}
     };
 
-    /**
-     * @brief Snapshot of URL statistics aggregated over a time window.
-     */
+    /// @brief Snapshot of URL statistics aggregated over a time window.
     class UrlStatSnapshot {
     public:
         using UrlStatMap = std::unordered_map<UrlKey, EachUrlStat, UrlKeyHash>;
@@ -172,43 +146,22 @@ namespace pinpoint {
         UrlStatSnapshot(const UrlStatSnapshot&) = delete;
         UrlStatSnapshot& operator=(const UrlStatSnapshot&) = delete;
         
-        /**
-         * @brief Adds a URL statistic to the snapshot using bucketization rules.
-         *
-         * @param us URL statistic entry.
-         * @param config Agent configuration for histogram settings.
-         * @param tick_clock Clock for time bucketing.
-         */
+        /// @brief Adds a URL statistic using the bucketization rules.
         void add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
-        /// @brief Returns the const map storing statistics per URL/tick.
         const UrlStatMap& getEachStats() const { return urlMap_; }
 
-        /**
-         * @brief Trims a URL path using the configured depth.
-         *
-         * @param url Raw URL path.
-         * @param depth Maximum number of segments to keep.
-         */
+        /// @brief Trims a URL path to at most @p depth segments.
         static std::string trim_url_path(std::string_view url, int depth);
 
     private:
         UrlStatMap urlMap_;
     };
 
-    /**
-     * @brief Background workers for collecting and sending URL statistics.
-     */
+    /// @brief Background workers for collecting and sending URL statistics.
     class UrlStats {
     public:
-        /**
-         * @brief Constructs the URL statistics aggregator.
-         *
-         * @param agent Owning agent service.
-         * @param tick_interval Time-bucket width for aggregation; defaults to
-         *        the production value, tests inject shorter buckets.
-         * @param send_interval Period of the send worker; defaults to the
-         *        production value, tests inject millisecond periods.
-         */
+        /// @brief @p tick_interval (bucket width) and @p send_interval default
+        ///        to the production values; tests inject shorter ones.
         explicit UrlStats(AgentService* agent,
                           std::chrono::seconds tick_interval = URL_STAT_TICK_INTERVAL,
                           std::chrono::milliseconds send_interval = URL_STAT_SEND_INTERVAL);
@@ -228,18 +181,15 @@ namespace pinpoint {
         void enqueueUrlStats(UrlStatEntry stats, const Config& config) noexcept;
         /// @brief Worker loop that aggregates URL statistics.
         void addUrlStatsWorker();
-        /// @brief Stops the aggregation worker.
         void stopAddUrlStatsWorker();
         /// @brief Worker loop that sends aggregated statistics to the collector.
         void sendUrlStatsWorker();
-        /// @brief Stops the sending worker.
         void stopSendUrlStatsWorker();
 
         /// @brief Adds a runtime statistic to the current snapshot buffer.
         void addSnapshot(const UrlStatEntry* us, const Config& config);
-        /// @brief Extracts the latest URL statistic snapshot for transmission.
+        /// @brief Extracts the latest snapshot for transmission.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot();
-        /// @brief Returns the tick clock for time bucketing.
         TickClock& getTickClock() { return tick_clock_; }
 
     private:

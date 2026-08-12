@@ -32,39 +32,33 @@ namespace pinpoint {
     /**
      * @brief Preallocated bounded queue with producer contention sharded N ways.
      *
-     * Producer threads are assigned a stable home shard. Each shard has an
-     * independent, short-held mutex and circular buffer, removing the former
-     * process-wide mutex and queue-storage allocation from the hot path. Values
-     * never move to another shard, so FIFO ordering is retained for each
-     * producer shard.
+     * Producer threads get a stable home shard, each with an independent,
+     * short-held mutex and circular buffer, keeping the hot path off any
+     * process-wide mutex or allocation. Values never move between shards, so
+     * FIFO ordering holds per producer shard.
      *
      * Concurrency contract: multi-producer, SINGLE consumer. Any number of
-     * threads may enqueue concurrently, but the dequeue methods (try_dequeue,
-     * try_dequeue_batch) must only ever be called by
-     * one consumer thread — consumer_cursor_ is deliberately a plain field
-     * (see its comment), so two concurrent dequeuers are a data race (UB),
-     * not merely an unspecified dequeue order. The production consumer is the
-     * span-sender worker thread (GrpcSpan::sendSpanWorker, including its
-     * post-stop flush, which runs on that same thread).
+     * threads may enqueue, but try_dequeue/try_dequeue_batch must only ever be
+     * called by one consumer thread — consumer_cursor_ is a plain field (see
+     * its comment), so two concurrent dequeuers are a data race, not merely an
+     * unspecified order. In production the consumer is GrpcSpan's span-sender
+     * worker, including its post-stop flush on that same thread.
      *
-     * QueueSize remains a global logical bound. Capacity starts evenly divided
-     * into quotas; an active shard may borrow the quota of an inactive shard.
-     * Quota transfers are rare setup/expansion operations protected by a
-     * separate mutex, while steady-state enqueue and head-drop touch only the
-     * producer's shard. Cross-shard dequeue order is intentionally unspecified.
+     * QueueSize stays a global logical bound. Capacity starts evenly divided
+     * into quotas, and an active shard may borrow an inactive shard's; those
+     * transfers are rare and take a separate mutex, while steady-state enqueue
+     * and head-drop touch only the producer's shard. Cross-shard dequeue order
+     * is intentionally unspecified.
      *
-     * To avoid queue-internal allocation during quota borrowing and enqueue,
-     * each shard preallocates a physical ring with QueueSize cells. Physical
-     * cell storage is therefore shard_count * QueueSize, even though the
-     * global logical retention bound remains QueueSize. T's own assignment
-     * operators may still perform implementation-specific work.
+     * To keep quota borrowing and enqueue allocation-free, each shard
+     * preallocates a ring of QueueSize cells — so physical storage is
+     * shard_count * QueueSize even though logical retention stays QueueSize.
      *
      * T's complete contract is the three static_asserts below. Every value
-     * transfer inside the queue uses default construction plus move
-     * assignment — never move construction — so a throwing move constructor
-     * cannot corrupt queue state. The operations that may throw (the vector
-     * growth in try_dequeue_batch, the reclaim scratch buffer in
-     * take_excess_quota) all run before any queue state is mutated.
+     * transfer uses default construction plus move assignment — never move
+     * construction — so a throwing move constructor cannot corrupt queue state,
+     * and the operations that may throw (vector growth in try_dequeue_batch,
+     * the scratch buffer in take_excess_quota) run before any state is mutated.
      */
     template <typename T>
     class ShardedBoundedQueue final {

@@ -30,9 +30,7 @@
 #include "agent_service.h"
 
 namespace pinpoint {
-    /**
-     * @brief Snapshot of runtime statistics collected from the agent process.
-     */
+    /// @brief Snapshot of runtime statistics collected from the agent process.
     struct AgentStatsSnapshot {
         int64_t    sample_time_{0};
         int64_t    interval_{0}; 
@@ -52,9 +50,7 @@ namespace pinpoint {
         int32_t    active_requests_[4]{0, 0, 0, 0};
     };
 
-    /**
-     * @brief Worker responsible for periodically sending agent statistics to the collector.
-     */
+    /// @brief Worker responsible for periodically sending agent statistics to the collector.
     class AgentStats {
     public:
         explicit AgentStats(AgentService* agent);

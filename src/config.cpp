@@ -67,18 +67,16 @@ namespace pinpoint {
         return {std::move(name), value};
     }
 
-    // Stop signal for one watcher generation. Each started watcher captures
-    // its own signal by shared_ptr, so a stop issued to one generation can
-    // never be undone by a later start: with a single shared signal, a
-    // start() racing stop() (which joins outside the lock) could reset it
-    // before the old watcher — possibly still waiting out its poll tick —
-    // ever observed it, leaving that watcher running forever and the stopper
-    // blocked in join().
+    // Stop signal for one watcher generation. Each watcher captures its own
+    // signal by shared_ptr, so a stop issued to one generation can never be
+    // undone by a later start: with a single shared signal, a start() racing
+    // stop() could reset it before the old watcher — possibly still waiting
+    // out its poll tick — observed it, leaving that watcher running forever
+    // and the stopper blocked in join().
     //
-    // A condition variable rather than a plain sleep+atomic, so a stop request
-    // wakes the watcher immediately: with an uninterruptible poll-tick sleep,
-    // stop() — and therefore agent Shutdown() — would block in join() for up
-    // to a full poll tick.
+    // A condition variable rather than sleep+atomic so a stop wakes the
+    // watcher immediately; an uninterruptible poll-tick sleep would block
+    // stop() — and therefore Shutdown() — for up to a full tick.
     struct ConfigFileWatcher::StopSignal {
         std::mutex mutex;
         std::condition_variable cv;
@@ -174,23 +172,20 @@ namespace pinpoint {
         const auto tick = std::chrono::milliseconds(config_watcher_poll_interval_ms.load());
 
         thread_ = std::thread([path = file_path_, reload = reload_, stop, tick]() {
-            // Seed with the non-throwing overload: the throwing form could
-            // escape this thread function (the file may have been removed
-            // between the exists() check above and the thread starting), and
-            // an exception leaving a std::thread calls std::terminate(),
-            // crashing the host. On error last_write_time stays default-
-            // constructed, so the first iteration just treats the file as
-            // changed and attempts a reload.
+            // Non-throwing overload: the throwing form could escape this thread
+            // function (the file may have been removed since the exists() check
+            // above), and an exception leaving a std::thread calls
+            // std::terminate(). On error last_write_time stays default-
+            // constructed, so the first iteration treats the file as changed.
             std::error_code seed_ec;
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
-            // wait() covers both a stop pending before the tick and one
-            // arriving mid-tick, so shutdown need not wait out the polling
-            // interval. The check below avoids starting expensive reload work
-            // after an observed stop; a stop can still race that check, which
-            // is why stop() joins this thread — the owning agent stops the
-            // watcher before tearing anything down, so an in-flight reload
-            // always completes against a live agent.
+            // wait() covers a stop pending before the tick and one arriving
+            // mid-tick, so shutdown need not wait out the polling interval.
+            // The check below avoids starting reload work after an observed
+            // stop; a stop can still race it, which is why stop() joins this
+            // thread — the owning agent stops the watcher before tearing
+            // anything down, so an in-flight reload always sees a live agent.
             while (!stop->wait(tick)) {
                 try {
                     auto current = std::filesystem::last_write_time(path);
@@ -239,13 +234,11 @@ namespace pinpoint {
         watcher_to_join.join();
     }
 
-    // yaml-cpp resolves map keys case-sensitively. To let users write config
-    // keys in any case (e.g. "collector"/"Collector"/"COLLECTOR", "host"/"Host"),
-    // resolve each key by first trying an exact match and then falling back to a
-    // case-insensitive scan of the map's keys. Returns the matched value node, or
-    // an undefined node when `yaml` is not a map or no key matches — an undefined
-    // node is falsy, so callers keep their existing `if (node)` / default-value
-    // handling unchanged.
+    // yaml-cpp resolves map keys case-sensitively; users may write them in any
+    // case ("collector"/"Collector"/"COLLECTOR"), so try an exact match first
+    // and fall back to a case-insensitive scan. Returns an undefined node when
+    // `yaml` is not a map or nothing matches — undefined is falsy, so callers'
+    // `if (node)` / default handling is unchanged.
     static YAML::Node find_node(const YAML::Node& yaml, std::string_view cname) {
         if (!yaml || !yaml.IsMap()) {
             return YAML::Node(YAML::NodeType::Undefined);
@@ -550,12 +543,10 @@ namespace pinpoint {
         }
     }
 
-    // Expands the per-worker placeholder in the configured log file path at
-    // sink-application time (Config keeps the raw value, so reload
-    // comparisons and to_config_string() round-trips stay stable):
-    //   %pid% -> current process id
-    // Sibling pre-fork workers can thereby write separate log files — the
-    // built-in size rotation is not multi-process safe on a shared file.
+    // Expands %pid% in the log file path at sink-application time (Config keeps
+    // the raw value, so reload comparisons and to_config_string() round-trips
+    // stay stable). Lets sibling pre-fork workers write separate log files —
+    // the built-in size rotation is not multi-process safe on a shared file.
     static std::string expand_log_file_path(const std::string& path) {
         const std::string pid = std::to_string(static_cast<long>(getpid()));
         return absl::StrReplaceAll(path, {{"%pid%", pid}});
@@ -566,8 +557,8 @@ namespace pinpoint {
         // closes and reopens the stream, and a reload triggered by an unrelated
         // setting should not churn the log file. An empty path is applied too —
         // that is how removing FilePath at runtime switches back to stdout.
-        // Comparing the raw (unexpanded) paths is equivalent: the placeholder
-        // expansion is constant within one process and agent.
+        // Comparing raw (unexpanded) paths is equivalent: the expansion is
+        // constant within one process.
         if (!old || old->log.file_path != cfg.log.file_path ||
             old->log.max_file_size != cfg.log.max_file_size) {
             Logger::getInstance().setFileLogger(
@@ -578,16 +569,10 @@ namespace pinpoint {
         }
     }
 
-    // make_config() is reached from the public StartAgent() entry point, so
-    // it must never let a parsing problem escape into the host application:
-    // yaml errors degrade to defaults, and the function-level handler below is
-    // the last-resort backstop.
-    //
-    // `old` is the running agent's config when the sources are re-read for a
-    // reload, nullptr on the first load. The returned config is final: on a
-    // reload the non-reloadable fields are already retained from `old` and the
-    // logger is already reconfigured, so callers pass it straight to
-    // reloadConfig().
+    // Reached from the public StartAgent() entry point, so a parsing problem
+    // must never escape into the host: yaml errors degrade to defaults and the
+    // function-level handler below is the last-resort backstop. See the
+    // contract in config.h for `old` and the finality of the result.
     std::shared_ptr<Config> make_config(const AgentOptions& options,
                                         const std::shared_ptr<const Config>& old) try {
         // Seed the config with the running values on a reload so every setting
@@ -623,13 +608,11 @@ namespace pinpoint {
             // far and continue with defaults plus environment overrides.
             LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
         }
-        // Environment variables are process-level identity/bootstrap inputs and
-        // are only meant to seed the very first configuration. When rebuilding
-        // for a reload (`old` set), env overrides must not be re-applied —
-        // otherwise they would silently override values the user just changed
-        // in the config file. Env-sourced values still survive reloads through
-        // the old-config seeding above, as long as the file does not
-        // explicitly override them.
+        // Environment variables are process-level bootstrap inputs that seed
+        // only the first configuration. On a reload (`old` set) they must not
+        // be re-applied, or they would silently override values the user just
+        // changed in the file. Env-sourced values still survive through the
+        // old-config seeding above, unless the file overrides them.
         if (!old) {
             load_env_config(prefix, *config, is_container_set);
         }

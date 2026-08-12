@@ -27,25 +27,19 @@ namespace pinpoint {
     class AgentService;
     class SpanImpl;
 
-    /**
-     * @brief Concrete span event implementation that records timing and metadata.
-     */
+    /// @brief Concrete span event implementation that records timing and metadata.
     class SpanEventImpl final : public SpanEvent {
     public:
         SpanEventImpl(SpanImpl* span, std::string_view operation);
         ~SpanEventImpl() override {}
 
-        /// @brief Sets the service type for this event.
         void SetServiceType(int32_t type) override { if (warnIfFinished()) return; service_type_ = type; }
-        /// @brief Sets the logical operation name. Out-of-line: the string
-        /// assignment allocates, so it needs the exception boundary in
-        /// span_event.cpp (as do the other allocating setters below).
+        // Out-of-line: the string assignment allocates, so it needs the
+        // exception boundary in span_event.cpp (as do the allocating setters
+        // below).
         void SetOperationName(std::string_view operationName) override;
-        /// @brief Records the absolute start time.
         void SetStartTime(std::chrono::system_clock::time_point start_time) override { if (warnIfFinished()) return; start_time_ = to_milli_seconds(start_time); }
-        /// @brief Records the destination identifier.
         void SetDestination(std::string_view dest) override;
-        /// @brief Records the remote endpoint.
         void SetEndPoint(std::string_view endpoint) override;
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
@@ -53,13 +47,11 @@ namespace pinpoint {
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
-        /// @brief Injects the trace context for the outbound call represented
-        /// by this event (trace id, generated child span id, parent app info)
-        /// into an outbound propagation carrier.
+        /// @brief Writes this event's outbound context (trace id, generated
+        /// child span id, parent app info) into a propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
-        /// @brief Annotation overloads are out-of-line because string payload
-        /// copies and list growth must stay inside the exception boundary in
-        /// span_event.cpp. A finished event is a warning no-op.
+        // Out-of-line: string copies and list growth must stay inside the
+        // exception boundary in span_event.cpp. A finished event no-ops.
         void SetAnnotation(int32_t key, int32_t value) override;
         void SetAnnotation(int32_t key, int64_t value) override;
         void SetAnnotation(int32_t key, std::string_view value) override;
@@ -71,104 +63,76 @@ namespace pinpoint {
         /// corrupting) another event from the span's event stack.
         void EndEvent() override;
 
-        /**
-         * @brief Finalizes the span event by computing elapsed metrics.
-         */
+        /// @brief Finalizes the span event by computing elapsed metrics.
         void finish();
 
         /**
          * @brief Releases the heap this retired event owns (strings and the
          * annotation list), leaving a small tombstone at a stable address.
          *
-         * Called by ~SpanChunk once the chunk holding this event is done with
-         * it — the gRPC builders copied every field into arena protobuf, or
-         * the chunk was dropped unsent — so nothing reads the payload
-         * afterwards: every public accessor and mutator has been a
-         * finished_-guarded no-op since finish() (see warnIfFinished), which
-         * is also why freeing from the gRPC worker (or a dropping producer)
-         * thread cannot race user-held raw SpanEventPtr handles. Only the
-         * payload dies here; the object itself must stay alive at its
-         * address until the owning SpanData does (see
-         * SpanData::retired_events_).
+         * Called by ~SpanChunk once the chunk is done with the event — the
+         * gRPC builders copied every field into arena protobuf, or the chunk
+         * was dropped unsent — so nothing reads the payload afterwards: every
+         * accessor and mutator has been a finished_-guarded no-op since
+         * finish(), which is also why freeing from the gRPC worker thread
+         * cannot race user-held raw SpanEventPtr handles. Only the payload
+         * dies here; the object must stay alive at its address until the
+         * owning SpanData does (see SpanData::retired_events_).
          */
         void releaseRetiredPayload() noexcept;
 
-        /// @brief Returns the service type identifier.
         int32_t getServiceType() const { return service_type_; }
-        /// @brief Returns the operation name kept as the api-id fallback.
+        /// @brief Operation name, kept only as the api-id fallback.
         ///
         /// Empty whenever getApiId() is positive — the id identifies the
-        /// operation on the wire, so the name is not stored a second time —
-        /// unless SetOperationName() later supplied one explicitly. Only
-        /// build_span_event's no-api-id branch consumes this.
+        /// operation on the wire — unless SetOperationName() supplied one
+        /// explicitly. Only build_span_event's no-api-id branch consumes this.
         const std::string& getOperationName() const { return operation_; }
 
-        /// @brief Returns the absolute start time in milliseconds.
         int64_t getStartTime() const { return start_time_; }
-        /// @brief Sets the start offset relative to the parent span.
+        /// @brief Start offset relative to the parent span.
         void setStartElapsed(int32_t elapsed) { start_elapsed_ = elapsed; }
-        /// @brief Returns the start offset relative to the parent span.
         int32_t getStartElapsed() const { return start_elapsed_; }
-        /// @brief Returns the elapsed duration of the event.
         int32_t getEndElapsed() const { return elapsed_; }
 
-        /// @brief Assigns the sequence number.
         void setSequence(int32_t sequence) { sequence_ = sequence; }
-        /// @brief Returns the sequence number assigned to this event.
         int32_t getSequence() const { return sequence_; }
-        /// @brief Sets the depth of this event in the call hierarchy.
         void setDepth(int32_t depth) { depth_ = depth; }
-        /// @brief Returns the depth of this event in the call hierarchy.
         int32_t getDepth() const { return depth_; }
 
-        /**
-         * @brief Generates the next span identifier for asynchronous spans.
-         */
+        /// @brief Generates the next span identifier for asynchronous spans.
         int64_t generateNextSpanId();
-        /// @brief Returns the generated asynchronous span identifier.
         int64_t getNextSpanId() const { return next_span_id_; }
 
-        /// @brief Returns the annotation container (owned by value; its list
-        /// only allocates on the first append).
+        // Owned by value; the list inside only allocates on the first append.
         PinpointAnnotation* getAnnotations() { return &annotations_; }
 
-        /// @brief Returns the recorded endpoint.
         std::string& getEndPoint() { return endpoint_; }
-        /// @brief Returns the recorded destination identifier.
         std::string& getDestinationId() { return destination_id_; }
 
-        /// @brief Returns the error function identifier, if any.
         int32_t getErrorFuncId() const { return error_func_id_; }
-        /// @brief Returns the error message captured during execution.
         std::string& getErrorString() { return error_string_; }
 
-        /// @brief Sets the asynchronous identifier for the event.
         void setAsyncId(const int32_t async_id) { async_id_ = async_id; }
-        /// @brief Returns the asynchronous identifier.
         int32_t getAsyncId() const { return async_id_; }
 
-        /// @brief Increments the async sequence generator.
         void incrAsyncSeq() { async_seq_gen_++; }
-        /// @brief Returns the current async sequence value.
         int32_t getAsyncSeqGen() const { return async_seq_gen_; }
 
-        /// @brief Assigns the API identifier associated with this event.
         void setApiId(int32_t api_id) { api_id_ = api_id; }
-        /// @brief Returns the API identifier.
         int32_t getApiId() const { return api_id_; }
 
     private:
-        /// @brief Returns true (after logging a warning) once the event has been
-        /// finished, signalling that a recording accessor or mutator must
-        /// no-op. A finished event may already sit in a chunk under
-        /// serialization on the gRPC worker thread, so mutating a field the
-        /// worker reads (string reassignment, annotation-list growth) would be
-        /// a data race. Mirrors the guard used by EndEvent().
+        /// @brief True (after logging a warning) once the event is finished,
+        /// signalling that a recording accessor or mutator must no-op. A
+        /// finished event may already sit in a chunk under serialization on
+        /// the gRPC worker, so mutating a field it reads (string reassignment,
+        /// annotation-list growth) would be a data race.
         bool warnIfFinished() const;
 
-        // Non-owning by design. SpanData owns SpanEventImpl instances and keeps
-        // them within the parent span's lifetime, while this pointer lets hot
-        // event operations avoid weak_ptr::lock() and shared_ptr refcount traffic.
+        // Non-owning by design. SpanData owns SpanEventImpl instances for the
+        // parent span's lifetime, while this raw pointer lets hot event
+        // operations avoid weak_ptr::lock() and refcount traffic.
         SpanImpl* span_;
         AgentService* agent_;
         int32_t service_type_;
@@ -186,17 +150,15 @@ namespace pinpoint {
         int32_t async_id_{NONE_ASYNC_ID};
         int32_t async_seq_gen_{0};
         int32_t api_id_{0};
-        // Defensive idempotency guard for EndEvent, same shape as
-        // SpanImpl::finished_: the atomic exchange lets only the first end
-        // proceed; it is NOT a concurrency guarantee (events follow the span's
-        // single-thread contract). Also set by finish() so an event ended
-        // through an internal path (e.g. async-span EndSpan) rejects a later
-        // user-level EndEvent.
+        // Idempotency guard for EndEvent, same shape as SpanImpl::finished_:
+        // the atomic exchange lets only the first end proceed; NOT a
+        // concurrency guarantee (events follow the span's single-thread
+        // contract). Also set by finish(), so an event ended through an
+        // internal path (e.g. async-span EndSpan) rejects a later EndEvent.
         std::atomic<bool> finished_{false};
-        // Owned by value: an annotation-free event (the common case) pays no
-        // heap, since the list inside only allocates on the first append.
-        // releaseRetiredPayload() frees that list once the event's chunk is
-        // done with it; the empty husk stays for the tombstone.
+        // Owned by value: an annotation-free event pays no heap.
+        // releaseRetiredPayload() frees the list once the chunk is done with
+        // it; the empty husk stays as the tombstone.
         PinpointAnnotation annotations_;
     };
 
@@ -209,10 +171,9 @@ namespace pinpoint {
      *        limit, not a sampling decision.
      *
      * One instance per span, created lazily on first overflow and owned by the
-     * SpanImpl that hands it out, so the pointer stays valid for the span's
-     * whole lifetime. Because the instance is shared by every overflowed event
-     * of the span, the kept destination reflects the most recent SetDestination
-     * call (only used for the Pinpoint-Host header).
+     * SpanImpl. Since every overflowed event of the span shares it, the kept
+     * destination reflects the most recent SetDestination call (used only for
+     * the Pinpoint-Host header).
      */
     class DisabledSpanEvent final : public SpanEvent {
     public:
@@ -222,10 +183,9 @@ namespace pinpoint {
         void SetServiceType(int32_t type) override {}
         void SetOperationName(std::string_view operation) override {}
         void SetStartTime(std::chrono::system_clock::time_point start_time) override {}
-        /// @brief Destination is kept (not recorded) so InjectContext can still
-        /// write the Pinpoint-Host header for the outbound call. Out-of-line:
-        /// the string assignment allocates, so it needs the exception
-        /// boundary in span_event.cpp.
+        // Destination is kept (not recorded) so InjectContext can still write
+        // the Pinpoint-Host header. Out-of-line: the assignment allocates, so
+        // it needs the exception boundary in span_event.cpp.
         void SetDestination(std::string_view dest) override;
         void SetEndPoint(std::string_view end_point) override {}
         void SetError(std::string_view error_message) override {}

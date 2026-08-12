@@ -34,17 +34,13 @@ namespace pinpoint {
         constexpr int TABLE_SIZE = 600;
     }
 
-    /**
-     * @brief Parses status expressions from the configuration and evaluates failure conditions.
-     */
+    /// @brief Parses status expressions from the configuration and evaluates failure conditions.
     class HttpStatusErrors {
     public:
         explicit HttpStatusErrors(const std::vector<std::string>& tokens);
         ~HttpStatusErrors() = default;
 
-        /**
-         * @brief Returns whether an HTTP status code should be treated as failure.
-         */
+        /// @brief Returns whether an HTTP status code should be treated as failure.
         bool isErrorCode(int status_code) const noexcept;
 
     private:
@@ -56,20 +52,13 @@ namespace pinpoint {
         std::vector<int> extra_codes_{};  // configured codes outside [0, TABLE_SIZE)
     };
 
-    /**
-     * @brief Captures selected HTTP headers and appends them to span annotations.
-     */
+    /// @brief Captures selected HTTP headers and appends them to span annotations.
     class HttpHeaderRecorder {
     public:
         HttpHeaderRecorder(int anno_key, std::vector<std::string> cfg);
         ~HttpHeaderRecorder() = default;
 
-        /**
-         * @brief Records headers using the configuration rules.
-         *
-         * @param header Header reader callback provided by the user.
-         * @param annotation Annotation destination that receives captured key-value pairs.
-         */
+        /// @brief Records headers into @p annotation using the config rules.
         void recordHeader(const HeaderReader& header, PinpointAnnotation* annotation);
     private:
         int anno_key_;
@@ -89,12 +78,8 @@ namespace pinpoint {
         HttpUrlFilter(const std::vector<std::string>& cfg);
         ~HttpUrlFilter() = default;
 
-        /**
-         * @brief Tests whether a URL should be ignored for statistics.
-         *
-         * @param url URL to test.
-         * @return `true` if the pattern list matches the URL.
-         */
+        /// @brief True when the pattern list matches @p url, i.e. it should be
+        ///        ignored for statistics.
         bool isFiltered(std::string_view url) const;
 
     private:
@@ -143,51 +128,27 @@ namespace pinpoint {
         static bool ant_match(const CompiledPattern& pattern, std::string_view url, MatchScratch& scratch);
     };
 
-    /**
-     * @brief Filters HTTP methods according to a configuration whitelist or blacklist.
-     */
+    /// @brief Filters HTTP methods according to a configuration whitelist or blacklist.
     class HttpMethodFilter {
     public:
         HttpMethodFilter(std::vector<std::string> cfg);
         ~HttpMethodFilter() = default;
 
-        /**
-         * @brief Tests whether a method should be ignored.
-         *
-         * @param method Method string to test (e.g., GET, POST).
-         * @return `true` if filtering rules match the method.
-         */
+        /// @brief True when the filter rules match @p method (e.g. GET, POST).
         bool isFiltered(std::string_view method) const;
     private:
         std::vector<std::string> methods_;
     };
 
-    /**
-     * @brief Utility functions for HTTP tracing.
-     */
+    /// @brief Utility functions for HTTP tracing.
     class HttpTracerUtil {
     public:
-        /**
-         * @brief Extracts the real remote address from HTTP headers.
-         * 
-         * Checks X-Forwarded-For and X-Real-Ip headers for proxy information,
-         * falling back to the direct remote address if not present.
-         *
-         * @param reader Header reader to access HTTP headers.
-         * @param remote_addr Direct remote address (e.g., from socket).
-         * @return The actual remote client address.
-         */
+        /// @brief Extracts the real remote address, checking X-Forwarded-For
+        ///        and X-Real-Ip before falling back to @p remote_addr.
         static std::string getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
 
-        /**
-         * @brief Records proxy header information to span annotations.
-         * 
-         * Parses Pinpoint proxy headers (Apache, Nginx, or App) and adds
-         * timing and load information to the span.
-         *
-         * @param reader Header reader to access HTTP headers.
-         * @param annotation Annotation destination for proxy metadata.
-         */
+        /// @brief Parses the Pinpoint proxy headers (Apache, Nginx or App) and
+        ///        records their timing and load information as annotations.
         static void setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation);
     };
 

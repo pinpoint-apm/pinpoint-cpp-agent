@@ -57,7 +57,7 @@ namespace pinpoint {
     using PreparedSqlRef = std::shared_ptr<const PreparedSql>;
 
     /**
-     * @brief Generic LRU cache result structure.
+     * @brief Generic LRU cache result.
      *
      * @tparam ValueType Type of the cached value.
      */
@@ -67,12 +67,7 @@ namespace pinpoint {
         bool found;  // true if entry already existed in cache
     };
 
-    /**
-     * @brief Result returned from `IdCache::get`.
-     *
-     * Type alias for LruCacheResult<int32_t>.
-     * Use `.value` to access the ID and `.found` to check if it existed in cache.
-     */
+    /// @brief Result returned from `IdCache::get`.
     using CacheResult = LruCacheResult<int32_t>;
 
     struct ApiCacheKey {
@@ -204,28 +199,21 @@ namespace pinpoint {
         }
     };
 
-    /**
-     * @brief Result returned from `SqlUidCache::get`.
-     *
-     * Type alias for LruCacheResult<SqlUid>. SqlUid is a fixed 16-byte array, so
-     * copying a result out of the cache on a hit is allocation-free.
-     * Use `.value` to access the UID and `.found` to check if it existed in cache.
-     */
+    /// @brief Result returned from `SqlUidCache::get`. SqlUid is a fixed
+    ///        16-byte array, so copying one out on a hit is allocation-free.
     using SqlUidCacheResult = LruCacheResult<SqlUid>;
 
     /**
      * @brief Thread-safe LRU cache implementation template.
      *
-     * Combines a std::list (LRU ordering) with a std::unordered_map keyed by
-     * a non-owning map key from KeyTraits (average O(1) lookup without
-     * allocating key storage on a hit). Copying the cached ValueType still has
-     * that type's normal copy cost. Access is guarded by a std::shared_mutex:
-     * lookups take a shared lock so ordinary cache hits can run concurrently.
-     * LRU reordering is performed lazily — while the cache is below max_size
-     * no eviction can occur, so ordering is irrelevant; once full, an entry is
-     * promoted only after it has aged past half the capacity's churn (see
-     * get()), so most hits remain shared-lock reads instead of serializing on
-     * the exclusive lock the splice needs.
+     * Combines a std::list (LRU ordering) with a std::unordered_map keyed by a
+     * non-owning map key from KeyTraits (average O(1) lookup, no key storage
+     * allocated on a hit). Guarded by a std::shared_mutex, so lookups run
+     * concurrently under a shared lock. LRU reordering is lazy: below max_size
+     * nothing can be evicted so ordering is irrelevant, and once full an entry
+     * is promoted only after aging past half the capacity's churn (see get()),
+     * keeping most hits shared-lock reads instead of serializing on the
+     * exclusive lock the splice needs.
      *
      * @tparam ValueType Type of values stored in the cache.
      * @tparam KeyTraits Converts lookup keys into owned storage and map keys.
@@ -272,22 +260,15 @@ namespace pinpoint {
         LruCacheImpl& operator=(LruCacheImpl&&) = delete;
 
         /**
-         * @brief Retrieves or creates a cache entry.
+         * @brief Retrieves or creates a cache entry (no allocation on hit).
          *
-         * Lookups take a shared lock, so cache hits run concurrently. While the
-         * cache has not reached capacity no entry can be evicted, so LRU ordering
-         * is irrelevant and the splice is skipped entirely — a hit is then a pure
-         * shared-lock read. Once full, promoting on every hit would serialize all
-         * lookups on the exclusive lock the splice needs, so promotion is aged:
-         * an entry promoted within the last promote_age_threshold_ insert/promote
-         * operations is still far from the eviction end and its hit stays a pure
-         * shared-lock read; only entries past that age pay for the splice. On a
-         * miss the generator runs OUTSIDE any lock, so an expensive generator
-         * does not serialize other threads' lookups.
-         *
-         * @param key The key to look up (no allocation on hit).
-         * @param generator Function to generate a new value if key not found.
-         * @return Result containing the value and whether it was found.
+         * Below capacity nothing can be evicted, so the splice is skipped and a
+         * hit is a pure shared-lock read. Once full, promoting on every hit
+         * would serialize all lookups on the exclusive lock the splice needs,
+         * so promotion is aged: an entry promoted within the last
+         * promote_age_threshold_ operations is still far from the eviction end
+         * and stays a shared-lock read. On a miss the generator runs OUTSIDE
+         * any lock, so an expensive one does not serialize other lookups.
          */
         template<typename Generator>
         LruCacheResult<ValueType> get(LookupKey key, Generator&& generator) {
@@ -336,17 +317,15 @@ namespace pinpoint {
             // which would otherwise serialize every concurrent lookup.
             auto new_value = generator();
 
-            // Stage the new node outside the lock as well: the list-node
-            // allocation and KeyTraits::store()'s key copy (for RawSqlCache
-            // the full raw SQL text, up to 64 KB) would otherwise stall every
-            // concurrent shared-lock hit behind malloc + memcpy. Taking the
-            // op sequence here (relaxed, like every op_seq_ use) can reorder
-            // it slightly against promotions racing under the lock; that only
-            // perturbs an entry's age estimate by a step — the same benign
-            // race the shared-lock age check above already tolerates.
-            // `staged` doubles as the graveyard: the node discarded on a lost
-            // insert race and the evicted victim are spliced back onto it, so
-            // their destruction also runs after the lock is released.
+            // Stage the new node outside the lock too: the list-node allocation
+            // and KeyTraits::store()'s key copy (for RawSqlCache the full raw
+            // SQL, up to 64 KB) would otherwise stall every concurrent
+            // shared-lock hit behind malloc + memcpy. Taking the op sequence
+            // here can reorder slightly against promotions racing under the
+            // lock, perturbing an age estimate by one step — the same benign
+            // race the shared-lock age check tolerates. `staged` doubles as the
+            // graveyard: a node discarded on a lost insert race and the evicted
+            // victim are spliced back onto it, so they also die after unlock.
             std::list<Node> staged;
             staged.emplace_front(KeyTraits::store(key), std::move(new_value),
                                  next_op_seq());
@@ -377,25 +356,19 @@ namespace pinpoint {
     private:
         /**
          * @brief Inserts the staged node, or promotes an existing entry.
+         *        Assumes the caller holds the lock.
          *
-         * The candidate list node and its owned key bytes are pre-built by
-         * get() in `staged`, outside the lock. This critical section relinks
-         * list pointers and updates the map; a successful try_emplace may
-         * allocate an unordered_map node, but the pre-reserved buckets avoid
-         * a rehash and no full key string is copied. Node destruction is
-         * deferred until after unlock. Because the generator ran outside the
-         * lock, another thread may have inserted the same key in the meantime.
-         * We detect that race via try_emplace and, if so, leave our node in
-         * `staged` and return the existing entry (found = true). An evicted
-         * victim is also spliced onto `staged` for deferred destruction.
+         * get() pre-builds the candidate node and its owned key bytes in
+         * `staged`, outside the lock; this critical section only relinks list
+         * pointers and updates the map (try_emplace may allocate a map node,
+         * but pre-reserved buckets avoid a rehash and no key string is copied).
+         * Because the generator ran unlocked, another thread may have inserted
+         * the same key meanwhile — try_emplace detects that, and our node stays
+         * in `staged` while the existing entry is returned (found = true). An
+         * evicted victim is spliced onto `staged` too, so both die after unlock.
          *
-         * Hashes the key once: try_emplace performs the existence check and
-         * the insert in a single map operation. The map key is a view into
-         * the node's owned key storage, which splice never relocates.
-         * Assumes the lock is already held by the caller.
-         *
-         * @param staged Single-node list holding the candidate; receives the
-         *               discarded or evicted node, if any.
+         * Hashes the key once: try_emplace checks and inserts in one operation.
+         * The map key views the node's owned storage, which splice never moves.
          */
         LruCacheResult<ValueType> insert_or_promote(std::list<Node>& staged) {
             const auto list_it = staged.begin();
@@ -460,15 +433,14 @@ namespace pinpoint {
     /**
      * @brief Hash-sharded front over N independent LruCacheImpl instances.
      *
-     * Ordinary hits on one LruCacheImpl can share its read lock, but every hit
-     * still acquires and releases the same shared_mutex and may wait behind a
-     * writer. Splitting the key space over independent shards reduces that
-     * shared synchronization point for unrelated hot keys.
+     * Hits on one LruCacheImpl share its read lock, but every hit still
+     * acquires the same shared_mutex and may wait behind a writer. Splitting
+     * the key space over independent shards reduces that contention point for
+     * unrelated hot keys.
      *
      * The key is hashed ONCE per operation: the shard index derives from the
-     * hash (see shard_for()), and the same hash rides into the shard's
-     * unordered_map via the hash-carrying key (InnerTraits' pass-through
-     * hasher), so the key bytes are never scanned twice.
+     * hash (see shard_for()), and the same hash rides into the shard's map via
+     * the hash-carrying key (InnerTraits' pass-through hasher).
      *
      * ShardTraits contract:
      *   LookupKey               caller-facing key type
@@ -529,12 +501,10 @@ namespace pinpoint {
         /**
          * @brief Removes an entry from the cache.
          *
-         * Derives the shard from the same hash as get(): removal must evict
-         * from the shard that owns the entry, or a stale entry would keep
-         * serving its old value after an invalidation (for the id caches that
-         * would break metadata re-registration with the collector).
-         *
-         * @param key The key to remove.
+         * Derives the shard from the same hash as get(): removal must hit the
+         * shard that owns the entry, or a stale one keeps serving its old value
+         * after an invalidation — for the id caches, breaking metadata
+         * re-registration with the collector.
          */
         void remove(LookupKey key) {
             const size_t hash = ShardTraits::hash(key);
@@ -676,16 +646,14 @@ namespace pinpoint {
     /**
      * @brief LRU cache that assigns numeric identifiers to frequently used keys.
      *
-     * The cache is used for API, SQL, and error metadata to minimize payload
-     * sizes when sending data over gRPC. Every sampled span and every named
-     * span event resolves its api id here, so the store is sharded (see
-     * ShardedLruCache): a single LruCacheImpl would put every request thread's
-     * shared-lock acquire/release on one shared_mutex cache line.
+     * Used for API, SQL and error metadata to keep gRPC payloads small. Every
+     * sampled span and named span event resolves its api id here, so the store
+     * is sharded (see ShardedLruCache): a single LruCacheImpl would put every
+     * request thread's shared-lock traffic on one shared_mutex cache line.
      *
-     * The id sequence is deliberately ONE atomic shared by all shards, not a
-     * per-shard counter: the collector keys metadata by id, so two shards
-     * handing the same id to different keys would corrupt the mapping. The
-     * counter is only touched on a miss, so it is not a hit-path hot spot.
+     * The id sequence is deliberately ONE atomic shared by all shards: the
+     * collector keys metadata by id, so two shards handing the same id to
+     * different keys would corrupt the mapping. Only touched on a miss.
      */
     template<typename ShardTraits>
     class IdCacheImpl {
@@ -716,13 +684,11 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Evicts a cached key from the cache.
+         * @brief Evicts a cached key.
          *
-         * Routes to the shard get() uses for the key, so the next get() is a
-         * guaranteed miss that mints a fresh id — the miss path is what
-         * re-enqueues the metadata to the collector after a connection reset.
-         *
-         * @param key Entry to remove.
+         * Routes to the shard get() uses, so the next get() is a guaranteed
+         * miss that mints a fresh id — the miss path is what re-enqueues the
+         * metadata to the collector after a connection reset.
          */
         void remove(LookupKey key) {
             cache_.remove(key);

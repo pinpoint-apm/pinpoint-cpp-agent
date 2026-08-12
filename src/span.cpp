@@ -30,11 +30,11 @@ namespace pinpoint {
 
     SpanData::SpanData(std::string_view operation, int32_t app_type, int32_t api_id) :
         app_type_{app_type},
-        // Kept only as the fallback for a span with no api id: whenever the
-        // id is positive the builders send it and never read the name (see
-        // build_grpc_span), so storing it there allocated once per span for
-        // bytes nothing would look at. An operation name is past libstdc++'s
-        // 15-character small-string threshold more often than not.
+        // Kept only as the fallback for a span with no api id: whenever the id
+        // is positive the builders send it and never read the name (see
+        // build_grpc_span), so storing it would allocate once per span (an
+        // operation name usually exceeds libstdc++'s 15-char SSO threshold)
+        // for bytes nothing looks at.
         operation_{api_id > 0 ? std::string_view{} : operation},
         api_id_{api_id},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {}
@@ -97,13 +97,11 @@ namespace pinpoint {
             });
         finished_events.insert(pos, std::move(se));
     } catch (...) {
-        // Vector insertion throws only on allocation, before the element is
-        // moved in (unique_ptr moves are noexcept), so `se` still owns the
-        // event here. It must not be destroyed during unwind: user code may
-        // hold this event's raw SpanEventPtr, and the duplicate-EndEvent
-        // no-op promised in pinpoint/tracer.h needs a live object. Retire it
-        // unsent instead — kept alive until this SpanData dies, like every
-        // chunk-flushed event.
+        // Insertion throws only on allocation, before the element is moved in
+        // (unique_ptr moves are noexcept), so `se` still owns the event. It
+        // must survive the unwind: user code may hold its raw SpanEventPtr,
+        // and the duplicate-EndEvent no-op promised in pinpoint/tracer.h needs
+        // a live object. Retire it unsent instead.
         try {
             retired_events_.emplace_back(std::move(se));
             LOG_ERROR("store finished event: allocation failed; span event dropped from trace");
@@ -132,12 +130,11 @@ namespace pinpoint {
                 retired_events_.emplace_back(std::move(event));
             }
         } catch (...) {
-            // A mid-loop allocation failure leaves the events already
-            // processed owned by retired_events_ (emplace_back throws only
-            // before the move) and their finished_events slots null. Compact
-            // the nulls away — a later flush must not hand null event
-            // pointers to a chunk — then rethrow to the caller's boundary
-            // (record_chunk / EndSpan), which logs and abandons the chunk.
+            // A mid-loop failure leaves already-processed events owned by
+            // retired_events_ and their finished_events slots null. Compact
+            // the nulls away — a later flush must not hand a chunk null
+            // pointers — then rethrow to record_chunk / EndSpan, which logs
+            // and abandons the chunk.
             finished_events.erase(
                 std::remove_if(finished_events.begin(), finished_events.end(),
                                [](const std::unique_ptr<SpanEventImpl>& event) {
@@ -159,19 +156,15 @@ namespace pinpoint {
     }
 
     SpanChunk::~SpanChunk() {
-        // A chunk dies in exactly two ways: consumed by the gRPC builders
-        // (which copy every event field into arena-owned protobuf) or dropped
-        // unsent (queue overflow, permit timeout, shutdown, enqueue refusal).
-        // Either way this chunk was the last reader of its events' payload —
-        // user-facing accessors have been finished_-guarded no-ops since
-        // finish() — so release the heavy payload now instead of holding it
-        // until the span data dies. The event objects themselves stay alive
-        // in retired_events_ (span_data_ outlives this chunk, and its members
-        // outlive this destructor body) as small tombstones, keeping
-        // user-held raw SpanEventPtr handles valid. Ordering is provided by
-        // the span queue's shard mutex: the destroying thread acquired the
-        // lock the owning thread released at enqueue, so the payload writes
-        // are visible here.
+        // A chunk dies either consumed by the gRPC builders (which copy every
+        // field into arena protobuf) or dropped unsent; either way it was the
+        // last reader of its events' payload — accessors have been
+        // finished_-guarded no-ops since finish() — so free it now instead of
+        // holding it until the span data dies. The event objects stay alive in
+        // retired_events_ as tombstones, keeping user-held raw SpanEventPtr
+        // handles valid. Ordering comes from the span queue's shard mutex: the
+        // destroying thread acquired the lock the owning thread released at
+        // enqueue, so the payload writes are visible here.
         for (auto* se : event_chunk_) {
             se->releaseRetiredPayload();
         }
@@ -211,9 +204,7 @@ namespace pinpoint {
         }
     }
 
-    // retval unparenthesized so an empty argument yields a plain `return;`;
-    // every current argument is a single call expression, so no precedence
-    // pitfall.
+    // retval unparenthesized so an empty argument yields a plain `return;`.
     #define CHECK_FINISHED_WITH_RETURN(retval) \
         do { \
             if (finished_) { \
@@ -230,15 +221,14 @@ namespace pinpoint {
         } while(0)
 
     SpanImpl::~SpanImpl() {
-        // Self-heal spans dropped without EndSpan (early-return or exception
-        // paths in user code), and the hard backstop for the intrusive node:
-        // active_node_ lives inside this object, so a still-linked node here
-        // would leave dangling pointers in its shard list — not just skewed
-        // stats like the old map entry. Check the node itself rather than
-        // finished_: this still covers an EndSpan that failed between setting
-        // finished_ and its drop, while a normally ended or async span returns
-        // after one atomic load without dereferencing agent_. That matters for
-        // non-owning AgentService implementations whose selfRef() is empty.
+        // Self-heals spans dropped without EndSpan, and is the hard backstop
+        // for the intrusive node: active_node_ lives inside this object, so a
+        // still-linked node here would leave dangling pointers in its shard
+        // list. Checking the node rather than finished_ still covers an
+        // EndSpan that failed between setting finished_ and its drop, while a
+        // normally ended span returns after one atomic load without touching
+        // agent_ — which matters for non-owning AgentService implementations
+        // whose selfRef() is empty.
         if (agent_ != nullptr && active_node_.isLinked()) {
             try {
                 agent_->getAgentStats().dropActiveSpan(active_node_);
@@ -301,15 +291,13 @@ namespace pinpoint {
 
         if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
             overflow_++;
-            // Throttled: an app whose traced call tree routinely exceeds the
-            // limits hits this once per discarded event on its request
-            // threads, and an unthrottled line each time would serialize them
+            // Throttled: an app that routinely exceeds the limits would hit
+            // this once per discarded event, serializing its request threads
             // on the logger mutex and its per-line write+flush.
             LOG_WARN_THROTTLED("span event maximum depth/sequence exceeded. (depth:{}, seq:{})", depth, seq);
             // Overflow is a profiling depth limit, not a sampling decision:
-            // like the Java agent's DisableSpanEvent, the returned event
-            // records nothing but its InjectContext still propagates the full
-            // trace context so the distributed trace is not cut here.
+            // the returned event records nothing but still propagates the full
+            // trace context, so the distributed trace is not cut here.
             return disabledSpanEvent();
         }
 
@@ -334,10 +322,8 @@ namespace pinpoint {
     } CATCH_AND_LOG_RETURN("get span event", noopSpanEvent())
 
     void SpanImpl::SetAnnotation(int32_t key, int32_t value) try {
-        // A finished span's annotation list may already be under
-        // serialization on the gRPC worker thread; appending would race the
-        // worker's iteration. Every other mutator degrades to a safe no-op
-        // after EndSpan — so does this.
+        // A finished span's annotation list may already be under serialization
+        // on the gRPC worker; appending would race its iteration.
         CHECK_FINISHED();
         data_->getAnnotations()->AppendData(key, AnnotationData(value));
     } CATCH_AND_LOG("set annotation")
@@ -422,11 +408,10 @@ namespace pinpoint {
             if (open_events == 0) {
                 LOG_WARN("EndSpan: abnormal async span - has no event");
             }
-            // Exceptions can be captured on async spans too: SetError on an
-            // async span event routes to that span's own exception list. Flush
-            // them here since the non-async branch below is skipped — otherwise
-            // the span event's ANNOTATION_EXCEPTION_ID references exception
-            // metadata that is never sent, and the captured call stack is lost.
+            // SetError on an async span event routes to that span's own
+            // exception list, and the non-async branch below is skipped — so
+            // flush here, or ANNOTATION_EXCEPTION_ID references metadata that
+            // is never sent and the captured call stack is lost.
             sendExceptions();
         } else {
             auto& stats = agent_->getAgentStats();
@@ -439,17 +424,14 @@ namespace pinpoint {
             sendUrlStat();
         }
 
-        // Seal the span-level annotation list before the final chunk reaches
-        // the gRPC worker: an annotation handle obtained while the span was
-        // active must degrade to a warn/no-op from here on, not grow a vector
-        // the worker is iterating.
+        // Seal before the final chunk reaches the gRPC worker: an annotation
+        // handle obtained while the span was active must no-op from here on,
+        // not grow a vector the worker is iterating.
         data_->getAnnotations()->seal();
         record_chunk(true);
     } catch (const std::exception& e) {
-        // Reached only on allocation failure (e.g. bad_alloc while finishing
-        // open events): EndSpan is commonly called from destructors in host
-        // code, so the exception must not escape — the sibling entry points
-        // (NewSpanEvent, record_chunk, NewAsyncSpan) already catch.
+        // Reached only on allocation failure. EndSpan is commonly called from
+        // destructors in host code, so the exception must not escape.
         LOG_ERROR("end span exception = {}", e.what());
         releaseActiveSpanOnError();
     } catch (...) {
@@ -458,11 +440,9 @@ namespace pinpoint {
     }
 
     void SpanImpl::releaseActiveSpanOnError() noexcept {
-        // Shared by EndSpan's catch handlers. The destructor would unlink
-        // the node anyway, but user code may hold the span handle long after
-        // a failed EndSpan — unlink now so the span stops counting as an
-        // active request immediately. Idempotent (unlinked node → no-op),
-        // and async spans never link.
+        // The destructor would unlink the node anyway, but user code may hold
+        // the span handle long after a failed EndSpan — unlink now so it stops
+        // counting as an active request. Idempotent; async spans never link.
         try {
             if (agent_ != nullptr) {
                 agent_->getAgentStats().dropActiveSpan(active_node_);
@@ -481,10 +461,10 @@ namespace pinpoint {
     void SpanImpl::injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host) {
         CHECK_FINISHED();
 
-        // Runs on every outbound call: format the numeric headers into a
-        // stack buffer instead of allocating std::to_string temporaries.
-        // Reusing one buffer across Set calls is safe because Set must consume
-        // or copy each borrowed view before returning.
+        // Runs on every outbound call: format numeric headers into a stack
+        // buffer instead of std::to_string temporaries. Reusing one buffer
+        // across Set calls is safe because Set must consume or copy each
+        // borrowed view before returning.
         char buf[32];
         const auto num = [&buf](auto value) -> std::string_view {
             const auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
@@ -498,10 +478,8 @@ namespace pinpoint {
         writer.Set(HEADER_FLAG, num(data_->getFlags()));
         writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
         writer.Set(HEADER_PARENT_APP_TYPE, num(agent_->getAppType()));
-        // The agent's own service name is sent only when present, which (per
-        // uid.version handling) means uid.version=v4 only; v1/v3 leave it empty
-        // and the header is omitted. Mirrors Java DefaultRequestTraceWriter,
-        // which writes Pinpoint-pServiceName only when serviceName != null.
+        // Sent only when present — i.e. uid.version=v4; v1/v3 leave it empty
+        // and the header is omitted. Mirrors Java DefaultRequestTraceWriter.
         if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
             writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
         }
@@ -556,11 +534,8 @@ namespace pinpoint {
         }
 
         if (const auto host = reader.Get(HEADER_HOST); host.has_value()) {
-            // One copy, not three. The endpoint and remote address default to
-            // the acceptor host in their getters (see SpanData), so this
-            // serializes exactly as before while allocating once — the other
-            // two copies were the same bytes again, on a path every continued
-            // trace runs.
+            // One copy, not three: the endpoint and remote address default to
+            // the acceptor host in their getters (see SpanData).
             data_->setAcceptorHost(host.value());
         }
 
@@ -608,13 +583,11 @@ namespace pinpoint {
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
         CHECK_FINISHED();
         // Gate at entry creation: with URL stats disabled (the default) the
-        // entry used to be built — two heap string copies — and carried to
-        // enqueueUrlStats() only to be dropped there. The entry doubles as
-        // the url_template source for recordException (see getUrlTemplate),
-        // so it is still kept while callstack tracing needs it; sendUrlStat()
-        // then discards it without enqueueing. Only applied under a runtime
-        // snapshot: spans constructed without one (tests) keep the legacy
-        // record-then-drop behavior their assertions rely on.
+        // entry would cost two heap string copies only to be dropped at
+        // enqueue. It still doubles as recordException's url_template source
+        // (see getUrlTemplate), so callstack tracing keeps it and
+        // sendUrlStat() discards it without enqueueing. Snapshot-gated: spans
+        // built without one (tests) keep the record-then-drop behavior.
         if (runtime_ && !config_->http.url_stat.enable && !config_->enable_callstack_trace) {
             return;
         }

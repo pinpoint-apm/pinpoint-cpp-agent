@@ -39,17 +39,13 @@ namespace pinpoint {
     /// @brief Maximum supported percent rate (stored as hundredths of a percent).
     constexpr int MAX_PERCENT_RATE = 100 * 100;
 
-    /**
-     * @brief Base sampler interface that decides whether a trace should be sampled.
-     */
+    /// @brief Base sampler interface that decides whether a trace should be sampled.
     class Sampler {
     public:
         Sampler () : rate_(0), sampling_count_(0) {}
         virtual ~Sampler() = default;
 
-        /**
-         * @brief Decides whether the current event should be sampled.
-         */
+        /// @brief Decides whether the current event should be sampled.
         virtual bool isSampled() noexcept = 0;
 
     protected:
@@ -57,24 +53,18 @@ namespace pinpoint {
         std::atomic<uint64_t> sampling_count_;
     };
 
-    /**
-     * @brief Samples every Nth request based on a counter.
-     */
+    /// @brief Samples every Nth request based on a counter.
     class CounterSampler final : public Sampler {
     public:
         explicit CounterSampler (const int rate) {
             rate_ = rate;
         }
 
-        /**
-         * @brief Returns `true` every `rate_` calls.
-         */
+        /// @brief Returns `true` every `rate_` calls.
         bool isSampled() noexcept override;
     };
 
-    /**
-     * @brief Samples requests based on a configured percentage.
-     */
+    /// @brief Samples requests based on a configured percentage.
     class PercentSampler final : public Sampler {
     public:
         explicit PercentSampler(const double rate) {
@@ -88,9 +78,7 @@ namespace pinpoint {
                 std::lround(rate * 100), 0, MAX_PERCENT_RATE));
         }
 
-        /**
-         * @brief Returns `true` deterministically based on the sampling counter and percent rate.
-         */
+        /// @brief Returns `true` deterministically based on the sampling counter and percent rate.
         bool isSampled() noexcept override;
     };
 

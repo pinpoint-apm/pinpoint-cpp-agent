@@ -29,9 +29,7 @@
 
 namespace pinpoint {
 
-    /**
-     * @brief Returns a shared noop span event instance.
-     */
+    /// @brief Returns a shared noop span event instance.
     SpanEventPtr noopSpanEvent();
     /**
      * @brief Returns a shared noop span instance.
@@ -47,18 +45,12 @@ namespace pinpoint {
      * path — unchanged from before the per-thread owner existed.
      */
     SpanPtr noopSpan();
-    /**
-     * @brief Returns the global singleton span event handed out by unsampled spans.
-     */
+    /// @brief Returns the global singleton span event handed out by unsampled spans.
     SpanEventPtr unsampledSpanEvent();
-    /**
-     * @brief Returns a shared noop agent instance.
-     */
+    /// @brief Returns a shared noop agent instance.
     AgentPtr noopAgent();
 
-    /**
-     * @brief Span event implementation that ignores all recording operations.
-     */
+    /// @brief Span event implementation that ignores all recording operations.
     class NoopSpanEvent : public SpanEvent {
     public:
         void SetServiceType(int32_t type) override {}
@@ -96,9 +88,7 @@ namespace pinpoint {
         void InjectContext(TraceContextWriter& writer) override;
     };
 
-    /**
-     * @brief Span implementation used when tracing is disabled.
-     */
+    /// @brief Span implementation used when tracing is disabled.
     class NoopSpan : public Span {
     public:
         SpanEventPtr NewSpanEvent(std::string_view operation) override { return noopSpanEvent(); }
@@ -130,9 +120,7 @@ namespace pinpoint {
         bool IsSampled() override { return false; }
     };
 
-    /**
-     * @brief Lightweight span used when requests are explicitly marked as unsampled.
-     */
+    /// @brief Lightweight span used when requests are explicitly marked as unsampled.
     class UnsampledSpan final : public NoopSpan {
     public:
         // `runtime` is the creator's already-loaded runtime snapshot (see
@@ -194,9 +182,7 @@ namespace pinpoint {
         AgentService *agent_;
     };
 
-    /**
-     * @brief Agent implementation that always returns noop spans.
-     */
+    /// @brief Agent implementation that always returns noop spans.
     class NoopAgent final : public Agent {
     public:
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) override { return noopSpan(); }
@@ -209,9 +195,7 @@ namespace pinpoint {
         void Shutdown() override {}
     };
 
-    /**
-     * @brief Trace context reader that never returns any context information.
-     */
+    /// @brief Trace context reader that never returns any context information.
     class NoopTraceContextReader final : public TraceContextReader {
     public:
         std::optional<std::string_view> Get(std::string_view key) const override { return std::nullopt; }
