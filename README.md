@@ -89,6 +89,7 @@ tests.
 | [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
 | [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
 | [Troubleshooting](doc/trouble_shooting.md) | Startup contract, logging, common issues and solutions |
+| [Measured Complexity Decisions](doc/complexity_decisions.md) | Benchmark-adjudicated verdicts on the perf/semantics machinery kept after the code audit |
 
 ## Examples
 
