@@ -204,7 +204,7 @@ namespace pinpoint {
         // initialized in a child forked after grpc_init. The supported model
         // is StartAgent() in the process that traces — a master must not
         // start an agent before forking.
-        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+        if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             warn_fork_inheritance();
             return false;
         }
@@ -218,7 +218,7 @@ namespace pinpoint {
             return true;
         }
 
-        owner_pid_ = getpid();
+        owner_pid_ = current_pid();
 
         // NOTE on gRPC and fork(): the constructor triggers no grpc_init — no
         // channel, stub or credentials are built until openChannel() runs from
@@ -768,7 +768,7 @@ namespace pinpoint {
         // forever waiting for waiters that do not exist in this process.
         // Member destruction runs after this body, so releasing here is what
         // keeps that destructor from ever running.
-        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+        if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             (void)grpc_agent_.release();
             (void)grpc_metadata_.release();
             (void)grpc_span_.release();
@@ -784,15 +784,18 @@ namespace pinpoint {
         if (!enabled_) {
             return false;
         }
-        // One getpid() per span creation, only on the enabled path. An agent
-        // inherited across fork() carries the parent's enabled_ == true, but
-        // its worker threads do not exist in this process: recording would
-        // enqueue real spans into queues nothing drains — silently, since
-        // even the queue-drop reporter runs on the missing worker thread.
-        // Reading owner_pid_ is race-free: it is written before the init
-        // thread that publishes enabled_ = true is spawned, so any thread
-        // observing enabled_ == true also observes the final owner_pid_.
-        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+        // One pid read per span creation, only on the enabled path — served
+        // from current_pid()'s fork-hooked cache, so it is a relaxed atomic
+        // load rather than the syscall getpid() is on Linux (see utility.h).
+        // An agent inherited across fork() carries the parent's
+        // enabled_ == true, but its worker threads do not exist in this
+        // process: recording would enqueue real spans into queues nothing
+        // drains — silently, since even the queue-drop reporter runs on the
+        // missing worker thread. Reading owner_pid_ is race-free: it is
+        // written before the init thread that publishes enabled_ = true is
+        // spawned, so any thread observing enabled_ == true also observes the
+        // final owner_pid_.
+        if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             warn_fork_inheritance();
             return false;
         }
@@ -926,7 +929,7 @@ namespace pinpoint {
         // watcher threads and its gRPC runtime do not exist in this process.
         // Joining those dead handles would abort; touching the inherited gRPC
         // stack is unsafe. Abandon the handles and skip the normal teardown.
-        if (owner_pid_ != 0 && owner_pid_ != getpid()) {
+        if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             try { LOG_INFO("agent shutdown in forked child: abandoning inherited workers"); } catch (...) {}
             abandon_grpc_workers();
             // The watcher thread does not exist in this process either; its

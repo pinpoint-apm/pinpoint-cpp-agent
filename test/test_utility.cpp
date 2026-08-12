@@ -20,7 +20,9 @@
 #include <cstdlib>
 #include <new>
 #include <set>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 #include <cmath>
 
@@ -340,6 +342,36 @@ TEST(UtilityTest, QueueDropReporterPullVariantRateLimits) {
     std::this_thread::sleep_for(std::chrono::milliseconds(40));
     EXPECT_EQ(reporter.report_if_due(2), 2u)
         << "the drops silenced inside the window report after it";
+}
+
+TEST(UtilityTest, CurrentPidMatchesGetpid) {
+    EXPECT_EQ(current_pid(), getpid());
+}
+
+// The whole point of caching the pid is that the cache cannot go stale in a
+// forked child: every fork-inheritance guard in the agent compares a stored
+// owner pid against current_pid(), so a child still reporting the parent's pid
+// would let an inherited agent record spans into queues whose worker threads
+// do not exist in that process. test_fork covers that end to end through
+// AgentImpl; this pins the contract on the helper itself.
+TEST(UtilityTest, CurrentPidRefreshesInForkedChild) {
+    // Prime the cache in the parent, so the child can only pass by having its
+    // fork handler overwrite a value that is now demonstrably the parent's.
+    const pid_t parent_pid = current_pid();
+    ASSERT_EQ(parent_pid, getpid());
+
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        _exit((current_pid() == getpid() && current_pid() != parent_pid) ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "current_pid() must report the child's own pid after fork(), "
+           "never the cached parent pid";
 }
 
 } // namespace pinpoint

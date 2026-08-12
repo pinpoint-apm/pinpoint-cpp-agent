@@ -34,6 +34,7 @@
 #include "stat.h"
 #include "grpc.h"
 #include "url_stat.h"
+#include "utility.h"
 #include "agent_service.h"
 
 namespace pinpoint {
@@ -139,7 +140,7 @@ namespace pinpoint {
 		bool Enable() override;
 		/// @brief True when this agent was started in the current process (or
 		/// not started at all); false for a handle inherited across fork().
-		bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == getpid(); }
+		bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == current_pid(); }
 		/// @brief True when the asynchronous initialization launched by
 		/// Start() failed terminally (channel bring-up or worker spawn threw
 		/// on the init thread). Such an agent can never come online — unlike

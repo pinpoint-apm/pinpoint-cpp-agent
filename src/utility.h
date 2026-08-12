@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <optional>
+#include <sys/types.h>
 #include <thread>
 #include <vector>
 #include <string_view>
@@ -81,6 +82,27 @@ namespace pinpoint {
     std::optional<double> stod_(std::string_view str);
     /// @brief Safe string-to-bool conversion returning `std::nullopt` on error.
     std::optional<bool> stob_(std::string_view str);
+
+    /**
+     * @brief Returns the calling process's id, served from a cache that a
+     *        fork handler keeps current.
+     *
+     * The fork-inheritance guards compare a stored owner pid against the
+     * running process on paths as hot as span admission
+     * (AgentImpl::tracing_active, once per NewSpan). That comparison is only
+     * as cheap as reading the current pid, and getpid() is not uniformly
+     * cheap: glibc dropped its pid cache in 2.25 and the call is not in the
+     * vDSO, so on Linux it is a real syscall — measured at ~139 ns, against
+     * ~1 ns for the relaxed atomic load here — while Darwin still caches it
+     * and shows ~2 ns. Reading it from here costs the same everywhere.
+     *
+     * Correctness across fork() is preserved by a pthread_atfork child
+     * handler, which runs in the child before fork() returns there, so the
+     * child never observes the parent's pid. If that handler cannot be
+     * registered the cache is bypassed entirely and every call goes to
+     * getpid(): slower, never stale.
+     */
+    pid_t current_pid() noexcept;
 
     /**
      * @brief Abandons a thread handle without joining or detaching it,

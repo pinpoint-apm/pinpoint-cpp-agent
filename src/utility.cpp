@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <pthread.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -124,6 +125,48 @@ namespace pinpoint {
         // would be use-after-destruction.
         static const auto* cached_ip_addr = new std::string(resolve_host_ip_addr());
         return *cached_ip_addr;
+    }
+
+    namespace {
+        // Constant-initialized (std::atomic's value constructor is constexpr),
+        // so reading it is defined even before this file's dynamic
+        // initialization below has run.
+        std::atomic<pid_t> cached_pid{0};
+
+        void refresh_cached_pid() noexcept {
+            cached_pid.store(getpid(), std::memory_order_relaxed);
+        }
+
+        // Registered during this file's dynamic initialization — at library
+        // load, before the host can have forked — rather than lazily on the
+        // first current_pid() call. A function-local static would put a
+        // magic-static guard on that first call, and a fork() from another
+        // thread while that guard is held leaves it locked forever in the
+        // child. This library explicitly supports pre-fork servers, so that
+        // window must not exist. pthread_atfork itself is thread-safe, and
+        // every interleaving of a fork() with the initialization below leaves
+        // the child either fully hooked or with the flag still false, which
+        // the fallback in current_pid() handles.
+        const bool pid_hook_installed = [] {
+            if (pthread_atfork(nullptr, nullptr, &refresh_cached_pid) != 0) {
+                return false;
+            }
+            refresh_cached_pid();
+            return true;
+        }();
+    }
+
+    pid_t current_pid() noexcept {
+        // A false flag means either that the handler could not be registered
+        // or that this file's dynamic initialization has not run yet (another
+        // translation unit's initializer calling in). Both must bypass the
+        // cache: without the fork handler a cached value can go stale in a
+        // child, and a stale pid would let an inherited agent record spans
+        // into queues whose worker threads do not exist in that process.
+        if (!pid_hook_installed) {
+            return getpid();
+        }
+        return cached_pid.load(std::memory_order_relaxed);
     }
 
     void abandon_thread(std::thread& t) noexcept {
