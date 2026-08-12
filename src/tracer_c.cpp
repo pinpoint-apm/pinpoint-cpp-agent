@@ -272,13 +272,16 @@ static R pt_handle_call(Handle handle, R fallback, F&& fn) {
     return owned && owned->ptr ? std::forward<F>(fn)(owned.get()) : fallback;
 }
 
+// Variant for entry points whose noop result is a handle of its own: the noop
+// input short-circuits to @p noop_result instead of running @p fn, which would
+// register a fresh owned handle per call for a noop pointee. The failure
+// fallback is R{} (a null handle), as it is at every call site.
 template <typename Handle, typename R, typename F>
-static R pt_handle_call_or_noop(Handle handle, Handle noop_handle, R noop_result,
-                                R fallback, F&& fn) {
-    if (handle == noop_handle) {
+static R pt_handle_call_or_noop(Handle handle, R noop_result, F&& fn) {
+    if (handle == noop_sentinel_for(handle)) {
         return noop_result;
     }
-    return pt_handle_call(handle, fallback, std::forward<F>(fn));
+    return pt_handle_call(handle, R{}, std::forward<F>(fn));
 }
 
 template <typename Handle>
@@ -692,9 +695,7 @@ pt_span_t pt_agent_new_span(pt_agent_t agent, const char* operation,
     return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
         // The noop agent only ever makes noop spans — skip the call (and the
         // singleton refcount churn it would trigger) and hand back the sentinel.
-        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
-                                      static_cast<pt_span_t>(noop_span_sentinel()),
-                                      static_cast<pt_span_t>(nullptr),
+        return pt_handle_call_or_noop(agent, noop_span_sentinel(),
                                       [&](pt_agent_t valid) {
             return make_span_handle(valid->ptr->NewSpan(operation ? operation : "",
                                                         rpc_point  ? rpc_point  : ""));
@@ -706,9 +707,7 @@ pt_span_t pt_agent_new_span_with_reader(pt_agent_t agent, const char* operation,
                                         const char* rpc_point,
                                         const pt_context_reader_t* reader) {
     return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
-                                      static_cast<pt_span_t>(noop_span_sentinel()),
-                                      static_cast<pt_span_t>(nullptr),
+        return pt_handle_call_or_noop(agent, noop_span_sentinel(),
                                       [&](pt_agent_t valid) {
             pinpoint::SpanPtr ptr;
             if (reader) {
@@ -729,9 +728,7 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
                                         const char* rpc_point, const char* method,
                                         const pt_context_reader_t* reader) {
     return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
-        return pt_handle_call_or_noop(agent, noop_agent_sentinel(),
-                                      static_cast<pt_span_t>(noop_span_sentinel()),
-                                      static_cast<pt_span_t>(nullptr),
+        return pt_handle_call_or_noop(agent, noop_span_sentinel(),
                                       [&](pt_agent_t valid) {
             pinpoint::SpanPtr ptr;
             if (reader) {
@@ -809,8 +806,6 @@ void pt_span_end(pt_span_t span) {
 pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation) {
     return pt_api_call(__func__, static_cast<pt_span_t>(nullptr), [&] {
         return pt_handle_call_or_noop(span, noop_span_sentinel(),
-                                      static_cast<pt_span_t>(noop_span_sentinel()),
-                                      static_cast<pt_span_t>(nullptr),
                                       [&](pt_span_t valid) {
             return make_span_handle(
                 valid->ptr->NewAsyncSpan(async_operation ? async_operation : ""));

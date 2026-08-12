@@ -668,10 +668,6 @@ namespace pinpoint {
                 std::forward<Generator>(generator));
         }
 
-        size_t shardCount() const noexcept {
-            return cache_.shardCount();
-        }
-
     private:
         ShardedLruCache<PreparedSqlRef, RawSqlCacheShardTraits> cache_;
         const size_t max_cacheable_length_;
