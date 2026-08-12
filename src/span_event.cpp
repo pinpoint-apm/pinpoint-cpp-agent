@@ -122,13 +122,19 @@ namespace pinpoint {
         span_(span),
         agent_(span->agent_),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
-        operation_{operation},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {
         assert(span_ != nullptr);
         assert(agent_ != nullptr);
 
-        if (!operation_.empty()) {
+        if (!operation.empty()) {
             api_id_ = agent_->cacheApi(operation, API_TYPE_DEFAULT);
+        }
+        // Same trade as SpanData: the name is the fallback for an event with
+        // no api id, and build_span_event reads it only on that branch. A
+        // span event is created per traced call, so this is the copy that
+        // repeats most within a single span.
+        if (api_id_ <= 0) {
+            operation_ = operation;
         }
     }
 

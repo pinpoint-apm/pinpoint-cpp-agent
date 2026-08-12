@@ -68,7 +68,8 @@ static TraceId make_extract_trace_id(AgentService& agent, TraceContextReader& re
 TEST_F(SpanTest, SpanDataConstructorTest) {
     SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
-    EXPECT_EQ(span_data.getOperationName(), "test-operation") << "Operation name should match";
+    EXPECT_EQ(span_data.getOperationName(), "")
+        << "the name is not stored a second time once its API ID identifies it";
     EXPECT_EQ(span_data.getAppType(), 1300) << "App type should match agent's app type";
     EXPECT_EQ(span_data.getServiceType(), defaults::SPAN_SERVICE_TYPE) << "Default service type should be set";
     EXPECT_GT(span_data.getApiId(), 0) << "API ID should be cached and positive";
@@ -504,7 +505,8 @@ TEST_F(SpanTest, SpanEventEndEventUsesParentSpanTest) {
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
     ASSERT_EQ(events.size(), 1u);
-    EXPECT_EQ(events[0]->getOperationName(), "test-event");
+    EXPECT_EQ(events[0]->getApiId(), mock_agent_service_->getCachedApiId("test-event"))
+        << "the recorded event is identified by the API ID its name resolved to";
 }
 
 TEST_F(SpanTest, SpanEventEndEventTest) {
@@ -519,7 +521,9 @@ TEST_F(SpanTest, SpanEventEndEventTest) {
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
     ASSERT_EQ(events.size(), 1u);
-    EXPECT_EQ(events[0]->getOperationName(), "event-ended-by-handle");
+    EXPECT_EQ(events[0]->getApiId(),
+              mock_agent_service_->getCachedApiId("event-ended-by-handle"))
+        << "the recorded event is identified by the API ID its name resolved to";
 }
 
 TEST_F(SpanTest, SpanImplEndSpanTest) {

@@ -103,12 +103,21 @@ public:
     }
 
     int32_t cacheApi(std::string_view api_str, int32_t api_type) const override {
+        // The real agent returns 0 when it is disabled or the cache throws;
+        // spans then fall back to sending the operation name itself, so tests
+        // need a way to reach that branch.
+        if (api_caching_disabled_) {
+            return 0;
+        }
         auto key = std::string(api_str);
         if (cached_apis_.find(key) == cached_apis_.end()) {
             cached_apis_[key] = api_id_counter_++;
         }
         return cached_apis_[key];
     }
+
+    /// @brief Makes cacheApi() report failure, as a disabled agent does.
+    void setApiCachingDisabled(bool disabled) { api_caching_disabled_ = disabled; }
 
     void removeCacheApi(const ApiMeta& api_meta) const override {
         removed_api_count_++;
@@ -312,6 +321,7 @@ public:
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;
+    bool api_caching_disabled_ = false;
     mutable int32_t error_id_counter_ = 200;
     mutable int32_t sql_id_counter_ = 300;
     // Atomic so tests can poll these from another thread while a worker runs

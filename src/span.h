@@ -82,8 +82,12 @@ namespace pinpoint {
 
     	/// @brief Returns the application type.
     	int32_t getAppType() const { return app_type_; }
-        /// @brief Returns the logical operation name.
-        std::string& getOperationName() { return operation_; }
+        /// @brief Returns the operation name kept as the api-id fallback.
+        ///
+        /// Empty whenever getApiId() is positive: the id identifies the
+        /// operation on the wire and the name is not stored a second time.
+        /// Only build_grpc_span's no-api-id branch consumes this.
+        const std::string& getOperationName() const { return operation_; }
     	/// @brief Returns the cached API identifier for the operation.
     	int32_t getApiId() const { return api_id_; }
 

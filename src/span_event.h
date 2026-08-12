@@ -95,8 +95,13 @@ namespace pinpoint {
 
         /// @brief Returns the service type identifier.
         int32_t getServiceType() const { return service_type_; }
-        /// @brief Returns the recorded operation name.
-        std::string& getOperationName() { return operation_; }
+        /// @brief Returns the operation name kept as the api-id fallback.
+        ///
+        /// Empty whenever getApiId() is positive — the id identifies the
+        /// operation on the wire, so the name is not stored a second time —
+        /// unless SetOperationName() later supplied one explicitly. Only
+        /// build_span_event's no-api-id branch consumes this.
+        const std::string& getOperationName() const { return operation_; }
 
         /// @brief Returns the absolute start time in milliseconds.
         int64_t getStartTime() const { return start_time_; }

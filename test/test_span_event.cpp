@@ -77,7 +77,9 @@ TEST_F(SpanEventTest, ConstructorTest) {
     auto span_event = make_test_span_event(*test_span_, "test-operation");
     
     EXPECT_EQ(span_event.getServiceType(), defaults::SPAN_EVENT_SERVICE_TYPE) << "Default service type should be set";
-    EXPECT_EQ(span_event.getOperationName(), "test-operation") << "Operation name should match";
+    EXPECT_GT(span_event.getApiId(), 0) << "Operation name should resolve to an API ID";
+    EXPECT_EQ(span_event.getOperationName(), "")
+        << "the name is not stored a second time once its API ID identifies it";
     EXPECT_GT(span_event.getStartTime(), 0) << "Start time should be set";
     EXPECT_EQ(span_event.getStartElapsed(), 0) << "Initial start elapsed should be 0";
     EXPECT_EQ(span_event.getEndElapsed(), 0) << "Initial end elapsed should be 0";
@@ -99,8 +101,9 @@ TEST_F(SpanEventTest, ConstructorWithEmptyOperationTest) {
 TEST_F(SpanEventTest, ConstructorWithNonEmptyOperationTest) {
     auto span_event = make_test_span_event(*test_span_, "database-query");
     
-    EXPECT_EQ(span_event.getOperationName(), "database-query") << "Operation name should be set";
     EXPECT_GT(span_event.getApiId(), 0) << "API ID should be cached for non-empty operation";
+    EXPECT_EQ(span_event.getOperationName(), "")
+        << "an event with an API ID keeps no fallback name";
     
     // Verify API was cached
     int32_t cached_id = mock_agent_service_->getCachedApiId("database-query");
@@ -754,10 +757,11 @@ TEST_F(SpanEventTest, MultipleSpanEventsTest) {
     EXPECT_GE(event2.getDepth(), 0);
     EXPECT_GE(event3.getDepth(), 0);
     
-    // Each should have different operation names
-    EXPECT_EQ(event1.getOperationName(), "operation-1");
-    EXPECT_EQ(event2.getOperationName(), "operation-2");
-    EXPECT_EQ(event3.getOperationName(), "operation-3");
+    // Distinct operation names are told apart by their API IDs below, which
+    // is also why none of the three retains its name.
+    EXPECT_EQ(event1.getOperationName(), "");
+    EXPECT_EQ(event2.getOperationName(), "");
+    EXPECT_EQ(event3.getOperationName(), "");
     
     // Each should have different API IDs (cached by agent)
     int32_t api_id1 = event1.getApiId();
@@ -1224,14 +1228,29 @@ TEST_F(SpanEventTest, SetOperationNameDoesNotUpdateApiIdTest) {
         << "SetOperationName should NOT recache the API ID";
 }
 
+// Dropping the name is only safe because the branch that needs it still gets
+// it: with no API ID there is nothing on the wire to identify the operation,
+// so build_span_event falls back to sending the name as an annotation. If
+// this ever regressed, operations would silently lose their names whenever
+// the agent could not cache them.
+TEST_F(SpanEventTest, OperationNameRetainedWhenApiIdUnavailableTest) {
+    mock_agent_service_->setApiCachingDisabled(true);
+    auto span_event = make_test_span_event(*test_span_, "uncacheable-operation");
+
+    ASSERT_EQ(span_event.getApiId(), 0) << "the API cache was made to fail";
+    EXPECT_EQ(span_event.getOperationName(), "uncacheable-operation")
+        << "with no API ID the name is the only thing left to send";
+}
+
 // ========== Long String Edge Cases ==========
 
 TEST_F(SpanEventTest, LongOperationNameTest) {
     std::string long_name(10000, 'x');
     auto span_event = make_test_span_event(*test_span_, long_name);
 
-    EXPECT_EQ(span_event.getOperationName(), long_name);
     EXPECT_GT(span_event.getApiId(), 0) << "Long operation name should still be cached";
+    EXPECT_EQ(span_event.getOperationName(), "")
+        << "the 10 KB name lives in the API cache, not in every span event";
 }
 
 TEST_F(SpanEventTest, LongErrorMessageTest) {

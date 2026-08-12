@@ -30,7 +30,12 @@ namespace pinpoint {
 
     SpanData::SpanData(std::string_view operation, int32_t app_type, int32_t api_id) :
         app_type_{app_type},
-        operation_{operation},
+        // Kept only as the fallback for a span with no api id: whenever the
+        // id is positive the builders send it and never read the name (see
+        // build_grpc_span), so storing it there allocated once per span for
+        // bytes nothing would look at. An operation name is past libstdc++'s
+        // 15-character small-string threshold more often than not.
+        operation_{api_id > 0 ? std::string_view{} : operation},
         api_id_{api_id},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {}
 
