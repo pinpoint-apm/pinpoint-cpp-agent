@@ -31,3 +31,11 @@ target_link_libraries(raw_sql_cache_benchmark PRIVATE
 add_executable(active_span_benchmark active_span_benchmark.cpp)
 target_include_directories(active_span_benchmark PRIVATE ../src)
 target_link_libraries(active_span_benchmark PRIVATE Threads::Threads)
+
+# Drives a real AgentImpl, so unlike the component benchmarks above it needs
+# the library itself (and the generated protobuf headers it carries).
+add_executable(span_lifecycle_benchmark span_lifecycle_benchmark.cpp)
+target_include_directories(span_lifecycle_benchmark PRIVATE ../src ../include)
+target_link_libraries(span_lifecycle_benchmark PRIVATE
+  ${PINPOINT_CPP_LIBRARY}
+  Threads::Threads)

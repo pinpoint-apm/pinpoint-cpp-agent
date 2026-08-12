@@ -145,3 +145,75 @@ sampled per-pair latency (p50/p99/max) alongside aggregate throughput. A
 final phase times the `collect()` snapshot scan with 10,000 in-flight spans —
 that scan runs once per stat-collect interval, so it only needs to show no
 regression.
+
+## Span lifecycle
+
+The benchmarks above each isolate one mechanism and answer "was this data
+structure worth it". This one answers the question a host application asks
+instead: **what does one instrumented request cost the thread that makes it?**
+It drives a real `AgentImpl` through the whole
+`NewSpan` → `NewSpanEvent` → `EndSpan` lifecycle rather than any single
+component of it.
+
+That gap was not theoretical. `AgentImpl::tracing_active()` carried a
+`getpid()` per span — ~1 ns on Darwin but ~150 ns on Linux/glibc, more than
+every component measured above put together — and no component benchmark
+could have shown it.
+
+**Unlike the other targets here, this one must be built against an optimized
+library.** The others are header-only and get compiled into the benchmark
+translation unit, which this directory always builds with optimization; this
+one measures code that lives in `libpinpoint_cpp`, so a `debug-cached`
+(Debug) library reports numbers several times too slow:
+
+```sh
+cmake --preset default -DBUILD_BENCHMARKS=ON
+cmake --build --preset default --target span_lifecycle_benchmark
+./build/default/benchmark/span_lifecycle_benchmark 50000
+```
+
+The optional argument is the request count **per thread**, so the total work
+grows with the thread count and `ns/req` stays comparable across rows.
+`ns/req` is wall time divided by requests per thread — the same per-thread
+convention as the atomic-shared-pointer benchmark, so a column that stays
+flat as threads are added means the agent accumulates no cross-core
+contention, and one that grows is a cost to explain.
+
+Four request shapes, because they cost very different amounts and real
+traffic is a mix of them:
+
+| shape | what it exercises |
+|---|---|
+| `filtered` | the URL is excluded, so `NewSpan` returns the shared noop span |
+| `unsampled` | admitted but not sampled: an `UnsampledSpan`, still registered in the active-request registry and still timed at `EndSpan`. The majority path whenever sampling is on, so this is what most production requests actually pay |
+| `sampled` | a full `SpanImpl` for a fresh root trace, with N span events |
+| `continued` | a full `SpanImpl` for an inbound trace: the trace id is parsed and every propagation header is copied into `SpanData` |
+
+A continued trace bypasses the sampler entirely (see
+`TraceSampler::isContinueSampled`), so that shape is always sampled
+regardless of the configured rate; the `unsampled` rows therefore run against
+a second agent configured at `percent_rate = 0`.
+
+Each shape is verified before it is timed — the noop span reports span id 0,
+an `UnsampledSpan` reports a real span id but `IsSampled() == false`, and a
+`SpanImpl` reports both — so a phase cannot silently degrade to noop spans
+(an agent that never came online, a filter that stopped matching) and still
+publish a fast number. A failed verification exits non-zero.
+
+The gRPC clients are the production classes with their channels held unready,
+so the span worker collects batches and discards them exactly as it does
+during a collector outage: the queue is drained and chunks are destroyed, as
+in production, without a network or a mock framework. Watch the run for
+`span queue overflow` warnings — a machine loaded enough to push the worker
+behind moves enqueues onto the head-drop path and changes what is measured.
+
+Two caveats when reading the output:
+
+- For the very cheap shapes the sampled `p50`/`p99` are dominated by the two
+  `Clock::now()` calls around each timed request (tens of ns). Read `ns/req`
+  for those rows; the percentiles are meaningful once a request costs
+  hundreds of ns or more.
+- On a heterogeneous CPU (Apple silicon: 10 performance + 4 efficiency
+  cores), the 8-thread rows spill onto efficiency cores, so part of the 1→8
+  rise is core heterogeneity rather than contention. The 1→4 comparison is
+  the clean one there.
