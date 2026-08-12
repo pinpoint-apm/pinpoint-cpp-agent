@@ -357,9 +357,17 @@ namespace pinpoint {
         // A vector, not a deque: the deque paid its map + first-block
         // allocation in every span's constructor (see event_stack_), while a
         // vector starts allocation-free and keeps its capacity across chunk
-        // flushes (takeFinishedEvents clears it). The front/middle inserts
-        // in storeFinishedEvent are the rare out-of-order finishes and move
-        // at most one chunk's worth of pointers.
+        // flushes (takeFinishedEvents clears it).
+        //
+        // Which insert path storeFinishedEvent takes follows from the shape of
+        // the trace, not from misuse. Sibling events at the same depth finish
+        // in creation order, so their sequences arrive ascending and append.
+        // NESTED events finish innermost-first, so their sequences arrive
+        // DESCENDING and insert at the front — that is the normal well-nested
+        // case, not an out-of-order end. Either way the move stays small: the
+        // list is drained into a chunk every span.event_chunk_size finishes,
+        // and the one burst that can exceed that (EndSpan draining the open
+        // stack in one go) is capped by span.max_event_depth.
         std::vector<std::unique_ptr<SpanEventImpl>> finished_events;
         // Finished events already handed to a chunk. Ownership is retained
         // here (a chunk holds borrowed pointers plus a shared_ptr to this
