@@ -1621,8 +1621,37 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
     EXPECT_EQ(data->getAcceptorHost(), "upstream-host:8080");
+    // Both default to the acceptor host without storing it again; the wire
+    // must not be able to tell that only one copy was made.
     EXPECT_EQ(data->getEndPoint(), "upstream-host:8080");
     EXPECT_EQ(data->getRemoteAddr(), "upstream-host:8080");
+}
+
+// The acceptor-host default holds only until instrumentation supplies real
+// values, and an explicitly empty value must stay empty rather than fall back
+// to the host — the reason SpanData tracks "was it set" instead of testing
+// the string for emptiness.
+TEST_F(SpanTest, SpanImplExplicitEndpointOverridesAcceptorHostDefaultTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_HOST, "upstream-host:8080");
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    span.SetEndPoint("/orders");
+    span.SetRemoteAddress("");
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
+    EXPECT_EQ(data->getAcceptorHost(), "upstream-host:8080")
+        << "the acceptor host itself is untouched by the overrides";
+    EXPECT_EQ(data->getEndPoint(), "/orders")
+        << "an explicit endpoint must replace the acceptor-host default";
+    EXPECT_EQ(data->getRemoteAddr(), "")
+        << "an explicitly empty remote address must stay empty, not "
+           "resurrect the acceptor-host default";
 }
 
 TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {

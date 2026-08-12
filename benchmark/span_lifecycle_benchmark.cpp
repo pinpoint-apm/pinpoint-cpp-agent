@@ -152,7 +152,13 @@ namespace benchmark {
             if (key == HEADER_PARENT_APP_NAME) return "upstream-service";
             if (key == HEADER_PARENT_APP_TYPE) return "1300";
             if (key == HEADER_FLAG) return "0";
-            if (key == HEADER_HOST) return "upstream.internal:8080";
+            // Deliberately longer than BOTH small-string thresholds
+            // (libstdc++ 15, libc++ 22): the propagation headers are copied
+            // into SpanData, so a short host would keep every one of those
+            // copies inside the string object and hide their cost on exactly
+            // the platform this benchmark usually runs on. A real host name
+            // is past both thresholds anyway.
+            if (key == HEADER_HOST) return "upstream-gateway-07.internal:8443";
             return std::nullopt;
         }
     };

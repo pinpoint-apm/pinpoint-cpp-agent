@@ -551,10 +551,12 @@ namespace pinpoint {
         }
 
         if (const auto host = reader.Get(HEADER_HOST); host.has_value()) {
-            const auto& v = host.value();
-            data_->setAcceptorHost(v);
-            data_->setEndPoint(v);
-            data_->setRemoteAddr(v);
+            // One copy, not three. The endpoint and remote address default to
+            // the acceptor host in their getters (see SpanData), so this
+            // serializes exactly as before while allocating once — the other
+            // two copies were the same bytes again, on a path every continued
+            // trace runs.
+            data_->setAcceptorHost(host.value());
         }
 
         agent_->getAgentStats().addActiveSpan(active_node_, data_->getSpanId(), data_->getStartTime());

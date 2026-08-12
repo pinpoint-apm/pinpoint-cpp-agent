@@ -117,20 +117,44 @@ namespace pinpoint {
         /// @brief Returns the RPC name for the span.
         std::string& getRpcName() { return rpc_name_; }
 
+        // Endpoint and remote address both DEFAULT to the acceptor host: an
+        // inbound Pinpoint-Host names the host the caller dialed, and until
+        // instrumentation supplies better values that is the best answer for
+        // all three fields. extractContext used to express that by copying
+        // the same header value into three separate std::strings — three
+        // allocations of identical bytes per continued trace, and libstdc++
+        // leaves SSO at 15 characters, so a real host name always allocates.
+        // The default lives in the getters instead, so only the acceptor host
+        // is ever stored. The wire is unchanged: a field nobody sets still
+        // serializes as the host (see build_accept_event).
+        //
+        // The explicit `*_set_` flags rather than an empty() check: setting a
+        // field to "" on purpose must keep meaning "empty", not silently
+        // resurrect the host default.
+
         /// @brief Sets the endpoint that handled the request.
-        void setEndPoint(std::string_view endpoint) { endpoint_ = endpoint; }
-        /// @brief Returns the endpoint that handled the request.
-        std::string& getEndPoint() { return endpoint_; }
+        void setEndPoint(std::string_view endpoint) {
+            endpoint_ = endpoint;
+            endpoint_set_ = true;
+        }
+        /// @brief Returns the endpoint, defaulting to the acceptor host until
+        /// one is set explicitly.
+        const std::string& getEndPoint() const { return endpoint_set_ ? endpoint_ : acceptor_host_; }
 
         /// @brief Sets the remote address of the client.
-        void setRemoteAddr(std::string_view remote_addr) { remote_addr_ = remote_addr; }
-        /// @brief Returns the remote address of the client.
-        std::string& getRemoteAddr() { return remote_addr_; }
+        void setRemoteAddr(std::string_view remote_addr) {
+            remote_addr_ = remote_addr;
+            remote_addr_set_ = true;
+        }
+        /// @brief Returns the remote address, defaulting to the acceptor host
+        /// until one is set explicitly.
+        const std::string& getRemoteAddr() const { return remote_addr_set_ ? remote_addr_ : acceptor_host_; }
 
-        /// @brief Sets the acceptor host recorded for this span.
+        /// @brief Sets the acceptor host recorded for this span. Also supplies
+        /// the default for the two getters above.
         void setAcceptorHost(std::string_view acceptor_host) { acceptor_host_ = acceptor_host; }
         /// @brief Returns the acceptor host recorded for this span.
-        std::string& getAcceptorHost() { return acceptor_host_; }
+        const std::string& getAcceptorHost() const { return acceptor_host_; }
 
         /// @brief Sets logging verbosity information.
         void setLoggingFlag() { logging_flag_ = SPAN_LOGGING_FLAG_ON; }
@@ -272,8 +296,17 @@ namespace pinpoint {
     	int32_t api_id_;
 
     	std::string rpc_name_;
+    	// Only written through setEndPoint/setRemoteAddr; while the matching
+    	// flag is false the getters serve acceptor_host_ instead, so a span
+    	// that never sets them holds no storage for them at all. Plain bools,
+    	// not atomics, for the same reason the strings beside them are plain:
+    	// the owning thread writes them, and the gRPC worker only reads this
+    	// object's endpoint through SpanChunk's own snapshot until the span is
+    	// finished (see SpanChunk::endpoint_).
     	std::string endpoint_;
+    	bool endpoint_set_{false};
     	std::string remote_addr_;
+    	bool remote_addr_set_{false};
     	std::string acceptor_host_;
 
         // Atomic so overflow checks and event position reservation never race
