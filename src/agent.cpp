@@ -866,13 +866,7 @@ namespace pinpoint {
             return span;
         }
         return std::make_shared<UnsampledSpan>(this, std::move(runtime));
-    } catch (const std::exception& e) {
-        LOG_ERROR("new span exception = {}", e.what());
-        return noopSpan();
-    } catch (...) {
-        LOG_ERROR("new span unknown exception");
-        return noopSpan();
-    }
+    } CATCH_AND_LOG_RETURN("new span", noopSpan())
 
 	bool AgentImpl::Enable() {
     	return tracing_active();
@@ -1113,13 +1107,7 @@ namespace pinpoint {
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to cache api meta: exception = {}", e.what());
-        return 0;
-    } catch (...) {
-        LOG_ERROR("failed to cache api meta: unknown exception");
-        return 0;
-    }
+    } CATCH_AND_LOG_RETURN("failed to cache api meta:", 0)
 
     // The removeCache* functions carry the same exception boundary as their
     // cache* siblings: they build allocating keys, and their caller is the
@@ -1129,11 +1117,7 @@ namespace pinpoint {
         if (enabled_) {
             api_cache_->remove(ApiCacheKey{api_meta.api_str_, api_meta.type_});
         }
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to remove cached api meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to remove cached api meta: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to remove cached api meta:")
 
     int32_t AgentImpl::cacheError(std::string_view error_name) const try {
         if (!enabled_) {
@@ -1149,23 +1133,13 @@ namespace pinpoint {
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to cache error meta: exception = {}", e.what());
-        return 0;
-    } catch (...) {
-        LOG_ERROR("failed to cache error meta: unknown exception");
-        return 0;
-    }
+    } CATCH_AND_LOG_RETURN("failed to cache error meta:", 0)
 
     void AgentImpl::removeCacheError(const StringMeta& error_meta) const try {
         if (enabled_) {
             error_cache_->remove(error_meta.str_val_);
         }
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to remove cached error meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to remove cached error meta: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to remove cached error meta:")
 
     int32_t AgentImpl::cacheSql(std::string_view sql_query) const try {
         if (!enabled_) {
@@ -1181,13 +1155,7 @@ namespace pinpoint {
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to cache sql meta: exception = {}", e.what());
-        return 0;
-    } catch (...) {
-        LOG_ERROR("failed to cache sql meta: unknown exception");
-        return 0;
-    }
+    } CATCH_AND_LOG_RETURN("failed to cache sql meta:", 0)
 
     std::optional<PreparedSqlRef> AgentImpl::prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const try {
@@ -1217,7 +1185,6 @@ namespace pinpoint {
                     throw std::runtime_error("SQL ID unavailable");
                 }
                 return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
             };
@@ -1236,7 +1203,6 @@ namespace pinpoint {
                     throw std::runtime_error("SQL UID unavailable");
                 }
                 return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{*uid}});
             };
@@ -1248,13 +1214,7 @@ namespace pinpoint {
         }
 
         return std::nullopt;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to prepare raw sql: exception = {}", e.what());
-        return std::nullopt;
-    } catch (...) {
-        LOG_ERROR("failed to prepare raw sql: unknown exception");
-        return std::nullopt;
-    }
+    } CATCH_AND_LOG_RETURN("failed to prepare raw sql:", std::nullopt)
 
     void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const try {
         if (enabled_) {
@@ -1264,11 +1224,7 @@ namespace pinpoint {
             // reverse index from normalized SQL to every raw variant.
             sql_id_metadata_epoch_.fetch_add(1, std::memory_order_release);
         }
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to remove cached sql meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to remove cached sql meta: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to remove cached sql meta:")
 
     std::optional<SqlUid> AgentImpl::cacheSqlUid(std::string_view sql) const try {
         if (!enabled_) {
@@ -1285,24 +1241,14 @@ namespace pinpoint {
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return uid;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to cache sql uid meta: exception = {}", e.what());
-        return std::nullopt;
-    } catch (...) {
-        LOG_ERROR("failed to cache sql uid meta: unknown exception");
-        return std::nullopt;
-    }
+    } CATCH_AND_LOG_RETURN("failed to cache sql uid meta:", std::nullopt)
 
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
         if (enabled_) {
             sql_uid_cache_->remove(sql_uid_meta.sql_);
             sql_uid_metadata_epoch_.fetch_add(1, std::memory_order_release);
         }
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to remove cached sql uid meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to remove cached sql uid meta: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to remove cached sql uid meta:")
 
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
@@ -1315,11 +1261,7 @@ namespace pinpoint {
         auto meta = std::make_unique<MetaData>(META_EXCEPTION, trace_id, span_id, url_template,
                                                std::move(exceptions));
         grpc_metadata_->enqueueMeta(std::move(meta));
-    } catch (const std::exception& e) {
-        LOG_ERROR("failed to record exception meta: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to record exception meta: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to record exception meta:")
 
     // These check enabled_ before touching the runtime generation so the
     // disabled-agent path remains free.
@@ -1377,13 +1319,7 @@ namespace pinpoint {
             return AgentImpl::createShared(cfg,
                 std::move(grpc_agent), std::move(grpc_metadata), std::move(grpc_span),
                 std::move(grpc_stat), std::move(grpc_command), options.app_type);
-        } catch (const std::exception& e) {
-            LOG_ERROR("make agent exception = {}", e.what());
-            return nullptr;
-        } catch (...) {
-            LOG_ERROR("make agent unknown exception");
-            return nullptr;
-        }
+        } CATCH_AND_LOG_RETURN("make agent", nullptr)
     }
 
     // Public entry point: a failure to configure or construct the agent must

@@ -37,11 +37,9 @@ protected:
 };
 
 namespace {
-    PreparedSqlRef prepared_sql(std::string normalized,
-                                std::string parameters,
-                                int32_t id) {
+    PreparedSqlRef prepared_sql(std::string parameters, int32_t id) {
         return std::make_shared<const PreparedSql>(PreparedSql{
-            std::move(normalized), std::move(parameters), SqlIdentity{id}});
+            std::move(parameters), SqlIdentity{id}});
     }
 }
 
@@ -50,7 +48,7 @@ TEST_F(CacheTest, RawSqlCacheHitSkipsGeneratorAndReturnsSameImmutableEntry) {
     int generator_calls = 0;
     auto generator = [&] {
         ++generator_calls;
-        return prepared_sql("SELECT * FROM users WHERE id = 0#", "42", 7);
+        return prepared_sql("42", 7);
     };
 
     auto first = cache.get("SELECT * FROM users WHERE id = 42", 0, generator);
@@ -70,7 +68,7 @@ TEST_F(CacheTest, RawSqlCacheMetadataEpochInvalidatesStaleIdentity) {
     int generator_calls = 0;
     auto generator = [&] {
         ++generator_calls;
-        return prepared_sql("SELECT 0#", "1", 100 + generator_calls);
+        return prepared_sql("1", 100 + generator_calls);
     };
 
     auto epoch_zero = cache.get("SELECT 1", 0, generator);
@@ -90,12 +88,12 @@ TEST_F(CacheTest, RawSqlCacheMetadataEpochInvalidatesStaleIdentity) {
 TEST_F(CacheTest, RawSqlCacheReferenceSurvivesEviction) {
     RawSqlCache cache(1, 1);
     auto retained = cache.get("SELECT 1", 0, [] {
-        return prepared_sql("SELECT 0#", "1", 1);
+        return prepared_sql("1", 1);
     }).value;
     std::weak_ptr<const PreparedSql> weak = retained;
 
     cache.get("SELECT 2", 0, [] {
-        return prepared_sql("SELECT 0#", "2", 1);
+        return prepared_sql("2", 1);
     });
 
     ASSERT_NE(retained, nullptr);
@@ -110,7 +108,7 @@ TEST_F(CacheTest, RawSqlCacheOversizedStatementBypassesStorage) {
     int generator_calls = 0;
     auto generator = [&] {
         ++generator_calls;
-        return prepared_sql("SELECT 0#", "123456789", 1);
+        return prepared_sql("123456789", 1);
     };
 
     auto first = cache.get("SELECT 123456789", 0, generator);
@@ -131,7 +129,7 @@ TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
             return cache.get("SELECT * FROM concurrent WHERE id = 7", 0, [&] {
                 generator_calls.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::yield();
-                return prepared_sql("SELECT * FROM concurrent WHERE id = 0#", "7", 9);
+                return prepared_sql("7", 9);
             }).value;
         }));
     }

@@ -16,6 +16,9 @@
 
 #include "../src/sql.h"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <string>
 #include <vector>
 
@@ -72,6 +75,203 @@ static void ExpectNormalize(const SqlNormalizer& normalizer, std::string_view sq
     EXPECT_EQ(result.parameters, expected_params);
 }
 
+// ---- Java OutputParameterParser/DefaultSqlParser combine ports -------------
+//
+// Test-only reimplementations of the Java agent's combine step (the Pinpoint
+// web UI recombines normalized SQL with its extracted parameters). Production
+// never combines — these live here purely to round-trip-verify normalize()
+// against the Java parser, byte for byte.
+
+static char LookAhead1(std::string_view sql, size_t index) {
+    ++index;
+    return index < sql.length() ? sql[index] : '\0';
+}
+
+static bool IsAsciiDigit(char c) {
+    return std::isdigit(static_cast<unsigned char>(c)) != 0;
+}
+
+static bool ParseIndex(std::string_view text, size_t& index) {
+    const auto r = std::from_chars(text.data(), text.data() + text.size(), index);
+    return r.ec == std::errc{} && r.ptr == text.data() + text.size();
+}
+
+// Mirror of SqlNormalizer::readComment: copies the comment (start token
+// through end token inclusive) into writer and returns the index of the
+// comment's last character.
+static size_t ReadComment(std::string_view sql, size_t sql_length, size_t start_idx,
+    std::string_view first_token, std::string_view end_token, std::string* writer) {
+    const size_t search_start = std::min(start_idx + first_token.length(), sql_length);
+    const size_t end_index = sql.find(end_token, search_start);
+
+    size_t return_idx = sql_length;
+    size_t append_end = sql_length;
+    if (end_index != std::string_view::npos && end_index < sql_length) {
+        return_idx = end_index + end_token.length() - 1;
+        append_end = std::min(return_idx + 1, sql_length);
+    }
+
+    if (writer != nullptr && start_idx < append_end) {
+        writer->append(sql.substr(start_idx, append_end - start_idx));
+    }
+
+    return return_idx;
+}
+
+static std::string combineOutputParams(std::string_view sql, const std::vector<std::string>& output_params) {
+    if (sql.empty()) {
+        return "";
+    }
+
+    const size_t length = sql.length();
+    std::string normalized;
+    normalized.reserve(length + 16);
+
+    for (size_t i = 0; i < length; ++i) {
+        const char ch = sql[i];
+        switch (ch) {
+            case '/':
+                if (LookAhead1(sql, i) == '*') {
+                    i = ReadComment(sql, length, i, "/*", "*/", &normalized);
+                } else if (LookAhead1(sql, i) == '/') {
+                    i = ReadComment(sql, length, i, "//", "\n", &normalized);
+                } else {
+                    normalized += ch;
+                }
+                break;
+
+            case '-':
+                if (LookAhead1(sql, i) == '-') {
+                    i = ReadComment(sql, length, i, "--", "\n", &normalized);
+                } else {
+                    normalized += ch;
+                }
+                break;
+
+            case '0': case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7': case '8': case '9': {
+                if (LookAhead1(sql, i) == '\0') {
+                    normalized += ch;
+                    break;
+                }
+
+                std::string output_index;
+                output_index += ch;
+                ++i;
+
+                bool token_done = false;
+                for (; i < length; ++i) {
+                    const char state_ch = sql[i];
+                    if (IsAsciiDigit(state_ch)) {
+                        if (LookAhead1(sql, i) == '\0') {
+                            output_index += state_ch;
+                            normalized += output_index;
+                            token_done = true;
+                            break;
+                        }
+                        output_index += state_ch;
+                        continue;
+                    }
+
+                    if (state_ch == '#' || state_ch == '$') {
+                        size_t index = 0;
+                        if (ParseIndex(output_index, index) && index < output_params.size()) {
+                            normalized += output_params[index];
+                        } else {
+                            normalized += output_index;
+                            normalized += state_ch;
+                        }
+                        token_done = true;
+                        break;
+                    }
+
+                    normalized += output_index;
+                    --i;
+                    token_done = true;
+                    break;
+                }
+
+                if (!token_done) {
+                    normalized += output_index;
+                }
+                break;
+            }
+
+            default:
+                normalized += ch;
+                break;
+        }
+    }
+
+    return normalized;
+}
+
+static std::string combineBindValues(std::string_view sql, const std::vector<std::string>& bind_values) {
+    if (sql.empty() || bind_values.empty()) {
+        return std::string(sql);
+    }
+
+    const size_t length = sql.length();
+    std::string result;
+    result.reserve(length + 16);
+
+    bool in_quotes = false;
+    char quote_char = 0;
+    size_t bind_index = 0;
+
+    for (size_t i = 0; i < length; ++i) {
+        const char ch = sql[i];
+        if (in_quotes) {
+            if ((ch == '\'' || ch == '"') && ch == quote_char) {
+                if (LookAhead1(sql, i) == quote_char) {
+                    // Both quotes of a doubled-quote escape are consumed but
+                    // only one is emitted ('it''s' becomes 'it's'), matching
+                    // the Java agent's DefaultSqlParser byte for byte.
+                    result += ch;
+                    ++i;
+                    continue;
+                }
+                in_quotes = false;
+                quote_char = 0;
+            }
+            result += ch;
+            continue;
+        }
+
+        if (ch == '/') {
+            if (LookAhead1(sql, i) == '*') {
+                i = ReadComment(sql, length, i, "/*", "*/", &result);
+            } else if (LookAhead1(sql, i) == '/') {
+                i = ReadComment(sql, length, i, "//", "\n", &result);
+            } else {
+                result += ch;
+            }
+        } else if (ch == '-') {
+            if (LookAhead1(sql, i) == '-') {
+                i = ReadComment(sql, length, i, "--", "\n", &result);
+            } else {
+                result += ch;
+            }
+        } else if (ch == '\'' || ch == '"') {
+            in_quotes = true;
+            quote_char = ch;
+            result += ch;
+        } else if (ch == '?') {
+            if (bind_index < bind_values.size()) {
+                // The value is interpolated verbatim — quotes inside it are
+                // not escaped, matching the Java agent (display-only string).
+                result += '\'';
+                result += bind_values[bind_index++];
+                result += '\'';
+            }
+        } else {
+            result += ch;
+        }
+    }
+
+    return result;
+}
+
 static void ExpectJavaDefaultNormalize(std::string_view sql, std::string_view expected_normalized,
     std::string_view expected_params = "") {
     SqlNormalizer java_default(2048, false);
@@ -82,7 +282,7 @@ static void ExpectJavaCombine(std::string_view original_sql, std::string_view no
     std::string_view output_params) {
     SqlNormalizer java_default(2048, false);
     ExpectNormalize(java_default, original_sql, normalized_sql, output_params);
-    EXPECT_EQ(java_default.combineOutputParams(normalized_sql, ParseOutputParameter(output_params)), original_sql);
+    EXPECT_EQ(combineOutputParams(normalized_sql, ParseOutputParameter(output_params)), original_sql);
 }
 
 // ========== Basic Normalization Tests ==========
@@ -824,54 +1024,51 @@ TEST_F(SqlTest, JavaDefaultEmptyStringCases) {
 }
 
 TEST_F(SqlTest, JavaCombineOutputParamsCases) {
-    SqlNormalizer java_default(2048, false);
-    EXPECT_EQ(java_default.combineOutputParams("0# 1#", ParseOutputParameter("123,345")), "123 345");
-    EXPECT_EQ(java_default.combineOutputParams("0# 1# '2$'", ParseOutputParameter("123,345,test")), "123 345 'test'");
-    EXPECT_EQ(java_default.combineOutputParams("0# 1# 2# 3# 4# 5# 6# 7# 8# 9# 10#",
+    EXPECT_EQ(combineOutputParams("0# 1#", ParseOutputParameter("123,345")), "123 345");
+    EXPECT_EQ(combineOutputParams("0# 1# '2$'", ParseOutputParameter("123,345,test")), "123 345 'test'");
+    EXPECT_EQ(combineOutputParams("0# 1# 2# 3# 4# 5# 6# 7# 8# 9# 10#",
         ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 3 4 5 6 7 8 9 10 11");
 }
 
 TEST_F(SqlTest, JavaCombineOutputParamsErrorCases) {
-    SqlNormalizer java_default(2048, false);
-    EXPECT_EQ(java_default.combineOutputParams("0# 10#", ParseOutputParameter("123,345")), "123 10#");
-    EXPECT_EQ(java_default.combineOutputParams("0# 2# 10#", ParseOutputParameter("1,2,3")), "1 3 10#");
-    EXPECT_EQ(java_default.combineOutputParams("0# 2 3", ParseOutputParameter("1,2,3")), "1 2 3");
-    EXPECT_EQ(java_default.combineOutputParams("0# 2 10", ParseOutputParameter("1,2,3")), "1 2 10");
-    EXPECT_EQ(java_default.combineOutputParams("0# 2 201", ParseOutputParameter("1,2,3")), "1 2 201");
-    EXPECT_EQ(java_default.combineOutputParams("0# 2 10#", ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 11");
+    EXPECT_EQ(combineOutputParams("0# 10#", ParseOutputParameter("123,345")), "123 10#");
+    EXPECT_EQ(combineOutputParams("0# 2# 10#", ParseOutputParameter("1,2,3")), "1 3 10#");
+    EXPECT_EQ(combineOutputParams("0# 2 3", ParseOutputParameter("1,2,3")), "1 2 3");
+    EXPECT_EQ(combineOutputParams("0# 2 10", ParseOutputParameter("1,2,3")), "1 2 10");
+    EXPECT_EQ(combineOutputParams("0# 2 201", ParseOutputParameter("1,2,3")), "1 2 201");
+    EXPECT_EQ(combineOutputParams("0# 2 10#", ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 11");
 }
 
 TEST_F(SqlTest, JavaCombineBindValuesCases) {
-    SqlNormalizer java_default(2048, false);
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table a = 1 and b=50 and c=? and d='11'",
         ParseOutputParameter("foo")),
         "select * from table a = 1 and b=50 and c='foo' and d='11'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table a = ? and b=? and c=? and d=?",
         ParseOutputParameter("1,50,  foo ,11")),
         "select * from table a = '1' and b='50' and c=' foo ' and d='11'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table a = ? and b=? and c=? and d=?",
         ParseOutputParameter("1, 50, foo, 11")),
         "select * from table a = '1' and b='50' and c='foo' and d='11'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table id = \"foo ? bar\" and number=?",
         ParseOutputParameter("99")),
         "select * from table id = \"foo ? bar\" and number='99'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table id = 'hi ? name''s foo' and number=?",
         ParseOutputParameter("99")),
         "select * from table id = 'hi ? name's foo' and number='99'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "/** comment ? */ select * from table id = ?",
         ParseOutputParameter("foo,,bar")),
         "/** comment ? */ select * from table id = 'foo,bar'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select /*! STRAIGHT_JOIN ? */ * from table id = ?",
         ParseOutputParameter("foo,,bar")),
         "select /*! STRAIGHT_JOIN ? */ * from table id = 'foo,bar'");
-    EXPECT_EQ(java_default.combineBindValues(
+    EXPECT_EQ(combineBindValues(
         "select * from table id = ?; -- This ? comment",
         ParseOutputParameter("foo")),
         "select * from table id = 'foo'; -- This ? comment");

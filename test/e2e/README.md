@@ -216,5 +216,4 @@ wrapper directly:
 ```
 
 The SQL endpoints intentionally exercise `SetSqlQuery` and collector metadata;
-they do not require a database. `init.sql` remains only as optional seed data
-for developers who attach a real MySQL instrumentation sample.
+they do not require a database.

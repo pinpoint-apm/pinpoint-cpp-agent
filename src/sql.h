@@ -64,10 +64,6 @@ namespace pinpoint {
         */
         SqlNormalizeResult normalize(std::string_view sql) const;
 
-        std::string combineOutputParams(std::string_view sql, const std::vector<std::string>& output_params) const;
-
-        std::string combineBindValues(std::string_view sql, const std::vector<std::string>& bind_values) const;
-
     private:
         size_t max_sql_length_;
         bool remove_comments_;

@@ -46,9 +46,10 @@ namespace pinpoint {
      * Immutable result of preparing one raw SQL statement. RawSqlCache returns
      * shared ownership so annotations can refer to the extracted parameters
      * without copying them, even after the cache entry itself is evicted.
+     * The normalized SQL text itself is not retained: the id/uid is resolved
+     * before this struct is built, and annotations only need the parameters.
      */
     struct PreparedSql {
-        std::string normalized_sql;
         std::string parameters;
         SqlIdentity identity;
     };

@@ -208,7 +208,7 @@
             "inherits": "test-base",
             "configurePreset": "asan",
             "environment": {
-                "ASAN_OPTIONS": "abort_on_error=1:suppressions=${sourceDir}/scripts/asan.supp"
+                "ASAN_OPTIONS": "abort_on_error=1"
             }
         },
         {

@@ -985,8 +985,8 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     auto* root_impl = dynamic_cast<SpanImpl*>(root.get());
     ASSERT_NE(root_impl, nullptr);
     auto* root_annotations = root_impl->getSpanData()->getAnnotations();
-    root_annotations->AppendIntStringString(9004, 11, "one", "two");
-    root_annotations->AppendSqlUidStringString(9005, annotation_uid, "sql", "args");
+    root_annotations->AppendData(9004, AnnotationData(11, "one", "two"));
+    root_annotations->AppendData(9005, AnnotationData(annotation_uid, "sql", "args"));
     root_annotations->AppendLongIntIntByteByteString(
         9006, 123456, 1, 2, 3, 4, "network-detail");
 

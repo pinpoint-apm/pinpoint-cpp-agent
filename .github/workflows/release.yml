@@ -36,18 +36,6 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Verify pinned IDL commit matches submodule
-        run: |
-          submodule_sha=$(git -C 3rd_party/pinpoint-grpc-idl rev-parse HEAD)
-          pinned_sha=$(grep -E '^set\(PP_GRPC_IDL_COMMIT ' CMakeLists.txt \
-                       | sed -E 's/.*"([0-9a-f]+)".*/\1/')
-          if [ "${submodule_sha}" != "${pinned_sha}" ]; then
-            echo "PP_GRPC_IDL_COMMIT in CMakeLists.txt (${pinned_sha})"
-            echo "does not match the submodule SHA (${submodule_sha})."
-            echo "Update the constant so the FetchContent fallback stays in sync."
-            exit 1
-          fi
-
       - name: Create source tarball
         id: archive
         run: |

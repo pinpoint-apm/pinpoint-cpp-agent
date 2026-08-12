@@ -97,7 +97,6 @@ The `example/` directory contains complete working examples:
 - **[tutorial.cpp](example/tutorial.cpp)** — basic agent usage and span creation
 - **[http_server.cpp](example/http_server.cpp)** — HTTP server instrumentation with context propagation
 - **[http_server_c.c](example/http_server_c.c)** / **[tutorial_c.c](example/tutorial_c.c)** — the same in plain C
-- **[nginx/](example/nginx/)** — nginx dynamic-module skeleton
 
 ## Dependencies
 

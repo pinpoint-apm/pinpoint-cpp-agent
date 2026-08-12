@@ -28,8 +28,8 @@
 #include <sstream>
 #include <algorithm>
 #include <string_view>
-#include <tuple>
 #include <unordered_map>
+#include <variant>
 #include <unistd.h>
 
 #include "absl/strings/match.h"
@@ -263,6 +263,16 @@ namespace pinpoint {
         return YAML::Node(YAML::NodeType::Undefined);
     }
 
+    // Resolves a dotted path ("Collector.Grpc.SslEnable") one case-insensitive
+    // segment at a time. Undefined (falsy) when any segment is missing.
+    static YAML::Node find_path(const YAML::Node& yaml, std::string_view path) {
+        const auto dot = path.find('.');
+        if (dot == std::string_view::npos) {
+            return find_node(yaml, path);
+        }
+        return find_path(find_node(yaml, path.substr(0, dot)), path.substr(dot + 1));
+    }
+
     // The getter guards the whole lookup, not just the conversion: yaml-cpp
     // throws from the subscript itself (BadSubscript on scalar nodes) and from
     // element-level conversions (TypedBadConversion<Element> inside vector
@@ -272,7 +282,7 @@ namespace pinpoint {
     static T get_yaml(const YAML::Node& yaml, std::string_view cname, T default_value,
                       const char* type_name) {
         try {
-            if (auto node = find_node(yaml, cname)) {
+            if (auto node = find_path(yaml, cname)) {
                 return node.as<T>();
             }
         } catch (const YAML::Exception& e) {
@@ -283,167 +293,141 @@ namespace pinpoint {
         return default_value;
     }
 
-    static bool get_boolean(const YAML::Node& yaml, std::string_view cname, bool default_value) {
-        return get_yaml(yaml, cname, default_value, "boolean");
+    // Typed yaml readers keyed by the member's own type, so the field table
+    // below can dispatch through std::visit. Every reader falls back to the
+    // current member value, never a hardcoded default: `config` arrives
+    // pre-seeded with the defaults (first load) or the running config (reload).
+    // size_t members parse through int so a negative value survives to the
+    // range checks in make_config() instead of wrapping.
+    static void get_into(const YAML::Node& y, std::string_view key, bool& v) { v = get_yaml(y, key, v, "boolean"); }
+    static void get_into(const YAML::Node& y, std::string_view key, int& v) { v = get_yaml(y, key, v, "int"); }
+    static void get_into(const YAML::Node& y, std::string_view key, double& v) { v = get_yaml(y, key, v, "double"); }
+    static void get_into(const YAML::Node& y, std::string_view key, std::string& v) { v = get_yaml(y, key, v, "string"); }
+    static void get_into(const YAML::Node& y, std::string_view key, std::vector<std::string>& v) {
+        v = get_yaml(y, key, v, "string vector");
+    }
+    static void get_into(const YAML::Node& y, std::string_view key, size_t& v) {
+        v = static_cast<size_t>(get_yaml(y, key, static_cast<int>(v), "int"));
     }
 
-    static std::string get_string(const YAML::Node& yaml, std::string_view cname, std::string default_value) {
-        return get_yaml(yaml, cname, std::move(default_value), "string");
-    }
+    // ---- Configuration field table ------------------------------------
+    //
+    // Every configuration field is declared exactly once here; the YAML
+    // loader, the environment loader, to_config_string() and the reload
+    // policy all iterate this table. `path` is the dotted YAML location and
+    // also fixes the serialization order. `alias`/`env_alias` are deprecated
+    // fallbacks, read first so the preferred name wins when both are set.
 
-    static std::vector<std::string> get_string_vector(const YAML::Node& yaml, std::string_view cname,
-                                                      std::vector<std::string> default_value) {
-        return get_yaml(yaml, cname, std::move(default_value), "string vector");
-    }
+    template <typename T>
+    using FieldGetter = const T& (*)(const Config&);
+    using FieldRef = std::variant<FieldGetter<bool>, FieldGetter<int>, FieldGetter<double>,
+                                  FieldGetter<size_t>, FieldGetter<std::string>,
+                                  FieldGetter<std::vector<std::string>>>;
 
-    static int get_int(const YAML::Node& yaml, std::string_view cname, int default_value) {
-        return get_yaml(yaml, cname, default_value, "int");
-    }
+    struct ConfigField {
+        std::string_view path;
+        FieldRef ref;
+        bool reloadable;
+        const char* env;
+        std::string_view alias{};
+        const char* env_alias = nullptr;
+    };
 
-    static double get_double(const YAML::Node& yaml, std::string_view cname, double default_value) {
-        return get_yaml(yaml, cname, default_value, "double");
-    }
+    // The table hands out const references so to_config_string() can read
+    // through it; the loaders (which own a non-const Config) cast back.
+    template <typename T>
+    static T& mut(const T& v) { return const_cast<T&>(v); }
 
-    static void load_grpc_channel_yaml(const YAML::Node& grpc, Config::GrpcChannelOptions& options) {
-        options.keepalive_time_ms = get_int(grpc, "KeepAliveTimeMs", options.keepalive_time_ms);
-        options.keepalive_timeout_ms = get_int(grpc, "KeepAliveTimeoutMs", options.keepalive_timeout_ms);
-        options.keepalive_permit_without_calls =
-            get_boolean(grpc, "KeepAlivePermitWithoutCalls", options.keepalive_permit_without_calls);
-        options.max_send_message_size = get_int(grpc, "MaxSendMessageSize", options.max_send_message_size);
-        options.max_receive_message_size = get_int(grpc, "MaxReceiveMessageSize", options.max_receive_message_size);
-        options.sender_queue_size = get_int(grpc, "SenderQueueSize", options.sender_queue_size);
-    }
+#define REF(member) +[](const Config& c) -> const auto& { return c.member; }
+    constexpr bool RELOAD = true;   // applied by a config-file reload
+    constexpr bool FIXED = false;   // retained from the running config on reload
 
-    static void load_grpc_yaml(const YAML::Node& collector, Config& config) {
-        if (auto grpc = find_node(collector, "Grpc")) {
-            config.collector.grpc.ssl.enable = get_boolean(grpc, "SslEnable", config.collector.grpc.ssl.enable);
-            config.collector.grpc.ssl.trust_cert_file_path =
-                get_string(grpc, "TrustCertFilePath", config.collector.grpc.ssl.trust_cert_file_path);
-            config.collector.grpc.ssl.root_cert_file_path =
-                get_string(grpc, "RootCertFilePath", config.collector.grpc.ssl.root_cert_file_path);
+    static const ConfigField kConfigFields[] = {
+        {"ApplicationName", REF(app_name_), FIXED, env::APPLICATION_NAME},
+        {"AgentName", REF(agent_name_), FIXED, env::AGENT_NAME},
+        {"UidVersion", REF(uid_version_), FIXED, env::UID_VERSION},
+        {"ServiceName", REF(service_name_), FIXED, env::SERVICE_NAME},
+        {"ApiKey", REF(api_key_), FIXED, env::API_KEY},
+        {"Enable", REF(enable), RELOAD, env::ENABLE},
+        {"IsContainer", REF(is_container), RELOAD, env::IS_CONTAINER},
+        {"Log.Level", REF(log.level), RELOAD, env::LOG_LEVEL, "LogLevel"},
+        {"Log.FilePath", REF(log.file_path), RELOAD, env::LOG_FILE_PATH},
+        {"Log.MaxFileSize", REF(log.max_file_size), RELOAD, env::LOG_MAX_FILE_SIZE},
+        {"Collector.Host", REF(collector.host), FIXED, env::COLLECTOR_HOST, "Collector.GrpcHost", env::GRPC_HOST},
+        {"Collector.AgentPort", REF(collector.agent_port), FIXED, env::COLLECTOR_AGENT_PORT, "Collector.GrpcAgentPort", env::GRPC_AGENT_PORT},
+        {"Collector.SpanPort", REF(collector.span_port), FIXED, env::COLLECTOR_SPAN_PORT, "Collector.GrpcSpanPort", env::GRPC_SPAN_PORT},
+        {"Collector.StatPort", REF(collector.stat_port), FIXED, env::COLLECTOR_STAT_PORT, "Collector.GrpcStatPort", env::GRPC_STAT_PORT},
+        {"Collector.Grpc.SslEnable", REF(collector.grpc.ssl.enable), FIXED, env::GRPC_SSL_ENABLE},
+        {"Collector.Grpc.TrustCertFilePath", REF(collector.grpc.ssl.trust_cert_file_path), FIXED, env::GRPC_SSL_TRUST_CERT_FILE_PATH},
+        {"Collector.Grpc.RootCertFilePath", REF(collector.grpc.ssl.root_cert_file_path), FIXED, env::GRPC_SSL_ROOT_CERT_FILE_PATH},
+        {"Collector.Grpc.KeepAliveTimeMs", REF(collector.grpc.channel.keepalive_time_ms), FIXED, env::GRPC_KEEPALIVE_TIME_MS},
+        {"Collector.Grpc.KeepAliveTimeoutMs", REF(collector.grpc.channel.keepalive_timeout_ms), FIXED, env::GRPC_KEEPALIVE_TIMEOUT_MS},
+        {"Collector.Grpc.KeepAlivePermitWithoutCalls", REF(collector.grpc.channel.keepalive_permit_without_calls), FIXED, env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS},
+        {"Collector.Grpc.MaxSendMessageSize", REF(collector.grpc.channel.max_send_message_size), FIXED, env::GRPC_MAX_SEND_MESSAGE_SIZE},
+        {"Collector.Grpc.MaxReceiveMessageSize", REF(collector.grpc.channel.max_receive_message_size), FIXED, env::GRPC_MAX_RECEIVE_MESSAGE_SIZE},
+        {"Collector.Grpc.SenderQueueSize", REF(collector.grpc.channel.sender_queue_size), FIXED, env::GRPC_SENDER_QUEUE_SIZE},
+        {"Collector.AgentInfo.RefreshIntervalMs", REF(collector.agent_info.refresh_interval_ms), FIXED, env::AGENT_INFO_REFRESH_INTERVAL_MS},
+        {"Collector.AgentInfo.SendRetryIntervalMs", REF(collector.agent_info.send_retry_interval_ms), FIXED, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS},
+        {"Collector.AgentInfo.MaxTryPerAttempt", REF(collector.agent_info.max_try_per_attempt), FIXED, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT},
+        {"Collector.SpanBatch.Size", REF(collector.span_batch.size), FIXED, env::SPAN_BATCH_SIZE},
+        {"Collector.SpanBatch.FlushIntervalMs", REF(collector.span_batch.flush_interval_ms), FIXED, env::SPAN_BATCH_FLUSH_INTERVAL_MS},
+        {"Collector.SpanBatch.CollectDeadlineMs", REF(collector.span_batch.collect_deadline_ms), FIXED, env::SPAN_BATCH_COLLECT_DEADLINE_MS},
+        {"Collector.SpanBatch.MaxConcurrentRequests", REF(collector.span_batch.max_concurrent_requests), FIXED, env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS},
+        {"Stat.Enable", REF(stat.enable), FIXED, env::STAT_ENABLE},
+        {"Stat.BatchCount", REF(stat.batch_count), FIXED, env::STAT_BATCH_COUNT},
+        {"Stat.BatchInterval", REF(stat.collect_interval), FIXED, env::STAT_BATCH_INTERVAL},
+        {"Sampling.Type", REF(sampling.type), RELOAD, env::SAMPLING_TYPE},
+        {"Sampling.CounterRate", REF(sampling.counter_rate), RELOAD, env::SAMPLING_COUNTER_RATE},
+        {"Sampling.PercentRate", REF(sampling.percent_rate), RELOAD, env::SAMPLING_PERCENT_RATE},
+        {"Sampling.NewThroughput", REF(sampling.new_throughput), RELOAD, env::SAMPLING_NEW_THROUGHPUT},
+        {"Sampling.ContinueThroughput", REF(sampling.cont_throughput), RELOAD, env::SAMPLING_CONTINUE_THROUGHPUT},
+        {"Span.QueueSize", REF(span.queue_size), FIXED, env::SPAN_QUEUE_SIZE},
+        {"Span.MaxEventDepth", REF(span.max_event_depth), RELOAD, env::SPAN_MAX_EVENT_DEPTH},
+        {"Span.MaxEventSequence", REF(span.max_event_sequence), RELOAD, env::SPAN_MAX_EVENT_SEQUENCE},
+        {"Span.EventChunkSize", REF(span.event_chunk_size), RELOAD, env::SPAN_EVENT_CHUNK_SIZE},
+        {"Http.CollectUrlStat", REF(http.url_stat.enable), FIXED, env::HTTP_COLLECT_URL_STAT},
+        {"Http.UrlStatLimit", REF(http.url_stat.limit), FIXED, env::HTTP_URL_STAT_LIMIT},
+        {"Http.UrlStatQueueSize", REF(http.url_stat.queue_size), FIXED, env::HTTP_URL_STAT_QUEUE_SIZE},
+        {"Http.UrlStatEnableTrimPath", REF(http.url_stat.enable_trim_path), FIXED, env::HTTP_URL_STAT_ENABLE_TRIM_PATH},
+        {"Http.UrlStatTrimPathDepth", REF(http.url_stat.trim_path_depth), FIXED, env::HTTP_URL_STAT_TRIM_PATH_DEPTH},
+        {"Http.UrlStatMethodPrefix", REF(http.url_stat.method_prefix), FIXED, env::HTTP_URL_STAT_METHOD_PREFIX},
+        {"Http.Server.StatusCodeErrors", REF(http.server.status_errors), RELOAD, env::HTTP_SERVER_STATUS_CODE_ERRORS},
+        {"Http.Server.ExcludeUrl", REF(http.server.exclude_url), RELOAD, env::HTTP_SERVER_EXCLUDE_URL},
+        {"Http.Server.ExcludeMethod", REF(http.server.exclude_method), RELOAD, env::HTTP_SERVER_EXCLUDE_METHOD},
+        {"Http.Server.RecordRequestHeader", REF(http.server.rec_request_header), RELOAD, env::HTTP_SERVER_RECORD_REQUEST_HEADER},
+        {"Http.Server.RecordRequestCookie", REF(http.server.rec_request_cookie), RELOAD, env::HTTP_SERVER_RECORD_REQUEST_COOKIE},
+        {"Http.Server.RecordResponseHeader", REF(http.server.rec_response_header), RELOAD, env::HTTP_SERVER_RECORD_RESPONSE_HEADER},
+        {"Http.Client.RecordRequestHeader", REF(http.client.rec_request_header), RELOAD, env::HTTP_CLIENT_RECORD_REQUEST_HEADER},
+        {"Http.Client.RecordRequestCookie", REF(http.client.rec_request_cookie), RELOAD, env::HTTP_CLIENT_RECORD_REQUEST_COOKIE},
+        {"Http.Client.RecordResponseHeader", REF(http.client.rec_response_header), RELOAD, env::HTTP_CLIENT_RECORD_RESPONSE_HEADER},
+        {"Sql.MaxBindArgsSize", REF(sql.max_bind_args_size), RELOAD, env::SQL_MAX_BIND_ARGS_SIZE},
+        {"Sql.EnableSqlStats", REF(sql.enable_sql_stats), RELOAD, env::SQL_ENABLE_SQL_STATS},
+        {"Sql.EnableRawSqlCache", REF(sql.enable_raw_sql_cache), RELOAD, env::SQL_ENABLE_RAW_SQL_CACHE},
+        {"Sql.TraceBindValue", REF(sql.trace_bind_value), RELOAD, env::SQL_TRACE_BIND_VALUE},
+        {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
+        {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
+    };
+#undef REF
 
-            load_grpc_channel_yaml(grpc, config.collector.grpc.channel);
-        }
-    }
-
-    // Every getter falls back to the current member value, never a hardcoded
-    // default. `config` arrives pre-seeded: with the Config member initializers
-    // (the defaults) on a first load, or with a copy of the running config on a
-    // reload — so a key absent from the file keeps the running value instead of
-    // silently reverting to its default.
     static void load_yaml_config(const YAML::Node& yaml, Config& config, bool& is_container_set) {
         if (yaml.size() < 1) {
             return;
         }
-
-        config.log.level = get_string(yaml, "LogLevel", config.log.level);
-        config.enable = get_boolean(yaml, "Enable", config.enable);
-        config.app_name_ = get_string(yaml, "ApplicationName", config.app_name_);
-        config.agent_name_ = get_string(yaml, "AgentName", config.agent_name_);
-        config.uid_version_ = get_string(yaml, "UidVersion", config.uid_version_);
-        config.service_name_ = get_string(yaml, "ServiceName", config.service_name_);
-        config.api_key_ = get_string(yaml, "ApiKey", config.api_key_);
-
-        if (auto log = find_node(yaml, "Log")) {
-            config.log.level = get_string(log, "Level", config.log.level);
-            config.log.file_path = get_string(log, "FilePath", config.log.file_path);
-            config.log.max_file_size = get_int(log, "MaxFileSize", config.log.max_file_size);
+        for (const auto& f : kConfigFields) {
+            std::visit([&](auto ref) {
+                auto& value = mut(ref(config));
+                // Deprecated key first: the preferred name then overrides it.
+                if (!f.alias.empty()) {
+                    get_into(yaml, f.alias, value);
+                }
+                get_into(yaml, f.path, value);
+            }, f.ref);
         }
-
-        if (auto collector = find_node(yaml, "Collector")) {
-            // Host/AgentPort/SpanPort/StatPort take precedence; the deprecated
-            // GrpcHost/GrpcAgentPort/GrpcSpanPort/GrpcStatPort keys are read as
-            // a fallback for backward compatibility.
-            config.collector.host =
-                get_string(collector, "Host", get_string(collector, "GrpcHost", config.collector.host));
-            config.collector.agent_port =
-                get_int(collector, "AgentPort", get_int(collector, "GrpcAgentPort", config.collector.agent_port));
-            config.collector.span_port =
-                get_int(collector, "SpanPort", get_int(collector, "GrpcSpanPort", config.collector.span_port));
-            config.collector.stat_port =
-                get_int(collector, "StatPort", get_int(collector, "GrpcStatPort", config.collector.stat_port));
-
-            if (auto agent_info = find_node(collector, "AgentInfo")) {
-                config.collector.agent_info.refresh_interval_ms = get_int(agent_info, "RefreshIntervalMs", config.collector.agent_info.refresh_interval_ms);
-                config.collector.agent_info.send_retry_interval_ms = get_int(agent_info, "SendRetryIntervalMs", config.collector.agent_info.send_retry_interval_ms);
-                config.collector.agent_info.max_try_per_attempt = get_int(agent_info, "MaxTryPerAttempt", config.collector.agent_info.max_try_per_attempt);
-            }
-            if (auto span_batch = find_node(collector, "SpanBatch")) {
-                config.collector.span_batch.size = get_int(span_batch, "Size", config.collector.span_batch.size);
-                config.collector.span_batch.flush_interval_ms = get_int(span_batch, "FlushIntervalMs", config.collector.span_batch.flush_interval_ms);
-                config.collector.span_batch.collect_deadline_ms = get_int(span_batch, "CollectDeadlineMs", config.collector.span_batch.collect_deadline_ms);
-                config.collector.span_batch.max_concurrent_requests = get_int(span_batch, "MaxConcurrentRequests", config.collector.span_batch.max_concurrent_requests);
-            }
-            load_grpc_yaml(collector, config);
-        }
-
-        if (auto stat = find_node(yaml, "Stat")) {
-            config.stat.enable = get_boolean(stat, "Enable", config.stat.enable);
-            config.stat.batch_count = get_int(stat, "BatchCount", config.stat.batch_count);
-            config.stat.collect_interval = get_int(stat, "BatchInterval", config.stat.collect_interval);
-        }
-
-        if (auto http = find_node(yaml, "Http")) {
-            config.http.url_stat.enable = get_boolean(http, "CollectUrlStat", config.http.url_stat.enable);
-            config.http.url_stat.limit = get_int(http, "UrlStatLimit", config.http.url_stat.limit);
-            config.http.url_stat.queue_size = get_int(http, "UrlStatQueueSize", static_cast<int>(config.http.url_stat.queue_size));
-            config.http.url_stat.enable_trim_path = get_boolean(http, "UrlStatEnableTrimPath", config.http.url_stat.enable_trim_path);
-            config.http.url_stat.trim_path_depth = get_int(http, "UrlStatTrimPathDepth", config.http.url_stat.trim_path_depth);
-            config.http.url_stat.method_prefix = get_boolean(http, "UrlStatMethodPrefix", config.http.url_stat.method_prefix);
-
-            if (auto srv = find_node(http, "Server")) {
-                config.http.server.status_errors = get_string_vector(srv, "StatusCodeErrors", config.http.server.status_errors);
-                config.http.server.exclude_url = get_string_vector(srv, "ExcludeUrl", config.http.server.exclude_url);
-                config.http.server.exclude_method = get_string_vector(srv, "ExcludeMethod", config.http.server.exclude_method);
-                config.http.server.rec_request_header = get_string_vector(srv, "RecordRequestHeader", config.http.server.rec_request_header);
-                config.http.server.rec_request_cookie = get_string_vector(srv, "RecordRequestCookie", config.http.server.rec_request_cookie);
-                config.http.server.rec_response_header = get_string_vector(srv, "RecordResponseHeader", config.http.server.rec_response_header);
-            }
-
-            if (auto cli = find_node(http, "Client")) {
-                config.http.client.rec_request_header = get_string_vector(cli, "RecordRequestHeader", config.http.client.rec_request_header);
-                config.http.client.rec_request_cookie = get_string_vector(cli, "RecordRequestCookie", config.http.client.rec_request_cookie);
-                config.http.client.rec_response_header = get_string_vector(cli, "RecordResponseHeader", config.http.client.rec_response_header);
-            }
-        }
-
-        if (auto sampling = find_node(yaml, "Sampling")) {
-            config.sampling.type = get_string(sampling, "Type", config.sampling.type);
-            config.sampling.counter_rate = get_int(sampling, "CounterRate", config.sampling.counter_rate);
-            config.sampling.percent_rate = get_double(sampling, "PercentRate", config.sampling.percent_rate);
-            config.sampling.new_throughput = get_int(sampling, "NewThroughput", config.sampling.new_throughput);
-            config.sampling.cont_throughput = get_int(sampling, "ContinueThroughput", config.sampling.cont_throughput);
-        }
-
-        if (auto span = find_node(yaml, "Span")) {
-            config.span.queue_size = get_int(span, "QueueSize", static_cast<int>(config.span.queue_size));
-            config.span.max_event_depth = get_int(span, "MaxEventDepth", config.span.max_event_depth);
-            config.span.max_event_sequence = get_int(span, "MaxEventSequence", config.span.max_event_sequence);
-            config.span.event_chunk_size = get_int(span, "EventChunkSize", static_cast<int>(config.span.event_chunk_size));
-        }
-
-        if (auto is_container = find_node(yaml, "IsContainer")) {
-            // The key being present (even malformed) means the user decided
-            // containerness explicitly, so auto-detection is skipped either way.
+        // The IsContainer key being present (even malformed) means the user
+        // decided containerness explicitly, so auto-detection is skipped.
+        if (find_path(yaml, "IsContainer")) {
             is_container_set = true;
-            try {
-                config.is_container = is_container.as<bool>();
-            } catch (const YAML::Exception& e) {
-                LOG_WARN("Failed to read 'IsContainer' as boolean: {}. Using default value: {}",
-                         e.what(), config.is_container);
-            }
         }
-
-        if (auto sql = find_node(yaml, "Sql")) {
-            config.sql.max_bind_args_size = get_int(sql, "MaxBindArgsSize", config.sql.max_bind_args_size);
-            config.sql.enable_sql_stats = get_boolean(sql, "EnableSqlStats", config.sql.enable_sql_stats);
-            config.sql.enable_raw_sql_cache = get_boolean(sql, "EnableRawSqlCache", config.sql.enable_raw_sql_cache);
-            config.sql.trace_bind_value = get_boolean(sql, "TraceBindValue", config.sql.trace_bind_value);
-        }
-
-        config.enable_callstack_trace = get_boolean(yaml, "EnableCallstackTrace", config.enable_callstack_trace);
-        config.enable_config_file_watcher =
-            get_boolean(yaml, "EnableConfigFileWatcher", config.enable_config_file_watcher);
     }
 
     template <typename T, typename Parse>
@@ -469,235 +453,40 @@ namespace pinpoint {
         return safe_env_parse(stod_, "Invalid double", env_name, env_value, default_value);
     }
 
-    static void load_env_grpc_channel(const std::string& prefix,
-                                      Config::GrpcChannelOptions& options) {
-        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_TIME_MS)) {
-            options.keepalive_time_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_time_ms);
-        }
-        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_TIMEOUT_MS)) {
-            options.keepalive_timeout_ms = safe_env_stoi(e.name.c_str(), e.value, options.keepalive_timeout_ms);
-        }
-        if(auto e = get_env(prefix, env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS)) {
-            options.keepalive_permit_without_calls =
-                safe_env_stob(e.name.c_str(), e.value, options.keepalive_permit_without_calls);
-        }
-        if(auto e = get_env(prefix, env::GRPC_MAX_SEND_MESSAGE_SIZE)) {
-            options.max_send_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_send_message_size);
-        }
-        if(auto e = get_env(prefix, env::GRPC_MAX_RECEIVE_MESSAGE_SIZE)) {
-            options.max_receive_message_size = safe_env_stoi(e.name.c_str(), e.value, options.max_receive_message_size);
-        }
-        if(auto e = get_env(prefix, env::GRPC_SENDER_QUEUE_SIZE)) {
-            options.sender_queue_size = safe_env_stoi(e.name.c_str(), e.value, options.sender_queue_size);
-        }
-    }
-
+    // Typed env readers keyed by the member's own type, mirroring get_into().
     // Like the yaml getters, every parse failure falls back to the CURRENT
     // member value — which at this point carries the yaml-loaded (or default)
     // setting — never a hardcoded default. A malformed env var must degrade to
     // "env override ignored", not silently clobber a value the user set in the
     // config file.
-    static void load_env_config(const std::string& prefix, Config& config, bool& is_container_set) {
-        if(auto e = get_env(prefix, env::ENABLE)) {
-            config.enable = safe_env_stob(e.name.c_str(), e.value, config.enable);
-        }
-        if(auto e = get_env(prefix, env::APPLICATION_NAME)) {
-            config.app_name_ = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::AGENT_NAME)) {
-            config.agent_name_ = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::UID_VERSION)) {
-            config.uid_version_ = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::SERVICE_NAME)) {
-            config.service_name_ = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::API_KEY)) {
-            config.api_key_ = std::string(e.value);
-        }
-
-        if(auto e = get_env(prefix, env::LOG_LEVEL)) {
-            config.log.level = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::LOG_FILE_PATH)) {
-            config.log.file_path = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::LOG_MAX_FILE_SIZE)) {
-            config.log.max_file_size = safe_env_stoi(e.name.c_str(), e.value, config.log.max_file_size);
-        }
-
-        // The deprecated GRPC_* variables are read first, then the preferred
-        // COLLECTOR_* variables override them when both are set.
-        if(auto e = get_env(prefix, env::GRPC_HOST)) {
-            config.collector.host = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::COLLECTOR_HOST)) {
-            config.collector.host = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::GRPC_AGENT_PORT)) {
-            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
-        }
-        if(auto e = get_env(prefix, env::COLLECTOR_AGENT_PORT)) {
-            config.collector.agent_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_port);
-        }
-        if(auto e = get_env(prefix, env::GRPC_SPAN_PORT)) {
-            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
-        }
-        if(auto e = get_env(prefix, env::COLLECTOR_SPAN_PORT)) {
-            config.collector.span_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_port);
-        }
-        if(auto e = get_env(prefix, env::GRPC_STAT_PORT)) {
-            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
-        }
-        if(auto e = get_env(prefix, env::COLLECTOR_STAT_PORT)) {
-            config.collector.stat_port = safe_env_stoi(e.name.c_str(), e.value, config.collector.stat_port);
-        }
-
-        if(auto e = get_env(prefix, env::STAT_ENABLE)) {
-            config.stat.enable = safe_env_stob(e.name.c_str(), e.value, config.stat.enable);
-        }
-        if(auto e = get_env(prefix, env::STAT_BATCH_COUNT)) {
-            config.stat.batch_count = safe_env_stoi(e.name.c_str(), e.value, config.stat.batch_count);
-        }
-        if(auto e = get_env(prefix, env::STAT_BATCH_INTERVAL)) {
-            config.stat.collect_interval = safe_env_stoi(e.name.c_str(), e.value, config.stat.collect_interval);
-        }
-
-        if(auto e = get_env(prefix, env::SAMPLING_TYPE)) {
-            config.sampling.type = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::SAMPLING_COUNTER_RATE)) {
-            config.sampling.counter_rate = safe_env_stoi(e.name.c_str(), e.value, config.sampling.counter_rate);
-        }
-        if(auto e = get_env(prefix, env::SAMPLING_PERCENT_RATE)) {
-            config.sampling.percent_rate = safe_env_stod(e.name.c_str(), e.value, config.sampling.percent_rate);
-        }
-        if(auto e = get_env(prefix, env::SAMPLING_NEW_THROUGHPUT)) {
-            config.sampling.new_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.new_throughput);
-        }
-        if(auto e = get_env(prefix, env::SAMPLING_CONTINUE_THROUGHPUT)) {
-            config.sampling.cont_throughput = safe_env_stoi(e.name.c_str(), e.value, config.sampling.cont_throughput);
-        }
-
-        if(auto e = get_env(prefix, env::SPAN_QUEUE_SIZE)) {
-            config.span.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.span.queue_size));
-        }
-        if(auto e = get_env(prefix, env::SPAN_MAX_EVENT_DEPTH)) {
-            config.span.max_event_depth = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_depth);
-        }
-        if(auto e = get_env(prefix, env::SPAN_MAX_EVENT_SEQUENCE)) {
-            config.span.max_event_sequence = safe_env_stoi(e.name.c_str(), e.value, config.span.max_event_sequence);
-        }
-        if(auto e = get_env(prefix, env::SPAN_EVENT_CHUNK_SIZE)) {
-            config.span.event_chunk_size = safe_env_stoi(e.name.c_str(), e.value, config.span.event_chunk_size);
-        }
-        if(auto e = get_env(prefix, env::SPAN_BATCH_SIZE)) {
-            config.collector.span_batch.size = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.size);
-        }
-        if(auto e = get_env(prefix, env::SPAN_BATCH_FLUSH_INTERVAL_MS)) {
-            config.collector.span_batch.flush_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.flush_interval_ms);
-        }
-        if(auto e = get_env(prefix, env::SPAN_BATCH_COLLECT_DEADLINE_MS)) {
-            config.collector.span_batch.collect_deadline_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.collect_deadline_ms);
-        }
-        if(auto e = get_env(prefix, env::SPAN_BATCH_MAX_CONCURRENT_REQUESTS)) {
-            config.collector.span_batch.max_concurrent_requests = safe_env_stoi(e.name.c_str(), e.value, config.collector.span_batch.max_concurrent_requests);
-        }
-        if(auto e = get_env(prefix, env::AGENT_INFO_REFRESH_INTERVAL_MS)) {
-            config.collector.agent_info.refresh_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.refresh_interval_ms);
-        }
-        if(auto e = get_env(prefix, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)) {
-            config.collector.agent_info.send_retry_interval_ms = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.send_retry_interval_ms);
-        }
-        if(auto e = get_env(prefix, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)) {
-            config.collector.agent_info.max_try_per_attempt = safe_env_stoi(e.name.c_str(), e.value, config.collector.agent_info.max_try_per_attempt);
-        }
-
-        if(auto e = get_env(prefix, env::GRPC_SSL_ENABLE)) {
-            config.collector.grpc.ssl.enable = safe_env_stob(e.name.c_str(), e.value, config.collector.grpc.ssl.enable);
-        }
-        if(auto e = get_env(prefix, env::GRPC_SSL_TRUST_CERT_FILE_PATH)) {
-            config.collector.grpc.ssl.trust_cert_file_path = std::string(e.value);
-        }
-        if(auto e = get_env(prefix, env::GRPC_SSL_ROOT_CERT_FILE_PATH)) {
-            config.collector.grpc.ssl.root_cert_file_path = std::string(e.value);
-        }
-        load_env_grpc_channel(prefix, config.collector.grpc.channel);
-
-        if(auto e = get_env(prefix, env::IS_CONTAINER)) {
-            config.is_container = safe_env_stob(e.name.c_str(), e.value, config.is_container);
-            is_container_set = true;
-        }
-
-        if(auto e = get_env(prefix, env::HTTP_COLLECT_URL_STAT)) {
-            config.http.url_stat.enable = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable);
-        }
-        if(auto e = get_env(prefix, env::HTTP_URL_STAT_LIMIT)) {
-            config.http.url_stat.limit = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.limit);
-        }
-        if(auto e = get_env(prefix, env::HTTP_URL_STAT_QUEUE_SIZE)) {
-            config.http.url_stat.queue_size = safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(config.http.url_stat.queue_size));
-        }
-        if(auto e = get_env(prefix, env::HTTP_URL_STAT_ENABLE_TRIM_PATH)) {
-            config.http.url_stat.enable_trim_path = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.enable_trim_path);
-        }
-        if(auto e = get_env(prefix, env::HTTP_URL_STAT_TRIM_PATH_DEPTH)) {
-            config.http.url_stat.trim_path_depth = safe_env_stoi(e.name.c_str(), e.value, config.http.url_stat.trim_path_depth);
-        }
-        if(auto e = get_env(prefix, env::HTTP_URL_STAT_METHOD_PREFIX)) {
-            config.http.url_stat.method_prefix = safe_env_stob(e.name.c_str(), e.value, config.http.url_stat.method_prefix);
-        }
-
+    static void env_into(const ResolvedEnv& e, bool& v) { v = safe_env_stob(e.name.c_str(), e.value, v); }
+    static void env_into(const ResolvedEnv& e, int& v) { v = safe_env_stoi(e.name.c_str(), e.value, v); }
+    static void env_into(const ResolvedEnv& e, double& v) { v = safe_env_stod(e.name.c_str(), e.value, v); }
+    static void env_into(const ResolvedEnv& e, std::string& v) { v = e.value; }
+    static void env_into(const ResolvedEnv& e, size_t& v) {
+        v = static_cast<size_t>(safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(v)));
+    }
+    static void env_into(const ResolvedEnv& e, std::vector<std::string>& v) {
         // SkipEmpty keeps an empty (or all-commas) variable from producing
         // phantom "" entries: e.g. HTTP_SERVER_EXCLUDE_URL="" must clear the
         // list, not build a URL filter around a single empty pattern.
-        if(auto e = get_env(prefix, env::HTTP_SERVER_STATUS_CODE_ERRORS)) {
-            config.http.server.status_errors = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_SERVER_EXCLUDE_URL)) {
-            config.http.server.exclude_url = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_SERVER_EXCLUDE_METHOD)) {
-            config.http.server.exclude_method = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_REQUEST_HEADER)) {
-            config.http.server.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_REQUEST_COOKIE)) {
-            config.http.server.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_SERVER_RECORD_RESPONSE_HEADER)) {
-            config.http.server.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_REQUEST_HEADER)) {
-            config.http.client.rec_request_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)) {
-            config.http.client.rec_request_cookie = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
-        if(auto e = get_env(prefix, env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)) {
-            config.http.client.rec_response_header = absl::StrSplit(e.value, ',', absl::SkipEmpty());
-        }
+        v = absl::StrSplit(e.value, ',', absl::SkipEmpty());
+    }
 
-        if(auto e = get_env(prefix, env::SQL_MAX_BIND_ARGS_SIZE)) {
-            config.sql.max_bind_args_size = safe_env_stoi(e.name.c_str(), e.value, config.sql.max_bind_args_size);
-        }
-        if(auto e = get_env(prefix, env::SQL_ENABLE_SQL_STATS)) {
-            config.sql.enable_sql_stats = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_sql_stats);
-        }
-        if(auto e = get_env(prefix, env::SQL_ENABLE_RAW_SQL_CACHE)) {
-            config.sql.enable_raw_sql_cache = safe_env_stob(e.name.c_str(), e.value, config.sql.enable_raw_sql_cache);
-        }
-        if(auto e = get_env(prefix, env::SQL_TRACE_BIND_VALUE)) {
-            config.sql.trace_bind_value = safe_env_stob(e.name.c_str(), e.value, config.sql.trace_bind_value);
-        }
-        if(auto e = get_env(prefix, env::ENABLE_CALLSTACK_TRACE)) {
-            config.enable_callstack_trace = safe_env_stob(e.name.c_str(), e.value, config.enable_callstack_trace);
-        }
-        if(auto e = get_env(prefix, env::ENABLE_CONFIG_FILE_WATCHER)) {
-            config.enable_config_file_watcher =
-                safe_env_stob(e.name.c_str(), e.value, config.enable_config_file_watcher);
+    static void load_env_config(const std::string& prefix, Config& config, bool& is_container_set) {
+        for (const auto& f : kConfigFields) {
+            // Deprecated variable first: the preferred name then overrides it.
+            for (const char* suffix : {f.env_alias, f.env}) {
+                if (!suffix) {
+                    continue;
+                }
+                if (auto e = get_env(prefix, suffix)) {
+                    std::visit([&](auto ref) { env_into(e, mut(ref(config))); }, f.ref);
+                    if (f.path == "IsContainer") {
+                        is_container_set = true;
+                    }
+                }
+            }
         }
     }
 
@@ -716,10 +505,6 @@ namespace pinpoint {
 
     constexpr int MIN_PORT = 1;
     constexpr int MAX_PORT = 65535;
-    constexpr int NONE_SAMPLING_COUNTER_RATE = 0;
-    constexpr double NONE_SAMPLING_PERCENT_RATE = 0.0;
-    constexpr int NONE_SAMPLING_NEW_THROUGHPUT = 0;
-    constexpr int NONE_SAMPLING_CONTINUE_THROUGHPUT = 0;
     constexpr double MIN_SAMPLING_PERCENT_RATE = 0.01;
     constexpr double MAX_SAMPLING_PERCENT_RATE = 100.0;
     constexpr int MIN_SPAN_QUEUE_SIZE = 1;
@@ -727,7 +512,6 @@ namespace pinpoint {
     constexpr int UNLIMITED_SIZE = -1;
     constexpr int MIN_SPAN_EVENT_DEPTH = 2;
     constexpr int MIN_SPAN_EVENT_SEQUENCE = 4;
-    constexpr int MIN_SPAN_EVENT_CHUNK_SIZE = 1;
     constexpr int MAX_SPAN_EVENT_DEPTH = INT32_MAX;
     constexpr int MAX_SPAN_EVENT_SEQUENCE = INT32_MAX;
     constexpr int MIN_STAT_BATCH_COUNT = 1;
@@ -739,40 +523,30 @@ namespace pinpoint {
     constexpr int MIN_URL_STAT_QUEUE_SIZE = 1;
     constexpr int MAX_URL_STAT_QUEUE_SIZE = 65536;
 
-    static int clamp_port(int port, int default_port) {
-        if (port < MIN_PORT || port > MAX_PORT) {
-            LOG_WARN("port {} is out of range ({}-{}), using default: {}", port, MIN_PORT, MAX_PORT, default_port);
-            return default_port;
+    // Range/validity checks shared by every clamp site in make_config().
+    // in_range: outside [lo, hi] warns and falls back. at_least: below min
+    // warns and falls back. clamp_min: below min warns and clamps to min.
+    template <typename T>
+    static void in_range(T& v, T lo, T hi, T fallback, const char* what) {
+        if (v < lo || v > hi) {
+            LOG_WARN("{} {} is out of range ({}-{}), using default: {}", what, v, lo, hi, fallback);
+            v = fallback;
         }
-        return port;
     }
 
-    static void validate_grpc_channel(Config::GrpcChannelOptions& options) {
-        const Config::GrpcChannelOptions defaults;
-        if (options.keepalive_time_ms < 0) {
-            LOG_WARN("grpc keepalive time {}ms is invalid, using default: {}ms",
-                     options.keepalive_time_ms, defaults.keepalive_time_ms);
-            options.keepalive_time_ms = defaults.keepalive_time_ms;
+    template <typename T>
+    static void at_least(T& v, T min, T fallback, const char* what) {
+        if (v < min) {
+            LOG_WARN("{} {} is invalid, using default: {}", what, v, fallback);
+            v = fallback;
         }
-        if (options.keepalive_timeout_ms < 0) {
-            LOG_WARN("grpc keepalive timeout {}ms is invalid, using default: {}ms",
-                     options.keepalive_timeout_ms, defaults.keepalive_timeout_ms);
-            options.keepalive_timeout_ms = defaults.keepalive_timeout_ms;
-        }
-        if (options.max_send_message_size < UNLIMITED_SIZE) {
-            LOG_WARN("grpc max send message size {} is invalid, using default: {}",
-                     options.max_send_message_size, defaults.max_send_message_size);
-            options.max_send_message_size = defaults.max_send_message_size;
-        }
-        if (options.max_receive_message_size < UNLIMITED_SIZE) {
-            LOG_WARN("grpc max receive message size {} is invalid, using default: {}",
-                     options.max_receive_message_size, defaults.max_receive_message_size);
-            options.max_receive_message_size = defaults.max_receive_message_size;
-        }
-        if (options.sender_queue_size < MIN_GRPC_QUEUE_SIZE || options.sender_queue_size > MAX_GRPC_QUEUE_SIZE) {
-            LOG_WARN("grpc sender queue size {} is out of range ({}-{}), using default: {}",
-                     options.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE, defaults.sender_queue_size);
-            options.sender_queue_size = defaults.sender_queue_size;
+    }
+
+    template <typename T>
+    static void clamp_min(T& v, T min, const char* what) {
+        if (v < min) {
+            LOG_WARN("{} {} is below minimum, clamping to: {}", what, v, min);
+            v = min;
         }
     }
 
@@ -911,30 +685,20 @@ namespace pinpoint {
             }
         }
 
-        config->collector.agent_port = clamp_port(config->collector.agent_port, defaults::AGENT_PORT);
-        config->collector.span_port = clamp_port(config->collector.span_port, defaults::SPAN_PORT);
-        config->collector.stat_port = clamp_port(config->collector.stat_port, defaults::STAT_PORT);
+        in_range(config->collector.agent_port, MIN_PORT, MAX_PORT, defaults::AGENT_PORT, "collector agent port");
+        in_range(config->collector.span_port, MIN_PORT, MAX_PORT, defaults::SPAN_PORT, "collector span port");
+        in_range(config->collector.stat_port, MIN_PORT, MAX_PORT, defaults::STAT_PORT, "collector stat port");
 
-        if (config->stat.batch_count < MIN_STAT_BATCH_COUNT || config->stat.batch_count > MAX_STAT_BATCH_COUNT) {
-            LOG_WARN("stat batch count {} is out of range ({}-{}), using default: {}",
-                     config->stat.batch_count, MIN_STAT_BATCH_COUNT, MAX_STAT_BATCH_COUNT, defaults::STAT_BATCH_COUNT);
-            config->stat.batch_count = defaults::STAT_BATCH_COUNT;
-        }
-        if (config->stat.collect_interval < MIN_STAT_INTERVAL_MS || config->stat.collect_interval > MAX_STAT_INTERVAL_MS) {
-            LOG_WARN("stat collect interval {}ms is out of range ({}-{}ms), using default: {}ms",
-                     config->stat.collect_interval, MIN_STAT_INTERVAL_MS, MAX_STAT_INTERVAL_MS, defaults::STAT_INTERVAL_MS);
-            config->stat.collect_interval = defaults::STAT_INTERVAL_MS;
-        }
+        in_range(config->stat.batch_count, MIN_STAT_BATCH_COUNT, MAX_STAT_BATCH_COUNT,
+                 defaults::STAT_BATCH_COUNT, "stat batch count");
+        in_range(config->stat.collect_interval, MIN_STAT_INTERVAL_MS, MAX_STAT_INTERVAL_MS,
+                 defaults::STAT_INTERVAL_MS, "stat collect interval");
 
-        if (config->sampling.counter_rate < NONE_SAMPLING_COUNTER_RATE) {
-            LOG_WARN("sampling counter rate {} is invalid, using default: {}",
-                     config->sampling.counter_rate, NONE_SAMPLING_COUNTER_RATE);
-            config->sampling.counter_rate = NONE_SAMPLING_COUNTER_RATE;
-        }
-        if (config->sampling.percent_rate < NONE_SAMPLING_PERCENT_RATE) {
+        at_least(config->sampling.counter_rate, 0, 0, "sampling counter rate");
+        if (config->sampling.percent_rate < 0.0) {
             LOG_WARN("sampling percent rate {} is invalid, using default: {}",
-                     config->sampling.percent_rate, NONE_SAMPLING_PERCENT_RATE);
-            config->sampling.percent_rate = NONE_SAMPLING_PERCENT_RATE;
+                     config->sampling.percent_rate, 0.0);
+            config->sampling.percent_rate = 0.0;
         } else if (config->sampling.percent_rate < MIN_SAMPLING_PERCENT_RATE) {
             LOG_WARN("sampling percent rate {} is below minimum, clamping to: {}",
                      config->sampling.percent_rate, MIN_SAMPLING_PERCENT_RATE);
@@ -944,104 +708,56 @@ namespace pinpoint {
                      config->sampling.percent_rate, MAX_SAMPLING_PERCENT_RATE);
             config->sampling.percent_rate = MAX_SAMPLING_PERCENT_RATE;
         }
-        if (config->sampling.new_throughput < NONE_SAMPLING_NEW_THROUGHPUT) {
-            LOG_WARN("sampling new throughput {} is invalid, using default: {}",
-                     config->sampling.new_throughput, NONE_SAMPLING_NEW_THROUGHPUT);
-            config->sampling.new_throughput = NONE_SAMPLING_NEW_THROUGHPUT;
-        }
-        if (config->sampling.cont_throughput < NONE_SAMPLING_CONTINUE_THROUGHPUT) {
-            LOG_WARN("sampling continue throughput {} is invalid, using default: {}",
-                     config->sampling.cont_throughput, NONE_SAMPLING_CONTINUE_THROUGHPUT);
-            config->sampling.cont_throughput = NONE_SAMPLING_CONTINUE_THROUGHPUT;
-        }
+        at_least(config->sampling.new_throughput, 0, 0, "sampling new throughput");
+        at_least(config->sampling.cont_throughput, 0, 0, "sampling continue throughput");
 
-        if (config->span.queue_size < MIN_SPAN_QUEUE_SIZE || config->span.queue_size > MAX_SPAN_QUEUE_SIZE) {
-            LOG_WARN("span queue size {} is out of range ({}-{}), using default: {}",
-                     config->span.queue_size, MIN_SPAN_QUEUE_SIZE, MAX_SPAN_QUEUE_SIZE, defaults::SPAN_QUEUE_SIZE);
-            config->span.queue_size = defaults::SPAN_QUEUE_SIZE;
-        }
+        in_range<size_t>(config->span.queue_size, MIN_SPAN_QUEUE_SIZE, MAX_SPAN_QUEUE_SIZE,
+                         defaults::SPAN_QUEUE_SIZE, "span queue size");
         if (config->span.max_event_depth == UNLIMITED_SIZE) {
             config->span.max_event_depth = MAX_SPAN_EVENT_DEPTH;
-        } else if (config->span.max_event_depth < MIN_SPAN_EVENT_DEPTH) {
-            LOG_WARN("span max event depth {} is below minimum, clamping to: {}",
-                     config->span.max_event_depth, MIN_SPAN_EVENT_DEPTH);
-            config->span.max_event_depth = MIN_SPAN_EVENT_DEPTH;
+        } else {
+            clamp_min(config->span.max_event_depth, MIN_SPAN_EVENT_DEPTH, "span max event depth");
         }
         if (config->span.max_event_sequence == UNLIMITED_SIZE) {
             config->span.max_event_sequence = MAX_SPAN_EVENT_SEQUENCE;
-        } else if (config->span.max_event_sequence < MIN_SPAN_EVENT_SEQUENCE) {
-            LOG_WARN("span max event sequence {} is below minimum, clamping to: {}",
-                     config->span.max_event_sequence, MIN_SPAN_EVENT_SEQUENCE);
-            config->span.max_event_sequence = MIN_SPAN_EVENT_SEQUENCE;
+        } else {
+            clamp_min(config->span.max_event_sequence, MIN_SPAN_EVENT_SEQUENCE, "span max event sequence");
         }
-        if (config->span.event_chunk_size < MIN_SPAN_EVENT_CHUNK_SIZE) {
-            LOG_WARN("span event chunk size {} is below minimum, clamping to: {}",
-                     config->span.event_chunk_size, defaults::SPAN_EVENT_CHUNK_SIZE);
-            config->span.event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
-        }
+        at_least(config->span.event_chunk_size, 1, defaults::SPAN_EVENT_CHUNK_SIZE, "span event chunk size");
 
-        if (config->collector.span_batch.size < 1) {
-            LOG_WARN("span batch size {} is invalid, using default: {}",
-                     config->collector.span_batch.size, defaults::SPAN_BATCH_SIZE);
-            config->collector.span_batch.size = defaults::SPAN_BATCH_SIZE;
-        }
-        if (config->collector.span_batch.flush_interval_ms < 1) {
-            LOG_WARN("span batch flush interval {}ms is invalid, using default: {}ms",
-                     config->collector.span_batch.flush_interval_ms, defaults::SPAN_BATCH_FLUSH_INTERVAL_MS);
-            config->collector.span_batch.flush_interval_ms = defaults::SPAN_BATCH_FLUSH_INTERVAL_MS;
-        }
-        if (config->collector.span_batch.collect_deadline_ms < 0) {
-            LOG_WARN("span batch collect deadline {}ms is invalid, using default: {}ms",
-                     config->collector.span_batch.collect_deadline_ms, defaults::SPAN_BATCH_COLLECT_DEADLINE_MS);
-            config->collector.span_batch.collect_deadline_ms = defaults::SPAN_BATCH_COLLECT_DEADLINE_MS;
-        }
-        if (config->collector.span_batch.max_concurrent_requests < 1) {
-            LOG_WARN("span batch max concurrent requests {} is invalid, using default: {}",
-                     config->collector.span_batch.max_concurrent_requests, defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS);
-            config->collector.span_batch.max_concurrent_requests = defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS;
-        }
-        if (config->collector.agent_info.refresh_interval_ms < 1) {
-            LOG_WARN("agent info refresh interval {}ms is invalid, using default: {}ms",
-                     config->collector.agent_info.refresh_interval_ms, defaults::AGENT_INFO_REFRESH_INTERVAL_MS);
-            config->collector.agent_info.refresh_interval_ms = defaults::AGENT_INFO_REFRESH_INTERVAL_MS;
-        }
-        if (config->collector.agent_info.send_retry_interval_ms < 1) {
-            LOG_WARN("agent info send retry interval {}ms is invalid, using default: {}ms",
-                     config->collector.agent_info.send_retry_interval_ms, defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS);
-            config->collector.agent_info.send_retry_interval_ms = defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS;
-        }
-        if (config->collector.agent_info.max_try_per_attempt < 1) {
-            LOG_WARN("agent info max try per attempt {} is invalid, using default: {}",
-                     config->collector.agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT);
-            config->collector.agent_info.max_try_per_attempt = defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT;
-        }
+        at_least(config->collector.span_batch.size, 1, defaults::SPAN_BATCH_SIZE, "span batch size");
+        at_least(config->collector.span_batch.flush_interval_ms, 1,
+                 defaults::SPAN_BATCH_FLUSH_INTERVAL_MS, "span batch flush interval");
+        at_least(config->collector.span_batch.collect_deadline_ms, 0,
+                 defaults::SPAN_BATCH_COLLECT_DEADLINE_MS, "span batch collect deadline");
+        at_least(config->collector.span_batch.max_concurrent_requests, 1,
+                 defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, "span batch max concurrent requests");
+        at_least(config->collector.agent_info.refresh_interval_ms, 1,
+                 defaults::AGENT_INFO_REFRESH_INTERVAL_MS, "agent info refresh interval");
+        at_least(config->collector.agent_info.send_retry_interval_ms, 1,
+                 defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS, "agent info send retry interval");
+        at_least(config->collector.agent_info.max_try_per_attempt, 1,
+                 defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT, "agent info max try per attempt");
 
-        if (config->sql.max_bind_args_size < 0) {
-            LOG_WARN("sql max bind args size {} is invalid, clamping to 0",
-                     config->sql.max_bind_args_size);
-            config->sql.max_bind_args_size = 0;
-        }
+        at_least(config->sql.max_bind_args_size, 0, 0, "sql max bind args size");
 
         // A negative limit would cast to a huge size_t at the use site
         // (UrlStatSnapshot::add), disabling the cap and letting the URL map grow
-        // unbounded with cardinality. Reject it.
-        if (config->http.url_stat.limit < 0) {
-            LOG_WARN("http url stat limit {} is invalid, using default: {}",
-                     config->http.url_stat.limit, defaults::HTTP_URL_STAT_LIMIT);
-            config->http.url_stat.limit = defaults::HTTP_URL_STAT_LIMIT;
-        }
+        // unbounded with cardinality. Reject it. Likewise a negative queue size
+        // would wrap into a huge size_t, so the range check rejects it too.
+        at_least(config->http.url_stat.limit, 0, defaults::HTTP_URL_STAT_LIMIT, "http url stat limit");
+        in_range<size_t>(config->http.url_stat.queue_size, MIN_URL_STAT_QUEUE_SIZE, MAX_URL_STAT_QUEUE_SIZE,
+                         defaults::HTTP_URL_STAT_QUEUE_SIZE, "http url stat queue size");
 
-        // A negative value would wrap into a huge size_t here, so the upper
-        // bound also rejects it.
-        if (config->http.url_stat.queue_size < MIN_URL_STAT_QUEUE_SIZE ||
-            config->http.url_stat.queue_size > MAX_URL_STAT_QUEUE_SIZE) {
-            LOG_WARN("http url stat queue size {} is out of range ({}-{}), using default: {}",
-                     config->http.url_stat.queue_size, MIN_URL_STAT_QUEUE_SIZE, MAX_URL_STAT_QUEUE_SIZE,
-                     defaults::HTTP_URL_STAT_QUEUE_SIZE);
-            config->http.url_stat.queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
-        }
-
-        validate_grpc_channel(config->collector.grpc.channel);
+        auto& channel = config->collector.grpc.channel;
+        at_least(channel.keepalive_time_ms, 0, defaults::GRPC_KEEPALIVE_TIME_MS, "grpc keepalive time");
+        at_least(channel.keepalive_timeout_ms, 0, defaults::GRPC_KEEPALIVE_TIMEOUT_MS, "grpc keepalive timeout");
+        at_least(channel.max_send_message_size, UNLIMITED_SIZE,
+                 defaults::GRPC_MAX_MESSAGE_SIZE, "grpc max send message size");
+        at_least(channel.max_receive_message_size, UNLIMITED_SIZE,
+                 defaults::GRPC_MAX_MESSAGE_SIZE, "grpc max receive message size");
+        in_range(channel.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE,
+                 defaults::GRPC_SENDER_QUEUE_SIZE, "grpc sender queue size");
 
         // Auto-detect only on the first load. On a reload the value is already
         // seeded from the running config (env- or file-sourced) at the top of
@@ -1126,136 +842,54 @@ namespace pinpoint {
 
     std::string to_config_string(const Config& config) {
         YAML::Emitter emitter;
-
         emitter << YAML::BeginMap;
-        emitter << YAML::Key << "ApplicationName" << YAML::Value << config.app_name_;
-        // AgentId is runtime-generated state, not a configuration input.
-        // Likewise, serialize a defaulted AgentName (= AgentId) as empty so
-        // loading this YAML in a new process falls back to that process's new
-        // id instead of pinning the previous process's id as a display name.
-        const bool agent_name_defaulted = config.agent_name_ == config.agent_id_;
-        emitter << YAML::Key << "AgentName" << YAML::Value
-                << (agent_name_defaulted ? std::string() : config.agent_name_);
-        emitter << YAML::Key << "UidVersion" << YAML::Value << config.uid_version_;
-        if (config.is_v4()) {
-            emitter << YAML::Key << "ServiceName" << YAML::Value << config.service_name_;
-            // ApiKey is intentionally masked and never serialized in plaintext.
-            emitter << YAML::Key << "ApiKey" << YAML::Value << (config.api_key_.empty() ? "" : "****");
+
+        // `open` is the stack of currently open nested maps; consecutive table
+        // entries sharing a path prefix stay inside the same map, so the table
+        // order defines the document structure.
+        std::vector<std::string_view> open;
+        for (const auto& f : kConfigFields) {
+            // ServiceName/ApiKey are v4-only inputs.
+            if ((f.path == "ServiceName" || f.path == "ApiKey") && !config.is_v4()) {
+                continue;
+            }
+
+            const std::vector<std::string_view> segs = absl::StrSplit(f.path, '.');
+            const size_t depth = segs.size() - 1;
+            size_t common = 0;
+            while (common < open.size() && common < depth && open[common] == segs[common]) {
+                ++common;
+            }
+            while (open.size() > common) {
+                emitter << YAML::EndMap;
+                open.pop_back();
+            }
+            while (open.size() < depth) {
+                emitter << YAML::Key << std::string(segs[open.size()]) << YAML::BeginMap;
+                open.push_back(segs[open.size()]);
+            }
+
+            emitter << YAML::Key << std::string(segs.back()) << YAML::Value;
+            if (f.path == "AgentName" && config.agent_name_ == config.agent_id_) {
+                // AgentId is runtime-generated state, not a configuration
+                // input, and is never serialized. A defaulted AgentName
+                // (= AgentId) serializes as empty so loading this YAML in a
+                // new process falls back to that process's new id instead of
+                // pinning the previous process's id as a display name.
+                emitter << std::string();
+            } else if (f.path == "ApiKey") {
+                // ApiKey is intentionally masked and never serialized in plaintext.
+                emitter << (config.api_key_.empty() ? "" : "****");
+            } else {
+                // yaml-cpp's stlemitter.h emits std::vector as
+                // BeginSeq/elements/EndSeq, identical to an explicit loop.
+                std::visit([&](auto ref) { emitter << ref(config); }, f.ref);
+            }
         }
-
-        emitter << YAML::Key << "Enable" << YAML::Value << config.enable;
-        emitter << YAML::Key << "IsContainer" << YAML::Value << config.is_container;
-
-        emitter << YAML::Key << "Log";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Level" << YAML::Value << config.log.level;
-        emitter << YAML::Key << "FilePath" << YAML::Value << config.log.file_path;
-        emitter << YAML::Key << "MaxFileSize" << YAML::Value << config.log.max_file_size;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Collector";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Host" << YAML::Value << config.collector.host;
-        emitter << YAML::Key << "AgentPort" << YAML::Value << config.collector.agent_port;
-        emitter << YAML::Key << "SpanPort" << YAML::Value << config.collector.span_port;
-        emitter << YAML::Key << "StatPort" << YAML::Value << config.collector.stat_port;
-
-        auto emit_grpc_channel = [&emitter](const Config::GrpcChannelOptions& options) {
-            emitter << YAML::Key << "KeepAliveTimeMs" << YAML::Value << options.keepalive_time_ms;
-            emitter << YAML::Key << "KeepAliveTimeoutMs" << YAML::Value << options.keepalive_timeout_ms;
-            emitter << YAML::Key << "KeepAlivePermitWithoutCalls" << YAML::Value << options.keepalive_permit_without_calls;
-            emitter << YAML::Key << "MaxSendMessageSize" << YAML::Value << options.max_send_message_size;
-            emitter << YAML::Key << "MaxReceiveMessageSize" << YAML::Value << options.max_receive_message_size;
-            emitter << YAML::Key << "SenderQueueSize" << YAML::Value << options.sender_queue_size;
-        };
-
-        emitter << YAML::Key << "Grpc";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "SslEnable" << YAML::Value << config.collector.grpc.ssl.enable;
-        emitter << YAML::Key << "TrustCertFilePath" << YAML::Value << config.collector.grpc.ssl.trust_cert_file_path;
-        emitter << YAML::Key << "RootCertFilePath" << YAML::Value << config.collector.grpc.ssl.root_cert_file_path;
-        emit_grpc_channel(config.collector.grpc.channel);
-        emitter << YAML::EndMap;
-        emitter << YAML::Key << "AgentInfo";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "RefreshIntervalMs" << YAML::Value << config.collector.agent_info.refresh_interval_ms;
-        emitter << YAML::Key << "SendRetryIntervalMs" << YAML::Value << config.collector.agent_info.send_retry_interval_ms;
-        emitter << YAML::Key << "MaxTryPerAttempt" << YAML::Value << config.collector.agent_info.max_try_per_attempt;
-        emitter << YAML::EndMap;
-        emitter << YAML::Key << "SpanBatch";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Size" << YAML::Value << config.collector.span_batch.size;
-        emitter << YAML::Key << "FlushIntervalMs" << YAML::Value << config.collector.span_batch.flush_interval_ms;
-        emitter << YAML::Key << "CollectDeadlineMs" << YAML::Value << config.collector.span_batch.collect_deadline_ms;
-        emitter << YAML::Key << "MaxConcurrentRequests" << YAML::Value << config.collector.span_batch.max_concurrent_requests;
-        emitter << YAML::EndMap;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Stat";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Enable" << YAML::Value << config.stat.enable;
-        emitter << YAML::Key << "BatchCount" << YAML::Value << config.stat.batch_count;
-        emitter << YAML::Key << "BatchInterval" << YAML::Value << config.stat.collect_interval;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Sampling";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "Type" << YAML::Value << config.sampling.type;
-        emitter << YAML::Key << "CounterRate" << YAML::Value << config.sampling.counter_rate;
-        emitter << YAML::Key << "PercentRate" << YAML::Value << config.sampling.percent_rate;
-        emitter << YAML::Key << "NewThroughput" << YAML::Value << config.sampling.new_throughput;
-        emitter << YAML::Key << "ContinueThroughput" << YAML::Value << config.sampling.cont_throughput;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Span";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "QueueSize" << YAML::Value << config.span.queue_size;
-        emitter << YAML::Key << "MaxEventDepth" << YAML::Value << config.span.max_event_depth;
-        emitter << YAML::Key << "MaxEventSequence" << YAML::Value << config.span.max_event_sequence;
-        emitter << YAML::Key << "EventChunkSize" << YAML::Value << config.span.event_chunk_size;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Http";
-        emitter << YAML::BeginMap;
-
-        emitter << YAML::Key << "CollectUrlStat" << YAML::Value << config.http.url_stat.enable;
-        emitter << YAML::Key << "UrlStatLimit" << YAML::Value << config.http.url_stat.limit;
-        emitter << YAML::Key << "UrlStatQueueSize" << YAML::Value << config.http.url_stat.queue_size;
-        emitter << YAML::Key << "UrlStatEnableTrimPath" << YAML::Value << config.http.url_stat.enable_trim_path;
-        emitter << YAML::Key << "UrlStatTrimPathDepth" << YAML::Value << config.http.url_stat.trim_path_depth;
-        emitter << YAML::Key << "UrlStatMethodPrefix" << YAML::Value << config.http.url_stat.method_prefix;
-
-        emitter << YAML::Key << "Server";
-        emitter << YAML::BeginMap;
-
-        // yaml-cpp's stlemitter.h emits std::vector as BeginSeq/elements/EndSeq,
-        // identical to an explicit loop.
-        emitter << YAML::Key << "StatusCodeErrors" << YAML::Value << config.http.server.status_errors;
-        emitter << YAML::Key << "ExcludeUrl" << YAML::Value << config.http.server.exclude_url;
-        emitter << YAML::Key << "ExcludeMethod" << YAML::Value << config.http.server.exclude_method;
-        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << config.http.server.rec_request_header;
-        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << config.http.server.rec_request_cookie;
-        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << config.http.server.rec_response_header;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Client";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "RecordRequestHeader" << YAML::Value << config.http.client.rec_request_header;
-        emitter << YAML::Key << "RecordRequestCookie" << YAML::Value << config.http.client.rec_request_cookie;
-        emitter << YAML::Key << "RecordResponseHeader" << YAML::Value << config.http.client.rec_response_header;
-        emitter << YAML::EndMap;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "Sql";
-        emitter << YAML::BeginMap;
-        emitter << YAML::Key << "MaxBindArgsSize" << YAML::Value << config.sql.max_bind_args_size;
-        emitter << YAML::Key << "EnableSqlStats" << YAML::Value << config.sql.enable_sql_stats;
-        emitter << YAML::Key << "EnableRawSqlCache" << YAML::Value << config.sql.enable_raw_sql_cache;
-        emitter << YAML::Key << "TraceBindValue" << YAML::Value << config.sql.trace_bind_value;
-        emitter << YAML::EndMap;
-
-        emitter << YAML::Key << "EnableCallstackTrace" << YAML::Value << config.enable_callstack_trace;
-        emitter << YAML::Key << "EnableConfigFileWatcher" << YAML::Value << config.enable_config_file_watcher;
+        while (!open.empty()) {
+            emitter << YAML::EndMap;
+            open.pop_back();
+        }
         emitter << YAML::EndMap;
 
         return emitter.c_str();
@@ -1283,39 +917,21 @@ namespace pinpoint {
         return true;
     }
 
-    // A tuple of references to every non-reloadable field, so each field is
-    // named once. Everything under `collector` is non-reloadable: the
-    // endpoint, gRPC transport, agent-info refresh and span-batch tuning are
-    // all wired into the running gRPC connection/streams at startup.
-    static auto non_reloadable_fields(const Config& c) {
-        return std::tie(c.app_name_, c.agent_id_, c.agent_name_,
-                        c.uid_version_, c.service_name_, c.api_key_, c.object_name_version_,
-                        c.span.queue_size, c.enable_config_file_watcher,
-                        c.collector.host, c.collector.agent_port, c.collector.span_port, c.collector.stat_port,
-                        c.collector.agent_info.refresh_interval_ms,
-                        c.collector.agent_info.send_retry_interval_ms,
-                        c.collector.agent_info.max_try_per_attempt,
-                        c.collector.span_batch.size, c.collector.span_batch.flush_interval_ms,
-                        c.collector.span_batch.collect_deadline_ms,
-                        c.collector.span_batch.max_concurrent_requests,
-                        c.collector.grpc.ssl.enable,
-                        c.collector.grpc.ssl.trust_cert_file_path,
-                        c.collector.grpc.ssl.root_cert_file_path,
-                        c.collector.grpc.channel.keepalive_time_ms,
-                        c.collector.grpc.channel.keepalive_timeout_ms,
-                        c.collector.grpc.channel.keepalive_permit_without_calls,
-                        c.collector.grpc.channel.max_send_message_size,
-                        c.collector.grpc.channel.max_receive_message_size,
-                        c.collector.grpc.channel.sender_queue_size,
-                        c.stat.enable, c.stat.batch_count, c.stat.collect_interval,
-                        c.http.url_stat.enable, c.http.url_stat.limit, c.http.url_stat.queue_size,
-                        c.http.url_stat.enable_trim_path, c.http.url_stat.trim_path_depth,
-                        c.http.url_stat.method_prefix);
-    }
-
+    // The reload policy is the table's `reloadable` column. The runtime
+    // identity fields (agent_id_, object_name_version_, identity_resolved_)
+    // are not configuration inputs, so they sit outside the table but are
+    // pinned alongside the FIXED fields here.
     bool Config::isReloadable(const std::shared_ptr<const Config>& old) const {
         if (!old) return true;
-        return non_reloadable_fields(*this) == non_reloadable_fields(*old);
+        for (const auto& f : kConfigFields) {
+            if (f.reloadable) {
+                continue;
+            }
+            if (!std::visit([&](auto ref) { return ref(*this) == ref(*old); }, f.ref)) {
+                return false;
+            }
+        }
+        return agent_id_ == old->agent_id_ && object_name_version_ == old->object_name_version_;
     }
 
     void Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {
@@ -1334,23 +950,15 @@ namespace pinpoint {
                      "values and reloading the rest");
         }
 
-        app_name_ = old->app_name_;
+        for (const auto& f : kConfigFields) {
+            if (!f.reloadable) {
+                std::visit([&](auto ref) { mut(ref(*this)) = ref(*old); }, f.ref);
+            }
+        }
         agent_id_ = old->agent_id_;
-        agent_name_ = old->agent_name_;
-        uid_version_ = old->uid_version_;
-        service_name_ = old->service_name_;
-        api_key_ = old->api_key_;
         object_name_version_ = old->object_name_version_;
         // Identity was resolved for the running agent; keep that outcome so a
         // reload whose new identity failed resolution still passes check().
         identity_resolved_ = old->identity_resolved_;
-        collector = old->collector;
-        stat = old->stat;
-        http.url_stat = old->http.url_stat;
-        span.queue_size = old->span.queue_size;
-        // Consumed once by Start(): the watcher either was or was not
-        // installed, and a reload (running on the watcher's own thread)
-        // cannot change that.
-        enable_config_file_watcher = old->enable_config_file_watcher;
     }
 }

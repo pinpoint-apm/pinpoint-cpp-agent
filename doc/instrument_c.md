@@ -795,4 +795,4 @@ PT_API_TYPE_INVOCATION  /* 200 */
 - [config.md](config.md) — full configuration reference
 - [trouble_shooting.md](trouble_shooting.md) — startup contract and diagnostics
 - API header: [`include/pinpoint/tracer_c.h`](../include/pinpoint/tracer_c.h)
-- Examples: [`example/http_server_c.c`](../example/http_server_c.c), [`example/tutorial_c.c`](../example/tutorial_c.c), [`example/nginx/`](../example/nginx/)
+- Examples: [`example/http_server_c.c`](../example/http_server_c.c), [`example/tutorial_c.c`](../example/tutorial_c.c)

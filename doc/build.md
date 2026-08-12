@@ -98,8 +98,8 @@ pinpoint-cpp-agent/
 ├── src/                 # Library source files
 ├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
-├── example/             # Example applications (C++, C, nginx module)
-├── benchmark/           # Overhead and version-comparison benchmarks
+├── example/             # Example applications (C++, C)
+├── benchmark/           # Microbenchmarks (span queue, caches, active spans)
 ├── test/                # Unit tests
 │   ├── it/              # Integration test against an in-process mock collector
 │   └── e2e/             # Integration test (HTTP + gRPC + SQL tracing)
@@ -208,20 +208,16 @@ through the default CMake search paths or `CMAKE_PREFIX_PATH`.
 
 ### Compiler Cache (ccache)
 
-If `ccache` is available on `PATH`, `CMakeLists.txt` wires it up automatically as `CMAKE_C_COMPILER_LAUNCHER` / `CMAKE_CXX_COMPILER_LAUNCHER`. Verify:
+CMake picks up the standard launcher variables, so enable ccache with:
 
 ```bash
-cmake --preset default    # look for "ccache found: ..." in the output
+cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 ccache -s                 # after a build, check hit/miss counters
 ```
 
-Disable with:
-
-```bash
-cmake --preset default -DUSE_CCACHE=OFF
-```
-
-Install ccache with `brew install ccache` (macOS) or `apt install ccache` (Debian/Ubuntu).
+(Or export `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER` in the
+environment once.) Install ccache with `brew install ccache` (macOS) or
+`apt install ccache` (Debian/Ubuntu).
 
 ---
 
@@ -237,9 +233,7 @@ The following CMake options are available:
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
 | `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
 | `BUILD_PROFILING` | OFF | Preserve symbols and reliable call stacks for sampling profilers |
-| `SANITIZE` | (empty) | Enable a sanitizer: `address`, `thread`, `undefined`, or `address+undefined` |
-| `SANITIZE_DEPS` | ON | With `SANITIZE` set, build gRPC/Protobuf/absl/yaml-cpp/fmt from source so the sanitizer covers them too |
-| `USE_CCACHE` | ON | Use ccache as compiler launcher if found on PATH |
+| `SANITIZE` | (empty) | Enable a sanitizer: `address`, `thread`, or `undefined`. Dependencies are rebuilt from source with the same instrumentation |
 
 Example:
 
@@ -375,23 +369,15 @@ links the whole static gRPC/Abseil/BoringSSL closure, and letting a machine-wide
 `-j` reach the link phase peaks past 17 GiB and gets `ld` OOM-killed. The
 instrumented integration test uses a fifteen-minute timeout and scales its
 collector waits for the same environment. Like `coverage` and `profiling`, they
-build dependencies from source with FetchContent. To keep vcpkg packages
-uninstrumented instead, pass its toolchain and disable `SANITIZE_DEPS`:
-
-```bash
-cmake --preset ubsan --toolchain "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-  -DSANITIZE_DEPS=OFF
-cmake --build --preset ubsan
-ctest --preset ubsan
-```
+build dependencies from source with FetchContent.
 
 The `ubsan` preset selects Clang because GCC 13 cannot compile the vendored
 Abseil hash policy constexpr expressions when undefined-behavior instrumentation
 is enabled. On Linux, sanitizer links select compiler-rt explicitly; install
 `libclang-rt-dev` when using Clang outside the provided image. The equivalent
 manual configuration uses the `SANITIZE` cache variable, which accepts
-`address`, `thread`, `undefined`, or `address+undefined` (ASan and UBSan can be
-combined) and cannot be combined with `BUILD_COVERAGE` or `BUILD_PROFILING`:
+`address`, `thread`, or `undefined` and cannot be combined with
+`BUILD_COVERAGE` or `BUILD_PROFILING`:
 
 ```bash
 cmake -S . -B build/ubsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSANITIZE=undefined
@@ -423,31 +409,14 @@ bazel test --config=ubsan //test:all
 Point the relevant `*_OPTIONS` variable at a suppression file when a dependency
 trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`.
 
-Prefer a whole-program instrumented build over suppressions. `SANITIZE_DEPS` is
-ON by default, so the sanitizer presets rebuild gRPC, Protobuf, Abseil, yaml-cpp
-and fmt from source with the same instrumentation, and both `ctest --preset asan`
+Suppressions are rarely needed because sanitized builds are whole-program
+instrumented: with `SANITIZE` set, gRPC, Protobuf, Abseil, yaml-cpp and fmt are
+rebuilt from source with the same instrumentation, and both `ctest --preset asan`
 and `bazel test --config=asan` pass the full suite. The cost is the first build:
-it compiles the whole dependency graph.
-
-Turning it off (`-DSANITIZE_DEPS=OFF`) keeps vcpkg-provided packages when the
-vcpkg toolchain is active, but reintroduces a mixed-instrumentation process,
-which produces false positives that look alarming and are hard to read. The
-instrumented copies of inline C++ symbols (`std::string_view`,
-`std::char_traits`, ...) are weak, so the
-dynamic linker interposes them into the uninstrumented gRPC libraries; they then
-execute on stack frames ASan has no descriptor for and it misattributes leftover
-shadow poison, reporting `use-after-poison` inside gRPC internals. The reports are
-recognisable by that misattribution — an access at "offset 544" inside a frame
-whose objects span only 104 bytes — plus ASan's own "this may be a false positive"
-hint.
-
-`scripts/asan.supp` is applied automatically by the `asan` test preset and covers
-part of that noise, but only part: ASan understands `interceptor_via_fun`,
-`interceptor_via_lib` and `odr_violation`, so it can silence errors raised inside
-an interceptor (`memcmp`, `strlen`, ...) and nothing else. Reports coming from a
-*direct* instrumented load check are not suppressible by any suppression entry or
-`ASAN_OPTIONS` setting. That is why `SANITIZE_DEPS=ON` is the default rather than
-a larger suppression list.
+it compiles the whole dependency graph. Mixing instrumented and prebuilt
+libraries is not supported — the instrumented copies of inline C++ symbols are
+weak and would be interposed into the uninstrumented libraries, producing
+unsuppressible `use-after-poison` false positives inside gRPC internals.
 
 ---
 

@@ -396,7 +396,7 @@ void trace_db_op(pinpoint::SpanPtr span,
    respect. For plain C, see the [C API Guide](instrument_c.md).
 2. **Explore Examples**: the `example/` directory has complete working programs
    for C++ (`http_server.cpp`, `tutorial.cpp`) and C (`http_server_c.c`,
-   `tutorial_c.c`), plus an nginx module skeleton.
+   `tutorial_c.c`).
 3. **Configure Advanced Options**: see the [Configuration Guide](config.md) for
    sampling strategies, URL statistics, SQL bind values, logging, and stats.
 4. **Monitor Your Application**: use the Pinpoint Web UI to view service maps,

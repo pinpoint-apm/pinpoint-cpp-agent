@@ -1,23 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
 
-# =============================================================================
-# ccache auto-detection
-# =============================================================================
-# If ccache is available on PATH, wire it up as the compiler launcher.
-# Disable with -DUSE_CCACHE=OFF.
-# =============================================================================
-option(USE_CCACHE "Use ccache as compiler launcher if available" ON)
-if(USE_CCACHE)
-  find_program(CCACHE_PROGRAM ccache)
-  if(CCACHE_PROGRAM)
-    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-  else()
-    message(STATUS "ccache not found, continuing without compiler launcher")
-  endif()
-endif()
-
 project(pinpoint-cpp VERSION 2.0.0)
 
 option(BUILD_TESTING      "Build tests"                ON)
@@ -28,9 +10,9 @@ option(BUILD_COVERAGE     "Enable coverage instrumentation (Clang/LLVM or GCC)" 
 option(BUILD_BENCHMARKS   "Build standalone microbenchmarks" OFF)
 option(BUILD_PROFILING    "Build with symbols and reliable sampling-profiler stacks" OFF)
 set(SANITIZE "" CACHE STRING
-  "Enable a sanitizer: address, thread, undefined, or address+undefined (empty = off)")
+  "Enable a sanitizer: address, thread, or undefined (empty = off)")
 set_property(CACHE SANITIZE PROPERTY STRINGS
-  "" "address" "thread" "undefined" "address+undefined")
+  "" "address" "thread" "undefined")
 
 # Sanitized builds normally compile third-party code with the same
 # instrumentation. The dependency module consumes this flag when it selects
@@ -72,31 +54,18 @@ if(SANITIZE)
     set(_pinpoint_sanitize_flags -fsanitize=thread)
   elseif(SANITIZE STREQUAL "undefined")
     set(_pinpoint_sanitize_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
-  elseif(SANITIZE STREQUAL "address+undefined")
-    set(_pinpoint_sanitize_flags
-      -fsanitize=address,undefined -fno-sanitize-recover=undefined)
   else()
     message(FATAL_ERROR
-      "Unknown SANITIZE value '${SANITIZE}'. "
-      "Use address, thread, undefined, or address+undefined.")
+      "Unknown SANITIZE value '${SANITIZE}'. Use address, thread, or undefined.")
   endif()
 
   # A vcpkg-provided gRPC/Abseil/protobuf is prebuilt and therefore cannot be
   # instrumented, which reintroduces the boundary described above. Force the
   # FetchContent provider so dependencies are rebuilt with the flags below.
-  # Turn this off to keep vcpkg packages, accepting third-party false positives.
-  option(SANITIZE_DEPS
-    "Build dependencies from source so the sanitizer covers them too" ON)
-  if(SANITIZE_DEPS)
-    set(PINPOINT_FORCE_FETCHCONTENT ON)
-    message(STATUS
-      "Sanitized dependencies enabled: gRPC/Protobuf/absl/yaml-cpp/fmt are built "
-      "from source with ${SANITIZE} instrumentation (first build is slow)")
-  else()
-    message(WARNING
-      "SANITIZE_DEPS=OFF: dependencies stay uninstrumented. Expect third-party "
-      "false positives at the library boundary; see doc/build.md.")
-  endif()
+  set(PINPOINT_FORCE_FETCHCONTENT ON)
+  message(STATUS
+    "Sanitized dependencies: gRPC/Protobuf/absl/yaml-cpp/fmt are built "
+    "from source with ${SANITIZE} instrumentation (first build is slow)")
 
   # The instrumentation above also covers protoc and grpc_cpp_plugin, which this
   # build then runs to generate the .pb.cc sources. Protobuf keeps an over-aligned
@@ -144,14 +113,10 @@ list(APPEND LINK_LIBS
 
 # The pinpoint-grpc-idl submodule lays out protos as proto/v1/*.proto; adding
 # .../proto to the import path keeps generated headers at v1/*.pb.h so existing
-# `#include "v1/..."` sites don't change.
-#
-# Commit pinned here MUST match the submodule SHA (see 3rd_party/pinpoint-grpc-idl).
-# It is only consulted when the submodule directory is empty AND the repo is not
-# a git checkout (e.g. building from a GitHub auto-generated source tarball).
+# `#include "v1/..."` sites don't change. Release tarballs bundle the populated
+# submodule (see release.yml), so an empty directory means a git checkout that
+# has not initialized its submodules yet.
 set(PP_GRPC_IDL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/pinpoint-grpc-idl)
-set(PP_GRPC_IDL_URL "https://github.com/pinpoint-apm/pinpoint-grpc-idl.git")
-set(PP_GRPC_IDL_COMMIT "48978376de3406d356c4db3f32e40125b2050322")
 
 if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
@@ -171,25 +136,14 @@ if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
     if(NOT _pp_gm_rc EQUAL 0)
       message(FATAL_ERROR "`git submodule update --init` failed (rc=${_pp_gm_rc})")
     endif()
-  else()
-    # No .git (e.g. source tarball): fetch the pinned commit via FetchContent.
-    message(STATUS "No .git directory; fetching pinpoint-grpc-idl "
-            "@${PP_GRPC_IDL_COMMIT} via FetchContent")
-    include(FetchContent)
-    FetchContent_Declare(
-      pinpoint_grpc_idl
-      GIT_REPOSITORY ${PP_GRPC_IDL_URL}
-      GIT_TAG        ${PP_GRPC_IDL_COMMIT}
-      GIT_SHALLOW    FALSE   # commit SHAs are not reachable via shallow fetch
-      SOURCE_DIR     ${PP_GRPC_IDL_DIR}
-    )
-    FetchContent_MakeAvailable(pinpoint_grpc_idl)
   endif()
 
   if(NOT EXISTS ${PP_GRPC_IDL_DIR}/proto/v1/Service.proto)
     message(FATAL_ERROR
-      "pinpoint-grpc-idl protos are still missing at ${PP_GRPC_IDL_DIR}. "
-      "Network required, or populate the directory manually.")
+      "pinpoint-grpc-idl protos are missing at ${PP_GRPC_IDL_DIR}. "
+      "Clone with submodules (git clone --recurse-submodules), run "
+      "`git submodule update --init --recursive`, or use a release tarball "
+      "(which bundles them).")
   endif()
 endif()
 set(PP_PROTOBUF_IMPORT_DIRS ${PP_GRPC_IDL_DIR}/proto)
@@ -304,7 +258,6 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   endif()
 endif()
 
-file (STRINGS "build_number.txt" BUILD_NUMBER)
 configure_file(version.h.in version.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(include)

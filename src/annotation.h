@@ -198,13 +198,6 @@ namespace pinpoint {
          */
         void AppendLong(int32_t key, int64_t l);
         /**
-         * @brief Appends a string value annotation.
-         *
-         * @param key Annotation identifier.
-         * @param s String value to store.
-         */
-        void AppendString(int32_t key, std::string_view s);
-        /**
          * @brief Appends an annotation containing two strings.
          *
          * @param key Annotation identifier.
@@ -212,24 +205,6 @@ namespace pinpoint {
          * @param s2 Second string.
          */
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2);
-        /**
-         * @brief Appends an annotation containing an integer and two strings.
-         *
-         * @param key Annotation identifier.
-         * @param i Integer payload.
-         * @param s1 First string.
-         * @param s2 Second string.
-         */
-        void AppendIntStringString(int32_t key, int32_t i, std::string_view s1, std::string_view s2);
-        /**
-         * @brief Appends an annotation containing a SQL UID and two strings.
-         *
-         * @param key Annotation identifier.
-         * @param uid 16-byte SQL UID payload.
-         * @param s1 First string.
-         * @param s2 Second string.
-         */
-        void AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2);
         /**
          * @brief Appends a detailed network annotation used for RPC metadata.
          *

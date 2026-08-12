@@ -210,10 +210,9 @@ namespace benchmark {
         result.nanoseconds_per_pair =
             static_cast<double>(wall_ns) / static_cast<double>(thread_count * pairs_per_thread);
         if (!merged.empty()) {
-            // Nearest-rank percentiles, in sync with the definition in
-            // version_compare/api_benchmark.cpp. The previous (n*99)/100
-            // indexing read one rank high — for n <= 100 it reported the
-            // maximum labeled as p99.
+            // Nearest-rank percentiles. The previous (n*99)/100 indexing
+            // read one rank high — for n <= 100 it reported the maximum
+            // labeled as p99.
             const auto nearest_rank = [&merged](double fraction) {
                 auto rank = static_cast<size_t>(
                     std::ceil(fraction * static_cast<double>(merged.size())));

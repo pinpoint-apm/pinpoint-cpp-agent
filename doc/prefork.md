@@ -117,8 +117,7 @@ still queued in that process.
 
 ## nginx recipe
 
-A complete dynamic-module skeleton lives in
-[`example/nginx/`](../example/nginx/). The lifecycle is:
+The lifecycle for a dynamic module is:
 
 | nginx hook | Runs in | What to do |
 |---|---|---|

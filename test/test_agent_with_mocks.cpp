@@ -414,8 +414,6 @@ TEST_F(AgentImplTest, PrepareSqlCachesCompleteRawResult) {
     ASSERT_TRUE(second.has_value());
     ASSERT_NE(*first, nullptr);
     EXPECT_EQ(*first, *second);
-    EXPECT_EQ((*first)->normalized_sql,
-              "SELECT * FROM users WHERE id = 0# AND state = '1$'");
     EXPECT_EQ((*first)->parameters, "42,READY");
     EXPECT_GT(std::get<int32_t>((*first)->identity), 0);
 }
@@ -435,7 +433,6 @@ TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
     ASSERT_NE(*first, nullptr);
     ASSERT_NE(*second, nullptr);
     EXPECT_NE(*first, *second);
-    EXPECT_EQ((*first)->normalized_sql, (*second)->normalized_sql);
     EXPECT_EQ((*first)->parameters, (*second)->parameters);
     EXPECT_EQ(std::get<int32_t>((*first)->identity),
               std::get<int32_t>((*second)->identity));
@@ -450,7 +447,6 @@ TEST_F(AgentImplTest, PrepareSqlRawVariantsShareCanonicalIdentity) {
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
     EXPECT_NE(*first, *second);
-    EXPECT_EQ((*first)->normalized_sql, (*second)->normalized_sql);
     EXPECT_EQ(std::get<int32_t>((*first)->identity),
               std::get<int32_t>((*second)->identity));
     EXPECT_EQ((*first)->parameters, "41");
@@ -465,14 +461,13 @@ TEST_F(AgentImplTest, PrepareSqlMetadataFailureEpochInvalidatesRawEntry) {
     const auto first_id = std::get<int32_t>((*first)->identity);
 
     agent_->removeCacheSql(StringMeta{
-        first_id, (*first)->normalized_sql, STRING_META_SQL});
+        first_id, "SELECT * FROM users WHERE id = 0#", STRING_META_SQL});
     auto reloaded = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
 
     ASSERT_TRUE(reloaded.has_value());
     ASSERT_NE(*reloaded, nullptr);
     EXPECT_NE(*first, *reloaded);
     EXPECT_NE(first_id, std::get<int32_t>((*reloaded)->identity));
-    EXPECT_EQ((*first)->normalized_sql, (*reloaded)->normalized_sql);
     EXPECT_EQ((*first)->parameters, (*reloaded)->parameters);
 }
 
@@ -488,7 +483,7 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
     EXPECT_TRUE(std::holds_alternative<SqlUid>((*uid_entry)->identity));
 
     const auto uid = std::get<SqlUid>((*uid_entry)->identity);
-    agent_->removeCacheSqlUid(SqlUidMeta{uid, (*uid_entry)->normalized_sql});
+    agent_->removeCacheSqlUid(SqlUidMeta{uid, "SELECT * FROM users WHERE id = 0#"});
     auto reloaded_uid = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
 
     ASSERT_TRUE(reloaded_uid.has_value());

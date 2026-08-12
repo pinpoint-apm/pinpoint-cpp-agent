@@ -2444,11 +2444,11 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     auto& annotations = span_data->getAnnotations()->getAnnotations();
     annotations.emplace_back(101, AnnotationData(int32_t{42}));
     span_data->getAnnotations()->AppendLong(102, 1234567890123LL);
-    span_data->getAnnotations()->AppendString(103, "string-value");
+    span_data->getAnnotations()->AppendData(103, AnnotationData("string-value"));
     span_data->getAnnotations()->AppendStringString(104, "left", "right");
-    span_data->getAnnotations()->AppendIntStringString(105, 7, "method", "GET");
+    span_data->getAnnotations()->AppendData(105, AnnotationData(7, "method", "GET"));
     span_data->getAnnotations()->AppendLongIntIntByteByteString(106, 99, 1, 2, 3, 4, "rpc");
-    span_data->getAnnotations()->AppendSqlUidStringString(107, uid, "sql", "args");
+    span_data->getAnnotations()->AppendData(107, AnnotationData(uid, "sql", "args"));
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
     ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },

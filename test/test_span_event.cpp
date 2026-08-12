@@ -642,11 +642,11 @@ TEST_F(SpanEventTest, AnnotationHandleSealedByFinishTest) {
     // finish; appends through it must be sealed off once the event can sit
     // in a chunk.
     auto* annotations = span_event.getAnnotations();
-    annotations->AppendString(100, "before");
+    annotations->AppendData(100, AnnotationData("before"));
 
     span_event.finish();
 
-    annotations->AppendString(101, "after");
+    annotations->AppendData(101, AnnotationData("after"));
     EXPECT_EQ(annotations->getAnnotations().size(), 1u)
         << "annotation appends through a pre-finish handle must no-op after finish";
 }
@@ -683,7 +683,7 @@ TEST_F(SpanEventTest, GetAnnotationsInternalPointerTest) {
     EXPECT_NE(annotations, nullptr) << "Annotations pointer should not be null";
     
     // Test that we can use the annotations
-    annotations->AppendString(100, "test-value");
+    annotations->AppendData(100, AnnotationData("test-value"));
     // Verify by checking the content (this depends on PinpointAnnotation implementation)
 }
 

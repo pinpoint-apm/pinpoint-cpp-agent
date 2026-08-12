@@ -57,18 +57,8 @@ namespace pinpoint {
 
     void PinpointAnnotation::AppendLong(int32_t key, int64_t l) { append(key, l); }
 
-    void PinpointAnnotation::AppendString(int32_t key, std::string_view s) { append(key, s); }
-
     void PinpointAnnotation::AppendStringString(int32_t key, std::string_view s1, std::string_view s2) {
         append(key, s1, s2);
-    }
-
-    void PinpointAnnotation::AppendIntStringString(int32_t key, int32_t i, std::string_view s1, std::string_view s2) {
-        append(key, i, s1, s2);
-    }
-
-    void PinpointAnnotation::AppendSqlUidStringString(int32_t key, SqlUid uid, std::string_view s1, std::string_view s2) {
-        append(key, uid, s1, s2);
     }
 
     void PinpointAnnotation::AppendLongIntIntByteByteString(int32_t key, int64_t l, int32_t i1, int32_t i2, int32_t b1,

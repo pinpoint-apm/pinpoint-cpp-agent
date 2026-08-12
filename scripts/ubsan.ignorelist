@@ -1,6 +1,6 @@
 # UBSan ignorelist, applied by the `undefined` sanitizer builds (see CMakeLists.txt).
 #
-# SANITIZE_DEPS=ON builds gRPC/Protobuf from source with the same instrumentation,
+# Sanitized builds compile gRPC/Protobuf from source with the same instrumentation,
 # which also instruments the code generators (protoc, grpc_cpp_plugin) that the
 # build then runs. Protobuf declares its arena ThreadCache over-aligned in
 # thread_local storage, and macOS TLS does not honour that alignment, so an

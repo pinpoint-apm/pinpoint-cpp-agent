@@ -570,11 +570,7 @@ namespace pinpoint {
         // Notify after releasing the lock so the woken worker does not
         // immediately block on the pipeline mutex (matches enqueueSpan).
         pipeline_->cv.notify_all();
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to enqueue metadata: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to enqueue metadata: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to enqueue metadata:")
 
     void GrpcMetadata::on_launch_failure(const std::shared_ptr<PendingMetaRpc>& call,
                                          bool registered,
@@ -1389,11 +1385,7 @@ namespace pinpoint {
                 if (send_agent_info_once()) {
                     return true;
                 }
-            } catch (const std::exception& e) {
-                LOG_ERROR("register agent exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("register agent unknown exception");
-            }
+            } CATCH_AND_LOG("register agent")
             if (wait_agent_info_until(std::chrono::steady_clock::now() + retry_backoff.next_delay())) {
                 return false;
             }
@@ -1853,11 +1845,7 @@ namespace pinpoint {
         // and no process-wide counter write on the hot path.
         span_queue_.enqueue(span);
         notify_span_worker();
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to enqueue span: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to enqueue span: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to enqueue span:")
 
     void GrpcSpan::notify_span_worker() {
         // The fast path never takes the wait mutex. If the worker has announced
@@ -2145,11 +2133,7 @@ namespace pinpoint {
             try {
                 run_span_worker(pending_batch);
                 break;
-            } catch (const std::exception& e) {
-                LOG_ERROR("grpc span worker exception = {}", e.what());
-            } catch (...) {
-                LOG_ERROR("grpc span worker unknown exception");
-            }
+            } CATCH_AND_LOG("grpc span worker")
 
             if (!stopping()) {
                 // run_span_worker previously owned its batch as a local, so an
@@ -2164,11 +2148,7 @@ namespace pinpoint {
 
         try {
             flush_remaining(pending_batch);
-        } catch (const std::exception& e) {
-            LOG_ERROR("grpc span worker flush exception = {}", e.what());
-        } catch (...) {
-            LOG_ERROR("grpc span worker flush unknown exception");
-        }
+        } CATCH_AND_LOG("grpc span worker flush")
         LOG_INFO("grpc span worker end");
     }
 
@@ -2465,11 +2445,7 @@ namespace pinpoint {
         // Notify after releasing the lock so the woken worker does not
         // immediately block on stats_queue_mutex_ (matches enqueueSpan).
         stats_queue_cv_.notify_one();
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to enqueue stats: exception = {}", e.what());
-    } catch (...) {
-        LOG_ERROR("failed to enqueue stats: unknown exception");
-    }
+    } CATCH_AND_LOG("failed to enqueue stats:")
 
     void GrpcStats::empty_stats_queue() noexcept try {
         std::queue<StatsType> temp_queue;

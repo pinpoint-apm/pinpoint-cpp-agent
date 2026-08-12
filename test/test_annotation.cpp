@@ -199,7 +199,7 @@ TEST_F(AnnotationTest, AppendStringNormalTest) {
     int32_t key = 300;
     std::string value = "Hello, World!";
     
-    annotation->AppendString(key, value);
+    annotation->AppendData(key, AnnotationData(value));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -215,7 +215,7 @@ TEST_F(AnnotationTest, AppendStringEmptyTest) {
     int32_t key = 301;
     std::string value = "";
     
-    annotation->AppendString(key, value);
+    annotation->AppendData(key, AnnotationData(value));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -231,7 +231,7 @@ TEST_F(AnnotationTest, AppendStringSpecialCharsTest) {
     int32_t key = 302;
     std::string value = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
     
-    annotation->AppendString(key, value);
+    annotation->AppendData(key, AnnotationData(value));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -247,7 +247,7 @@ TEST_F(AnnotationTest, AppendStringUnicodeTest) {
     int32_t key = 303;
     std::string value = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
     
-    annotation->AppendString(key, value);
+    annotation->AppendData(key, AnnotationData(value));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -323,7 +323,7 @@ TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     std::string string1 = "Method";
     std::string string2 = "GET";
     
-    annotation->AppendIntStringString(key, intValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(intValue, string1, string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -343,7 +343,7 @@ TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
     std::string string1 = "";
     std::string string2 = "Non-empty";
     
-    annotation->AppendIntStringString(key, intValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(intValue, string1, string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -423,7 +423,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringNormalTest) {
     std::string string1 = "SQL Query";
     std::string string2 = "SELECT * FROM users WHERE id = ?";
     
-    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -445,7 +445,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringZeroBytesTest) {
     std::string string1 = "Zero Bytes";
     std::string string2 = "Test with a zero-filled UID";
 
-    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -467,7 +467,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringEmptyStringsTest) {
     std::string string1 = "";
     std::string string2 = "";
     
-    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -493,7 +493,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringBinaryDataTest) {
     std::string string1 = "Binary Data Test";
     std::string string2 = "Contains binary byte values";
 
-    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -516,7 +516,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringSpecialCharsTest) {
     std::string string1 = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
     std::string string2 = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
     
-    annotation->AppendSqlUidStringString(key, bytesValue, string1, string2);
+    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -536,12 +536,12 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringSpecialCharsTest) {
 // Test adding multiple annotations of different types
 TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     annotation->AppendInt(1, 42);
-    annotation->AppendString(2, "Test String");
+    annotation->AppendData(2, AnnotationData("Test String"));
     annotation->AppendStringString(3, "Key", "Value");
-    annotation->AppendIntStringString(4, 100, "Method", "POST");
+    annotation->AppendData(4, AnnotationData(100, "Method", "POST"));
     annotation->AppendLongIntIntByteByteString(5, 123456789LL, 1, 2, 3, 4, "Complex");
     SqlUid bytesValue = {0xDE, 0xAD, 0xBE, 0xEF};
-    annotation->AppendSqlUidStringString(6, bytesValue, "Binary", "Data");
+    annotation->AppendData(6, AnnotationData(bytesValue, "Binary", "Data"));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 6) << "Should have exactly 6 annotations";
@@ -625,7 +625,7 @@ TEST_F(AnnotationTest, SameKeyMultipleTimesTest) {
     int32_t key = 999;
     annotation->AppendInt(key, 1);
     annotation->AppendInt(key, 2);
-    annotation->AppendString(key, "Three");
+    annotation->AppendData(key, AnnotationData("Three"));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 3) << "Should have exactly 3 annotations with same key";
@@ -653,7 +653,7 @@ TEST_F(AnnotationTest, VeryLongStringTest) {
     int32_t key = 700;
     std::string longString(10000, 'A'); // 10,000 character string
     
-    annotation->AppendString(key, longString);
+    annotation->AppendData(key, AnnotationData(longString));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -670,7 +670,7 @@ TEST_F(AnnotationTest, NullCharactersInStringTest) {
     int32_t key = 701;
     std::string stringWithNulls = std::string("Hello\0World\0Test", 17);
     
-    annotation->AppendString(key, stringWithNulls);
+    annotation->AppendData(key, AnnotationData(stringWithNulls));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -692,7 +692,7 @@ TEST_F(AnnotationTest, EmptyAnnotationListTest) {
 // Test negative key values
 TEST_F(AnnotationTest, NegativeKeyTest) {
     annotation->AppendInt(-1, 42);
-    annotation->AppendString(-100, "negative key");
+    annotation->AppendData(-100, AnnotationData("negative key"));
     annotation->AppendLong(INT32_MIN, 999LL);
 
     auto& annotations = annotation->getAnnotations();
@@ -749,7 +749,7 @@ TEST_F(AnnotationTest, StringViewFromTemporaryTest) {
     int32_t key = 310;
     {
         std::string temp = "temporary string data";
-        annotation->AppendString(key, temp);
+        annotation->AppendData(key, AnnotationData(temp));
         // temp goes out of scope here
     }
 
@@ -805,7 +805,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
     SqlUid original = {0x01, 0x02, 0x03, 0x04, 0x05};
     SqlUid expected = original; // copy before the call
 
-    annotation->AppendSqlUidStringString(key, std::move(original), "s1", "s2");
+    annotation->AppendData(key, AnnotationData(std::move(original), "s1", "s2"));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1);
@@ -818,8 +818,8 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
 
 // Test AppendIntStringString with extreme int values
 TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
-    annotation->AppendIntStringString(510, INT32_MAX, "max", "value");
-    annotation->AppendIntStringString(511, INT32_MIN, "min", "value");
+    annotation->AppendData(510, AnnotationData(INT32_MAX, "max", "value"));
+    annotation->AppendData(511, AnnotationData(INT32_MIN, "min", "value"));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 2);
@@ -833,7 +833,7 @@ TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
 
 TEST_F(AnnotationTest, CachedSqlParameterAliasKeepsPreparedEntryAlive) {
     auto prepared = std::make_shared<const PreparedSql>(PreparedSql{
-        "SELECT 0#", "42", SqlIdentity{7}});
+        "42", SqlIdentity{7}});
     std::weak_ptr<const PreparedSql> weak = prepared;
 
     {
@@ -861,10 +861,10 @@ TEST_F(AnnotationTest, SealedAnnotationIgnoresEveryLateAppend) {
 
     annotation->AppendInt(101, 1);
     annotation->AppendLong(102, 2);
-    annotation->AppendString(103, "late");
+    annotation->AppendData(103, AnnotationData("late"));
     annotation->AppendStringString(104, "a", "b");
-    annotation->AppendIntStringString(105, 3, "a", "b");
-    annotation->AppendSqlUidStringString(106, SqlUid{}, "a", "b");
+    annotation->AppendData(105, AnnotationData(3, "a", "b"));
+    annotation->AppendData(106, AnnotationData(SqlUid{}, "a", "b"));
     annotation->AppendLongIntIntByteByteString(107, 4, 5, 6, 7, 8, "s");
     annotation->AppendData(108, AnnotationData(int32_t{9}));
 

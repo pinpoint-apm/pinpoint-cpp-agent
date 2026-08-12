@@ -4,18 +4,14 @@ licenses(["notice"])  # Apache 2
 
 genrule(
     name = "generate_version_h",
-    srcs = [
-        "MODULE.bazel",
-        "build_number.txt",
-    ],
+    srcs = ["MODULE.bazel"],
     outs = ["version.h"],
     cmd = """
         VERSION=$$(grep 'version = ' $(location MODULE.bazel) | head -1 | sed 's/.*version = "\\(.*\\)".*/\\1/')
-        BUILD=$$(cat $(location build_number.txt) | tr -d '[:space:]')
         cat > $@ <<EOF
 #pragma once
 
-#define VERSION_STRING  "$$VERSION.$$BUILD"
+#define VERSION_STRING  "$$VERSION"
 EOF
     """,
 )

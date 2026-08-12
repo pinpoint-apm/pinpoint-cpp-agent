@@ -158,7 +158,6 @@ public:
                     throw std::runtime_error("mock SQL ID unavailable");
                 }
                 return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.normalized_sql),
                     std::move(normalized.parameters),
                     SqlIdentity{id}});
             };
@@ -177,7 +176,6 @@ public:
                 throw std::runtime_error("mock SQL UID unavailable");
             }
             return std::make_shared<const PreparedSql>(PreparedSql{
-                std::move(normalized.normalized_sql),
                 std::move(normalized.parameters),
                 SqlIdentity{*uid}});
         };

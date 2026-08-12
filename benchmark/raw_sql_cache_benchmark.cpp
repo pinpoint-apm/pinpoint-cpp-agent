@@ -178,7 +178,6 @@ int main(int argc, char** argv) {
         auto normalized = normalizer.normalize(kRawSql);
         const auto id = canonical_cache.get(normalized.normalized_sql).value;
         return std::make_shared<const PreparedSql>(PreparedSql{
-            std::move(normalized.normalized_sql),
             std::move(normalized.parameters),
             SqlIdentity{id}});
     };
@@ -238,7 +237,6 @@ int main(int argc, char** argv) {
             auto normalized = normalizer.normalize(raw);
             const auto id = canonical_cache.get(normalized.normalized_sql).value;
             return std::make_shared<const PreparedSql>(PreparedSql{
-                std::move(normalized.normalized_sql),
                 std::move(normalized.parameters),
                 SqlIdentity{id}});
         });
