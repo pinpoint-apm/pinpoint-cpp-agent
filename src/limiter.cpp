@@ -54,13 +54,23 @@ namespace pinpoint {
             return false;
         }
 
-        const auto now = current_second() & kSecondMask;
         // No data is published through state_; it is a self-contained
         // counter, so relaxed ordering is sufficient everywhere.
         auto state = state_.load(std::memory_order_relaxed);
 
         for (;;) {
-            if (state_second(state) != now) {
+            // Re-read the clock on every attempt: a failed CAS means another
+            // thread moved the state, possibly into a newer second.
+            const auto now = current_second() & kSecondMask;
+            const auto second = state_second(state);
+
+            // Refill only when the clock is ahead of the stored window. A
+            // thread whose `now` went stale at a second boundary (another
+            // thread already published the next window) must not CAS the
+            // window backward with a full bucket — that would double-admit
+            // the new second. It consumes from the stored window instead.
+            // Forward distance is taken mod 2^32, so wrap stays correct.
+            if (second != now && ((now - second) & kSecondMask) < 0x80000000ull) {
                 // New window: refill and consume one token in a single CAS.
                 if (state_.compare_exchange_weak(state, pack(now, token_ - 1),
                                                  std::memory_order_relaxed)) {
@@ -74,7 +84,7 @@ namespace pinpoint {
                 return false;
             }
 
-            if (state_.compare_exchange_weak(state, pack(now, tokens - 1),
+            if (state_.compare_exchange_weak(state, pack(second, tokens - 1),
                                              std::memory_order_relaxed)) {
                 return true;
             }
