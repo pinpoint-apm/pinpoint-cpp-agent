@@ -249,8 +249,17 @@ namespace pinpoint {
     	std::unique_ptr<GrpcSpan> grpc_span_{};
     	std::unique_ptr<GrpcStats> grpc_stat_{};
 		std::unique_ptr<GrpcCommand> grpc_command_{};
-    	std::unique_ptr<UrlStats> url_stats_{};
-    	std::unique_ptr<AgentStats> agent_stats_{};
+		// Shared, not unique: every AgentRuntime generation carries these two
+		// sinks (build_runtime), so spans reach them through the runtime
+		// snapshot they already hold instead of keeping the whole agent
+		// alive (see AgentRuntime::stats). The last release can therefore
+		// happen after ~AgentImpl — a late span, or a thread's cached
+		// runtime snapshot dying at thread exit — by which point the workers
+		// are long joined and both objects are passive data (atomic shards,
+		// queues, an idle registry, unused mutexes/condvars), safe to
+		// destroy there.
+    	std::shared_ptr<UrlStats> url_stats_{};
+    	std::shared_ptr<AgentStats> agent_stats_{};
 
     	std::thread init_thread_;
     	std::thread ping_thread_;

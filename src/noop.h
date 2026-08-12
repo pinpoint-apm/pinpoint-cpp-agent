@@ -159,6 +159,10 @@ namespace pinpoint {
     private:
         // Shared by EndSpan's catch handlers; see the definition.
         void releaseActiveSpanOnError() noexcept;
+        // The stats sink this span records into: the runtime snapshot's
+        // shared AgentStats when the span was admitted with one (production),
+        // else the agent's own (tests), else null (no agent at all).
+        AgentStats* statsSink() const;
 
         int64_t span_id_;
         int64_t start_time_;
@@ -177,8 +181,16 @@ namespace pinpoint {
         // Runtime snapshot of this span's admission decision; null only when
         // constructed without one (tests). See the ctor comment.
         std::shared_ptr<const AgentRuntime> runtime_;
-        // Keeps the agent alive while user code still holds this span.
+        // Agent keep-alive, held ONLY when runtime_ does not carry the stats
+        // sinks (tests, hand-built runtimes). A production span reaches
+        // everything it touches after construction through runtime_, so it
+        // skips the selfRef() this used to cost — a per-request CAS on the
+        // agent's single control block; see the ctor.
         std::shared_ptr<AgentService> agent_ref_;
+        // Dereferenced during construction (caller holds the agent) and on
+        // the agent_ref_-protected fallback paths only: without the
+        // keep-alive this pointer may dangle once the host releases the
+        // agent, and EndSpan/the destructor must not touch it.
         AgentService *agent_;
     };
 

@@ -196,6 +196,13 @@ namespace pinpoint {
         if (!config.http.url_stat.enable) {
             return;
         }
+        // Shutdown gate; see the accepting_ declaration. Relaxed: a racing
+        // enqueue that slips past the flip lands in a shard queue and is
+        // simply never drained — bounded by queue_size, freed with this
+        // object — so no ordering is needed.
+        if (!accepting_.load(std::memory_order_relaxed)) {
+            return;
+        }
 
         auto& shard = queueShard();
         int64_t prev_pending = 0;
@@ -319,6 +326,9 @@ namespace pinpoint {
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
+        // Refuse new entries from here on (see accepting_): shutdown has
+        // begun, so anything enqueued now would never be drained.
+        accepting_.store(false, std::memory_order_relaxed);
         // Always notify, without consulting any config: re-deriving the
         // worker's boot decision from a config load here would couple
         // shutdown to the non-reloadability invariant documented in

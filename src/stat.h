@@ -74,15 +74,17 @@ namespace pinpoint {
         void addActiveSpan(ActiveSpanNode& node, int64_t span_id, int64_t start_time);
         void dropActiveSpan(ActiveSpanNode& node);
         
-        // Counter incrementers. Called once per request, so relaxed: these are
+        // Counter incrementers. Called once per request, routed to the
+        // caller's per-thread shard (see ResponseTimeShard) so the RMW lands
+        // on a cache line no other thread's requests touch. Relaxed: these are
         // independent counters with no ordering relationship to other data —
-        // the collector just exchange()s each one for its own value.
-        void incrSampleNew() { sample_new_.fetch_add(1, std::memory_order_relaxed); }
-        void incrUnsampleNew() { un_sample_new_.fetch_add(1, std::memory_order_relaxed); }
-        void incrSampleCont() { sample_cont_.fetch_add(1, std::memory_order_relaxed); }
-        void incrUnsampleCont() { un_sample_cont_.fetch_add(1, std::memory_order_relaxed); }
-        void incrSkipNew() { skip_new_.fetch_add(1, std::memory_order_relaxed); }
-        void incrSkipCont() { skip_cont_.fetch_add(1, std::memory_order_relaxed); }
+        // the collector just exchange()s and sums them per shard.
+        void incrSampleNew() { responseTimeShard().sample_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrUnsampleNew() { responseTimeShard().un_sample_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSampleCont() { responseTimeShard().sample_cont_.fetch_add(1, std::memory_order_relaxed); }
+        void incrUnsampleCont() { responseTimeShard().un_sample_cont_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSkipNew() { responseTimeShard().skip_new_.fetch_add(1, std::memory_order_relaxed); }
+        void incrSkipCont() { responseTimeShard().skip_cont_.fetch_add(1, std::memory_order_relaxed); }
 
         /**
          * @brief Returns a copy of the snapshot batch, taken under the stats mutex.
@@ -105,7 +107,9 @@ namespace pinpoint {
         /// @brief One supervised run of the collect loop; agentStatsWorker
         /// restarts it after a transient exception.
         void runAgentStatsWorker(const Config& config);
-        void collectAndResetResponseTime(int64_t& avg, int64_t& max);
+        /// @brief Drains every per-thread shard in one sweep: response-time
+        /// avg/max plus the six sampler-outcome counts, all into `stat`.
+        void collectAndResetRequestStats(AgentStatsSnapshot& stat);
         
         // System metrics structures
         struct CpuLoad {
@@ -126,20 +130,38 @@ namespace pinpoint {
     private:
         static constexpr size_t kResponseTimeShardCount = 16;
 
-        // One cache line per shard: every request end updates exactly one
-        // shard (picked by thread id), so the per-request RMWs never contend
-        // across shards.
+        // Cache-line-aligned per-thread shard: every request updates exactly
+        // one shard (picked by thread id), so the per-request RMWs never
+        // contend across threads. Besides the response-time fields it carries
+        // the sampler-outcome counters: as process-wide singles they were one
+        // shared line hit once per request — span_lifecycle_benchmark
+        // measured that at ~23 ns/request of cross-core traffic at 4 threads,
+        // the same contention this sharding exists to remove. Nine counters
+        // exceed one 64-byte line, but both lines still belong to a single
+        // thread's shard, which is the isolation that matters.
         struct alignas(64) ResponseTimeShard {
             std::atomic<int64_t> acc_response_time_{0};
             std::atomic<int64_t> request_count_{0};
             std::atomic<int64_t> max_response_time_{0};
+            std::atomic<int64_t> sample_new_{0};
+            std::atomic<int64_t> un_sample_new_{0};
+            std::atomic<int64_t> sample_cont_{0};
+            std::atomic<int64_t> un_sample_cont_{0};
+            std::atomic<int64_t> skip_new_{0};
+            std::atomic<int64_t> skip_cont_{0};
         };
 
         ResponseTimeShard& responseTimeShard();
 
-        // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
-        // the stats worker before its own destruction, so agent_ never dangles.
-        // A shared_ptr here would form a cycle and leak the agent.
+        // Non-owning. The agent joins the stats worker before its own
+        // destruction, and this object can now outlive the agent (it is
+        // shared with every AgentRuntime snapshot, which live spans and TLS
+        // caches keep alive) — but only the span-facing methods
+        // (collectResponseTime, add/dropActiveSpan, the incr counters) run
+        // in that afterlife, and none of them reads agent_. Everything that
+        // does (the worker loop, collectAgentStat) runs on threads joined
+        // while the agent is alive. A shared_ptr here would form a cycle
+        // and leak the agent.
         AgentService* agent_{};
         std::mutex mutex_{};
         std::condition_variable cond_var_{};
@@ -153,15 +175,6 @@ namespace pinpoint {
         std::optional<clock_t> last_proc_cpu_time_{};
         
         std::array<ResponseTimeShard, kResponseTimeShardCount> response_time_shards_;
-
-        // Sampler counters isolated on their own cache line so their
-        // per-request fetch_adds never share a line with neighboring members.
-        alignas(64) std::atomic<int64_t> sample_new_{0};
-        std::atomic<int64_t> un_sample_new_{0};
-        std::atomic<int64_t> sample_cont_{0};
-        std::atomic<int64_t> un_sample_cont_{0};
-        std::atomic<int64_t> skip_new_{0};
-        std::atomic<int64_t> skip_cont_{0};
 
         ActiveSpanRegistry active_spans_;
         

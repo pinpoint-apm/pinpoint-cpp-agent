@@ -84,13 +84,35 @@ namespace pinpoint {
         span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         runtime_(std::move(runtime)),
-        agent_ref_(agent != nullptr ? agent->selfRef() : nullptr),
+        // With a runtime snapshot that carries the stats sinks (every
+        // build_runtime() snapshot does), this span never touches the agent
+        // after construction: everything EndSpan and the destructor need —
+        // AgentStats, the url-stat sink, the status-error set — is owned by
+        // runtime_, which the span already holds through a thread-localized
+        // control block. Skipping selfRef() here removes a per-request CAS
+        // on the agent's single shared control block: unsampled spans are
+        // the majority path whenever sampling is on, and that one CAS was
+        // measured as half the four-thread cost of this path
+        // (span_lifecycle_benchmark). Without the sinks (tests, hand-built
+        // runtimes) the legacy keep-alive covers the agent_ fallbacks below.
+        agent_ref_(runtime_ && runtime_->stats && runtime_->url_stats
+                       ? nullptr
+                       : (agent != nullptr ? agent->selfRef() : nullptr)),
         agent_(agent) {
-        // Guard the deref to stay consistent with the null check on agent_ref_
-        // above (agent_ is always the live AgentImpl in production).
-        if (agent_ != nullptr) {
-            agent_->getAgentStats().addActiveSpan(active_node_, span_id_, start_time_);
+        // Null only when constructed without an agent AND without a runtime
+        // (some unit tests) — then there is simply nothing to record into.
+        if (auto* stats = statsSink()) {
+            stats->addActiveSpan(active_node_, span_id_, start_time_);
         }
+    }
+
+    AgentStats* UnsampledSpan::statsSink() const {
+        if (runtime_ && runtime_->stats) {
+            return runtime_->stats.get();
+        }
+        // Fallback deref is safe: whenever it is reachable the constructor
+        // took agent_ref_ (or the caller owns a test agent outliving the span).
+        return agent_ != nullptr ? &agent_->getAgentStats() : nullptr;
     }
 
     UnsampledSpan::~UnsampledSpan() {
@@ -99,12 +121,17 @@ namespace pinpoint {
         // this object, so a still-linked node here would leave dangling
         // pointers in its shard list. Check the node itself rather than
         // finished_: this still covers an EndSpan failure before its drop,
-        // while a normally ended span returns after one atomic load without
-        // dereferencing a potentially non-owning agent_.
-        if (agent_ != nullptr && active_node_.isLinked()) {
-            try {
-                agent_->getAgentStats().dropActiveSpan(active_node_);
-            } catch (...) {
+        // while a normally ended span returns after one atomic load — without
+        // resolving the sink, so a non-owning test agent_ is never touched.
+        // The registry outlives this unlink on every path: runtime_ owns the
+        // AgentStats it lives in, or the fallback's agent_ref_/test caller
+        // keeps the agent alive.
+        if (active_node_.isLinked()) {
+            if (auto* stats = statsSink()) {
+                try {
+                    stats->dropActiveSpan(active_node_);
+                } catch (...) {
+                }
             }
         }
     }
@@ -118,9 +145,9 @@ namespace pinpoint {
             return;
         }
 
-        // Paired with the constructor's null guard: nothing to record without
-        // an agent (agent_ is always valid in production).
-        if (agent_ == nullptr) {
+        // Paired with the constructor: no sink means nothing was recorded.
+        auto* stats = statsSink();
+        if (stats == nullptr) {
             return;
         }
 
@@ -131,9 +158,8 @@ namespace pinpoint {
         auto elapsed_ = static_cast<int32_t>(
             std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
 
-        auto& stats = agent_->getAgentStats();
-        stats.collectResponseTime(elapsed_);
-        stats.dropActiveSpan(active_node_);
+        stats->collectResponseTime(elapsed_);
+        stats->dropActiveSpan(active_node_);
 
         // url_stat_mutex_ pairs with SetUrlStat(): its finished_ check runs
         // under the same lock, so a SetUrlStat racing this consume (documented
@@ -152,8 +178,20 @@ namespace pinpoint {
                 const auto& status_errors = runtime_->http_status_errors;
                 url_stat_->failed_ =
                     status_errors && status_errors->isErrorCode(url_stat_->status_code_);
-                agent_->recordUrlStat(std::move(*url_stat_), *runtime_->config);
-            } else {
+                if (runtime_->url_stats) {
+                    // Straight into the runtime-owned sink, no agent deref:
+                    // this span may hold no agent keep-alive (see the ctor).
+                    // The agent's enabled_ gate that recordUrlStat used to
+                    // apply is preserved by the sink's own accepting_ flag,
+                    // flipped when shutdown begins.
+                    runtime_->url_stats->enqueueUrlStats(std::move(*url_stat_),
+                                                         *runtime_->config);
+                } else if (agent_ != nullptr) {
+                    // Runtime without a url-stat sink (hand-built): the ctor
+                    // took agent_ref_ for exactly this fallback.
+                    agent_->recordUrlStat(std::move(*url_stat_), *runtime_->config);
+                }
+            } else if (agent_ != nullptr) {
                 url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
                 agent_->recordUrlStat(std::move(*url_stat_));
             }
@@ -177,8 +215,8 @@ namespace pinpoint {
         // active request immediately. Idempotent (unlinked node → no-op).
         // Same shape as SpanImpl::releaseActiveSpanOnError.
         try {
-            if (agent_ != nullptr) {
-                agent_->getAgentStats().dropActiveSpan(active_node_);
+            if (auto* stats = statsSink()) {
+                stats->dropActiveSpan(active_node_);
             }
         } catch (...) {
         }

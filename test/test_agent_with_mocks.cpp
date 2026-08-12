@@ -265,6 +265,41 @@ TEST(AgentStartResultTest, StartReportsLaunchRepeatAndShutdownRefusal) {
     EXPECT_FALSE(agent->Start()) << "a shut-down agent must refuse Start()";
 }
 
+// An unsampled span reaches everything it records into (AgentStats, the
+// url-stat sink) through its runtime snapshot, NOT through an agent
+// keep-alive: it must not pin the agent — the per-span selfRef() it used to
+// take was a CAS on the agent's one control block, measured as half the
+// four-thread cost of the unsampled path — and, the flip side of that coin,
+// ending the span after the agent is destroyed must stay safe because the
+// snapshot owns the sinks independently.
+TEST(AgentLifetimeTest, UnsampledSpanDoesNotPinAgentAndOutlivesItSafely) {
+    auto cfg = make_test_config();
+    cfg->sampling.counter_rate = 0;  // never sample → NewSpan yields UnsampledSpan
+    auto agent = make_test_agent(cfg);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(agent->Enable());
+
+    auto span = agent->NewSpan("lifetime-op", "/lifetime");
+    ASSERT_FALSE(span->IsSampled());
+    // A real UnsampledSpan, not the noop singleton (which has span id 0).
+    ASSERT_NE(span->GetSpanId(), 0);
+    span->SetUrlStat("/lifetime", "GET", 200);
+
+    std::weak_ptr<AgentImpl> observer = agent;
+    agent->Shutdown();
+    agent.reset();
+    EXPECT_TRUE(observer.expired())
+        << "an unsampled span must not keep the agent alive";
+
+    // Records into the runtime-owned sinks (the url stat is dropped by the
+    // sink's shutdown gate); under ASan/TSan this is the use-after-free probe.
+    span->EndSpan();
+    span.reset();
+}
+
 // Start() blocks signals only while it spawns the agent threads (so they
 // inherit a blocked mask); the calling thread's own mask must be restored
 // before Start() returns — the host's signal handling must not be altered.

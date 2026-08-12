@@ -261,9 +261,14 @@ namespace pinpoint {
         /// @brief One supervised run of the periodic send loop.
         void runSendUrlStatsWorker();
 
-        // Non-owning. AgentImpl owns this object (unique_ptr member) and joins
-        // the URL-stat workers before its own destruction, so agent_ never
-        // dangles. A shared_ptr here would form a cycle and leak the agent.
+        // Non-owning. The agent joins the URL-stat workers before its own
+        // destruction, and this object can now outlive the agent (shared
+        // with every AgentRuntime snapshot) — but the only method that runs
+        // in that afterlife is the config-taking enqueueUrlStats overload,
+        // which never reads agent_ (and drops on accepting_ anyway). The
+        // config-loading overload and the workers, which do read it, run
+        // only while the agent is alive. A shared_ptr here would form a
+        // cycle and leak the agent.
         AgentService* agent_{};
 
         // Queue for incoming URL stats. pending_ is the exact number of
@@ -277,6 +282,14 @@ namespace pinpoint {
         std::atomic<int64_t> pending_{0};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
+        // Flipped once by stopAddUrlStatsWorker(); enqueueUrlStats drops
+        // entries from then on. Spans that reach this sink through their
+        // runtime snapshot (UnsampledSpan) bypass the agent's enabled_ check
+        // in recordUrlStat, and the snapshot keeps this object alive past
+        // agent teardown — this flag preserves the old behavior of dropping
+        // post-shutdown entries instead of buffering them into queues no
+        // worker will ever drain.
+        std::atomic<bool> accepting_{true};
         // Rate-limited overflow reporting (see QueueDropReporter).
         QueueDropReporter drop_reporter_{};
 

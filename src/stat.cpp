@@ -239,33 +239,46 @@ namespace pinpoint {
             shard.acc_response_time_.store(0, std::memory_order_relaxed);
             shard.request_count_.store(0, std::memory_order_relaxed);
             shard.max_response_time_.store(0, std::memory_order_relaxed);
+            shard.sample_new_.store(0, std::memory_order_relaxed);
+            shard.un_sample_new_.store(0, std::memory_order_relaxed);
+            shard.sample_cont_.store(0, std::memory_order_relaxed);
+            shard.un_sample_cont_.store(0, std::memory_order_relaxed);
+            shard.skip_new_.store(0, std::memory_order_relaxed);
+            shard.skip_cont_.store(0, std::memory_order_relaxed);
         }
-
-        sample_new_.store(0, std::memory_order_relaxed);
-        un_sample_new_.store(0, std::memory_order_relaxed);
-        sample_cont_.store(0, std::memory_order_relaxed);
-        un_sample_cont_.store(0, std::memory_order_relaxed);
-        skip_new_.store(0, std::memory_order_relaxed);
-        skip_cont_.store(0, std::memory_order_relaxed);
     }
 
-    void AgentStats::collectAndResetResponseTime(int64_t& avg, int64_t& max) {
+    void AgentStats::collectAndResetRequestStats(AgentStatsSnapshot& stat) {
         // No writer gate: exchange() hands every sample to exactly one
         // collection — a sample racing the snapshot just lands in the next
         // 5s window instead of this one, which monitoring tolerates.
+        // Explicitly zeroed before summing: the caller reuses snapshot slots
+        // across batches.
         int64_t request_count = 0;
         int64_t acc_response_time = 0;
-        max = 0;
+        stat.response_time_max_ = 0;
+        stat.num_sample_new_ = 0;
+        stat.num_unsample_new_ = 0;
+        stat.num_sample_cont_ = 0;
+        stat.num_unsample_cont_ = 0;
+        stat.num_skip_new_ = 0;
+        stat.num_skip_cont_ = 0;
         for (auto& shard : response_time_shards_) {
             request_count += shard.request_count_.exchange(0, std::memory_order_relaxed);
             acc_response_time += shard.acc_response_time_.exchange(0, std::memory_order_relaxed);
             const auto shard_max = shard.max_response_time_.exchange(0, std::memory_order_relaxed);
-            if (shard_max > max) {
-                max = shard_max;
+            if (shard_max > stat.response_time_max_) {
+                stat.response_time_max_ = shard_max;
             }
+            stat.num_sample_new_ += shard.sample_new_.exchange(0, std::memory_order_relaxed);
+            stat.num_unsample_new_ += shard.un_sample_new_.exchange(0, std::memory_order_relaxed);
+            stat.num_sample_cont_ += shard.sample_cont_.exchange(0, std::memory_order_relaxed);
+            stat.num_unsample_cont_ += shard.un_sample_cont_.exchange(0, std::memory_order_relaxed);
+            stat.num_skip_new_ += shard.skip_new_.exchange(0, std::memory_order_relaxed);
+            stat.num_skip_cont_ += shard.skip_cont_.exchange(0, std::memory_order_relaxed);
         }
 
-        avg = request_count > 0 ? acc_response_time / request_count : 0;
+        stat.response_time_avg_ = request_count > 0 ? acc_response_time / request_count : 0;
     }
 
     void AgentStats::initAgentStats() {
@@ -341,16 +354,9 @@ namespace pinpoint {
         stat.heap_max_size_ = process_status.heap_max;
         stat.num_threads_ = process_status.num_threads;
 
-        // Calculate avg response time and snapshot max
-        collectAndResetResponseTime(stat.response_time_avg_, stat.response_time_max_);
-
-        // Snapshot atomics
-        stat.num_sample_new_ = sample_new_.exchange(0);
-        stat.num_sample_cont_ = sample_cont_.exchange(0);
-        stat.num_unsample_new_ = un_sample_new_.exchange(0);
-        stat.num_unsample_cont_ = un_sample_cont_.exchange(0);
-        stat.num_skip_new_ = skip_new_.exchange(0);
-        stat.num_skip_cont_ = skip_cont_.exchange(0);
+        // Drain the per-thread shards in one sweep: response-time avg/max
+        // plus the sampler-outcome counts.
+        collectAndResetRequestStats(stat);
 
         collectActiveRequests(stat.active_requests_, stat.sample_time_);
     }

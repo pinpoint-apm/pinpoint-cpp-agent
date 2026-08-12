@@ -21,6 +21,7 @@
 #include <utility>
 #include <condition_variable>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -117,8 +118,11 @@ namespace pinpoint {
         agent_name_ = cfg->agent_name_;
         service_name_ = cfg->service_name_;
 
-        agent_stats_ = std::make_unique<AgentStats>(this);
-        url_stats_ = std::make_unique<UrlStats>(this);
+        // Shared (see the member declarations): build_runtime() below hangs
+        // both sinks off every runtime generation so spans reach them without
+        // an agent keep-alive.
+        agent_stats_ = std::make_shared<AgentStats>(this);
+        url_stats_ = std::make_shared<UrlStats>(this);
 
         // Each cache shards its store by kDefaultCacheShardCount (see
         // ShardedLruCache): the api cache in particular is hit once per span
@@ -375,6 +379,12 @@ namespace pinpoint {
 
         auto rt = std::make_shared<AgentRuntime>();
         rt->config = std::move(cfg);
+        // Not config-derived: every generation shares the same stats sinks,
+        // so spans admitted under different generations aggregate into one
+        // place (see AgentRuntime::stats for why spans take them from the
+        // runtime instead of an agent keep-alive).
+        rt->stats = agent_stats_;
+        rt->url_stats = url_stats_;
         const Config& c = *rt->config;
 
         // Rebuild sampler
@@ -760,22 +770,29 @@ namespace pinpoint {
         // here rather than in do_shutdown() so the pointers stay valid while
         // the object is alive (see the forked-child branch there).
         //
-        // The stats aggregators go the same way, for a second reason: their
-        // shards (UrlStats::QueueShard, AgentStats::ResponseTimeShard) hold
-        // condition variables that the abandoned url_stat/agent_stat workers
+        // The stats aggregators go the same way, for a second reason: they
+        // own condition variables the abandoned url_stat/agent_stat workers
         // were waiting on when fork() ran. The waiter count lives in the
         // condvar and is inherited, so glibc's pthread_cond_destroy blocks
         // forever waiting for waiters that do not exist in this process.
-        // Member destruction runs after this body, so releasing here is what
-        // keeps that destructor from ever running.
+        // They are shared-owned now (every AgentRuntime generation carries
+        // them — see build_runtime), so nulling this member alone is not
+        // enough: runtime snapshots inherited from the parent — the runtime_
+        // holder, live spans, TLS caches — hold them too, and whichever
+        // reference is released LAST in this process would run those
+        // destructors. Leak one extra strong reference instead, so no
+        // release here can ever be the last one. nothrow keeps the noexcept
+        // contract; if even this tiny allocation fails the leak is skipped
+        // and the old exposure returns — a hang only if this child later
+        // drops every inherited reference.
         if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             (void)grpc_agent_.release();
             (void)grpc_metadata_.release();
             (void)grpc_span_.release();
             (void)grpc_stat_.release();
             (void)grpc_command_.release();
-            (void)url_stats_.release();
-            (void)agent_stats_.release();
+            (void)new (std::nothrow) std::shared_ptr<UrlStats>(url_stats_);
+            (void)new (std::nothrow) std::shared_ptr<AgentStats>(agent_stats_);
         }
     }
 
