@@ -174,10 +174,15 @@ namespace pinpoint {
             if (cached == cache.end()) {
                 cached = cache.emplace(
                     this, CacheEntry{instance_id_, generation, std::move(snapshot)}).first;
-            } else {
-                cached->second = CacheEntry{instance_id_, generation, std::move(snapshot)};
+                return cached->second.snapshot;
             }
-            return cached->second.snapshot;
+            // Bind a reference before assigning: the assignment may drop the
+            // last owner of the previous snapshot, and if ~T re-enters a
+            // ThreadCached load on this thread the map can rehash. A rehash
+            // invalidates iterators (`cached`) but not references.
+            auto& entry = cached->second;
+            entry = CacheEntry{instance_id_, generation, std::move(snapshot)};
+            return entry.snapshot;
         }
 
         void store(std::shared_ptr<T> desired) {

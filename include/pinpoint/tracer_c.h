@@ -350,7 +350,13 @@ typedef struct pt_agent_options_s* pt_agent_options_t;
  */
 pt_agent_options_t pt_agent_options_new(void);
 
-/** @brief Releases an options object. NULL is ignored. */
+/**
+ * @brief Releases an options object.
+ *
+ * NULL is ignored. Options handles are registry tokens like agent and span
+ * handles: a second free of the same handle, or any setter/pt_start_agent()
+ * call made with an already-freed handle, is ignored.
+ */
 void pt_agent_options_free(pt_agent_options_t options);
 
 /**

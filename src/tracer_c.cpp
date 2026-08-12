@@ -553,46 +553,66 @@ struct pt_agent_options_s {
     pinpoint::AgentOptions options;
 };
 
+namespace {
+// Options handles ride the same never-reused odd-token registry as agent and
+// span handles: a second pt_agent_options_free, or a setter/start on a freed
+// handle, degrades to an ignored lookup miss instead of a double delete in
+// the host heap. Cold path (once per agent start), so the lookup is free.
+using OptionsHandleRegistry = OwnedHandleRegistry<pt_agent_options_t, pt_agent_options_s>;
+
+OptionsHandleRegistry& options_handle_registry() {
+    static auto* registry = new OptionsHandleRegistry();
+    return *registry;
+}
+
+std::shared_ptr<pt_agent_options_s> find_options(pt_agent_options_t options) {
+    return options ? options_handle_registry().find(options)
+                   : std::shared_ptr<pt_agent_options_s>{};
+}
+}  // namespace
+
 pt_agent_options_t pt_agent_options_new(void) {
     return pt_api_call(__func__, static_cast<pt_agent_options_t>(nullptr), [] {
-        return new pt_agent_options_s();
+        return options_handle_registry().insert(std::make_shared<pt_agent_options_s>());
     });
 }
 
 void pt_agent_options_free(pt_agent_options_t options) {
     pt_api_call(__func__, [&] {
-        delete options;
+        if (options && !options_handle_registry().erase(options)) {
+            LOG_WARN("freeing an unknown or already-freed options handle: ignored");
+        }
     });
 }
 
 void pt_agent_options_set_config_file(pt_agent_options_t options, const char* path) {
     pt_api_call(__func__, [&] {
-        if (options) {
-            options->options.config_file_path = path ? path : "";
+        if (auto owned = find_options(options)) {
+            owned->options.config_file_path = path ? path : "";
         }
     });
 }
 
 void pt_agent_options_set_config_yaml(pt_agent_options_t options, const char* yaml) {
     pt_api_call(__func__, [&] {
-        if (options) {
-            options->options.config_yaml = yaml ? yaml : "";
+        if (auto owned = find_options(options)) {
+            owned->options.config_yaml = yaml ? yaml : "";
         }
     });
 }
 
 void pt_agent_options_set_env_prefix(pt_agent_options_t options, const char* prefix) {
     pt_api_call(__func__, [&] {
-        if (options) {
-            options->options.env_prefix = prefix ? prefix : "";
+        if (auto owned = find_options(options)) {
+            owned->options.env_prefix = prefix ? prefix : "";
         }
     });
 }
 
 void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type) {
     pt_api_call(__func__, [&] {
-        if (options) {
-            options->options.app_type = app_type;
+        if (auto owned = find_options(options)) {
+            owned->options.app_type = app_type;
         }
     });
 }
@@ -604,14 +624,15 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
                                           const char* const* libs,
                                           int libs_count) {
     pt_api_call(__func__, [&] {
-        if (!options) {
+        auto owned = find_options(options);
+        if (!owned) {
             return;
         }
         if (server_info) {
-            options->options.server_info = server_info;
+            owned->options.server_info = server_info;
         }
-        options->options.args = to_string_vector(args, args_count);
-        options->options.libs = to_string_vector(libs, libs_count);
+        owned->options.args = to_string_vector(args, args_count);
+        owned->options.libs = to_string_vector(libs, libs_count);
     });
 }
 
@@ -621,8 +642,11 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
 
 int pt_start_agent(pt_agent_options_t options) {
     return pt_api_call(__func__, 0, [&] {
-        const bool started = options
-            ? pinpoint::StartAgent(options->options)
+        // A freed or unknown non-NULL handle misses the registry and falls
+        // back to defaults, same as NULL.
+        const auto owned = find_options(options);
+        const bool started = owned
+            ? pinpoint::StartAgent(owned->options)
             : pinpoint::StartAgent();
         return started ? 1 : 0;
     });

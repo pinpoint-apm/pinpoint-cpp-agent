@@ -1097,6 +1097,12 @@ namespace pinpoint {
             return false;
         }
 
+        // Reserve before start(): if push_back had to grow the vector and
+        // threw, the unique_ptr's unwind would join the just-started stream
+        // thread while holding active_streams_mutex_ — the unbounded join
+        // this file forbids (see cleanup_active_thread_count_streams). With
+        // capacity secured, the noexcept move push_back cannot throw.
+        active_thread_count_streams_.reserve(active_thread_count_streams_.size() + 1);
         auto stream = std::make_unique<ActiveThreadCountStream>(this, ++socket_id_, request_id);
         stream->start();
         active_thread_count_streams_.push_back(std::move(stream));

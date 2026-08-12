@@ -382,6 +382,26 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     pt_agent_options_free(opts);
 }
 
+// Options handles are registry tokens: a double free and any call made with
+// an already-freed handle are ignored instead of corrupting the heap.
+TEST(TracerCAgentOptionsTest, DoubleFreeAndStaleHandleAreIgnored) {
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_free(opts);
+
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_free(opts));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_file(opts, "x"));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(opts, 1));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, "x", nullptr, 0, nullptr, 0));
+
+    // Distinct handles must never reuse a token (ABA), so a stale free of the
+    // first handle cannot release the second.
+    pt_agent_options_t next = pt_agent_options_new();
+    ASSERT_NE(next, nullptr);
+    EXPECT_NE(next, opts);
+    pt_agent_options_free(next);
+}
+
 // ============================================================================
 // 3. Null-handle safety — no crashes on NULL inputs
 // ============================================================================
