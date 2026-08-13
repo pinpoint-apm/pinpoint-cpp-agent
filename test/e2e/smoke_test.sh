@@ -215,6 +215,17 @@ fi
 http_request POST "$BASE_URL/agent/reload?counter_rate=1"
 assert_status "restore full sampling" 200
 
+echo ""
+echo "Config file watcher"
+# Production reconfiguration flows through the watcher, not through an agent
+# restart. The endpoint points a fresh agent at a config file it owns, edits
+# the sampling rate, and waits for the running agent to follow. It restarts
+# the agent twice, so it needs more than the default request timeout.
+http_request POST "$BASE_URL/agent/watch-reload" --max-time 90
+assert_status "config file watcher" 200
+assert_contains "watched agent started" '"started":true'
+assert_contains "watcher applied the new rate" '"reloaded":true'
+
 if [[ -n "$C_API_SCENARIO" ]]; then
     echo ""
     echo "Pure C API scenario"

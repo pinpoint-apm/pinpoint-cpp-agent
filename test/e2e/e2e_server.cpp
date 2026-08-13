@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -912,6 +914,110 @@ void on_agent_reload(const httplib::Request& req, httplib::Response& res) {
     res.set_content(body.str(), "application/json");
 }
 
+// Counts how many of @p count fresh traces the current sampler admits.
+int probe_sampled(int count, std::string_view prefix) {
+    int sampled = 0;
+    for (int i = 0; i < count; ++i) {
+        auto span = pinpoint::GlobalAgent()->NewSpan(
+            "sampling-probe", std::string(prefix) + std::to_string(i));
+        if (span->IsSampled()) ++sampled;
+        span->EndSpan();
+    }
+    return sampled;
+}
+
+// Replaces the running agent and waits for it to come up: StartAgent()
+// returns before registration completes.
+bool restart_agent_and_wait(int timeout_ms) {
+    if (g_agent) {
+        g_agent->Shutdown();
+        g_agent.reset();
+    }
+    if (!pinpoint::StartAgent()) {
+        std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
+    }
+    g_agent = pinpoint::GlobalAgent();
+    for (int waited = 0; waited < timeout_ms; waited += 50) {
+        if (g_agent->Enable()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return g_agent->Enable();
+}
+
+std::string watch_config_path() {
+    return (std::filesystem::temp_directory_path() /
+            ("pinpoint-e2e-watch-" +
+             it_test::env_or("PINPOINT_CPP_AGENT_NAME", "e2e") + ".yaml"))
+        .string();
+}
+
+void write_watch_config(const std::string& path, int counter_rate,
+                        std::string_view app_name) {
+    std::ofstream out(path, std::ios::trunc);
+    out << "EnableConfigFileWatcher: true\n"
+        // Not reloadable. Changing it between writes gives the reload's
+        // retain step real work to do — the running value has to win.
+        << "ApplicationName: " << app_name << "\n"
+        << "Sampling:\n"
+        << "  Type: COUNTER\n"
+        << "  CounterRate: " << counter_rate << "\n";
+}
+
+// Drives the config-file watcher end to end. Production reconfiguration goes
+// through it: the watcher polls the file's modification time (1s by default)
+// and rebuilds the config in place, with no agent restart. Exercising that
+// needs a file this process alone owns — every server in the run reads
+// pinpoint-config.yaml — so this writes one to the temp dir, points a fresh
+// agent at it, edits the sampling rate, and waits for the rate to follow.
+// The original config path and agent are restored before returning.
+void on_agent_watch_reload(const httplib::Request&, httplib::Response& res) {
+    const std::string path = watch_config_path();
+    const char* original = getenv("PINPOINT_CPP_CONFIG_FILE");
+    const std::string original_config = original != nullptr ? original : "";
+
+    std::lock_guard<std::mutex> lock(g_agent_mutex);
+    // The rate has to ride the file here. An environment override — which
+    // /agent/reload leaves behind — is applied after the file and would mask
+    // the reload this endpoint exists to observe.
+    unsetenv("PINPOINT_CPP_SAMPLING_COUNTER_RATE");
+    write_watch_config(path, 1, "cpp-it-watch");
+    setenv("PINPOINT_CPP_CONFIG_FILE", path.c_str(), 1);
+    const bool started = restart_agent_and_wait(15000);
+    const int before = probe_sampled(40, "/watch-probe/before/");
+
+    write_watch_config(path, 2, "cpp-it-watch-changed");
+    int after = before;
+    int waited_ms = 0;
+    while (waited_ms < 15000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        waited_ms += 250;
+        after = probe_sampled(40, "/watch-probe/after/");
+        if (after < 40) {
+            break;
+        }
+    }
+
+    if (original_config.empty()) {
+        unsetenv("PINPOINT_CPP_CONFIG_FILE");
+    } else {
+        setenv("PINPOINT_CPP_CONFIG_FILE", original_config.c_str(), 1);
+    }
+    restart_agent_and_wait(15000);
+    std::remove(path.c_str());
+
+    std::ostringstream body;
+    body << "{\"status\":\"ok\","
+         << "\"started\":" << it_test::JsonBool(started) << ","
+         << "\"before_sampled\":" << before << ","
+         << "\"after_sampled\":" << after << ","
+         << "\"waited_ms\":" << waited_ms << ","
+         << "\"reloaded\":"
+         << it_test::JsonBool(before == 40 && after > 0 && after < 40) << "}";
+    res.set_content(body.str(), "application/json");
+}
+
 void on_sampling_probe(const httplib::Request& req, httplib::Response& res) {
     int count = 20;
     if (req.has_param("count")) {
@@ -1001,6 +1107,7 @@ int main(int argc, char* argv[]) {
     server.Post("/agent/start", on_agent_start);
     server.Post("/agent/shutdown", on_agent_shutdown);
     server.Post("/agent/reload", on_agent_reload);
+    server.Post("/agent/watch-reload", on_agent_watch_reload);
 
     // HTTP-only endpoints
     server.Get("/simple", on_simple);
