@@ -42,262 +42,127 @@ protected:
 
 // ========== AppendInt Tests ==========
 
-TEST_F(AnnotationTest, AppendIntPositiveTest) {
-    int32_t key = 100;
-    int value = 42;
-    
-    annotation->AppendInt(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
-    EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Int value should match";
-}
+TEST_F(AnnotationTest, AppendIntTest) {
+    struct Case {
+        const char* name;
+        int32_t key;
+        int32_t value;
+    };
+    const Case cases[] = {
+        {"positive", 100, 42},
+        {"negative", 101, -123},
+        {"zero", 102, 0},
+        {"int32 max", 200, INT32_MAX},
+        {"int32 min", 201, INT32_MIN},
+    };
 
-TEST_F(AnnotationTest, AppendIntNegativeTest) {
-    int32_t key = 101;
-    int value = -123;
-    
-    annotation->AppendInt(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
-    EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Negative int value should match";
-}
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        annotation = std::make_unique<PinpointAnnotation>();
+        annotation->AppendInt(c.key, c.value);
 
-TEST_F(AnnotationTest, AppendIntZeroTest) {
-    int32_t key = 102;
-    int value = 0;
-    
-    annotation->AppendInt(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
-    EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Zero value should match";
-}
+        auto& annotations = annotation->getAnnotations();
+        EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
 
-TEST_F(AnnotationTest, AppendIntExtremeValuesTest) {
-    annotation->AppendInt(200, INT32_MAX);
-    annotation->AppendInt(201, INT32_MIN);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 2) << "Should have exactly 2 annotations";
-    
-    auto it = annotations.begin();
-    EXPECT_EQ(it->first, 200) << "First key should match";
-    EXPECT_EQ(std::get<int32_t>(it->second.data), INT32_MAX) << "INT32_MAX should match";
-    
-    ++it;
-    EXPECT_EQ(it->first, 201) << "Second key should match";
-    EXPECT_EQ(std::get<int32_t>(it->second.data), INT32_MIN) << "INT32_MIN should match";
+        auto& pair = annotations.front();
+        EXPECT_EQ(pair.first, c.key) << "Key should match";
+        EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT) << "DataType should be ANNOTATION_TYPE_INT for int";
+        EXPECT_EQ(std::get<int32_t>(pair.second.data), c.value) << "Int value should match";
+    }
 }
 
 // ========== AppendLong Tests ==========
 
-TEST_F(AnnotationTest, AppendLongPositiveTest) {
-    int32_t key = 150;
-    int64_t value = 1234567890123456789LL;
-    
-    annotation->AppendLong(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
-    EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Long value should match";
-}
+TEST_F(AnnotationTest, AppendLongTest) {
+    struct Case {
+        const char* name;
+        int32_t key;
+        int64_t value;
+    };
+    const Case cases[] = {
+        {"positive", 150, 1234567890123456789LL},
+        {"negative", 151, -1234567890123456789LL},
+        {"zero", 152, 0LL},
+        {"int64 max", 250, INT64_MAX},
+        {"int64 min", 251, INT64_MIN},
+        {"timestamp 2021-01-01 00:00:00 in ms", 153, 1609459200000LL},
+        {"int32-range value still stored as LONG", 160, 42LL},
+    };
 
-TEST_F(AnnotationTest, AppendLongNegativeTest) {
-    int32_t key = 151;
-    int64_t value = -1234567890123456789LL;
-    
-    annotation->AppendLong(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
-    EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Negative long value should match";
-}
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        annotation = std::make_unique<PinpointAnnotation>();
+        annotation->AppendLong(c.key, c.value);
 
-TEST_F(AnnotationTest, AppendLongZeroTest) {
-    int32_t key = 152;
-    int64_t value = 0LL;
-    
-    annotation->AppendLong(key, value);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
-    EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Zero value should match";
-}
+        auto& annotations = annotation->getAnnotations();
+        EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
 
-TEST_F(AnnotationTest, AppendLongExtremeValuesTest) {
-    annotation->AppendLong(250, INT64_MAX);
-    annotation->AppendLong(251, INT64_MIN);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 2) << "Should have exactly 2 annotations";
-    
-    auto it = annotations.begin();
-    EXPECT_EQ(it->first, 250) << "First key should match";
-    EXPECT_EQ(std::get<int64_t>(it->second.data), INT64_MAX) << "INT64_MAX should match";
-    
-    ++it;
-    EXPECT_EQ(it->first, 251) << "Second key should match";
-    EXPECT_EQ(std::get<int64_t>(it->second.data), INT64_MIN) << "INT64_MIN should match";
-}
-
-// Test AppendLong with timestamp-like values
-TEST_F(AnnotationTest, AppendLongTimestampTest) {
-    int32_t key = 153;
-    int64_t timestamp = 1609459200000LL; // 2021-01-01 00:00:00 in milliseconds
-    
-    annotation->AppendLong(key, timestamp);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
-    EXPECT_EQ(std::get<int64_t>(pair.second.data), timestamp) << "Timestamp value should match";
+        auto& pair = annotations.front();
+        EXPECT_EQ(pair.first, c.key) << "Key should match";
+        EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "DataType should be ANNOTATION_TYPE_LONG for long";
+        EXPECT_EQ(std::get<int64_t>(pair.second.data), c.value) << "Long value should match";
+    }
 }
 
 // ========== AppendString Tests ==========
 
-TEST_F(AnnotationTest, AppendStringNormalTest) {
-    int32_t key = 300;
-    std::string value = "Hello, World!";
-    
-    annotation->AppendData(key, AnnotationData(value));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
-    EXPECT_EQ(std::get<std::string>(pair.second.data), value) << "String value should match";
-}
+TEST_F(AnnotationTest, AppendStringTest) {
+    struct Case {
+        const char* name;
+        int32_t key;
+        std::string value;
+    };
+    const Case cases[] = {
+        {"normal", 300, "Hello, World!"},
+        {"empty", 301, ""},
+        {"special chars", 302, "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r"},
+        {"unicode", 303, "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά"},
+    };
 
-TEST_F(AnnotationTest, AppendStringEmptyTest) {
-    int32_t key = 301;
-    std::string value = "";
-    
-    annotation->AppendData(key, AnnotationData(value));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
-    EXPECT_EQ(std::get<std::string>(pair.second.data), value) << "Empty string should match";
-}
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        annotation = std::make_unique<PinpointAnnotation>();
+        annotation->AppendData(c.key, AnnotationData(c.value));
 
-// Test AppendString with special characters
-TEST_F(AnnotationTest, AppendStringSpecialCharsTest) {
-    int32_t key = 302;
-    std::string value = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
-    
-    annotation->AppendData(key, AnnotationData(value));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
-    EXPECT_EQ(std::get<std::string>(pair.second.data), value) << "Special characters string should match";
-}
+        auto& annotations = annotation->getAnnotations();
+        EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
 
-// Test AppendString with Unicode characters
-TEST_F(AnnotationTest, AppendStringUnicodeTest) {
-    int32_t key = 303;
-    std::string value = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
-    
-    annotation->AppendData(key, AnnotationData(value));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
-    EXPECT_EQ(std::get<std::string>(pair.second.data), value) << "Unicode string should match";
+        auto& pair = annotations.front();
+        EXPECT_EQ(pair.first, c.key) << "Key should match";
+        EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING) << "DataType should be ANNOTATION_TYPE_STRING for string";
+        EXPECT_EQ(std::get<std::string>(pair.second.data), c.value) << "String value should match";
+    }
 }
 
 // ========== AppendStringString Tests ==========
 
-TEST_F(AnnotationTest, AppendStringStringNormalTest) {
-    int32_t key = 400;
-    std::string value1 = "First String";
-    std::string value2 = "Second String";
-    
-    annotation->AppendStringString(key, value1, value2);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "First string should match";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Second string should match";
-}
+TEST_F(AnnotationTest, AppendStringStringTest) {
+    struct Case {
+        const char* name;
+        int32_t key;
+        std::string value1;
+        std::string value2;
+    };
+    const Case cases[] = {
+        {"normal", 400, "First String", "Second String"},
+        {"empty", 401, "", ""},
+        {"header-like mixed content", 402, "Content-Type", "application/json; charset=utf-8"},
+    };
 
-TEST_F(AnnotationTest, AppendStringStringEmptyTest) {
-    int32_t key = 401;
-    std::string value1 = "";
-    std::string value2 = "";
-    
-    annotation->AppendStringString(key, value1, value2);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "First empty string should match";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Second empty string should match";
-}
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        annotation = std::make_unique<PinpointAnnotation>();
+        annotation->AppendStringString(c.key, c.value1, c.value2);
 
-// Test AppendStringString with mixed content
-TEST_F(AnnotationTest, AppendStringStringMixedTest) {
-    int32_t key = 402;
-    std::string value1 = "Content-Type";
-    std::string value2 = "application/json; charset=utf-8";
-    
-    annotation->AppendStringString(key, value1, value2);
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).first, value1) << "Header name should match";
-    EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Header value should match";
+        auto& annotations = annotation->getAnnotations();
+        EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+
+        auto& pair = annotations.front();
+        EXPECT_EQ(pair.first, c.key) << "Key should match";
+        EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_STRING_STRING) << "DataType should be ANNOTATION_TYPE_STRING_STRING for string-string";
+        EXPECT_EQ(std::get<StringPair>(pair.second.data).first, c.value1) << "First string should match";
+        EXPECT_EQ(std::get<StringPair>(pair.second.data).second, c.value2) << "Second string should match";
+    }
 }
 
 // ========== AppendIntStringString Tests ==========
@@ -402,118 +267,50 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringExtremeTest) {
 
 // ========== AppendSqlUidStringString Tests ==========
 
-// Test AppendSqlUidStringString with normal values
-TEST_F(AnnotationTest, AppendSqlUidStringStringNormalTest) {
-    int32_t key = 700;
-    SqlUid bytesValue = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; // "Hello" in the leading bytes
-    std::string string1 = "SQL Query";
-    std::string string2 = "SELECT * FROM users WHERE id = ?";
-    
-    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
-}
-
-// Test AppendSqlUidStringString with a zero-filled UID
-TEST_F(AnnotationTest, AppendSqlUidStringStringZeroBytesTest) {
-    int32_t key = 701;
-    SqlUid bytesValue{}; // All-zero UID
-    std::string string1 = "Zero Bytes";
-    std::string string2 = "Test with a zero-filled UID";
-
-    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
-
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should be the zero-filled UID";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
-}
-
-TEST_F(AnnotationTest, AppendSqlUidStringStringEmptyStringsTest) {
-    int32_t key = 702;
-    SqlUid bytesValue = {0xAB, 0xCD, 0xEF};
-    std::string string1 = "";
-    std::string string2 = "";
-    
-    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should be empty";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should be empty";
-}
-
-// Test AppendSqlUidStringString with binary data spanning the full UID
-TEST_F(AnnotationTest, AppendSqlUidStringStringBinaryDataTest) {
-    int32_t key = 703;
+TEST_F(AnnotationTest, AppendSqlUidStringStringTest) {
     // Fill all 16 bytes with distinct values spread across 0x00..0xFF
-    SqlUid bytesValue{};
-    for (size_t i = 0; i < bytesValue.size(); ++i) {
-        bytesValue[i] = static_cast<unsigned char>(i * 17);
+    SqlUid binaryUid{};
+    for (size_t i = 0; i < binaryUid.size(); ++i) {
+        binaryUid[i] = static_cast<unsigned char>(i * 17);
     }
-    std::string string1 = "Binary Data Test";
-    std::string string2 = "Contains binary byte values";
 
-    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
+    struct Case {
+        const char* name;
+        int32_t key;
+        SqlUid uid;
+        std::string string1;
+        std::string string2;
+    };
+    const Case cases[] = {
+        {"normal", 700, {0x48, 0x65, 0x6C, 0x6C, 0x6F}, // "Hello" in the leading bytes
+         "SQL Query", "SELECT * FROM users WHERE id = ?"},
+        {"zero-filled uid", 701, {}, "Zero Bytes", "Test with a zero-filled UID"},
+        {"empty strings", 702, {0xAB, 0xCD, 0xEF}, "", ""},
+        {"binary data across the full uid", 703, binaryUid,
+         "Binary Data Test", "Contains binary byte values"},
+        {"special chars and unicode", 704, {0x01, 0x02, 0x03, 0x04, 0x05},
+         "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r",
+         "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά"},
+    };
 
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.name);
+        annotation = std::make_unique<PinpointAnnotation>();
+        annotation->AppendData(c.key, AnnotationData(c.uid, c.string1, c.string2));
 
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
+        auto& annotations = annotation->getAnnotations();
+        EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
 
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue.size(), 16u) << "UID is always 16 bytes";
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Binary data should match exactly";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "First string should match";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
-}
+        auto& pair = annotations.front();
+        EXPECT_EQ(pair.first, c.key) << "Key should match";
+        EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
 
-// Test AppendSqlUidStringString with special characters in strings
-TEST_F(AnnotationTest, AppendSqlUidStringStringSpecialCharsTest) {
-    int32_t key = 704;
-    SqlUid bytesValue = {0x01, 0x02, 0x03, 0x04, 0x05};
-    std::string string1 = "Special chars: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\r";
-    std::string string2 = "Unicode: 한글, 日本語, العربية, 中文, Ελληνικά";
-    
-    annotation->AppendData(key, AnnotationData(bytesValue, string1, string2));
-    
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
-    
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.first, key) << "Key should match";
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "DataType should be ANNOTATION_TYPE_BYTES_STRING_STRING for bytes-string-string";
-    
-    auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
-    EXPECT_EQ(bytesData.bytesValue, bytesValue) << "Bytes value should match";
-    EXPECT_EQ(bytesData.stringValue1, string1) << "Special characters string should match";
-    EXPECT_EQ(bytesData.stringValue2, string2) << "Unicode string should match";
+        auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
+        EXPECT_EQ(bytesData.bytesValue.size(), 16u) << "UID is always 16 bytes";
+        EXPECT_EQ(bytesData.bytesValue, c.uid) << "Bytes value should match";
+        EXPECT_EQ(bytesData.stringValue1, c.string1) << "First string should match";
+        EXPECT_EQ(bytesData.stringValue2, c.string2) << "Second string should match";
+    }
 }
 
 // ========== Multiple Annotations Tests ==========
@@ -700,21 +497,6 @@ TEST_F(AnnotationTest, ZeroKeyTest) {
     EXPECT_EQ(annotations.size(), 1);
     EXPECT_EQ(annotations.front().first, 0) << "Zero key should be preserved";
     EXPECT_EQ(std::get<int32_t>(annotations.front().second.data), 42);
-}
-
-// Test AppendLong with int32-range value stores as LONG type
-TEST_F(AnnotationTest, AppendLongWithSmallValueTest) {
-    int32_t key = 160;
-    int64_t value = 42LL; // Value fits in int32_t but stored via AppendLong
-
-    annotation->AppendLong(key, value);
-
-    auto& annotations = annotation->getAnnotations();
-    EXPECT_EQ(annotations.size(), 1);
-
-    auto& pair = annotations.front();
-    EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG) << "Small value via AppendLong should still be LONG type";
-    EXPECT_EQ(std::get<int64_t>(pair.second.data), value);
 }
 
 TEST_F(AnnotationTest, AnnotationDataTypeComesFromVariantValueTest) {
