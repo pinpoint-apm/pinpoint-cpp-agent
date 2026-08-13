@@ -4,3 +4,7 @@
 /cmake-build-*
 /.cache
 .DS_Store
+
+# Coverage-instrumented binaries drop this in the working directory whenever
+# they run without LLVM_PROFILE_FILE set.
+default.profraw
