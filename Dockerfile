@@ -5,7 +5,7 @@
 #   docker run --rm pinpoint-cpp-agent-test vcpkg
 #   docker run --rm pinpoint-cpp-agent-test bazel
 #
-# Supported CMake presets: default, debug, debug-cached, vcpkg, asan, tsan,
+# Supported CMake presets: default, debug, vcpkg, asan, tsan,
 # ubsan, coverage, profiling.
 # Supported Bazel presets: bazel, bazel-asan, bazel-tsan, bazel-ubsan,
 # bazel-profiling.

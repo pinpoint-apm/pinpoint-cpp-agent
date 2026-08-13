@@ -26,12 +26,12 @@ metadata and allocator overhead. At most `QueueSize` values are logically
 retained across all shards.
 
 The benchmark target is always compiled with optimization, including when the
-rest of the project uses the `debug-cached` preset:
+rest of the project uses the `debug` preset:
 
 ```sh
-cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
-cmake --build --preset debug-cached --target span_queue_benchmark
-./build/debug-cached/benchmark/span_queue_benchmark --verify
+cmake --preset debug -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug --target span_queue_benchmark
+./build/debug/benchmark/span_queue_benchmark --verify
 ```
 
 Useful options:
@@ -67,9 +67,9 @@ hit allocates or invokes the preparation factory. An eight-thread pass checks
 the shared-lock hit path under contention.
 
 ```sh
-cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
-cmake --build --preset debug-cached --target raw_sql_cache_benchmark
-./build/debug-cached/benchmark/raw_sql_cache_benchmark 500000
+cmake --preset debug -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug --target raw_sql_cache_benchmark
+./build/debug/benchmark/raw_sql_cache_benchmark 500000
 ```
 
 The optional argument is the total operation count used by both the
@@ -98,9 +98,9 @@ compares a single-shard cache (the former layout) with the default
 measured lookup misses or the two configurations disagree on ids.
 
 ```sh
-cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
-cmake --build --preset debug-cached --target id_cache_benchmark
-./build/debug-cached/benchmark/id_cache_benchmark 2000000
+cmake --preset debug -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug --target id_cache_benchmark
+./build/debug/benchmark/id_cache_benchmark 2000000
 ```
 
 The optional argument is the total operation count per configuration. The
@@ -121,9 +121,9 @@ in the benchmark, so one run produces the before/after comparison under the
 same machine load.
 
 ```sh
-cmake --preset debug-cached -DBUILD_BENCHMARKS=ON
-cmake --build --preset debug-cached --target atomic_shared_ptr_benchmark
-./build/debug-cached/benchmark/atomic_shared_ptr_benchmark 1000000
+cmake --preset debug -DBUILD_BENCHMARKS=ON
+cmake --build --preset debug --target atomic_shared_ptr_benchmark
+./build/debug/benchmark/atomic_shared_ptr_benchmark 1000000
 ```
 
 The optional argument is the operation count per thread. Each row is the median
@@ -163,7 +163,7 @@ could have shown it.
 **Unlike the other targets here, this one must be built against an optimized
 library.** The others are header-only and get compiled into the benchmark
 translation unit, which this directory always builds with optimization; this
-one measures code that lives in `libpinpoint_cpp`, so a `debug-cached`
+one measures code that lives in `libpinpoint_cpp`, so a `debug`
 (Debug) library reports numbers several times too slow:
 
 ```sh

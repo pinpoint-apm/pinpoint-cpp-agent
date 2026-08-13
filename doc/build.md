@@ -33,7 +33,7 @@ docker run --rm pinpoint-cpp-agent-test tsan
 docker run --rm pinpoint-cpp-agent-test ubsan
 ```
 
-The remaining modes are `debug`, `debug-cached`, `coverage`, `profiling`,
+The remaining modes are `debug`, `coverage`, `profiling`,
 `bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. Run the image
 with `help` to print the complete list. The source tree is copied into the image;
 rebuild the image after changing source files.
@@ -144,7 +144,6 @@ cmake --list-presets
 | `default` | Build pinned dependency sources with FetchContent |
 | `vcpkg` | vcpkg toolchain (requires `VCPKG_ROOT` env var) |
 | `debug` | Same as `default` with `CMAKE_BUILD_TYPE=Debug` |
-| `debug-cached` | Debug FetchContent build with a shared cache under `$HOME/.cache/cmake-fetchcontent` |
 | `coverage` | FetchContent deps; Clang `Debug` build with source-based coverage; the build step also runs the tests and writes the reports (see [LLVM Coverage](#llvm-coverage-cmake)) |
 | `profiling` | Optimized `RelWithDebInfo` build with symbols and frame pointers for xctrace/perf |
 | `asan` | FetchContent deps; `Debug` build instrumented with AddressSanitizer (`-fsanitize=address`) |
@@ -164,6 +163,38 @@ Each preset writes to its own build directory (`build/<preset-name>/`), so you c
 > `coverage` and `profiling` have no matching **test** preset: `coverage` runs the
 > tests as part of its build step, and `profiling` is meant to be driven by a
 > profiler. Every other preset above has one, so `ctest --preset <name>` works.
+
+### Sharing the FetchContent cache
+
+By default every FetchContent preset downloads and builds its dependencies into
+its own `build/<preset>/_deps/`, so switching presets re-fetches everything.
+Point `FETCHCONTENT_BASE_DIR` at a directory outside the build tree to share one
+download/build cache across presets:
+
+```bash
+cmake --preset debug -D FETCHCONTENT_BASE_DIR="$HOME/.cache/cmake-fetchcontent"
+cmake --build --preset debug
+```
+
+`FETCHCONTENT_BASE_DIR` is a CMake **cache** variable, not an environment
+variable: it must be passed with `-D` on the configure command (exporting it in
+the shell has no effect). It is stored in the build directory's cache, so later
+`cmake --preset`/`--build` runs on the same directory keep using it.
+
+Use an absolute path: a relative one is resolved against the directory `cmake`
+was invoked from, so the same argument run from elsewhere points at a different
+cache. To share the cache in an editor, set it as a configure
+setting rather than an environment variable; the checked-in
+[`.vscode/settings.json`](../.vscode/settings.json) does this via
+`cmake.configureSettings`.
+
+> The directory holds full dependency *build* trees (`<dep>-build/`), not just
+> downloaded sources (`<dep>-src/`). Two presets that compile with different
+> flags — `Debug` vs `Release`, sanitized vs not — write the dependency object
+> files to the same paths, so each switch between them rebuilds those
+> dependencies. Sharing pays off across presets with matching flags; give the
+> sanitizer and `Release` presets their own directory (for example
+> `…/cmake-fetchcontent-asan`) when you alternate.
 
 ### Dependency Versions
 
@@ -288,7 +319,7 @@ ctest --preset default --verbose
 ctest --preset default -R test_sampling
 ```
 
-Substitute the preset name (`vcpkg`, `debug`, `debug-cached`) to run against a different build directory.
+Substitute the preset name (`vcpkg`, `debug`) to run against a different build directory.
 
 For the current list of test targets, ask the build system rather than a document:
 `ctest --preset default -N` or `bazel query //test:all`. The agent integration
@@ -470,9 +501,10 @@ The first Bazel build downloads and compiles all external dependencies (gRPC, pr
 ### CMake: the first FetchContent build is slow
 
 The `default` preset downloads and builds all dependencies from source on the
-first run. Use the `vcpkg` preset for managed packages, or `debug-cached` to
-reuse a shared FetchContent cache. After the first configure, `ccache` also
-speeds up subsequent rebuilds.
+first run. Use the `vcpkg` preset for managed packages, or set
+`FETCHCONTENT_BASE_DIR` to reuse one dependency cache across presets and build
+directories — see [Sharing the FetchContent cache](#sharing-the-fetchcontent-cache).
+After the first configure, `ccache` also speeds up subsequent rebuilds.
 
 ### macOS linker warnings
 
