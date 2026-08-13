@@ -12,31 +12,14 @@ The C++ tracer API mirrors the design of the [Pinpoint Go agent](https://github.
 
 Pinpoint models each transaction as a collection of **spans**.
 
-### Span
-
-Represents a top-level operation in your application, such as an HTTP request, gRPC method, scheduled job, or long-running worker iteration. A span records timing, status, key metadata, and contains a stack of **SpanEvents** describing internal operations. Each span has a unique span ID and trace ID.
-
-### SpanEvent
-
-Represents an operation *inside* a span: database query, HTTP client call, cache access, function block, etc. Multiple span events form a call-stack view in the Pinpoint UI.
-
-### Annotations
-
-Key/value metadata attached to spans or span events. Use them to record HTTP URLs, status codes, customer IDs, SQL parameters (sanitized), and other context.
-
-### Distributed Tracing
-
-Trace context (trace ID, span ID, sampling decision, etc.) is propagated across services using transport-specific headers (e.g., HTTP). The C++ agent uses `TraceContextReader` / `TraceContextWriter` interfaces to abstract header access.
-
-### Supporting Types
-
 | Type | Description |
 |---|---|
 | `Agent` | Entry point that manages configuration, span creation, and shutdown lifecycle. |
-| `Span` | Top-level trace segment for an incoming request or logical operation. |
-| `SpanEvent` | Fine-grained operations inside a span. |
+| `Span` | A top-level operation — HTTP request, gRPC method, scheduled job, worker iteration. Records timing, status and metadata, carries a trace ID and span ID, and holds a stack of span events. |
+| `SpanEvent` | An operation *inside* a span (DB query, HTTP client call, function block). Multiple events form the call-stack view in the Pinpoint UI. |
+| Annotation | Key/value metadata on a span or span event: URLs, status codes, customer IDs, sanitized SQL parameters. |
 | `SqlBindValue` | Variant scalar accepted as a SQL bind argument. |
-| `TraceContextReader` / `TraceContextWriter` | Context propagation adapters for distributed tracing headers. |
+| `TraceContextReader` / `TraceContextWriter` | Context propagation adapters. Trace context (trace ID, span ID, sampling decision) travels between services in transport-specific headers. |
 | `HeaderReader` | Structured access to HTTP headers for recording request/response metadata. Derives from `TraceContextReader`, so one implementation covers both roles. |
 | `HeaderReaderWriter` | `HeaderReader` plus `TraceContextWriter`, for carriers you both read and write. |
 | `CallStackReader` | Optional stack trace provider for enriched error reporting. |
@@ -99,9 +82,7 @@ options.server_info = "my-service-runtime";
 options.args = {"--port=8080"};
 options.libs = {"my-http-framework/1.2.3"};
 
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent(options);
 ```
 
 ### Using the Global Agent
@@ -148,9 +129,7 @@ setenv("PINPOINT_CPP_CONFIG_FILE", "/tmp/pinpoint-config.yaml", 0);
 setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-web-demo", 0);
 setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
 
-if (!pinpoint::StartAgent()) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent();
 auto agent = pinpoint::GlobalAgent();
 ```
 
@@ -168,33 +147,9 @@ There are three overloads:
 - `Agent::NewSpan(operation, rpc_point, TraceContextReader& reader)` — continues a transaction when upstream trace headers are present. Falls back to a new transaction if headers are missing.
 - `Agent::NewSpan(operation, rpc_point, method, TraceContextReader& reader)` — same, plus the HTTP method, so the `Http.Server.ExcludeMethod` filter can apply. Prefer this one in HTTP servers.
 
-### Example: HTTP Server Handler
-
-```cpp
-void handleRequest(const httplib::Request& req, httplib::Response& res) {
-    auto agent = pinpoint::GlobalAgent();
-
-    // 1. A HeaderReader is also a TraceContextReader — one object does both
-    HttpHeaderReader reader(req.headers);
-
-    // 2. Create span (continues trace if headers exist, otherwise starts new)
-    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
-
-    // 3. Record request details
-    span->SetRemoteAddress(req.remote_addr);
-    span->SetEndPoint(req.get_header_value("Host"));
-    span->RecordHeader(pinpoint::HTTP_REQUEST, reader);
-
-    // ... process request ...
-
-    // 4. Record response details
-    span->SetStatusCode(res.status);
-    span->SetUrlStat(req.matched_route, req.method, res.status);
-
-    // 5. End span — MUST be called on all code paths
-    span->EndSpan();
-}
-```
+A `HeaderReader` is also a `TraceContextReader`, so one object serves both the
+context extraction and the header recording. See [§8](#8-http-request-tracing)
+for a complete server handler.
 
 ### Setting Span Properties
 
@@ -231,18 +186,10 @@ if (!sampled) {
 
 ### Thread-Local Storage for Span Context
 
-Use TLS when span access is needed by nested helpers, so the span does not have to
-be threaded through every function signature:
-
-```cpp
-thread_local pinpoint::SpanPtr current_span;
-
-void set_span_context(pinpoint::SpanPtr span) { current_span = span; }
-pinpoint::SpanPtr get_span_context() { return current_span; }
-```
-
-A span is single-threaded ([§6.1](#61-a-span-is-single-threaded)), so a
-thread-local is a natural fit — but clear it when the request ends.
+A `thread_local pinpoint::SpanPtr` lets nested helpers reach the span without
+threading it through every signature. A span is single-threaded
+([§6.1](#61-a-span-is-single-threaded)), so a thread-local is a natural fit —
+but clear it when the request ends (see the wrapper in [§8](#8-http-request-tracing)).
 
 ---
 
@@ -271,29 +218,17 @@ span->EndSpan();
 Nest events to reflect the call hierarchy:
 
 ```cpp
-auto span = agent->NewSpan("MyService", "/api/endpoint");
-
-// Level 1
-auto processRequest = span->NewSpanEvent("processRequest");
+auto processRequest = span->NewSpanEvent("processRequest");   // level 1
 {
-    // Level 2
-    auto validate = span->NewSpanEvent("validateInput");
-    validateInput();
-    validate->EndEvent();
-
-    // Level 2
-    auto businessLogic = span->NewSpanEvent("businessLogic");
+    auto businessLogic = span->NewSpanEvent("businessLogic"); // level 2
     {
-        // Level 3
-        auto query = span->NewSpanEvent("queryDatabase");
+        auto query = span->NewSpanEvent("queryDatabase");     // level 3
         queryDatabase();
         query->EndEvent();
     }
     businessLogic->EndEvent();
 }
 processRequest->EndEvent();
-
-span->EndSpan();
 ```
 
 ### SpanEvent Properties
@@ -312,42 +247,22 @@ span_event->SetStartTime(start_time);
 span_event->EndEvent();
 ```
 
-### Getting the Current Span Event
-
-```cpp
-auto span_event = span->GetSpanEvent();
-if (span_event) {
-    span_event->SetOperationName("customOperation");
-    span_event->SetServiceType(pinpoint::SERVICE_TYPE_REDIS);
-}
-```
+`span->GetSpanEvent()` returns the innermost active event when you need it
+without threading the handle through — see [§6.6](#66-getspanevent-returns-the-innermost-active-event).
 
 ### RAII Helper: `helper::ScopedSpanEvent`
 
-The `helper::ScopedSpanEvent` class automatically calls `EndEvent()` on the event when it goes out of scope, preventing dangling events:
+`helper::ScopedSpanEvent` calls `EndEvent()` when it goes out of scope — including
+on an exception — so events can never dangle. Access the underlying `SpanEvent`
+through `operator->` or `value()`:
 
 ```cpp
-#include "pinpoint/tracer.h"
-
-void processRequest(pinpoint::SpanPtr span) {
-    // Automatically ends when 'guard' goes out of scope
-    pinpoint::helper::ScopedSpanEvent guard(span, "processRequest");
-
-    // Access the underlying SpanEvent via operator-> or value()
-    guard->SetDestination("backend-service");
-    guard->SetEndPoint("localhost:9000");
-
-    // No need to call EndEvent() — destructor handles it
-}
-
-// With a custom service type
 void queryDatabase(pinpoint::SpanPtr span) {
     pinpoint::helper::ScopedSpanEvent guard(span, "SQL_SELECT", pinpoint::SERVICE_TYPE_MYSQL_QUERY);
     guard->SetEndPoint("mysql-server:3306");
     guard->SetDestination("user_database");
 
-    // Even if an exception is thrown, EndEvent() is called
-    database->execute("SELECT * FROM users");
+    database->execute("SELECT * FROM users");   // no EndEvent() needed
 }
 ```
 
@@ -569,18 +484,12 @@ pinpoint::HEADER_HOST              // "Pinpoint-Host"
 
 ### Server Side: Extracting Context
 
-When receiving a request, pass a `TraceContextReader` to `NewSpan()` to continue the trace:
+When receiving a request, pass a `TraceContextReader` to `NewSpan()`; it extracts
+the upstream context if present and starts a new trace otherwise:
 
 ```cpp
-void handleRequest(const httplib::Request& req) {
-    HttpHeaderReader reader(req.headers);
-    auto agent = pinpoint::GlobalAgent();
-
-    // NewSpan automatically extracts context if present
-    auto span = agent->NewSpan("Server", req.path, req.method, reader);
-    // ...
-    span->EndSpan();
-}
+HttpHeaderReader reader(req.headers);
+auto span = agent->NewSpan("Server", req.path, req.method, reader);
 ```
 
 ### Client Side: Injecting Context
@@ -725,51 +634,28 @@ Database, cache, and other backend calls are represented as span events with app
 ### Tracing SQL Queries
 
 ```cpp
-void executeQuery(pinpoint::SpanPtr span, const std::string& sql) {
+void executeQuery(pinpoint::SpanPtr span,
+                  const std::string& sql,
+                  const std::vector<std::string>& params) {
     auto db_event = span->NewSpanEvent("SQL_SELECT");
-
     db_event->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
     db_event->SetEndPoint("mysql-server:3306");
     db_event->SetDestination("user_database");
-
-    try {
-        auto result = database->execute(sql);
-        db_event->SetSqlQuery(sql, {});  // record SQL without sensitive data
-
-    } catch (const std::exception& e) {
-        db_event->SetError("SQL_ERROR", e.what());
-    }
-
-    db_event->EndEvent();
-}
-```
-
-### Tracing Parameterized Queries
-
-```cpp
-void executeParameterizedQuery(pinpoint::SpanPtr span,
-                               const std::string& sql,
-                               const std::vector<std::string>& params) {
-    auto db_event = span->NewSpanEvent("SQL_INSERT");
-    db_event->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
-    db_event->SetEndPoint("localhost:3306");
-    db_event->SetDestination("test_db");
 
     try {
         auto stmt = session->sql(sql);
         for (const auto& param : params) {
             stmt.bind(param);
         }
-        auto result = stmt.execute();
+        stmt.execute();
 
-        // When Sql.TraceBindValue is true, SetSqlQuery formats and joins these values.
-        // Sanitize sensitive data before recording it.
-        std::vector<pinpoint::SqlBindValue> bind_values(
-            params.begin(), params.end());
+        // Pass {} to record the SQL text alone. Sanitize bind values first:
+        // with Sql.TraceBindValue on, SetSqlQuery formats and joins them.
+        std::vector<pinpoint::SqlBindValue> bind_values(params.begin(), params.end());
         db_event->SetSqlQuery(sql, bind_values);
 
     } catch (const std::exception& e) {
-        db_event->SetError("DB_ERROR", e.what());
+        db_event->SetError("SQL_ERROR", e.what());
     }
 
     db_event->EndEvent();
@@ -863,35 +749,28 @@ void handleRequest() {
         processRequest(span);
         span->SetStatusCode(200);
 
-    } catch (const DatabaseException& e) {
-        span->SetError("DatabaseError", e.what());
-        span->SetStatusCode(500);
-
     } catch (const ValidationException& e) {
         span->SetError("ValidationError", e.what());
         span->SetStatusCode(400);
 
     } catch (const std::exception& e) {
+        // Record the stack on a span event; SetError on the span marks the
+        // transaction as failed.
         CppTraceCallStackReader stack_reader;
         span->SetError("UnexpectedError", e.what());
         auto error_event = span->NewSpanEvent("unexpected_error");
         error_event->SetError("UnexpectedError", e.what(), stack_reader);
         error_event->EndEvent();
         span->SetStatusCode(500);
-
-    } catch (...) {
-        span->SetError("UnknownError", "An unknown error occurred");
-        span->SetStatusCode(500);
     }
 
-    // Always end the span
-    span->EndSpan();
+    span->EndSpan();   // on every path
 }
 ```
 
-**Tips**:
-- Record errors at the granularity that is useful — often on the specific span event representing the failed operation.
-- Always end the span event and span so the failure appears at a precise time in the timeline.
+Record errors at the granularity that is useful — often on the specific span
+event representing the failed operation — and end that event and the span so the
+failure lands at a precise point in the timeline.
 
 ---
 
@@ -905,24 +784,18 @@ Since `SpanPtr` is a shared pointer, you can hand it off to a worker thread — 
 long as the original thread never touches it again ([§6.1](#61-a-span-is-single-threaded)):
 
 ```cpp
-void outgoingRequest(pinpoint::SpanPtr span) {
-    auto se = span->NewSpanEvent("outgoingRequest_thread");
-    se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_FUNC);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    se->EndEvent();
-}
-
 void asyncWithThread(const httplib::Request& req, httplib::Response& res) {
     auto agent = pinpoint::GlobalAgent();
     auto span = agent->NewSpan("AsyncHandler", req.path);
 
-    std::thread t([span]() {
-        outgoingRequest(span);
+    std::thread t([span]() {          // thread B owns the span from here on
+        auto se = span->NewSpanEvent("outgoingRequest_thread");
+        se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_FUNC);
+        outgoingRequest();
+        se->EndEvent();
         span->EndSpan();
     });
-    t.detach();
+    t.detach();                       // thread A never touches the span again
 }
 ```
 
@@ -944,12 +817,10 @@ void safeAsyncOperation() {
             auto event = async_span->NewSpanEvent("work");
             performWork();
             event->EndEvent();
-            async_span->EndSpan();
-
         } catch (const std::exception& e) {
             async_span->SetError("AsyncError", e.what());
-            async_span->EndSpan();
         }
+        async_span->EndSpan();
     }).detach();
 
     span->EndSpan();  // main request finishes immediately
@@ -961,94 +832,61 @@ void safeAsyncOperation() {
 - Each async span must be **ended exactly once**.
 - Ensure the original span outlives any span events created on it.
 - For long-running worker loops, create a **new span per iteration** rather than keeping a single span open indefinitely.
-- Use `shared_ptr` semantics to manage span lifetime across threads.
 
 ---
 
 ## 12. Sampling Policy
 
-### Why Sampling?
+Tracing every request of every service costs overhead, bandwidth and storage.
+Sampling collects a representative subset instead.
 
-In microservice architectures, a single request traverses multiple services, generating numerous spans. Tracing every request can create significant system overhead, generate massive data volumes, and burden collector and storage systems. Transaction sampling selectively collects trace data from only a subset of transactions, minimizing overhead while still providing enough data to understand system health, identify bottlenecks, and detect anomalies.
-
-### Key Concepts
-
-- **New Transaction**: A transaction without a parent trace context — the root span of a trace.
-- **Continue Transaction**: A transaction that continues from a parent span via distributed tracing headers.
-- **Sampled**: The transaction will be fully traced and sent to the collector.
-- **Unsampled**: The transaction will not be traced (minimal overhead, no data sent).
-
-### Head-based Sampling
-
-The Pinpoint C++ Agent uses **head-based sampling**, where the sampling decision is made when the **root span** (first span of a trace) is created. This decision is then propagated to all downstream services via trace context headers, ensuring the entire distributed trace is either collected or discarded as a whole — no partial traces.
+The agent uses **head-based sampling**: the decision is made when the **root
+span** is created and propagated to all downstream services in the trace context
+headers, so a distributed trace is collected or discarded as a whole — never
+partially. A **new transaction** has no parent context; a **continue
+transaction** arrives with a `Pinpoint-TraceID` header and follows the parent's
+decision.
 
 ### Sampling Decision Flow
 
-When `NewSpan()` is called, the agent follows these steps in order:
-
-1. **Agent enabled check** — if disabled, a no-op span is returned.
-2. **URL filtering** — if the URL matches an exclusion pattern, a no-op span is returned.
-3. **Method filtering** — if the HTTP method is excluded, a no-op span is returned.
-4. **Parent sampling** — if the parent explicitly said "don't sample" (header `Pinpoint-Sampled: s0`), an unsampled span is returned. The child's own sampling configuration is ignored.
-5. **Trace context check**:
-   - If `Pinpoint-TraceID` header exists → **continue transaction** — apply continue-transaction sampling logic.
-   - If `Pinpoint-TraceID` header does not exist → **new transaction** — apply the configured sampling rate.
+`NewSpan()` decides in this order:
 
 | Condition | Transaction Type | Result |
 |---|---|---|
 | Agent disabled | — | NoopSpan (no tracing) |
 | URL excluded | — | NoopSpan (no tracing) |
 | Method excluded | — | NoopSpan (no tracing) |
-| Parent says `s0` | Continue | UnsampledSpan (follows parent) |
-| No trace ID in headers | New | Apply `isNewSampled()` logic |
-| Trace ID exists in headers | Continue | Apply `isContinueSampled()` logic |
+| Parent says `Pinpoint-Sampled: s0` | Continue | UnsampledSpan — the child's own configuration is ignored |
+| No trace ID in headers | New | Apply the configured sampler |
+| Trace ID in headers | Continue | Sampled by default, subject to `ContinueThroughput` |
 
 ### Sampler Types
 
-The agent supports three sampling strategies. The choice depends on your traffic volume and monitoring objectives. All of them are configured under `Sampling.*` — see the [Configuration Guide](config.md#sampling-configuration) for the keys, ranges and ready-made profiles.
+All three are configured under `Sampling.*` — see the
+[Configuration Guide](config.md#sampling-configuration) for keys and ranges.
 
-#### 1. CounterSampler (Constant Rate)
-
-Samples 1 out of every N transactions using an atomic counter. Simple and predictable.
-
-- `CounterRate: 1` — sample **every** transaction (for development/debugging).
-- `CounterRate: 10` — sample **1 in 10** transactions (10%).
-- `CounterRate: 0` — sample **no** transactions (effectively disables tracing).
-
-#### 2. PercentSampler (Deterministic)
-
-Samples a configured percentage of transactions using an atomic counter. The sampling decision is deterministic for a given call sequence while maintaining the configured percentage over time.
-
-- `PercentRate: 100` — sample all transactions.
-- `PercentRate: 10.0` — deterministically sample approximately 10% of transactions.
-- Range: clamped to `[0.01, 100]`.
-
-#### 3. ThroughputLimitTraceSampler (Adaptive / Throughput-based)
-
-Wraps a base sampler (Counter or Percent) with per-second rate limiters. This is the most production-friendly option for high-traffic environments, as it dynamically caps the volume of collected traces regardless of traffic spikes.
-
-The sampler applies two stages of filtering for **new transactions**: first the base sampler decides, then the rate limiter caps the throughput. For **continue transactions**, only the rate limiter applies (continue transactions follow the parent's decision by default).
-
-- `NewThroughput` — maximum new transactions sampled per second. `0` = unlimited.
-- `ContinueThroughput` — maximum continue transactions sampled per second. `0` = unlimited.
-
-The throughput limiter is automatically enabled when either value is greater than 0.
-
-### Distributed Tracing Behavior
-
-In a distributed system, sampling decisions flow from the root service to all downstream services:
-
-- The **root service** (no parent trace context) makes the initial sampling decision based on its configured sampler.
-- **Downstream services** receiving a request with a trace ID will **continue** the transaction. By default, continue transactions are always sampled; when `Sampling.ContinueThroughput` is set they are subject to the continue throughput limiter.
-- If the parent explicitly marks the trace as unsampled (`Pinpoint-Sampled: s0`), all downstream services will skip sampling regardless of their own configuration.
+- **CounterSampler** (`Type: COUNTER`) — samples 1 out of every N transactions
+  with an atomic counter. `CounterRate: 1` samples everything (development),
+  `10` samples 10%, `0` samples nothing.
+- **PercentSampler** (`Type: PERCENT`) — samples a configured percentage,
+  deterministic for a given call sequence. `PercentRate` is clamped to
+  `[0.01, 100]`.
+- **Throughput limiting** — wraps whichever base sampler is configured with
+  per-second caps, enabled automatically when `NewThroughput` or
+  `ContinueThroughput` is greater than `0` (`0` = unlimited). New transactions
+  pass the base sampler first and then the limiter; continue transactions face
+  only the limiter. This is the production-friendly option: it caps trace volume
+  regardless of traffic spikes.
 
 ### Sampling Best Practices
 
-- **Balance is key**: too low a rate risks missing critical issues; too high a rate incurs performance overhead and storage costs.
-- **Let the root service control sampling**: continue transactions automatically follow the parent's decision.
-- **Use throughput limiting in production**: it protects the collector and storage from traffic spikes.
-- **Check `span->IsSampled()` before expensive work**: skip heavy data collection (e.g., large payloads, detailed annotations) for unsampled traces to minimize overhead.
-- **Don't set parent sampling to `s0` unless intentional**: this suppresses tracing for the entire downstream call chain.
+- **Let the root service control sampling** — continue transactions follow the
+  parent, and a `s0` decision suppresses the entire downstream call chain.
+- **Use throughput limiting in production** — it protects the collector and
+  storage from traffic spikes.
+- **Check `span->IsSampled()` before expensive work** — skip heavy data
+  collection (large payloads, detailed annotations) on unsampled traces, but
+  never skip `InjectContext()` ([§6.11](#611-noop-and-unsampled-spans-are-deliberately-silent)).
 
 ---
 

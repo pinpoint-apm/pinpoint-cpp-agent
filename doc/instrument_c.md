@@ -119,9 +119,7 @@ pt_agent_shutdown(agent);
 pt_agent_destroy(agent);          /* drop the dead handle */
 
 /* ... later: a NEW agent; the old one cannot restart */
-if (!pt_start_agent(NULL)) {
-    fprintf(stderr, "failed to restart the pinpoint agent: check the agent log\n");
-}
+pt_start_agent(NULL);
 agent = pt_global_agent();
 ```
 
@@ -134,9 +132,7 @@ const char* libs[] = {"my-http-framework/1.2.3"};
 
 pt_agent_options_t opts = pt_agent_options_new();
 pt_agent_options_set_server_metadata(opts, "my-service-runtime", args, 1, libs, 1);
-if (!pt_start_agent(opts)) {
-    fprintf(stderr, "failed to start the pinpoint agent: check the agent log\n");
-}
+pt_start_agent(opts);
 pt_agent_options_free(opts);
 ```
 
@@ -458,7 +454,7 @@ Translate the C++ names in it as follows:
 | [§6.10](instrument.md#610-clock-and-setstarttime-caveats) clock | `SetStartTime(time_point)` | `pt_span_set_start_time_ms()` |
 | [§6.11](instrument.md#611-noop-and-unsampled-spans-are-deliberately-silent) noop spans | `IsSampled()` | `pt_span_is_sampled()` |
 
-Three rules are specific to the C handle model:
+Four rules are specific to the C handle model:
 
 - **Destroy last, and only after every derived handle is out of use.** A span
   destroyed without `pt_span_end()` is never sent; `pt_span_destroy()` only
@@ -510,26 +506,11 @@ pt_span_t span = pt_agent_new_span_with_reader(
 ### Client side — injecting outgoing context
 
 Context is injected through the span event that represents the outbound call:
-
-```c
-/* Span event representing the outbound call */
-pt_span_event_t se = pt_span_new_event(span, "HTTP_CLIENT");
-
-/* Build outbound headers, then inject trace context */
-my_headers_t out = my_headers_create();
-
-pt_context_writer_t writer = { &out, my_hdr_set };
-pt_span_event_inject_context(se, &writer);
-
-/* Issue the outgoing request with out headers */
-my_http_get(client, "/downstream", &out);
-my_headers_destroy(&out);
-
-pt_span_event_end(se);
-pt_span_event_destroy(se);
-```
-
-See [`example/tutorial_c.c`](../example/tutorial_c.c) for a complete client-side injection example using `hlc_mutable_headers_t`.
+build the outbound header map, wrap it in a `pt_context_writer_t`, and call
+`pt_span_event_inject_context(se, &writer)` before issuing the request. A full
+example is in [Outbound HTTP client call](#outbound-http-client-call) below, and
+a working one using `hlc_mutable_headers_t` in
+[`example/tutorial_c.c`](../example/tutorial_c.c).
 
 ---
 

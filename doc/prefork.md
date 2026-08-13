@@ -25,9 +25,8 @@ down its own agent, fully independent of its siblings:
 
 - The worker's first gRPC use is also the process's first `grpc_init`, so no
   gRPC state ever crosses a `fork()` boundary (no `pthread_atfork` handlers or
-  `GRPC_ENABLE_FORK_SUPPORT` needed). This assumes the **host application**
-  also refrains from using gRPC before forking; if it does, the host must
-  arrange its own gRPC fork handling.
+  `GRPC_ENABLE_FORK_SUPPORT` needed). If the **host application** itself uses
+  gRPC before forking, it must arrange its own gRPC fork handling.
 - Each worker registers as its own agent instance with a process-unique agent
   id and its own start time.
 - Each worker owns its own sender threads, queues, caches and collector
@@ -55,12 +54,9 @@ agent use in the child.
 
 Each worker appears as one agent instance in the Pinpoint UI. Identity is
 resolved inside the worker, when `StartAgent()` runs: the agent id is always
-auto-generated (a fresh UUIDv7 per worker process), so sibling workers can
-never collide — but the id changes on worker restart.
-
-`AgentName` provides the human-readable display label. It need not be unique:
-all workers can share one configured name (the auto-generated id already
-tells the instances apart).
+auto-generated (a fresh UUIDv7 per worker process), so sibling workers can never
+collide — but the id changes on worker restart. `AgentName` is the human-readable
+display label and need not be unique; all workers can share one.
 
 ## Logging
 
@@ -92,11 +88,10 @@ workers start fresh agents.
 
 ## Worker shutdown
 
-Call `Shutdown()` / `pt_agent_shutdown()` from the worker's exit hook. It
-drains queued spans to the collector (bounded wait) and joins the agent's
-threads, returning within a 3-second deadline even if the collector is
-unresponsive. A worker killed without the hook simply loses whatever was
-still queued in that process.
+Call `Shutdown()` / `pt_agent_shutdown()` from the worker's exit hook. It drains
+queued spans (bounded wait) and joins the agent's threads, returning within a
+3-second deadline even if the collector is unresponsive. A worker killed without
+the hook simply loses whatever was still queued in that process.
 
 ## Operational notes
 
@@ -161,8 +156,7 @@ static void ngx_http_pinpoint_exit_process(ngx_cycle_t *cycle) {
 Notes:
 
 - `pt_start_agent()` returns quickly (registration is asynchronous), so worker
-  startup latency is unaffected; `pt_agent_is_enabled()` flips to non-zero once
-  the collector accepted the registration.
+  startup latency is unaffected.
 - nginx binary upgrades (`SIGUSR2`) `exec()` a fresh master, and config reloads
   (`SIGHUP`) fork fresh workers — both are covered by the per-worker lifecycle
   above with no extra handling.

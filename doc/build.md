@@ -250,9 +250,9 @@ cmake --build --preset profiling
 ```
 
 The equivalent manual option is `-DBUILD_PROFILING=ON` with a `Release` or
-`RelWithDebInfo` build. It retains debug symbols and frame pointers and disables
-sibling-call optimization. Coverage and profiling instrumentation cannot be
-enabled together. Bazel users can build the same configuration with:
+`RelWithDebInfo` build: debug symbols and frame pointers are retained and
+sibling-call optimization is disabled. It cannot be combined with
+`BUILD_COVERAGE`. The Bazel equivalent is:
 
 ```bash
 bazel build --config=profiling //test/e2e/...
@@ -337,10 +337,8 @@ cmake --build build/coverage --target coverage
 ## Sanitizers (ASan, TSan, UBSan)
 
 Runtime sanitizers instrument the binaries to catch bugs while the tests run.
-They are especially valuable for this agent, which is concurrency-heavy
-(background gRPC workers, lock-free queues and caches), crosses a C FFI boundary,
-and parses untrusted input (HTTP headers, SQL). Both build systems expose the same
-three sanitizers; enable one at a time (ASan and TSan are mutually exclusive).
+Both build systems expose the same three; enable one at a time (ASan and TSan
+are mutually exclusive).
 
 | Sanitizer | Catches | CMake preset | Bazel config |
 |---|---|---|---|
@@ -360,23 +358,22 @@ ctest --preset ubsan          # the matching UBSAN_OPTIONS is applied automatica
 ```
 
 Swap `ubsan` for `asan` or `tsan`. Each preset writes to its own `build/<preset>/`
-directory. These are `Debug` builds with examples off. ASan uses static linkage
-to prevent ODR reports when gRPC's generated UPB globals appear in more than one
-shared dependency; TSan and UBSan retain shared linkage. Compiles run at the
-generator's default job count like every other preset, but the presets pin links
-to a two-job Ninja pool (`CMAKE_JOB_POOLS`): each instrumented test executable
-links the whole static gRPC/Abseil/BoringSSL closure, and letting a machine-wide
-`-j` reach the link phase peaks past 17 GiB and gets `ld` OOM-killed. The
-instrumented integration test uses a fifteen-minute timeout and scales its
-collector waits for the same environment. Like `coverage` and `profiling`, they
-build dependencies from source with FetchContent.
+directory, builds dependencies from source with FetchContent, and is a `Debug`
+build with examples off. Notable details:
 
-The `ubsan` preset selects Clang because GCC 13 cannot compile the vendored
-Abseil hash policy constexpr expressions when undefined-behavior instrumentation
-is enabled. On Linux, sanitizer links select compiler-rt explicitly; install
-`libclang-rt-dev` when using Clang outside the provided image. The equivalent
-manual configuration uses the `SANITIZE` cache variable, which accepts
-`address`, `thread`, or `undefined` and cannot be combined with
+- ASan uses static linkage to prevent ODR reports on gRPC's generated UPB
+  globals; TSan and UBSan retain shared linkage.
+- Links are pinned to a two-job Ninja pool (`CMAKE_JOB_POOLS`): each instrumented
+  test executable links the whole static gRPC/Abseil/BoringSSL closure, and a
+  machine-wide `-j` at the link phase peaks past 17 GiB and gets `ld` OOM-killed.
+- The `ubsan` preset selects Clang because GCC 13 cannot compile the vendored
+  Abseil hash policy constexpr expressions under UB instrumentation. On Linux,
+  sanitizer links select compiler-rt explicitly; install `libclang-rt-dev` when
+  using Clang outside the provided image.
+- The instrumented integration test uses a fifteen-minute timeout.
+
+The equivalent manual configuration uses the `SANITIZE` cache variable, which
+accepts `address`, `thread`, or `undefined` and cannot be combined with
 `BUILD_COVERAGE` or `BUILD_PROFILING`:
 
 ```bash
@@ -396,13 +393,12 @@ bazel test --config=ubsan //test:all
 ```
 
 > Bazel applies `--copt` to every C++ target in the graph, so the first sanitized
-> run rebuilds the external dependencies (gRPC, Abseil, ...) with instrumentation.
-> This is intentional — it gives TSan a fully instrumented view and avoids false
-> positives at library boundaries — but makes the first build slow. Bazel ASan
-> uses static linking to avoid duplicate generated UPB globals, while Bazel UBSan
-> selects Clang and compiler-rt for the same GCC 13 and ARM64 constraints as the
-> CMake preset. Sanitizer tests use a fifteen-minute timeout; the TSan suppression
-> file is included in the test runfiles.
+> run rebuilds the external dependencies (gRPC, Abseil, ...) with instrumentation
+> — intentional, since it avoids false positives at library boundaries, but slow.
+> Bazel ASan uses static linking to avoid duplicate generated UPB globals; Bazel
+> UBSan selects Clang and compiler-rt for the same constraints as the CMake
+> preset. Sanitizer tests use a fifteen-minute timeout; the TSan suppression file
+> is included in the test runfiles.
 
 ### Suppressing third-party false positives
 
@@ -410,13 +406,11 @@ Point the relevant `*_OPTIONS` variable at a suppression file when a dependency
 trips a sanitizer, e.g. `ASAN_OPTIONS=suppressions=my.supp ctest --preset asan`.
 
 Suppressions are rarely needed because sanitized builds are whole-program
-instrumented: with `SANITIZE` set, gRPC, Protobuf, Abseil, yaml-cpp and fmt are
-rebuilt from source with the same instrumentation, and both `ctest --preset asan`
-and `bazel test --config=asan` pass the full suite. The cost is the first build:
-it compiles the whole dependency graph. Mixing instrumented and prebuilt
-libraries is not supported — the instrumented copies of inline C++ symbols are
-weak and would be interposed into the uninstrumented libraries, producing
-unsuppressible `use-after-poison` false positives inside gRPC internals.
+instrumented: gRPC, Protobuf, Abseil, yaml-cpp and fmt are all rebuilt with the
+same instrumentation, and the full suite passes under both build systems. Mixing
+instrumented and prebuilt libraries is not supported — the weak instrumented
+copies of inline C++ symbols get interposed into the uninstrumented libraries,
+producing unsuppressible `use-after-poison` false positives inside gRPC.
 
 ---
 
@@ -455,24 +449,12 @@ PINPOINT_CPP_COLLECTOR_HOST=collector.example.com \
   --build-dir ./build/default/test/e2e
 ```
 
-The test script supports several modes and options:
+`run_e2e.sh` also takes `--load-mode`, `--load-duration` and `--load-concurrency`
+to append a load phase after the correctness checks. `e2e.sh` drives load alone,
+selecting the endpoint set with `-m` (`stress`, `db-all`, `grpc-all`, `full`),
+the duration with `-d` and the concurrency with `-c`:
 
 ```bash
-# Run correctness checks followed by 120 seconds of mixed load
-./test/e2e/run_e2e.sh \
-  --build-dir ./build/default/test/e2e \
-  --load-mode mixed --load-duration 120 --load-concurrency 20
-
-# Stress test with 50 concurrent workers
-./test/e2e/e2e.sh -m stress -d 300
-
-# Test SQL tracing endpoints only
-./test/e2e/e2e.sh -m db-all -d 60 -c 5
-
-# Test gRPC endpoints only
-./test/e2e/e2e.sh -m grpc-all -d 60 -c 10
-
-# Full test (HTTP + gRPC + SQL)
 ./test/e2e/e2e.sh -m full -d 180 -c 15
 ```
 
@@ -490,12 +472,6 @@ The `default` preset downloads and builds all dependencies from source on the
 first run. Use the `vcpkg` preset for managed packages, or `debug-cached` to
 reuse a shared FetchContent cache. After the first configure, `ccache` also
 speeds up subsequent rebuilds.
-
-### Migrating from `FORCE_FETCHCONTENT=ON`
-
-`FORCE_FETCHCONTENT` has been removed. FetchContent is now automatic whenever
-the vcpkg toolchain is not active; no clean environment or search-path changes
-are needed.
 
 ### macOS linker warnings
 

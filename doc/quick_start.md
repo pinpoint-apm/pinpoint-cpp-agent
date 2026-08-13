@@ -6,8 +6,6 @@ This guide helps you get started with the Pinpoint C++ Agent (`pinpoint-cpp-agen
 
 ## Prerequisites
 
-Before you begin, ensure you have:
-
 - **Pinpoint Collector**: Version 2.4.0 or higher
 - **C++ Compiler**: Supporting C++17 or higher
 - **Build System**: CMake 3.21+ or Bazel 7.0+
@@ -65,11 +63,11 @@ To build the agent itself from source, see the [Build Guide](build.md).
 
 ## Configuration
 
-You can configure the agent using a YAML file, environment variables, or an inline configuration string. Environment variables take the highest priority, followed by the YAML file, then built-in defaults.
+Configure the agent with a YAML file, environment variables, or an inline YAML
+string. Environment variables take the highest priority, then the YAML file, then
+built-in defaults.
 
 ### Option 1: Configuration File
-
-Create a `pinpoint-config.yaml` file:
 
 ```yaml
 ApplicationName: "MyApplication"
@@ -77,9 +75,6 @@ AgentName: "my-agent-name"  # Optional label; the agent id is always auto-genera
 
 Collector:
   Host: "localhost"          # Your Pinpoint collector host
-  AgentPort: 9991            # gRPC agent port
-  SpanPort: 9993             # gRPC span port
-  StatPort: 9992             # gRPC stat port
 
 Sampling:
   Type: "COUNTER"
@@ -89,28 +84,16 @@ Log:
   Level: "info"              # trace, debug, info, warn, error
 ```
 
-Set the configuration file path in your application:
+Point the agent at it with `AgentOptions::config_file_path` before calling
+`StartAgent()`:
 
 ```cpp
-#include "httplib.h"
-#include "pinpoint/tracer.h"
-
-int main() {
-    pinpoint::AgentOptions options;
-    options.config_file_path = "/path/to/pinpoint-config.yaml";
-    if (!pinpoint::StartAgent(options)) {
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    auto agent = pinpoint::GlobalAgent();
-
-    httplib::Server server;
-    server.Get("/users", on_users);   // your traced handler
-    server.listen("0.0.0.0", 8090);   // returns when the server stops
-
-    agent->Shutdown();
-    return 0;
-}
+pinpoint::AgentOptions options;
+options.config_file_path = "/path/to/pinpoint-config.yaml";
+pinpoint::StartAgent(options);
 ```
+
+Or set `PINPOINT_CPP_CONFIG_FILE` in the environment.
 
 ### Option 2: Environment Variables
 
@@ -123,15 +106,7 @@ export PINPOINT_CPP_COLLECTOR_SPAN_PORT="9993"
 export PINPOINT_CPP_COLLECTOR_STAT_PORT="9992"
 ```
 
-You can also point to a config file via environment variable:
-
-```bash
-export PINPOINT_CPP_CONFIG_FILE="/path/to/pinpoint-config.yaml"
-```
-
 ### Option 3: Configuration String
-
-Pass configuration directly as a YAML string:
 
 ```cpp
 pinpoint::AgentOptions options;
@@ -140,9 +115,7 @@ options.config_yaml = R"(
     Collector:
       Host: "localhost"
 )";
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent(options);
 ```
 
 For a complete list of configuration options, see the [Configuration Guide](config.md).
@@ -151,9 +124,9 @@ For a complete list of configuration options, see the [Configuration Guide](conf
 
 ## Basic Usage
 
-The examples below instrument an HTTP server built with
+The example below instruments an HTTP server built with
 [cpp-httplib](https://github.com/yhirose/cpp-httplib), the same library the
-programs in `example/` use. The typical workflow follows five steps:
+programs in `example/` use. The workflow is five steps:
 
 1. **Initialize** — call `StartAgent()` with your configuration at application startup, in the process that records spans (for pre-fork servers: in each worker, see the [Pre-fork Integration Guide](prefork.md)).
 2. **Trace** — use `Agent::NewSpan` at the top of each request handler to start tracing a transaction.
@@ -168,104 +141,10 @@ programs in `example/` use. The typical workflow follows five steps:
 > [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup) and
 > [Stopping and Resuming the Agent](trouble_shooting.md#stopping-and-resuming-the-agent).
 
-### Initialize the Agent
-
-```cpp
-#include "httplib.h"
-#include "pinpoint/tracer.h"
-
-int main() {
-    pinpoint::AgentOptions options;
-    options.config_file_path = "pinpoint-config.yaml";
-    if (!pinpoint::StartAgent(options)) {
-        // A configuration or setup failure — the application keeps running
-        // untraced. The cause is in the agent log.
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-    }
-    auto agent = pinpoint::GlobalAgent();
-
-    httplib::Server server;
-    server.Get("/users", on_users);
-    server.listen("0.0.0.0", 8090);
-
-    agent->Shutdown();
-    return 0;
-}
-```
-
-### Create a Span
-
-A **Span** represents a single operation or request — for an HTTP server, one
-inbound request. `HttpHeaderReader` comes from
+`HttpHeaderReader` comes from
 [`example/http_trace_context.h`](../example/http_trace_context.h); it implements
-`pinpoint::HeaderReader`, which also serves as the `TraceContextReader` that
-joins this span to the caller's trace:
-
-```cpp
-#include "http_trace_context.h"
-
-void on_users(const httplib::Request& req, httplib::Response& res) {
-    auto agent = pinpoint::GlobalAgent();
-
-    // Extract the trace context from the inbound request headers
-    HttpHeaderReader reader(req.headers);
-    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
-
-    span->SetRemoteAddress(req.remote_addr);
-    span->SetEndPoint(req.get_header_value("Host"));
-
-    // Your business logic here
-    res.set_content("hello, users!", "text/plain");
-    // httplib fills res.status only after the handler returns (it is still -1
-    // here), so set it explicitly before recording it on the span.
-    res.status = 200;
-
-    span->SetStatusCode(res.status);
-    span->EndSpan();
-}
-```
-
-### Create Span Events
-
-**SpanEvents** represent sub-operations within a span:
-
-```cpp
-void on_users(const httplib::Request& req, httplib::Response& res) {
-    auto agent = pinpoint::GlobalAgent();
-    HttpHeaderReader reader(req.headers);
-    auto span = agent->NewSpan("HTTP Server", req.path, req.method, reader);
-
-    // Create a span event for a database operation
-    auto dbEvent = span->NewSpanEvent("queryDatabase");
-    dbEvent->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
-    dbEvent->SetDestination("mysql-db");
-    dbEvent->SetEndPoint("localhost:3306");
-
-    // Execute database query ...
-
-    dbEvent->EndEvent();
-
-    res.set_content(R"({"users":[]})", "application/json");
-    res.status = 200;  // see note above: res.status is -1 until the handler returns
-    span->SetStatusCode(res.status);
-    span->EndSpan();
-}
-```
-
-### Add Annotations
-
-Annotations provide additional metadata:
-
-```cpp
-span->SetAnnotation(pinpoint::ANNOTATION_API, "getUserInfo");
-span->SetAnnotation(pinpoint::ANNOTATION_HTTP_STATUS_CODE, 200);
-```
-
----
-
-## Running Your First Traced Application
-
-Here is a complete minimal HTTP server, traced end to end:
+`pinpoint::HeaderReader`, which also serves as the `TraceContextReader` that joins
+a span to the caller's trace.
 
 ```cpp
 #include <cstdlib>   // setenv
@@ -318,25 +197,24 @@ int main() {
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 0);
 
     if (!pinpoint::StartAgent()) {
+        // A configuration or setup failure — the application keeps running
+        // untraced. The cause is in the agent log.
         std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
     }
     auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
     server.Get("/users", on_users);
-
-    std::cout << "listening on 0.0.0.0:8090" << std::endl;
     server.listen("0.0.0.0", 8090);   // blocks until the server stops
 
-    std::cout << "Shutting down agent..." << std::endl;
     agent->Shutdown();
-
     return 0;
 }
 ```
 
 See the full working program — several handlers, nested span events, URL
-statistics — in [`example/http_server.cpp`](../example/http_server.cpp).
+statistics — in [`example/http_server.cpp`](../example/http_server.cpp), and SQL
+tracing in [`example/tutorial.cpp`](../example/tutorial.cpp).
 
 ### Build and Run
 
@@ -358,36 +236,6 @@ The request appears in the Pinpoint Web UI as a transaction for
 
 ---
 
-## Example: Database Query
-
-This example demonstrates tracing database operations (e.g., MySQL). It shows how to create `SpanEvent`s for SQL queries.
-
-See full example: [`example/tutorial.cpp`](../example/tutorial.cpp)
-
-```cpp
-// Helper to trace DB operations
-void trace_db_op(pinpoint::SpanPtr span,
-                 const std::string& query,
-                 std::function<void()> func) {
-    auto se = span->NewSpanEvent("mysql_query");
-    se->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
-    se->SetEndPoint("localhost:33060");
-    se->SetDestination("test_db");
-    se->SetSqlQuery(query, {});  // Record the query string (sanitize in production)
-
-    try {
-        func();  // Execute actual DB operation
-    } catch (const std::exception& e) {
-        se->SetError(e.what());  // Record error if any
-        throw;
-    }
-
-    se->EndEvent();
-}
-```
-
----
-
 ## Next Steps
 
 1. **Learn Advanced Instrumentation**: the [Instrumentation Guide](instrument.md)
@@ -399,8 +247,6 @@ void trace_db_op(pinpoint::SpanPtr span,
    `tutorial_c.c`).
 3. **Configure Advanced Options**: see the [Configuration Guide](config.md) for
    sampling strategies, URL statistics, SQL bind values, logging, and stats.
-4. **Monitor Your Application**: use the Pinpoint Web UI to view service maps,
-   analyze transaction traces, and identify bottlenecks.
 
 ---
 

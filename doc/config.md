@@ -8,11 +8,11 @@ This document is a consolidated reference for all configuration options availabl
 
 The agent merges configuration from three sources. **Later sources override earlier ones:**
 
-1. **Default Values** (lowest priority) — built-in defaults applied by `init_config`.
-2. **YAML Configuration File** — loaded via `PINPOINT_CPP_CONFIG_FILE` env var, `read_config_from_file()`, or `set_config_string()`.
-3. **Environment Variables** (highest priority) — `PINPOINT_CPP_*` variables applied last by `load_env_config`.
+1. **Default Values** (lowest priority) — built-in defaults.
+2. **YAML Configuration File** — a config file path or an inline YAML string.
+3. **Environment Variables** (highest priority) — `PINPOINT_CPP_*` variables applied last.
 
-During startup (`make_config`), the agent loads defaults → reads the optional config file → parses YAML → applies environment overrides → normalises values → initialises logging.
+Values are normalised (clamped into range) after the merge.
 
 > **Environment variables are read only while building the initial configuration** (before the agent exists). Once the agent is running, a [hot reload](#configuration-hot-reload) rebuilds the config from the file **without re-reading environment variables** — so a value provided only via an env var is fixed for the agent's lifetime and cannot change at runtime.
 
@@ -23,9 +23,7 @@ Create a `pinpoint-config.yaml` file and set its path:
 ```cpp
 pinpoint::AgentOptions options;
 options.config_file_path = "/path/to/pinpoint-config.yaml";
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent(options);
 ```
 
 Or set the path via environment variable:
@@ -76,9 +74,7 @@ options.config_yaml = R"(
       Type: "PERCENT"
       PercentRate: 10
 )";
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent(options);
 ```
 
 ---
@@ -280,18 +276,21 @@ Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are d
 
 ## Configuration Hot Reload
 
-The agent supports hot-reloading a subset of configuration options from the YAML configuration file **without restarting the application**. Hot reload is **disabled by default**: set `EnableConfigFileWatcher: true` (or `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER=true`) to opt in. When the agent starts with a valid config file path and the watcher enabled, a background file-watcher thread monitors the file for changes (polling every 1 second). When a modification is detected the agent automatically re-reads the file, validates the new configuration, and applies it.
+With `EnableConfigFileWatcher: true` (or `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER=true`;
+default `false`) the agent hot-reloads a subset of options from the YAML config
+file **without restarting the application**. A background thread compares the
+file's last-write timestamp once per second; on a change the file is re-read,
+validated and applied. Environment variables are **not** re-read.
 
-### How It Works
-
-1. The file-watcher compares the file's last-write timestamp once per second.
-2. When a change is detected, the file is re-read and parsed into a new `Config` object (environment variables are **not** re-read).
-3. Non-reloadable fields (identity, collector endpoint, gRPC transport) are copied from the currently running configuration into the new one, so they can never change at runtime. If the file changed any of them, `isReloadable` detects the mismatch and a **warning** is logged while the running values are kept.
-4. The agent atomically swaps the internal configuration and rebuilds **only the components whose backing configuration actually changed**.
+Requirements: the watcher toggle must be on (it is evaluated once at agent start
+and cannot itself be reloaded), and a config file path must be set — via
+`AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE` — and exist at
+startup. Inline YAML strings are not watched.
 
 ### Reloadable vs. Non-Reloadable Options
 
-Not all configuration options can be changed at runtime. Options that define the agent's identity or gRPC connection targets are **non-reloadable** — changing them requires an application restart.
+Options that define the agent's identity or its gRPC connection targets are
+**non-reloadable** — changing them requires an application restart.
 
 | Category | Options | Reloadable? |
 |---|---|---|
@@ -304,28 +303,26 @@ Not all configuration options can be changed at runtime. Options that define the
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue` | **Yes** |
 
-The reload is **always applied**. If the new config file changes a non-reloadable field, that change is ignored — the running value is retained — and a warning is logged. Any reloadable changes in the same file still take effect.
+The reload is **always applied**: a change to a non-reloadable field is ignored —
+the running value is kept — and logged as a warning, while reloadable changes in
+the same file still take effect.
 
-### Components Rebuilt on Reload
+### What Is Rebuilt
 
-On reload, each of the following internal components is rebuilt **only if its backing configuration changed**; components whose configuration is unchanged keep running as-is (preserving any accumulated state, such as throughput-sampler counters):
+Each component is rebuilt **only if its backing configuration changed**, so
+untouched components keep running as-is with their accumulated state (such as
+throughput-sampler counters): the sampler (`Sampling.*`), the URL filter
+(`ExcludeUrl`), the method filter (`ExcludeMethod`), the status error codes
+(`StatusCodeErrors`), and the header recorders (any server- or client-side
+header/cookie list).
 
-- **Sampler** — rebuilt when any `Sampling.*` value changes.
-- **HTTP URL filter** — rebuilt when `Http.Server.ExcludeUrl` changes.
-- **HTTP method filter** — rebuilt when `Http.Server.ExcludeMethod` changes.
-- **HTTP status error codes** — rebuilt when `Http.Server.StatusCodeErrors` changes.
-- **HTTP header recorders** — rebuilt when any server- or client-side header/cookie recording list changes.
+Rebuilt components are published together in a **single atomic swap**, so
+in-flight requests can never observe a half-applied reload. Each span snapshots
+the configuration once at creation, so per-span options (e.g. `Span.MaxEventDepth`,
+`Span.EventChunkSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue`) take effect for
+spans **created after** the reload; an already-open span keeps its values.
 
-All rebuilt components are published together in a **single atomic swap** (thread-safe), so in-flight requests are not affected and can never observe a half-applied reload. Each span also snapshots the configuration once at creation, so reloadable per-span options (e.g. `Span.MaxEventDepth`, `Span.EventChunkSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue`) take effect for spans **created after** the reload; a span that is already open keeps the values it started with.
-
-### Requirements
-
-- **`EnableConfigFileWatcher: true`** must be set (in the config file or via `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER`); the watcher is disabled by default. The toggle is evaluated once at agent start and cannot itself be changed by a reload.
-- A **YAML configuration file path** must be set (via `AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE`). Hot reload does not apply to environment variables or inline config strings.
-- The config file must exist at startup; the watcher is not started otherwise.
-
-Editing `Sampling.PercentRate` in a watched file, for example, is picked up within
-~1 second and logged as `agent config reloaded`; a warning is logged instead if
+A successful reload logs `agent config reloaded`; a warning is logged instead if
 the file cannot be parsed or changed a non-reloadable field.
 
 ---
@@ -411,17 +408,8 @@ EnableCallstackTrace: false
 
 ## Best Practices
 
-### Development
-- `CounterRate: 1` — sample every transaction.
-- `Log.Level: "debug"` — verbose output for diagnostics.
-- `EnableCallstackTrace: true` — capture stack on errors.
-- Record all headers (`["HEADERS-ALL"]`) for troubleshooting (non-production only).
-
-### Production
-- Use `PERCENT` sampling or throughput limits to control overhead.
-- `Log.Level: "warn"` or `"error"`.
-- Exclude health-check / monitoring endpoints via `ExcludeUrl`.
-- Record only the headers you need; avoid sensitive ones (`Authorization`, `Cookie`).
+The two examples above are the starting points for development and production.
+Beyond them:
 
 ### High-Traffic
 - Prefer explicit `NewThroughput` / `ContinueThroughput` TPS caps.

@@ -44,41 +44,12 @@ failure and `pt_agent_is_enabled()` returns `1` only after registration.
 
 ## Disabling the Agent
 
-If the agent causes disruptions or problems to a production application, you can disable it without removing the agent from your code.
-
-### Config Option
-
-Disable the agent by setting the config option **`Enable`** to `false`.
-
-**Option 1: YAML Configuration File**
+To disable tracing without removing the agent from your code, set `Enable` to
+`false` — in the config file, or as `PINPOINT_CPP_ENABLE=false` in the
+environment:
 
 ```yaml
 Enable: false
-```
-
-**Option 2: Environment Variable**
-
-```bash
-export PINPOINT_CPP_ENABLE="false"
-```
-
-Or programmatically in your application:
-
-```cpp
-#include <cstdlib>
-
-int main() {
-    setenv("PINPOINT_CPP_ENABLE", "false", 1);
-
-    // Tracing is disabled: StartAgent() returns false, no agent is
-    // installed, and no tracing data is collected. Do NOT print a
-    // "failed to start" message for this return value — see the note below.
-    pinpoint::StartAgent();
-
-    // Your application code
-
-    return 0;
-}
 ```
 
 > **A deliberate disable returns `false`, just like a failure.** `Enable: false`
@@ -90,8 +61,6 @@ int main() {
 > does not read as an error (e.g. "pinpoint tracing is not active"). Everything
 > else keeps working: `GlobalAgent()` hands out the noop agent and every tracing
 > call is a safe no-op.
-
-For more information, refer to the [Configuration Guide](config.md).
 
 ---
 
@@ -113,9 +82,7 @@ the noop agent when none is installed), and both calls are thread-safe.
 pinpoint::GlobalAgent()->Shutdown();
 
 // ... later: resume tracing with a NEW agent ...
-if (!pinpoint::StartAgent(options)) {
-    std::cerr << "failed to restart the pinpoint agent: check the agent log" << std::endl;
-}
+pinpoint::StartAgent(options);
 auto agent = pinpoint::GlobalAgent();
 ```
 
@@ -157,89 +124,27 @@ new `pt_start_agent()`; see the [C API guide](instrument_c.md#3-bootstrapping-th
 
 ## Logging
 
-Pinpoint C++ Agent outputs logs related to agent operation (configuration, gRPC, span collection, etc.). These logs are essential for the debugging process.
-
-### Log Output
-
-By default, logs are written to **stdout/stderr**. You can configure file-based logging with automatic rotation:
+The agent logs configuration, gRPC, and span collection activity. By default it
+writes to stdout/stderr; file logging rotates automatically. Levels are `trace`,
+`debug`, `info` (default), `warn`, `error` — see the
+[Configuration Guide](config.md) for the keys and their environment variables.
 
 ```yaml
 Log:
-  Level: "info"
+  Level: "debug"
   FilePath: "/var/log/pinpoint/agent.log"
   MaxFileSize: 10  # MB — rotates when this size is reached
-```
 
-### Log Levels
-
-Use the config option **`Log.Level`** to increase the granularity of the agent's logging.
-
-Available log levels (from most to least verbose):
-
-- `trace` — very detailed debugging information
-- `debug` — debugging information
-- `info` — informational messages (default)
-- `warn` — warning messages
-- `error` — error messages only
-
-**Setting Log Level via YAML:**
-
-```yaml
-Log:
-  Level: "debug"
-```
-
-**Setting Log Level via Environment Variable:**
-
-```bash
-export PINPOINT_CPP_LOG_LEVEL="debug"
-```
-
-For more information, refer to the [Configuration Guide](config.md).
-
-### Viewing Logs
-
-**Console Output:**
-
-```bash
-# Run your application and capture logs
-./my_application 2>&1 | tee app.log
-```
-
-**File Output:**
-
-```bash
-# Tail the log file in real time
-tail -f /var/log/pinpoint/agent.log
-
-# Search for errors
-grep -i error /var/log/pinpoint/agent.log
-```
-
-### Debug Mode
-
-For troubleshooting, enable debug mode to see detailed information:
-
-```yaml
-Enable: true
-
-Log:
-  Level: "debug"
-  FilePath: "/tmp/pinpoint-debug.log"
-
-# Enable call stack traces on errors
-EnableCallstackTrace: true
+EnableCallstackTrace: true   # stack traces on recorded errors
 ```
 
 ---
 
 ## Common Issues
 
-### Issue 1: Agent Not Starting
+### Agent Not Starting
 
-**Symptoms:**
-- Application runs but no data appears in Pinpoint UI.
-- Agent initialization fails.
+**Symptoms:** the application runs but no data appears in the Pinpoint UI.
 
 **Diagnosis:** read the agent log — see [Verifying Agent Startup](#verifying-agent-startup)
 for what each entry means and why `Enable()` right after `StartAgent()` diagnoses
@@ -248,68 +153,52 @@ rather than a broken configuration; check that first.
 
 **Solutions:**
 
-1. **Check Configuration** — ensure required fields are set:
-
-   ```yaml
-   ApplicationName: "MyApp"  # Required
-   Collector:
-     Host: "localhost"       # Required
-   ```
-
-2. **Verify Collector Connection** — see [Connection Issues](#connection-issues).
-
-3. **Check Permissions** — ensure the log directory is writable:
-
-   ```bash
-   ls -la /var/log/pinpoint/
-   ```
-
+1. **Check the required fields** — `ApplicationName` and `Collector.Host` must be set.
+2. **Verify collector connectivity** — see [Cannot Connect to Collector](#cannot-connect-to-collector).
+3. **Check permissions** — the log directory must be writable.
 4. **Check the *resolved* configuration** — with `Log.Level: "debug"` the agent
-   logs the configuration it actually resolved at startup, after the file,
-   environment variables and defaults have been merged. This is the fastest way
-   to catch a setting that never took effect: a typo'd YAML key, a stale
-   `PINPOINT_CPP_*` variable in the environment overriding the file, or a value
-   clamped into range. Compare it against what you intended, not against your
-   config file.
+   logs the configuration it actually resolved, after the file, environment
+   variables and defaults have been merged. This is the fastest way to catch a
+   setting that never took effect: a typo'd YAML key, a stale `PINPOINT_CPP_*`
+   variable overriding the file, or a value clamped into range.
 
-### Issue 2: No Data in Pinpoint UI
+### No Data in the Pinpoint UI
 
-**Symptoms:**
-- Agent starts successfully but no traces appear.
+The agent starts successfully but no traces appear.
 
-**Solutions:**
-
-1. **Check Sampling Configuration:**
+1. **Check sampling** — `Sampling.CounterRate: 1` samples every transaction.
+2. **Verify spans are ended** — `EndSpan()` must run on every code path; a span
+   released without it is never sent.
+3. **Check excluded URLs and methods** — a filter match produces a noop span, so
+   the transaction disappears entirely. Temporarily clear both:
 
    ```yaml
-   Sampling:
-     Type: "COUNTER"
-     CounterRate: 1  # Sample all transactions
+   Http:
+     Server:
+       ExcludeUrl: []
+       ExcludeMethod: []
    ```
 
-2. **Verify Spans Are Ended** — `EndSpan()` must run on every code path; a span
-   released without it is never sent. See
-   [Missing Spans](#missing-spans) below.
+   `ExcludeMethod` only applies when the span is created with the
+   `NewSpan(operation, rpc_point, method, reader)` overload.
+4. **Check `ApplicationName`** is set.
+5. **Wait for collection** — data may take 5–10 seconds to appear.
+6. **Check the collector side** — the agent log can show a clean `AgentInfo sent`
+   and spans still be rejected downstream. Review the Pinpoint **collector** logs
+   before assuming the agent is at fault.
 
-3. **Check Application Name** — `ApplicationName` must be set in configuration.
+### Incomplete Traces
 
-4. **Wait for Collection** — data may take 5–10 seconds to appear depending on the stat collection interval.
+1. **Raise the limits** — `Span.MaxEventDepth` / `Span.MaxEventSequence`
+   (`-1` = unlimited).
+2. **Check event ending** — every `NewSpanEvent()` needs a matching `EndEvent()`
+   on the returned event.
 
-5. **Check the collector side** — the agent log can show a clean `AgentInfo sent`
-   and spans still be rejected downstream. Review the Pinpoint **collector**
-   logs for errors before assuming the agent is at fault.
+### High Memory Usage
 
-### Issue 3: High Memory Usage
-
-**Symptoms:**
-- Application memory usage grows over time.
-
-**Solutions:**
-
-1. **Always End Spans** — an unended span holds its buffered events and
+1. **Always end spans** — an unended span holds its buffered events and
    exceptions for as long as it lives. Use the RAII guard shown in
    [instrument.md §6.2](instrument.md#62-end-exactly-once-and-record-before-ending).
-
 2. **Reduce buffer sizes and collection limits:**
 
    ```yaml
@@ -322,12 +211,7 @@ rather than a broken configuration; check that first.
      UrlStatLimit: 512         # Reduce from default 1024
    ```
 
-### Issue 4: High CPU Usage or Slow Responses
-
-**Symptoms:**
-- Application CPU usage or request latency is higher than expected.
-
-**Solutions:**
+### High CPU Usage or Slow Responses
 
 1. **Reduce sampling**, or cap it by throughput:
 
@@ -339,114 +223,27 @@ rather than a broken configuration; check that first.
      ContinueThroughput: 200
    ```
 
-2. **Disable what you do not read:**
-
-   ```yaml
-   Http:
-     CollectUrlStat: false
-
-   Sql:
-     EnableSqlStats: false
-     TraceBindValue: false
-
-   Stat:
-     Enable: false
-   ```
-
+2. **Disable what you do not read** — `Http.CollectUrlStat`, `Sql.EnableSqlStats`,
+   `Sql.TraceBindValue`, `Stat.Enable`.
 3. **Reduce the work per transaction** — trace only the paths that matter, prefer
-   fewer coarser span events over very fine-grained ones, and cut the volume and
-   size of annotations and recorded headers (`HEADERS-ALL` is a debugging
-   setting, not a production one).
-
-4. **Skip expensive collection on unsampled spans:**
-
-   ```cpp
-   if (span->IsSampled()) {
-       collectDetailedMetrics();
-   }
-   ```
-
----
-
-## Connection Issues
+   fewer coarser span events, and cut the volume and size of annotations and
+   recorded headers (`HEADERS-ALL` is a debugging setting, not a production one).
+4. **Skip expensive collection on unsampled spans** — guard it with
+   `span->IsSampled()`.
 
 ### Cannot Connect to Collector
 
-**Symptoms:**
-- Logs show connection errors or gRPC errors.
+Logs show connection or gRPC errors.
 
-**Diagnosis:**
-
-1. **Check Collector Address:**
-
-   ```yaml
-   Collector:
-     Host: "pinpoint-collector.example.com"
-     AgentPort: 9991
-     SpanPort: 9993
-     StatPort: 9992
-   ```
-
-2. **Test Network Connectivity** to each gRPC port (9991–9993), e.g.
-   `telnet pinpoint-collector.example.com 9991` and `nslookup pinpoint-collector.example.com`.
-
-**Solutions:**
-
-1. Update collector address to the correct hostname/IP.
-2. Configure firewall rules to allow traffic on gRPC ports (9991–9993).
-3. Check network policies (e.g., in Kubernetes).
-4. Verify the collector is running and healthy.
-
----
-
-## Data Collection Issues
-
-### Missing Spans
-
-1. **Check Sampling Rate** — temporarily set to sample all:
-
-   ```yaml
-   Sampling:
-     CounterRate: 1
-   ```
-
-2. **Verify Span Ending** — ensure `EndSpan()` is called on every code path.
-
-3. **Check Excluded URLs and Methods** — temporarily remove both exclusions; a
-   filter match produces a noop span, so the transaction disappears entirely:
-
-   ```yaml
-   Http:
-     Server:
-       ExcludeUrl: []
-       ExcludeMethod: []
-   ```
-
-   Note that `ExcludeMethod` only applies when the span is created with the
-   `NewSpan(operation, rpc_point, method, reader)` overload — without the method
-   argument there is nothing to match.
-
-### Incomplete Traces
-
-1. **Increase Limits:**
-
-   ```yaml
-   Span:
-     MaxEventDepth: -1      # Unlimited
-     MaxEventSequence: -1   # Unlimited
-   ```
-
-2. **Check Event Ending** — ensure every `NewSpanEvent()` has a matching `EndEvent()` on the returned event:
-
-   ```cpp
-   auto se = span->NewSpanEvent("operation");
-   // ... do work ...
-   se->EndEvent();  // Must call this!
-   ```
+1. Verify `Collector.Host` and the three ports (`AgentPort` 9991, `StatPort`
+   9992, `SpanPort` 9993) point at a running, healthy collector.
+2. Test connectivity to each port, e.g. `telnet <host> 9991`, `nslookup <host>`.
+3. Allow gRPC ports 9991–9993 through firewalls and network policies
+   (e.g. Kubernetes).
 
 ### Missing Distributed Tracing
 
-1. **Verify Context Propagation** — both inject and extract must be implemented:
+1. **Verify context propagation** — both inject and extract must be implemented:
 
    ```cpp
    // Server: Extract context
@@ -459,22 +256,15 @@ rather than a broken configuration; check that first.
    se->InjectContext(writer);
    ```
 
-2. **Check Headers** — verify Pinpoint headers are present in the request:
-
-   ```cpp
-   std::cout << "Trace ID: "
-             << req.get_header_value("Pinpoint-TraceID") << std::endl;
-   ```
-
-3. **Check for Header Stripping** — gateways or proxies may strip or rewrite Pinpoint headers.
-
-4. **Check your reader's header lookup is case-insensitive** — the agent asks
+2. **Check the headers** are present on the inbound request
+   (`req.get_header_value("Pinpoint-TraceID")`), and that no gateway or proxy
+   strips or rewrites them.
+3. **Check your reader's header lookup is case-insensitive** — the agent asks
    your `TraceContextReader` for the canonical spellings (`Pinpoint-TraceID`,
-   `Pinpoint-Sampled`, ...), but HTTP header names are case-insensitive on the
-   wire and proxies and HTTP/2 clients routinely re-case them (`pinpoint-traceid`).
-   A reader backed by a case-sensitive container silently finds nothing and every
-   request looks like a new transaction. `httplib::Headers` is case-insensitive by
-   default, which is why
+   `Pinpoint-Sampled`, ...), but proxies and HTTP/2 clients routinely re-case
+   them (`pinpoint-traceid`). A reader backed by a case-sensitive container
+   silently finds nothing and every request looks like a new transaction.
+   `httplib::Headers` is case-insensitive by default, which is why
    [`example/http_trace_context.h`](../example/http_trace_context.h) works as
    written; a plain `std::map<std::string, std::string>` does **not** — normalise
    the key inside your `Get()`.
