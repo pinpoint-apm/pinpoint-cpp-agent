@@ -437,6 +437,31 @@ void expect_common_metadata(const RpcMetadata& metadata, bool expect_socket_id,
 
 class AgentIntegrationTest : public ::testing::Test {
 protected:
+    // Agent configuration knobs consumed by config(). Tests that need
+    // non-default values assign cfg_ fields before calling StartStack().
+    struct Cfg {
+        std::string_view sampling_type{"COUNTER"};
+        std::string_view uid_version{"v3"};
+        std::string_view service_name;
+        std::string_view api_key;
+        int sampling_counter_rate{1};
+        double sampling_percent_rate{100.0};
+        int sampling_new_throughput{0};
+        int sampling_continue_throughput{0};
+        bool url_stat_enable_trim_path{false};
+        int url_stat_trim_path_depth{1};
+        int max_event_depth{16};
+        int max_event_sequence{128};
+        int span_queue_size{128};
+        int span_batch_max_concurrent_requests{2};
+        bool enable_sql_stats{true};
+        bool trace_bind_value{true};
+        bool stat_enable{true};
+        int max_bind_args_size{2048};
+        std::string_view server_record_request_headers{"[x-request-id]"};
+        std::string_view server_exclude_urls{"[/excluded/**]"};
+    };
+
     void StartCollector() {
         ASSERT_TRUE(collector_.Start());
         ASSERT_GT(collector_.agent_port(), 0);
@@ -444,7 +469,9 @@ protected:
         ASSERT_GT(collector_.stat_port(), 0);
     }
 
-    void SetUp() override {
+    // Starts the collector and an agent built from cfg_, then blocks until
+    // the agent is registered and enabled.
+    void StartStack() {
         ASSERT_NO_FATAL_FAILURE(StartCollector());
 
         // Collector-side fault injection must be armed before the agent
@@ -493,12 +520,12 @@ protected:
             << "Enable: true\n"
             << "ApplicationName: cpp-agent-it\n"
             << "AgentName: cpp-it-agent-name\n"
-            << "UidVersion: " << UidVersion() << "\n";
-        if (!ServiceName().empty()) {
-            yaml << "ServiceName: " << ServiceName() << "\n";
+            << "UidVersion: " << cfg_.uid_version << "\n";
+        if (!cfg_.service_name.empty()) {
+            yaml << "ServiceName: " << cfg_.service_name << "\n";
         }
-        if (!ApiKey().empty()) {
-            yaml << "ApiKey: " << ApiKey() << "\n";
+        if (!cfg_.api_key.empty()) {
+            yaml << "ApiKey: " << cfg_.api_key << "\n";
         }
         yaml
             << "IsContainer: true\n"
@@ -518,34 +545,33 @@ protected:
             << "    Size: 4\n"
             << "    FlushIntervalMs: 50\n"
             << "    CollectDeadlineMs: 20\n"
-            << "    MaxConcurrentRequests: " << SpanBatchMaxConcurrentRequests() << "\n"
+            << "    MaxConcurrentRequests: " << cfg_.span_batch_max_concurrent_requests << "\n"
             << "Stat:\n"
-            << "  Enable: " << (StatEnable() ? "true" : "false") << "\n"
+            << "  Enable: " << (cfg_.stat_enable ? "true" : "false") << "\n"
             << "  BatchCount: 1\n"
             << "  BatchInterval: 1000\n"
             << "Sampling:\n"
-            << "  Type: " << SamplingType() << "\n"
-            << "  CounterRate: " << SamplingCounterRate() << "\n"
-            << "  PercentRate: " << SamplingPercentRate() << "\n"
-            << "  NewThroughput: " << SamplingNewThroughput() << "\n"
-            << "  ContinueThroughput: " << SamplingContinueThroughput() << "\n"
+            << "  Type: " << cfg_.sampling_type << "\n"
+            << "  CounterRate: " << cfg_.sampling_counter_rate << "\n"
+            << "  PercentRate: " << cfg_.sampling_percent_rate << "\n"
+            << "  NewThroughput: " << cfg_.sampling_new_throughput << "\n"
+            << "  ContinueThroughput: " << cfg_.sampling_continue_throughput << "\n"
             << "Span:\n"
-            << "  QueueSize: " << SpanQueueSize() << "\n"
-            << "  MaxEventDepth: " << MaxEventDepth() << "\n"
-            << "  MaxEventSequence: " << MaxEventSequence() << "\n"
+            << "  QueueSize: " << cfg_.span_queue_size << "\n"
+            << "  MaxEventDepth: " << cfg_.max_event_depth << "\n"
+            << "  MaxEventSequence: " << cfg_.max_event_sequence << "\n"
             << "  EventChunkSize: 2\n"
             << "Http:\n"
             << "  CollectUrlStat: true\n"
             << "  UrlStatEnableTrimPath: "
-            << (UrlStatEnableTrimPath() ? "true" : "false") << "\n"
-            << "  UrlStatTrimPathDepth: " << UrlStatTrimPathDepth() << "\n"
-            << "  UrlStatMethodPrefix: "
-            << (UrlStatMethodPrefix() ? "true" : "false") << "\n"
+            << (cfg_.url_stat_enable_trim_path ? "true" : "false") << "\n"
+            << "  UrlStatTrimPathDepth: " << cfg_.url_stat_trim_path_depth << "\n"
+            << "  UrlStatMethodPrefix: true\n"
             << "  Server:\n"
             << "    StatusCodeErrors: [4xx, 5xx]\n"
-            << "    ExcludeUrl: " << ServerExcludeUrls() << "\n"
+            << "    ExcludeUrl: " << cfg_.server_exclude_urls << "\n"
             << "    ExcludeMethod: [OPTIONS]\n"
-            << "    RecordRequestHeader: " << ServerRecordRequestHeaders() << "\n"
+            << "    RecordRequestHeader: " << cfg_.server_record_request_headers << "\n"
             << "    RecordRequestCookie: [session_id]\n"
             << "    RecordResponseHeader: [x-response-id]\n"
             << "  Client:\n"
@@ -553,37 +579,11 @@ protected:
             << "    RecordRequestCookie: [client_session]\n"
             << "    RecordResponseHeader: [x-client-response]\n"
             << "Sql:\n"
-            << "  EnableSqlStats: " << (EnableSqlStats() ? "true" : "false") << "\n"
+            << "  EnableSqlStats: " << (cfg_.enable_sql_stats ? "true" : "false") << "\n"
             << "  TraceBindValue: "
-            << (TraceBindValue() ? "true" : "false") << "\n"
-            << "  MaxBindArgsSize: " << MaxBindArgsSize() << "\n";
+            << (cfg_.trace_bind_value ? "true" : "false") << "\n"
+            << "  MaxBindArgsSize: " << cfg_.max_bind_args_size << "\n";
         return yaml.str();
-    }
-
-    virtual std::string_view SamplingType() const { return "COUNTER"; }
-    virtual std::string_view UidVersion() const { return "v3"; }
-    virtual std::string_view ServiceName() const { return ""; }
-    virtual std::string_view ApiKey() const { return ""; }
-    virtual int SamplingCounterRate() const { return 1; }
-    virtual double SamplingPercentRate() const { return 100.0; }
-    virtual int SamplingNewThroughput() const { return 0; }
-    virtual int SamplingContinueThroughput() const { return 0; }
-    virtual bool UrlStatEnableTrimPath() const { return false; }
-    virtual int UrlStatTrimPathDepth() const { return 1; }
-    virtual bool UrlStatMethodPrefix() const { return true; }
-    virtual int MaxEventDepth() const { return 16; }
-    virtual int MaxEventSequence() const { return 128; }
-    virtual int SpanQueueSize() const { return 128; }
-    virtual int SpanBatchMaxConcurrentRequests() const { return 2; }
-    virtual bool EnableSqlStats() const { return true; }
-    virtual bool TraceBindValue() const { return true; }
-    virtual bool StatEnable() const { return true; }
-    virtual int MaxBindArgsSize() const { return 2048; }
-    virtual std::string_view ServerRecordRequestHeaders() const {
-        return "[x-request-id]";
-    }
-    virtual std::string_view ServerExcludeUrls() const {
-        return server_exclude_urls_;
     }
 
     bool FlushUrlStatsUntil(std::string_view uri, int64_t expected_count) {
@@ -634,7 +634,7 @@ protected:
 
     virtual void ConfigureBeforeAgentStart() {}
 
-    std::string server_exclude_urls_{"[/excluded/**]"};
+    Cfg cfg_;
     MockCollector collector_;
     AgentPtr agent_;
     std::shared_ptr<AgentImpl> impl_;
@@ -655,37 +655,6 @@ protected:
     void ConfigureBeforeAgentStart() override {
         collector_.TimeoutNext(CollectorRpc::PingSession);
     }
-};
-
-class CApiIntegrationTest : public AgentIntegrationTest {
-protected:
-    std::string_view ServerRecordRequestHeaders() const override {
-        return "[HEADERS-ALL]";
-    }
-};
-
-class V4AgentIntegrationTest : public AgentIntegrationTest {
-protected:
-    std::string_view UidVersion() const override { return "v4"; }
-    std::string_view ServiceName() const override { return "cpp-it-service"; }
-    std::string_view ApiKey() const override { return "cpp-it-api-key"; }
-};
-
-class CounterSamplingIntegrationTest : public AgentIntegrationTest {
-protected:
-    int SamplingCounterRate() const override { return 3; }
-};
-
-class ThroughputSamplingIntegrationTest : public AgentIntegrationTest {
-protected:
-    int SamplingNewThroughput() const override { return 2; }
-    int SamplingContinueThroughput() const override { return 1; }
-};
-
-class UrlStatNormalizationIntegrationTest : public AgentIntegrationTest {
-protected:
-    bool UrlStatEnableTrimPath() const override { return true; }
-    int UrlStatTrimPathDepth() const override { return 2; }
 };
 
 class AgentInfoRetryIntegrationTest : public AgentIntegrationTest {
@@ -731,70 +700,9 @@ protected:
     }
 };
 
-// Span.QueueSize 8 keeps the sharded span queue at a single shard (strict
-// FIFO, see ShardedBoundedQueue::compute_shard_count), so the bounded
-// head-drop overflow policy is observable with a handful of spans while the
-// span endpoint is down.
-class SmallSpanQueueIntegrationTest : public AgentIntegrationTest {
-protected:
-    int SpanQueueSize() const override { return 8; }
-    // One worker-owned batch plus the eight-element queue can produce three
-    // sends after recovery. Keep permit backpressure out of this queue-policy
-    // test so sanitizer callback latency cannot discard the third batch.
-    int SpanBatchMaxConcurrentRequests() const override { return 3; }
-};
-
-class PercentSamplingIntegrationTest : public AgentIntegrationTest {
-protected:
-    std::string_view SamplingType() const override { return "PERCENT"; }
-    double SamplingPercentRate() const override { return 50.0; }
-};
-
-// Uses the smallest limits Config accepts (depth >= 2, sequence >= 4) so the
-// overflow paths are reachable with a handful of events.
-class EventLimitIntegrationTest : public AgentIntegrationTest {
-protected:
-    void SetUp() override {
-        AgentIntegrationTest::SetUp();
-        ASSERT_NE(impl_, nullptr);
-        ASSERT_EQ(impl_->getConfig()->span.max_event_depth, MaxEventDepth());
-        ASSERT_EQ(impl_->getConfig()->span.max_event_sequence,
-                  MaxEventSequence());
-    }
-
-    int MaxEventDepth() const override { return 2; }
-    int MaxEventSequence() const override { return 4; }
-};
-
-class SqlIdModeIntegrationTest : public AgentIntegrationTest {
-protected:
-    bool EnableSqlStats() const override { return false; }
-};
-
-class SqlBindValueDisabledIntegrationTest : public AgentIntegrationTest {
-protected:
-    bool TraceBindValue() const override { return false; }
-};
-
-// CounterRate 0 means "never sample a new trace"; continued traces bypass the
-// base sampler entirely, so they must still be recorded.
-class ZeroCounterSamplingIntegrationTest : public AgentIntegrationTest {
-protected:
-    int SamplingCounterRate() const override { return 0; }
-};
-
-class StatDisabledIntegrationTest : public AgentIntegrationTest {
-protected:
-    bool StatEnable() const override { return false; }
-};
-
-// Small enough that a handful of short bind values overflows the join limit.
-class SqlBindLimitIntegrationTest : public AgentIntegrationTest {
-protected:
-    int MaxBindArgsSize() const override { return 20; }
-};
-
 TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.pings.empty() && !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -831,7 +739,12 @@ TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
               "710;730");
 }
 
-TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
+TEST_F(AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
+    cfg_.uid_version = "v4";
+    cfg_.service_name = "cpp-it-service";
+    cfg_.api_key = "cpp-it-api-key";
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto root = agent_->NewSpan("v4.server", "/v4-root");
     ASSERT_TRUE(root->IsSampled());
     const auto trace_id = root->GetTraceId();
@@ -931,6 +844,8 @@ TEST_F(V4AgentIntegrationTest, SendsV4IdentityAcrossGrpcAndTracePropagation) {
 }
 
 TEST_F(PingFailureIntegrationTest, ReconnectsPingStreamAfterResponseError) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return snapshot.ping_streams.size() >= 2 &&
                !snapshot.pings.empty() &&
@@ -951,6 +866,8 @@ TEST_F(PingFailureIntegrationTest, ReconnectsPingStreamAfterResponseError) {
 }
 
 TEST_F(PingTimeoutIntegrationTest, RecyclesPingStreamWhenCollectorNeverResponds) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return snapshot.ping_streams.size() >= 2 &&
                has_result(snapshot, CollectorRpc::PingSession,
@@ -960,6 +877,8 @@ TEST_F(PingTimeoutIntegrationTest, RecyclesPingStreamWhenCollectorNeverResponds)
 }
 
 TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto root = agent_->NewSpan("http.server", "/orders/42");
     ASSERT_TRUE(root->IsSampled());
     const auto root_trace_id = root->GetTraceId();
@@ -1149,6 +1068,8 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
 }
 
 TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto active = agent_->NewSpan("active.request", "/active");
     ASSERT_TRUE(active->IsSampled());
 
@@ -1231,6 +1152,8 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
 }
 
 TEST_F(AgentIntegrationTest, FinalizesScopedAndOpenSpanEventsExactlyOnce) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("span.lifecycle", "/span-lifecycle");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -1271,6 +1194,8 @@ TEST_F(AgentIntegrationTest, FinalizesScopedAndOpenSpanEventsExactlyOnce) {
 
 TEST_F(AgentIntegrationTest,
        PreservesOutOfOrderEventsAndIgnoresPostFinishMutations) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("event.lifecycle", "/event-lifecycle");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -1359,6 +1284,8 @@ TEST_F(AgentIntegrationTest,
 }
 
 TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("http.helper.server", "/http-helper");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -1470,6 +1397,8 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
 }
 
 TEST_F(AgentIntegrationTest, CachesDeduplicateAndInvalidateCollectorMetadata) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr std::string_view api_key = "cache.shared.api";
     const auto api_default = impl_->cacheApi(api_key, API_TYPE_DEFAULT);
     const auto api_default_hit = impl_->cacheApi(api_key, API_TYPE_DEFAULT);
@@ -1578,6 +1507,8 @@ TEST_F(AgentIntegrationTest, CachesDeduplicateAndInvalidateCollectorMetadata) {
 }
 
 TEST_F(AgentIntegrationTest, ReportsResponseTimeAndRuntimeStatistics) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
@@ -1638,8 +1569,11 @@ TEST_F(AgentIntegrationTest, ReportsResponseTimeAndRuntimeStatistics) {
     EXPECT_GT(runtime_stat->totalthread().totalthreadcount(), 0);
 }
 
-TEST_F(CounterSamplingIntegrationTest,
+TEST_F(AgentIntegrationTest,
        AppliesCounterAndParentSamplingAndReportsDecisions) {
+    cfg_.sampling_counter_rate = 3;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
@@ -1688,8 +1622,12 @@ TEST_F(CounterSamplingIntegrationTest,
     EXPECT_EQ(count_spans_by_rpc(snapshot, "/sampling/parent-denied"), 0U);
 }
 
-TEST_F(ThroughputSamplingIntegrationTest,
+TEST_F(AgentIntegrationTest,
        EnforcesNewAndContinuationThroughputLimits) {
+    cfg_.sampling_new_throughput = 2;
+    cfg_.sampling_continue_throughput = 1;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
@@ -1729,8 +1667,12 @@ TEST_F(ThroughputSamplingIntegrationTest,
                           expected_continuation);
 }
 
-TEST_F(UrlStatNormalizationIntegrationTest,
+TEST_F(AgentIntegrationTest,
        NormalizesAndAggregatesUrlStatisticsAndFailures) {
+    cfg_.url_stat_enable_trim_path = true;
+    cfg_.url_stat_trim_path_depth = 2;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto success = agent_->NewSpan("url.stat.success", "/url-stat/success");
     ASSERT_TRUE(success->IsSampled());
     success->SetStartTime(std::chrono::system_clock::now() - 50ms);
@@ -1762,6 +1704,8 @@ TEST_F(UrlStatNormalizationIntegrationTest,
 }
 
 TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -1832,6 +1776,8 @@ TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
 }
 
 TEST_F(AgentIntegrationTest, DroppedSpanReleasesActiveRequestWithoutSendingSpan) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -1881,6 +1827,8 @@ TEST_F(AgentIntegrationTest, DroppedSpanReleasesActiveRequestWithoutSendingSpan)
 }
 
 TEST_F(AgentIntegrationTest, RetriesMetadataAfterGrpcAndApplicationErrors) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     collector_.FailNext(CollectorRpc::ApiMetadata,
                         grpc::StatusCode::UNAVAILABLE,
                         "metadata endpoint unavailable");
@@ -1913,6 +1861,8 @@ TEST_F(AgentIntegrationTest, RetriesMetadataAfterGrpcAndApplicationErrors) {
 }
 
 TEST_F(AgentIntegrationTest, TimesOutCommandRequestAndKeepsStreamUsable) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -1948,6 +1898,8 @@ TEST_F(AgentIntegrationTest, TimesOutCommandRequestAndKeepsStreamUsable) {
 }
 
 TEST_F(AgentIntegrationTest, ContinuesSendingAfterSpanRequestError) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     collector_.FailNext(CollectorRpc::SendSpanBatch,
                         grpc::StatusCode::INTERNAL,
                         "span batch rejected");
@@ -1973,6 +1925,8 @@ TEST_F(AgentIntegrationTest, ContinuesSendingAfterSpanRequestError) {
 }
 
 TEST_F(AgentIntegrationTest, ReconnectsAfterEndpointAndCommandStreamFailures) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.ping_streams.empty() &&
                !snapshot.command_streams_v2.empty();
@@ -2022,6 +1976,8 @@ TEST_F(AgentIntegrationTest, ReconnectsAfterEndpointAndCommandStreamFailures) {
 }
 
 TEST_F(AgentIntegrationTest, ReconnectsStatStreamAfterServerError) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.stat_streams.empty();
     }, kWaitTimeout));
@@ -2053,6 +2009,8 @@ TEST_F(AgentIntegrationTest, ReconnectsStatStreamAfterServerError) {
 }
 
 TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutStatStream) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.stat_streams.empty();
     }, kWaitTimeout));
@@ -2079,8 +2037,10 @@ TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutStatStream) {
 }
 
 TEST_F(AgentInfoRetryIntegrationTest, RetriesAgentRegistrationAfterInitialFailure) {
-    // SetUp already blocked until registration succeeded and the agent came
+    // StartStack() blocks until registration succeeded and the agent came
     // online, so by now the failed first attempt and its retry are on record.
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     const auto snapshot = collector_.snapshot();
     ASSERT_GE(snapshot.agent_infos.size(), 2U);
     EXPECT_EQ(snapshot.agent_infos[0].message.agentversion(),
@@ -2231,6 +2191,8 @@ TEST_F(CollectorOutageAtStartupIntegrationTest,
 
 TEST_F(AgentIntegrationTest,
        KeepsServingAndRecyclingQueuesThroughCollectorOutage) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     // Healthy baseline: tracing and the stat stream are live.
     {
         auto span = agent_->NewSpan("outage.before", "/collector-outage-before");
@@ -2337,8 +2299,19 @@ TEST_F(AgentIntegrationTest,
     EXPECT_TRUE(agent_->Enable());
 }
 
-TEST_F(SmallSpanQueueIntegrationTest,
+TEST_F(AgentIntegrationTest,
        HeadDropsOldestSpansWhileSpanEndpointIsDown) {
+    // Span.QueueSize 8 keeps the sharded span queue at a single shard (strict
+    // FIFO, see ShardedBoundedQueue::compute_shard_count), so the bounded
+    // head-drop overflow policy is observable with a handful of spans while
+    // the span endpoint is down.
+    cfg_.span_queue_size = 8;
+    // One worker-owned batch plus the eight-element queue can produce three
+    // sends after recovery. Keep permit backpressure out of this queue-policy
+    // test so sanitizer callback latency cannot discard the third batch.
+    cfg_.span_batch_max_concurrent_requests = 3;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     // Healthy baseline proves the span channel is connected before the
     // outage begins.
     {
@@ -2408,6 +2381,8 @@ TEST_F(SmallSpanQueueIntegrationTest,
 }
 
 TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     {
         auto span = agent_->NewSpan("shutdown.noop.before",
                                     "/shutdown-noop-before");
@@ -2460,6 +2435,8 @@ TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
 // half-starting an agent.
 
 TEST_F(AgentIntegrationTest, StartAfterShutdownIsRefusedAndKeepsServingNoopSpans) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     agent_->Shutdown();
     ASSERT_FALSE(agent_->Enable());
     const auto quiesced = collector_.snapshot();
@@ -2488,6 +2465,8 @@ TEST_F(AgentIntegrationTest, StartAfterShutdownIsRefusedAndKeepsServingNoopSpans
 }
 
 TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCycles) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr int kCycles = 3;
     for (int cycle = 1; cycle <= kCycles; ++cycle) {
         SCOPED_TRACE("cycle " + std::to_string(cycle));
@@ -2557,6 +2536,8 @@ TEST_F(AgentIntegrationTest, RecoversTracingAcrossRepeatedCreateStartShutdownCyc
 }
 
 TEST_F(AgentIntegrationTest, ReloadsConfigAndAppliesNewFilters) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     const auto infos_before = collector_.snapshot().agent_infos.size();
     ASSERT_GE(infos_before, 1U);
     {
@@ -2568,7 +2549,7 @@ TEST_F(AgentIntegrationTest, ReloadsConfigAndAppliesNewFilters) {
     // Rebuild the config from the updated sources and reload the live agent —
     // the same path the config-file watcher drives. A repeated StartAgent()
     // must NOT be a reload path: it leaves the running instance untouched.
-    server_exclude_urls_ = "[/excluded/**, /reloaded/**]";
+    cfg_.server_exclude_urls = "[/excluded/**, /reloaded/**]";
     auto reload_cfg = make_config(agent_options(), impl_->getConfig());
     ASSERT_NE(reload_cfg, nullptr);
     impl_->reloadConfig(reload_cfg);
@@ -2595,6 +2576,8 @@ TEST_F(AgentIntegrationTest, ReloadsConfigAndAppliesNewFilters) {
 }
 
 TEST_F(AgentIntegrationTest, RecordsUrlStatsForUnsampledSpan) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     MapCarrier inbound;
     inbound.Set(HEADER_SAMPLED, "s0");
     auto span = agent_->NewSpan("unsampled.server", "/unsampled-propagation", inbound);
@@ -2609,7 +2592,15 @@ TEST_F(AgentIntegrationTest, RecordsUrlStatsForUnsampledSpan) {
     EXPECT_EQ(totals.failed_count, 0);
 }
 
-TEST_F(EventLimitIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
+TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
+    // Uses the smallest limits Config accepts (depth >= 2, sequence >= 4) so
+    // the overflow paths are reachable with a handful of events.
+    cfg_.max_event_depth = 2;
+    cfg_.max_event_sequence = 4;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+    ASSERT_EQ(impl_->getConfig()->span.max_event_depth, 2);
+    ASSERT_EQ(impl_->getConfig()->span.max_event_sequence, 4);
+
     auto span = agent_->NewSpan("overflow.depth", "/overflow-depth");
     ASSERT_TRUE(span->IsSampled());
     const auto trace_id = span->GetTraceId();
@@ -2683,6 +2674,8 @@ TEST_F(EventLimitIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
 }
 
 TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeignContext) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     const std::array<std::string_view, 5> malformed{
         "missing-separators",
         "agent-only^123",
@@ -2747,6 +2740,8 @@ TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeig
 }
 
 TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr std::string_view raw_sql =
         "SELECT * FROM orders WHERE id = 42 AND status = 'ready'";
     constexpr std::string_view normalized_sql =
@@ -2799,6 +2794,8 @@ TEST_F(AgentIntegrationTest, NormalizesSqlIntoSharedUidMetadata) {
 }
 
 TEST_F(AgentIntegrationTest, SerializesEveryTypedSqlBindValueOnTheWire) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr std::string_view sql =
         "INSERT INTO typed_values VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     const std::vector<SqlBindValue> bind_values{
@@ -2844,8 +2841,11 @@ TEST_F(AgentIntegrationTest, SerializesEveryTypedSqlBindValueOnTheWire) {
               "null,alpha,true,false,-7,8,-9000000000,10000000000,1.5,2.25");
 }
 
-TEST_F(SqlBindValueDisabledIntegrationTest,
+TEST_F(AgentIntegrationTest,
        OmitsSensitiveSqlBindValuesFromSpanPayload) {
+    cfg_.trace_bind_value = false;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr std::string_view sql =
         "SELECT * FROM secrets WHERE token = ? AND tenant = ?";
     constexpr std::string_view secret = "do-not-collect-this-token";
@@ -2875,7 +2875,10 @@ TEST_F(SqlBindValueDisabledIntegrationTest,
     EXPECT_EQ(events[0].SerializeAsString().find(secret), std::string::npos);
 }
 
-TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
+TEST_F(AgentIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
+    cfg_.enable_sql_stats = false;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     constexpr std::string_view raw_sql =
         "UPDATE inventory SET count = 7 WHERE sku = 'ABC-1'";
     constexpr std::string_view normalized_sql =
@@ -2928,7 +2931,11 @@ TEST_F(SqlIdModeIntegrationTest, RegistersSqlIdMetadataWhenSqlStatsDisabled) {
                              }));
 }
 
-TEST_F(PercentSamplingIntegrationTest, AppliesPercentSamplingPattern) {
+TEST_F(AgentIntegrationTest, AppliesPercentSamplingPattern) {
+    cfg_.sampling_type = "PERCENT";
+    cfg_.sampling_percent_rate = 50.0;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     const auto baseline = agent_stat_count(collector_.snapshot());
 
     // PercentSampler accumulates rate (50% == 5000/10000) per request, so
@@ -2950,6 +2957,8 @@ TEST_F(PercentSamplingIntegrationTest, AppliesPercentSamplingPattern) {
 }
 
 TEST_F(AgentIntegrationTest, SharesAsyncIdAcrossAsyncSpansFromOneEvent) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("async.parent", "/async-parent");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -3011,6 +3020,8 @@ TEST_F(AgentIntegrationTest, SharesAsyncIdAcrossAsyncSpansFromOneEvent) {
 }
 
 TEST_F(AgentIntegrationTest, RestartsActiveThreadCountStreamForDuplicateRequest) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -3031,6 +3042,8 @@ TEST_F(AgentIntegrationTest, RestartsActiveThreadCountStreamForDuplicateRequest)
 }
 
 TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("http.proxy.apache", "/proxy-apache");
     ASSERT_TRUE(span->IsSampled());
 
@@ -3064,7 +3077,10 @@ TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
     EXPECT_EQ(value.bytevalue2(), 12);
 }
 
-TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
+TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
+    cfg_.server_record_request_headers = "[HEADERS-ALL]";
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     // Exercise the standalone lifecycle entry point against the already
     // installed singleton: pt_start_agent() in a process whose agent runs
     // reports success and leaves that same running agent installed.
@@ -3201,6 +3217,8 @@ TEST_F(CApiIntegrationTest, TracesCompleteSpanThroughCApi) {
 }
 
 TEST_F(AgentIntegrationTest, FlushesExceptionMetadataForAsyncSpans) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("async.exception.parent", "/async-exception");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -3261,6 +3279,8 @@ TEST_F(AgentIntegrationTest, FlushesExceptionMetadataForAsyncSpans) {
 }
 
 TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto app_span = agent_->NewSpan("http.proxy.app", "/proxy-app");
     ASSERT_TRUE(app_span->IsSampled());
     MapCarrier app_request;
@@ -3331,6 +3351,8 @@ TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) 
 }
 
 TEST_F(AgentIntegrationTest, ReRegistersMetadataAfterRetryExhaustion) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     // One initial attempt plus METADATA_RETRY_MAX_ATTEMPTS (3) retries: all
     // four must fail before the sender gives up on this metadata.
     for (int i = 0; i < 4; ++i) {
@@ -3372,7 +3394,12 @@ TEST_F(AgentIntegrationTest, ReRegistersMetadataAfterRetryExhaustion) {
     EXPECT_TRUE(agent_->Enable());
 }
 
-TEST_F(SqlBindLimitIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
+TEST_F(AgentIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
+    // Small enough that a handful of short bind values overflows the join
+    // limit.
+    cfg_.max_bind_args_size = 20;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     auto span = agent_->NewSpan("sql.bind.limit", "/sql-bind-limit");
     ASSERT_TRUE(span->IsSampled());
     const auto span_id = span->GetSpanId();
@@ -3402,8 +3429,13 @@ TEST_F(SqlBindLimitIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
               "0123456789,abcdefgh...(20)");
 }
 
-TEST_F(ZeroCounterSamplingIntegrationTest,
+TEST_F(AgentIntegrationTest,
        SamplesOnlyContinuedTracesWhenCounterRateIsZero) {
+    // CounterRate 0 means "never sample a new trace"; continued traces bypass
+    // the base sampler entirely, so they must still be recorded.
+    cfg_.sampling_counter_rate = 0;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
@@ -3439,6 +3471,8 @@ TEST_F(ZeroCounterSamplingIntegrationTest,
 }
 
 TEST_F(AgentIntegrationTest, PropagatesUnsampledDecisionDownstream) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
@@ -3482,7 +3516,10 @@ TEST_F(AgentIntegrationTest, PropagatesUnsampledDecisionDownstream) {
     EXPECT_EQ(totals.sampled_new, 0);
 }
 
-TEST_F(StatDisabledIntegrationTest, SendsNoAgentStatsWhenDisabled) {
+TEST_F(AgentIntegrationTest, SendsNoAgentStatsWhenDisabled) {
+    cfg_.stat_enable = false;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     // Tracing must be unaffected by the disabled statistics worker.
     auto span = agent_->NewSpan("stat.disabled", "/stat-disabled");
     ASSERT_TRUE(span->IsSampled());
@@ -3500,6 +3537,8 @@ TEST_F(StatDisabledIntegrationTest, SendsNoAgentStatsWhenDisabled) {
 }
 
 TEST_F(AgentIntegrationTest, RejectsActiveThreadCountStreamsBeyondLimit) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return !snapshot.command_streams_v2.empty();
     }, kWaitTimeout));
@@ -3583,6 +3622,8 @@ TEST(DisabledAgentIntegrationTest, CreatesNoopAgentWhenDisabledByConfig) {
 }
 
 TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutSpanRequest) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
     collector_.TimeoutNext(CollectorRpc::SendSpanBatch);
     auto span = agent_->NewSpan("shutdown.timeout", "/timeout-shutdown");
     ASSERT_TRUE(span->IsSampled());
