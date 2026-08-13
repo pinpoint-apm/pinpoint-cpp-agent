@@ -439,7 +439,7 @@ symptom:
 |---|---|
 | Agent never connects | `Collector.Host`, `Collector.*Port` ([Collector](#collector-configuration)) |
 | Nothing is traced at all | `Enable` — `false` disables the agent and makes `StartAgent()` return `false` ([Agent](#agent-configuration)) |
-| Transactions missing | `Sampling.CounterRate: 1` to sample all; clear `Http.Server.ExcludeUrl` / `ExcludeMethod` ([Sampling](#sampling-configuration), [HTTP](#http-configuration)) |
+| Transactions missing | `Sampling.Type: COUNTER` with `Sampling.CounterRate: 1` to sample all; clear `Http.Server.ExcludeUrl` / `ExcludeMethod` ([Sampling](#sampling-configuration), [HTTP](#http-configuration)) |
 | Memory too high | Lower `Span.QueueSize`, `Span.MaxEventSequence`, `Http.UrlStatLimit` ([Span](#span-configuration), [HTTP](#http-configuration)) |
 | CPU / latency overhead | Lower `Sampling.PercentRate` or set `NewThroughput` / `ContinueThroughput`; turn off `Http.CollectUrlStat`, `Sql.EnableSqlStats`, `Stat.Enable` |
 | Traces truncated | Raise `Span.MaxEventDepth` / `MaxEventSequence` (`-1` = unlimited) ([Span](#span-configuration)) |

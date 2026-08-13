@@ -166,7 +166,8 @@ rather than a broken configuration; check that first.
 
 The agent starts successfully but no traces appear.
 
-1. **Check sampling** — `Sampling.CounterRate: 1` samples every transaction.
+1. **Check sampling** — set `Sampling.Type: COUNTER` and
+   `Sampling.CounterRate: 1` together to sample every transaction.
 2. **Verify spans are ended** — `EndSpan()` must run on every code path; a span
    released without it is never sent.
 3. **Check excluded URLs and methods** — a filter match produces a noop span, so

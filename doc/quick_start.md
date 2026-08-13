@@ -197,9 +197,10 @@ int main() {
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 0);
 
     if (!pinpoint::StartAgent()) {
-        // A configuration or setup failure — the application keeps running
-        // untraced. The cause is in the agent log.
-        std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
+        // A deliberate Enable: false and a synchronous setup failure share this
+        // return path. The application keeps running untraced either way.
+        std::cerr << "pinpoint tracing is not active; "
+                     "if this is unexpected, check the agent log" << std::endl;
     }
     auto agent = pinpoint::GlobalAgent();
 
@@ -257,9 +258,9 @@ is the only authoritative startup signal. See
 [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup).
 
 Nothing in the UI despite `AgentInfo sent`? The three usual causes are sampling
-(`CounterRate: 1` samples everything — use it while testing), a span that is
-never ended (`EndSpan()` must run on every code path), and the collection
-interval (wait a few seconds).
+(`Type: COUNTER` with `CounterRate: 1` samples everything — use both while
+testing), a span that is never ended (`EndSpan()` must run on every code path),
+and the collection interval (wait a few seconds).
 
 For everything else — connection failures, memory or CPU concerns, missing
 distributed traces — see the [Troubleshooting Guide](trouble_shooting.md).

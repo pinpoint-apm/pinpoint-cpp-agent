@@ -651,6 +651,11 @@ void handleRequest() {
         error_event->SetError("UnexpectedError", e.what(), stack_reader);
         error_event->EndEvent();
         span->SetStatusCode(500);
+
+    } catch (...) {
+        // C++ also permits exceptions that do not derive from std::exception.
+        span->SetError("UnknownError", "A non-standard exception was thrown");
+        span->SetStatusCode(500);
     }
 
     span->EndSpan();   // on every path
