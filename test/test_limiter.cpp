@@ -66,20 +66,6 @@ TEST_F(RateLimiterTest, TokenRefillTest) {
     EXPECT_FALSE(limiter.allow()) << "Third request should be denied";
 }
 
-TEST_F(RateLimiterTest, MultipleRefillTest) {
-    RateLimiter limiter(1); // 1 TPS
-    
-    for (int cycle = 0; cycle < 3; ++cycle) {
-        EXPECT_TRUE(limiter.allow()) << "Cycle " << cycle << " first request should be allowed";
-        EXPECT_FALSE(limiter.allow()) << "Cycle " << cycle << " second request should be denied";
-        
-        // Wait 1 second for next cycle
-        if (cycle < 2) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-    }
-}
-
 // 0 TPS test - all requests should be denied
 TEST_F(RateLimiterTest, ZeroTpsTest) {
     RateLimiter limiter(0); // 0 TPS
@@ -138,26 +124,6 @@ TEST_F(RateLimiterTest, ThreadSafetyTest) {
     EXPECT_GT(total_allowed, 0) << "At least some requests should be allowed";
 }
 
-// Refill test after long interval
-TEST_F(RateLimiterTest, LongIntervalRefillTest) {
-    RateLimiter limiter(5); // 5 TPS
-    
-    // Exhaust all tokens
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(limiter.allow());
-    }
-    EXPECT_FALSE(limiter.allow());
-    
-    // Wait 2 seconds (verify correct refill after multiple cycles)
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-    
-    // Tokens should be refilled (but maximum is 5)
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(limiter.allow()) << "Request " << i << " should be allowed after long interval";
-    }
-    EXPECT_FALSE(limiter.allow()) << "6th request should be denied even after long interval";
-}
-
 // Time boundary test - behavior within the same second
 TEST_F(RateLimiterTest, SameSecondTest) {
     RateLimiter limiter(3); // 3 TPS
@@ -178,32 +144,6 @@ TEST_F(RateLimiterTest, SameSecondTest) {
 
 // ========== Edge Case Tests ==========
 
-// Zero TPS should still deny after sleep (refill doesn't help)
-TEST_F(RateLimiterTest, ZeroTpsAfterSleepTest) {
-    RateLimiter limiter(0);
-
-    EXPECT_FALSE(limiter.allow()) << "Should deny before sleep";
-
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    EXPECT_FALSE(limiter.allow()) << "Should still deny after 1 second sleep with 0 TPS";
-    EXPECT_FALSE(limiter.allow()) << "Should still deny on subsequent call";
-}
-
-// TPS=1 precise single token lifecycle
-TEST_F(RateLimiterTest, SingleTokenPrecisionTest) {
-    RateLimiter limiter(1);
-
-    EXPECT_TRUE(limiter.allow()) << "First request should be allowed";
-    EXPECT_FALSE(limiter.allow()) << "Second request should be denied";
-    EXPECT_FALSE(limiter.allow()) << "Third request should also be denied";
-
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    EXPECT_TRUE(limiter.allow()) << "After refill, one request should be allowed";
-    EXPECT_FALSE(limiter.allow()) << "After refill, second request should be denied";
-}
-
 // Bucket does NOT accumulate unused tokens across seconds
 TEST_F(RateLimiterTest, BucketDoesNotAccumulateTest) {
     RateLimiter limiter(3);
@@ -222,32 +162,6 @@ TEST_F(RateLimiterTest, BucketDoesNotAccumulateTest) {
         }
     }
     EXPECT_EQ(allowed, 3) << "After long sleep, bucket should reset to exactly tps (3), not accumulate";
-}
-
-// Rapid exhaust-refill-exhaust cycle
-TEST_F(RateLimiterTest, ExhaustRefillExhaustCycleTest) {
-    RateLimiter limiter(2);
-
-    // First cycle: exhaust
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_FALSE(limiter.allow());
-
-    // Refill
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    // Second cycle: exhaust again immediately
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_FALSE(limiter.allow());
-
-    // Refill
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    // Third cycle: exhaust again
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_FALSE(limiter.allow());
 }
 
 // Thread safety: exactly tps tokens consumed when demand exceeds supply

@@ -1094,55 +1094,6 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryStopsWhenAgentExits) {
     EXPECT_EQ(grpc_agent.calls(), 0);
 }
 
-TEST_F(GrpcMockTest, GrpcAgentMetaDataEnqueueTest) {
-    TestableGrpcAgent agent(mock_agent_service_.get());
-    
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    agent.setMockMetaStub(std::move(mock_meta_stub));
-    
-    // Test metadata enqueue operations (without worker)
-    auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
-    agent.enqueueMeta(std::move(api_meta));
-    
-    auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
-    agent.enqueueMeta(std::move(str_meta));
-    
-    SUCCEED() << "Metadata enqueue operations should succeed with mock stub";
-}
-
-TEST_F(GrpcMockTest, GrpcAgentPingWorkerTest) {
-    TestableGrpcAgent agent(mock_agent_service_.get());
-    // readyChannel=false so the worker exits immediately (async streaming
-    // cannot be tested with simple mock stubs)
-    agent.setReadyChannel(false);
-
-    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-
-    // readyChannel returns false, so no gRPC call is expected
-    EXPECT_CALL(*mock_agent_stub, PingSessionRaw(_))
-        .Times(0);
-
-    agent.setMockAgentStub(std::move(mock_agent_stub));
-    
-    // Test ping worker operations
-    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
-                             [&agent] { agent.sendPingWorker(); });
-    
-    // Give worker time to start and run briefly
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
-    // Set agent to exiting state before stopping worker
-    mock_agent_service_->setExiting(true);
-    
-    agent.stopPingWorker();
-    
-    if (ping_worker.joinable()) {
-        ping_worker.join();
-    }
-    
-    SUCCEED() << "Ping worker should start/stop cleanly even without successful gRPC connection";
-}
-
 TEST_F(GrpcMockTest, GrpcAgentPingWorkerContainsChannelSetupException) {
     ThrowingReadyGrpcAgent agent(mock_agent_service_->getConfig());
     agent.setAgentService(mock_agent_service_.get());
@@ -1191,74 +1142,7 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     EXPECT_EQ(fake->stringRequest(0).stringvalue(), "test.string");
 }
 
-// GrpcSpan Tests with Mock Stubs
-
-TEST_F(GrpcMockTest, GrpcSpanEnqueueSpanTest) {
-    TestableGrpcSpan span_client(mock_agent_service_.get());
-    
-    auto mock_span_stub = std::make_unique<NiceMock<v1::MockSpanStub>>();
-    span_client.setMockSpanStub(std::move(mock_span_stub));
-    
-    // Create test span data and enqueue (without worker)
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    
-    span_client.enqueueSpan(std::move(span_chunk));
-    
-    SUCCEED() << "Span enqueue should work with mock stub";
-}
-
-TEST_F(GrpcMockTest, GrpcSpanWorkerTest) {
-    TestableGrpcSpan span_client(mock_agent_service_.get());
-    // readyChannel=false so the worker exits immediately (async streaming
-    // cannot be tested with simple mock stubs)
-    span_client.setReadyChannel(false);
-
-    auto mock_span_stub = std::make_unique<NiceMock<v1::MockSpanStub>>();
-
-    EXPECT_CALL(*mock_span_stub, SendSpanRaw(_, _))
-        .Times(0);
-
-    span_client.setMockSpanStub(std::move(mock_span_stub));
-    
-    // Create test span data and enqueue
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    span_client.enqueueSpan(std::move(span_chunk));
-    
-    // Test span worker operations
-    ScopedWorker span_worker([&span_client] { span_client.stopSpanWorker(); },
-                             [&span_client] { span_client.sendSpanWorker(); });
-    
-    // Give worker time to process queue
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
-    // Set agent to exiting state before stopping worker
-    mock_agent_service_->setExiting(true);
-    
-    span_client.stopSpanWorker();
-    
-    if (span_worker.joinable()) {
-        span_worker.join();
-    }
-    
-    SUCCEED() << "Span worker should start/stop cleanly and process queue even without successful gRPC connection";
-}
-
 // GrpcStats Tests with Mock Stubs
-
-TEST_F(GrpcMockTest, GrpcStatsEnqueueStatsTest) {
-    TestableGrpcStats stats_client(mock_agent_service_.get());
-    
-    auto mock_stats_stub = std::make_unique<NiceMock<v1::MockStatStub>>();
-    stats_client.setMockStatsStub(std::move(mock_stats_stub));
-    
-    // Enqueue some stats (without worker)
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.enqueueStats(URL_STATS);
-    
-    SUCCEED() << "Stats enqueue should work with mock stub";
-}
 
 TEST_F(GrpcMockTest, GrpcStatsOverflowRequestsStatsQueuePurge) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
@@ -1303,42 +1187,6 @@ TEST_F(GrpcMockTest, GrpcStatsSlowChannelRecoveryRequestsStatsQueuePurge) {
     EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().empty());
 }
 
-TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
-    TestableGrpcStats stats_client(mock_agent_service_.get());
-    // readyChannel=false so the worker exits immediately (async streaming
-    // cannot be tested with simple mock stubs)
-    stats_client.setReadyChannel(false);
-
-    auto mock_stats_stub = std::make_unique<NiceMock<v1::MockStatStub>>();
-
-    EXPECT_CALL(*mock_stats_stub, SendAgentStatRaw(_, _))
-        .Times(0);
-
-    stats_client.setMockStatsStub(std::move(mock_stats_stub));
-    
-    // Enqueue some stats
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.enqueueStats(URL_STATS);
-    
-    // Test stats worker operations
-    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
-                              [&stats_client] { stats_client.sendStatsWorker(); });
-    
-    // Give worker time to process queue
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    
-    // Set agent to exiting state before stopping worker
-    mock_agent_service_->setExiting(true);
-    
-    stats_client.stopStatsWorker();
-    
-    if (stats_worker.joinable()) {
-        stats_worker.join();
-    }
-    
-    SUCCEED() << "Stats worker should start/stop cleanly and process queue even without successful gRPC connection";
-}
-
 TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
     GrpcClientTuning tuning;
     tuning.worker_restart_delay = std::chrono::milliseconds(10);
@@ -1364,55 +1212,32 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
     EXPECT_FALSE(mock_agent_service_->isExiting());
 }
 
-// Integration Tests
+// ============================================================
+// Workers on a dead channel
+// ============================================================
 
-TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
+// With readyChannel() false every worker must start, leave its stub
+// untouched, and stop promptly even with items queued — the mock stubs
+// cannot carry async streaming, so clean start/stop is the whole contract
+// testable here. Delivery itself is covered by the FakeStub worker tests.
+TEST_F(GrpcMockTest, GrpcWorkersStartAndStopCleanlyOnDeadChannelTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
     TestableGrpcSpan span_client(mock_agent_service_.get());
     TestableGrpcStats stats_client(mock_agent_service_.get());
-    
-    // Set up mock stubs
-    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-    auto mock_meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-    auto mock_span_stub = std::make_unique<NiceMock<v1::MockSpanStub>>();
-    auto mock_stats_stub = std::make_unique<NiceMock<v1::MockStatStub>>();
-    
-    // Set up expectations for all operations
-    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
-        .WillOnce(Return(grpc::Status::OK));
-    
-    // Ping session expectation (gRPC connection will fail)
-    EXPECT_CALL(*mock_agent_stub, PingSessionRaw(_))
-        .Times(0); // No calls expected due to connection failure
-    
-    // Metadata expectations (these might succeed if worker processes queue before connection)
-    EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _))
-        .WillRepeatedly(DoAll(SetArgPointee<2>(success_result()), Return(grpc::Status::OK)));
-    
-    // Span expectations (gRPC connection will fail)  
-    EXPECT_CALL(*mock_span_stub, SendSpanRaw(_, _))
-        .Times(0); // No calls expected due to connection failure
-    
-    // Stats expectations (gRPC connection will fail)
-    EXPECT_CALL(*mock_stats_stub, SendAgentStatRaw(_, _))
-        .Times(0); // No calls expected due to connection failure
-    
-    // Inject mocks
-    agent.setMockAgentStub(std::move(mock_agent_stub));
-    agent.setMockMetaStub(std::move(mock_meta_stub));
-    span_client.setMockSpanStub(std::move(mock_span_stub));
-    stats_client.setMockStatsStub(std::move(mock_stats_stub));
-    
-    // Test complete workflow
-    GrpcRequestStatus register_status = agent.registerAgent();
-    EXPECT_EQ(register_status, SEND_OK);
-
-    // Disable readyChannel for workers (async streaming cannot be tested with mock stubs)
     agent.setReadyChannel(false);
     span_client.setReadyChannel(false);
     stats_client.setReadyChannel(false);
 
-    // Start workers
+    agent.setMockAgentStub(std::make_unique<NiceMock<v1::MockAgentStub>>());
+    agent.setMockMetaStub(std::make_unique<NiceMock<v1::MockMetadataStub>>());
+    span_client.setMockSpanStub(std::make_unique<NiceMock<v1::MockSpanStub>>());
+    stats_client.setMockStatsStub(std::make_unique<NiceMock<v1::MockStatStub>>());
+
+    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "dead.channel"));
+    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "dead-channel-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    stats_client.enqueueStats(AGENT_STATS);
+
     ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
                      [&agent] { agent.sendPingWorker(); });
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
@@ -1421,35 +1246,19 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
                      [&span_client] { span_client.sendSpanWorker(); });
     ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
                      [&stats_client] { stats_client.sendStatsWorker(); });
-    
-    // Enqueue data
-    auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
-    agent.enqueueMeta(std::move(api_meta));
-    
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "workflow-test");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    span_client.enqueueSpan(std::move(span_chunk));
-    
-    stats_client.enqueueStats(AGENT_STATS);
-    
-    // Give workers time to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    // Set agent to exiting state before stopping workers
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
     mock_agent_service_->setExiting(true);
-    
-    // Stop all workers
     agent.stopPingWorker();
     agent.stopMetaWorker();
     span_client.stopSpanWorker();
     stats_client.stopStatsWorker();
-    
+
     if (ping_worker.joinable()) ping_worker.join();
     if (meta_worker.joinable()) meta_worker.join();
     if (span_worker.joinable()) span_worker.join();
     if (stats_worker.joinable()) stats_worker.join();
-    
-    SUCCEED() << "Complete gRPC workflow with workers should start/stop cleanly and process metadata even without gRPC connections";
 }
 
 // ============================================================

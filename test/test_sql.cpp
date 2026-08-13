@@ -206,72 +206,6 @@ static std::string combineOutputParams(std::string_view sql, const std::vector<s
     return normalized;
 }
 
-static std::string combineBindValues(std::string_view sql, const std::vector<std::string>& bind_values) {
-    if (sql.empty() || bind_values.empty()) {
-        return std::string(sql);
-    }
-
-    const size_t length = sql.length();
-    std::string result;
-    result.reserve(length + 16);
-
-    bool in_quotes = false;
-    char quote_char = 0;
-    size_t bind_index = 0;
-
-    for (size_t i = 0; i < length; ++i) {
-        const char ch = sql[i];
-        if (in_quotes) {
-            if ((ch == '\'' || ch == '"') && ch == quote_char) {
-                if (LookAhead1(sql, i) == quote_char) {
-                    // Both quotes of a doubled-quote escape are consumed but
-                    // only one is emitted ('it''s' becomes 'it's'), matching
-                    // the Java agent's DefaultSqlParser byte for byte.
-                    result += ch;
-                    ++i;
-                    continue;
-                }
-                in_quotes = false;
-                quote_char = 0;
-            }
-            result += ch;
-            continue;
-        }
-
-        if (ch == '/') {
-            if (LookAhead1(sql, i) == '*') {
-                i = ReadComment(sql, length, i, "/*", "*/", &result);
-            } else if (LookAhead1(sql, i) == '/') {
-                i = ReadComment(sql, length, i, "//", "\n", &result);
-            } else {
-                result += ch;
-            }
-        } else if (ch == '-') {
-            if (LookAhead1(sql, i) == '-') {
-                i = ReadComment(sql, length, i, "--", "\n", &result);
-            } else {
-                result += ch;
-            }
-        } else if (ch == '\'' || ch == '"') {
-            in_quotes = true;
-            quote_char = ch;
-            result += ch;
-        } else if (ch == '?') {
-            if (bind_index < bind_values.size()) {
-                // The value is interpolated verbatim — quotes inside it are
-                // not escaped, matching the Java agent (display-only string).
-                result += '\'';
-                result += bind_values[bind_index++];
-                result += '\'';
-            }
-        } else {
-            result += ch;
-        }
-    }
-
-    return result;
-}
-
 static void ExpectJavaDefaultNormalize(std::string_view sql, std::string_view expected_normalized,
     std::string_view expected_params = "") {
     SqlNormalizer java_default(2048, false);
@@ -1007,57 +941,6 @@ TEST_F(SqlTest, JavaDefaultEmptyStringCases) {
         "SELECT n.order_logistics_id, MAX(IF(IFNULL(n.id, '') != '', '2', '0')) AS is_ts FROM t_e_shipping_note n WHERE IFNULL(n.delflag, '') <> '1' AND IFNULL(n.document_require, '0') = '2' GROUP BY n.order_logistics_id",
         "SELECT n.order_logistics_id, MAX(IF(IFNULL(n.id, '') != '', '0$', '1$')) AS is_ts FROM t_e_shipping_note n WHERE IFNULL(n.delflag, '') <> '2$' AND IFNULL(n.document_require, '3$') = '4$' GROUP BY n.order_logistics_id",
         "2,0,1,0,2");
-}
-
-TEST_F(SqlTest, JavaCombineOutputParamsCases) {
-    EXPECT_EQ(combineOutputParams("0# 1#", ParseOutputParameter("123,345")), "123 345");
-    EXPECT_EQ(combineOutputParams("0# 1# '2$'", ParseOutputParameter("123,345,test")), "123 345 'test'");
-    EXPECT_EQ(combineOutputParams("0# 1# 2# 3# 4# 5# 6# 7# 8# 9# 10#",
-        ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 3 4 5 6 7 8 9 10 11");
-}
-
-TEST_F(SqlTest, JavaCombineOutputParamsErrorCases) {
-    EXPECT_EQ(combineOutputParams("0# 10#", ParseOutputParameter("123,345")), "123 10#");
-    EXPECT_EQ(combineOutputParams("0# 2# 10#", ParseOutputParameter("1,2,3")), "1 3 10#");
-    EXPECT_EQ(combineOutputParams("0# 2 3", ParseOutputParameter("1,2,3")), "1 2 3");
-    EXPECT_EQ(combineOutputParams("0# 2 10", ParseOutputParameter("1,2,3")), "1 2 10");
-    EXPECT_EQ(combineOutputParams("0# 2 201", ParseOutputParameter("1,2,3")), "1 2 201");
-    EXPECT_EQ(combineOutputParams("0# 2 10#", ParseOutputParameter("1,2,3,4,5,6,7,8,9,10,11")), "1 2 11");
-}
-
-TEST_F(SqlTest, JavaCombineBindValuesCases) {
-    EXPECT_EQ(combineBindValues(
-        "select * from table a = 1 and b=50 and c=? and d='11'",
-        ParseOutputParameter("foo")),
-        "select * from table a = 1 and b=50 and c='foo' and d='11'");
-    EXPECT_EQ(combineBindValues(
-        "select * from table a = ? and b=? and c=? and d=?",
-        ParseOutputParameter("1,50,  foo ,11")),
-        "select * from table a = '1' and b='50' and c=' foo ' and d='11'");
-    EXPECT_EQ(combineBindValues(
-        "select * from table a = ? and b=? and c=? and d=?",
-        ParseOutputParameter("1, 50, foo, 11")),
-        "select * from table a = '1' and b='50' and c='foo' and d='11'");
-    EXPECT_EQ(combineBindValues(
-        "select * from table id = \"foo ? bar\" and number=?",
-        ParseOutputParameter("99")),
-        "select * from table id = \"foo ? bar\" and number='99'");
-    EXPECT_EQ(combineBindValues(
-        "select * from table id = 'hi ? name''s foo' and number=?",
-        ParseOutputParameter("99")),
-        "select * from table id = 'hi ? name's foo' and number='99'");
-    EXPECT_EQ(combineBindValues(
-        "/** comment ? */ select * from table id = ?",
-        ParseOutputParameter("foo,,bar")),
-        "/** comment ? */ select * from table id = 'foo,bar'");
-    EXPECT_EQ(combineBindValues(
-        "select /*! STRAIGHT_JOIN ? */ * from table id = ?",
-        ParseOutputParameter("foo,,bar")),
-        "select /*! STRAIGHT_JOIN ? */ * from table id = 'foo,bar'");
-    EXPECT_EQ(combineBindValues(
-        "select * from table id = ?; -- This ? comment",
-        ParseOutputParameter("foo")),
-        "select * from table id = 'foo'; -- This ? comment");
 }
 
 TEST_F(SqlTest, JavaRemoveCommentsCases) {

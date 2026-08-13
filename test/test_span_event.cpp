@@ -240,36 +240,40 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
     
-    // Add multiple stack frames
+    // Add multiple stack frames, one without file/line info (system library)
     reader.AddFrame("/usr/lib/libmyapp.so", "function1", "/src/file1.cpp", 10);
-    reader.AddFrame("/usr/lib/libmyapp.so", "function2", "/src/file2.cpp", 20);
+    reader.AddFrame("/lib/x86_64-linux-gnu/libc.so.6", "malloc", "", 0);
     reader.AddFrame("/usr/lib/libmyapp.so", "function3", "/src/file3.cpp", 30);
     reader.AddFrame("/usr/lib/libmyapp.so", "main", "/src/main.cpp", 100);
-    
+
     span_event.SetError("StackOverflowError", "Stack overflow occurred", reader);
-    
+
     // Verify error information
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Stack overflow occurred") << "Error message should be set";
-    
+
     // Verify exception was added
     const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
-    
+
     // Verify callstack contains all frames
     const auto& callstack = exceptions[0]->getCallStack();
     EXPECT_EQ(callstack.getErrorMessage(), "Stack overflow occurred") << "Error message should match";
-    
+
     const auto& stack_frames = callstack.getStack();
     EXPECT_EQ(stack_frames.size(), 4) << "Should have 4 stack frames";
-    
+
     // Verify frame details
     EXPECT_EQ(stack_frames[0].module, "/usr/lib/libmyapp.so");
     EXPECT_EQ(stack_frames[0].function, "function1");
     EXPECT_EQ(stack_frames[0].file, "/src/file1.cpp");
     EXPECT_EQ(stack_frames[0].line, 10);
-    
-    EXPECT_EQ(stack_frames[1].function, "function2");
+
+    // A frame without file info keeps its module/function and empty file/0 line.
+    EXPECT_EQ(stack_frames[1].function, "malloc");
+    EXPECT_EQ(stack_frames[1].file, "");
+    EXPECT_EQ(stack_frames[1].line, 0);
+
     EXPECT_EQ(stack_frames[2].function, "function3");
     EXPECT_EQ(stack_frames[3].function, "main");
     EXPECT_EQ(stack_frames[3].line, 100);
@@ -297,28 +301,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     
     const auto& stack_frames = callstack.getStack();
     EXPECT_EQ(stack_frames.size(), 0) << "Stack should be empty";
-}
-
-TEST_F(SpanEventTest, SetErrorWithCallStackExceptionIdAnnotationTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    MockCallStackReader reader;
-    
-    reader.AddFrame("/lib/app.so", "doWork", "/src/worker.cpp", 55);
-    
-    span_event.SetError("NullPointerError", "Null pointer dereference", reader);
-    
-    // Get the exception ID from the exception
-    const auto& exceptions = test_span_->getExceptions();
-    ASSERT_EQ(exceptions.size(), 1) << "Should have one exception";
-    int64_t exception_id = exceptions[0]->getId();
-    
-    EXPECT_GT(exception_id, 0) << "Exception ID should be positive";
-    
-    // Note: In a real test, we would verify that ANNOTATION_EXCEPTION_ID was added to annotations
-    // However, the PinpointAnnotation class doesn't expose a way to read back annotations
-    // So we just verify that the exception ID is valid
-    auto* annotations = span_event.getAnnotations();
-    EXPECT_NE(annotations, nullptr) << "Annotations should exist";
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
@@ -350,44 +332,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_NE(id1, id2) << "Exception IDs should be different";
 }
 
-TEST_F(SpanEventTest, SetErrorWithCallStackDetailedFramesTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    MockCallStackReader reader;
-    
-    // Add frames with various details
-    reader.AddFrame("/usr/local/lib/libcustom.so.1.0", "CustomClass::process()", "/home/dev/project/src/custom.cpp", 123);
-    reader.AddFrame("/lib/x86_64-linux-gnu/libc.so.6", "malloc", "", 0);  // System library without file info
-    reader.AddFrame("./myapp", "handleRequest", "/app/handler.cpp", 456);
-    
-    span_event.SetError("ProcessingError", "Failed to process request", reader);
-    
-    // Verify exception
-    const auto& exceptions = test_span_->getExceptions();
-    ASSERT_EQ(exceptions.size(), 1);
-    
-    const auto& callstack = exceptions[0]->getCallStack();
-    
-    const auto& frames = callstack.getStack();
-    ASSERT_EQ(frames.size(), 3);
-    
-    // Verify first frame with full details
-    EXPECT_EQ(frames[0].module, "/usr/local/lib/libcustom.so.1.0");
-    EXPECT_EQ(frames[0].function, "CustomClass::process()");
-    EXPECT_EQ(frames[0].file, "/home/dev/project/src/custom.cpp");
-    EXPECT_EQ(frames[0].line, 123);
-    
-    // Verify second frame (system library)
-    EXPECT_EQ(frames[1].module, "/lib/x86_64-linux-gnu/libc.so.6");
-    EXPECT_EQ(frames[1].function, "malloc");
-    EXPECT_EQ(frames[1].file, "");  // No file info
-    EXPECT_EQ(frames[1].line, 0);    // No line info
-    
-    // Verify third frame
-    EXPECT_EQ(frames[2].module, "./myapp");
-    EXPECT_EQ(frames[2].function, "handleRequest");
-    EXPECT_EQ(frames[2].line, 456);
-}
-
 TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
@@ -409,51 +353,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     int64_t error_time = callstack.getErrorTime();
     EXPECT_GE(error_time, before_time) << "Error time should be after or equal to before time";
     EXPECT_LE(error_time, after_time) << "Error time should be before or equal to after time";
-}
-
-TEST_F(SpanEventTest, SetErrorWithCallStackIntegrationTest) {
-    auto span_event = make_test_span_event(*test_span_, "database-operation");
-    
-    // Set up the span event
-    span_event.SetServiceType(SERVICE_TYPE_MYSQL_QUERY);
-    span_event.SetDestination("mysql-server");
-    span_event.SetEndPoint("localhost:3306");
-    
-    // Create a realistic call stack
-    MockCallStackReader reader;
-    reader.AddFrame("/usr/lib/libmysqlclient.so", "mysql_real_connect", "", 0);
-    reader.AddFrame("/opt/myapp/lib/libdb.so", "DatabaseConnection::connect()", "/src/db/connection.cpp", 78);
-    reader.AddFrame("/opt/myapp/bin/server", "handleDatabaseRequest", "/src/server/handler.cpp", 234);
-    reader.AddFrame("/opt/myapp/bin/server", "main", "/src/main.cpp", 45);
-    
-    // Set error with call stack
-    span_event.SetError("MySQLConnectionError", "Unable to connect to MySQL server: Connection refused", reader);
-    
-    // Wait a bit and finish
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    span_event.finish();
-    
-    // Verify all properties
-    EXPECT_EQ(span_event.getServiceType(), SERVICE_TYPE_MYSQL_QUERY);
-    EXPECT_EQ(span_event.getDestinationId(), "mysql-server");
-    EXPECT_EQ(span_event.getEndPoint(), "localhost:3306");
-    EXPECT_GT(span_event.getErrorFuncId(), 0);
-    EXPECT_EQ(span_event.getErrorString(), "Unable to connect to MySQL server: Connection refused");
-    EXPECT_GT(span_event.getEndElapsed(), 0);
-    
-    // Verify exception and callstack
-    const auto& exceptions = test_span_->getExceptions();
-    ASSERT_EQ(exceptions.size(), 1);
-    
-    const auto& callstack = exceptions[0]->getCallStack();
-    EXPECT_EQ(callstack.getErrorMessage(), "Unable to connect to MySQL server: Connection refused");
-    
-    const auto& frames = callstack.getStack();
-    EXPECT_EQ(frames.size(), 4);
-    EXPECT_EQ(frames[0].function, "mysql_real_connect");
-    EXPECT_EQ(frames[1].function, "DatabaseConnection::connect()");
-    EXPECT_EQ(frames[2].function, "handleDatabaseRequest");
-    EXPECT_EQ(frames[3].function, "main");
 }
 
 // ========== Async Operations Tests ==========
@@ -617,25 +516,6 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
         << "InjectContext must not write propagation headers after finish";
     EXPECT_EQ(span_event.getNextSpanId(), baseline_next_span_id)
         << "InjectContext must not generate a next span id after finish";
-}
-
-TEST_F(SpanEventTest, InjectContextNoOpAfterFinishTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    span_event.SetDestination("dest");
-
-    span_event.finish();  // finished_ is now set.
-
-    // InjectContext after finish must neither regenerate next_span_id_ (a
-    // field the gRPC worker reads once the event sits in a chunk) nor write
-    // any trace headers through the (possibly destroyed) parent span.
-    const auto next_span_id = span_event.getNextSpanId();
-    MockTraceContextWriter writer;
-    span_event.InjectContext(writer);
-
-    EXPECT_EQ(span_event.getNextSpanId(), next_span_id)
-        << "InjectContext must not generate a next span id after finish";
-    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value())
-        << "InjectContext must not write trace headers after finish";
 }
 
 TEST_F(SpanEventTest, AnnotationHandleSealedByFinishTest) {
@@ -851,53 +731,6 @@ TEST_F(SpanEventTest, SetSqlQueryFormatsVariantParameters) {
               "-7,42,-9000000000,18000000000,3.5,2.25,true,false,null,hello");
 }
 
-TEST_F(SpanEventTest, SetSqlQueryEmptyTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    std::string empty_sql = "";
-    std::vector<SqlBindValue> args;
-    
-    span_event.SetSqlQuery(empty_sql, args);
-    
-    // Even empty SQL should be processed
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL ID counter should increment for empty SQL too";
-}
-
-TEST_F(SpanEventTest, SetSqlQueryComplexQueryTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    std::string complex_sql = R"(
-        SELECT u.id, u.name, p.title 
-        FROM users u 
-        JOIN posts p ON u.id = p.user_id 
-        WHERE u.active = 1 
-        AND p.published_at > '2023-01-01' 
-        ORDER BY p.published_at DESC 
-        LIMIT 10
-    )";
-    std::vector<SqlBindValue> args;
-    
-    span_event.SetSqlQuery(complex_sql, args);
-    
-    // Complex SQL should also be cached
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "Complex SQL should be cached";
-    
-    auto* annotations = span_event.getAnnotations();
-    EXPECT_NE(annotations, nullptr) << "Annotations should be created for complex SQL";
-}
-
-TEST_F(SpanEventTest, SetSqlQueryMultipleCallsTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    // Call SetSqlQuery multiple times with different queries
-    span_event.SetSqlQuery("SELECT * FROM table1", {});
-    span_event.SetSqlQuery("SELECT * FROM table2", {});
-    span_event.SetSqlQuery("UPDATE table1 SET name = ?", {"name=test"});
-    
-    // Each unique query should increment the counter (started at 300)
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "Multiple SQL queries should increment counter";
-}
-
 TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
     auto span_event1 = make_test_span_event(*test_span_, "test-op1");
     auto span_event2 = make_test_span_event(*test_span_, "test-op2");
@@ -1010,58 +843,6 @@ TEST_F(SpanEventTest, SetSqlQuerySkipsAnnotationWhenSqlIdUnavailable) {
     ASSERT_EQ(annotations.size(), 1U);
     EXPECT_GT(std::get<IntStringStringValue>(
         annotations.front().second.data).intValue, 0);
-}
-
-TEST_F(SpanEventTest, SetSqlQueryNormalizationTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    // Test SQL with literals that should be normalized
-    std::string sql_with_literals = "SELECT * FROM users WHERE id = 123 AND name = 'John'";
-    std::vector<SqlBindValue> args;
-    
-    span_event.SetSqlQuery(sql_with_literals, args);
-    
-    // The normalizer should process this SQL
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL with literals should be processed";
-    
-    auto* annotations = span_event.getAnnotations();
-    EXPECT_NE(annotations, nullptr) << "Annotations should be created";
-}
-
-TEST_F(SpanEventTest, SetSqlQueryWithSpecialCharactersTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    std::string sql_special = "SELECT * FROM `table_name` WHERE `column` = 'O''Reilly'";
-    std::vector<SqlBindValue> args;
-    
-    span_event.SetSqlQuery(sql_special, args);
-    
-    // SQL with special characters should be handled
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL with special characters should be processed";
-}
-
-TEST_F(SpanEventTest, SetSqlQueryIntegrationTest) {
-    auto span_event = make_test_span_event(*test_span_, "database-operation");
-    
-    // Set up span event for database operation
-    span_event.SetServiceType(SERVICE_TYPE_CPP_FUNC);
-    span_event.SetDestination("mysql-server");
-    span_event.SetEndPoint("localhost:3306");
-    
-    // Add SQL query
-    std::string sql = "SELECT u.*, COUNT(p.id) as post_count FROM users u LEFT JOIN posts p ON u.id = p.user_id GROUP BY u.id";
-    std::vector<SqlBindValue> args;
-    
-    span_event.SetSqlQuery(sql, args);
-    
-    // Verify the integration
-    EXPECT_EQ(span_event.getServiceType(), SERVICE_TYPE_CPP_FUNC);
-    EXPECT_EQ(span_event.getDestinationId(), "mysql-server");
-    EXPECT_EQ(span_event.getEndPoint(), "localhost:3306");
-    EXPECT_GT(mock_agent_service_->getSqlIdCounter(), 300) << "SQL should be cached";
-    
-    auto* annotations = span_event.getAnnotations();
-    EXPECT_NE(annotations, nullptr) << "Annotations should be available";
 }
 
 // ========== Sequence and Depth Tests ==========
