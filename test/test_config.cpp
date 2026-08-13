@@ -24,6 +24,8 @@
 #include <cstdlib>
 #include <unistd.h>
 
+extern char **environ;
+
 namespace pinpoint {
 
 // env:: constants hold only the suffix; the agent reads "<prefix>_<suffix>".
@@ -49,8 +51,22 @@ protected:
     }
 
     void SetUp() override {
-        // Save current environment variables
-        SaveEnvironmentVariables();
+        // Snapshot the whole environment; TearDown restores it exactly, so
+        // tests may set or unset any variable without hand-listing names.
+        for (char** e = environ; *e != nullptr; ++e) {
+            const std::string_view entry(*e);
+            const auto eq = entry.find('=');
+            saved_env_[std::string(entry.substr(0, eq))] = std::string(entry.substr(eq + 1));
+        }
+
+        // Drop every default-prefixed variable so each test starts from a
+        // clean agent environment.
+        const std::string prefix = std::string(env::DEFAULT_PREFIX) + "_";
+        for (const auto& [name, value] : saved_env_) {
+            if (name.rfind(prefix, 0) == 0) {
+                unsetenv(name.c_str());
+            }
+        }
 
         // Start each test from pristine options.
         options_ = AgentOptions{};
@@ -61,105 +77,28 @@ protected:
     }
 
     void TearDown() override {
-        // Restore environment variables
-        RestoreEnvironmentVariables();
-        
+        // Restore the snapshot. Names are collected before any unsetenv():
+        // removing an entry mutates environ while it is being walked.
+        std::vector<std::string> current_names;
+        for (char** e = environ; *e != nullptr; ++e) {
+            const std::string_view entry(*e);
+            current_names.emplace_back(entry.substr(0, entry.find('=')));
+        }
+        for (const auto& name : current_names) {
+            if (saved_env_.find(name) == saved_env_.end()) {
+                unsetenv(name.c_str());
+            }
+        }
+        for (const auto& [name, value] : saved_env_) {
+            setenv(name.c_str(), value.c_str(), 1);
+        }
+
         // Clean up temporary files
         system(("rm -rf " + temp_dir_).c_str());
     }
 
-private:
-    void SaveEnvironmentVariables() {
-        // Save environment variables that might affect config
-        saved_env_vars_[full_env(env::ENABLE)] = GetEnvVar(full_env(env::ENABLE));
-        saved_env_vars_[full_env(env::APPLICATION_NAME)] = GetEnvVar(full_env(env::APPLICATION_NAME));
-        saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
-        saved_env_vars_[full_env(env::UID_VERSION)] = GetEnvVar(full_env(env::UID_VERSION));
-        saved_env_vars_[full_env(env::SERVICE_NAME)] = GetEnvVar(full_env(env::SERVICE_NAME));
-        saved_env_vars_[full_env(env::API_KEY)] = GetEnvVar(full_env(env::API_KEY));
-        saved_env_vars_[full_env(env::LOG_LEVEL)] = GetEnvVar(full_env(env::LOG_LEVEL));
-        saved_env_vars_[full_env(env::GRPC_HOST)] = GetEnvVar(full_env(env::GRPC_HOST));
-        saved_env_vars_[full_env(env::GRPC_AGENT_PORT)] = GetEnvVar(full_env(env::GRPC_AGENT_PORT));
-        saved_env_vars_[full_env(env::GRPC_SPAN_PORT)] = GetEnvVar(full_env(env::GRPC_SPAN_PORT));
-        saved_env_vars_[full_env(env::GRPC_STAT_PORT)] = GetEnvVar(full_env(env::GRPC_STAT_PORT));
-        saved_env_vars_[full_env(env::COLLECTOR_HOST)] = GetEnvVar(full_env(env::COLLECTOR_HOST));
-        saved_env_vars_[full_env(env::COLLECTOR_AGENT_PORT)] = GetEnvVar(full_env(env::COLLECTOR_AGENT_PORT));
-        saved_env_vars_[full_env(env::COLLECTOR_SPAN_PORT)] = GetEnvVar(full_env(env::COLLECTOR_SPAN_PORT));
-        saved_env_vars_[full_env(env::COLLECTOR_STAT_PORT)] = GetEnvVar(full_env(env::COLLECTOR_STAT_PORT));
-        const std::vector<std::string> grpc_env_vars = {
-            full_env(env::GRPC_SSL_TRUST_CERT_FILE_PATH),
-            full_env(env::GRPC_SSL_ROOT_CERT_FILE_PATH),
-            full_env(env::GRPC_SSL_ENABLE),
-            full_env(env::GRPC_KEEPALIVE_TIME_MS),
-            full_env(env::GRPC_KEEPALIVE_TIMEOUT_MS),
-            full_env(env::GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS),
-            full_env(env::GRPC_MAX_SEND_MESSAGE_SIZE),
-            full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE),
-            full_env(env::GRPC_SENDER_QUEUE_SIZE),
-        };
-        for (const std::string& name : grpc_env_vars) {
-            saved_env_vars_[name] = GetEnvVar(name);
-        }
-        saved_env_vars_[full_env(env::SAMPLING_TYPE)] = GetEnvVar(full_env(env::SAMPLING_TYPE));
-        saved_env_vars_[full_env(env::SAMPLING_PERCENT_RATE)] = GetEnvVar(full_env(env::SAMPLING_PERCENT_RATE));
-        saved_env_vars_[full_env(env::IS_CONTAINER)] = GetEnvVar(full_env(env::IS_CONTAINER));
-        saved_env_vars_[full_env(env::CONFIG_FILE)] = GetEnvVar(full_env(env::CONFIG_FILE));
-        saved_env_vars_[full_env(env::SQL_MAX_BIND_ARGS_SIZE)] = GetEnvVar(full_env(env::SQL_MAX_BIND_ARGS_SIZE));
-        saved_env_vars_[full_env(env::SQL_ENABLE_SQL_STATS)] = GetEnvVar(full_env(env::SQL_ENABLE_SQL_STATS));
-        saved_env_vars_[full_env(env::SQL_ENABLE_RAW_SQL_CACHE)] = GetEnvVar(full_env(env::SQL_ENABLE_RAW_SQL_CACHE));
-        saved_env_vars_[full_env(env::SQL_TRACE_BIND_VALUE)] = GetEnvVar(full_env(env::SQL_TRACE_BIND_VALUE));
-        saved_env_vars_[full_env(env::ENABLE_CALLSTACK_TRACE)] = GetEnvVar(full_env(env::ENABLE_CALLSTACK_TRACE));
-        saved_env_vars_[full_env(env::ENABLE_CONFIG_FILE_WATCHER)] = GetEnvVar(full_env(env::ENABLE_CONFIG_FILE_WATCHER));
-        saved_env_vars_[full_env(env::HTTP_COLLECT_URL_STAT)] = GetEnvVar(full_env(env::HTTP_COLLECT_URL_STAT));
-        saved_env_vars_[full_env(env::HTTP_URL_STAT_LIMIT)] = GetEnvVar(full_env(env::HTTP_URL_STAT_LIMIT));
-        saved_env_vars_[full_env(env::HTTP_URL_STAT_QUEUE_SIZE)] = GetEnvVar(full_env(env::HTTP_URL_STAT_QUEUE_SIZE));
-        saved_env_vars_[full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH));
-        saved_env_vars_[full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH)] = GetEnvVar(full_env(env::HTTP_URL_STAT_TRIM_PATH_DEPTH));
-        saved_env_vars_[full_env(env::HTTP_URL_STAT_METHOD_PREFIX)] = GetEnvVar(full_env(env::HTTP_URL_STAT_METHOD_PREFIX));
-        saved_env_vars_[full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS)] = GetEnvVar(full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS));
-        saved_env_vars_[full_env(env::HTTP_SERVER_EXCLUDE_URL)] = GetEnvVar(full_env(env::HTTP_SERVER_EXCLUDE_URL));
-        saved_env_vars_[full_env(env::HTTP_SERVER_EXCLUDE_METHOD)] = GetEnvVar(full_env(env::HTTP_SERVER_EXCLUDE_METHOD));
-        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_REQUEST_HEADER));
-        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_REQUEST_COOKIE));
-        saved_env_vars_[full_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER)] = GetEnvVar(full_env(env::HTTP_SERVER_RECORD_RESPONSE_HEADER));
-        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER));
-        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE));
-        saved_env_vars_[full_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER)] = GetEnvVar(full_env(env::HTTP_CLIENT_RECORD_RESPONSE_HEADER));
-        saved_env_vars_[full_env(env::SPAN_QUEUE_SIZE)] = GetEnvVar(full_env(env::SPAN_QUEUE_SIZE));
-        saved_env_vars_[full_env(env::SPAN_MAX_EVENT_DEPTH)] = GetEnvVar(full_env(env::SPAN_MAX_EVENT_DEPTH));
-        saved_env_vars_[full_env(env::SPAN_MAX_EVENT_SEQUENCE)] = GetEnvVar(full_env(env::SPAN_MAX_EVENT_SEQUENCE));
-        saved_env_vars_[full_env(env::SPAN_EVENT_CHUNK_SIZE)] = GetEnvVar(full_env(env::SPAN_EVENT_CHUNK_SIZE));
-        saved_env_vars_[full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS)] = GetEnvVar(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS));
-        saved_env_vars_[full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS)] = GetEnvVar(full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS));
-        saved_env_vars_[full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT)] = GetEnvVar(full_env(env::AGENT_INFO_MAX_TRY_PER_ATTEMPT));
-        saved_env_vars_[full_env(env::STAT_ENABLE)] = GetEnvVar(full_env(env::STAT_ENABLE));
-        saved_env_vars_[full_env(env::STAT_BATCH_COUNT)] = GetEnvVar(full_env(env::STAT_BATCH_COUNT));
-        saved_env_vars_[full_env(env::STAT_BATCH_INTERVAL)] = GetEnvVar(full_env(env::STAT_BATCH_INTERVAL));
-        saved_env_vars_[full_env(env::AGENT_NAME)] = GetEnvVar(full_env(env::AGENT_NAME));
-
-        // Clear environment variables for clean test
-        for (const auto& pair : saved_env_vars_) {
-            unsetenv(pair.first.c_str());
-        }
-    }
-    
-    void RestoreEnvironmentVariables() {
-        for (const auto& pair : saved_env_vars_) {
-            if (!pair.second.empty()) {
-                setenv(pair.first.c_str(), pair.second.c_str(), 1);
-            } else {
-                unsetenv(pair.first.c_str());
-            }
-        }
-    }
-    
-    std::string GetEnvVar(const std::string& name) {
-        const char* value = std::getenv(name.c_str());
-        return value ? std::string(value) : std::string();
-    }
-
 protected:
-    std::map<std::string, std::string> saved_env_vars_;
+    std::map<std::string, std::string> saved_env_;
     std::string temp_dir_;
     
     // Test YAML configurations
@@ -1265,22 +1204,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     EXPECT_EQ(config->span.queue_size, 2048) << "Valid int should be parsed correctly";
 }
 
-// Test environment variable validation for boolean edge cases
-TEST_F(ConfigTest, EnvironmentVariableBooleanEdgeCasesTest) {
-    // Test various valid boolean representations
-    setenv(full_env(env::ENABLE).c_str(), "TRUE", 1);
-    setenv(full_env(env::STAT_ENABLE).c_str(), "False", 1);
-    setenv(full_env(env::IS_CONTAINER).c_str(), "yes", 1);
-    setenv(full_env(env::HTTP_COLLECT_URL_STAT).c_str(), "NO", 1);
-    
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->enable) << "TRUE should be parsed as true";
-    EXPECT_FALSE(config->stat.enable) << "False should be parsed as false";
-    EXPECT_TRUE(config->is_container) << "yes should be parsed as true";
-    EXPECT_FALSE(config->http.url_stat.enable) << "NO should be parsed as false";
-}
-
 // Test environment variable validation for negative values
 TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     // Set valid negative values where applicable
@@ -1491,330 +1414,138 @@ TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
     EXPECT_TRUE(config->sql.trace_bind_value) << "Should use default when env var is invalid";
 }
 
-// ========== CallStack Trace Configuration Tests ==========
+// ========== Boolean Config Key Tests ==========
 
-// Test default callstack trace configuration
-TEST_F(ConfigTest, CallstackTraceDefaultTest) {
-    auto config = make_config();
-    
-    // Default should be false
-    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
+// Every boolean key flows through the same table-driven loaders, so each key
+// is exercised once per source/override shape here instead of in per-key test
+// families.
+TEST_F(ConfigTest, BooleanConfigKeysTest) {
+    struct BoolKey {
+        const char* section;            // enclosing YAML section ("" = top level)
+        const char* key;                // YAML leaf key
+        const char* env_suffix;         // env:: variable name suffix
+        bool (*get)(const Config&);
+        bool default_value;
+        bool fixed_default;             // false: auto-detected default (IsContainer)
+        const char* config_string_key;  // nullptr: not a unique to_config_string token
+    };
+    const BoolKey keys[] = {
+        {"", "Enable", env::ENABLE,
+         [](const Config& c) { return c.enable; }, true, true, nullptr},
+        {"", "IsContainer", env::IS_CONTAINER,
+         [](const Config& c) { return c.is_container; }, false, false, "IsContainer"},
+        {"", "EnableCallstackTrace", env::ENABLE_CALLSTACK_TRACE,
+         [](const Config& c) { return c.enable_callstack_trace; }, false, true, "EnableCallstackTrace"},
+        {"", "EnableConfigFileWatcher", env::ENABLE_CONFIG_FILE_WATCHER,
+         [](const Config& c) { return c.enable_config_file_watcher; }, false, true, "EnableConfigFileWatcher"},
+        {"Stat", "Enable", env::STAT_ENABLE,
+         [](const Config& c) { return c.stat.enable; }, true, true, nullptr},
+        {"Http", "CollectUrlStat", env::HTTP_COLLECT_URL_STAT,
+         [](const Config& c) { return c.http.url_stat.enable; }, false, true, "CollectUrlStat"},
+        {"Http", "UrlStatEnableTrimPath", env::HTTP_URL_STAT_ENABLE_TRIM_PATH,
+         [](const Config& c) { return c.http.url_stat.enable_trim_path; }, true, true, "UrlStatEnableTrimPath"},
+    };
+
+    const auto yaml_for = [](const BoolKey& k, const char* value) {
+        const std::string nesting = *k.section ? std::string(k.section) + ":\n  " : "";
+        return nesting + k.key + ": " + value + "\n";
+    };
+
+    for (const auto& k : keys) {
+        SCOPED_TRACE(k.env_suffix);
+        const std::string env_name = full_env(k.env_suffix);
+        const char* default_text = k.default_value ? "true" : "false";
+        const char* non_default_text = k.default_value ? "false" : "true";
+
+        if (k.fixed_default) {
+            set_config_string("");
+            auto config = make_config();
+            EXPECT_EQ(k.get(*config), k.default_value) << "default value";
+            if (k.config_string_key) {
+                const std::string entry = std::string(k.config_string_key) + ": " + default_text;
+                EXPECT_TRUE(to_config_string(*config).find(entry) != std::string::npos)
+                    << "default value should appear in to_config_string()";
+            }
+        }
+
+        set_config_string(yaml_for(k, "true"));
+        EXPECT_TRUE(k.get(*make_config())) << "YAML true";
+        set_config_string(yaml_for(k, "false"));
+        EXPECT_FALSE(k.get(*make_config())) << "YAML false";
+
+        set_config_string("");
+        setenv(env_name.c_str(), "true", 1);
+        EXPECT_TRUE(k.get(*make_config())) << "environment variable true";
+        setenv(env_name.c_str(), "false", 1);
+        EXPECT_FALSE(k.get(*make_config())) << "environment variable false";
+
+        set_config_string(yaml_for(k, "false"));
+        setenv(env_name.c_str(), "true", 1);
+        EXPECT_TRUE(k.get(*make_config())) << "environment variable true should override YAML";
+        set_config_string(yaml_for(k, "true"));
+        setenv(env_name.c_str(), "false", 1);
+        EXPECT_FALSE(k.get(*make_config())) << "environment variable false should override YAML";
+
+        if (k.fixed_default) {
+            set_config_string("");
+            setenv(env_name.c_str(), "invalid_bool", 1);
+            EXPECT_EQ(k.get(*make_config()), k.default_value)
+                << "invalid environment value should fall back to the default";
+        }
+        unsetenv(env_name.c_str());
+
+        if (k.config_string_key) {
+            set_config_string(yaml_for(k, non_default_text));
+            auto config = make_config();
+            const std::string config_string = to_config_string(*config);
+            EXPECT_TRUE(config_string.find(std::string(k.config_string_key) + ": " + non_default_text)
+                            != std::string::npos)
+                << "non-default value should appear in to_config_string()";
+            set_config_string(config_string);
+            EXPECT_EQ(k.get(*make_config()), !k.default_value)
+                << "value should survive a to_config_string() round-trip";
+        }
+    }
 }
 
-// Test enabling callstack trace via YAML
-TEST_F(ConfigTest, CallstackTraceEnableViaYamlTest) {
-    set_config_string(R"(
-EnableCallstackTrace: true
-)");
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled as per YAML";
-}
+// The boolean value parsers are shared by every key, so the accepted spellings
+// are walked once: YAML spellings against UrlStatEnableTrimPath (default true,
+// making a parsed false observable) and environment spellings against
+// EnableCallstackTrace (default false, making a parsed true observable).
+// Unparseable spellings fall back to the key's default.
+TEST_F(ConfigTest, BooleanValueSpellingsTest) {
+    struct Spelling { const char* text; bool expected; };
 
-// Test disabling callstack trace via YAML
-TEST_F(ConfigTest, CallstackTraceDisableViaYamlTest) {
-    set_config_string(R"(
-EnableCallstackTrace: false
-)");
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled as per YAML";
-}
+    const Spelling yaml_spellings[] = {
+        {"true", true}, {"false", false},
+        {"TRUE", true}, {"FALSE", false},
+        {"yes", true},  {"no", false},
+        {"not_a_boolean", true},  // invalid type -> default
+    };
+    for (const auto& s : yaml_spellings) {
+        SCOPED_TRACE(std::string("yaml: ") + s.text);
+        set_config_string(std::string("Http:\n  UrlStatEnableTrimPath: ") + s.text + "\n");
+        EXPECT_EQ(make_config()->http.url_stat.enable_trim_path, s.expected);
+    }
 
-// Test enabling callstack trace via environment variable
-TEST_F(ConfigTest, CallstackTraceEnableViaEnvironmentVariableTest) {
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
-    
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled as per environment variable";
-}
-
-// Test disabling callstack trace via environment variable
-TEST_F(ConfigTest, CallstackTraceDisableViaEnvironmentVariableTest) {
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "false", 1);
-    
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled as per environment variable";
-}
-
-TEST_F(ConfigTest, CallstackTraceEnvironmentVariableOverrideYamlTest) {
-    // Set YAML to disable
-    set_config_string(R"(
-EnableCallstackTrace: false
-)");
-    
-    // Set environment variable to enable (should override YAML)
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
-    
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
-}
-
-// Test environment variable overrides YAML (opposite case)
-TEST_F(ConfigTest, CallstackTraceEnvironmentVariableOverrideYamlOppositeTest) {
-    // Set YAML to enable
-    set_config_string(R"(
-EnableCallstackTrace: true
-)");
-    
-    // Set environment variable to disable (should override YAML)
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "false", 1);
-    
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
-}
-
-TEST_F(ConfigTest, CallstackTraceInCompleteConfigurationTest) {
-    const std::string complete_config = R"(
-ApplicationName: "CallstackTestApp"
-EnableCallstackTrace: true
-
-Log:
-  Level: "debug"
-
-Collector:
-  GrpcHost: "test.host"
-  GrpcAgentPort: 9000
-)";
-    
-    set_config_string(complete_config);
-    auto config = make_config();
-    
-    EXPECT_EQ(config->app_name_, "CallstackTestApp") << "App name should match";
-    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled";
-    EXPECT_EQ(config->log.level, "debug") << "Other config values should also be loaded";
-}
-
-// Test callstack trace configuration string generation
-TEST_F(ConfigTest, CallstackTraceConfigurationToStringTest) {
-    set_config_string(R"(
-EnableCallstackTrace: true
-)");
-    auto config = make_config();
-    
-    std::string config_string = to_config_string(*config);
-    
-    // Check that callstack trace configuration is included in generated string
-    EXPECT_TRUE(config_string.find("EnableCallstackTrace: true") != std::string::npos) 
-        << "Config string should contain EnableCallstackTrace setting";
-}
-
-// Test callstack trace configuration string generation when disabled
-TEST_F(ConfigTest, CallstackTraceConfigurationToStringDisabledTest) {
-    set_config_string(R"(
-EnableCallstackTrace: false
-)");
-    auto config = make_config();
-    
-    std::string config_string = to_config_string(*config);
-    
-    // Check that callstack trace configuration is included in generated string
-    EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
-        << "Config string should contain EnableCallstackTrace setting as false";
-}
-
-TEST_F(ConfigTest, CallstackTraceConfigurationRoundTripTest) {
-    const std::string callstack_config = R"(
-ApplicationName: "RoundTripApp"
-EnableCallstackTrace: true
-)";
-    
-    set_config_string(callstack_config);
-    auto config1 = make_config();
-    
-    EXPECT_TRUE(config1->enable_callstack_trace) << "Initial config should have callstack trace enabled";
-    
-    std::string generated_config_string = to_config_string(*config1);
-    
-    // Use generated string as new config
-    set_config_string(generated_config_string);
-    auto config2 = make_config();
-    
-    // CallStack trace config should match after round-trip
-    EXPECT_EQ(config1->enable_callstack_trace, config2->enable_callstack_trace) 
-        << "CallStack trace setting should match after round-trip";
-    EXPECT_TRUE(config2->enable_callstack_trace) << "CallStack trace should still be enabled after round-trip";
-}
-
-// Test invalid callstack trace environment variable value
-TEST_F(ConfigTest, CallstackTraceInvalidEnvironmentVariableTest) {
-    // Test invalid boolean value (should fallback to default)
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "invalid_bool", 1);
-    
-    auto config = make_config();
-    
-    // Should fallback to default (false) when environment variable is invalid
-    EXPECT_FALSE(config->enable_callstack_trace) << "Should use default (false) when env var is invalid";
-}
-
-// Test various valid boolean representations for callstack trace
-TEST_F(ConfigTest, CallstackTraceBooleanRepresentationsTest) {
-    // Test "1" as true
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "1", 1);
-    auto config1 = make_config();
-    EXPECT_TRUE(config1->enable_callstack_trace) << "1 should be parsed as true";
-    
-    // Test "0" as false
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "0", 1);
-    auto config2 = make_config();
-    EXPECT_FALSE(config2->enable_callstack_trace) << "0 should be parsed as false";
-    
-    // Test "TRUE" as true
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "TRUE", 1);
-    auto config3 = make_config();
-    EXPECT_TRUE(config3->enable_callstack_trace) << "TRUE should be parsed as true";
-    
-    // Test "False" as false
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "False", 1);
-    auto config4 = make_config();
-    EXPECT_FALSE(config4->enable_callstack_trace) << "False should be parsed as false";
-    
-    // Test "yes" as true
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "yes", 1);
-    auto config5 = make_config();
-    EXPECT_TRUE(config5->enable_callstack_trace) << "yes should be parsed as true";
-    
-    // Test "NO" as false
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "NO", 1);
-    auto config6 = make_config();
-    EXPECT_FALSE(config6->enable_callstack_trace) << "NO should be parsed as false";
-}
-
-TEST_F(ConfigTest, CallstackTraceInvalidYamlTypeTest) {
-    // YAML with invalid type for EnableCallstackTrace
-    const std::string invalid_type_yaml = R"(
-EnableCallstackTrace: "not_a_boolean"
-)";
-    
-    set_config_string(invalid_type_yaml);
-    auto config = make_config();
-    
-    // Should use default value when YAML type is invalid
-    EXPECT_FALSE(config->enable_callstack_trace) << "Should use default (false) when YAML type is invalid";
-}
-
-// Test callstack trace mixed with other configurations
-TEST_F(ConfigTest, CallstackTraceMixedConfigurationTest) {
-    const std::string mixed_config = R"(
-ApplicationName: "MixedApp"
-Enable: true
-EnableCallstackTrace: true
-
-Log:
-  Level: "warn"
-  MaxFileSize: 50
-
-Collector:
-  GrpcHost: "mixed.collector.host"
-
-Sampling:
-  Type: "PERCENT"
-  PercentRate: 25.0
-
-Sql:
-  MaxBindArgsSize: 2048
-  EnableSqlStats: true
-)";
-    
-    set_config_string(mixed_config);
-    auto config = make_config();
-    
-    // Verify all config values including callstack trace
-    EXPECT_EQ(config->app_name_, "MixedApp") << "App name should match";
-    EXPECT_TRUE(config->enable) << "Enable should be true";
-    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled";
-    EXPECT_EQ(config->log.level, "warn") << "Log level should match";
-    EXPECT_EQ(config->log.max_file_size, 50) << "Log max file size should match";
-    EXPECT_EQ(config->collector.host, "mixed.collector.host") << "Collector host should match";
-    EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match";
-    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 25.0) << "Percent rate should match";
-    EXPECT_EQ(config->sql.max_bind_args_size, 2048) << "SQL max bind args size should match";
-    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled";
-}
-
-// Test callstack trace environment variable with other environment variables
-TEST_F(ConfigTest, CallstackTraceEnvironmentVariableWithOthersTest) {
-    setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvMixedApp", 1);
-    setenv(full_env(env::ENABLE_CALLSTACK_TRACE).c_str(), "true", 1);
-    setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
-    setenv(full_env(env::LOG_LEVEL).c_str(), "error", 1);
-    
-    auto config = make_config();
-    
-    // Verify all environment variables are loaded correctly
-    EXPECT_EQ(config->app_name_, "EnvMixedApp") << "App name should match env var";
-    EXPECT_TRUE(config->enable_callstack_trace) << "CallStack trace should be enabled via env var";
-    EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled via env var";
-    EXPECT_EQ(config->log.level, "error") << "Log level should match env var";
-}
-
-// Test callstack trace default value is included in string output
-TEST_F(ConfigTest, CallstackTraceDefaultInStringOutputTest) {
-    // Don't set any config, use defaults
-    auto config = make_config();
-    
-    std::string config_string = to_config_string(*config);
-    
-    // Check that callstack trace is included in output even with default value
-    EXPECT_TRUE(config_string.find("EnableCallstackTrace") != std::string::npos) 
-        << "Config string should contain EnableCallstackTrace key";
-    EXPECT_TRUE(config_string.find("EnableCallstackTrace: false") != std::string::npos) 
-        << "Config string should show default value (false)";
+    set_config_string("");
+    const std::string env_name = full_env(env::ENABLE_CALLSTACK_TRACE);
+    const Spelling env_spellings[] = {
+        {"true", true}, {"false", false},
+        {"TRUE", true}, {"False", false},
+        {"1", true},    {"0", false},
+        {"yes", true},  {"no", false}, {"NO", false},
+        {"invalid_bool", false},  // invalid value -> default
+    };
+    for (const auto& s : env_spellings) {
+        SCOPED_TRACE(std::string("env: ") + s.text);
+        setenv(env_name.c_str(), s.text, 1);
+        EXPECT_EQ(make_config()->enable_callstack_trace, s.expected);
+    }
+    unsetenv(env_name.c_str());
 }
 
 // ========== Config File Watcher Configuration Tests ==========
-
-// The config-file watcher (hot reload) is opt-in
-TEST_F(ConfigTest, ConfigFileWatcherDefaultTest) {
-    auto config = make_config();
-
-    EXPECT_FALSE(config->enable_config_file_watcher)
-        << "Config file watcher should be disabled by default";
-}
-
-TEST_F(ConfigTest, ConfigFileWatcherEnableViaYamlTest) {
-    set_config_string(R"(
-EnableConfigFileWatcher: true
-)");
-    auto config = make_config();
-
-    EXPECT_TRUE(config->enable_config_file_watcher)
-        << "Config file watcher should be enabled as per YAML";
-}
-
-TEST_F(ConfigTest, ConfigFileWatcherEnableViaEnvironmentVariableTest) {
-    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "true", 1);
-
-    auto config = make_config();
-
-    EXPECT_TRUE(config->enable_config_file_watcher)
-        << "Config file watcher should be enabled as per environment variable";
-}
-
-TEST_F(ConfigTest, ConfigFileWatcherEnvironmentVariableOverrideYamlTest) {
-    set_config_string(R"(
-EnableConfigFileWatcher: true
-)");
-    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "false", 1);
-
-    auto config = make_config();
-
-    EXPECT_FALSE(config->enable_config_file_watcher)
-        << "Environment variable should override YAML for the config file watcher";
-}
-
-TEST_F(ConfigTest, ConfigFileWatcherInvalidEnvironmentVariableTest) {
-    setenv(full_env(env::ENABLE_CONFIG_FILE_WATCHER).c_str(), "invalid_bool", 1);
-
-    auto config = make_config();
-
-    EXPECT_FALSE(config->enable_config_file_watcher)
-        << "Should use default (false) when env var is invalid";
-}
 
 // The toggle is consumed once at Start() (the watcher either was or was not
 // installed), so a reload must never flip it — in either direction.
@@ -1851,146 +1582,6 @@ EnableConfigFileWatcher: true
     ASSERT_NE(reloaded_on, nullptr);
     EXPECT_FALSE(reloaded_on->enable_config_file_watcher)
         << "Reload must retain the running watcher toggle (false)";
-}
-
-TEST_F(ConfigTest, ConfigFileWatcherConfigurationToStringTest) {
-    set_config_string(R"(
-EnableConfigFileWatcher: true
-)");
-    auto config = make_config();
-
-    std::string config_string = to_config_string(*config);
-
-    EXPECT_TRUE(config_string.find("EnableConfigFileWatcher: true") != std::string::npos)
-        << "Config string should contain EnableConfigFileWatcher setting";
-}
-
-// ========== URL Stat Enable Trim Path Tests ==========
-
-TEST_F(ConfigTest, UrlStatEnableTrimPathViaYamlTest) {
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: false
-)");
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via YAML";
-}
-
-TEST_F(ConfigTest, UrlStatEnableTrimPathViaEnvironmentVariableTest) {
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via environment variable";
-}
-
-// Test environment variable overrides YAML for enable trim path
-TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlTest) {
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: false
-)");
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "true", 1);
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path";
-}
-
-// Test environment variable overrides YAML (opposite case)
-TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableOverrideYamlOppositeTest) {
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: true
-)");
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
-    auto config = make_config();
-    
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Environment variable should override YAML for enable trim path (opposite)";
-}
-
-// Test invalid environment variable for enable trim path
-TEST_F(ConfigTest, UrlStatEnableTrimPathInvalidEnvironmentVariableTest) {
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "invalid", 1);
-    auto config = make_config();
-    
-    // Should use default value (true) when invalid
-    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Invalid environment variable should use default value";
-}
-
-TEST_F(ConfigTest, UrlStatEnableTrimPathWithOtherSettingsTest) {
-    set_config_string(R"(
-Http:
-  CollectUrlStat: true
-  UrlStatLimit: 512
-  UrlStatEnableTrimPath: false
-  UrlStatTrimPathDepth: 2
-  UrlStatMethodPrefix: true
-)");
-    auto config = make_config();
-    
-    EXPECT_TRUE(config->http.url_stat.enable) << "URL stat should be enabled";
-    EXPECT_EQ(config->http.url_stat.limit, 512) << "URL stat limit should match YAML";
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Enable trim path should be false";
-    EXPECT_EQ(config->http.url_stat.trim_path_depth, 2) << "Path depth should match YAML";
-    EXPECT_TRUE(config->http.url_stat.method_prefix) << "Method prefix should be true";
-}
-
-// Test enable trim path boolean variations
-TEST_F(ConfigTest, UrlStatEnableTrimPathBooleanVariationsTest) {
-    // Test "yes"
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: yes
-)");
-    auto config1 = make_config();
-    EXPECT_TRUE(config1->http.url_stat.enable_trim_path) << "yes should be parsed as true";
-    
-    // Test "no"
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: no
-)");
-    auto config2 = make_config();
-    EXPECT_FALSE(config2->http.url_stat.enable_trim_path) << "no should be parsed as false";
-    
-    // Test "TRUE"
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: TRUE
-)");
-    auto config3 = make_config();
-    EXPECT_TRUE(config3->http.url_stat.enable_trim_path) << "TRUE should be parsed as true";
-    
-    // Test "FALSE"
-    set_config_string(R"(
-Http:
-  UrlStatEnableTrimPath: FALSE
-)");
-    auto config4 = make_config();
-    EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "FALSE should be parsed as false";
-}
-
-// Test enable trim path environment variable boolean variations
-TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest) {
-    // Test "1"
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "1", 1);
-    auto config1 = make_config();
-    EXPECT_TRUE(config1->http.url_stat.enable_trim_path) << "1 should be parsed as true";
-    
-    // Test "0"
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "0", 1);
-    auto config2 = make_config();
-    EXPECT_FALSE(config2->http.url_stat.enable_trim_path) << "0 should be parsed as false";
-    
-    // Test "yes"
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "yes", 1);
-    auto config3 = make_config();
-    EXPECT_TRUE(config3->http.url_stat.enable_trim_path) << "yes should be parsed as true";
-    
-    // Test "no"
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "no", 1);
-    auto config4 = make_config();
-    EXPECT_FALSE(config4->http.url_stat.enable_trim_path) << "no should be parsed as false";
 }
 
 // ========== Config::check() Validation Tests ==========
@@ -2490,10 +2081,6 @@ TEST_F(ConfigTest, EnvVarPrefixCustomTest) {
 
     auto config = make_config();
 
-    unsetenv("MYAPP_APPLICATION_NAME");
-    unsetenv("MYAPP_SAMPLING_COUNTER_RATE");
-    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
-
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->app_name_, "custom-prefixed-app");
     EXPECT_EQ(config->sampling.counter_rate, 7);
@@ -2569,9 +2156,6 @@ TEST_F(ConfigTest, EnvVarPrefixEmptyResetsToDefaultTest) {
 
     auto config = make_config();
 
-    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
-    unsetenv("MYAPP_APPLICATION_NAME");
-
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->app_name_, "default-app");
 }
@@ -2581,8 +2165,6 @@ TEST_F(ConfigTest, EnvVarPrefixDefaultIsPinpointCppTest) {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "default-app", 1);
 
     auto config = make_config();
-
-    unsetenv("PINPOINT_CPP_APPLICATION_NAME");
 
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->app_name_, "default-app");
