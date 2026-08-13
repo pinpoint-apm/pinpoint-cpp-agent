@@ -534,7 +534,12 @@ protected:
             << "IsContainer: true\n"
             << "EnableCallstackTrace: true\n"
             << "Log:\n"
-            << "  Level: error\n"
+            // "warning", not error, and not the "warn" the level parser
+            // rejects: make_config() reports a rejected setting at warning
+            // level and then falls back to the default, so at error level a
+            // fixture knob outside its valid range is silently ignored and
+            // the test still passes, measuring something else entirely.
+            << "  Level: warning\n"
             << "Collector:\n"
             << "  Host: " << collector_.host() << "\n"
             << "  AgentPort: " << collector_.agent_port() << "\n"
