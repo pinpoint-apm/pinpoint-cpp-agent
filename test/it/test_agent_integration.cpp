@@ -458,6 +458,9 @@ protected:
         bool trace_bind_value{true};
         bool stat_enable{true};
         int max_bind_args_size{2048};
+        // Production default is minutes. Left long enough that the periodic
+        // re-sender never fires mid-test unless a test shortens it.
+        int agent_info_refresh_interval_ms{60000};
         std::string_view server_record_request_headers{"[x-request-id]"};
         std::string_view server_exclude_urls{"[/excluded/**]"};
     };
@@ -538,7 +541,7 @@ protected:
             << "  SpanPort: " << collector_.span_port() << "\n"
             << "  StatPort: " << collector_.stat_port() << "\n"
             << "  AgentInfo:\n"
-            << "    RefreshIntervalMs: 60000\n"
+            << "    RefreshIntervalMs: " << cfg_.agent_info_refresh_interval_ms << "\n"
             << "    SendRetryIntervalMs: 50\n"
             << "    MaxTryPerAttempt: 2\n"
             << "  SpanBatch:\n"
@@ -2052,6 +2055,42 @@ TEST_F(AgentInfoRetryIntegrationTest, RetriesAgentRegistrationAfterInitialFailur
     EXPECT_FALSE(results[0].response_success);
     EXPECT_EQ(results[1].status_code, grpc::StatusCode::OK);
     EXPECT_TRUE(results[1].response_success);
+    EXPECT_TRUE(agent_->Enable());
+}
+
+// Boot registration retries forever, but the periodic AgentInfo re-sender is
+// bounded by MaxTryPerAttempt and a failed cycle is best-effort: it must retry
+// within the cycle and leave the agent enabled either way. The other retry
+// tests here all cover the boot path, which is a different loop.
+TEST_F(AgentIntegrationTest, RetriesPeriodicAgentInfoResendAfterFailure) {
+    // Short enough that a refresh lands during the test; the retry interval
+    // and attempt count come from the fixture (50ms, 2 tries).
+    cfg_.agent_info_refresh_interval_ms = 200;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    const auto registered = collector_.snapshot().agent_infos.size();
+    ASSERT_GE(registered, 1U);
+
+    // Armed only now, so boot registration keeps its own success and the
+    // fault lands on a re-send instead.
+    collector_.FailNext(CollectorRpc::AgentInfo,
+                        grpc::StatusCode::UNAVAILABLE,
+                        "periodic re-send rejected");
+
+    // The failed attempt and its retry both reach the collector.
+    ASSERT_TRUE(collector_.WaitFor([registered](const auto& snapshot) {
+        return snapshot.agent_infos.size() >= registered + 2;
+    }, kWaitTimeout));
+
+    const auto results = results_for(collector_.snapshot(), CollectorRpc::AgentInfo);
+    ASSERT_GE(results.size(), registered + 2);
+    const auto& failed = results[registered];
+    const auto& retried = results[registered + 1];
+    EXPECT_EQ(failed.status_code, grpc::StatusCode::UNAVAILABLE);
+    EXPECT_FALSE(failed.response_success);
+    EXPECT_EQ(retried.status_code, grpc::StatusCode::OK);
+    EXPECT_TRUE(retried.response_success);
+    // A best-effort cycle must never take the agent offline.
     EXPECT_TRUE(agent_->Enable());
 }
 
