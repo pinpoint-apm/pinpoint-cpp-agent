@@ -1946,6 +1946,55 @@ TEST_F(GrpcMockTest, GrpcCommandStopWorkerWakesReconnectDelay) {
 // GrpcSpan SendSpanBatch tests (fake async stub)
 // ============================================================
 
+// enqueueSpan drops a chunk instead of queueing it: a null chunk would reach
+// the worker and crash at getSpanData(), and a chunk handed over while the
+// agent is exiting would sit in a queue nothing drains. Both drops must leave
+// the queue usable, so a later chunk is still delivered.
+TEST_F(GrpcMockTest, GrpcSpanEnqueueDropsNullAndExitingChunksTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    mock_agent_service_->setExiting(true);
+    auto exiting_span = make_test_span_data_ptr(*mock_agent_service_, "exiting-op");
+    exiting_span->setSpanId(1001);
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(exiting_span, true));
+    mock_agent_service_->setExiting(false);
+
+    span_client.enqueueSpan(nullptr);
+
+    auto delivered_span = make_test_span_data_ptr(*mock_agent_service_, "delivered-op");
+    delivered_span->setSpanId(1002);
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(delivered_span, true));
+
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
+        << "the chunk enqueued while the agent was running must be delivered";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    // Both enqueues run on this thread, so they share a queue shard and keep
+    // FIFO order: a retained exiting chunk would have been sent first.
+    EXPECT_EQ(fake->batchCount(), 1u)
+        << "only the accepted chunk should reach the collector";
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    ASSERT_TRUE(request.span(0).has_span());
+    EXPECT_EQ(request.span(0).span().spanid(), 1002)
+        << "the chunk enqueued while exiting must be dropped, not queued";
+}
+
 TEST_F(GrpcMockTest, GrpcSpanSendBatchSuccessTest) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->collector.span_batch.size = 2;
