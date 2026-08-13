@@ -41,11 +41,7 @@
 #include "v1/Service_mock.grpc.pb.h"
 #include "mock_helpers.h"
 
-using ::testing::_;
-using ::testing::Return;
 using ::testing::NiceMock;
-using ::testing::SetArgPointee;
-using ::testing::DoAll;
 
 namespace pinpoint {
 
@@ -57,10 +53,9 @@ public:
         : GrpcAgent(std::move(config)) {}
 
     void injectMockStubs() {
-        auto agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-        EXPECT_CALL(*agent_stub, RequestAgentInfo(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        set_agent_stub(std::move(agent_stub));
+        // No expectations: registerAgent() is overridden below and
+        // readyChannel() is false, so the stub is never exercised.
+        set_agent_stub(std::make_unique<NiceMock<v1::MockAgentStub>>());
     }
 
     // Avoid real gRPC async streaming in worker threads.
@@ -73,8 +68,6 @@ protected:
     // openChannel() (called from Start()) would otherwise replace the injected
     // mock stub with a real one; keep the mock in place.
     void create_stub() override {}
-    bool wait_channel_ready() const { return true; }
-
 };
 
 class TestableGrpcMetadata : public GrpcMetadata {
@@ -83,19 +76,9 @@ public:
         : GrpcMetadata(std::move(config)) {}
 
     void injectMockStubs() {
-        v1::PResult ok;
-        ok.set_success(true);
-
-        auto meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-        EXPECT_CALL(*meta_stub, RequestApiMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestStringMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestSqlMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestSqlUidMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        set_meta_stub(std::move(meta_stub));
+        // No expectations: readyChannel() is false, so the meta worker never
+        // issues an RPC (pinned by GrpcMetadataSkipsRpcWhenChannelNotReady).
+        set_meta_stub(std::make_unique<NiceMock<v1::MockMetadataStub>>());
     }
 
     bool readyChannel() override { return false; }
@@ -117,7 +100,6 @@ public:
 
 protected:
     void create_stub() override {}
-    bool wait_channel_ready() const { return true; }
 };
 
 class TestableGrpcStats : public GrpcStats {
@@ -133,7 +115,6 @@ public:
 
 protected:
     void create_stub() override {}
-    bool wait_channel_ready() const { return true; }
 };
 
 // --- Helper to build a valid Config ---

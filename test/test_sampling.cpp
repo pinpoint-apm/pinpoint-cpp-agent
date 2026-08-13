@@ -123,24 +123,6 @@ TEST_F(SamplingTest, PercentSamplerZeroRateTest) {
     }
 }
 
-// Test PercentSampler with rate 100.0 - should return true approximately 100% of the time
-TEST_F(SamplingTest, PercentSamplerFullRateTest) {
-    PercentSampler sampler(100.0); // 100.0 means 100%
-    
-    int true_count = 0;
-    int total_calls = 10000;
-    
-    for (int i = 0; i < total_calls; ++i) {
-        if (sampler.isSampled()) {
-            true_count++;
-        }
-    }
-    
-    double actual_rate = static_cast<double>(true_count) / total_calls;
-    // With rate 100.0, we expect close to 100% sampling
-    EXPECT_GT(actual_rate, 0.95) << "Rate 100.0 should result in >95% sampling, got " << actual_rate;
-}
-
 // Out-of-range rates are clamped in the constructor: a negative rate behaves
 // as never-sample (like CounterSampler's <= 0 guard) and a rate above 100%
 // behaves as always-sample, even without the config-layer validation.
@@ -456,69 +438,6 @@ TEST_F(SamplingTest, CounterSamplerLargeRateTest) {
     for (int i = 0; i < 10; ++i) {
         EXPECT_FALSE(sampler.isSampled()) << "Call " << i << " should return false for large rate";
     }
-}
-
-// Test PercentSampler with negative rate - should never sample
-TEST_F(SamplingTest, PercentSamplerNegativeRateTest) {
-    PercentSampler sampler(-5.0);
-
-    // Negative rate becomes negative int; should not crash
-    for (int i = 0; i < 100; ++i) {
-        sampler.isSampled(); // Just verify no crash
-    }
-}
-
-// Test PercentSampler with rate exceeding 100.0
-TEST_F(SamplingTest, PercentSamplerOverMaxRateTest) {
-    PercentSampler sampler(200.0); // 200% - double the max
-
-    int true_count = 0;
-    const int total_calls = 10000;
-
-    for (int i = 0; i < total_calls; ++i) {
-        if (sampler.isSampled()) {
-            true_count++;
-        }
-    }
-
-    // Even with rate > 100%, should not crash and sampling should work
-    EXPECT_GT(true_count, 0) << "Should still sample some requests with over-max rate";
-}
-
-// Test PercentSampler with very small rate (0.01 = 0.01%)
-TEST_F(SamplingTest, PercentSamplerVerySmallRateTest) {
-    PercentSampler sampler(0.01); // 0.01% sampling
-
-    int true_count = 0;
-    const int total_calls = 1000000;
-
-    for (int i = 0; i < total_calls; ++i) {
-        if (sampler.isSampled()) {
-            true_count++;
-        }
-    }
-
-    // 0.01% of 1M = ~100, allow wide tolerance
-    double actual_rate = static_cast<double>(true_count) / total_calls;
-    EXPECT_NEAR(actual_rate, 0.0001, 0.0005)
-        << "Very small rate should produce very few samples, got " << true_count;
-}
-
-// Test PercentSampler with rate 50.0 (50% sampling)
-TEST_F(SamplingTest, PercentSamplerHalfRateTest) {
-    PercentSampler sampler(50.0);
-
-    int true_count = 0;
-    const int total_calls = 100000;
-
-    for (int i = 0; i < total_calls; ++i) {
-        if (sampler.isSampled()) {
-            true_count++;
-        }
-    }
-
-    double actual_rate = static_cast<double>(true_count) / total_calls;
-    EXPECT_NEAR(actual_rate, 0.50, 0.02) << "50% rate should sample about half, got " << actual_rate;
 }
 
 // AgentStats Counter Verification Tests

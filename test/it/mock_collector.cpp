@@ -207,7 +207,6 @@ struct MockCollector::Impl {
                               google::protobuf::Empty*) override {
             const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
-            owner_.record_stream(&CollectorSnapshot::span_streams, metadata);
 
             if (auto fault = owner_.apply_stream_fault(
                     CollectorRpc::SendSpan, context, 0)) {
@@ -302,7 +301,6 @@ struct MockCollector::Impl {
                 google::protobuf::Empty*) override {
             const LiveCallGuard live_call(owner_, context);
             const auto metadata = copy_metadata(*context);
-            owner_.record_stream(&CollectorSnapshot::active_thread_count_streams, metadata);
 
             if (auto fault = owner_.apply_stream_fault(
                     CollectorRpc::CommandStreamActiveThreadCount, context, 0)) {
@@ -327,10 +325,8 @@ struct MockCollector::Impl {
 
         grpc::Status CommandActiveThreadDump(
                 grpc::ServerContext* context,
-                const v1::PCmdActiveThreadDumpRes* request,
+                const v1::PCmdActiveThreadDumpRes*,
                 google::protobuf::Empty*) override {
-            owner_.record(&CollectorSnapshot::active_thread_dump_responses,
-                          *request, copy_metadata(*context));
             return owner_.complete_unary(
                 CollectorRpc::CommandActiveThreadDump, context, nullptr);
         }

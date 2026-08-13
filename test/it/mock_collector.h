@@ -94,7 +94,6 @@ struct CollectorSnapshot {
     std::vector<Received<v1::PStringMetaData>> string_metadata;
     std::vector<Received<v1::PExceptionMetaData>> exception_metadata;
 
-    std::vector<RpcMetadata> span_streams;
     std::vector<Received<v1::PSpanMessage>> span_messages;
     std::vector<Received<v1::PSpanMessageBatch>> span_batches;
 
@@ -105,9 +104,7 @@ struct CollectorSnapshot {
     std::vector<RpcMetadata> command_streams_v2;
     std::vector<Received<v1::PCmdMessage>> command_stream_messages;
     std::vector<Received<v1::PCmdEchoResponse>> echo_responses;
-    std::vector<RpcMetadata> active_thread_count_streams;
     std::vector<Received<v1::PCmdActiveThreadCountRes>> active_thread_count_responses;
-    std::vector<Received<v1::PCmdActiveThreadDumpRes>> active_thread_dump_responses;
 };
 
 /**

@@ -92,22 +92,6 @@ size_t annotation_count_of(const PinpointAnnotation& annotation, int32_t key) {
     return total;
 }
 
-// Utility functions needed by http.cpp
-bool compare_string(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(a[i]) != std::tolower(b[i])) return false;
-    }
-    return true;
-}
-
-int stoi_(const std::string& str) {
-    std::stringstream ss(str);
-    int result;
-    ss >> result;
-    return result;
-}
-
 class HttpTest : public ::testing::Test {};
 
 // ========== HttpStatusErrors Class Tests ==========
@@ -898,7 +882,7 @@ TEST_F(HttpTest, HttpMethodFilterCaseInsensitiveTest) {
     std::vector<std::string> cfg = {"POST"};
     HttpMethodFilter filter(cfg);
     
-    // Should handle different cases (assuming compare_string is case-insensitive)
+    // Method matching is case-insensitive
     EXPECT_TRUE(filter.isFiltered("POST")) << "Should filter POST";
     EXPECT_TRUE(filter.isFiltered("post")) << "Should filter post (case insensitive)";
     EXPECT_TRUE(filter.isFiltered("Post")) << "Should filter Post (case insensitive)";
@@ -1266,7 +1250,7 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
     auto annotation = std::make_shared<PinpointAnnotation>();
     recorder.recordHeader(headerReader, annotation.get());
 
-    // compare_string is case-insensitive, so "headers-all" should trigger dump_all_headers_
+    // Header-name matching is case-insensitive, so "headers-all" should trigger dump_all_headers_
     EXPECT_EQ(string_string_count_of(*annotation), 3)
         << "headers-all (lowercase) should dump all 3 headers";
 }

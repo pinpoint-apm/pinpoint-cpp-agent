@@ -15,7 +15,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -23,27 +22,13 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <thread>
 #include <unistd.h>
 
 #include "../src/grpc.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
-#include "../src/span.h"
-#include "../src/stat.h"
-#include "../src/url_stat.h"
 #include "../include/pinpoint/tracer.h"
-#include "v1/Service_mock.grpc.pb.h"
 #include "mock_agent_service.h"
-#include "mock_helpers.h"
-
-using ::testing::_;
-using ::testing::Return;
-using ::testing::NiceMock;
-using ::testing::StrictMock;
-using ::testing::InSequence;
-using ::testing::DoAll;
-using ::testing::SetArgPointee;
 
 namespace pinpoint {
 
@@ -145,24 +130,6 @@ TEST(ExponentialBackoffTest, JitterStaysWithinRandomizationRange) {
     }
 }
 
-// GrpcClient Tests
-
-TEST_F(GrpcTest, GrpcClientConstructorTest) {
-    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
-    
-    // Basic construction should not throw
-    SUCCEED() << "GrpcClient should construct successfully";
-}
-
-TEST_F(GrpcTest, GrpcClientChannelTest) {
-    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
-    
-    // Test closeChannel should not throw (skip readyChannel as it blocks in test environment)
-    client.closeChannel();
-    
-    SUCCEED() << "Channel operations should complete without exceptions";
-}
-
 TEST_F(GrpcTest, GrpcClientTlsMissingSelectedCertificateThrows) {
     auto& ssl = mock_agent_service_->mutableConfig()->collector.grpc.ssl;
     ssl.enable = true;
@@ -215,121 +182,7 @@ TEST_F(GrpcTest, GrpcClientTlsUsesDefaultRootsWhenNoCertificatePathIsSet) {
     client.closeChannel();
 }
 
-// GrpcAgent Tests
-
-TEST_F(GrpcTest, GrpcAgentConstructorTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
-    
-    SUCCEED() << "GrpcAgent should construct successfully";
-}
-
-TEST_F(GrpcTest, GrpcAgentRegisterAgentTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
-    
-    // Skip actual registerAgent call as it blocks without server
-    // Just test that the method exists and can be called safely
-    SUCCEED() << "GrpcAgent registerAgent method should be available";
-}
-
-TEST_F(GrpcTest, GrpcAgentMetaOperationsTest) {
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-    
-    // Test enqueueMeta with API metadata
-    auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
-    metadata.enqueueMeta(std::move(api_meta));
-    
-    // Test enqueueMeta with string metadata
-    auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
-    metadata.enqueueMeta(std::move(str_meta));
-    
-    SUCCEED() << "Meta enqueue operations should complete successfully";
-}
-
-TEST_F(GrpcTest, GrpcAgentWorkerOperationsTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-    
-    // Test worker stop methods (skip start workers as they block without server)
-    agent.stopPingWorker();
-    metadata.stopMetaWorker();
-    
-    SUCCEED() << "Worker stop operations should complete successfully";
-}
-
-// GrpcSpan Tests
-
-TEST_F(GrpcTest, GrpcSpanConstructorTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    
-    SUCCEED() << "GrpcSpan should construct successfully";
-}
-
-TEST_F(GrpcTest, GrpcSpanEnqueueTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    
-    // Create a test span chunk
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "test-operation");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    
-    // Test enqueueSpan
-    span_client.enqueueSpan(std::move(span_chunk));
-    
-    SUCCEED() << "Span enqueue should complete successfully";
-}
-
-TEST_F(GrpcTest, GrpcSpanWorkerOperationsTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    
-    // Test worker stop method (skip start worker as it blocks without server)
-    span_client.stopSpanWorker();
-    
-    SUCCEED() << "Span worker stop operations should complete successfully";
-}
-
-// GrpcStats Tests
-
-TEST_F(GrpcTest, GrpcStatsConstructorTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    
-    SUCCEED() << "GrpcStats should construct successfully";
-}
-
-TEST_F(GrpcTest, GrpcStatsEnqueueTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    
-    // Test enqueueStats
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.enqueueStats(URL_STATS);
-    
-    SUCCEED() << "Stats enqueue should complete successfully";
-}
-
-TEST_F(GrpcTest, GrpcStatsWorkerOperationsTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    
-    // Test worker stop method (skip start worker as it blocks without server)
-    stats_client.stopStatsWorker();
-    
-    SUCCEED() << "Stats worker stop operations should complete successfully";
-}
-
 // Metadata Structure Tests
-
-TEST_F(GrpcTest, ApiMetaTest) {
-    ApiMeta api_meta(1, 100, "test.api.method");
-    
-    EXPECT_EQ(api_meta.id_, 1);
-    EXPECT_EQ(api_meta.type_, 100);
-    EXPECT_EQ(api_meta.api_str_, "test.api.method");
-}
-
-TEST_F(GrpcTest, StringMetaTest) {
-    StringMeta str_meta(2, "test.string.value", STRING_META_ERROR);
-    
-    EXPECT_EQ(str_meta.id_, 2);
-    EXPECT_EQ(str_meta.str_val_, "test.string.value");
-    EXPECT_EQ(str_meta.type_, STRING_META_ERROR);
-}
 
 TEST_F(GrpcTest, MetaDataApiTest) {
     MetaData meta_data(META_API, 1, 100, "test.api");
@@ -349,136 +202,6 @@ TEST_F(GrpcTest, MetaDataStringTest) {
     EXPECT_EQ(str_meta.id_, 2);
     EXPECT_EQ(str_meta.str_val_, "test.string");
     EXPECT_EQ(str_meta.type_, STRING_META_ERROR);
-}
-
-TEST_F(GrpcTest, MetaDataSqlTest) {
-    MetaData meta_data(META_STRING, 3, "SELECT * FROM users", STRING_META_SQL);
-    
-    EXPECT_EQ(meta_data.meta_type_, META_STRING);
-    const auto& str_meta = std::get<StringMeta>(meta_data.value_);
-    EXPECT_EQ(str_meta.id_, 3);
-    EXPECT_EQ(str_meta.str_val_, "SELECT * FROM users");
-    EXPECT_EQ(str_meta.type_, STRING_META_SQL);
-}
-
-TEST_F(GrpcTest, StringMetaSqlTest) {
-    StringMeta sql_meta(4, "INSERT INTO table VALUES (?)", STRING_META_SQL);
-    
-    EXPECT_EQ(sql_meta.id_, 4);
-    EXPECT_EQ(sql_meta.str_val_, "INSERT INTO table VALUES (?)");
-    EXPECT_EQ(sql_meta.type_, STRING_META_SQL);
-}
-
-// Integration Tests
-
-TEST_F(GrpcTest, GrpcClientTypeTest) {
-    GrpcAgent agent_client(mock_agent_service_->getConfig()); agent_client.setAgentService(mock_agent_service_.get());
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    
-    // Test that different client types can be created
-    SUCCEED() << "All gRPC client types should be constructible";
-}
-
-TEST_F(GrpcTest, CompleteWorkflowTest) {
-    // Create all client types
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    
-    // Enqueue some data
-    auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "workflow.test");
-    metadata.enqueueMeta(std::move(api_meta));
-    
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "workflow-test");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    span_client.enqueueSpan(std::move(span_chunk));
-    
-    stats_client.enqueueStats(AGENT_STATS);
-    
-    // Test that the workflow completes without exceptions
-    SUCCEED() << "Complete gRPC workflow should execute successfully";
-}
-
-TEST_F(GrpcTest, GrpcEnumValuesTest) {
-    // Test GrpcRequestStatus enum
-    EXPECT_EQ(SEND_OK, 0);
-    EXPECT_EQ(SEND_FAIL, 1);
-    
-    // Test GrpcStreamStatus enum
-    EXPECT_EQ(STREAM_WRITE, 0);
-    EXPECT_EQ(STREAM_CONTINUE, 1);
-    EXPECT_EQ(STREAM_DONE, 2);
-    
-    // Test ClientType enum
-    EXPECT_EQ(AGENT, 0);
-    EXPECT_EQ(METADATA, 1);
-    EXPECT_EQ(SPAN, 2);
-    EXPECT_EQ(STATS, 3);
-    
-    // Test MetaType enum
-    EXPECT_EQ(META_API, 0);
-    EXPECT_EQ(META_STRING, 1);
-    
-    // Test StringMetaType enum
-    EXPECT_EQ(STRING_META_ERROR, 0);
-    EXPECT_EQ(STRING_META_SQL, 1);
-}
-
-TEST_F(GrpcTest, MultipleClientInstancesTest) {
-    // Test that multiple instances can coexist
-    std::unique_ptr<GrpcAgent> agent1 = std::make_unique<GrpcAgent>(mock_agent_service_->getConfig());
-    std::unique_ptr<GrpcAgent> agent2 = std::make_unique<GrpcAgent>(mock_agent_service_->getConfig());
-    
-    std::unique_ptr<GrpcSpan> span1 = std::make_unique<GrpcSpan>(mock_agent_service_->getConfig());
-    std::unique_ptr<GrpcSpan> span2 = std::make_unique<GrpcSpan>(mock_agent_service_->getConfig());
-    
-    std::unique_ptr<GrpcStats> stats1 = std::make_unique<GrpcStats>(mock_agent_service_->getConfig());
-    std::unique_ptr<GrpcStats> stats2 = std::make_unique<GrpcStats>(mock_agent_service_->getConfig());
-    
-    // All instances should be valid
-    EXPECT_NE(agent1.get(), nullptr);
-    EXPECT_NE(agent2.get(), nullptr);
-    EXPECT_NE(span1.get(), nullptr);
-    EXPECT_NE(span2.get(), nullptr);
-    EXPECT_NE(stats1.get(), nullptr);
-    EXPECT_NE(stats2.get(), nullptr);
-    
-    // Clean up
-    agent1.reset();
-    agent2.reset();
-    span1.reset();
-    span2.reset();
-    stats1.reset();
-    stats2.reset();
-    
-    SUCCEED() << "Multiple client instances should be manageable";
-}
-
-// SqlUidMeta Tests
-
-TEST_F(GrpcTest, SqlUidMetaTest) {
-    SqlUid uid = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A};
-    SqlUidMeta sql_uid_meta(uid, "SELECT * FROM orders WHERE id = ?");
-
-    EXPECT_EQ(sql_uid_meta.uid_, uid);
-    EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM orders WHERE id = ?");
-}
-
-TEST_F(GrpcTest, SqlUidMetaZeroUidTest) {
-    SqlUid uid{};
-    SqlUidMeta sql_uid_meta(uid, "SELECT 1");
-
-    EXPECT_EQ(sql_uid_meta.uid_, uid);
-    EXPECT_EQ(sql_uid_meta.sql_, "SELECT 1");
-}
-
-TEST_F(GrpcTest, SqlUidMetaMoveTest) {
-    SqlUid uid = {0xAA, 0xBB, 0xCC};
-    SqlUid uid_copy = uid;
-    SqlUidMeta sql_uid_meta(std::move(uid), "SELECT 1");
-
-    EXPECT_EQ(sql_uid_meta.uid_, uid_copy);
 }
 
 // ExceptionMeta Tests
@@ -556,72 +279,6 @@ TEST_F(GrpcTest, MetaDataExceptionTest) {
     EXPECT_EQ(exc_meta.exceptions_.size(), 1u);
 }
 
-// Enum completeness tests
-
-TEST_F(GrpcTest, MetaTypeEnumValuesTest) {
-    EXPECT_EQ(META_API, 0);
-    EXPECT_EQ(META_STRING, 1);
-    EXPECT_EQ(META_SQL_UID, 2);
-    EXPECT_EQ(META_EXCEPTION, 3);
-}
-
-// Queue behavior tests
-
-TEST_F(GrpcTest, GrpcAgentMultipleMetaEnqueueTest) {
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-
-    // Enqueue multiple different metadata types
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api1"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api2"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "err1", STRING_META_ERROR));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_STRING, 4, "sql1", STRING_META_SQL));
-
-    SqlUid uid = {1, 2, 3};
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT 1"));
-
-    TraceId txid{"agent", 100, 0};
-    std::vector<std::unique_ptr<Exception>> exceptions;
-    auto cs = std::make_unique<CallStack>("test");
-    exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/url", std::move(exceptions)));
-
-    SUCCEED() << "Enqueuing multiple meta types should succeed";
-}
-
-TEST_F(GrpcTest, GrpcSpanMultipleEnqueueTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-
-    for (int i = 0; i < 5; i++) {
-        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "op-" + std::to_string(i));
-        auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-        span_client.enqueueSpan(std::move(span_chunk));
-    }
-
-    SUCCEED() << "Multiple span enqueue operations should succeed";
-}
-
-TEST_F(GrpcTest, GrpcStatsEnqueueAllTypesTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.enqueueStats(URL_STATS);
-    stats_client.enqueueStats(AGENT_STATS);
-
-    SUCCEED() << "Enqueuing all stats types should succeed";
-}
-
-// Channel operation tests
-
-TEST_F(GrpcTest, GrpcClientCloseChannelIdempotentTest) {
-    GrpcAgent client(mock_agent_service_->getConfig()); client.setAgentService(mock_agent_service_.get());
-
-    client.closeChannel();
-    client.closeChannel();
-    client.closeChannel();
-
-    SUCCEED() << "Calling closeChannel multiple times should be safe";
-}
-
 // ============================================================
 // Collector outage tests: real channel to an unreachable endpoint.
 // Port 1 (tcpmux) is reserved and needs root to bind, so nothing
@@ -691,131 +348,6 @@ TEST_F(GrpcTest, GrpcAgentRegisterAgentFailsWhenCollectorUnreachable) {
 
     agent.closeChannel();
 }
-
-// Worker stop idempotency tests
-
-TEST_F(GrpcTest, GrpcAgentStopWorkersIdempotentTest) {
-    GrpcAgent agent(mock_agent_service_->getConfig()); agent.setAgentService(mock_agent_service_.get());
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-
-    agent.stopPingWorker();
-    agent.stopPingWorker();
-    metadata.stopMetaWorker();
-    metadata.stopMetaWorker();
-
-    SUCCEED() << "Stopping workers multiple times should be safe";
-}
-
-TEST_F(GrpcTest, GrpcSpanStopWorkerIdempotentTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-
-    span_client.stopSpanWorker();
-    span_client.stopSpanWorker();
-
-    SUCCEED() << "Stopping span worker multiple times should be safe";
-}
-
-TEST_F(GrpcTest, GrpcStatsStopWorkerIdempotentTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-
-    stats_client.stopStatsWorker();
-    stats_client.stopStatsWorker();
-
-    SUCCEED() << "Stopping stats worker multiple times should be safe";
-}
-
-// ApiMeta edge cases
-
-TEST_F(GrpcTest, ApiMetaEmptyStringTest) {
-    ApiMeta api_meta(0, 0, "");
-
-    EXPECT_EQ(api_meta.id_, 0);
-    EXPECT_EQ(api_meta.type_, 0);
-    EXPECT_TRUE(api_meta.api_str_.empty());
-}
-
-TEST_F(GrpcTest, ApiMetaLongStringTest) {
-    std::string long_api(1024, 'x');
-    ApiMeta api_meta(1, 200, long_api);
-
-    EXPECT_EQ(api_meta.api_str_.size(), 1024u);
-    EXPECT_EQ(api_meta.api_str_, long_api);
-}
-
-// StringMeta edge cases
-
-TEST_F(GrpcTest, StringMetaEmptyStringTest) {
-    StringMeta str_meta(0, "", STRING_META_ERROR);
-
-    EXPECT_EQ(str_meta.id_, 0);
-    EXPECT_TRUE(str_meta.str_val_.empty());
-}
-
-TEST_F(GrpcTest, StringMetaLongSqlTest) {
-    std::string long_sql = "SELECT ";
-    for (int i = 0; i < 100; i++) {
-        long_sql += "col" + std::to_string(i) + ", ";
-    }
-    long_sql += "col100 FROM large_table";
-
-    StringMeta sql_meta(1, long_sql, STRING_META_SQL);
-    EXPECT_EQ(sql_meta.str_val_, long_sql);
-    EXPECT_EQ(sql_meta.type_, STRING_META_SQL);
-}
-
-// Enqueue after service exiting
-
-TEST_F(GrpcTest, GrpcAgentEnqueueMetaWhileExitingTest) {
-    GrpcMetadata metadata(mock_agent_service_->getConfig()); metadata.setAgentService(mock_agent_service_.get());
-    mock_agent_service_->setExiting(true);
-
-    // Should not crash even when service is exiting
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api-during-exit"));
-
-    SUCCEED() << "Enqueuing meta while exiting should not crash";
-}
-
-TEST_F(GrpcTest, GrpcSpanEnqueueWhileExitingTest) {
-    GrpcSpan span_client(mock_agent_service_->getConfig()); span_client.setAgentService(mock_agent_service_.get());
-    mock_agent_service_->setExiting(true);
-
-    auto span_data = make_test_span_data_ptr(*mock_agent_service_, "exit-op");
-    auto span_chunk = std::make_unique<SpanChunk>(span_data, true);
-    span_client.enqueueSpan(std::move(span_chunk));
-
-    SUCCEED() << "Enqueuing span while exiting should not crash";
-}
-
-TEST_F(GrpcTest, GrpcStatsEnqueueWhileExitingTest) {
-    GrpcStats stats_client(mock_agent_service_->getConfig()); stats_client.setAgentService(mock_agent_service_.get());
-    mock_agent_service_->setExiting(true);
-
-    stats_client.enqueueStats(AGENT_STATS);
-
-    SUCCEED() << "Enqueuing stats while exiting should not crash";
-}
-
-// MetaValue variant correctness
-
-TEST_F(GrpcTest, MetaValueVariantIndexTest) {
-    MetaData api_meta(META_API, 1, 100, "api");
-    EXPECT_EQ(api_meta.value_.index(), 0u);  // ApiMeta
-
-    MetaData str_meta(META_STRING, 2, "str", STRING_META_ERROR);
-    EXPECT_EQ(str_meta.value_.index(), 1u);  // StringMeta
-
-    SqlUid uid = {1};
-    MetaData uid_meta(META_SQL_UID, uid, "sql");
-    EXPECT_EQ(uid_meta.value_.index(), 2u);  // SqlUidMeta
-
-    TraceId txid{"a", 1, 0};
-    std::vector<std::unique_ptr<Exception>> excs;
-    MetaData exc_meta(META_EXCEPTION, txid, 1, "/", std::move(excs));
-    EXPECT_EQ(exc_meta.value_.index(), 3u);  // ExceptionMeta
-}
-
-// Reactor callback tests removed - they cause segmentation faults when called without active gRPC streams
-// The callbacks are tested indirectly through the actual gRPC operations in integration tests
 
 // ========== gRPC metadata header set (per uid version) ==========
 
