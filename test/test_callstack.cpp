@@ -27,11 +27,9 @@ namespace pinpoint {
 class CallStackTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
     }
 
     void TearDown() override {
-        // Called after each test
     }
 };
 
@@ -63,7 +61,6 @@ TEST_F(CallStackTest, CallStackCreationTest) {
     EXPECT_TRUE(callstack.getStack().empty()) << "Stack should be empty on creation";
 }
 
-// Test CallStack with empty error message
 TEST_F(CallStackTest, CallStackEmptyErrorMessageTest) {
     std::string error_msg = "";
     CallStack callstack(error_msg);
@@ -80,7 +77,6 @@ TEST_F(CallStackTest, CallStackSpecialCharsErrorMessageTest) {
     EXPECT_EQ(callstack.getErrorMessage(), error_msg) << "Error message with special chars should match";
 }
 
-// Test CallStack with Unicode error message
 TEST_F(CallStackTest, CallStackUnicodeErrorMessageTest) {
     std::string error_msg = "오류 발생: 예외 처리 필요 (에러 코드: 500)";
     CallStack callstack(error_msg);
@@ -88,7 +84,6 @@ TEST_F(CallStackTest, CallStackUnicodeErrorMessageTest) {
     EXPECT_EQ(callstack.getErrorMessage(), error_msg) << "Unicode error message should match";
 }
 
-// Test CallStack push single frame
 TEST_F(CallStackTest, CallStackPushSingleFrameTest) {
     CallStack callstack("Test error");
     
@@ -102,7 +97,6 @@ TEST_F(CallStackTest, CallStackPushSingleFrameTest) {
     EXPECT_EQ(stack[0].line, 10) << "Line number should match";
 }
 
-// Test CallStack push multiple frames
 TEST_F(CallStackTest, CallStackPushMultipleFramesTest) {
     CallStack callstack("Test error");
     
@@ -132,7 +126,6 @@ TEST_F(CallStackTest, CallStackPushMultipleFramesTest) {
     EXPECT_EQ(stack[2].line, 30) << "Third frame line should match";
 }
 
-// Test CallStack push with empty strings
 TEST_F(CallStackTest, CallStackPushEmptyStringsTest) {
     CallStack callstack("Test error");
     
@@ -157,7 +150,6 @@ TEST_F(CallStackTest, CallStackPushNegativeLineTest) {
     EXPECT_EQ(stack[0].line, -1) << "Negative line number should be preserved";
 }
 
-// Test CallStack push with long strings
 TEST_F(CallStackTest, CallStackPushLongStringsTest) {
     CallStack callstack("Test error");
     
@@ -174,7 +166,6 @@ TEST_F(CallStackTest, CallStackPushLongStringsTest) {
     EXPECT_EQ(stack[0].file, longFile) << "Long file name should match";
 }
 
-// Test CallStack getModuleName
 TEST_F(CallStackTest, CallStackGetModuleNameTest) {
     CallStack callstack("Test error");
     
@@ -184,7 +175,6 @@ TEST_F(CallStackTest, CallStackGetModuleNameTest) {
     EXPECT_EQ(callstack.getModuleName(), "first_module") << "Should return first module name";
 }
 
-// Test CallStack error time consistency
 TEST_F(CallStackTest, CallStackErrorTimeConsistencyTest) {
     auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
@@ -202,7 +192,6 @@ TEST_F(CallStackTest, CallStackErrorTimeConsistencyTest) {
     EXPECT_LE(error_time, after) << "Error time should be <= time after creation";
 }
 
-// Test CallStack with realistic stack trace
 TEST_F(CallStackTest, CallStackRealisticStackTraceTest) {
     CallStack callstack("NullPointerException: Cannot read property 'value' of null");
     
@@ -249,7 +238,6 @@ TEST_F(CallStackTest, ExceptionUniqueIdTest) {
     EXPECT_NE(id1, id3) << "Exception IDs should be unique";
 }
 
-// Test Exception ID is sequential
 TEST_F(CallStackTest, ExceptionSequentialIdTest) {
     auto callstack1 = std::make_unique<CallStack>("Error 1");
     auto callstack2 = std::make_unique<CallStack>("Error 2");
@@ -290,7 +278,6 @@ TEST_F(CallStackTest, ExceptionGetCallStackMultipleAccessTest) {
     EXPECT_EQ(first.getErrorMessage(), second.getErrorMessage()) << "Multiple accesses should return same data";
 }
 
-// Test Exception with empty CallStack
 TEST_F(CallStackTest, ExceptionWithEmptyCallStackTest) {
     auto callstack = std::make_unique<CallStack>("");
 
@@ -303,7 +290,6 @@ TEST_F(CallStackTest, ExceptionWithEmptyCallStackTest) {
     EXPECT_TRUE(retrieved_callstack.getStack().empty()) << "Stack should be empty";
 }
 
-// Test Exception with complex CallStack
 TEST_F(CallStackTest, ExceptionWithComplexCallStackTest) {
     auto callstack = std::make_unique<CallStack>("ComplexException: Multiple nested calls failed");
 

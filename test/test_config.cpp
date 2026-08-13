@@ -372,7 +372,6 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
 }
 
-// Test generated agent ID
 TEST_F(ConfigTest, GeneratedAgentIdTest) {
     auto config = make_config();
     
@@ -386,7 +385,6 @@ TEST_F(ConfigTest, GeneratedAgentIdTest) {
 
 // ========== YAML Configuration Tests ==========
 
-// Test complete YAML configuration
 TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     set_config_string(complete_config_yaml_);
     auto config = make_config();
@@ -492,7 +490,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled as per YAML";
 }
 
-// Test partial YAML configuration
 TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     set_config_string(partial_config_yaml_);
     auto config = make_config();
@@ -520,7 +517,6 @@ TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should remain enabled by default";
 }
 
-// Test empty YAML configuration
 TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
     set_config_string("");
     auto config = make_config();
@@ -533,7 +529,6 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 
 // ========== Environment Variable Tests ==========
 
-// Test environment variable configuration
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvApp", 1);
@@ -727,7 +722,6 @@ sampling:
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 12.5) << "mixed-case double key should resolve";
 }
 
-// Test environment variable override YAML
 TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set YAML config
     set_config_string(partial_config_yaml_);
@@ -752,7 +746,6 @@ TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
 
 // ========== File Configuration Tests ==========
 
-// Test configuration file reading
 TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     // Create a temporary config file
     std::string config_file = temp_dir_ + "/test_config.yaml";
@@ -770,7 +763,6 @@ TEST_F(ConfigTest, ConfigurationFileReadingTest) {
     EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should be loaded from file";
 }
 
-// Test missing configuration file
 TEST_F(ConfigTest, MissingConfigurationFileTest) {
     // Set environment variable to point to non-existent file
     std::string missing_file = temp_dir_ + "/missing_config.yaml";
@@ -830,7 +822,6 @@ Sampling:
 
 // ========== Error Handling Tests ==========
 
-// Test invalid YAML handling
 TEST_F(ConfigTest, InvalidYamlHandlingTest) {
     set_config_string(invalid_yaml_);
     auto config = make_config();
@@ -1135,7 +1126,6 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
 
 // ========== Integration Tests ==========
 
-// Test complete configuration flow
 TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
     // Create config file
     std::string config_file = temp_dir_ + "/complete_config.yaml";
@@ -1163,7 +1153,6 @@ TEST_F(ConfigTest, CompleteConfigurationFlowTest) {
 
 // ========== Exception Handling Tests ==========
 
-// Test type conversion exception handling
 TEST_F(ConfigTest, TypeConversionExceptionHandlingTest) {
     // YAML with invalid type conversions
     std::string invalid_type_yaml = R"(
@@ -1202,7 +1191,6 @@ Http:
     // but the error messages should be logged for invalid conversions
 }
 
-// Test mixed valid and invalid configurations
 TEST_F(ConfigTest, MixedValidInvalidConfigurationTest) {
     std::string mixed_yaml = R"(
 ApplicationName: ValidApp
@@ -1259,7 +1247,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     EXPECT_EQ(config->span.queue_size, 1024) << "Invalid int should use default value";
 }
 
-// Test environment variable validation for valid values
 TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     // Set valid environment variables
     setenv(full_env(env::ENABLE).c_str(), "false", 1);                  // Valid bool
@@ -1397,7 +1384,6 @@ Sql:
         << "Raw SQL cache should be disabled by environment variable";
 }
 
-// Test SQL configuration edge cases
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
     // Test negative bind args size
     set_config_string(R"(
@@ -1460,7 +1446,6 @@ Sql:
         << "Config string should contain SQL bind value tracing setting";
 }
 
-// Test SQL configuration round-trip
 TEST_F(ConfigTest, SqlConfigurationRoundTripTest) {
     const std::string sql_config = R"(
 ApplicationName: "SqlTestApp"
@@ -1554,7 +1539,6 @@ TEST_F(ConfigTest, CallstackTraceDisableViaEnvironmentVariableTest) {
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled as per environment variable";
 }
 
-// Test environment variable overrides YAML for callstack trace
 TEST_F(ConfigTest, CallstackTraceEnvironmentVariableOverrideYamlTest) {
     // Set YAML to disable
     set_config_string(R"(
@@ -1584,7 +1568,6 @@ EnableCallstackTrace: true
     EXPECT_FALSE(config->enable_callstack_trace) << "Environment variable should override YAML for callstack trace";
 }
 
-// Test callstack trace in complete configuration
 TEST_F(ConfigTest, CallstackTraceInCompleteConfigurationTest) {
     const std::string complete_config = R"(
 ApplicationName: "CallstackTestApp"
@@ -1634,7 +1617,6 @@ EnableCallstackTrace: false
         << "Config string should contain EnableCallstackTrace setting as false";
 }
 
-// Test callstack trace configuration round-trip
 TEST_F(ConfigTest, CallstackTraceConfigurationRoundTripTest) {
     const std::string callstack_config = R"(
 ApplicationName: "RoundTripApp"
@@ -1702,7 +1684,6 @@ TEST_F(ConfigTest, CallstackTraceBooleanRepresentationsTest) {
     EXPECT_FALSE(config6->enable_callstack_trace) << "NO should be parsed as false";
 }
 
-// Test callstack trace with invalid YAML type
 TEST_F(ConfigTest, CallstackTraceInvalidYamlTypeTest) {
     // YAML with invalid type for EnableCallstackTrace
     const std::string invalid_type_yaml = R"(
@@ -1886,7 +1867,6 @@ EnableConfigFileWatcher: true
 
 // ========== URL Stat Enable Trim Path Tests ==========
 
-// Test URL stat enable trim path via YAML
 TEST_F(ConfigTest, UrlStatEnableTrimPathViaYamlTest) {
     set_config_string(R"(
 Http:
@@ -1897,7 +1877,6 @@ Http:
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should be disabled via YAML";
 }
 
-// Test URL stat enable trim path via environment variable
 TEST_F(ConfigTest, UrlStatEnableTrimPathViaEnvironmentVariableTest) {
     setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
     auto config = make_config();
@@ -1938,7 +1917,6 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathInvalidEnvironmentVariableTest) {
     EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Invalid environment variable should use default value";
 }
 
-// Test enable trim path with other URL stat settings
 TEST_F(ConfigTest, UrlStatEnableTrimPathWithOtherSettingsTest) {
     set_config_string(R"(
 Http:
@@ -2017,7 +1995,6 @@ TEST_F(ConfigTest, UrlStatEnableTrimPathEnvironmentVariableBooleanVariationsTest
 
 // ========== Config::check() Validation Tests ==========
 
-// Test check() passes with valid config
 TEST_F(ConfigTest, CheckPassesWithValidConfigTest) {
     Config config;
     config.collector.host = "localhost";
@@ -2028,7 +2005,6 @@ TEST_F(ConfigTest, CheckPassesWithValidConfigTest) {
     EXPECT_TRUE(config.check()) << "Valid config should pass check";
 }
 
-// Test check() fails when collector host is empty
 TEST_F(ConfigTest, CheckFailsEmptyCollectorHostTest) {
     Config config;
     config.collector.host = "";
@@ -2038,7 +2014,6 @@ TEST_F(ConfigTest, CheckFailsEmptyCollectorHostTest) {
     EXPECT_FALSE(config.check()) << "Empty collector host should fail check";
 }
 
-// Test check() fails when app name is empty
 TEST_F(ConfigTest, CheckFailsEmptyAppNameTest) {
     Config config;
     config.collector.host = "localhost";
@@ -2171,7 +2146,6 @@ TEST_F(ConfigTest, MakeConfigV4ReloadKeepsAgentIdWithoutWarning) {
 
 // ========== Config::isReloadable() Tests ==========
 
-// Test isReloadable() returns true when critical fields match
 TEST_F(ConfigTest, IsReloadableReturnsTrueWhenCriticalFieldsMatchTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2192,7 +2166,6 @@ TEST_F(ConfigTest, IsReloadableReturnsTrueWhenCriticalFieldsMatchTest) {
         << "Should be reloadable when only non-critical fields change";
 }
 
-// Test isReloadable() returns false when app name changes
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenAppNameChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "OldApp";
@@ -2233,7 +2206,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenUidVersionChangesFromDefaultRawVa
         << "Should not be reloadable when UID version is explicitly changed";
 }
 
-// Test isReloadable() returns false when collector host changes
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorHostChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2246,7 +2218,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorHostChangesTest) {
         << "Should not be reloadable when collector host changes";
 }
 
-// Test isReloadable() returns false when port changes
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenPortChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2260,7 +2231,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenPortChangesTest) {
         << "Should not be reloadable when agent port changes";
 }
 
-// Test isReloadable() returns false when gRPC channel options change
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenGrpcChannelOptionsChangeTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2273,7 +2243,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenGrpcChannelOptionsChangeTest) {
         << "Should not be reloadable when gRPC channel options change";
 }
 
-// Test isReloadable() returns false when stat options change
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenStatOptionsChangeTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2325,7 +2294,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorSpanBatchChangesTest) {
         << "Should not be reloadable when collector span_batch options change";
 }
 
-// Test isReloadable() returns false when span queue size changes
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenSpanQueueSizeChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2339,7 +2307,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenSpanQueueSizeChangesTest) {
         << "Should not be reloadable when span queue size changes";
 }
 
-// Test isReloadable() returns true when old config is null
 TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
     Config new_config;
     new_config.app_name_ = "MyApp";
@@ -2644,7 +2611,6 @@ Collector:
         << "Negative port should be clamped to default";
 }
 
-// Test port boundary values
 TEST_F(ConfigTest, PortBoundaryValuesTest) {
     std::string yaml = R"(
 Collector:
@@ -2718,7 +2684,6 @@ Collector:
 
 // ========== Stat Validation Tests ==========
 
-// Test stat batch_count out of range
 TEST_F(ConfigTest, StatBatchCountOutOfRangeTest) {
     // Below minimum (1)
     std::string yaml = R"(
@@ -2756,7 +2721,6 @@ Stat:
     EXPECT_EQ(config->stat.batch_count, 100) << "batch_count 100 (max) should be valid";
 }
 
-// Test stat collect_interval out of range
 TEST_F(ConfigTest, StatCollectIntervalOutOfRangeTest) {
     // Below minimum (1000)
     set_config_string(R"(

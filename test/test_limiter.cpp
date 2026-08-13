@@ -26,11 +26,9 @@ namespace pinpoint {
 class RateLimiterTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
     }
 
     void TearDown() override {
-        // Called after each test
     }
 };
 
@@ -75,7 +73,6 @@ TEST_F(RateLimiterTest, TokenRefillTest) {
     EXPECT_FALSE(limiter.allow()) << "Third request should be denied";
 }
 
-// Multiple refill test
 TEST_F(RateLimiterTest, MultipleRefillTest) {
     RateLimiter limiter(1); // 1 TPS
     
@@ -100,7 +97,6 @@ TEST_F(RateLimiterTest, ZeroTpsTest) {
     }
 }
 
-// High TPS test
 TEST_F(RateLimiterTest, HighTpsTest) {
     RateLimiter limiter(1000); // 1000 TPS
     
@@ -118,7 +114,6 @@ TEST_F(RateLimiterTest, HighTpsTest) {
     EXPECT_FALSE(limiter.allow()) << "1001st request should be denied";
 }
 
-// Thread safety test
 TEST_F(RateLimiterTest, ThreadSafetyTest) {
     RateLimiter limiter(100); // 100 TPS
     const int num_threads = 10;

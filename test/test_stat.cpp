@@ -200,7 +200,6 @@ TEST_F(StatTest, AgentStatsConstructorTest) {
 TEST_F(StatTest, AgentStatsWorkerStopTest) {
     // AgentStats instance is already created in SetUp
     
-    // Start worker in a separate thread
     std::thread worker_thread([this]() {
         agent_stats_->agentStatsWorker();
     });
@@ -208,11 +207,9 @@ TEST_F(StatTest, AgentStatsWorkerStopTest) {
     // Give worker time to start
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     
-    // Signal to stop and wait
     mock_agent_service_->setExiting(true);
     agent_stats_->stopAgentStatsWorker();
     
-    // Wait for thread to finish
     worker_thread.join();
     
     SUCCEED() << "AgentStats worker should start and stop cleanly";
@@ -221,7 +218,6 @@ TEST_F(StatTest, AgentStatsWorkerStopTest) {
 TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
     // AgentStats instance is already created in SetUp
     
-    // Start worker in a separate thread
     std::thread worker_thread([this]() {
         agent_stats_->agentStatsWorker();
     });
@@ -229,11 +225,9 @@ TEST_F(StatTest, AgentStatsWorkerRecordsStatsTest) {
     // Let it run briefly to start up
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
-    // Signal to stop and wait
     mock_agent_service_->setExiting(true);
     agent_stats_->stopAgentStatsWorker();
     
-    // Wait for thread to finish
     worker_thread.join();
     
     // Check if stats were recorded (may not be called if collection interval hasn't passed)
@@ -275,7 +269,6 @@ TEST_F(StatTest, AgentStatsWithExitingAgentTest) {
     // Re-create stats to pick up exiting state if checked in constructor or init
     // But SetUp already created one. 
     
-    // Start worker in a separate thread
     std::thread worker_thread([this]() {
         agent_stats_->agentStatsWorker();
     });
@@ -286,7 +279,6 @@ TEST_F(StatTest, AgentStatsWithExitingAgentTest) {
     // Stop the worker
     agent_stats_->stopAgentStatsWorker();
     
-    // Wait for thread to finish
     worker_thread.join();
     
     // When agent is exiting, worker should exit quickly
@@ -431,7 +423,6 @@ TEST_F(StatTest, ResetAgentStatsTest) {
     EXPECT_EQ(snapshot.response_time_max_, 0);
 }
 
-// Test collectAgentStat resets counters between calls
 TEST_F(StatTest, CollectResetsCountersBetweenCallsTest) {
     agent_stats_->incrSampleNew();
     agent_stats_->incrSampleNew();
@@ -459,7 +450,6 @@ TEST_F(StatTest, CollectResetsCountersBetweenCallsTest) {
     EXPECT_EQ(snapshot2.response_time_max_, 0);
 }
 
-// Test single response time
 TEST_F(StatTest, SingleResponseTimeTest) {
     agent_stats_->collectResponseTime(42);
 
@@ -470,7 +460,6 @@ TEST_F(StatTest, SingleResponseTimeTest) {
     EXPECT_EQ(snapshot.response_time_max_, 42);
 }
 
-// Test zero response time
 TEST_F(StatTest, ZeroResponseTimeTest) {
     agent_stats_->collectResponseTime(0);
 
@@ -502,7 +491,6 @@ TEST_F(StatTest, LargeResponseTimeTest) {
     EXPECT_EQ(snapshot.response_time_max_, large_time);
 }
 
-// Test response time average calculation
 TEST_F(StatTest, ResponseTimeAverageCalculationTest) {
     agent_stats_->collectResponseTime(100);
     agent_stats_->collectResponseTime(200);
@@ -627,7 +615,6 @@ TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
     agent_stats_->dropActiveSpan(nodes[3]);
 }
 
-// Test empty active span map
 TEST_F(StatTest, EmptyActiveSpanMapTest) {
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
@@ -781,7 +768,6 @@ TEST_F(StatTest, SampleTimeIsCurrentTest) {
     EXPECT_LE(snapshot.sample_time_, after);
 }
 
-// Test AgentStatsSnapshot default initialization
 TEST_F(StatTest, SnapshotDefaultInitTest) {
     AgentStatsSnapshot snapshot;
 
@@ -842,7 +828,6 @@ TEST_F(StatTest, AllCountersMixedIncrementTest) {
     EXPECT_EQ(snapshot.num_skip_cont_, 60);
 }
 
-// Test many active spans
 TEST_F(StatTest, ManyActiveSpansTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();

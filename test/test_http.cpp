@@ -111,17 +111,14 @@ int stoi_(const std::string& str) {
 class HttpTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
     }
 
     void TearDown() override {
-        // Called after each test
     }
 };
 
 // ========== HttpStatusErrors Class Tests ==========
 
-// Test HttpStatusErrors with single category
 TEST_F(HttpTest, HttpStatusErrorsSingleCategoryTest) {
     std::vector<std::string> tokens = {"5xx"};
     HttpStatusErrors errors(tokens);
@@ -137,7 +134,6 @@ TEST_F(HttpTest, HttpStatusErrorsSingleCategoryTest) {
     EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 for 5xx category";
 }
 
-// Test HttpStatusErrors with multiple categories
 TEST_F(HttpTest, HttpStatusErrorsMultipleCategoriesTest) {
     std::vector<std::string> tokens = {"4xx", "5xx"};
     HttpStatusErrors errors(tokens);
@@ -153,7 +149,6 @@ TEST_F(HttpTest, HttpStatusErrorsMultipleCategoriesTest) {
     EXPECT_FALSE(errors.isErrorCode(301)) << "Should not match 301";
 }
 
-// Test HttpStatusErrors with specific codes
 TEST_F(HttpTest, HttpStatusErrorsSpecificCodesTest) {
     std::vector<std::string> tokens = {"404", "503"};
     HttpStatusErrors errors(tokens);
@@ -520,7 +515,6 @@ TEST_F(HttpTest, HttpUrlFilterRealisticPatternsTest) {
     EXPECT_FALSE(filter.isFiltered("/public/file.txt")) << "Should not match non-static public files";
 }
 
-// Test HttpUrlFilter with empty configuration
 TEST_F(HttpTest, HttpUrlFilterEmptyConfigTest) {
     std::vector<std::string> cfg = {};
     HttpUrlFilter filter(cfg);
@@ -553,7 +547,6 @@ TEST_F(HttpTest, HttpUrlFilterRootAndSubpathTest) {
     // depending on the regex conversion logic
 }
 
-// Test HttpUrlFilter edge cases
 TEST_F(HttpTest, HttpUrlFilterEdgeCasesTest) {
     std::vector<std::string> cfg = {"", "/", "//", "/**/", "/*/", "**"};
     HttpUrlFilter filter(cfg);
@@ -567,7 +560,6 @@ TEST_F(HttpTest, HttpUrlFilterEdgeCasesTest) {
     // These tests verify the filter doesn't crash on edge cases
 }
 
-// Test HttpUrlFilter with duplicate patterns
 TEST_F(HttpTest, HttpUrlFilterDuplicatePatternsTest) {
     std::vector<std::string> cfg = {"/api/*", "/api/*", "/static/**", "/static/**"};
     HttpUrlFilter filter(cfg);
@@ -629,12 +621,10 @@ TEST_F(HttpTest, HttpUrlFilterUsableDuringThreadTeardownTest) {
 
 // ========== HttpHeaderRecorder Class Tests ==========
 
-// Test HttpHeaderRecorder with empty configuration
 TEST_F(HttpTest, HttpHeaderRecorderEmptyConfigTest) {
     std::vector<std::string> cfg = {};
     HttpHeaderRecorder recorder(100, cfg);
     
-    // Create test headers
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
     headers["Authorization"] = "Bearer token123";
@@ -682,7 +672,6 @@ TEST_F(HttpTest, HttpHeaderRecorderSingleHeaderTest) {
     std::vector<std::string> cfg = {"Content-Type"};
     HttpHeaderRecorder recorder(300, cfg);
     
-    // Create test headers
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "text/html";
     headers["Cache-Control"] = "no-cache";
@@ -700,7 +689,6 @@ TEST_F(HttpTest, HttpHeaderRecorderSingleHeaderTest) {
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 300";
 }
 
-// Test HttpHeaderRecorder with missing headers
 TEST_F(HttpTest, HttpHeaderRecorderMissingHeadersTest) {
     std::vector<std::string> cfg = {"Content-Type", "Authorization", "X-Custom-Header"};
     HttpHeaderRecorder recorder(400, cfg);
@@ -728,7 +716,6 @@ TEST_F(HttpTest, HttpHeaderRecorderAllHeadersTest) {
     std::vector<std::string> cfg = {"HEADERS-ALL"};
     HttpHeaderRecorder recorder(500, cfg);
     
-    // Create test headers
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
     headers["Authorization"] = "Bearer token123";
@@ -750,12 +737,10 @@ TEST_F(HttpTest, HttpHeaderRecorderAllHeadersTest) {
     EXPECT_EQ(it->second.size(), 5) << "Should have 5 headers recorded with key 500";
 }
 
-// Test HttpHeaderRecorder with case sensitivity
 TEST_F(HttpTest, HttpHeaderRecorderCaseSensitivityTest) {
     std::vector<std::string> cfg = {"content-type", "Content-Type"};
     HttpHeaderRecorder recorder(600, cfg);
     
-    // Create test headers
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
     headers["content-type"] = "text/plain"; // Different case
@@ -770,7 +755,6 @@ TEST_F(HttpTest, HttpHeaderRecorderCaseSensitivityTest) {
     EXPECT_LE(string_string_count_of(*annotation), 2) << "Should record at most 2 headers";
 }
 
-// Test HttpHeaderRecorder with empty header values
 TEST_F(HttpTest, HttpHeaderRecorderEmptyValuesTest) {
     std::vector<std::string> cfg = {"X-Empty-Header", "X-Normal-Header"};
     HttpHeaderRecorder recorder(700, cfg);
@@ -793,7 +777,6 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyValuesTest) {
     EXPECT_EQ(it->second.size(), 2) << "Should have 2 headers recorded with key 700";
 }
 
-// Test HttpHeaderRecorder with special characters in headers
 TEST_F(HttpTest, HttpHeaderRecorderSpecialCharactersTest) {
     std::vector<std::string> cfg = {"X-Special-Chars"};
     HttpHeaderRecorder recorder(800, cfg);
@@ -820,7 +803,6 @@ TEST_F(HttpTest, HttpHeaderRecorderMultipleAllConfigTest) {
     std::vector<std::string> cfg = {"HEADERS-ALL", "Content-Type"}; // Mixed config
     HttpHeaderRecorder recorder(900, cfg);
     
-    // Create test headers
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
     headers["Authorization"] = "Bearer token123";
@@ -839,7 +821,6 @@ TEST_F(HttpTest, HttpHeaderRecorderMultipleAllConfigTest) {
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 900";
 }
 
-// Test HttpHeaderRecorder with realistic HTTP headers
 TEST_F(HttpTest, HttpHeaderRecorderRealisticHeadersTest) {
     std::vector<std::string> cfg = {
         "Content-Type", 
@@ -892,7 +873,6 @@ TEST_F(HttpTest, HttpHeaderRecorderNoHeadersTest) {
 
 // ========== HttpMethodFilter Class Tests ==========
 
-// Test HttpMethodFilter with single method
 TEST_F(HttpTest, HttpMethodFilterSingleMethodTest) {
     std::vector<std::string> cfg = {"POST"};
     HttpMethodFilter filter(cfg);
@@ -906,7 +886,6 @@ TEST_F(HttpTest, HttpMethodFilterSingleMethodTest) {
     EXPECT_FALSE(filter.isFiltered("DELETE")) << "Should not filter DELETE method";
 }
 
-// Test HttpMethodFilter with multiple methods
 TEST_F(HttpTest, HttpMethodFilterMultipleMethodsTest) {
     std::vector<std::string> cfg = {"POST", "PUT", "DELETE"};
     HttpMethodFilter filter(cfg);
@@ -932,7 +911,6 @@ TEST_F(HttpTest, HttpMethodFilterCaseInsensitiveTest) {
     EXPECT_TRUE(filter.isFiltered("Post")) << "Should filter Post (case insensitive)";
 }
 
-// Test HttpMethodFilter with empty configuration
 TEST_F(HttpTest, HttpMethodFilterEmptyConfigTest) {
     std::vector<std::string> cfg = {};
     HttpMethodFilter filter(cfg);
@@ -1019,7 +997,6 @@ TEST_F(HttpTest, GetRemoteAddrNoProxyWithoutPortTest) {
     EXPECT_EQ(addr, "192.168.1.100") << "Should return address as is";
 }
 
-// Test getRemoteAddr with IPv6 address
 TEST_F(HttpTest, GetRemoteAddrIPv6Test) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -1194,7 +1171,6 @@ TEST_F(HttpTest, HttpMethodFilterLowercaseConfigTest) {
     EXPECT_FALSE(filter.isFiltered("PUT")) << "Should not match PUT";
 }
 
-// Test HttpMethodFilter with all standard HTTP methods
 TEST_F(HttpTest, HttpMethodFilterAllStandardMethodsTest) {
     std::vector<std::string> cfg = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"};
     HttpMethodFilter filter(cfg);
@@ -1210,7 +1186,6 @@ TEST_F(HttpTest, HttpMethodFilterAllStandardMethodsTest) {
     EXPECT_FALSE(filter.isFiltered("CONNECT")) << "CONNECT not in config";
 }
 
-// Test getRemoteAddr with empty remote address
 TEST_F(HttpTest, GetRemoteAddrEmptyAddressTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -1303,7 +1278,6 @@ TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
         << "headers-all (lowercase) should dump all 3 headers";
 }
 
-// Test HttpHeaderRecorder HEADERS-ALL with empty headers
 TEST_F(HttpTest, HttpHeaderRecorderHeadersAllEmptyHeadersTest) {
     std::vector<std::string> cfg = {"HEADERS-ALL"};
     HttpHeaderRecorder recorder(1300, cfg);

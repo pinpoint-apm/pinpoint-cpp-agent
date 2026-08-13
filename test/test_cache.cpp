@@ -28,11 +28,9 @@ namespace pinpoint {
 class CacheTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
     }
 
     void TearDown() override {
-        // Called after each test
     }
 };
 
@@ -195,7 +193,6 @@ TEST_F(CacheTest, MultipleDifferentKeysTest) {
     EXPECT_NE(result1.value, result3.value);
 }
 
-// Test ID sequence is incremental
 TEST_F(CacheTest, IdSequenceIncrementalTest) {
     IdCache cache(10);
     
@@ -390,7 +387,6 @@ TEST_F(CacheTest, BasicRemoveTest) {
     EXPECT_EQ(result1.value, 1);
     EXPECT_FALSE(result1.found);
     
-    // Verify it's in cache
     auto result2 = cache.get("key1");
     EXPECT_EQ(result2.value, 1);
     EXPECT_TRUE(result2.found);
@@ -445,7 +441,6 @@ TEST_F(CacheTest, RemoveFromMiddleTest) {
 
 // Edge case tests
 
-// Test cache with size 1
 TEST_F(CacheTest, CacheSize1Test) {
     IdCache cache(1);
     
@@ -464,7 +459,6 @@ TEST_F(CacheTest, CacheSize1Test) {
     EXPECT_FALSE(result1_again.found);
 }
 
-// Test empty string key
 TEST_F(CacheTest, EmptyStringKeyTest) {
     IdCache cache(5);
     
@@ -562,7 +556,6 @@ TEST_F(CacheTest, ConcurrentGetRemoveTest) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     stop_flag.store(true);
     
-    // Wait for threads to finish
     adder.wait();
     remover.wait();
     
@@ -586,7 +579,6 @@ TEST_F(CacheTest, ConcurrentSameKeyTest) {
         }));
     }
     
-    // Collect results
     std::vector<CacheResult> results;
     for (auto& future : futures) {
         results.push_back(future.get());
@@ -726,7 +718,6 @@ TEST_F(CacheTest, LRUEvictionChainTest) {
     EXPECT_TRUE(r1_check.found) << "key1 should be in cache";
 }
 
-// Test string_view key from temporary string
 TEST_F(CacheTest, StringViewKeyFromTemporaryTest) {
     IdCache cache(5);
 
@@ -1032,11 +1023,9 @@ TEST_F(CacheTest, ShardCountOneDegeneratesToUnshardedBehaviorTest) {
 class SqlUidCacheTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
     }
 
     void TearDown() override {
-        // Called after each test
     }
     
     bool areUidsEqual(const SqlUid& uid1, const SqlUid& uid2) {
@@ -1209,7 +1198,6 @@ TEST_F(SqlUidCacheTest, BasicRemoveTest) {
     EXPECT_EQ(result1.value.size(), 16);
     EXPECT_FALSE(result1.found);
     
-    // Verify it's in cache
     auto result2 = cache.get(sql);
     EXPECT_TRUE(areUidsEqual(result1.value, result2.value));
     EXPECT_TRUE(result2.found);
@@ -1268,7 +1256,6 @@ TEST_F(SqlUidCacheTest, RemoveFromMiddleTest) {
 
 // Edge case tests
 
-// Test cache with size 1
 TEST_F(SqlUidCacheTest, CacheSize1Test) {
     SqlUidCache cache(1);
     
@@ -1291,7 +1278,6 @@ TEST_F(SqlUidCacheTest, CacheSize1Test) {
     EXPECT_FALSE(result1_again.found);
 }
 
-// Test empty string key
 TEST_F(SqlUidCacheTest, EmptyStringKeyTest) {
     SqlUidCache cache(5);
     
@@ -1372,7 +1358,6 @@ TEST_F(SqlUidCacheTest, ConcurrentSameSqlTest) {
         }));
     }
     
-    // Collect results
     std::vector<SqlUidCacheResult> results;
     for (auto& future : futures) {
         results.push_back(future.get());
@@ -1431,7 +1416,6 @@ TEST_F(SqlUidCacheTest, ConcurrentGetRemoveTest) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     stop_flag.store(true);
     
-    // Wait for threads to finish
     adder.wait();
     remover.wait();
     
@@ -1558,7 +1542,6 @@ TEST_F(SqlUidCacheTest, RemoveAllAndReuseTest) {
     EXPECT_TRUE(result2.found) << "Should be cache hit now";
 }
 
-// Test string_view key from temporary string
 TEST_F(SqlUidCacheTest, StringViewKeyFromTemporaryTest) {
     SqlUidCache cache(5);
 

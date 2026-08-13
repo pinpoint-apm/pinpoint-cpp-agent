@@ -287,7 +287,6 @@ static void ExpectJavaCombine(std::string_view original_sql, std::string_view no
 
 // ========== Basic Normalization Tests ==========
 
-// Test empty SQL
 TEST_F(SqlTest, EmptySqlTest) {
     auto result = normalizer_->normalize("");
     EXPECT_EQ(result.normalized_sql, "");
@@ -377,7 +376,6 @@ TEST_F(SqlTest, MixedParametersTest) {
 
 // ========== Comment Removal Tests ==========
 
-// Test line comment removal
 TEST_F(SqlTest, LineCommentRemovalTest) {
     auto result = normalizer_->normalize("SELECT * FROM users -- This is a comment");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
@@ -388,7 +386,6 @@ TEST_F(SqlTest, LineCommentRemovalTest) {
     EXPECT_EQ(result.parameters, "1");
 }
 
-// Test block comment removal
 TEST_F(SqlTest, BlockCommentRemovalTest) {
     auto result = normalizer_->normalize("SELECT * /* This is a block comment */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
@@ -413,14 +410,12 @@ TEST_F(SqlTest, DivisionOperatorPreservedTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test mixed comments
 TEST_F(SqlTest, MixedCommentsTest) {
     auto result = normalizer_->normalize("SELECT * /* block */ FROM users -- line comment");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users ");
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test comments with parameters
 TEST_F(SqlTest, CommentsWithParametersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users  WHERE id = 0# ");
@@ -641,14 +636,12 @@ TEST_F(SqlTest, OnePassNormalizationFlowTest) {
     EXPECT_EQ(result.parameters, "25,1000.50,active,2023-01-01,10");
 }
 
-// Test parameter indexing accuracy
 TEST_F(SqlTest, ParameterIndexingAccuracyTest) {
     auto result = normalizer_->normalize("SELECT 1, 'literal', 2, 'another', 3.14, 42");
     EXPECT_EQ(result.normalized_sql, "SELECT 0#, '1$', 2#, '3$', 4#, 5#");
     EXPECT_EQ(result.parameters, "1,literal,2,another,3.14,42");
 }
 
-// Test nested quotes and comments
 TEST_F(SqlTest, NestedQuotesAndCommentsTest) {
     auto result = normalizer_->normalize("SELECT 'Comment /* not really */' FROM table WHERE id = 123 -- 'not a string'");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM table WHERE id = 1# ");
@@ -665,7 +658,6 @@ TEST_F(SqlTest, CustomMaxSqlLengthTest) {
     EXPECT_TRUE(result.normalized_sql.length() <= 30);
 }
 
-// Test empty string literal
 TEST_F(SqlTest, EmptyStringLiteralTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = ''");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = ''");
@@ -683,7 +675,6 @@ TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test unclosed block comment
 TEST_F(SqlTest, UnclosedBlockCommentTest) {
     auto result = normalizer_->normalize("SELECT * FROM users /* unclosed comment");
     // Everything after /* should be consumed as comment
@@ -691,7 +682,6 @@ TEST_F(SqlTest, UnclosedBlockCommentTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test whitespace-only SQL
 TEST_F(SqlTest, WhitespaceOnlySqlTest) {
     auto result = normalizer_->normalize("   \t\n  ");
     EXPECT_EQ(result.normalized_sql, "   \t\n  ");
@@ -734,7 +724,6 @@ TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
     EXPECT_EQ(result.parameters, "Doe,, John,plain");
 }
 
-// Test consecutive block comments
 TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
     auto result = normalizer_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT  *  FROM users");
@@ -829,7 +818,6 @@ TEST_F(SqlTest, ManyParametersIndexingTest) {
     EXPECT_EQ(result.parameters, "1,2,3,4,5,6,7,8,9,10,a,b");
 }
 
-// Test UPDATE statement
 TEST_F(SqlTest, UpdateStatementTest) {
     auto result = normalizer_->normalize(
         "UPDATE users SET name = 'Alice', age = 30 WHERE id = 1");
@@ -838,7 +826,6 @@ TEST_F(SqlTest, UpdateStatementTest) {
     EXPECT_EQ(result.parameters, "Alice,30,1");
 }
 
-// Test DELETE statement
 TEST_F(SqlTest, DeleteStatementTest) {
     auto result = normalizer_->normalize(
         "DELETE FROM users WHERE id = 42 AND status = 'inactive'");
@@ -856,7 +843,6 @@ TEST_F(SqlTest, InClauseTest) {
     EXPECT_EQ(result.parameters, "1,2,3,a,b");
 }
 
-// Test BETWEEN clause
 TEST_F(SqlTest, BetweenClauseTest) {
     auto result = normalizer_->normalize(
         "SELECT * FROM orders WHERE amount BETWEEN 100.0 AND 500.0");

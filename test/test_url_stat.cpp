@@ -384,7 +384,6 @@ TEST_F(UrlStatTest, UrlStatsWorkerStartStopTest) {
     // Give worker time to start
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     
-    // Signal to stop and wait
     mock_agent_service_->setExiting(true);
     url_stats.stopAddUrlStatsWorker();
     add_worker.join();
@@ -400,7 +399,6 @@ TEST_F(UrlStatTest, UrlStatsWorkerStartStopTest) {
     // Give worker time to start
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     
-    // Signal to stop and wait
     mock_agent_service_->setExiting(true);
     url_stats.stopSendUrlStatsWorker();
     send_worker.join();
@@ -542,7 +540,6 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     // Let it process for a bit
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
-    // Stop worker
     mock_agent_service_->setExiting(true);
     url_stats.stopAddUrlStatsWorker();
     add_worker.join();
@@ -594,7 +591,6 @@ TEST_F(UrlStatTest, SendWorkerRecordsStatsTest) {
     // Let it run for a brief moment
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    // Stop worker
     mock_agent_service_->setExiting(true);
     url_stats.stopSendUrlStatsWorker();
     send_worker.join();
@@ -677,7 +673,6 @@ TEST_F(UrlStatTest, HistogramOutOfBoundsIndexTest) {
     EXPECT_EQ(histogram.histogram(100), 0);
 }
 
-// Test histogram with zero elapsed
 TEST_F(UrlStatTest, HistogramZeroElapsedTest) {
     UrlStatHistogram histogram;
     histogram.add(0);
@@ -710,13 +705,11 @@ TEST_F(UrlStatTest, TrimUrlPathEmptyTest) {
     EXPECT_EQ(result, "");
 }
 
-// Test trim_url_path with root path "/"
 TEST_F(UrlStatTest, TrimUrlPathRootTest) {
     std::string result = UrlStatSnapshot::trim_url_path("/", 3);
     EXPECT_EQ(result, "/");
 }
 
-// Test trim_url_path with trailing slash
 TEST_F(UrlStatTest, TrimUrlPathTrailingSlashTest) {
     // "/api/v1/" has 2 slashes after position 0, so depth=2 should trim after v1/
     std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users", 2);
@@ -730,7 +723,6 @@ TEST_F(UrlStatTest, TrimUrlPathDepthExceedsSegmentsTest) {
     EXPECT_EQ(result, "/api/users") << "Should return full path when depth exceeds segments";
 }
 
-// Test trim_url_path with depth 1
 TEST_F(UrlStatTest, TrimUrlPathDepth1Test) {
     std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users/123", 1);
     EXPECT_EQ(result, "/api/*");
@@ -751,7 +743,6 @@ TEST_F(UrlStatTest, TrimUrlPathQueryParamsEarlyTest) {
     EXPECT_EQ(result.find('?'), std::string::npos);
 }
 
-// Test trim_url_path with fragment
 TEST_F(UrlStatTest, TrimUrlPathWithFragmentTest) {
     // Fragments are not specially handled, treated as part of the path
     std::string result = UrlStatSnapshot::trim_url_path("/api/v1#section", 3);
@@ -760,7 +751,6 @@ TEST_F(UrlStatTest, TrimUrlPathWithFragmentTest) {
     EXPECT_FALSE(result.empty());
 }
 
-// Test trim_url_path with consecutive slashes
 TEST_F(UrlStatTest, TrimUrlPathConsecutiveSlashesTest) {
     std::string result = UrlStatSnapshot::trim_url_path("/api//v1/users", 2);
     // Each '/' decrements depth, so "/api/" uses depth 1, "/" uses depth 2 -> trim
@@ -769,7 +759,6 @@ TEST_F(UrlStatTest, TrimUrlPathConsecutiveSlashesTest) {
 
 // ========== Additional UrlStatSnapshot Tests ==========
 
-// Test snapshot aggregates same URL and tick
 TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -898,7 +887,6 @@ TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
     EXPECT_EQ(entry.getFailHistogram().total(), 150) << "404 should now be a failure";
 }
 
-// Test snapshot limit enforcement
 TEST_F(UrlStatTest, SnapshotLimitEnforcementTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -1041,7 +1029,6 @@ TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
 
 // ========== Additional TickClock Tests ==========
 
-// Test TickClock tick alignment
 TEST_F(UrlStatTest, TickClockAlignmentTest) {
     TickClock clock(30);  // 30-second interval
 
@@ -1082,7 +1069,6 @@ TEST_F(UrlStatTest, TickClockFarTimeDifferentTickTest) {
 
 // ========== Additional UrlStatEntry Tests ==========
 
-// Test UrlStatEntry fields
 TEST_F(UrlStatTest, UrlStatEntryFieldsTest) {
     UrlStatEntry stat("/api/data", "DELETE", 204);
 
@@ -1097,7 +1083,6 @@ TEST_F(UrlStatTest, UrlStatEntryFieldsTest) {
 
 // ========== Additional UrlStats Tests ==========
 
-// Test takeSnapshot replaces with fresh snapshot
 TEST_F(UrlStatTest, TakeSnapshotReplacesWithFreshTest) {
     Config config;
     auto& url_stats = mock_agent_service_->getUrlStats();

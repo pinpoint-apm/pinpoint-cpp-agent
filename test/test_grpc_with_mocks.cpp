@@ -1185,10 +1185,8 @@ TEST_F(GrpcMockTest, GrpcAgentPingWorkerTest) {
     // Set agent to exiting state before stopping worker
     mock_agent_service_->setExiting(true);
     
-    // Stop worker
     agent.stopPingWorker();
     
-    // Wait for thread to finish
     if (ping_worker.joinable()) {
         ping_worker.join();
     }
@@ -1289,10 +1287,8 @@ TEST_F(GrpcMockTest, GrpcSpanWorkerTest) {
     // Set agent to exiting state before stopping worker
     mock_agent_service_->setExiting(true);
     
-    // Stop worker
     span_client.stopSpanWorker();
     
-    // Wait for thread to finish
     if (span_worker.joinable()) {
         span_worker.join();
     }
@@ -1385,10 +1381,8 @@ TEST_F(GrpcMockTest, GrpcStatsWorkerTest) {
     // Set agent to exiting state before stopping worker
     mock_agent_service_->setExiting(true);
     
-    // Stop worker
     stats_client.stopStatsWorker();
     
-    // Wait for thread to finish
     if (stats_worker.joinable()) {
         stats_worker.join();
     }
@@ -1501,7 +1495,6 @@ TEST_F(GrpcMockTest, CompleteGrpcWorkflowWithWorkersTest) {
     span_client.stopSpanWorker();
     stats_client.stopStatsWorker();
     
-    // Wait for threads to finish
     if (ping_worker.joinable()) ping_worker.join();
     if (meta_worker.joinable()) meta_worker.join();
     if (span_worker.joinable()) span_worker.join();

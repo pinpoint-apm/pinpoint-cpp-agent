@@ -29,12 +29,10 @@ using StringPair = std::pair<std::string, std::string>;
 class AnnotationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Called before each test
         annotation = std::make_unique<PinpointAnnotation>();
     }
 
     void TearDown() override {
-        // Called after each test
         annotation.reset();
     }
 
@@ -44,7 +42,6 @@ protected:
 
 // ========== AppendInt Tests ==========
 
-// Test AppendInt with positive integer
 TEST_F(AnnotationTest, AppendIntPositiveTest) {
     int32_t key = 100;
     int value = 42;
@@ -60,7 +57,6 @@ TEST_F(AnnotationTest, AppendIntPositiveTest) {
     EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Int value should match";
 }
 
-// Test AppendInt with negative integer
 TEST_F(AnnotationTest, AppendIntNegativeTest) {
     int32_t key = 101;
     int value = -123;
@@ -76,7 +72,6 @@ TEST_F(AnnotationTest, AppendIntNegativeTest) {
     EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Negative int value should match";
 }
 
-// Test AppendInt with zero
 TEST_F(AnnotationTest, AppendIntZeroTest) {
     int32_t key = 102;
     int value = 0;
@@ -92,7 +87,6 @@ TEST_F(AnnotationTest, AppendIntZeroTest) {
     EXPECT_EQ(std::get<int32_t>(pair.second.data), value) << "Zero value should match";
 }
 
-// Test AppendInt with extreme values
 TEST_F(AnnotationTest, AppendIntExtremeValuesTest) {
     annotation->AppendInt(200, INT32_MAX);
     annotation->AppendInt(201, INT32_MIN);
@@ -111,7 +105,6 @@ TEST_F(AnnotationTest, AppendIntExtremeValuesTest) {
 
 // ========== AppendLong Tests ==========
 
-// Test AppendLong with positive long
 TEST_F(AnnotationTest, AppendLongPositiveTest) {
     int32_t key = 150;
     int64_t value = 1234567890123456789LL;
@@ -127,7 +120,6 @@ TEST_F(AnnotationTest, AppendLongPositiveTest) {
     EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Long value should match";
 }
 
-// Test AppendLong with negative long
 TEST_F(AnnotationTest, AppendLongNegativeTest) {
     int32_t key = 151;
     int64_t value = -1234567890123456789LL;
@@ -143,7 +135,6 @@ TEST_F(AnnotationTest, AppendLongNegativeTest) {
     EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Negative long value should match";
 }
 
-// Test AppendLong with zero
 TEST_F(AnnotationTest, AppendLongZeroTest) {
     int32_t key = 152;
     int64_t value = 0LL;
@@ -159,7 +150,6 @@ TEST_F(AnnotationTest, AppendLongZeroTest) {
     EXPECT_EQ(std::get<int64_t>(pair.second.data), value) << "Zero value should match";
 }
 
-// Test AppendLong with extreme values
 TEST_F(AnnotationTest, AppendLongExtremeValuesTest) {
     annotation->AppendLong(250, INT64_MAX);
     annotation->AppendLong(251, INT64_MIN);
@@ -194,7 +184,6 @@ TEST_F(AnnotationTest, AppendLongTimestampTest) {
 
 // ========== AppendString Tests ==========
 
-// Test AppendString with normal string
 TEST_F(AnnotationTest, AppendStringNormalTest) {
     int32_t key = 300;
     std::string value = "Hello, World!";
@@ -210,7 +199,6 @@ TEST_F(AnnotationTest, AppendStringNormalTest) {
     EXPECT_EQ(std::get<std::string>(pair.second.data), value) << "String value should match";
 }
 
-// Test AppendString with empty string
 TEST_F(AnnotationTest, AppendStringEmptyTest) {
     int32_t key = 301;
     std::string value = "";
@@ -260,7 +248,6 @@ TEST_F(AnnotationTest, AppendStringUnicodeTest) {
 
 // ========== AppendStringString Tests ==========
 
-// Test AppendStringString with normal strings
 TEST_F(AnnotationTest, AppendStringStringNormalTest) {
     int32_t key = 400;
     std::string value1 = "First String";
@@ -278,7 +265,6 @@ TEST_F(AnnotationTest, AppendStringStringNormalTest) {
     EXPECT_EQ(std::get<StringPair>(pair.second.data).second, value2) << "Second string should match";
 }
 
-// Test AppendStringString with empty strings
 TEST_F(AnnotationTest, AppendStringStringEmptyTest) {
     int32_t key = 401;
     std::string value1 = "";
@@ -460,7 +446,6 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringZeroBytesTest) {
     EXPECT_EQ(bytesData.stringValue2, string2) << "Second string should match";
 }
 
-// Test AppendSqlUidStringString with empty strings
 TEST_F(AnnotationTest, AppendSqlUidStringStringEmptyStringsTest) {
     int32_t key = 702;
     SqlUid bytesValue = {0xAB, 0xCD, 0xEF};
@@ -620,7 +605,6 @@ TEST_F(AnnotationTest, InsertionOrderTest) {
     }
 }
 
-// Test same key multiple times
 TEST_F(AnnotationTest, SameKeyMultipleTimesTest) {
     int32_t key = 999;
     annotation->AppendInt(key, 1);
@@ -648,7 +632,6 @@ TEST_F(AnnotationTest, SameKeyMultipleTimesTest) {
 
 // ========== Edge Cases and Boundary Tests ==========
 
-// Test very long strings
 TEST_F(AnnotationTest, VeryLongStringTest) {
     int32_t key = 700;
     std::string longString(10000, 'A'); // 10,000 character string
@@ -665,7 +648,6 @@ TEST_F(AnnotationTest, VeryLongStringTest) {
     EXPECT_EQ(std::get<std::string>(pair.second.data).length(), 10000) << "String length should be 10000";
 }
 
-// Test null characters in string
 TEST_F(AnnotationTest, NullCharactersInStringTest) {
     int32_t key = 701;
     std::string stringWithNulls = std::string("Hello\0World\0Test", 17);
@@ -682,7 +664,6 @@ TEST_F(AnnotationTest, NullCharactersInStringTest) {
     EXPECT_EQ(std::get<std::string>(pair.second.data).length(), 17) << "String length should include null characters";
 }
 
-// Test empty annotation list
 TEST_F(AnnotationTest, EmptyAnnotationListTest) {
     auto& annotations = annotation->getAnnotations();
     EXPECT_TRUE(annotations.empty()) << "New annotation should have empty list";

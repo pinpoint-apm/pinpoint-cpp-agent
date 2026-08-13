@@ -78,7 +78,6 @@ TEST_F(SamplingTest, CounterSamplerNRateTest) {
     }
 }
 
-// Test CounterSampler thread safety
 TEST_F(SamplingTest, CounterSamplerThreadSafetyTest) {
     const int rate = 10;
     const int num_threads = 5;
@@ -100,7 +99,6 @@ TEST_F(SamplingTest, CounterSamplerThreadSafetyTest) {
         }));
     }
     
-    // Collect results
     int total_true_count = 0;
     for (auto& future : futures) {
         total_true_count += future.get();
@@ -216,7 +214,6 @@ TEST_F(SamplingTest, PercentSamplerNearFullRateRoundsUpToAlwaysSampleTest) {
     }
 }
 
-// Test PercentSampler with various rates
 TEST_F(SamplingTest, PercentSamplerVariousRatesTest) {
     // In this implementation, rate is percentage (1.0 = 1%, 5.0 = 5%, etc.)
     const std::vector<std::pair<double, double>> test_cases = {
@@ -249,7 +246,6 @@ TEST_F(SamplingTest, PercentSamplerVariousRatesTest) {
     }
 }
 
-// Test PercentSampler thread safety
 TEST_F(SamplingTest, PercentSamplerThreadSafetyTest) {
     const double input_rate = 5.0; // 5.0 input = 5% sampling
     const double expected_rate = 0.05;
@@ -272,7 +268,6 @@ TEST_F(SamplingTest, PercentSamplerThreadSafetyTest) {
         }));
     }
     
-    // Collect results
     int total_true_count = 0;
     for (auto& future : futures) {
         total_true_count += future.get();
@@ -348,7 +343,6 @@ TEST_F(SamplingTest, PassThroughTraceSamplerWithPercentSamplerTest) {
 
 // TraceSampler Tests
 
-// Test TraceSampler with no limiters
 TEST_F(SamplingTest, TraceSamplerNoLimitersTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0); // No limiters
@@ -404,7 +398,6 @@ TEST_F(SamplingTest, TraceSamplerContinueLimiterTest) {
     }
 }
 
-// Test TraceSampler with both limiters
 TEST_F(SamplingTest, TraceSamplerBothLimitersTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 2;
@@ -631,7 +624,6 @@ TEST_F(SamplingTest, TraceSamplerStatsUnsampleNewTest) {
     EXPECT_EQ(snapshot.num_skip_new_, 0) << "Should have 0 skipped (rate limiter never reached)";
 }
 
-// Test TraceSampler with null sampler
 TEST_F(SamplingTest, TraceSamplerNullSamplerTest) {
     TraceSampler trace_sampler(mock_service_.get(), nullptr, 5, 5);
 
