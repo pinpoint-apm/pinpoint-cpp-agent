@@ -22,7 +22,6 @@
 // down an inherited started agent never joins dead threads (no abort).
 
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
 
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -39,60 +38,10 @@
 #include "../src/config.h"
 #include "../src/object_name.h"
 #include "../include/pinpoint/tracer.h"
-#include "v1/Service_mock.grpc.pb.h"
-
-using ::testing::_;
-using ::testing::Return;
-using ::testing::NiceMock;
-using ::testing::DoAll;
-using ::testing::SetArgPointee;
+#include "testable_grpc.h"
 
 namespace pinpoint {
 namespace {
-
-// Mock gRPC clients: real channels are never contacted (readyChannel() is
-// false and create_stub() keeps the injected mock), yet registerAgent()
-// reports success so Start() flips the agent to "enabled".
-class ForkGrpcAgent : public GrpcAgent {
-public:
-    explicit ForkGrpcAgent(std::shared_ptr<const Config> cfg) : GrpcAgent(std::move(cfg)) {}
-    void injectMockStubs() {
-        auto stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-        EXPECT_CALL(*stub, RequestAgentInfo(_, _, _)).WillRepeatedly(Return(grpc::Status::OK));
-        set_agent_stub(std::move(stub));
-    }
-    bool readyChannel() override { return false; }
-    GrpcRequestStatus registerAgent() override { return SEND_OK; }
-protected:
-    void create_stub() override {}
-};
-
-class ForkGrpcMetadata : public GrpcMetadata {
-public:
-    explicit ForkGrpcMetadata(std::shared_ptr<const Config> cfg) : GrpcMetadata(std::move(cfg)) {}
-    void injectMockStubs() { set_meta_stub(std::make_unique<NiceMock<v1::MockMetadataStub>>()); }
-    bool readyChannel() override { return false; }
-protected:
-    void create_stub() override {}
-};
-
-class ForkGrpcSpan : public GrpcSpan {
-public:
-    explicit ForkGrpcSpan(std::shared_ptr<const Config> cfg) : GrpcSpan(std::move(cfg)) {}
-    void injectMockStubs() { set_span_stub(std::make_unique<NiceMock<v1::MockSpanStub>>()); }
-    bool readyChannel() override { return false; }
-protected:
-    void create_stub() override {}
-};
-
-class ForkGrpcStats : public GrpcStats {
-public:
-    explicit ForkGrpcStats(std::shared_ptr<const Config> cfg) : GrpcStats(std::move(cfg)) {}
-    void injectMockStubs() { set_stats_stub(std::make_unique<NiceMock<v1::MockStatStub>>()); }
-    bool readyChannel() override { return false; }
-protected:
-    void create_stub() override {}
-};
 
 std::shared_ptr<Config> make_fork_config() {
     auto cfg = std::make_shared<Config>();
@@ -116,16 +65,9 @@ std::shared_ptr<Config> make_fork_config() {
 
 // Builds a COLD agent (no Start()) with mock gRPC clients.
 std::shared_ptr<AgentImpl> make_cold_agent(const std::shared_ptr<Config>& cfg) {
-    auto a = std::make_unique<ForkGrpcAgent>(cfg);
-    auto m = std::make_unique<ForkGrpcMetadata>(cfg);
-    auto s = std::make_unique<ForkGrpcSpan>(cfg);
-    auto st = std::make_unique<ForkGrpcStats>(cfg);
-    a->injectMockStubs();
-    m->injectMockStubs();
-    s->injectMockStubs();
-    st->injectMockStubs();
-    return AgentImpl::createShared(cfg, std::move(a), std::move(m),
-                                   std::move(s), std::move(st));
+    auto c = make_testable_grpc_clients(cfg);
+    return AgentImpl::createShared(cfg, std::move(c.agent), std::move(c.metadata),
+                                   std::move(c.span), std::move(c.stats));
 }
 
 void wait_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {

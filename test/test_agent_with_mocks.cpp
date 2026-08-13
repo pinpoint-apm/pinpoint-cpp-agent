@@ -38,84 +38,10 @@
 #include "../src/url_stat.h"
 #include "../src/logging.h"
 #include "../include/pinpoint/tracer.h"
-#include "v1/Service_mock.grpc.pb.h"
 #include "mock_helpers.h"
-
-using ::testing::NiceMock;
+#include "testable_grpc.h"
 
 namespace pinpoint {
-
-// --- Testable gRPC classes that bypass real connections ---
-
-class TestableGrpcAgent : public GrpcAgent {
-public:
-    explicit TestableGrpcAgent(std::shared_ptr<const Config> config)
-        : GrpcAgent(std::move(config)) {}
-
-    void injectMockStubs() {
-        // No expectations: registerAgent() is overridden below and
-        // readyChannel() is false, so the stub is never exercised.
-        set_agent_stub(std::make_unique<NiceMock<v1::MockAgentStub>>());
-    }
-
-    // Avoid real gRPC async streaming in worker threads.
-    bool readyChannel() override { return false; }
-
-    // Override to skip real build_agent_info (which calls slow DNS resolution)
-    GrpcRequestStatus registerAgent() override { return SEND_OK; }
-
-protected:
-    // openChannel() (called from Start()) would otherwise replace the injected
-    // mock stub with a real one; keep the mock in place.
-    void create_stub() override {}
-};
-
-class TestableGrpcMetadata : public GrpcMetadata {
-public:
-    explicit TestableGrpcMetadata(std::shared_ptr<const Config> config)
-        : GrpcMetadata(std::move(config)) {}
-
-    void injectMockStubs() {
-        // No expectations: readyChannel() is false, so the meta worker never
-        // issues an RPC (pinned by GrpcMetadataSkipsRpcWhenChannelNotReady).
-        set_meta_stub(std::make_unique<NiceMock<v1::MockMetadataStub>>());
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
-
-class TestableGrpcSpan : public GrpcSpan {
-public:
-    explicit TestableGrpcSpan(std::shared_ptr<const Config> config)
-        : GrpcSpan(std::move(config)) {}
-
-    void injectMockStubs() {
-        set_span_stub(std::make_unique<NiceMock<v1::MockSpanStub>>());
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
-
-class TestableGrpcStats : public GrpcStats {
-public:
-    explicit TestableGrpcStats(std::shared_ptr<const Config> config)
-        : GrpcStats(std::move(config)) {}
-
-    void injectMockStubs() {
-        set_stats_stub(std::make_unique<NiceMock<v1::MockStatStub>>());
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
 
 // --- Helper to build a valid Config ---
 
@@ -148,25 +74,17 @@ static std::shared_ptr<Config> make_test_config() {
 static std::shared_ptr<AgentImpl> make_test_agent(std::shared_ptr<Config> cfg,
                                                   size_t cache_size = AgentImpl::kDefaultCacheSize,
                                                   const AgentOptions& options = {}) {
-    auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
-    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
-    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
-    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
-
-    grpc_agent->injectMockStubs();
-    grpc_metadata->injectMockStubs();
-    grpc_span->injectMockStubs();
-    grpc_stat->injectMockStubs();
+    auto clients = make_testable_grpc_clients(cfg);
 
     // createShared mirrors production (StartAgent): the SharedDeleter keeps
     // the final release bounded when a test drops the last reference
     // without calling Shutdown().
     auto agent = AgentImpl::createShared(
         cfg,
-        std::move(grpc_agent),
-        std::move(grpc_metadata),
-        std::move(grpc_span),
-        std::move(grpc_stat),
+        std::move(clients.agent),
+        std::move(clients.metadata),
+        std::move(clients.span),
+        std::move(clients.stats),
         nullptr,
         DEFAULT_APP_TYPE,
         cache_size);
@@ -224,20 +142,13 @@ TEST_F(AgentImplTest, EnableAfterInit) {
 // cold agent that later StartAgent() calls would keep returning.
 TEST(AgentStartResultTest, StartReportsLaunchRepeatAndShutdownRefusal) {
     auto cfg = make_test_config();
-    auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
-    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
-    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
-    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
-    grpc_agent->injectMockStubs();
-    grpc_metadata->injectMockStubs();
-    grpc_span->injectMockStubs();
-    grpc_stat->injectMockStubs();
+    auto clients = make_testable_grpc_clients(cfg);
     // createShared, never make_shared: production (StartAgent) attaches the
     // SharedDeleter to every shared-owned agent, and the deadline-expiry
     // deferred-destroy path assumes it runs at final release.
     auto agent = AgentImpl::createShared(
-        cfg, std::move(grpc_agent), std::move(grpc_metadata),
-        std::move(grpc_span), std::move(grpc_stat));
+        cfg, std::move(clients.agent), std::move(clients.metadata),
+        std::move(clients.span), std::move(clients.stats));
 
     EXPECT_TRUE(agent->Start()) << "first Start() must report a successful launch";
     EXPECT_TRUE(agent->Start()) << "a repeated Start() is a successful no-op";

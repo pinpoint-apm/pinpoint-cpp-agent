@@ -28,7 +28,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <gmock/gmock.h>
 
 #include <atomic>
 #include <chrono>
@@ -46,97 +45,9 @@
 #include "../src/grpc.h"
 #include "../src/noop.h"
 #include "c_api_test_helpers.h"
-#include "v1/Service_mock.grpc.pb.h"
-
-using ::testing::_;
-using ::testing::NiceMock;
-using ::testing::Return;
-using ::testing::DoAll;
-using ::testing::SetArgPointee;
-
-// ============================================================================
-// Mock gRPC infrastructure (same pattern as test_agent_with_mocks.cpp)
-// ============================================================================
+#include "testable_grpc.h"
 
 namespace {
-
-class TestableGrpcAgent : public pinpoint::GrpcAgent {
-public:
-    explicit TestableGrpcAgent(std::shared_ptr<const pinpoint::Config> cfg)
-        : GrpcAgent(std::move(cfg)) {}
-
-    void injectMockStubs() {
-        auto agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
-        EXPECT_CALL(*agent_stub, RequestAgentInfo(_, _, _))
-            .WillRepeatedly(Return(grpc::Status::OK));
-        set_agent_stub(std::move(agent_stub));
-    }
-
-    bool readyChannel() override { return false; }
-    pinpoint::GrpcRequestStatus registerAgent() override { return pinpoint::SEND_OK; }
-
-protected:
-    // Keep the injected mock stub; openChannel() (from Start()) would otherwise
-    // replace it with a real one.
-    void create_stub() override {}
-};
-
-class TestableGrpcMetadata : public pinpoint::GrpcMetadata {
-public:
-    explicit TestableGrpcMetadata(std::shared_ptr<const pinpoint::Config> cfg)
-        : GrpcMetadata(std::move(cfg)) {}
-
-    void injectMockStubs() {
-        v1::PResult ok;
-        ok.set_success(true);
-
-        auto meta_stub = std::make_unique<NiceMock<v1::MockMetadataStub>>();
-        EXPECT_CALL(*meta_stub, RequestApiMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestStringMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestSqlMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        EXPECT_CALL(*meta_stub, RequestSqlUidMetaData(_, _, _))
-            .WillRepeatedly(DoAll(SetArgPointee<2>(ok), Return(grpc::Status::OK)));
-        set_meta_stub(std::move(meta_stub));
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
-
-class TestableGrpcSpan : public pinpoint::GrpcSpan {
-public:
-    explicit TestableGrpcSpan(std::shared_ptr<const pinpoint::Config> cfg)
-        : GrpcSpan(std::move(cfg)) {}
-
-    void injectMockStubs() {
-        set_span_stub(std::make_unique<NiceMock<v1::MockSpanStub>>());
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
-
-class TestableGrpcStats : public pinpoint::GrpcStats {
-public:
-    explicit TestableGrpcStats(std::shared_ptr<const pinpoint::Config> cfg)
-        : GrpcStats(std::move(cfg)) {}
-
-    void injectMockStubs() {
-        set_stats_stub(std::make_unique<NiceMock<v1::MockStatStub>>());
-    }
-
-    bool readyChannel() override { return false; }
-
-protected:
-    void create_stub() override {}
-};
 
 static std::shared_ptr<pinpoint::Config> make_test_config() {
     auto cfg = std::make_shared<pinpoint::Config>();
@@ -175,22 +86,14 @@ Sampling:
 
 static std::shared_ptr<pinpoint::AgentImpl> make_test_agent(
         std::shared_ptr<pinpoint::Config> cfg) {
-    auto grpc_agent = std::make_unique<TestableGrpcAgent>(cfg);
-    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
-    auto grpc_span  = std::make_unique<TestableGrpcSpan>(cfg);
-    auto grpc_stat  = std::make_unique<TestableGrpcStats>(cfg);
-
-    grpc_agent->injectMockStubs();
-    grpc_metadata->injectMockStubs();
-    grpc_span->injectMockStubs();
-    grpc_stat->injectMockStubs();
+    auto clients = pinpoint::make_testable_grpc_clients(cfg);
 
     auto agent = std::make_shared<pinpoint::AgentImpl>(
         cfg,
-        std::move(grpc_agent),
-        std::move(grpc_metadata),
-        std::move(grpc_span),
-        std::move(grpc_stat));
+        std::move(clients.agent),
+        std::move(clients.metadata),
+        std::move(clients.span),
+        std::move(clients.stats));
     // Construction is cold; Start() spawns the workers (mirrors production).
     agent->Start();
     return agent;

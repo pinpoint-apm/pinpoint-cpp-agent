@@ -10,6 +10,7 @@ cc_library(
     hdrs = [
         "mock_agent_service.h",
         "mock_helpers.h",
+        "testable_grpc.h",
     ],
     includes = [
         ".",
