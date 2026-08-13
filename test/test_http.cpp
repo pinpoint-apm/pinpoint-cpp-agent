@@ -108,14 +108,7 @@ int stoi_(const std::string& str) {
     return result;
 }
 
-class HttpTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-    }
-
-    void TearDown() override {
-    }
-};
+class HttpTest : public ::testing::Test {};
 
 // ========== HttpStatusErrors Class Tests ==========
 

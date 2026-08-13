@@ -25,14 +25,7 @@
 
 namespace pinpoint {
 
-class CacheTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-    }
-
-    void TearDown() override {
-    }
-};
+class CacheTest : public ::testing::Test {};
 
 namespace {
     PreparedSqlRef prepared_sql(std::string parameters, int32_t id) {
@@ -1022,12 +1015,6 @@ TEST_F(CacheTest, ShardCountOneDegeneratesToUnshardedBehaviorTest) {
 // SqlUidCache Test Suite
 class SqlUidCacheTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-    }
-
-    void TearDown() override {
-    }
-    
     bool areUidsEqual(const SqlUid& uid1, const SqlUid& uid2) {
         return uid1 == uid2;
     }

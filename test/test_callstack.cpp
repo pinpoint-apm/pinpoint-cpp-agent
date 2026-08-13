@@ -24,14 +24,7 @@
 
 namespace pinpoint {
 
-class CallStackTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-    }
-
-    void TearDown() override {
-    }
-};
+class CallStackTest : public ::testing::Test {};
 
 // ========== StackFrame Tests ==========
 

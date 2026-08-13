@@ -23,14 +23,7 @@
 
 namespace pinpoint {
 
-class RateLimiterTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-    }
-
-    void TearDown() override {
-    }
-};
+class RateLimiterTest : public ::testing::Test {};
 
 // Basic functionality test - verify allow() returns true when tokens are available
 TEST_F(RateLimiterTest, BasicAllowTest) {
