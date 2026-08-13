@@ -204,3 +204,18 @@ wrapper directly:
 
 The SQL endpoints intentionally exercise `SetSqlQuery` and collector metadata;
 they do not require a database.
+
+## DB fault injection
+
+`PINPOINT_E2E_DB_FAULTS` makes every traced statement sleep 1–100 ms and turns
+~30% of them into error spans, which is useful for exercising error metadata and
+slow-query traces:
+
+```bash
+PINPOINT_E2E_DB_FAULTS=1 ./build/default/test/e2e/it_test_server 8090
+```
+
+It is off by default: the sleeps dominate DB-mode timings, so a load pass with
+faults enabled measures the injected sleep rather than agent overhead. Any value
+other than `0` or the empty string turns it on, and the server prints a notice
+at startup when it is enabled.

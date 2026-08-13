@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -455,6 +456,39 @@ void on_http_client(const httplib::Request& req, httplib::Response& res) {
 // SQL-traced endpoints (no actual DB connection — span events only)
 // =============================================================================
 
+// Per-statement query latency and ~30% error spans, enabled by
+// PINPOINT_E2E_DB_FAULTS. Off by default: the sleeps dominate DB-mode load
+// results, so an ungated run measures the sleep rather than the agent.
+static bool db_faults_enabled() {
+    const char* value = getenv("PINPOINT_E2E_DB_FAULTS");
+    return value != nullptr && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static const bool g_db_faults = db_faults_enabled();
+
+static void inject_db_fault(pinpoint::SpanEventPtr ev,
+                            const std::string& operation) {
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> sleep_dist(1, 100);
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
+
+    const std::string error_messages[] = {
+        "Connection timed out after 30s",
+        "Deadlock found when trying to get lock; try restarting transaction",
+        "Lost connection to MySQL server during query",
+        "Table 'test." + operation + "_tmp' doesn't exist",
+        "Query execution was interrupted",
+        "Too many connections",
+        "Lock wait timeout exceeded; try restarting transaction",
+        "Duplicate entry for key 'PRIMARY'",
+    };
+    std::uniform_int_distribution<int> error_dist(0, 9);
+    if (ev && error_dist(rng) < 3) {  // ~30% chance of error
+        std::uniform_int_distribution<int> msg_dist(0, 7);
+        ev->SetError("MySQL_Error", error_messages[msg_dist(rng)]);
+    }
+}
+
 static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
                       const std::string& sql, const std::string& params) {
     auto ev = span->NewSpanEvent("SQL_" + operation);
@@ -469,24 +503,8 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
         }
     }
 
-    static thread_local std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> sleep_dist(1, 100);
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(rng)));
-
-    static const std::string error_messages[] = {
-        "Connection timed out after 30s",
-        "Deadlock found when trying to get lock; try restarting transaction",
-        "Lost connection to MySQL server during query",
-        "Table 'test." + operation + "_tmp' doesn't exist",
-        "Query execution was interrupted",
-        "Too many connections",
-        "Lock wait timeout exceeded; try restarting transaction",
-        "Duplicate entry for key 'PRIMARY'",
-    };
-    std::uniform_int_distribution<int> error_dist(0, 9);
-    if (ev && error_dist(rng) < 3) {  // ~30% chance of error
-        std::uniform_int_distribution<int> msg_dist(0, 7);
-        ev->SetError("MySQL_Error", error_messages[msg_dist(rng)]);
+    if (g_db_faults) {
+        inject_db_fault(ev, operation);
     }
 
     ev->EndEvent();
@@ -910,6 +928,11 @@ void on_ready(const httplib::Request&, httplib::Response& res) {
 // Main
 // =============================================================================
 int main(int argc, char* argv[]) {
+    // Redirected stdout is block-buffered, and the process then blocks in
+    // listen() until it is killed, so the startup lines would never reach a
+    // log file.
+    setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+
     int port = 8090;
     if (argc > 1) {
         port = std::atoi(argv[1]);
@@ -975,6 +998,9 @@ int main(int argc, char* argv[]) {
 
     printf("\nIntegration test server starting on port %d "
            "(see test/e2e/README.md for endpoints)\n", port);
+    if (g_db_faults) {
+        printf("DB fault injection ON: per-statement sleep and ~30%% error spans\n");
+    }
     printf("Collector: %s\n", it_test::CollectorHost().c_str());
     if (!server.listen("0.0.0.0", port)) {
         fprintf(stderr, "Failed to start integration test server on port %d\n", port);
