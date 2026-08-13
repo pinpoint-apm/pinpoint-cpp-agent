@@ -96,259 +96,65 @@ class HttpTest : public ::testing::Test {};
 
 // ========== HttpStatusErrors Class Tests ==========
 
-TEST_F(HttpTest, HttpStatusErrorsSingleCategoryTest) {
-    std::vector<std::string> tokens = {"5xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match server errors
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match 500 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(502)) << "Should match 502 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(599)) << "Should match 599 for 5xx category";
-    
-    // Should not match other categories
-    EXPECT_FALSE(errors.isErrorCode(404)) << "Should not match 404 for 5xx category";
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200 for 5xx category";
-    EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 for 5xx category";
-}
+TEST_F(HttpTest, HttpStatusErrorsTest) {
+    struct StatusErrorCase {
+        std::vector<std::string> tokens;
+        std::vector<int> errors;      // isErrorCode must be true
+        std::vector<int> non_errors;  // isErrorCode must be false
+    };
 
-TEST_F(HttpTest, HttpStatusErrorsMultipleCategoriesTest) {
-    std::vector<std::string> tokens = {"4xx", "5xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match both client and server errors
-    EXPECT_TRUE(errors.isErrorCode(400)) << "Should match 400 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match 404 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match 500 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(502)) << "Should match 502 for 5xx category";
-    
-    // Should not match success or redirection
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200";
-    EXPECT_FALSE(errors.isErrorCode(301)) << "Should not match 301";
-}
+    const std::vector<StatusErrorCase> cases = {
+        // single category
+        {{"5xx"}, {500, 502, 599}, {404, 200, 300}},
+        // multiple categories
+        {{"4xx", "5xx"}, {400, 404, 500, 502}, {200, 301}},
+        // specific codes only
+        {{"404", "503"}, {404, 503}, {403, 500, 200}},
+        // mixed categories and specific codes
+        {{"404", "500", "503", "2xx"}, {404, 500, 503, 200, 201, 299}, {403, 502, 301, 100}},
+        // all ranges and some specific codes
+        {{"1xx", "3xx", "4xx", "200", "502"},
+         {100, 150, 199, 300, 350, 399, 400, 404, 499, 200, 502},
+         {201, 500, 600}},
+        // only specific codes
+        {{"201", "301", "401", "501"},
+         {201, 301, 401, 501},
+         {200, 202, 300, 302, 400, 402, 500, 502}},
+        // edge cases and boundary values
+        {{"100", "199", "200", "299", "5xx"},
+         {100, 199, 200, 299, 500, 550, 599},
+         {99, 101, 198, 201, 298, 300, 499, 600}},
+        // duplicate tokens
+        {{"404", "4xx", "404", "4xx"}, {400, 404, 450, 499}, {300, 500, 200}},
+        // complex realistic scenario
+        {{"4xx", "5xx", "200", "302"},
+         {400, 401, 403, 404, 429, 499, 500, 502, 503, 504, 599, 200, 302},
+         {201, 204, 301, 304, 100, 101}},
+        // all categories
+        {{"1xx", "2xx", "3xx", "4xx", "5xx"},
+         {100, 150, 199, 200, 250, 299, 300, 350, 399, 400, 450, 499, 500, 550, 599},
+         {99, 600, 700}},
+        // unusual but valid specific codes
+        {{"102", "226", "308", "418", "451", "511"},
+         {102, 226, 308, 418, 451, 511},
+         {100, 101, 200, 201, 300, 301, 400, 404, 500, 502}},
+    };
 
-TEST_F(HttpTest, HttpStatusErrorsSpecificCodesTest) {
-    std::vector<std::string> tokens = {"404", "503"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match specific codes
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match specific code 404";
-    EXPECT_TRUE(errors.isErrorCode(503)) << "Should match specific code 503";
-    
-    // Should not match other codes in same category
-    EXPECT_FALSE(errors.isErrorCode(403)) << "Should not match 403 (other 4xx)";
-    EXPECT_FALSE(errors.isErrorCode(500)) << "Should not match 500 (other 5xx)";
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200";
-}
+    for (const auto& c : cases) {
+        std::string label = "tokens:";
+        for (const auto& token : c.tokens) {
+            label += " " + token;
+        }
+        SCOPED_TRACE(label);
 
-// ========== Extended HttpStatusErrors Tests with Custom Arrays ==========
-
-// Test with mixed categories and specific codes
-TEST_F(HttpTest, HttpStatusErrorsCustomArray1Test) {
-    std::vector<std::string> tokens = {"404", "500", "503", "2xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match specific codes
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match specific code 404";
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match specific code 500";
-    EXPECT_TRUE(errors.isErrorCode(503)) << "Should match specific code 503";
-    
-    // Should match 2xx category
-    EXPECT_TRUE(errors.isErrorCode(200)) << "Should match 200 for 2xx category";
-    EXPECT_TRUE(errors.isErrorCode(201)) << "Should match 201 for 2xx category";
-    EXPECT_TRUE(errors.isErrorCode(299)) << "Should match 299 for 2xx category";
-    
-    // Should not match other codes
-    EXPECT_FALSE(errors.isErrorCode(403)) << "Should not match 403 (other 4xx except 404)";
-    EXPECT_FALSE(errors.isErrorCode(502)) << "Should not match 502 (other 5xx except 500, 503)";
-    EXPECT_FALSE(errors.isErrorCode(301)) << "Should not match 301 (3xx not included)";
-    EXPECT_FALSE(errors.isErrorCode(100)) << "Should not match 100 (1xx not included)";
-}
-
-// Test with all ranges and some specific codes
-TEST_F(HttpTest, HttpStatusErrorsCustomArray2Test) {
-    std::vector<std::string> tokens = {"1xx", "3xx", "4xx", "200", "502"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match 1xx range
-    EXPECT_TRUE(errors.isErrorCode(100)) << "Should match 100 for 1xx category";
-    EXPECT_TRUE(errors.isErrorCode(150)) << "Should match 150 for 1xx category";
-    EXPECT_TRUE(errors.isErrorCode(199)) << "Should match 199 for 1xx category";
-    
-    // Should match 3xx range
-    EXPECT_TRUE(errors.isErrorCode(300)) << "Should match 300 for 3xx category";
-    EXPECT_TRUE(errors.isErrorCode(350)) << "Should match 350 for 3xx category";
-    EXPECT_TRUE(errors.isErrorCode(399)) << "Should match 399 for 3xx category";
-    
-    // Should match 4xx range
-    EXPECT_TRUE(errors.isErrorCode(400)) << "Should match 400 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match 404 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(499)) << "Should match 499 for 4xx category";
-    
-    // Should match specific codes
-    EXPECT_TRUE(errors.isErrorCode(200)) << "Should match specific code 200";
-    EXPECT_TRUE(errors.isErrorCode(502)) << "Should match specific code 502";
-    
-    // Should not match other codes
-    EXPECT_FALSE(errors.isErrorCode(201)) << "Should not match 201 (other 2xx except 200)";
-    EXPECT_FALSE(errors.isErrorCode(500)) << "Should not match 500 (other 5xx except 502)";
-    EXPECT_FALSE(errors.isErrorCode(600)) << "Should not match 600 (out of range)";
-}
-
-// Test with only specific codes
-TEST_F(HttpTest, HttpStatusErrorsCustomArray3Test) {
-    std::vector<std::string> tokens = {"201", "301", "401", "501"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match only specific codes
-    EXPECT_TRUE(errors.isErrorCode(201)) << "Should match specific code 201";
-    EXPECT_TRUE(errors.isErrorCode(301)) << "Should match specific code 301";
-    EXPECT_TRUE(errors.isErrorCode(401)) << "Should match specific code 401";
-    EXPECT_TRUE(errors.isErrorCode(501)) << "Should match specific code 501";
-    
-    // Should not match related codes in same category
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200 (other 2xx)";
-    EXPECT_FALSE(errors.isErrorCode(202)) << "Should not match 202 (other 2xx)";
-    EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 (other 3xx)";
-    EXPECT_FALSE(errors.isErrorCode(302)) << "Should not match 302 (other 3xx)";
-    EXPECT_FALSE(errors.isErrorCode(400)) << "Should not match 400 (other 4xx)";
-    EXPECT_FALSE(errors.isErrorCode(402)) << "Should not match 402 (other 4xx)";
-    EXPECT_FALSE(errors.isErrorCode(500)) << "Should not match 500 (other 5xx)";
-    EXPECT_FALSE(errors.isErrorCode(502)) << "Should not match 502 (other 5xx)";
-}
-
-// Test edge cases and boundary values
-TEST_F(HttpTest, HttpStatusErrorsCustomArray4Test) {
-    std::vector<std::string> tokens = {"100", "199", "200", "299", "5xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match boundary specific codes
-    EXPECT_TRUE(errors.isErrorCode(100)) << "Should match boundary code 100";
-    EXPECT_TRUE(errors.isErrorCode(199)) << "Should match boundary code 199";
-    EXPECT_TRUE(errors.isErrorCode(200)) << "Should match boundary code 200";
-    EXPECT_TRUE(errors.isErrorCode(299)) << "Should match boundary code 299";
-    
-    // Should match all 5xx
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match 500 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(550)) << "Should match 550 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(599)) << "Should match 599 for 5xx category";
-    
-    // Should not match adjacent codes
-    EXPECT_FALSE(errors.isErrorCode(99)) << "Should not match 99 (before 100)";
-    EXPECT_FALSE(errors.isErrorCode(101)) << "Should not match 101 (after 100, not specified)";
-    EXPECT_FALSE(errors.isErrorCode(198)) << "Should not match 198 (before 199, not specified)";
-    EXPECT_FALSE(errors.isErrorCode(201)) << "Should not match 201 (after 200, not specified)";
-    EXPECT_FALSE(errors.isErrorCode(298)) << "Should not match 298 (before 299, not specified)";
-    EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 (after 299)";
-    EXPECT_FALSE(errors.isErrorCode(499)) << "Should not match 499 (just before 5xx range)";
-    EXPECT_FALSE(errors.isErrorCode(600)) << "Should not match 600 (just after 5xx range)";
-}
-
-// Test with duplicate tokens (should still work correctly)
-TEST_F(HttpTest, HttpStatusErrorsCustomArray5Test) {
-    std::vector<std::string> tokens = {"404", "4xx", "404", "4xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match 4xx range (includes 404)
-    EXPECT_TRUE(errors.isErrorCode(400)) << "Should match 400 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match 404 (specific and in range)";
-    EXPECT_TRUE(errors.isErrorCode(450)) << "Should match 450 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(499)) << "Should match 499 for 4xx category";
-    
-    // Should not match other ranges
-    EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 (3xx not included)";
-    EXPECT_FALSE(errors.isErrorCode(500)) << "Should not match 500 (5xx not included)";
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200 (2xx not included)";
-}
-
-// Test complex realistic scenario
-TEST_F(HttpTest, HttpStatusErrorsCustomArray6Test) {
-    std::vector<std::string> tokens = {"4xx", "5xx", "200", "302"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match client errors (4xx)
-    EXPECT_TRUE(errors.isErrorCode(400)) << "Should match 400 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(401)) << "Should match 401 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(403)) << "Should match 403 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(404)) << "Should match 404 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(429)) << "Should match 429 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(499)) << "Should match 499 for 4xx category";
-    
-    // Should match server errors (5xx)
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match 500 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(502)) << "Should match 502 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(503)) << "Should match 503 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(504)) << "Should match 504 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(599)) << "Should match 599 for 5xx category";
-    
-    // Should match specific codes
-    EXPECT_TRUE(errors.isErrorCode(200)) << "Should match specific code 200";
-    EXPECT_TRUE(errors.isErrorCode(302)) << "Should match specific code 302";
-    
-    // Should not match other success codes
-    EXPECT_FALSE(errors.isErrorCode(201)) << "Should not match 201 (other 2xx)";
-    EXPECT_FALSE(errors.isErrorCode(204)) << "Should not match 204 (other 2xx)";
-    
-    // Should not match other redirect codes
-    EXPECT_FALSE(errors.isErrorCode(301)) << "Should not match 301 (other 3xx)";
-    EXPECT_FALSE(errors.isErrorCode(304)) << "Should not match 304 (other 3xx)";
-    
-    // Should not match informational codes
-    EXPECT_FALSE(errors.isErrorCode(100)) << "Should not match 100 (1xx not included)";
-    EXPECT_FALSE(errors.isErrorCode(101)) << "Should not match 101 (1xx not included)";
-}
-
-// Test with all categories
-TEST_F(HttpTest, HttpStatusErrorsCustomArray7Test) {
-    std::vector<std::string> tokens = {"1xx", "2xx", "3xx", "4xx", "5xx"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match everything from 100-599
-    EXPECT_TRUE(errors.isErrorCode(100)) << "Should match 100 for 1xx category";
-    EXPECT_TRUE(errors.isErrorCode(150)) << "Should match 150 for 1xx category";
-    EXPECT_TRUE(errors.isErrorCode(199)) << "Should match 199 for 1xx category";
-    EXPECT_TRUE(errors.isErrorCode(200)) << "Should match 200 for 2xx category";
-    EXPECT_TRUE(errors.isErrorCode(250)) << "Should match 250 for 2xx category";
-    EXPECT_TRUE(errors.isErrorCode(299)) << "Should match 299 for 2xx category";
-    EXPECT_TRUE(errors.isErrorCode(300)) << "Should match 300 for 3xx category";
-    EXPECT_TRUE(errors.isErrorCode(350)) << "Should match 350 for 3xx category";
-    EXPECT_TRUE(errors.isErrorCode(399)) << "Should match 399 for 3xx category";
-    EXPECT_TRUE(errors.isErrorCode(400)) << "Should match 400 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(450)) << "Should match 450 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(499)) << "Should match 499 for 4xx category";
-    EXPECT_TRUE(errors.isErrorCode(500)) << "Should match 500 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(550)) << "Should match 550 for 5xx category";
-    EXPECT_TRUE(errors.isErrorCode(599)) << "Should match 599 for 5xx category";
-    
-    // Should not match out of range
-    EXPECT_FALSE(errors.isErrorCode(99)) << "Should not match 99 (out of range)";
-    EXPECT_FALSE(errors.isErrorCode(600)) << "Should not match 600 (out of range)";
-    EXPECT_FALSE(errors.isErrorCode(700)) << "Should not match 700 (out of range)";
-}
-
-// Test unusual but valid specific codes
-TEST_F(HttpTest, HttpStatusErrorsCustomArray8Test) {
-    std::vector<std::string> tokens = {"102", "226", "308", "418", "451", "511"};
-    HttpStatusErrors errors(tokens);
-    
-    // Should match only specified codes
-    EXPECT_TRUE(errors.isErrorCode(102)) << "Should match specific code 102 (Processing)";
-    EXPECT_TRUE(errors.isErrorCode(226)) << "Should match specific code 226 (IM Used)";
-    EXPECT_TRUE(errors.isErrorCode(308)) << "Should match specific code 308 (Permanent Redirect)";
-    EXPECT_TRUE(errors.isErrorCode(418)) << "Should match specific code 418 (I'm a teapot)";
-    EXPECT_TRUE(errors.isErrorCode(451)) << "Should match specific code 451 (Unavailable For Legal Reasons)";
-    EXPECT_TRUE(errors.isErrorCode(511)) << "Should match specific code 511 (Network Authentication Required)";
-    
-    // Should not match common codes in same ranges
-    EXPECT_FALSE(errors.isErrorCode(100)) << "Should not match 100 (other 1xx)";
-    EXPECT_FALSE(errors.isErrorCode(101)) << "Should not match 101 (other 1xx)";
-    EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200 (other 2xx)";
-    EXPECT_FALSE(errors.isErrorCode(201)) << "Should not match 201 (other 2xx)";
-    EXPECT_FALSE(errors.isErrorCode(300)) << "Should not match 300 (other 3xx)";
-    EXPECT_FALSE(errors.isErrorCode(301)) << "Should not match 301 (other 3xx)";
-    EXPECT_FALSE(errors.isErrorCode(400)) << "Should not match 400 (other 4xx)";
-    EXPECT_FALSE(errors.isErrorCode(404)) << "Should not match 404 (other 4xx)";
-    EXPECT_FALSE(errors.isErrorCode(500)) << "Should not match 500 (other 5xx)";
-    EXPECT_FALSE(errors.isErrorCode(502)) << "Should not match 502 (other 5xx)";
+        HttpStatusErrors errors(c.tokens);
+        for (int code : c.errors) {
+            EXPECT_TRUE(errors.isErrorCode(code)) << "should match " << code;
+        }
+        for (int code : c.non_errors) {
+            EXPECT_FALSE(errors.isErrorCode(code)) << "should not match " << code;
+        }
+    }
 }
 
 // ========== HttpUrlFilter Class Tests ==========
