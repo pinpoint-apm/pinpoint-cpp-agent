@@ -50,35 +50,35 @@ namespace pinpoint {
         SpanData(std::string_view operation, int32_t app_type, int32_t api_id);
         ~SpanData() = default;
 
-    	TraceId& getTraceId() { return trace_id_; }
-    	// By value so an rvalue moves straight through without copying the
-    	// AgentId string a second time.
-    	void setTraceId(TraceId trace_id) {
-    		trace_id_ = std::move(trace_id);
-    		trace_id_wire_.clear();
-    	}
-    	/// @brief Wire form (`agentId^startTime^sequence`), built once and
-    	/// cached: immutable for the span's lifetime, while injectContext()
-    	/// resends it on every outbound call. Span-owning thread only; the gRPC
-    	/// workers read trace_id_ directly.
-    	const std::string& getTraceIdWire() {
-    		if (trace_id_wire_.empty() && !trace_id_.empty()) {
-    			trace_id_wire_ = trace_id_.toString();
-    		}
-    		return trace_id_wire_;
-    	}
+        TraceId& getTraceId() { return trace_id_; }
+        // By value so an rvalue moves straight through without copying the
+        // AgentId string a second time.
+        void setTraceId(TraceId trace_id) {
+            trace_id_ = std::move(trace_id);
+            trace_id_wire_.clear();
+        }
+        /// @brief Wire form (`agentId^startTime^sequence`), built once and
+        /// cached: immutable for the span's lifetime, while injectContext()
+        /// resends it on every outbound call. Span-owning thread only; the gRPC
+        /// workers read trace_id_ directly.
+        const std::string& getTraceIdWire() {
+            if (trace_id_wire_.empty() && !trace_id_.empty()) {
+                trace_id_wire_ = trace_id_.toString();
+            }
+            return trace_id_wire_;
+        }
 
-    	void setSpanId(int64_t span_id) { span_id_ = span_id; }
-    	int64_t getSpanId() const { return span_id_; }
+        void setSpanId(int64_t span_id) { span_id_ = span_id; }
+        int64_t getSpanId() const { return span_id_; }
 
-    	int32_t getAppType() const { return app_type_; }
+        int32_t getAppType() const { return app_type_; }
         /// @brief Operation name, kept only as the api-id fallback.
         ///
         /// Empty whenever getApiId() is positive: the id identifies the
         /// operation on the wire, so the name is not stored a second time.
         /// Only build_grpc_span's no-api-id branch consumes this.
         const std::string& getOperationName() const { return operation_; }
-    	int32_t getApiId() const { return api_id_; }
+        int32_t getApiId() const { return api_id_; }
 
         void setParentSpanId(int64_t parent_span_id) { parent_span_id_ = parent_span_id; }
         int64_t getParentSpanId() const { return parent_span_id_; }
@@ -146,59 +146,59 @@ namespace pinpoint {
         int getErr() const { return err_; }
 
         void setErrorFuncId(int32_t error_func_id) { error_func_id_ = error_func_id; }
-    	int32_t getErrorFuncId() const { return error_func_id_; }
+        int32_t getErrorFuncId() const { return error_func_id_; }
 
         void setErrorString(std::string_view error_string) { error_string_ = error_string; }
-    	const std::string& getErrorString() const { return error_string_; }
+        const std::string& getErrorString() const { return error_string_; }
 
-    	void setAsyncId(int32_t async_id) { async_id_ = async_id; }
+        void setAsyncId(int32_t async_id) { async_id_ = async_id; }
         int32_t getAsyncId() const { return async_id_; }
-    	bool isAsyncSpan() const { return async_id_ != NONE_ASYNC_ID; }
+        bool isAsyncSpan() const { return async_id_ != NONE_ASYNC_ID; }
 
-    	void setAsyncSequence(int32_t async_seq) { async_sequence_ = async_seq; }
+        void setAsyncSequence(int32_t async_seq) { async_sequence_ = async_seq; }
         int32_t getAsyncSequence() const { return async_sequence_; }
 
-    	/// @brief Stores the start timestamp in epoch milliseconds.
-    	void setStartTime(std::chrono::system_clock::time_point start_time) { start_time_ = to_milli_seconds(start_time); }
+        /// @brief Stores the start timestamp in epoch milliseconds.
+        void setStartTime(std::chrono::system_clock::time_point start_time) { start_time_ = to_milli_seconds(start_time); }
         int64_t getStartTime() const { return start_time_; }
 
-    	/// @brief Captures the end time and computes the elapsed duration.
-    	void setEndTime() {
-	        end_time_ = std::chrono::system_clock::now();
-    	    // system_clock can step backwards (NTP); never report a negative
+        /// @brief Captures the end time and computes the elapsed duration.
+        void setEndTime() {
+            end_time_ = std::chrono::system_clock::now();
+            // system_clock can step backwards (NTP); never report a negative
             // elapsed time. Only the low side is clamped: the wire field is
             // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a
             // user-supplied start time in seconds instead of ms) wraps.
-        	elapsed_ = static_cast<int32_t>(std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
+            elapsed_ = static_cast<int32_t>(std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
         }
         std::chrono::system_clock::time_point getEndTime() const { return end_time_; }
         int32_t getElapsed() const { return elapsed_; }
 
-    	/// @brief Pushes a newly created span event onto the event stack.
-    	SpanEventImpl* addSpanEvent(std::unique_ptr<SpanEventImpl> se);
-    	/**
-    	 * @brief Finalizes span events down to and including `expected`.
-    	 *
-    	 * A well-nested trace has `expected` on top, so this is a single pop.
-    	 * When user code ends events out of order (parent before child), the
-    	 * events above `expected` are implicitly finished — as EndSpan does —
-    	 * rather than finishing a different event with `expected`'s end time
-    	 * and stranding `expected` on the stack. Logged so misuse is visible.
-    	 */
-    	void finishSpanEvent(SpanEventImpl* expected);
-    	/**
-    	 * @brief Finalizes every span event still on the stack (LIFO order).
-    	 *
-    	 * Called at EndSpan so events user code failed to end — plus the async
-    	 * root event, which stays open until EndSpan by design — reach the
-    	 * final chunk instead of being dropped.
-    	 *
-    	 * @return Number of events that were still open.
-    	 */
-    	size_t finishOpenSpanEvents();
-    	SpanEventImpl* topSpanEvent() {
-    	    return event_stack_.empty() ? nullptr : event_stack_.back().get();
-    	}
+        /// @brief Pushes a newly created span event onto the event stack.
+        SpanEventImpl* addSpanEvent(std::unique_ptr<SpanEventImpl> se);
+        /**
+         * @brief Finalizes span events down to and including `expected`.
+         *
+         * A well-nested trace has `expected` on top, so this is a single pop.
+         * When user code ends events out of order (parent before child), the
+         * events above `expected` are implicitly finished — as EndSpan does —
+         * rather than finishing a different event with `expected`'s end time
+         * and stranding `expected` on the stack. Logged so misuse is visible.
+         */
+        void finishSpanEvent(SpanEventImpl* expected);
+        /**
+         * @brief Finalizes every span event still on the stack (LIFO order).
+         *
+         * Called at EndSpan so events user code failed to end — plus the async
+         * root event, which stays open until EndSpan by design — reach the
+         * final chunk instead of being dropped.
+         *
+         * @return Number of events that were still open.
+         */
+        size_t finishOpenSpanEvents();
+        SpanEventImpl* topSpanEvent() {
+            return event_stack_.empty() ? nullptr : event_stack_.back().get();
+        }
 
         /**
          * @brief Drains finished span events into a chunk view.
@@ -210,9 +210,9 @@ namespace pinpoint {
          * pinpoint/tracer.h must never touch freed memory.
          */
         void takeFinishedEvents(std::vector<SpanEventImpl*>& out);
-    	size_t getFinishedEventsCount() const {
-    	    return finished_events.size();
-    	}
+        size_t getFinishedEventsCount() const {
+            return finished_events.size();
+        }
 
         // Owned by value; the list inside only allocates on the first append.
         PinpointAnnotation* getAnnotations() { return &annotations_; }
@@ -220,60 +220,60 @@ namespace pinpoint {
     private:
         void storeFinishedEvent(std::unique_ptr<SpanEventImpl> se);
 
-    	TraceId trace_id_;
-    	// Lazily-built toString() cache; see getTraceIdWire().
-    	std::string trace_id_wire_;
-    	int64_t span_id_{};
+        TraceId trace_id_;
+        // Lazily-built toString() cache; see getTraceIdWire().
+        std::string trace_id_wire_;
+        int64_t span_id_{};
 
-    	int64_t parent_span_id_{-1};
-    	std::string parent_app_name_;
-    	int32_t parent_app_type_{1};
-    	std::string parent_service_name_;
+        int64_t parent_span_id_{-1};
+        std::string parent_app_name_;
+        int32_t parent_app_type_{1};
+        std::string parent_service_name_;
 
-    	int32_t app_type_;
-    	int32_t service_type_{defaults::SPAN_SERVICE_TYPE};
-    	std::string operation_;
-    	int32_t api_id_;
+        int32_t app_type_;
+        int32_t service_type_{defaults::SPAN_SERVICE_TYPE};
+        std::string operation_;
+        int32_t api_id_;
 
-    	std::string rpc_name_;
-    	// Plain bools, not atomics, for the same reason the strings beside them
-    	// are plain: the owning thread writes them, and the gRPC worker reads
-    	// the endpoint only through SpanChunk's own snapshot until the span is
-    	// finished (see SpanChunk::endpoint_).
-    	std::string endpoint_;
-    	bool endpoint_set_{false};
-    	std::string remote_addr_;
-    	bool remote_addr_set_{false};
-    	std::string acceptor_host_;
+        std::string rpc_name_;
+        // Plain bools, not atomics, for the same reason the strings beside them
+        // are plain: the owning thread writes them, and the gRPC worker reads
+        // the endpoint only through SpanChunk's own snapshot until the span is
+        // finished (see SpanChunk::endpoint_).
+        std::string endpoint_;
+        bool endpoint_set_{false};
+        std::string remote_addr_;
+        bool remote_addr_set_{false};
+        std::string acceptor_host_;
 
         // Atomic so overflow checks and event position reservation never race
         // concurrent NewSpanEvent calls.
-    	std::atomic<int32_t> event_sequence_{0};
-    	std::atomic<int32_t> event_depth_{1};
+        std::atomic<int32_t> event_sequence_{0};
+        std::atomic<int32_t> event_depth_{1};
 
-    	int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
-    	int flags_{SPAN_FLAG_NONE};
-    	int err_{SPAN_ERR_NONE};
-    	int32_t error_func_id_{};
-    	std::string error_string_;
+        int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
+        int flags_{SPAN_FLAG_NONE};
+        int err_{SPAN_ERR_NONE};
+        int32_t error_func_id_{};
+        std::string error_string_;
 
-    	int64_t start_time_;
-    	std::chrono::system_clock::time_point end_time_;
-    	int32_t elapsed_{};
+        int64_t start_time_;
+        std::chrono::system_clock::time_point end_time_;
+        int32_t elapsed_{};
 
-    	int32_t async_id_{NONE_ASYNC_ID};
-    	int32_t async_sequence_{};
+        int32_t async_id_{NONE_ASYNC_ID};
+        int32_t async_sequence_{};
 
-    	/// @brief Pops the most recent open span event, or nullptr if none is
-    	/// open. Owning thread only.
-    	std::unique_ptr<SpanEventImpl> popSpanEvent() {
-    	    if (event_stack_.empty()) {
-    	        return nullptr;
-    	    }
-    	    auto se = std::move(event_stack_.back());
-    	    event_stack_.pop_back();
-    	    return se;
-    	}
+        /// @brief Pops the most recent open span event, or nullptr if none is
+        /// open. Owning thread only.
+        std::unique_ptr<SpanEventImpl> popSpanEvent() {
+            if (event_stack_.empty()) {
+                return nullptr;
+            }
+            auto se = std::move(event_stack_.back());
+            event_stack_.pop_back();
+            return se;
+        }
 
         // LIFO stack of the open (nested) span events, back() being the most
         // recent. A vector, not a deque (nor std::stack's deque backing): on
@@ -308,45 +308,45 @@ namespace pinpoint {
         PinpointAnnotation annotations_;
     };
 
-	/// @brief Represents a batch of span events emitted as a single gRPC message.
-	class SpanChunk final {
-	public:
-		SpanChunk(const std::shared_ptr<SpanData>& span_data, bool final);
-		/// @brief Releases the retired events' heavy payload; see span.cpp.
-		~SpanChunk();
+    /// @brief Represents a batch of span events emitted as a single gRPC message.
+    class SpanChunk final {
+    public:
+        SpanChunk(const std::shared_ptr<SpanData>& span_data, bool final);
+        /// @brief Releases the retired events' heavy payload; see span.cpp.
+        ~SpanChunk();
 
-		// Non-copyable (which also suppresses the implicit moves): the
-		// destructor releases the events' payload, so a copy would let the
-		// first-destroyed sibling wipe it out from under the other, silently
-		// emptying whatever it still had to serialize. Chunks are only ever
-		// handled as std::unique_ptr<SpanChunk>; keep it that way.
-		SpanChunk(const SpanChunk&) = delete;
-		SpanChunk& operator=(const SpanChunk&) = delete;
+        // Non-copyable (which also suppresses the implicit moves): the
+        // destructor releases the events' payload, so a copy would let the
+        // first-destroyed sibling wipe it out from under the other, silently
+        // emptying whatever it still had to serialize. Chunks are only ever
+        // handled as std::unique_ptr<SpanChunk>; keep it that way.
+        SpanChunk(const SpanChunk&) = delete;
+        SpanChunk& operator=(const SpanChunk&) = delete;
 
-		/// @brief Compacts the span event list by removing completed events.
-		void optimizeSpanEvents();
+        /// @brief Compacts the span event list by removing completed events.
+        void optimizeSpanEvents();
 
-		std::shared_ptr<SpanData>& getSpanData() { return span_data_; }
-		std::vector<SpanEventImpl*>& getSpanEventChunk() { return event_chunk_; }
-		/// @brief Timestamp used for ordering span chunks.
-		int64_t getKeyTime() const { return key_time_; }
-		bool isFinal() const { return final_; }
-		const std::string& getEndPoint() const { return endpoint_; }
+        std::shared_ptr<SpanData>& getSpanData() { return span_data_; }
+        std::vector<SpanEventImpl*>& getSpanEventChunk() { return event_chunk_; }
+        /// @brief Timestamp used for ordering span chunks.
+        int64_t getKeyTime() const { return key_time_; }
+        bool isFinal() const { return final_; }
+        const std::string& getEndPoint() const { return endpoint_; }
 
-	private:
-		std::shared_ptr<SpanData> span_data_;
-		// Borrowed from span_data_'s retired list; kept alive by span_data_.
-		std::vector<SpanEventImpl*> event_chunk_;
-		bool final_;
-		int64_t key_time_;
-		// Copied from span_data_ at construction (on the span-owning thread).
-		// A non-final chunk is serialized on the gRPC span worker while the
-		// span is still live, and SetEndPoint() is the one mutator that stays
-		// legal in that window — the worker must read this snapshot, never
-		// span_data_'s endpoint_, or it races the owning thread's write to a
-		// plain std::string.
-		std::string endpoint_;
-	};
+    private:
+        std::shared_ptr<SpanData> span_data_;
+        // Borrowed from span_data_'s retired list; kept alive by span_data_.
+        std::vector<SpanEventImpl*> event_chunk_;
+        bool final_;
+        int64_t key_time_;
+        // Copied from span_data_ at construction (on the span-owning thread).
+        // A non-final chunk is serialized on the gRPC span worker while the
+        // span is still live, and SetEndPoint() is the one mutator that stays
+        // legal in that window — the worker must read this snapshot, never
+        // span_data_'s endpoint_, or it races the owning thread's write to a
+        // plain std::string.
+        std::string endpoint_;
+    };
 
     /**
      * @brief Concrete span implementation used when tracing is enabled.
@@ -376,51 +376,51 @@ namespace pinpoint {
                  std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~SpanImpl() override;
 
-    	SpanEventPtr NewSpanEvent(std::string_view operation) override {
-    		return NewSpanEvent(operation, defaults::SPAN_EVENT_SERVICE_TYPE);
-    	}
-    	SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override;
+        SpanEventPtr NewSpanEvent(std::string_view operation) override {
+            return NewSpanEvent(operation, defaults::SPAN_EVENT_SERVICE_TYPE);
+        }
+        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override;
         SpanEventPtr GetSpanEvent() override;
-		/// @brief Finalizes the span and queues it for asynchronous delivery.
-      	void EndSpan() override;
-    	SpanPtr NewAsyncSpan(std::string_view async_operation) override;
+        /// @brief Finalizes the span and queues it for asynchronous delivery.
+        void EndSpan() override;
+        SpanPtr NewAsyncSpan(std::string_view async_operation) override;
 
-    	/**
-    	 * @brief Extracts a span context from an inbound propagation carrier.
-    	 *
-    	 * Impl-level only: called by AgentImpl::NewSpan right after creation.
-    	 *
-    	 * @param trace_id The already-resolved trace id — parsed from the
-    	 *                 inbound HEADER_TRACE_ID or generated by NewSpan. Must
-    	 *                 be non-empty (NewSpan turns an empty/failed trace id
-    	 *                 into a noop span). Moved into the span's SpanData.
-    	 */
-    	void extractContext(TraceContextReader& reader, TraceId trace_id);
-    	/**
-    	 * @brief Injects this span's context into an outbound carrier.
-    	 *
-    	 * Impl-level only: called by the span events this span hands out
-    	 * (SpanEventImpl and DisabledSpanEvent) to implement
-    	 * SpanEvent::InjectContext. No-op once the span is finished.
-    	 */
-    	void injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host);
-    	/**
-    	 * @brief Pops and finalizes span events down to `se` (top of stack when
-    	 * the trace is well nested; see SpanData::finishSpanEvent).
-    	 *
-    	 * Impl-level only: called by SpanEventImpl::EndEvent, which guards
-    	 * against duplicate ends before delegating here.
-    	 */
-    	void endSpanEvent(SpanEventImpl* se);
-    	/**
-    	 * @brief Consumes one pending overflow placeholder.
-    	 *
-    	 * Impl-level only: called by DisabledSpanEvent::EndEvent. Overflowed
-    	 * events are never pushed onto the stack, so ending one must not pop a
-    	 * real event; it only balances NewSpanEvent's overflow counter. Warns
-    	 * when there is no pending overflow (duplicate end).
-    	 */
-    	void endDisabledSpanEvent();
+        /**
+         * @brief Extracts a span context from an inbound propagation carrier.
+         *
+         * Impl-level only: called by AgentImpl::NewSpan right after creation.
+         *
+         * @param trace_id The already-resolved trace id — parsed from the
+         *                 inbound HEADER_TRACE_ID or generated by NewSpan. Must
+         *                 be non-empty (NewSpan turns an empty/failed trace id
+         *                 into a noop span). Moved into the span's SpanData.
+         */
+        void extractContext(TraceContextReader& reader, TraceId trace_id);
+        /**
+         * @brief Injects this span's context into an outbound carrier.
+         *
+         * Impl-level only: called by the span events this span hands out
+         * (SpanEventImpl and DisabledSpanEvent) to implement
+         * SpanEvent::InjectContext. No-op once the span is finished.
+         */
+        void injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host);
+        /**
+         * @brief Pops and finalizes span events down to `se` (top of stack when
+         * the trace is well nested; see SpanData::finishSpanEvent).
+         *
+         * Impl-level only: called by SpanEventImpl::EndEvent, which guards
+         * against duplicate ends before delegating here.
+         */
+        void endSpanEvent(SpanEventImpl* se);
+        /**
+         * @brief Consumes one pending overflow placeholder.
+         *
+         * Impl-level only: called by DisabledSpanEvent::EndEvent. Overflowed
+         * events are never pushed onto the stack, so ending one must not pop a
+         * real event; it only balances NewSpanEvent's overflow counter. Warns
+         * when there is no pending overflow (duplicate end).
+         */
+        void endDisabledSpanEvent();
 
         // Out-of-line: getTraceIdWire() lazily builds (and the return copies)
         // a string, so this needs the exception boundary in span.cpp.
@@ -446,21 +446,21 @@ namespace pinpoint {
             return "NULL";
         }
 
-    	void SetServiceType(int32_t service_type) override;
-    	void SetStartTime(std::chrono::system_clock::time_point start_time) override;
+        void SetServiceType(int32_t service_type) override;
+        void SetStartTime(std::chrono::system_clock::time_point start_time) override;
         void SetRemoteAddress(std::string_view address) override;
         void SetEndPoint(std::string_view end_point) override;
         void SetAcceptorHost(std::string_view host) override;
-    	void SetError(std::string_view error_message) override;
-    	void SetError(std::string_view error_name, std::string_view error_message) override;
-    	void SetStatusCode(int status) override;
+        void SetError(std::string_view error_message) override;
+        void SetError(std::string_view error_name, std::string_view error_message) override;
+        void SetStatusCode(int status) override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         /// @brief Records the logging flag and injects the context into a logger.
         void SetLogging(TraceContextWriter& writer) override;
-    	void RecordHeader(HeaderType which, HeaderReader& reader) override;
+        void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
-	private:
-	    friend class SpanEventImpl;
+    private:
+        friend class SpanEventImpl;
 
             // Keeps the agent alive while user code still holds this span (as
             // UnsampledSpan::agent_ref_ does): a span may legally outlive
@@ -531,6 +531,6 @@ namespace pinpoint {
                 exceptions_.push_back(std::move(exception));
                 return true;
             }
-	};
+    };
 
 }  // namespace pinpoint

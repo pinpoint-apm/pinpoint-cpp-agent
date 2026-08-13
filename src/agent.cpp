@@ -793,7 +793,7 @@ namespace pinpoint {
         return true;
     }
 
-	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
+    SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point) {
         NoopTraceContextReader reader;
         return NewSpan(operation, rpc_point, reader);
     }
@@ -803,8 +803,8 @@ namespace pinpoint {
         return NewSpan(operation, rpc_point, "", reader);
     }
 
-	SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
-	                           std::string_view method, TraceContextReader& reader) try {
+    SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
+                               std::string_view method, TraceContextReader& reader) try {
         // Every NewSpan overload funnels through here, so this is the single
         // authoritative admission check: enabled AND owned by this process.
         // An agent inherited across fork() therefore hands out noop spans
@@ -862,9 +862,9 @@ namespace pinpoint {
         return std::make_shared<UnsampledSpan>(this, std::move(runtime));
     } CATCH_AND_LOG_RETURN("new span", noopSpan())
 
-	bool AgentImpl::Enable() {
-    	return tracing_active();
-	}
+    bool AgentImpl::Enable() {
+        return tracing_active();
+    }
 
     void AgentImpl::Shutdown() noexcept {
         // Keep *this alive across do_shutdown(): if the global handle holds the

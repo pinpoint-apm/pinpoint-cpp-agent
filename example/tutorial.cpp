@@ -31,7 +31,7 @@ int main() {
         span->RecordHeader(pinpoint::HTTP_REQUEST, http_reader);
 
         auto host = "localhost:8090";
-	    auto se = span->NewSpanEvent("TestSpanEvent");
+        auto se = span->NewSpanEvent("TestSpanEvent");
         se->SetServiceType(pinpoint::SERVICE_TYPE_CPP_HTTP_CLIENT);
         se->SetEndPoint(host);
         se->SetDestination(host);

@@ -31,598 +31,598 @@
 
 namespace pinpoint {
 
-	/// @brief Fixed-size binary UID for a normalized SQL statement
-	/// (128-bit MurmurHash3 output). Trivially copyable — no heap allocation.
-	using SqlUid = std::array<unsigned char, 16>;
+    /// @brief Fixed-size binary UID for a normalized SQL statement
+    /// (128-bit MurmurHash3 output). Trivially copyable — no heap allocation.
+    using SqlUid = std::array<unsigned char, 16>;
 
-	/// @brief Scalar value accepted as a SQL bind argument.
-	///
-	/// String views are consumed during SetSqlQuery and need only remain valid
-	/// for the duration of that call. nullptr is recorded as "null" and bool
-	/// values are recorded as "true" or "false".
-	using SqlBindValue = std::variant<
-		std::nullptr_t,
-		std::string_view,
-		bool,
-		int32_t,
-		uint32_t,
-		int64_t,
-		uint64_t,
-		float,
-		double>;
+    /// @brief Scalar value accepted as a SQL bind argument.
+    ///
+    /// String views are consumed during SetSqlQuery and need only remain valid
+    /// for the duration of that call. nullptr is recorded as "null" and bool
+    /// values are recorded as "true" or "false".
+    using SqlBindValue = std::variant<
+        std::nullptr_t,
+        std::string_view,
+        bool,
+        int32_t,
+        uint32_t,
+        int64_t,
+        uint64_t,
+        float,
+        double>;
 
-	/**
-	 * @brief HTTP header names used to propagate Pinpoint trace context.
-	 */
-	inline constexpr std::string_view HEADER_TRACE_ID = "Pinpoint-TraceID";
-	inline constexpr std::string_view HEADER_SPAN_ID = "Pinpoint-SpanID";
-	inline constexpr std::string_view HEADER_PARENT_SPAN_ID = "Pinpoint-pSpanID";
-	inline constexpr std::string_view HEADER_SAMPLED = "Pinpoint-Sampled";
-	inline constexpr std::string_view HEADER_FLAG = "Pinpoint-Flags";
-	inline constexpr std::string_view HEADER_PARENT_APP_NAME = "Pinpoint-pAppName";
-	inline constexpr std::string_view HEADER_PARENT_APP_TYPE = "Pinpoint-pAppType";
-	inline constexpr std::string_view HEADER_PARENT_APP_NAMESPACE = "Pinpoint-pAppNamespace";
-	inline constexpr std::string_view HEADER_PARENT_SERVICE_NAME = "Pinpoint-pServiceName";
-	inline constexpr std::string_view HEADER_HOST = "Pinpoint-Host";
+    /**
+     * @brief HTTP header names used to propagate Pinpoint trace context.
+     */
+    inline constexpr std::string_view HEADER_TRACE_ID = "Pinpoint-TraceID";
+    inline constexpr std::string_view HEADER_SPAN_ID = "Pinpoint-SpanID";
+    inline constexpr std::string_view HEADER_PARENT_SPAN_ID = "Pinpoint-pSpanID";
+    inline constexpr std::string_view HEADER_SAMPLED = "Pinpoint-Sampled";
+    inline constexpr std::string_view HEADER_FLAG = "Pinpoint-Flags";
+    inline constexpr std::string_view HEADER_PARENT_APP_NAME = "Pinpoint-pAppName";
+    inline constexpr std::string_view HEADER_PARENT_APP_TYPE = "Pinpoint-pAppType";
+    inline constexpr std::string_view HEADER_PARENT_APP_NAMESPACE = "Pinpoint-pAppNamespace";
+    inline constexpr std::string_view HEADER_PARENT_SERVICE_NAME = "Pinpoint-pServiceName";
+    inline constexpr std::string_view HEADER_HOST = "Pinpoint-Host";
 
-	constexpr int32_t ANNOTATION_API = 12;
-	constexpr int32_t ANNOTATION_SQL_ID = 20;
-	constexpr int32_t ANNOTATION_SQL_UID = 25;
-	constexpr int32_t ANNOTATION_EXCEPTION_ID = -52;
-	constexpr int32_t ANNOTATION_HTTP_URL = 40;
-	constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
-	constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
-	constexpr int32_t ANNOTATION_HTTP_REQUEST_HEADER = 47;
-	constexpr int32_t ANNOTATION_HTTP_RESPONSE_HEADER = 55;
-	constexpr int32_t ANNOTATION_HTTP_PROXY_HEADER = 300;
+    constexpr int32_t ANNOTATION_API = 12;
+    constexpr int32_t ANNOTATION_SQL_ID = 20;
+    constexpr int32_t ANNOTATION_SQL_UID = 25;
+    constexpr int32_t ANNOTATION_EXCEPTION_ID = -52;
+    constexpr int32_t ANNOTATION_HTTP_URL = 40;
+    constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
+    constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
+    constexpr int32_t ANNOTATION_HTTP_REQUEST_HEADER = 47;
+    constexpr int32_t ANNOTATION_HTTP_RESPONSE_HEADER = 55;
+    constexpr int32_t ANNOTATION_HTTP_PROXY_HEADER = 300;
 
-	constexpr int32_t APP_TYPE_CPP = 1300;
-	constexpr int32_t SERVICE_TYPE_CPP = APP_TYPE_CPP;
-	constexpr int32_t SERVICE_TYPE_CPP_FUNC = 1301;
-	constexpr int32_t SERVICE_TYPE_CPP_HTTP_CLIENT = 9800;
-	constexpr int32_t SERVICE_TYPE_ASYNC = 100;
+    constexpr int32_t APP_TYPE_CPP = 1300;
+    constexpr int32_t SERVICE_TYPE_CPP = APP_TYPE_CPP;
+    constexpr int32_t SERVICE_TYPE_CPP_FUNC = 1301;
+    constexpr int32_t SERVICE_TYPE_CPP_HTTP_CLIENT = 9800;
+    constexpr int32_t SERVICE_TYPE_ASYNC = 100;
 
-	constexpr int32_t SERVICE_TYPE_MYSQL_QUERY = 2101;
-	constexpr int32_t SERVICE_TYPE_MSSQL_QUERY = 2201;
-	constexpr int32_t SERVICE_TYPE_ORACLE_QUERY = 2301;
-	constexpr int32_t SERVICE_TYPE_PGSQL_QUERY = 2501;
-	constexpr int32_t SERVICE_TYPE_CASSANDRA_QUERY = 2601;
-	constexpr int32_t SERVICE_TYPE_MONGODB_QUERY = 2651;
+    constexpr int32_t SERVICE_TYPE_MYSQL_QUERY = 2101;
+    constexpr int32_t SERVICE_TYPE_MSSQL_QUERY = 2201;
+    constexpr int32_t SERVICE_TYPE_ORACLE_QUERY = 2301;
+    constexpr int32_t SERVICE_TYPE_PGSQL_QUERY = 2501;
+    constexpr int32_t SERVICE_TYPE_CASSANDRA_QUERY = 2601;
+    constexpr int32_t SERVICE_TYPE_MONGODB_QUERY = 2651;
 
-	constexpr int32_t SERVICE_TYPE_MEMCACHED = 8050;
-	constexpr int32_t SERVICE_TYPE_REDIS = 8203;
-	constexpr int32_t SERVICE_TYPE_KAFKA = 8660;
-	constexpr int32_t SERVICE_TYPE_HBASE = 8800;
+    constexpr int32_t SERVICE_TYPE_MEMCACHED = 8050;
+    constexpr int32_t SERVICE_TYPE_REDIS = 8203;
+    constexpr int32_t SERVICE_TYPE_KAFKA = 8660;
+    constexpr int32_t SERVICE_TYPE_HBASE = 8800;
 
-	constexpr int32_t SERVICE_TYPE_GRPC_CLIENT = 9160;
-	constexpr int32_t SERVICE_TYPE_GRPC_SERVER = 1130;
+    constexpr int32_t SERVICE_TYPE_GRPC_CLIENT = 9160;
+    constexpr int32_t SERVICE_TYPE_GRPC_SERVER = 1130;
 
-	constexpr int32_t API_TYPE_DEFAULT = 0;
-	constexpr int32_t API_TYPE_WEB_REQUEST = 100;
-	constexpr int32_t API_TYPE_INVOCATION = 200;
+    constexpr int32_t API_TYPE_DEFAULT = 0;
+    constexpr int32_t API_TYPE_WEB_REQUEST = 100;
+    constexpr int32_t API_TYPE_INVOCATION = 200;
 
-	constexpr int32_t NONE_ASYNC_ID = 0;
+    constexpr int32_t NONE_ASYNC_ID = 0;
 
-	/**
-	 * @brief Read-only accessor for inbound propagation carriers.
-	 */
-	class TraceContextReader {
+    /**
+     * @brief Read-only accessor for inbound propagation carriers.
+     */
+    class TraceContextReader {
     public:
-    	virtual ~TraceContextReader() = default;
-		/**
-		 * @brief Reads a key value from the propagation carrier.
-		 *
-		 * Returning a view lets implementations avoid a per-lookup value copy;
-		 * for example, a reader can point into its backing header map.
-		 *
-		 * @param key Header name or key to look up. Built-in HTTP headers are
-		 *        queried with mixed-case constants ("Pinpoint-TraceID",
-		 *        "X-Forwarded-For", ...); configured recorded-header names are
-		 *        passed through as configured. HTTP field names are
-		 *        case-insensitive and HTTP/2/3 deliver them lowercase, so an
-		 *        HTTP-backed implementation MUST match case-insensitively.
-		 *        Only non-HTTP carriers with genuinely case-sensitive keys
-		 *        should use exact matching.
-		 * @return View of the value if present. The view must remain valid
-		 *         until the next call on the same reader or until the reader
-		 *         is destroyed, whichever comes first. Implementations that
-		 *         build the value on the fly must keep the backing storage
-		 *         alive accordingly (e.g. in a member buffer).
-		 */
+        virtual ~TraceContextReader() = default;
+        /**
+         * @brief Reads a key value from the propagation carrier.
+         *
+         * Returning a view lets implementations avoid a per-lookup value copy;
+         * for example, a reader can point into its backing header map.
+         *
+         * @param key Header name or key to look up. Built-in HTTP headers are
+         *        queried with mixed-case constants ("Pinpoint-TraceID",
+         *        "X-Forwarded-For", ...); configured recorded-header names are
+         *        passed through as configured. HTTP field names are
+         *        case-insensitive and HTTP/2/3 deliver them lowercase, so an
+         *        HTTP-backed implementation MUST match case-insensitively.
+         *        Only non-HTTP carriers with genuinely case-sensitive keys
+         *        should use exact matching.
+         * @return View of the value if present. The view must remain valid
+         *         until the next call on the same reader or until the reader
+         *         is destroyed, whichever comes first. Implementations that
+         *         build the value on the fly must keep the backing storage
+         *         alive accordingly (e.g. in a member buffer).
+         */
         virtual std::optional<std::string_view> Get(std::string_view key) const = 0;
     };
 
-	/**
-	 * @brief Write-only accessor for outbound propagation carriers.
-	 */
-	class TraceContextWriter {
+    /**
+     * @brief Write-only accessor for outbound propagation carriers.
+     */
+    class TraceContextWriter {
     public:
-    	virtual ~TraceContextWriter() = default;
-		/**
-		 * @brief Writes a key/value pair into the propagation carrier.
-		 *
-		 * @warning @p key and @p value are borrowed views that remain valid only
-		 *          for the duration of this call. Implementations must consume or
-		 *          copy their contents before returning and must not retain the
-		 *          views or pointers into their backing storage.
-		 *
-		 * @param key Case-insensitive header name or key.
-		 * @param value Value to set.
-		 */
+        virtual ~TraceContextWriter() = default;
+        /**
+         * @brief Writes a key/value pair into the propagation carrier.
+         *
+         * @warning @p key and @p value are borrowed views that remain valid only
+         *          for the duration of this call. Implementations must consume or
+         *          copy their contents before returning and must not retain the
+         *          views or pointers into their backing storage.
+         *
+         * @param key Case-insensitive header name or key.
+         * @param value Value to set.
+         */
         virtual void Set(std::string_view key, std::string_view value) = 0;
     };
 
-	/**
-	 * @brief Enumerates logical header groups that can be recorded on spans.
-	 */
-	enum HeaderType {
-		HTTP_REQUEST = 0, HTTP_RESPONSE, HTTP_COOKIE
-	};
+    /**
+     * @brief Enumerates logical header groups that can be recorded on spans.
+     */
+    enum HeaderType {
+        HTTP_REQUEST = 0, HTTP_RESPONSE, HTTP_COOKIE
+    };
 
-	/**
-	 * @brief Interface used to iterate through headers without exposing container details.
-	 */
-	class HeaderReader : public TraceContextReader {
-	public:
-		virtual ~HeaderReader() override = default;
-		/**
-		 * @brief Looks up a single header value by key.
-		 *
-		 * See TraceContextReader::Get for the lifetime contract of the
-		 * returned view.
-		 */
-		virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
-		/**
-		 * @brief Iterates through all headers invoking the callback for each entry.
-		 *
-		 * @param callback Return false to stop iteration early.
-		 */
-		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const = 0;
-	};
+    /**
+     * @brief Interface used to iterate through headers without exposing container details.
+     */
+    class HeaderReader : public TraceContextReader {
+    public:
+        virtual ~HeaderReader() override = default;
+        /**
+         * @brief Looks up a single header value by key.
+         *
+         * See TraceContextReader::Get for the lifetime contract of the
+         * returned view.
+         */
+        virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
+        /**
+         * @brief Iterates through all headers invoking the callback for each entry.
+         *
+         * @param callback Return false to stop iteration early.
+         */
+        virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const = 0;
+    };
 
-	class HeaderReaderWriter : public HeaderReader, public TraceContextWriter {
-	public:
-		virtual ~HeaderReaderWriter() override = default;
-		/**
-		 * @brief Looks up a single header value by key.
-		 *
-		 * See TraceContextReader::Get for the lifetime contract of the
-		 * returned view.
-		 */
-		virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
-		/**
-		 * @brief Iterates through all headers invoking the callback for each entry.
-		 *
-		 * @param callback Return false to stop iteration early.
-		 */
-		virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override = 0;
-		/**
-		 * @brief Writes a key/value pair into the propagation carrier.
-		 *
-		 * See TraceContextWriter::Set() for the borrowed-view lifetime contract.
-		 */
-		virtual void Set(std::string_view key, std::string_view value) override = 0;
-	};
+    class HeaderReaderWriter : public HeaderReader, public TraceContextWriter {
+    public:
+        virtual ~HeaderReaderWriter() override = default;
+        /**
+         * @brief Looks up a single header value by key.
+         *
+         * See TraceContextReader::Get for the lifetime contract of the
+         * returned view.
+         */
+        virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
+        /**
+         * @brief Iterates through all headers invoking the callback for each entry.
+         *
+         * @param callback Return false to stop iteration early.
+         */
+        virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override = 0;
+        /**
+         * @brief Writes a key/value pair into the propagation carrier.
+         *
+         * See TraceContextWriter::Set() for the borrowed-view lifetime contract.
+         */
+        virtual void Set(std::string_view key, std::string_view value) override = 0;
+    };
 
-	/**
-	 * @brief Interface used to enumerates frames stored inside a call stack.
-	 */
-	class CallStackReader {
-	public:
-		virtual ~CallStackReader() = default;
-		/**
-		 * @brief Iterates through all frames in the call stack.
-		 *
-		 * @param callback Invoked with module, function, file and line for each frame.
-		 */
-		virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
-	};
-	
-	class Span;
-	using SpanPtr = std::shared_ptr<Span>;
+    /**
+     * @brief Interface used to enumerates frames stored inside a call stack.
+     */
+    class CallStackReader {
+    public:
+        virtual ~CallStackReader() = default;
+        /**
+         * @brief Iterates through all frames in the call stack.
+         *
+         * @param callback Invoked with module, function, file and line for each frame.
+         */
+        virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
+    };
+    
+    class Span;
+    using SpanPtr = std::shared_ptr<Span>;
 
-	/**
-	 * @brief Interface describing a span event recorded within a span.
-	 */
+    /**
+     * @brief Interface describing a span event recorded within a span.
+     */
     class SpanEvent {
     public:
         virtual ~SpanEvent() = default;
 
-		/// @brief Sets the service type for the span event.
+        /// @brief Sets the service type for the span event.
         virtual void SetServiceType(int32_t type) = 0;
-		/// @brief Sets the logical operation recorded by the event.
+        /// @brief Sets the logical operation recorded by the event.
         virtual void SetOperationName(std::string_view operation) = 0;
-		/// @brief Records the event's start timestamp.
-		virtual void SetStartTime(std::chrono::system_clock::time_point start_time) = 0;
-		/// @brief Records the destination identifier (for RPCs).
+        /// @brief Records the event's start timestamp.
+        virtual void SetStartTime(std::chrono::system_clock::time_point start_time) = 0;
+        /// @brief Records the destination identifier (for RPCs).
         virtual void SetDestination(std::string_view dest) = 0;
-		/// @brief Records the remote endpoint.
+        /// @brief Records the remote endpoint.
         virtual void SetEndPoint(std::string_view end_point) = 0;
-		/// @brief Stores an error message.
+        /// @brief Stores an error message.
         virtual void SetError(std::string_view error_message) = 0;
-		/// @brief Stores a named error message.
+        /// @brief Stores a named error message.
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
-		/// @brief Stores an error message along with call stack details.
+        /// @brief Stores an error message along with call stack details.
         virtual void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) = 0;
-		/// @brief Records a SQL query and comma-separated bound parameters.
-		virtual void SetSqlQuery(std::string_view sql_query,
-		                         const std::vector<SqlBindValue>& bind_args) = 0;
-		/// @brief Records HTTP headers into the event.
+        /// @brief Records a SQL query and comma-separated bound parameters.
+        virtual void SetSqlQuery(std::string_view sql_query,
+                                 const std::vector<SqlBindValue>& bind_args) = 0;
+        /// @brief Records HTTP headers into the event.
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
-		/// @brief Injects the trace context for the outbound call represented
-		///        by this span event into an outbound carrier.
-		virtual void InjectContext(TraceContextWriter& writer) = 0;
+        /// @brief Injects the trace context for the outbound call represented
+        ///        by this span event into an outbound carrier.
+        virtual void InjectContext(TraceContextWriter& writer) = 0;
 
-		/// @brief Records a 32-bit integer annotation on this span event.
-		virtual void SetAnnotation(int32_t key, int32_t value) = 0;
-		/// @brief Records a 64-bit integer annotation on this span event.
-		virtual void SetAnnotation(int32_t key, int64_t value) = 0;
-		/// @brief Records a string annotation. The view is consumed during
-		///        this call and is copied only when the event is recording.
-		virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
-		/// @brief Records a string-string annotation. Both views are consumed
-		///        during this call and copied only when the event is recording.
-		virtual void SetAnnotation(int32_t key,
-		                           std::string_view value1,
-		                           std::string_view value2) = 0;
-		/// @brief Finalizes this span event through its parent span.
-		///        Guarded against duplicate calls: ending an already-ended
-		///        event is a warning no-op, like Span::EndSpan.
-		virtual void EndEvent() = 0;
+        /// @brief Records a 32-bit integer annotation on this span event.
+        virtual void SetAnnotation(int32_t key, int32_t value) = 0;
+        /// @brief Records a 64-bit integer annotation on this span event.
+        virtual void SetAnnotation(int32_t key, int64_t value) = 0;
+        /// @brief Records a string annotation. The view is consumed during
+        ///        this call and is copied only when the event is recording.
+        virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
+        /// @brief Records a string-string annotation. Both views are consumed
+        ///        during this call and copied only when the event is recording.
+        virtual void SetAnnotation(int32_t key,
+                                   std::string_view value1,
+                                   std::string_view value2) = 0;
+        /// @brief Finalizes this span event through its parent span.
+        ///        Guarded against duplicate calls: ending an already-ended
+        ///        event is a warning no-op, like Span::EndSpan.
+        virtual void EndEvent() = 0;
     };
 
-	/// @brief Non-owning span-event pointer.
-	///
-	/// Span events are owned by their parent span. Ending an event retains its
-	/// storage so a duplicate EndEvent() can be a warning no-op while the parent
-	/// span remains alive, but this pointer does not extend that lifetime. Do not
-	/// retain it for work that can outlive the span. It also inherits the span's
-	/// single-thread contract: concurrent use, including ending it from another
-	/// thread, is unsupported and can race with event mutation or span teardown.
-	using SpanEventPtr = SpanEvent*;
+    /// @brief Non-owning span-event pointer.
+    ///
+    /// Span events are owned by their parent span. Ending an event retains its
+    /// storage so a duplicate EndEvent() can be a warning no-op while the parent
+    /// span remains alive, but this pointer does not extend that lifetime. Do not
+    /// retain it for work that can outlive the span. It also inherits the span's
+    /// single-thread contract: concurrent use, including ending it from another
+    /// thread, is unsupported and can race with event mutation or span teardown.
+    using SpanEventPtr = SpanEvent*;
 
-	/**
-	 * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
-	 *
-	 * @warning Thread-safety contract: a single `Span` instance is NOT safe for
-	 *          concurrent use. All methods on one span — including those of the
-	 *          `SpanEvent`s it hands out — must be called from a single thread
-	 *          for the lifetime of that span. Sharing one `SpanPtr` across
-	 *          threads and calling into it concurrently is undefined behaviour
-	 *          and can crash the process (use-after-free of span events,
-	 *          heap corruption of the internal string/annotation/exception
-	 *          buffers), independent of any data-consistency concerns.
-	 *
-	 *          To trace work that runs on another thread, do NOT share this span.
-	 *          Instead call NewAsyncSpan() on the owning thread to obtain a
-	 *          separate child span, then use that child exclusively on the other
-	 *          thread. Each span instance thus remains single-threaded.
-	 */
-	class Span {
-	public:
-		virtual ~Span() = default;
+    /**
+     * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
+     *
+     * @warning Thread-safety contract: a single `Span` instance is NOT safe for
+     *          concurrent use. All methods on one span — including those of the
+     *          `SpanEvent`s it hands out — must be called from a single thread
+     *          for the lifetime of that span. Sharing one `SpanPtr` across
+     *          threads and calling into it concurrently is undefined behaviour
+     *          and can crash the process (use-after-free of span events,
+     *          heap corruption of the internal string/annotation/exception
+     *          buffers), independent of any data-consistency concerns.
+     *
+     *          To trace work that runs on another thread, do NOT share this span.
+     *          Instead call NewAsyncSpan() on the owning thread to obtain a
+     *          separate child span, then use that child exclusively on the other
+     *          thread. Each span instance thus remains single-threaded.
+     */
+    class Span {
+    public:
+        virtual ~Span() = default;
 
-		/// @brief Creates a new span event using the default service type.
-		virtual SpanEventPtr NewSpanEvent(std::string_view operation) = 0;
-		/// @brief Creates a new span event using the specified service type.
-		virtual SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) = 0;
-		/// @brief Returns the active (top-of-stack) span event, or a shared
-		/// no-op event (never null) when the span is finished or has no
-		/// active event.
-		virtual SpanEventPtr GetSpanEvent() = 0;
-		/// @brief Finalizes the span and submits its recorded data for
-		///        asynchronous delivery. Span events are finalized individually
-		///        via SpanEvent::EndEvent on the event handle.
-		virtual void EndSpan() = 0;
-		/// @brief Creates an asynchronous child span for background work.
-		///
-		/// Use this to continue the trace on another thread without sharing the
-		/// parent span. Call it on the thread that owns this span; the returned
-		/// child is a distinct instance that the other thread then uses
-		/// exclusively. See the Span thread-safety contract above.
-		virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
+        /// @brief Creates a new span event using the default service type.
+        virtual SpanEventPtr NewSpanEvent(std::string_view operation) = 0;
+        /// @brief Creates a new span event using the specified service type.
+        virtual SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) = 0;
+        /// @brief Returns the active (top-of-stack) span event, or a shared
+        /// no-op event (never null) when the span is finished or has no
+        /// active event.
+        virtual SpanEventPtr GetSpanEvent() = 0;
+        /// @brief Finalizes the span and submits its recorded data for
+        ///        asynchronous delivery. Span events are finalized individually
+        ///        via SpanEvent::EndEvent on the event handle.
+        virtual void EndSpan() = 0;
+        /// @brief Creates an asynchronous child span for background work.
+        ///
+        /// Use this to continue the trace on another thread without sharing the
+        /// parent span. Call it on the thread that owns this span; the returned
+        /// child is a distinct instance that the other thread then uses
+        /// exclusively. See the Span thread-safety contract above.
+        virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
 
-		/// @brief Returns the distributed trace identifier for the span in its
-		///        wire form (`agentId^startTime^sequence`), or an empty string
-		///        when the span carries no trace (e.g. a noop/unsampled span).
-		virtual std::string GetTraceId() = 0;
-		/// @brief Returns the span identifier.
-		virtual int64_t GetSpanId() = 0;
-		/// @brief Indicates whether the span is sampled.
-		virtual bool IsSampled() = 0;
+        /// @brief Returns the distributed trace identifier for the span in its
+        ///        wire form (`agentId^startTime^sequence`), or an empty string
+        ///        when the span carries no trace (e.g. a noop/unsampled span).
+        virtual std::string GetTraceId() = 0;
+        /// @brief Returns the span identifier.
+        virtual int64_t GetSpanId() = 0;
+        /// @brief Indicates whether the span is sampled.
+        virtual bool IsSampled() = 0;
 
-		/// @brief Sets the span service type.
-		virtual void SetServiceType(int32_t service_type) = 0;
-		/// @brief Records the span start time.
-		virtual void SetStartTime(std::chrono::system_clock::time_point start_time) = 0;
-		/// @brief Records the remote address.
-		virtual void SetRemoteAddress(std::string_view address) = 0;
-		/// @brief Records the endpoint served by the span.
-		virtual void SetEndPoint(std::string_view end_point) = 0;
-		/// @brief Records the host of acceptor.
-		virtual void SetAcceptorHost(std::string_view host) = 0;
-		/// @brief Records an error message at the span level.
-		virtual void SetError(std::string_view error_message) = 0;
-		/// @brief Records a named error message at the span level.
-		virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
-		/// @brief Records the HTTP status code for the span.
-		virtual void SetStatusCode(int status) = 0;
-		/// @brief Records URL statistics for the span.
-		virtual void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) = 0;
-		/// @brief Records the logging flag and injects the span context into a logger.
-		virtual void SetLogging(TraceContextWriter& writer) = 0;
-		/// @brief Records HTTP headers for the span.
-		virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
+        /// @brief Sets the span service type.
+        virtual void SetServiceType(int32_t service_type) = 0;
+        /// @brief Records the span start time.
+        virtual void SetStartTime(std::chrono::system_clock::time_point start_time) = 0;
+        /// @brief Records the remote address.
+        virtual void SetRemoteAddress(std::string_view address) = 0;
+        /// @brief Records the endpoint served by the span.
+        virtual void SetEndPoint(std::string_view end_point) = 0;
+        /// @brief Records the host of acceptor.
+        virtual void SetAcceptorHost(std::string_view host) = 0;
+        /// @brief Records an error message at the span level.
+        virtual void SetError(std::string_view error_message) = 0;
+        /// @brief Records a named error message at the span level.
+        virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
+        /// @brief Records the HTTP status code for the span.
+        virtual void SetStatusCode(int status) = 0;
+        /// @brief Records URL statistics for the span.
+        virtual void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) = 0;
+        /// @brief Records the logging flag and injects the span context into a logger.
+        virtual void SetLogging(TraceContextWriter& writer) = 0;
+        /// @brief Records HTTP headers for the span.
+        virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 
-		/// @brief Records a 32-bit integer annotation on the span.
-		virtual void SetAnnotation(int32_t key, int32_t value) = 0;
-		/// @brief Records a 64-bit integer annotation on the span.
-		virtual void SetAnnotation(int32_t key, int64_t value) = 0;
-		/// @brief Records a string annotation. The view is consumed during
-		///        this call and is copied only when the span is recording.
-		virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
-		/// @brief Records a string-string annotation. Both views are consumed
-		///        during this call and copied only when the span is recording.
-		virtual void SetAnnotation(int32_t key,
-		                           std::string_view value1,
-		                           std::string_view value2) = 0;
-	};
+        /// @brief Records a 32-bit integer annotation on the span.
+        virtual void SetAnnotation(int32_t key, int32_t value) = 0;
+        /// @brief Records a 64-bit integer annotation on the span.
+        virtual void SetAnnotation(int32_t key, int64_t value) = 0;
+        /// @brief Records a string annotation. The view is consumed during
+        ///        this call and is copied only when the span is recording.
+        virtual void SetAnnotation(int32_t key, std::string_view value) = 0;
+        /// @brief Records a string-string annotation. Both views are consumed
+        ///        during this call and copied only when the span is recording.
+        virtual void SetAnnotation(int32_t key,
+                                   std::string_view value1,
+                                   std::string_view value2) = 0;
+    };
 
-	/**
-	 * @brief Interface exposed to application code for creating spans.
-	 */
-  	class Agent {
-   	public:
-   		virtual ~Agent() = default;
+    /**
+     * @brief Interface exposed to application code for creating spans.
+     */
+    class Agent {
+    public:
+        virtual ~Agent() = default;
 
-		/**
-		 * @brief Creates a new span for an outbound RPC/operation.
-		 *
-		 * @param operation Logical name of the operation.
-		 * @param rpc_point RPC endpoint or destination.
-		 */
-		virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) = 0;
-      	/**
-      	 * @brief Creates a new span using context extracted from inbound carrier.
-      	 *
-      	 * @param operation Logical name of the operation.
-      	 * @param rpc_point RPC endpoint or destination.
-      	 * @param reader Trace context carrier reader.
-      	 */
-      	virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) = 0;
-      	/**
-      	 * @brief Creates a new span recording HTTP method information.
-      	 *
-      	 * @param operation Logical name of the operation.
-      	 * @param rpc_point RPC endpoint or destination.
-      	 * @param method HTTP method (GET, POST, ...).
-      	 * @param reader Trace context carrier reader.
-      	 */
-      	virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
-		/// @brief Returns whether agent initialization succeeded and tracing is
-		///        enabled. Individual spans may still be rejected by sampling.
-		///        Always false for an agent handle inherited across fork() —
-		///        each process must obtain its own agent via StartAgent().
-      	virtual bool Enable() = 0;
-		/// @brief Stops the agent and waits for its workers to finish. Pending
-		///        spans are submitted when a channel is available, but delivery
-		///        is not guaranteed.
-		///
-		/// Bounded: Shutdown() returns within a 3-second deadline even if a
-		/// worker is wedged in an RPC that ignores cancellation. Stragglers
-		/// then keep draining on a background thread that holds the agent
-		/// alive until they finish, so the final release of the object may
-		/// happen after Shutdown() returns. Dropping the last AgentPtr
-		/// without calling Shutdown() is bounded the same way — destruction
-		/// is deferred until the workers finish (the object stays leaked if
-		/// they never do) rather than blocking the release.
-		///
-		/// Terminal for this instance: it can never be brought back online,
-		/// Enable() stays false and NewSpan() only returns noop spans. When
-		/// this is the global agent it is also removed from the singleton, so
-		/// GlobalAgent() falls back to the noop agent until a new one is
-		/// installed.
-		///
-		/// To resume tracing in the same process, call StartAgent() again;
-		/// GlobalAgent() then hands out the fresh agent. Note that each such
-		/// cycle re-resolves the agent identity, so it registers a NEW agent
-		/// instance with the collector.
-      	virtual void Shutdown() = 0;
-  	};
+        /**
+         * @brief Creates a new span for an outbound RPC/operation.
+         *
+         * @param operation Logical name of the operation.
+         * @param rpc_point RPC endpoint or destination.
+         */
+        virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) = 0;
+        /**
+         * @brief Creates a new span using context extracted from inbound carrier.
+         *
+         * @param operation Logical name of the operation.
+         * @param rpc_point RPC endpoint or destination.
+         * @param reader Trace context carrier reader.
+         */
+        virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) = 0;
+        /**
+         * @brief Creates a new span recording HTTP method information.
+         *
+         * @param operation Logical name of the operation.
+         * @param rpc_point RPC endpoint or destination.
+         * @param method HTTP method (GET, POST, ...).
+         * @param reader Trace context carrier reader.
+         */
+        virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
+        /// @brief Returns whether agent initialization succeeded and tracing is
+        ///        enabled. Individual spans may still be rejected by sampling.
+        ///        Always false for an agent handle inherited across fork() —
+        ///        each process must obtain its own agent via StartAgent().
+        virtual bool Enable() = 0;
+        /// @brief Stops the agent and waits for its workers to finish. Pending
+        ///        spans are submitted when a channel is available, but delivery
+        ///        is not guaranteed.
+        ///
+        /// Bounded: Shutdown() returns within a 3-second deadline even if a
+        /// worker is wedged in an RPC that ignores cancellation. Stragglers
+        /// then keep draining on a background thread that holds the agent
+        /// alive until they finish, so the final release of the object may
+        /// happen after Shutdown() returns. Dropping the last AgentPtr
+        /// without calling Shutdown() is bounded the same way — destruction
+        /// is deferred until the workers finish (the object stays leaked if
+        /// they never do) rather than blocking the release.
+        ///
+        /// Terminal for this instance: it can never be brought back online,
+        /// Enable() stays false and NewSpan() only returns noop spans. When
+        /// this is the global agent it is also removed from the singleton, so
+        /// GlobalAgent() falls back to the noop agent until a new one is
+        /// installed.
+        ///
+        /// To resume tracing in the same process, call StartAgent() again;
+        /// GlobalAgent() then hands out the fresh agent. Note that each such
+        /// cycle re-resolves the agent identity, so it registers a NEW agent
+        /// instance with the collector.
+        virtual void Shutdown() = 0;
+    };
 
-	using AgentPtr = std::shared_ptr<Agent>;
+    using AgentPtr = std::shared_ptr<Agent>;
 
-	/// @brief Default application type used by StartAgent().
-	constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
-	/// @brief Default server metadata description used by StartAgent().
-	constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
+    /// @brief Default application type used by StartAgent().
+    constexpr int32_t DEFAULT_APP_TYPE = APP_TYPE_CPP;
+    /// @brief Default server metadata description used by StartAgent().
+    constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
 
-	/**
-	 * @brief Inputs for StartAgent(): configuration sources, server metadata
-	 *        and per-worker naming.
-	 *
-	 * Configuration source precedence: when @ref config_file_path is set —
-	 * including via the `<env_prefix>_CONFIG_FILE` environment variable, which
-	 * overrides it — the file's content replaces @ref config_yaml wholesale on
-	 * every (re)load; the two sources are never merged. Environment variables
-	 * (`<env_prefix>_*`) still override individual settings from either source.
-	 */
-	struct AgentOptions {
-		/// YAML configuration file path. When set, the file's content replaces
-		/// config_yaml wholesale. With `EnableConfigFileWatcher: true`
-		/// (default: false) the config-file watcher re-reads the file on
-		/// change and hot-reloads the reloadable settings.
-		std::string config_file_path;
-		/// Raw YAML configuration used when no config file is configured.
-		std::string config_yaml;
-		/// Prefix of the environment variable names the agent reads (e.g.
-		/// `MYAPP` makes it read `MYAPP_APPLICATION_NAME`). Empty selects the
-		/// default `PINPOINT_CPP`.
-		std::string env_prefix;
+    /**
+     * @brief Inputs for StartAgent(): configuration sources, server metadata
+     *        and per-worker naming.
+     *
+     * Configuration source precedence: when @ref config_file_path is set —
+     * including via the `<env_prefix>_CONFIG_FILE` environment variable, which
+     * overrides it — the file's content replaces @ref config_yaml wholesale on
+     * every (re)load; the two sources are never merged. Environment variables
+     * (`<env_prefix>_*`) still override individual settings from either source.
+     */
+    struct AgentOptions {
+        /// YAML configuration file path. When set, the file's content replaces
+        /// config_yaml wholesale. With `EnableConfigFileWatcher: true`
+        /// (default: false) the config-file watcher re-reads the file on
+        /// change and hot-reloads the reloadable settings.
+        std::string config_file_path;
+        /// Raw YAML configuration used when no config file is configured.
+        std::string config_yaml;
+        /// Prefix of the environment variable names the agent reads (e.g.
+        /// `MYAPP` makes it read `MYAPP_APPLICATION_NAME`). Empty selects the
+        /// default `PINPOINT_CPP`.
+        std::string env_prefix;
 
-		/// Application type reported to the collector.
-		int32_t app_type = DEFAULT_APP_TYPE;
-		/// Server runtime description included in AgentInfo.
-		std::string server_info = std::string(DEFAULT_SERVER_INFO);
-		/// Process command line arguments included in AgentInfo.
-		std::vector<std::string> args;
-		/// Loaded service libraries included in AgentInfo.
-		std::vector<std::string> libs;
-	};
+        /// Application type reported to the collector.
+        int32_t app_type = DEFAULT_APP_TYPE;
+        /// Server runtime description included in AgentInfo.
+        std::string server_info = std::string(DEFAULT_SERVER_INFO);
+        /// Process command line arguments included in AgentInfo.
+        std::vector<std::string> args;
+        /// Loaded service libraries included in AgentInfo.
+        std::vector<std::string> libs;
+    };
 
-	/**
-	 * @brief Creates, configures and starts the agent in the CURRENT process,
-	 *        and installs it as the global agent.
-	 *
-	 * This is the only way to bring an agent online. Call it in the process
-	 * that will record spans — for pre-fork servers (nginx, Apache prefork,
-	 * uWSGI, ...) that means each worker calls StartAgent() after fork(), from
-	 * its post-fork/worker-init hook, and the master process makes NO agent
-	 * API calls at all. Each worker registers as its own agent instance with a
-	 * process-unique agent id and its own start time.
-	 *
-	 * The call returns as soon as initialization is launched: the config-file
-	 * watcher is installed (only when enabled via `EnableConfigFileWatcher`,
-	 * which defaults to false) and an initialization thread opens the gRPC
-	 * channels, registers with the collector and starts the workers. It does
-	 * NOT wait for collector connection or registration; Enable() flips to
-	 * true once registration succeeds.
-	 *
-	 * @return true when the agent was launched and installed as the global
-	 * agent — obtain the handle with GlobalAgent(). false on a configuration
-	 * or setup failure (never an exception); check the agent log for the
-	 * cause. Nothing is installed as the global agent then — GlobalAgent()
-	 * keeps returning the noop agent — and a later StartAgent() call retries
-	 * from scratch.
-	 *
-	 * Calling StartAgent() again in the same process leaves the already
-	 * running agent untouched and returns true (with a warning). After
-	 * Shutdown() a new StartAgent() call builds a fresh agent.
-	 *
-	 * @warning An agent handle (or the global agent) inherited across fork()
-	 * is unusable in the child and is refused: its threads and gRPC runtime
-	 * do not exist there, and gRPC cannot be re-initialized in a process that
-	 * forked after `grpc_init`. An inherited agent reports Enable() == false
-	 * and hands out noop spans, and a StartAgent() call in such a child is
-	 * refused (returns false) and evicts the inherited global agent, so
-	 * GlobalAgent() degrades to the noop agent. The child must be a fresh
-	 * process that calls StartAgent() itself before any other agent use.
-	 */
-	bool StartAgent(const AgentOptions& options = {});
+    /**
+     * @brief Creates, configures and starts the agent in the CURRENT process,
+     *        and installs it as the global agent.
+     *
+     * This is the only way to bring an agent online. Call it in the process
+     * that will record spans — for pre-fork servers (nginx, Apache prefork,
+     * uWSGI, ...) that means each worker calls StartAgent() after fork(), from
+     * its post-fork/worker-init hook, and the master process makes NO agent
+     * API calls at all. Each worker registers as its own agent instance with a
+     * process-unique agent id and its own start time.
+     *
+     * The call returns as soon as initialization is launched: the config-file
+     * watcher is installed (only when enabled via `EnableConfigFileWatcher`,
+     * which defaults to false) and an initialization thread opens the gRPC
+     * channels, registers with the collector and starts the workers. It does
+     * NOT wait for collector connection or registration; Enable() flips to
+     * true once registration succeeds.
+     *
+     * @return true when the agent was launched and installed as the global
+     * agent — obtain the handle with GlobalAgent(). false on a configuration
+     * or setup failure (never an exception); check the agent log for the
+     * cause. Nothing is installed as the global agent then — GlobalAgent()
+     * keeps returning the noop agent — and a later StartAgent() call retries
+     * from scratch.
+     *
+     * Calling StartAgent() again in the same process leaves the already
+     * running agent untouched and returns true (with a warning). After
+     * Shutdown() a new StartAgent() call builds a fresh agent.
+     *
+     * @warning An agent handle (or the global agent) inherited across fork()
+     * is unusable in the child and is refused: its threads and gRPC runtime
+     * do not exist there, and gRPC cannot be re-initialized in a process that
+     * forked after `grpc_init`. An inherited agent reports Enable() == false
+     * and hands out noop spans, and a StartAgent() call in such a child is
+     * refused (returns false) and evicts the inherited global agent, so
+     * GlobalAgent() degrades to the noop agent. The child must be a fresh
+     * process that calls StartAgent() itself before any other agent use.
+     */
+    bool StartAgent(const AgentOptions& options = {});
 
-	/// @brief Returns the singleton global agent instance installed by
-	///        StartAgent(), or the noop agent when none is installed.
-	AgentPtr GlobalAgent();
+    /// @brief Returns the singleton global agent instance installed by
+    ///        StartAgent(), or the noop agent when none is installed.
+    AgentPtr GlobalAgent();
 
-	namespace helper {
-		/**
-		 * @brief Traces a HTTP server request.
-		 *
-		 * @param span The span to trace.
-		 * @param remote_addr The remote address.
-		 * @param endpoint The endpoint.
-		 * @param request_reader The request reader.
-		 */
-		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
+    namespace helper {
+        /**
+         * @brief Traces a HTTP server request.
+         *
+         * @param span The span to trace.
+         * @param remote_addr The remote address.
+         * @param endpoint The endpoint.
+         * @param request_reader The request reader.
+         */
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
 
-		/**
-		 * @brief Traces a HTTP server request.
-		 *
-		 * @param span The span to trace.
-		 * @param remote_addr The remote address.
-		 * @param endpoint The endpoint.
-		 * @param request_reader The request reader.
-		 * @param cookie_reader The cookie reader.
-		 */
-		void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
+        /**
+         * @brief Traces a HTTP server request.
+         *
+         * @param span The span to trace.
+         * @param remote_addr The remote address.
+         * @param endpoint The endpoint.
+         * @param request_reader The request reader.
+         * @param cookie_reader The cookie reader.
+         */
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
-		/**
-		 * @brief Traces a HTTP server response.
-		 *
-		 * @param span The span to trace.
-		 * @param url_pattern The URL pattern.
-		 * @param method The method.
-		 * @param status_code The status code.
-		 */
-		void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader);
+        /**
+         * @brief Traces a HTTP server response.
+         *
+         * @param span The span to trace.
+         * @param url_pattern The URL pattern.
+         * @param method The method.
+         * @param status_code The status code.
+         */
+        void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader);
 
-		/**
-		 * @brief Traces a HTTP client request.
-		 *
-		 * @param span_event The span event to trace.
-		 * @param host The host.
-		 * @param url The URL.
-		 * @param request_reader The request reader.
-		 */
-		 void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
+        /**
+         * @brief Traces a HTTP client request.
+         *
+         * @param span_event The span event to trace.
+         * @param host The host.
+         * @param url The URL.
+         * @param request_reader The request reader.
+         */
+         void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
 
-		 /**
-		 * @brief Traces a HTTP client request.
-		 *
-		 * @param span_event The span event to trace.
-		 * @param host The host.
-		 * @param url The URL.
-		 * @param request_reader The request reader.
-		 * @param cookie_reader The cookie reader.
-		 */
-		 void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
+         /**
+         * @brief Traces a HTTP client request.
+         *
+         * @param span_event The span event to trace.
+         * @param host The host.
+         * @param url The URL.
+         * @param request_reader The request reader.
+         * @param cookie_reader The cookie reader.
+         */
+         void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
-		/**
-		 * @brief Traces a HTTP client response.
-		 *
-		 * @param span_event The span event to trace.
-		 * @param status_code The status code.
-		 * @param response_reader The response reader.
-		 */
-		void TraceHttpClientResponse(SpanEventPtr span_event, int32_t status_code, HeaderReader& response_reader);
+        /**
+         * @brief Traces a HTTP client response.
+         *
+         * @param span_event The span event to trace.
+         * @param status_code The status code.
+         * @param response_reader The response reader.
+         */
+        void TraceHttpClientResponse(SpanEventPtr span_event, int32_t status_code, HeaderReader& response_reader);
 
-		// RAII helper to manage span events.
-		class ScopedSpanEvent {
-		public:
-			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation) : span_(span) {
-				if (span_) {
-					event_ = span_->NewSpanEvent(operation, SERVICE_TYPE_CPP_FUNC);
-				}
-			}
-			explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation, int32_t service_type) : span_(span) {
-				if (span_) {
-					event_ = span_->NewSpanEvent(operation, service_type);
-				}
-			}
+        // RAII helper to manage span events.
+        class ScopedSpanEvent {
+        public:
+            explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation) : span_(span) {
+                if (span_) {
+                    event_ = span_->NewSpanEvent(operation, SERVICE_TYPE_CPP_FUNC);
+                }
+            }
+            explicit ScopedSpanEvent(const SpanPtr& span, std::string_view operation, int32_t service_type) : span_(span) {
+                if (span_) {
+                    event_ = span_->NewSpanEvent(operation, service_type);
+                }
+            }
 
-			// Non-copyable (and thereby non-movable) scope guard: a copy
-			// would call EndEvent() once per instance on the same raw event
-			// — a warn no-op while the span lives, a dangling access after
-			// it. C++17 guaranteed elision keeps direct initialization from
-			// a prvalue (auto guard = ScopedSpanEvent(span, "op")) working.
-			ScopedSpanEvent(const ScopedSpanEvent&) = delete;
-			ScopedSpanEvent& operator=(const ScopedSpanEvent&) = delete;
+            // Non-copyable (and thereby non-movable) scope guard: a copy
+            // would call EndEvent() once per instance on the same raw event
+            // — a warn no-op while the span lives, a dangling access after
+            // it. C++17 guaranteed elision keeps direct initialization from
+            // a prvalue (auto guard = ScopedSpanEvent(span, "op")) working.
+            ScopedSpanEvent(const ScopedSpanEvent&) = delete;
+            ScopedSpanEvent& operator=(const ScopedSpanEvent&) = delete;
 
-			~ScopedSpanEvent() {
-				if (event_) {
-					// A destructor is implicitly noexcept, so anything
-					// escaping EndEvent() would std::terminate the host
-					// process. Current library builds already catch inside
-					// EndEvent(), but this header is compiled into the host
-					// and may run against an older library — swallow
-					// defensively.
-					try {
-						event_->EndEvent();
-					} catch (...) {
-					}
-				}
-			}
-		
-			SpanEventPtr operator->() const { return event_; }
-			SpanEventPtr value() const { return event_; }
-		
-		private:
-			SpanPtr span_;
-			SpanEventPtr event_{nullptr};
-		};
+            ~ScopedSpanEvent() {
+                if (event_) {
+                    // A destructor is implicitly noexcept, so anything
+                    // escaping EndEvent() would std::terminate the host
+                    // process. Current library builds already catch inside
+                    // EndEvent(), but this header is compiled into the host
+                    // and may run against an older library — swallow
+                    // defensively.
+                    try {
+                        event_->EndEvent();
+                    } catch (...) {
+                    }
+                }
+            }
+        
+            SpanEventPtr operator->() const { return event_; }
+            SpanEventPtr value() const { return event_; }
+        
+        private:
+            SpanPtr span_;
+            SpanEventPtr event_{nullptr};
+        };
    
-	};
-	
+    };
+    
 }  // namespace pinpoint
 
 #endif //PINPOINT_TRACER_H
