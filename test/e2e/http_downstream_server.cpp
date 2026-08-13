@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "httplib.h"
 #include "http_trace_context.h"
@@ -81,6 +82,15 @@ int main(int argc, char** argv) {
     server.Get("/echo", trace);
     server.Get("/trace", trace);
     server.Get("/error", trace);
+    // run_e2e.sh posts this before falling back to SIGTERM. Without the route
+    // the process only ever died from the signal, which skips the exit
+    // handlers — including the one that writes the coverage profile, so this
+    // server contributed nothing to a coverage run. Mirrors
+    // e2e_server.cpp's /server/shutdown.
+    server.Post("/shutdown", [&](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"status\":\"shutting_down\"}", "application/json");
+        std::thread([&server]() { server.stop(); }).detach();
+    });
     if (!server.listen("0.0.0.0", port)) {
         return 2;
     }

@@ -1,7 +1,10 @@
 #include <iostream>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -109,6 +112,14 @@ class HelloServiceImpl final : public grpcdemo::Hello::Service {
 
 }  // namespace grpc_demo
 
+namespace {
+
+volatile std::sig_atomic_t g_stop = 0;
+
+void request_stop(int) { g_stop = 1; }
+
+}  // namespace
+
 int main(int argc, char** argv) {
   int port = 50051;
   if (argc > 1) {
@@ -159,6 +170,19 @@ int main(int argc, char** argv) {
   std::cout << "  StreamCallUnaryReturn" << std::endl;
   std::cout << "  StreamCallStreamReturn" << std::endl;
 
+  // This server has no control channel, so run_e2e.sh stops it with SIGTERM.
+  // The default action terminates the process outright and skips the exit
+  // handlers — including the one that writes the coverage profile, which is
+  // why this server contributed nothing to a coverage run. Catch the signal
+  // and leave through gRPC's own shutdown instead. The handler only sets a
+  // flag: Shutdown() is not async-signal-safe, and the signal interrupts the
+  // sleep below so the wait stays short.
+  std::signal(SIGTERM, request_stop);
+  std::signal(SIGINT, request_stop);
+  while (g_stop == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  server->Shutdown();
   server->Wait();
 
   agent->Shutdown();

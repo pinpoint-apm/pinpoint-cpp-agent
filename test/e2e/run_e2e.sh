@@ -165,6 +165,18 @@ stop_process() {
     fi
 }
 
+# Waits up to 5s for a process asked to shut down to leave on its own.
+# Signalling one mid-shutdown skips its exit handlers, and under coverage
+# instrumentation that means it writes no profile at all.
+wait_exit() {
+    local pid=$1 waited=0
+    [[ -n "$pid" ]] || return 0
+    while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 50 ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
 cleanup() {
     # Content-Length: 0 — cpp-httplib 400s a bodiless POST without it, which
     # would silently skip the graceful shutdown and leave only the kill below.
@@ -172,7 +184,10 @@ cleanup() {
         -X POST "http://$HOST:$PORT/server/shutdown" >/dev/null 2>&1 || true
     curl -sS --max-time 2 -H 'Content-Length: 0' \
         -X POST "http://$HOST:$DOWNSTREAM_PORT/shutdown" >/dev/null 2>&1 || true
-    sleep 1
+    wait_exit "$UPSTREAM_PID"
+    wait_exit "$DOWNSTREAM_PID"
+    # The gRPC server has no control channel; it leaves through its SIGTERM
+    # handler, so signal it rather than waiting for an exit that never comes.
     stop_process "$UPSTREAM_PID"
     stop_process "$DOWNSTREAM_PID"
     stop_process "$GRPC_PID"
