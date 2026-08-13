@@ -86,6 +86,7 @@ tests.
 | [Configuration Guide](doc/config.md) | All configuration options, environment variables, and best practices |
 | [Instrumentation Guide](doc/instrument.md) | C++ API reference: spans, span events, annotations, distributed tracing |
 | [C API Instrumentation Guide](doc/instrument_c.md) | The same, for plain C via `tracer_c.h` (`pt_*` functions) |
+| [API Contracts](doc/api_contracts.md) | Threading, end-exactly-once, overflow and noop-span rules the agent enforces on spans, events and annotations |
 | [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
 | [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
 | [Troubleshooting](doc/trouble_shooting.md) | Startup contract, logging, common issues and solutions |

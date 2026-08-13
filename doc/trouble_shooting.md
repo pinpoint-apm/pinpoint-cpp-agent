@@ -198,7 +198,7 @@ The agent starts successfully but no traces appear.
 
 1. **Always end spans** — an unended span holds its buffered events and
    exceptions for as long as it lives. Use the RAII guard shown in
-   [instrument.md §6.2](instrument.md#62-end-exactly-once-and-record-before-ending).
+   [API Contracts §2](api_contracts.md#2-end-exactly-once-and-record-before-ending).
 2. **Reduce buffer sizes and collection limits:**
 
    ```yaml

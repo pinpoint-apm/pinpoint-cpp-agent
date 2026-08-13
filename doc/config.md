@@ -198,7 +198,7 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
-Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`. How the samplers behave, and how the decision propagates across services, is described in [Instrumentation Guide §12](instrument.md#12-sampling-policy).
+Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`. How the samplers behave, and how the decision propagates across services, is described in [Instrumentation Guide §11](instrument.md#11-sampling-policy).
 
 > Out-of-range values are automatically normalised (clamped) by the agent during `make_config()`.
 
@@ -249,7 +249,7 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Http.Client.RecordRequestCookie` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
 | `Http.Client.RecordResponseHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 
-Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are documented in [Instrumentation Guide §13](instrument.md#13-http-filtering-and-header-recording).
+Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are documented in [Instrumentation Guide §12](instrument.md#12-http-filtering-and-header-recording).
 
 ---
 

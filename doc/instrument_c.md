@@ -435,24 +435,24 @@ Never record passwords, secrets, or PII in annotations.
 
 The C API wraps the same span, span event, and annotation implementations as the
 C++ API, so **the contracts are identical** and are documented once in
-[Instrumentation Guide §6](instrument.md#6-usage-cautions-span-spanevent-and-annotation-contracts).
-Read that section — the rules there are not restated here.
+[API Contracts](api_contracts.md). Read that document — the rules there are not
+restated here.
 
 Translate the C++ names in it as follows:
 
-| §6 topic | C++ | C |
+| Contract | C++ | C |
 |---|---|---|
-| [§6.1](instrument.md#61-a-span-is-single-threaded) single-threaded span | `NewSpanEvent()`, `NewAsyncSpan()` | `pt_span_new_event()`, `pt_span_new_async_span()` |
-| [§6.2](instrument.md#62-end-exactly-once-and-record-before-ending) end exactly once | `EndSpan()`, `EndEvent()` | `pt_span_end()`, `pt_span_event_end()` |
-| [§6.3](instrument.md#63-end-span-events-in-nesting-lifo-order) LIFO order | `EndEvent()` | `pt_span_event_end()` |
-| [§6.4](instrument.md#64-spaneventptr-is-non-owning) non-owning event handles | `SpanEventPtr` | `pt_span_event_t` |
-| [§6.5](instrument.md#65-event-depth-and-count-limits-overflow) overflow | `NewSpanEvent()` | `pt_span_new_event()` |
-| [§6.6](instrument.md#66-getspanevent-returns-the-innermost-active-event) innermost event | `GetSpanEvent()` | `pt_span_get_event()` |
-| [§6.7](instrument.md#67-annotation-rules) annotations | `SetAnnotation()` | `pt_span_*_set_annotation_*()` |
-| [§6.8](instrument.md#68-keep-operation-and-error-names-low-cardinality) low cardinality | `SetError()` | `pt_span_set_error_named()` and friends |
-| [§6.9](instrument.md#69-error-recording-and-exception-buffering) errors | `SetError(..., CallStackReader&)` | `pt_span_event_set_error_with_callstack()` |
-| [§6.10](instrument.md#610-clock-and-setstarttime-caveats) clock | `SetStartTime(time_point)` | `pt_span_set_start_time_ms()` |
-| [§6.11](instrument.md#611-noop-and-unsampled-spans-are-deliberately-silent) noop spans | `IsSampled()` | `pt_span_is_sampled()` |
+| [§1](api_contracts.md#1-a-span-is-single-threaded) single-threaded span | `NewSpanEvent()`, `NewAsyncSpan()` | `pt_span_new_event()`, `pt_span_new_async_span()` |
+| [§2](api_contracts.md#2-end-exactly-once-and-record-before-ending) end exactly once | `EndSpan()`, `EndEvent()` | `pt_span_end()`, `pt_span_event_end()` |
+| [§3](api_contracts.md#3-end-span-events-in-nesting-lifo-order) LIFO order | `EndEvent()` | `pt_span_event_end()` |
+| [§4](api_contracts.md#4-spaneventptr-is-non-owning) non-owning event handles | `SpanEventPtr` | `pt_span_event_t` |
+| [§5](api_contracts.md#5-event-depth-and-count-limits-overflow) overflow | `NewSpanEvent()` | `pt_span_new_event()` |
+| [§6](api_contracts.md#6-getspanevent-returns-the-innermost-active-event) innermost event | `GetSpanEvent()` | `pt_span_get_event()` |
+| [§7](api_contracts.md#7-annotation-rules) annotations | `SetAnnotation()` | `pt_span_*_set_annotation_*()` |
+| [§8](api_contracts.md#8-keep-operation-and-error-names-low-cardinality) low cardinality | `SetError()` | `pt_span_set_error_named()` and friends |
+| [§9](api_contracts.md#9-error-recording-and-exception-buffering) errors | `SetError(..., CallStackReader&)` | `pt_span_event_set_error_with_callstack()` |
+| [§10](api_contracts.md#10-clock-and-setstarttime-caveats) clock | `SetStartTime(time_point)` | `pt_span_set_start_time_ms()` |
+| [§11](api_contracts.md#11-noop-and-unsampled-spans-are-deliberately-silent) noop spans | `IsSampled()` | `pt_span_is_sampled()` |
 
 Four rules are specific to the C handle model:
 
@@ -469,10 +469,6 @@ Four rules are specific to the C handle model:
   A crash on a `NULL` handle points at memory corruption, not at the agent.
 - **`pt_span_end()`/`pt_span_destroy()` are safe and cheap on noop and unsampled
   handles** — keep the normal end/destroy flow unconditionally.
-
-The `start_time_ms` arguments take **milliseconds** since the Unix epoch. Passing
-seconds (e.g. `time(NULL)`) is not validated: the computed deltas overflow int32
-and silently corrupt the trace timeline.
 
 ---
 
@@ -772,7 +768,8 @@ PT_API_TYPE_INVOCATION  /* 200 */
 
 ## Related Documentation
 
-- [instrument.md](instrument.md) — C++ API guide; owns the shared API contracts (§6)
+- [api_contracts.md](api_contracts.md) — the span/event/annotation rules, shared with the C++ API
+- [instrument.md](instrument.md) — C++ API guide
 - [config.md](config.md) — full configuration reference
 - [trouble_shooting.md](trouble_shooting.md) — startup contract and diagnostics
 - API header: [`include/pinpoint/tracer_c.h`](../include/pinpoint/tracer_c.h)
