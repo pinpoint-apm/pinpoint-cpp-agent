@@ -55,6 +55,20 @@ Http:
 
   Server:
     StatusCodeErrors: ["4xx", "5xx"]
+    # Exercised by the /filter/* probes in smoke_test.sh, one entry per
+    # pattern kind the matcher compiles to: exact, `**` prefix, single-`*`
+    # segment prefix, and the general ant matcher (a wildcard mid-pattern, or
+    # a `?`). Nothing else in the suite lives under /filter/, so these cannot
+    # silently drop spans another assertion depends on.
+    ExcludeUrl:
+      - "/filter/exact"       # Exact
+      - "/filter/prefix/**"   # Prefix
+      - "/filter/seg/*"       # SegmentPrefix
+      - "/filter/*/ant/**"    # Ant, wildcard mid-pattern
+      - "/filter/q?ery"       # Ant, single-character wildcard
+    # OPTIONS is used by nothing else here, so excluding it cannot affect
+    # another assertion.
+    ExcludeMethod: ["OPTIONS"]
     RecordRequestHeader:
       - "User-Agent"
       - "Content-Type"

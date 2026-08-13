@@ -128,12 +128,50 @@ void on_deep(const httplib::Request& req, httplib::Response& res) {
     for (int i = 0; i < depth; ++i) {
         events.push_back(span->NewSpanEvent("deep_level_" + std::to_string(i)));
     }
+
+    // Past the configured depth limit every further event is the span's shared
+    // overflow event, which is never recorded. It must still write a complete
+    // trace context, or a call made from that depth would lose the trace. Opt
+    // in with ?inject=1 so the load workload's shallow /deep calls keep their
+    // existing shape.
+    bool overflow_context = false;
+    if (req.has_param("inject")) {
+        httplib::Headers overflow_headers;
+        HttpHeaderReaderWriter overflow_writer(overflow_headers);
+        events.back()->SetDestination("deep-overflow-target:8080");
+        events.back()->InjectContext(overflow_writer);
+        overflow_context =
+            overflow_headers.find(std::string(pinpoint::HEADER_TRACE_ID)) !=
+                overflow_headers.end() &&
+            overflow_headers.find(std::string(pinpoint::HEADER_SPAN_ID)) !=
+                overflow_headers.end() &&
+            overflow_headers.find(std::string(pinpoint::HEADER_PARENT_SPAN_ID)) !=
+                overflow_headers.end();
+    }
+
     for (auto it = events.rbegin(); it != events.rend(); ++it) {
         (*it)->EndEvent();
     }
 
     res.status = 200;
-    res.set_content("depth=" + std::to_string(depth), "text/plain");
+    res.set_content("depth=" + std::to_string(depth) +
+                        " overflow_context=" + (overflow_context ? "true" : "false"),
+                    "text/plain");
+    finish_span(req, res, span);
+}
+
+// Reports whether the URL/method filters admitted this request. A filtered
+// request gets a plain noop span, whose id is 0 — an unsampled span, the
+// other non-recording case, still carries a real id, so the id distinguishes
+// filtering from a sampling decision.
+void on_filter_probe(const httplib::Request& req, httplib::Response& res) {
+    RequestTracker rt;
+    auto span = make_span(req);
+    std::ostringstream body;
+    body << "{\"path\":\"" << it_test::JsonEscape(req.path) << "\","
+         << "\"traced\":" << it_test::JsonBool(span->GetSpanId() != 0) << "}";
+    res.status = 200;
+    res.set_content(body.str(), "application/json");
     finish_span(req, res, span);
 }
 
@@ -967,6 +1005,16 @@ int main(int argc, char* argv[]) {
     // HTTP-only endpoints
     server.Get("/simple", on_simple);
     server.Get("/deep", on_deep);
+
+    // One probe behind every Http.Server.ExcludeUrl pattern kind, plus an
+    // unmatched control and an ExcludeMethod probe.
+    server.Get("/filter/exact", on_filter_probe);
+    server.Get("/filter/prefix/deep/leaf", on_filter_probe);
+    server.Get("/filter/seg/one", on_filter_probe);
+    server.Get("/filter/mid/ant/x/y", on_filter_probe);
+    server.Get("/filter/query", on_filter_probe);
+    server.Get("/filter/kept", on_filter_probe);
+    server.Options("/filter/method", on_filter_probe);
     server.Get("/wide", on_wide);
     server.Get("/annotated", on_annotated);
     server.Get("/features", on_features);
