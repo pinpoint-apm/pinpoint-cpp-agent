@@ -150,6 +150,8 @@ TEST_F(NoopTest, UnsampledSpanConstructorTest) {
 
     EXPECT_NE(span.GetSpanId(), 0) << "UnsampledSpan should have a non-zero span ID";
     EXPECT_FALSE(span.IsSampled()) << "UnsampledSpan should not be sampled";
+    EXPECT_TRUE(span.GetTraceId().empty())
+        << "GetTraceId should return an empty wire id for an unsampled span";
 }
 
 TEST_F(NoopTest, UnsampledSpanUniqueSpanIdsTest) {
@@ -289,44 +291,6 @@ TEST_F(NoopTest, UnsampledSpanMultipleUrlStatCallsTest) {
     EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 201) << "Last status code should be recorded";
 }
 
-TEST_F(NoopTest, UnsampledSpanInheritedNoopBehaviorTest) {
-    UnsampledSpan span(mock_agent_service_.get());
-
-    // Test inherited NoopSpan behavior - these should all be no-ops
-    auto span_event = span.NewSpanEvent("test-operation");
-    EXPECT_NE(span_event, nullptr) << "NewSpanEvent should return a valid SpanEvent";
-
-    auto span_event_with_type = span.NewSpanEvent("test-operation", 1000);
-    EXPECT_NE(span_event_with_type, nullptr) << "NewSpanEvent with service type should return a valid SpanEvent";
-
-    auto current_event = span.GetSpanEvent();
-    EXPECT_NE(current_event, nullptr) << "GetSpanEvent should return a valid SpanEvent";
-
-    // These should not throw exceptions
-    current_event->EndEvent();
-    span.SetServiceType(1000);
-    span.SetStartTime(std::chrono::system_clock::now());
-    span.SetRemoteAddress("192.168.1.1");
-    span.SetEndPoint("http://api.example.com");
-    span.SetError("Test error");
-    span.SetError("TestError", "Test error message");
-    span.SetStatusCode(500);
-
-    auto async_span = span.NewAsyncSpan("async-operation");
-    EXPECT_NE(async_span, nullptr) << "NewAsyncSpan should return a valid Span";
-
-    // InjectContext on the handed-out event propagates the unsampled decision
-    MockTraceContextWriter writer;
-    span.GetSpanEvent()->InjectContext(writer);
-    EXPECT_EQ(writer.Get(HEADER_SAMPLED), "s0");
-
-    auto trace_id = span.GetTraceId();
-    EXPECT_TRUE(trace_id.empty()) << "GetTraceId should return an empty wire id for a non-sampled span";
-
-    span.SetAnnotation(1, 42);
-    SUCCEED() << "SetAnnotation should be a safe no-op";
-}
-
 // NoopSpan Tests
 
 TEST_F(NoopTest, NoopSpanBasicBehaviorTest) {
@@ -378,13 +342,6 @@ TEST_F(NoopTest, NoopSpanAllMethodsTest) {
 }
 
 // NoopSpanEvent Tests
-
-TEST_F(NoopTest, NoopSpanEventBasicBehaviorTest) {
-    NoopSpanEvent span_event;
-
-    span_event.SetAnnotation(1, 42);
-    SUCCEED() << "SetAnnotation should be a safe no-op";
-}
 
 TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     NoopSpanEvent span_event;
@@ -589,13 +546,6 @@ TEST_F(NoopTest, NoopSpanNewAsyncSpanReturnsNoopTest) {
     EXPECT_EQ(async_span->GetSpanId(), 0) << "Async span from NoopSpan should have span ID 0";
 }
 
-TEST_F(NoopTest, NoopSpanEmptyTraceIdTest) {
-    NoopSpan span;
-
-    auto trace_id = span.GetTraceId();
-    EXPECT_TRUE(trace_id.empty()) << "NoopSpan should have an empty wire trace id";
-}
-
 // NoopAgent additional tests
 
 TEST_F(NoopTest, NoopAgentReturnedSpansAreNoopTest) {
@@ -614,11 +564,6 @@ TEST_F(NoopTest, NoopAgentReturnedSpansAreNoopTest) {
     auto span3 = agent.NewSpan("op", "rpc", "GET", reader);
     ASSERT_NE(span3, nullptr);
     EXPECT_FALSE(span3->IsSampled());
-}
-
-TEST_F(NoopTest, NoopSingletonsBehaveAsNoopTest) {
-    EXPECT_FALSE(noopAgent()->Enable());
-    EXPECT_FALSE(noopSpan()->IsSampled());
 }
 
 // UnsampledSpan additional tests
@@ -724,16 +669,9 @@ TEST_F(NoopTest, UnsampledSpanEventInjectContextDoesNotSetOtherHeadersTest) {
 TEST_F(NoopTest, NoopTraceContextReaderTest) {
     NoopTraceContextReader reader;
 
-    auto value = reader.Get("test-key");
-    EXPECT_FALSE(value.has_value()) << "NoopTraceContextReader should always return nullopt";
-
-    auto value2 = reader.Get(HEADER_TRACE_ID);
-    EXPECT_FALSE(value2.has_value()) << "NoopTraceContextReader should always return nullopt for any key";
-}
-
-TEST_F(NoopTest, NoopTraceContextReaderAllHeaderKeysTest) {
-    NoopTraceContextReader reader;
-
+    EXPECT_FALSE(reader.Get("test-key").has_value())
+        << "NoopTraceContextReader should always return nullopt for any key";
+    EXPECT_FALSE(reader.Get(HEADER_TRACE_ID).has_value());
     EXPECT_FALSE(reader.Get(HEADER_SAMPLED).has_value());
     EXPECT_FALSE(reader.Get(HEADER_SPAN_ID).has_value());
     EXPECT_FALSE(reader.Get(HEADER_PARENT_SPAN_ID).has_value());

@@ -287,7 +287,7 @@ if [[ -n "$LOAD_MODE" ]]; then
 fi
 
 # Give the async span sender time to flush before validating the transport log.
-sleep "${PINPOINT_IT_FLUSH_WAIT:-3}"
+sleep 3
 
 echo ""
 echo "Collector transport evidence"

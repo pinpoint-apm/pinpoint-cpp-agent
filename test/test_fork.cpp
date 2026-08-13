@@ -71,10 +71,7 @@ std::shared_ptr<AgentImpl> make_cold_agent(const std::shared_ptr<Config>& cfg) {
 }
 
 void wait_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    wait_for_condition([&] { return agent->Enable(); }, std::chrono::milliseconds(timeout_ms));
 }
 
 // Builds the worker's config the production way — make_config() runs in the

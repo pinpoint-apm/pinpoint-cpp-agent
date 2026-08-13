@@ -475,46 +475,6 @@ TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain the added stat";
 }
 
-TEST_F(UrlStatTest, TrimUrlPathTest) {
-    // Test basic path trimming
-    std::string result1 = UrlStatSnapshot::trim_url_path("/api/v1/users/123/posts/456", 3);
-    EXPECT_FALSE(result1.empty()) << "Trimmed path should not be empty";
-    
-    // Test with depth 0 (gets converted to depth 1)
-    std::string result2 = UrlStatSnapshot::trim_url_path("/api/v1/users", 0);
-    EXPECT_FALSE(result2.empty()) << "Trimmed path with depth 0 should not be empty";
-    
-    // Test with non-empty path that starts without slash
-    std::string result3 = UrlStatSnapshot::trim_url_path("api/test", 2);
-    EXPECT_FALSE(result3.empty()) << "Trimmed path should not be empty";
-    
-    // Test with single level path
-    std::string result4 = UrlStatSnapshot::trim_url_path("/api", 1);
-    EXPECT_EQ(result4, "/api") << "Single level path should be preserved";
-    
-    // Test path with query parameters
-    std::string result5 = UrlStatSnapshot::trim_url_path("/api/users?id=123", 2);
-    EXPECT_FALSE(result5.empty()) << "Path with query params should be trimmed";
-    EXPECT_EQ(result5.find('?'), std::string::npos) << "Query params should be removed";
-}
-
-TEST_F(UrlStatTest, TrimUrlPathDepthTest) {
-    // Test different depths
-    std::string path = "/api/v1/users/123/posts";
-    
-    std::string result1 = UrlStatSnapshot::trim_url_path(path, 1);
-    std::string result2 = UrlStatSnapshot::trim_url_path(path, 2);
-    std::string result3 = UrlStatSnapshot::trim_url_path(path, 3);
-    
-    // Results should be different for different depths
-    EXPECT_FALSE(result1.empty());
-    EXPECT_FALSE(result2.empty());
-    EXPECT_FALSE(result3.empty());
-    
-    // Higher depth should generally result in longer paths (unless truncated)
-    // This depends on implementation, but at least they should be valid
-}
-
 // ========== Integration Tests ==========
 
 TEST_F(UrlStatTest, FullWorkflowTest) {
@@ -697,64 +657,31 @@ TEST_F(UrlStatTest, HistogramMultipleSameBucketTest) {
     EXPECT_EQ(histogram.max(), 99);
 }
 
-// ========== Additional trim_url_path Tests ==========
+// ========== trim_url_path Tests ==========
 
-// Test trim_url_path with empty string
-TEST_F(UrlStatTest, TrimUrlPathEmptyTest) {
-    std::string result = UrlStatSnapshot::trim_url_path("", 3);
-    EXPECT_EQ(result, "");
-}
+TEST_F(UrlStatTest, TrimUrlPathTest) {
+    struct Case {
+        std::string path;
+        int depth;
+        std::string expected;
+    };
+    const Case cases[] = {
+        {"", 3, ""},                        // empty path
+        {"/", 3, "/"},                      // root only
+        {"/api", 1, "/api"},                // single level path preserved
+        {"/api/users", 10, "/api/users"},   // depth exceeds segments: full path
+        {"/api/v1/users", 2, "/api/v1/*"},  // trimmed after depth 2
+        {"/api/v1/users/123", 1, "/api/*"}, // trimmed after depth 1
+        {"/api/v1/users", -5, "/api/*"},    // depth < 1 gets converted to 1
+        {"/api?key=value", 3, "/api"},      // query params removed
+        // Each '/' decrements depth, so "/api/" uses depth 1, "/" uses depth 2 -> trim
+        {"/api//v1/users", 2, "/api//*"},
+    };
 
-TEST_F(UrlStatTest, TrimUrlPathRootTest) {
-    std::string result = UrlStatSnapshot::trim_url_path("/", 3);
-    EXPECT_EQ(result, "/");
-}
-
-TEST_F(UrlStatTest, TrimUrlPathTrailingSlashTest) {
-    // "/api/v1/" has 2 slashes after position 0, so depth=2 should trim after v1/
-    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users", 2);
-    EXPECT_EQ(result, "/api/v1/*");
-}
-
-// Test trim_url_path with depth exceeding segments
-TEST_F(UrlStatTest, TrimUrlPathDepthExceedsSegmentsTest) {
-    // Path has only 2 segments, but depth is 10
-    std::string result = UrlStatSnapshot::trim_url_path("/api/users", 10);
-    EXPECT_EQ(result, "/api/users") << "Should return full path when depth exceeds segments";
-}
-
-TEST_F(UrlStatTest, TrimUrlPathDepth1Test) {
-    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users/123", 1);
-    EXPECT_EQ(result, "/api/*");
-}
-
-// Test trim_url_path with negative depth (treated as 1)
-TEST_F(UrlStatTest, TrimUrlPathNegativeDepthTest) {
-    std::string result = UrlStatSnapshot::trim_url_path("/api/v1/users", -5);
-    // depth < 1 gets converted to 1
-    EXPECT_EQ(result, "/api/*");
-}
-
-// Test trim_url_path with query parameters at various positions
-TEST_F(UrlStatTest, TrimUrlPathQueryParamsEarlyTest) {
-    // Query params appear before depth is reached
-    std::string result = UrlStatSnapshot::trim_url_path("/api?key=value", 3);
-    EXPECT_EQ(result, "/api");
-    EXPECT_EQ(result.find('?'), std::string::npos);
-}
-
-TEST_F(UrlStatTest, TrimUrlPathWithFragmentTest) {
-    // Fragments are not specially handled, treated as part of the path
-    std::string result = UrlStatSnapshot::trim_url_path("/api/v1#section", 3);
-    EXPECT_TRUE(result.find('#') != std::string::npos || result.find('#') == std::string::npos)
-        << "Fragment handling is implementation-defined";
-    EXPECT_FALSE(result.empty());
-}
-
-TEST_F(UrlStatTest, TrimUrlPathConsecutiveSlashesTest) {
-    std::string result = UrlStatSnapshot::trim_url_path("/api//v1/users", 2);
-    // Each '/' decrements depth, so "/api/" uses depth 1, "/" uses depth 2 -> trim
-    EXPECT_EQ(result, "/api//*");
+    for (const auto& c : cases) {
+        SCOPED_TRACE("trim_url_path(\"" + c.path + "\", " + std::to_string(c.depth) + ")");
+        EXPECT_EQ(UrlStatSnapshot::trim_url_path(c.path, c.depth), c.expected);
+    }
 }
 
 // ========== Additional UrlStatSnapshot Tests ==========

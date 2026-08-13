@@ -119,10 +119,7 @@ protected:
     }
 
     static void wait_agent_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-        while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        wait_for_condition([&] { return agent->Enable(); }, std::chrono::milliseconds(timeout_ms));
     }
 
     std::shared_ptr<Config> cfg_;
@@ -168,11 +165,7 @@ TEST(AgentLifetimeTest, UnsampledSpanDoesNotPinAgentAndOutlivesItSafely) {
     auto cfg = make_test_config();
     cfg->sampling.counter_rate = 0;  // never sample → NewSpan yields UnsampledSpan
     auto agent = make_test_agent(cfg);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_TRUE(agent->Enable());
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
 
     auto span = agent->NewSpan("lifetime-op", "/lifetime");
     ASSERT_FALSE(span->IsSampled());
@@ -723,12 +716,7 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
 
     // ...and release it once the straggler finishes.
     wedged->release();
-    const auto release_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!weak.expired() && std::chrono::steady_clock::now() < release_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    EXPECT_TRUE(weak.expired())
+    EXPECT_TRUE(wait_for_condition([&] { return weak.expired(); }, std::chrono::seconds(5)))
         << "the reaper must release the agent once the wedged worker finishes";
 }
 
@@ -757,12 +745,7 @@ TEST(AgentShutdownDeadlineTest, ReleaseWithoutShutdownDefersDestructionWhenWedge
 
     // Once the straggler finishes, the runner joins it and destroys the agent.
     wedged->release();
-    const auto destroy_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!destroyed->load() && std::chrono::steady_clock::now() < destroy_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    EXPECT_TRUE(destroyed->load())
+    EXPECT_TRUE(wait_for_condition([&] { return destroyed->load(); }, std::chrono::seconds(5)))
         << "the runner must destroy the agent once the wedged worker finishes";
 }
 
@@ -850,10 +833,7 @@ TEST_F(AgentImplDisabledTest, DisabledConfigReturnsNotEnabled) {
     auto agent = make_test_agent(cfg);
 
     // Even with sampling rate 0, the agent itself is enabled after AgentInfo succeeds.
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3));
 
     // NewSpan should return unsampled span (not noop)
     auto span = agent->NewSpan("op", "/test");
@@ -926,10 +906,7 @@ protected:
     }
 
     static void wait_agent_enabled(const std::shared_ptr<AgentImpl>& agent, int timeout_ms = 3000) {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-        while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        wait_for_condition([&] { return agent->Enable(); }, std::chrono::milliseconds(timeout_ms));
     }
 
     void start_log_capture() {
@@ -1105,12 +1082,8 @@ TEST_F(StartAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
         watcher_config_file_, previous_mtime + std::chrono::seconds(5), ec);
     ASSERT_FALSE(ec);
 
-    const auto reload_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(4);
-    while (agent->getConfig()->sampling.counter_rate != 50 &&
-           std::chrono::steady_clock::now() < reload_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_for_condition([&] { return agent->getConfig()->sampling.counter_rate == 50; },
+                       std::chrono::seconds(4));
 
     const auto reloaded = agent->getConfig();
     ASSERT_EQ(reloaded->sampling.counter_rate, 50);
@@ -1385,10 +1358,8 @@ std::shared_ptr<AgentImpl> make_init_failed_agent(const std::shared_ptr<Config>&
         std::move(grpc_span), std::move(grpc_stat));
     EXPECT_TRUE(agent->Start()) << "the synchronous half of Start() must succeed";
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (!agent->initFailed() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    wait_for_condition([&] { return agent->initFailed(); }, std::chrono::seconds(3),
+                       std::chrono::milliseconds(1));
     return agent;
 }
 
@@ -1521,11 +1492,7 @@ TEST_F(StartAgentTest, MakeConfigKeepsEnvSeededLogLevelOnReload) {
 // The cache* APIs return 0 until the boot AgentInfo registration enables the
 // agent, so each test must wait for enablement first.
 static void wait_cache_test_agent_enabled(const std::shared_ptr<AgentImpl>& agent) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (!agent->Enable() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_TRUE(agent->Enable());
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
 }
 
 TEST(AgentImplCacheSizeTest, ApiCacheEvictionMintsFreshId) {

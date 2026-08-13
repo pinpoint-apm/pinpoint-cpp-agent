@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <utility>
 
 #include <gmock/gmock.h>
@@ -26,6 +28,20 @@
 #include "v1/Service_mock.grpc.pb.h"
 
 namespace pinpoint {
+
+// Polls pred until it holds or the timeout elapses; returns whether it held.
+template <typename Pred>
+bool wait_for_condition(Pred&& pred, std::chrono::milliseconds timeout,
+                        std::chrono::milliseconds poll_interval = std::chrono::milliseconds(10)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(poll_interval);
+    }
+    return true;
+}
 
 // Testable gRPC clients: real channels are never contacted (readyChannel() is
 // false and create_stub() keeps the injected mock stub), yet registerAgent()

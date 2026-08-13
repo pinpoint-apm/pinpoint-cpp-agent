@@ -160,12 +160,8 @@ protected:
     }
 
     void wait_enabled(int timeout_ms = 3000) {
-        auto deadline = std::chrono::steady_clock::now()
-                      + std::chrono::milliseconds(timeout_ms);
-        while (!mock_agent_->Enable()
-               && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        pinpoint::wait_for_condition([&] { return mock_agent_->Enable(); },
+                                     std::chrono::milliseconds(timeout_ms));
     }
 
     std::shared_ptr<pinpoint::Config>   cfg_;

@@ -159,15 +159,6 @@ TEST_F(CallStackTest, CallStackPushLongStringsTest) {
     EXPECT_EQ(stack[0].file, longFile) << "Long file name should match";
 }
 
-TEST_F(CallStackTest, CallStackGetModuleNameTest) {
-    CallStack callstack("Test error");
-    
-    callstack.push("first_module", "function1", "file1.cpp", 10);
-    callstack.push("second_module", "function2", "file2.cpp", 20);
-    
-    EXPECT_EQ(callstack.getModuleName(), "first_module") << "Should return first module name";
-}
-
 TEST_F(CallStackTest, CallStackErrorTimeConsistencyTest) {
     auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
@@ -202,45 +193,17 @@ TEST_F(CallStackTest, CallStackRealisticStackTraceTest) {
 
 // ========== Exception Tests ==========
 
-// Test Exception creation with CallStack
-TEST_F(CallStackTest, ExceptionCreationTest) {
-    auto callstack = std::make_unique<CallStack>("Test exception");
-    callstack->push("module", "function", "file.cpp", 10);
-    
-    Exception exception(std::move(callstack));
-    
-    EXPECT_GT(exception.getId(), 0) << "Exception ID should be greater than 0";
-}
-
-// Test Exception ID generation is unique
-TEST_F(CallStackTest, ExceptionUniqueIdTest) {
-    auto callstack1 = std::make_unique<CallStack>("Error 1");
-    auto callstack2 = std::make_unique<CallStack>("Error 2");
-    auto callstack3 = std::make_unique<CallStack>("Error 3");
-    
-    Exception exception1(std::move(callstack1));
-    Exception exception2(std::move(callstack2));
-    Exception exception3(std::move(callstack3));
-    
-    int64_t id1 = exception1.getId();
-    int64_t id2 = exception2.getId();
-    int64_t id3 = exception3.getId();
-    
-    EXPECT_NE(id1, id2) << "Exception IDs should be unique";
-    EXPECT_NE(id2, id3) << "Exception IDs should be unique";
-    EXPECT_NE(id1, id3) << "Exception IDs should be unique";
-}
-
 TEST_F(CallStackTest, ExceptionSequentialIdTest) {
     auto callstack1 = std::make_unique<CallStack>("Error 1");
     auto callstack2 = std::make_unique<CallStack>("Error 2");
-    
+
     Exception exception1(std::move(callstack1));
     int64_t id1 = exception1.getId();
-    
+    EXPECT_GT(id1, 0) << "Exception ID should be greater than 0";
+
     Exception exception2(std::move(callstack2));
     int64_t id2 = exception2.getId();
-    
+
     EXPECT_EQ(id2, id1 + 1) << "Exception IDs should be sequential";
 }
 

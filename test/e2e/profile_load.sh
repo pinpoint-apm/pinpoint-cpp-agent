@@ -20,9 +20,6 @@ Options:
   --output PATH      Output .trace (macOS) or perf.data file (Linux)
   --frequency HZ     Linux perf sampling frequency (default: $FREQUENCY)
   -h, --help         Show this help
-
-Environment:
-  PROFILE_STARTUP_WAIT  Seconds to wait for profiler startup (default: 1)
 EOF
 }
 
@@ -131,7 +128,7 @@ else
 fi
 PROFILER_PID=$!
 
-sleep "${PROFILE_STARTUP_WAIT:-1}"
+sleep 1
 if ! kill -0 "$PROFILER_PID" 2>/dev/null; then
     set +e
     wait "$PROFILER_PID"

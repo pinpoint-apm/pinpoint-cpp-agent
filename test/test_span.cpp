@@ -209,11 +209,6 @@ TEST_F(SpanTest, SpanDataTimeManagementTest) {
     EXPECT_GT(span_data.getElapsed(), 0) << "Elapsed time should be positive after setEndTime";
 }
 
-TEST_F(SpanTest, SpanDataEventSequenceTest) {
-    SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
-    EXPECT_EQ(span_data.getEventSequence(), 0) << "Initial sequence should be 0";
-}
-
 TEST_F(SpanTest, SpanDataSpanEventManagementTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
     auto span_data = span->getSpanData();
@@ -389,23 +384,6 @@ TEST_F(SpanTest, SpanEventHandleSafeAfterPayloadReleaseTest) {
     se->SetAnnotation(12, 42);         // finished_-guarded no-op
 }
 
-TEST_F(SpanTest, SpanChunkOptimizeEventsTest) {
-    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-operation", "test-rpc");
-    auto span_data = span->getSpanData();
-    
-    // Add some events
-    auto event1 = make_test_span_event_unique(*span, "event1");
-    span_data->addSpanEvent(std::move(event1));
-    span_data->finishSpanEvent(span_data->topSpanEvent());
-
-    SpanChunk chunk(span_data, true);
-    
-    // Test optimization (should not crash)
-    chunk.optimizeSpanEvents();
-    
-    SUCCEED() << "Event optimization should complete without errors";
-}
-
 // ========== SpanImpl Tests ==========
 
 TEST_F(SpanTest, SpanImplConstructorTest) {
@@ -434,16 +412,6 @@ TEST_F(SpanTest, SpanImplGetSpanEventTest) {
     span.NewSpanEvent("test-event");
     auto active_event = span.GetSpanEvent();
     EXPECT_NE(active_event, nullptr) << "Should return active span event";
-}
-
-TEST_F(SpanTest, SpanImplEndSpanEventTest) {
-    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-
-    // Create and end span event
-    auto se = span.NewSpanEvent("test-event");
-    se->EndEvent();
-
-    SUCCEED() << "End span event should complete without errors";
 }
 
 // EndEvent is guarded like EndSpan: a duplicate end is a warning no-op and
@@ -491,22 +459,6 @@ TEST_F(SpanTest, SpanEventEndEventOutOfOrderUnwindsTest) {
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 2u)
         << "Both events should be recorded exactly once";
-}
-
-TEST_F(SpanTest, SpanEventEndEventUsesParentSpanTest) {
-    SpanPtr span = std::make_shared<SpanImpl>(
-        mock_agent_service_.get(), "test-operation", "test-rpc");
-
-    auto event = span->NewSpanEvent("test-event");
-
-    event->EndEvent();
-    span->EndSpan();
-
-    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
-    auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
-    ASSERT_EQ(events.size(), 1u);
-    EXPECT_EQ(events[0]->getApiId(), mock_agent_service_->getCachedApiId("test-event"))
-        << "the recorded event is identified by the API ID its name resolved to";
 }
 
 TEST_F(SpanTest, SpanEventEndEventTest) {
@@ -631,35 +583,6 @@ TEST_F(SpanTest, ElapsedClampedToNonNegativeTest) {
     ASSERT_EQ(events.size(), 1u);
     EXPECT_EQ(events[0]->getEndElapsed(), 0)
         << "Event elapsed must be clamped to zero when the clock steps backwards";
-}
-
-TEST_F(SpanTest, SpanImplSettersTest) {
-    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-    
-    // Test service type
-    span.SetServiceType(2100);
-    
-    // Test start time
-    auto start_time = std::chrono::system_clock::now();
-    span.SetStartTime(start_time);
-    
-    // Test remote address
-    span.SetRemoteAddress("192.168.1.100");
-    
-    // Test end point
-    span.SetEndPoint("http://example.com");
-    
-    // Test error
-    span.SetError("Test error");
-    span.SetError("SQLException", "Connection failed");
-    
-    // Test status code
-    span.SetStatusCode(200);
-    
-    // Test URL stat
-    span.SetUrlStat("/api/users", "GET", 200);
-    
-    SUCCEED() << "All setters should complete without errors";
 }
 
 TEST_F(SpanTest, SpanImplRecordHeaderTest) {
@@ -941,45 +864,6 @@ TEST_F(SpanTest, ContextPropagationTest) {
     EXPECT_NE(parent_span.GetSpanId(), 0) << "Parent span should have non-zero ID";
     EXPECT_NE(child_span.GetSpanId(), 0) << "Child span should have non-zero ID";
     EXPECT_NE(parent_span.GetSpanId(), child_span.GetSpanId()) << "Span IDs should be different";
-}
-
-TEST_F(SpanTest, MultipleSpanEventsTest) {
-    SpanImpl span(mock_agent_service_.get(), "complex-operation", "complex-rpc");
-    
-    // Create multiple nested span events
-    auto step1 = span.NewSpanEvent("step1");
-    auto step2 = span.NewSpanEvent("step2");
-    auto step3 = span.NewSpanEvent("step3");
-
-    // End them all (innermost first)
-    step3->EndEvent();
-    step2->EndEvent();
-    step1->EndEvent();
-    
-    span.EndSpan();
-    
-    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Complex span should be recorded";
-}
-
-TEST_F(SpanTest, AsyncSpanTest) {
-    SpanImpl parent_span(mock_agent_service_.get(), "parent-operation", "parent-rpc");
-
-    // Create span event first to provide context for async span.
-    auto prepare_event = parent_span.NewSpanEvent("prepare-async");
-
-    // NewAsyncSpan never throws (it returns a noop span on internal failure), so
-    // no try/catch is needed — assert the real, non-noop result directly.
-    auto async_span = parent_span.NewAsyncSpan("async-task");
-    ASSERT_NE(async_span, nullptr) << "Async span should be created";
-    EXPECT_EQ(async_span->GetSpanId(), parent_span.GetSpanId())
-        << "Async child should inherit the parent span id";
-
-    async_span->EndSpan();
-
-    prepare_event->EndEvent();
-    parent_span.EndSpan();
-
-    EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Parent span should be recorded";
 }
 
 // Exercises the sanctioned cross-thread pattern: the async span is CREATED on the

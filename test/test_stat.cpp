@@ -51,12 +51,6 @@ protected:
 
 // ========== Agent Stats Global Functions Tests ==========
 
-TEST_F(StatTest, InitAgentStatsTest) {
-    // Test that initAgentStats() doesn't crash
-    agent_stats_->initAgentStats();
-    SUCCEED(); // If we reach here, initialization was successful
-}
-
 TEST_F(StatTest, CollectAgentStatTest) {
     AgentStatsSnapshot snapshot;
     
@@ -101,18 +95,39 @@ TEST_F(StatTest, CpuLoadStaysBoundedAcrossSequentialCollectsTest) {
 }
 
 TEST_F(StatTest, CollectResponseTimeTest) {
-    // Test response time collection
-    agent_stats_->collectResponseTime(100);
-    agent_stats_->collectResponseTime(200);
-    agent_stats_->collectResponseTime(50);
-    
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-    
-    // After collecting response times, average and max should be calculated
-    // Note: The exact values depend on implementation, but they should be reasonable
-    EXPECT_GE(snapshot.response_time_avg_, 0) << "Average response time should be non-negative";
-    EXPECT_GE(snapshot.response_time_max_, 0) << "Max response time should be non-negative";
+    struct Case {
+        std::vector<int64_t> inputs;
+        int64_t expected_avg;
+        int64_t expected_max;
+    };
+    const Case cases[] = {
+        {{}, 0, 0},                                        // no response times
+        {{0}, 0, 0},                                       // zero response time
+        {{42}, 42, 42},                                    // single response time
+        {{1000000000LL}, 1000000000LL, 1000000000LL},      // large response time
+        {{100, 200, 300}, 200, 300},                       // (100+200+300)/3 = 200
+        {{100, 200, 50}, 116, 200},                        // 350/3 truncates to 116
+        {{50, 100, 150, 200, 75, 125, 300, 25}, 128, 300}, // 1025/8 truncates to 128
+    };
+
+    // collectAgentStat resets the accumulators, so each row starts clean.
+    for (const auto& c : cases) {
+        std::string inputs = "inputs={";
+        for (int64_t time : c.inputs) {
+            inputs += std::to_string(time) + ",";
+        }
+        SCOPED_TRACE(inputs + "}");
+
+        for (int64_t time : c.inputs) {
+            agent_stats_->collectResponseTime(time);
+        }
+
+        AgentStatsSnapshot snapshot;
+        agent_stats_->collectAgentStat(snapshot);
+
+        EXPECT_EQ(snapshot.response_time_avg_, c.expected_avg);
+        EXPECT_EQ(snapshot.response_time_max_, c.expected_max);
+    }
 }
 
 TEST_F(StatTest, SamplingCountersTest) {
@@ -285,25 +300,6 @@ TEST_F(StatTest, AgentStatsWithExitingAgentTest) {
     SUCCEED() << "AgentStats worker should handle exiting agent gracefully";
 }
 
-TEST_F(StatTest, MultipleResponseTimeCollectionTest) {
-    // Test collecting multiple response times
-    std::vector<int64_t> response_times = {50, 100, 150, 200, 75, 125, 300, 25};
-    
-    for (int64_t time : response_times) {
-        agent_stats_->collectResponseTime(time);
-    }
-    
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-    
-    // Verify that max response time is the maximum we inserted
-    EXPECT_EQ(snapshot.response_time_max_, 300) << "Max response time should be 300";
-    
-    // Average should be reasonable (exact value depends on implementation)
-    EXPECT_GT(snapshot.response_time_avg_, 0) << "Average response time should be positive";
-    EXPECT_LE(snapshot.response_time_avg_, 300) << "Average should not exceed max";
-}
-
 TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     // First, get the current state to see how many spans exist
     AgentStatsSnapshot initial_snapshot;
@@ -346,53 +342,6 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     agent_stats_->dropActiveSpan(nodes[1]);
     agent_stats_->dropActiveSpan(nodes[2]);
     agent_stats_->dropActiveSpan(nodes[3]);
-}
-
-TEST_F(StatTest, StatSnapshotMemoryLayoutTest) {
-    AgentStatsSnapshot snapshot;
-    
-    // Test that the structure has the expected size and alignment
-    EXPECT_GT(sizeof(snapshot), 0) << "AgentStatsSnapshot should have positive size";
-    
-    // Test that we can access all fields without crashes
-    snapshot.sample_time_ = 123;
-    snapshot.system_cpu_time_ = 1.5;
-    snapshot.process_cpu_time_ = 2.5;
-    snapshot.num_threads_ = 10;
-    snapshot.heap_alloc_size_ = 1024;
-    snapshot.heap_max_size_ = 2048;
-    snapshot.response_time_avg_ = 100;
-    snapshot.response_time_max_ = 200;
-    snapshot.num_sample_new_ = 5;
-    snapshot.num_sample_cont_ = 6;
-    snapshot.num_unsample_new_ = 7;
-    snapshot.num_unsample_cont_ = 8;
-    snapshot.num_skip_new_ = 9;
-    snapshot.num_skip_cont_ = 10;
-    
-    for (int i = 0; i < 4; i++) {
-        snapshot.active_requests_[i] = i + 1;
-    }
-    
-    // Verify all fields are accessible
-    EXPECT_EQ(snapshot.sample_time_, 123);
-    EXPECT_DOUBLE_EQ(snapshot.system_cpu_time_, 1.5);
-    EXPECT_DOUBLE_EQ(snapshot.process_cpu_time_, 2.5);
-    EXPECT_EQ(snapshot.num_threads_, 10);
-    EXPECT_EQ(snapshot.heap_alloc_size_, 1024);
-    EXPECT_EQ(snapshot.heap_max_size_, 2048);
-    EXPECT_EQ(snapshot.response_time_avg_, 100);
-    EXPECT_EQ(snapshot.response_time_max_, 200);
-    EXPECT_EQ(snapshot.num_sample_new_, 5);
-    EXPECT_EQ(snapshot.num_sample_cont_, 6);
-    EXPECT_EQ(snapshot.num_unsample_new_, 7);
-    EXPECT_EQ(snapshot.num_unsample_cont_, 8);
-    EXPECT_EQ(snapshot.num_skip_new_, 9);
-    EXPECT_EQ(snapshot.num_skip_cont_, 10);
-    
-    for (int i = 0; i < 4; i++) {
-        EXPECT_EQ(snapshot.active_requests_[i], i + 1);
-    }
 }
 
 // ========== Additional Edge Case Tests ==========
@@ -448,60 +397,6 @@ TEST_F(StatTest, CollectResetsCountersBetweenCallsTest) {
     EXPECT_EQ(snapshot2.num_skip_cont_, 0);
     EXPECT_EQ(snapshot2.response_time_avg_, 0);
     EXPECT_EQ(snapshot2.response_time_max_, 0);
-}
-
-TEST_F(StatTest, SingleResponseTimeTest) {
-    agent_stats_->collectResponseTime(42);
-
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    EXPECT_EQ(snapshot.response_time_avg_, 42);
-    EXPECT_EQ(snapshot.response_time_max_, 42);
-}
-
-TEST_F(StatTest, ZeroResponseTimeTest) {
-    agent_stats_->collectResponseTime(0);
-
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    EXPECT_EQ(snapshot.response_time_avg_, 0);
-    EXPECT_EQ(snapshot.response_time_max_, 0);
-}
-
-// Test no response times collected (avg should be 0)
-TEST_F(StatTest, NoResponseTimesTest) {
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    EXPECT_EQ(snapshot.response_time_avg_, 0);
-    EXPECT_EQ(snapshot.response_time_max_, 0);
-}
-
-// Test large response time values
-TEST_F(StatTest, LargeResponseTimeTest) {
-    int64_t large_time = 1000000000LL; // 1 billion ms
-    agent_stats_->collectResponseTime(large_time);
-
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    EXPECT_EQ(snapshot.response_time_avg_, large_time);
-    EXPECT_EQ(snapshot.response_time_max_, large_time);
-}
-
-TEST_F(StatTest, ResponseTimeAverageCalculationTest) {
-    agent_stats_->collectResponseTime(100);
-    agent_stats_->collectResponseTime(200);
-    agent_stats_->collectResponseTime(300);
-
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    // (100 + 200 + 300) / 3 = 200
-    EXPECT_EQ(snapshot.response_time_avg_, 200);
-    EXPECT_EQ(snapshot.response_time_max_, 300);
 }
 
 // Test dropping a never-linked node (async/noop spans; should not crash)

@@ -73,7 +73,7 @@ protected:
 
         // Create a temporary directory for test files
         temp_dir_ = "/tmp/pinpoint_config_test_" + std::to_string(getpid());
-        mkdir(temp_dir_.c_str(), 0755);
+        std::filesystem::create_directories(temp_dir_);
     }
 
     void TearDown() override {
@@ -94,7 +94,7 @@ protected:
         }
 
         // Clean up temporary files
-        system(("rm -rf " + temp_dir_).c_str());
+        std::filesystem::remove_all(temp_dir_);
     }
 
 protected:
@@ -849,6 +849,14 @@ TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     EXPECT_EQ(config->uid_version_, config2->uid_version_) << "UID version should match after round-trip";
     EXPECT_EQ(config->agent_name_, config2->agent_name_)
         << "Explicit AgentName should match after round-trip";
+    EXPECT_EQ(config->sql.max_bind_args_size, config2->sql.max_bind_args_size)
+        << "Max bind args size should match after round-trip";
+    EXPECT_EQ(config->sql.enable_sql_stats, config2->sql.enable_sql_stats)
+        << "SQL stats enable should match after round-trip";
+    EXPECT_EQ(config->sql.enable_raw_sql_cache, config2->sql.enable_raw_sql_cache)
+        << "Raw SQL cache enable should match after round-trip";
+    EXPECT_EQ(config->sql.trace_bind_value, config2->sql.trace_bind_value)
+        << "SQL bind value tracing should match after round-trip";
 }
 
 // Runtime-generated identity must not become configuration input when a
@@ -894,73 +902,52 @@ TEST_F(ConfigTest, EmptyConfigurationStringTest) {
         << "Config string should contain default UID version field";
 }
 
-TEST_F(ConfigTest, UidVersionV1ConfigurationToStringAndRoundTripTest) {
-    set_config_string(R"(
-ApplicationName: "UidV1App"
-UidVersion: v1
-Collector:
-  GrpcHost: localhost
-)");
-    auto config = make_config();
-    ASSERT_NE(config, nullptr);
-    ASSERT_TRUE(config->identity_resolved_);
-    EXPECT_EQ(config->uid_version_, "v1");
-    EXPECT_EQ(config->object_name_version_, 1);
+// UidVersion resolution at the config integration level: identity resolves,
+// the raw string is preserved in uid_version_ (isReloadable compares the raw
+// value, not the resolved version), and object_name_version_ follows the
+// resolved version. An unrecognized value (anything not v1/v4, e.g. v2)
+// resolves as v3 — object_name_version_ becomes VERSION_V1 (1) exactly like an
+// explicit v3 — guarding the schema-drift / parse fallback beyond the
+// parse_name_version unit test. Recognized versions additionally survive a
+// to_config_string() round-trip.
+TEST_F(ConfigTest, UidVersionResolutionAndRoundTripTest) {
+    struct UidVersionCase {
+        const char* version_str;
+        int expected_object_name_version;
+        bool round_trips;  // recognized versions also check to_config_string()
+    };
+    const UidVersionCase cases[] = {
+        {"v1", 1, true},
+        {"v3", 1, true},
+        {"v2", 1, false},  // unrecognized: v3 fallback
+    };
 
-    std::string config_string = to_config_string(*config);
-    EXPECT_TRUE(config_string.find("UidVersion: v1") != std::string::npos)
-        << "Config string should contain v1 UID version";
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.version_str);
+        set_config_string(std::string("ApplicationName: \"UidApp\"\n"
+                                      "UidVersion: ") + c.version_str + "\n"
+                                      "Collector:\n"
+                                      "  GrpcHost: localhost\n");
+        auto config = make_config();
+        ASSERT_NE(config, nullptr);
+        ASSERT_TRUE(config->identity_resolved_)
+            << "identity must resolve even for an unrecognized uid version";
+        EXPECT_EQ(config->uid_version_, c.version_str)
+            << "the raw uid version string is preserved";
+        EXPECT_EQ(config->object_name_version_, c.expected_object_name_version);
 
-    set_config_string(config_string);
-    auto config2 = make_config();
-    ASSERT_NE(config2, nullptr);
-    EXPECT_EQ(config2->uid_version_, "v1");
-    EXPECT_EQ(config2->object_name_version_, 1);
-}
+        if (!c.round_trips) continue;
+        std::string config_string = to_config_string(*config);
+        EXPECT_TRUE(config_string.find(std::string("UidVersion: ") + c.version_str)
+                        != std::string::npos)
+            << "Config string should contain the UID version";
 
-TEST_F(ConfigTest, UidVersionV3ConfigurationToStringAndRoundTripTest) {
-    set_config_string(R"(
-ApplicationName: "UidV3App"
-UidVersion: v3
-Collector:
-  GrpcHost: localhost
-)");
-    auto config = make_config();
-    ASSERT_NE(config, nullptr);
-    ASSERT_TRUE(config->identity_resolved_);
-    EXPECT_EQ(config->uid_version_, "v3");
-    EXPECT_EQ(config->object_name_version_, 1);
-
-    std::string config_string = to_config_string(*config);
-    EXPECT_TRUE(config_string.find("UidVersion: v3") != std::string::npos)
-        << "Config string should contain v3 UID version";
-
-    set_config_string(config_string);
-    auto config2 = make_config();
-    ASSERT_NE(config2, nullptr);
-    EXPECT_EQ(config2->uid_version_, "v3");
-    EXPECT_EQ(config2->object_name_version_, 1);
-}
-
-// An unrecognized UidVersion (anything not v1/v4) resolves as v3: object_name_
-// version_ becomes VERSION_V1 (1) exactly like an explicit v3, identity still
-// resolves, and the raw string is preserved (isReloadable compares the raw
-// uid_version_, not the resolved version). Guards the schema-drift / parse
-// fallback at the config integration level, beyond the parse_name_version unit test.
-TEST_F(ConfigTest, UidVersionInvalidValueFallsBackToV3Test) {
-    set_config_string(R"(
-ApplicationName: "UidInvalidApp"
-UidVersion: v2
-Collector:
-  GrpcHost: localhost
-)");
-    auto config = make_config();
-    ASSERT_NE(config, nullptr);
-    EXPECT_TRUE(config->identity_resolved_)
-        << "an invalid uid version must still resolve identity as v3";
-    EXPECT_EQ(config->uid_version_, "v2") << "the raw uid version string is preserved";
-    EXPECT_EQ(config->object_name_version_, 1)
-        << "an unknown uid version maps to VERSION_V1 (v3 behavior)";
+        set_config_string(config_string);
+        auto config2 = make_config();
+        ASSERT_NE(config2, nullptr);
+        EXPECT_EQ(config2->uid_version_, c.version_str);
+        EXPECT_EQ(config2->object_name_version_, c.expected_object_name_version);
+    }
 }
 
 // A well-formed YAML document whose section key carries the WRONG node shape
@@ -1367,36 +1354,6 @@ Sql:
         << "Config string should contain raw SQL cache enable setting";
     EXPECT_TRUE(config_string.find("TraceBindValue: true") != std::string::npos)
         << "Config string should contain SQL bind value tracing setting";
-}
-
-TEST_F(ConfigTest, SqlConfigurationRoundTripTest) {
-    const std::string sql_config = R"(
-ApplicationName: "SqlTestApp"
-Sql:
-  MaxBindArgsSize: 3072
-  EnableSqlStats: true
-  EnableRawSqlCache: true
-  TraceBindValue: true
-)";
-    
-    set_config_string(sql_config);
-    auto config1 = make_config();
-    
-    std::string generated_config_string = to_config_string(*config1);
-    
-    // Use generated string as new config
-    set_config_string(generated_config_string);
-    auto config2 = make_config();
-    
-    // SQL configs should match after round-trip
-    EXPECT_EQ(config1->sql.max_bind_args_size, config2->sql.max_bind_args_size) 
-        << "Max bind args size should match after round-trip";
-    EXPECT_EQ(config1->sql.enable_sql_stats, config2->sql.enable_sql_stats) 
-        << "SQL stats enable should match after round-trip";
-    EXPECT_EQ(config1->sql.enable_raw_sql_cache, config2->sql.enable_raw_sql_cache)
-        << "Raw SQL cache enable should match after round-trip";
-    EXPECT_EQ(config1->sql.trace_bind_value, config2->sql.trace_bind_value)
-        << "SQL bind value tracing should match after round-trip";
 }
 
 // Test invalid SQL environment variable values
