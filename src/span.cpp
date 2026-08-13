@@ -548,7 +548,7 @@ namespace pinpoint {
 
         auto se = data_->topSpanEvent();
         if (!se) {
-            LOG_WARN("NewAsyncSpan: abnormal span - has no event");
+            LOG_WARN_THROTTLED("NewAsyncSpan: abnormal span - has no event");
             return noopSpan();
         }
         // Hand down this span's runtime snapshot: the async child records into
