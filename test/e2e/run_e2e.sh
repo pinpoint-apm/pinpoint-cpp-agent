@@ -166,10 +166,12 @@ stop_process() {
 }
 
 cleanup() {
-    curl -sS --max-time 2 -X POST "http://$HOST:$PORT/server/shutdown" \
-        >/dev/null 2>&1 || true
-    curl -sS --max-time 2 -X POST "http://$HOST:$DOWNSTREAM_PORT/shutdown" \
-        >/dev/null 2>&1 || true
+    # Content-Length: 0 — cpp-httplib 400s a bodiless POST without it, which
+    # would silently skip the graceful shutdown and leave only the kill below.
+    curl -sS --max-time 2 -H 'Content-Length: 0' \
+        -X POST "http://$HOST:$PORT/server/shutdown" >/dev/null 2>&1 || true
+    curl -sS --max-time 2 -H 'Content-Length: 0' \
+        -X POST "http://$HOST:$DOWNSTREAM_PORT/shutdown" >/dev/null 2>&1 || true
     sleep 1
     stop_process "$UPSTREAM_PID"
     stop_process "$DOWNSTREAM_PID"

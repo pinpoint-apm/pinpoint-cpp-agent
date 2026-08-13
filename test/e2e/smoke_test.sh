@@ -36,7 +36,13 @@ http_request() {
     shift 2
     local body_file="$WORK_DIR/response-${PASS_COUNT}-${FAIL_COUNT}-$$"
     : > "$body_file"
-    HTTP_STATUS=$(curl -sS --max-time 10 -X "$method" -o "$body_file" \
+    # cpp-httplib expects a body on every POST, so a bodiless one must say so
+    # explicitly or the server answers 400 without ever reaching the handler.
+    local opts=(--max-time 10)
+    if [[ "$method" == POST ]]; then
+        opts+=(-H 'Content-Length: 0')
+    fi
+    HTTP_STATUS=$(curl -sS "${opts[@]}" -X "$method" -o "$body_file" \
         -w '%{http_code}' "$@" "$url") || HTTP_STATUS="000"
     HTTP_BODY=$(<"$body_file")
 }
@@ -166,6 +172,10 @@ echo "Config reload and sampling"
 http_request POST "$BASE_URL/agent/reload?counter_rate=2"
 assert_status "reload counter sampling" 200
 assert_contains "reload counter rate" '"counter_rate":2'
+# A reload restarts the agent and StartAgent() returns before registration
+# completes, so probing straight away would only see noop spans.
+wait_for_body "reloaded upstream agent" "$BASE_URL/ready" \
+    '"agent_enabled":true' || true
 http_request GET "$BASE_URL/sampling-probe?count=40"
 assert_status "sampling probe" 200
 sampled=$(printf '%s' "$HTTP_BODY" | sed -n 's/.*"sampled":\([0-9][0-9]*\).*/\1/p')

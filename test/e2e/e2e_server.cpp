@@ -340,6 +340,9 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
         injected_headers.find(std::string(pinpoint::HEADER_PARENT_SPAN_ID)) !=
             injected_headers.end();
 
+    // NewAsyncSpan() hangs the async child off the span event on top of the
+    // stack, so an event must still be open when it is called.
+    auto async_event = span->NewSpanEvent("feature-async-invocation");
     auto async_span = span->NewAsyncSpan("feature-async");
     const std::string parent_trace_id = span->GetTraceId();
     bool async_complete = false;
@@ -355,6 +358,7 @@ void on_features(const httplib::Request& req, httplib::Response& res) {
         async_complete = true;
     });
     async_worker.join();
+    async_event->EndEvent();
 
     std::ostringstream body;
     body << "{"
@@ -844,23 +848,23 @@ void on_agent_reload(const httplib::Request& req, httplib::Response& res) {
         counter_rate = std::min(
             std::max(std::stoi(req.get_param_value("counter_rate")), 0), 1000);
     }
-    std::ostringstream config;
-    config << "Sampling:\n"
-           << "  Type: COUNTER\n"
-           << "  CounterRate: " << counter_rate << "\n"
-           << "Log:\n"
-           << "  Level: debug\n";
     std::lock_guard<std::mutex> lock(g_agent_mutex);
     // Runtime reconfiguration flows through the config-file watcher in
     // production; this test server simulates it by restarting the agent with
     // the new configuration (a fresh agent instance).
+    //
+    // The override rides an environment variable rather than
+    // AgentOptions::config_yaml: this suite sets PINPOINT_CPP_CONFIG_FILE, and
+    // a config file replaces config_yaml wholesale (see AgentOptions), so an
+    // inline YAML would be parsed by nobody. Env vars are applied after the
+    // file on a first load, and a restarted agent is a first load.
+    setenv("PINPOINT_CPP_SAMPLING_COUNTER_RATE",
+           std::to_string(counter_rate).c_str(), 1);
     if (g_agent) {
         g_agent->Shutdown();
         g_agent.reset();
     }
-    pinpoint::AgentOptions options;
-    options.config_yaml = config.str();
-    if (!pinpoint::StartAgent(options)) {
+    if (!pinpoint::StartAgent()) {
         std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
     }
     g_agent = pinpoint::GlobalAgent();
