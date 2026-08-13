@@ -51,9 +51,7 @@ namespace pinpoint {
         float,
         double>;
 
-    /**
-     * @brief HTTP header names used to propagate Pinpoint trace context.
-     */
+    /// @brief HTTP header names used to propagate Pinpoint trace context.
     inline constexpr std::string_view HEADER_TRACE_ID = "Pinpoint-TraceID";
     inline constexpr std::string_view HEADER_SPAN_ID = "Pinpoint-SpanID";
     inline constexpr std::string_view HEADER_PARENT_SPAN_ID = "Pinpoint-pSpanID";
@@ -103,9 +101,7 @@ namespace pinpoint {
 
     constexpr int32_t NONE_ASYNC_ID = 0;
 
-    /**
-     * @brief Read-only accessor for inbound propagation carriers.
-     */
+    /// @brief Read-only accessor for inbound propagation carriers.
     class TraceContextReader {
     public:
         virtual ~TraceContextReader() = default;
@@ -132,9 +128,7 @@ namespace pinpoint {
         virtual std::optional<std::string_view> Get(std::string_view key) const = 0;
     };
 
-    /**
-     * @brief Write-only accessor for outbound propagation carriers.
-     */
+    /// @brief Write-only accessor for outbound propagation carriers.
     class TraceContextWriter {
     public:
         virtual ~TraceContextWriter() = default;
@@ -152,78 +146,44 @@ namespace pinpoint {
         virtual void Set(std::string_view key, std::string_view value) = 0;
     };
 
-    /**
-     * @brief Enumerates logical header groups that can be recorded on spans.
-     */
+    /// @brief Enumerates logical header groups that can be recorded on spans.
     enum HeaderType {
         HTTP_REQUEST = 0, HTTP_RESPONSE, HTTP_COOKIE
     };
 
-    /**
-     * @brief Interface used to iterate through headers without exposing container details.
-     */
+    /// @brief Interface used to iterate through headers without exposing container details.
     class HeaderReader : public TraceContextReader {
     public:
         virtual ~HeaderReader() override = default;
-        /**
-         * @brief Looks up a single header value by key.
-         *
-         * See TraceContextReader::Get for the lifetime contract of the
-         * returned view.
-         */
+        /// @brief See TraceContextReader::Get for the returned view's lifetime.
         virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
-        /**
-         * @brief Iterates through all headers invoking the callback for each entry.
-         *
-         * @param callback Return false to stop iteration early.
-         */
+        /// @brief Iterates all headers; return false from @p callback to stop early.
         virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const = 0;
     };
 
+    /// @brief Carrier that both reads and writes, for an in-place header map.
+    ///        Each method keeps the contract of the base it overrides.
     class HeaderReaderWriter : public HeaderReader, public TraceContextWriter {
     public:
         virtual ~HeaderReaderWriter() override = default;
-        /**
-         * @brief Looks up a single header value by key.
-         *
-         * See TraceContextReader::Get for the lifetime contract of the
-         * returned view.
-         */
         virtual std::optional<std::string_view> Get(std::string_view key) const override = 0;
-        /**
-         * @brief Iterates through all headers invoking the callback for each entry.
-         *
-         * @param callback Return false to stop iteration early.
-         */
         virtual void ForEach(std::function<bool(std::string_view key, std::string_view val)> callback) const override = 0;
-        /**
-         * @brief Writes a key/value pair into the propagation carrier.
-         *
-         * See TraceContextWriter::Set() for the borrowed-view lifetime contract.
-         */
         virtual void Set(std::string_view key, std::string_view value) override = 0;
     };
 
-    /**
-     * @brief Interface used to enumerates frames stored inside a call stack.
-     */
+    /// @brief Interface used to enumerates frames stored inside a call stack.
     class CallStackReader {
     public:
         virtual ~CallStackReader() = default;
-        /**
-         * @brief Iterates through all frames in the call stack.
-         *
-         * @param callback Invoked with module, function, file and line for each frame.
-         */
+        /// @brief Invokes @p callback with module, function, file and line for
+        ///        each frame in the call stack.
         virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
     };
     
     class Span;
     using SpanPtr = std::shared_ptr<Span>;
 
-    /**
-     * @brief Interface describing a span event recorded within a span.
-     */
+    /// @brief Interface describing a span event recorded within a span.
     class SpanEvent {
     public:
         virtual ~SpanEvent() = default;
@@ -368,36 +328,16 @@ namespace pinpoint {
                                    std::string_view value2) = 0;
     };
 
-    /**
-     * @brief Interface exposed to application code for creating spans.
-     */
+    /// @brief Interface exposed to application code for creating spans.
     class Agent {
     public:
         virtual ~Agent() = default;
 
-        /**
-         * @brief Creates a new span for an outbound RPC/operation.
-         *
-         * @param operation Logical name of the operation.
-         * @param rpc_point RPC endpoint or destination.
-         */
+        /// @brief Creates a new span for an outbound RPC/operation.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point) = 0;
-        /**
-         * @brief Creates a new span using context extracted from inbound carrier.
-         *
-         * @param operation Logical name of the operation.
-         * @param rpc_point RPC endpoint or destination.
-         * @param reader Trace context carrier reader.
-         */
+        /// @brief Creates a new span, extracting context from @p reader.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) = 0;
-        /**
-         * @brief Creates a new span recording HTTP method information.
-         *
-         * @param operation Logical name of the operation.
-         * @param rpc_point RPC endpoint or destination.
-         * @param method HTTP method (GET, POST, ...).
-         * @param reader Trace context carrier reader.
-         */
+        /// @brief Creates a new span, also recording the HTTP @p method.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
         /// @brief Returns whether agent initialization succeeded and tracing is
         ///        enabled. Individual spans may still be rejected by sampling.
@@ -515,65 +455,33 @@ namespace pinpoint {
     AgentPtr GlobalAgent();
 
     namespace helper {
-        /**
-         * @brief Traces a HTTP server request.
-         *
-         * @param span The span to trace.
-         * @param remote_addr The remote address.
-         * @param endpoint The endpoint.
-         * @param request_reader The request reader.
-         */
+        /// @brief Records an inbound request on @p span: the endpoint, the
+        ///        remote address (taken from X-Forwarded-For / X-Real-Ip when
+        ///        present, else @p remote_addr), the Pinpoint proxy headers,
+        ///        and the request headers named in the configuration.
+        ///        A null @p span is ignored.
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
 
-        /**
-         * @brief Traces a HTTP server request.
-         *
-         * @param span The span to trace.
-         * @param remote_addr The remote address.
-         * @param endpoint The endpoint.
-         * @param request_reader The request reader.
-         * @param cookie_reader The cookie reader.
-         */
+        /// @brief As above, additionally recording the configured cookies.
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
-        /**
-         * @brief Traces a HTTP server response.
-         *
-         * @param span The span to trace.
-         * @param url_pattern The URL pattern.
-         * @param method The method.
-         * @param status_code The status code.
-         */
+        /// @brief Records the response on @p span: the status code, URL stats
+        ///        for @p url_pattern / @p method, and the configured response
+        ///        headers. A null @p span is ignored.
         void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader);
 
-        /**
-         * @brief Traces a HTTP client request.
-         *
-         * @param span_event The span event to trace.
-         * @param host The host.
-         * @param url The URL.
-         * @param request_reader The request reader.
-         */
+        /// @brief Records an outbound call on @p span_event: service type
+        ///        SERVICE_TYPE_CPP_HTTP_CLIENT, @p host as both endpoint and
+        ///        destination, @p url as ANNOTATION_HTTP_URL, and the
+        ///        configured request headers. A null @p span_event is ignored.
          void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
 
-         /**
-         * @brief Traces a HTTP client request.
-         *
-         * @param span_event The span event to trace.
-         * @param host The host.
-         * @param url The URL.
-         * @param request_reader The request reader.
-         * @param cookie_reader The cookie reader.
-         */
+         /// @brief As above, additionally recording the configured cookies.
          void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
-        /**
-         * @brief Traces a HTTP client response.
-         *
-         * @param span_event The span event to trace.
-         * @param status_code The status code.
-         * @param response_reader The response reader.
-         */
+        /// @brief Records the client response on @p span_event: the status code
+        ///        as ANNOTATION_HTTP_STATUS_CODE and the configured response
+        ///        headers. A null @p span_event is ignored.
         void TraceHttpClientResponse(SpanEventPtr span_event, int32_t status_code, HeaderReader& response_reader);
 
         // RAII helper to manage span events.

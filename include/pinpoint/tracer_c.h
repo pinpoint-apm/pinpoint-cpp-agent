@@ -58,6 +58,15 @@
  * a span or event seals its recording state but retains these objects while
  * the parent span is alive. Do not retain a view beyond the parent span's
  * lifetime.
+ *
+ * ## Handle validity
+ *
+ * Agent and span handles are owning and must be released with their
+ * pt_*_destroy(). Passing an unknown or already-destroyed handle to any
+ * function in this header is ignored with a warning, or returns that
+ * function's documented failure value — it is never undefined behavior.
+ * NULL and the shared disabled-agent / no-op-span sentinels are ignored
+ * silently.
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -459,11 +468,7 @@ pt_agent_t pt_global_agent(void);
  * @brief Releases an agent handle obtained from pt_global_agent().
  *
  * This only frees the C wrapper; the global agent itself is unaffected.
- *
- * Unknown and already-destroyed registry handles are ignored with a warning.
- * NULL and the shared disabled-agent sentinel are ignored silently. Other API
- * calls made with an already-destroyed registry handle are ignored or return
- * their documented failure value.
+ * See "Handle validity" at the top of this header.
  */
 void pt_agent_destroy(pt_agent_t agent);
 
@@ -542,12 +547,7 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
  * @brief Releases a span handle.
  *
  * Call pt_span_end() first to finalize and enqueue the span data, then destroy
- * the handle.
- *
- * Unknown and already-destroyed registry handles are ignored with a warning.
- * NULL and the shared no-op span sentinel are ignored silently. Other API
- * calls made with an already-destroyed registry handle are ignored or return
- * their documented failure value.
+ * the handle. See "Handle validity" at the top of this header.
  */
 void pt_span_destroy(pt_span_t span);
 
@@ -563,11 +563,7 @@ void pt_span_destroy(pt_span_t span);
  */
 pt_span_event_t pt_span_new_event(pt_span_t span, const char* operation);
 
-/**
- * @brief Creates a new child span event with an explicit service type.
- *
- * Mirrors pinpoint::Span::NewSpanEvent(operation, service_type).
- */
+/** Mirrors pinpoint::Span::NewSpanEvent(operation, service_type). */
 pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operation,
                                             int32_t service_type);
 
@@ -588,12 +584,7 @@ pt_span_event_t pt_span_new_event_with_type(pt_span_t span, const char* operatio
  */
 pt_span_event_t pt_span_get_event(pt_span_t span);
 
-/**
- * @brief Finalizes the span and submits its recorded data for asynchronous
- *        delivery.
- *
- * Mirrors pinpoint::Span::EndSpan().
- */
+/** Mirrors pinpoint::Span::EndSpan(). */
 void pt_span_end(pt_span_t span);
 
 /**
@@ -625,18 +616,10 @@ pt_span_t pt_span_new_async_span(pt_span_t span, const char* async_operation);
  */
 size_t pt_span_get_trace_id(pt_span_t span, char* buf, size_t buf_size);
 
-/**
- * @brief Returns the numeric span identifier.
- *
- * Mirrors pinpoint::Span::GetSpanId().
- */
+/** Mirrors pinpoint::Span::GetSpanId(). */
 int64_t pt_span_get_span_id(pt_span_t span);
 
-/**
- * @brief Returns non-zero if this span is being sampled.
- *
- * Mirrors pinpoint::Span::IsSampled().
- */
+/** Mirrors pinpoint::Span::IsSampled(). */
 int pt_span_is_sampled(pt_span_t span);
 
 /** Mirrors pinpoint::Span::SetServiceType(). */
@@ -702,11 +685,7 @@ void pt_span_set_annotation_long(pt_span_t span, int32_t key, int64_t value);
 /** Mirrors pinpoint::Span::SetAnnotation() with a string value. */
 void pt_span_set_annotation_string(pt_span_t span, int32_t key, const char* value);
 
-/**
- * @brief Records an annotation composed of two strings on the span.
- *
- * Mirrors pinpoint::Span::SetAnnotation() with a string-pair value.
- */
+/** Mirrors pinpoint::Span::SetAnnotation() with a string-pair value. */
 void pt_span_set_annotation_string_string(pt_span_t span, int32_t key,
                                           const char* value1, const char* value2);
 
@@ -821,11 +800,7 @@ void pt_span_event_set_annotation_long(pt_span_event_t se, int32_t key, int64_t 
 void pt_span_event_set_annotation_string(pt_span_event_t se, int32_t key,
                                          const char* value);
 
-/**
- * @brief Records an annotation composed of two strings on the span event.
- *
- * Mirrors pinpoint::SpanEvent::SetAnnotation() with a string-pair value.
- */
+/** Mirrors pinpoint::SpanEvent::SetAnnotation() with a string-pair value. */
 void pt_span_event_set_annotation_string_string(pt_span_event_t se, int32_t key,
                                                 const char* value1, const char* value2);
 
@@ -834,67 +809,45 @@ void pt_span_event_set_annotation_string_string(pt_span_event_t se, int32_t key,
 /* ========================================================================== */
 
 /**
- * @brief Records an HTTP server request on the span.
- *
- * Mirrors pinpoint::helper::TraceHttpServerRequest(span, remote_addr, endpoint,
- *                                                  request_reader).
+ * Each function below mirrors the pinpoint::helper:: overload of the matching
+ * name; see pinpoint/tracer.h for what each one records. A NULL handle or
+ * carrier makes the call a no-op; a NULL string argument is recorded as "".
  */
+
+/** Mirrors pinpoint::helper::TraceHttpServerRequest(). */
 void pt_trace_http_server_request(pt_span_t span,
                                   const char* remote_addr,
                                   const char* endpoint,
                                   const pt_header_reader_t* request_reader);
 
-/**
- * @brief Records an HTTP server request with cookies on the span.
- *
- * Mirrors pinpoint::helper::TraceHttpServerRequest(span, remote_addr, endpoint,
- *                                                  request_reader, cookie_reader).
- */
+/** Mirrors the TraceHttpServerRequest() overload taking a cookie reader. */
 void pt_trace_http_server_request_with_cookie(pt_span_t span,
                                               const char* remote_addr,
                                               const char* endpoint,
                                               const pt_header_reader_t* request_reader,
                                               const pt_header_reader_t* cookie_reader);
 
-/**
- * @brief Records an HTTP server response on the span.
- *
- * Mirrors pinpoint::helper::TraceHttpServerResponse().
- */
+/** Mirrors pinpoint::helper::TraceHttpServerResponse(). */
 void pt_trace_http_server_response(pt_span_t span,
                                    const char* url_pattern,
                                    const char* method,
                                    int status_code,
                                    const pt_header_reader_t* response_reader);
 
-/**
- * @brief Records an HTTP client request on the span event.
- *
- * Mirrors pinpoint::helper::TraceHttpClientRequest(span_event, host, url,
- *                                                  request_reader).
- */
+/** Mirrors pinpoint::helper::TraceHttpClientRequest(). */
 void pt_trace_http_client_request(pt_span_event_t se,
                                   const char* host,
                                   const char* url,
                                   const pt_header_reader_t* request_reader);
 
-/**
- * @brief Records an HTTP client request with cookies on the span event.
- *
- * Mirrors pinpoint::helper::TraceHttpClientRequest(span_event, host, url,
- *                                                  request_reader, cookie_reader).
- */
+/** Mirrors the TraceHttpClientRequest() overload taking a cookie reader. */
 void pt_trace_http_client_request_with_cookie(pt_span_event_t se,
                                               const char* host,
                                               const char* url,
                                               const pt_header_reader_t* request_reader,
                                               const pt_header_reader_t* cookie_reader);
 
-/**
- * @brief Records an HTTP client response on the span event.
- *
- * Mirrors pinpoint::helper::TraceHttpClientResponse().
- */
+/** Mirrors pinpoint::helper::TraceHttpClientResponse(). */
 void pt_trace_http_client_response(pt_span_event_t se,
                                    int status_code,
                                    const pt_header_reader_t* response_reader);
