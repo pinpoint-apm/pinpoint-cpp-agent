@@ -23,10 +23,13 @@
 #include <new>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "../src/noop.h"
+#include "../src/agent_runtime.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
+#include "../src/http.h"
 #include "../src/span.h"
 #include "../src/url_stat.h"
 #include "../src/stat.h"
@@ -138,6 +141,23 @@ protected:
 
     void TearDown() override {
         mock_agent_service_.reset();
+    }
+
+    // In production NewSpan hands its already-loaded runtime snapshot to the
+    // span, which then resolves config, status errors and the stats sinks
+    // from it instead of calling back into the agent. Build one here so those
+    // branches are exercised; @p with_url_stat_sink is the switch that picks
+    // the snapshot's own sink over the agent fallback.
+    std::shared_ptr<const AgentRuntime> makeRuntime(bool with_url_stat_sink) {
+        auto runtime = std::make_shared<AgentRuntime>();
+        runtime->config = mock_agent_service_->getConfig();
+        runtime->http_status_errors =
+            std::make_shared<HttpStatusErrors>(std::vector<std::string>{"5xx"});
+        runtime->stats = std::make_shared<AgentStats>(mock_agent_service_.get());
+        if (with_url_stat_sink) {
+            runtime->url_stats = std::make_shared<UrlStats>(mock_agent_service_.get());
+        }
+        return runtime;
     }
 
     std::unique_ptr<MockAgentService> mock_agent_service_;
@@ -289,6 +309,79 @@ TEST_F(NoopTest, UnsampledSpanMultipleUrlStatCallsTest) {
     EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/orders") << "Last URL should be recorded";
     EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "POST") << "Last method should be recorded";
     EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 201) << "Last status code should be recorded";
+}
+
+// Runtime-snapshot paths: the shape UnsampledSpan actually runs in once
+// NewSpan hands its snapshot down, and the majority path when sampling is on.
+
+// Neither an agent nor a runtime means there is no stats sink to record into.
+// EndSpan has to notice and return rather than deref its way to a crash.
+TEST_F(NoopTest, UnsampledSpanEndSpanWithoutStatsSinkTest) {
+    UnsampledSpan span(nullptr);
+
+    span.SetUrlStat("/api/users", "GET", 200);
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "a span with no sink must record nothing";
+}
+
+// A hand-built runtime can carry a config without a url-stat sink. The entry
+// must still reach the agent, through the overload that takes the snapshot's
+// config instead of loading the current one.
+TEST_F(NoopTest, UnsampledSpanRuntimeWithoutUrlStatSinkFallsBackToAgentTest) {
+    UnsampledSpan span(mock_agent_service_.get(), makeRuntime(false));
+
+    span.SetUrlStat("/api/users", "GET", 500);
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/users");
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "the snapshot's status errors decide the failed flag, not the agent";
+}
+
+// With a sink in the snapshot the entry goes straight into it. The span must
+// not route through the agent: it may hold no keep-alive reference to one,
+// because a runtime carrying both sinks lets the constructor skip selfRef().
+TEST_F(NoopTest, UnsampledSpanRuntimeUrlStatSinkBypassesAgentTest) {
+    auto runtime = makeRuntime(true);
+    {
+        UnsampledSpan span(mock_agent_service_.get(), runtime);
+        span.SetUrlStat("/api/users", "GET", 200);
+        span.EndSpan();
+    }
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "the runtime's own sink takes the entry, not the agent fallback";
+
+    // Drain the shard queues the way UrlStats' own tests do, so the entry is
+    // observable: asserting only that the agent went untouched would also
+    // hold if the sink branch quietly dropped it.
+    std::thread add_worker([&runtime] { runtime->url_stats->addUrlStatsWorker(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    mock_agent_service_->setExiting(true);
+    runtime->url_stats->stopAddUrlStatsWorker();
+    add_worker.join();
+    mock_agent_service_->setExiting(false);
+
+    auto snapshot = runtime->url_stats->takeSnapshot();
+    ASSERT_NE(snapshot.get(), nullptr);
+    EXPECT_FALSE(snapshot->getEachStats().empty())
+        << "the entry must actually reach the runtime's sink";
+}
+
+// URL stats off in the snapshot gates at SetUrlStat, so the entry is never
+// built — its two heap string copies would only be dropped again at enqueue.
+TEST_F(NoopTest, UnsampledSpanSetUrlStatDisabledInRuntimeTest) {
+    mock_agent_service_->mutableConfig()->http.url_stat.enable = false;
+    UnsampledSpan span(mock_agent_service_.get(), makeRuntime(false));
+
+    span.SetUrlStat("/api/users", "GET", 200);
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "SetUrlStat must drop the entry when the snapshot disables url stats";
 }
 
 // NoopSpan Tests
