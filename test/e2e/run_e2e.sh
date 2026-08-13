@@ -12,7 +12,6 @@ LOAD_MODE=""
 LOAD_DURATION=30
 LOAD_CONCURRENCY=5
 LOAD_RPS=""
-LOAD_MAX_THROUGHPUT=false
 PROFILE=false
 PROFILE_OUTPUT=""
 PROFILE_FREQUENCY=99
@@ -34,12 +33,12 @@ Options:
       --downstream-port N   Downstream HTTP port (default: $DOWNSTREAM_PORT)
       --grpc-port N         gRPC port (default: $GRPC_PORT)
       --load-mode MODE      Load workload to run after smoke checks
+                            (unthrottled maximum throughput unless --load-rps)
       --load-duration SEC   Load duration (default: $LOAD_DURATION)
       --load-concurrency N  Load workers, or fixed-RPS max in-flight requests
                             (default: $LOAD_CONCURRENCY)
       --load-rps RPS        Use constant-arrival-rate load at this target RPS
-      --load-max-throughput Use the unthrottled connection-reusing load test
-      --profile             Profile it_test_server during either Python load test
+      --profile             Profile it_test_server during the load phase
       --profile-output PATH Profile output (.trace on macOS, perf.data on Linux)
       --profile-frequency N Linux perf sampling frequency (default: $PROFILE_FREQUENCY)
       --skip-c-api          Skip the pure-C API scenario
@@ -64,7 +63,6 @@ while [[ $# -gt 0 ]]; do
         --load-duration) LOAD_DURATION=$2; shift 2 ;;
         --load-concurrency) LOAD_CONCURRENCY=$2; shift 2 ;;
         --load-rps) LOAD_RPS=$2; shift 2 ;;
-        --load-max-throughput) LOAD_MAX_THROUGHPUT=true; shift ;;
         --profile) PROFILE=true; shift ;;
         --profile-output) PROFILE_OUTPUT=$2; shift 2 ;;
         --profile-frequency) PROFILE_FREQUENCY=$2; shift 2 ;;
@@ -77,19 +75,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -n "$LOAD_RPS" ]] && $LOAD_MAX_THROUGHPUT; then
-    echo "--load-rps and --load-max-throughput cannot be used together." >&2
-    exit 2
-fi
-if $PROFILE && [[ -z "$LOAD_RPS" ]] && ! $LOAD_MAX_THROUGHPUT; then
-    echo "--profile requires --load-rps or --load-max-throughput." >&2
+if $PROFILE && [[ -z "$LOAD_MODE" && -z "$LOAD_RPS" ]]; then
+    echo "--profile requires a load phase (--load-mode or --load-rps)." >&2
     exit 2
 fi
 if ! $PROFILE && [[ -n "$PROFILE_OUTPUT" ]]; then
     echo "--profile-output requires --profile." >&2
     exit 2
 fi
-if { [[ -n "$LOAD_RPS" ]] || $LOAD_MAX_THROUGHPUT; } && [[ -z "$LOAD_MODE" ]]; then
+if [[ -n "$LOAD_RPS" && -z "$LOAD_MODE" ]]; then
     LOAD_MODE="mixed"
 fi
 
@@ -241,45 +235,33 @@ set -e
 if [[ -n "$LOAD_MODE" ]]; then
     echo ""
     set +e
-    LOAD_COMMAND=()
-    LOAD_KIND=""
     if [[ -n "$LOAD_RPS" ]]; then
         echo "Running fixed-RPS load mode: $LOAD_MODE at $LOAD_RPS RPS"
         LOAD_KIND="fixed-rps"
-        LOAD_COMMAND=(python3 "$SCRIPT_DIR/fixed_rps_test.py" \
-            --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
-            --duration "$LOAD_DURATION" --rps "$LOAD_RPS" \
-            --max-in-flight "$LOAD_CONCURRENCY")
-    elif $LOAD_MAX_THROUGHPUT; then
+    else
         echo "Running maximum-throughput load mode: $LOAD_MODE"
         LOAD_KIND="max-throughput"
-        LOAD_COMMAND=(python3 "$SCRIPT_DIR/max_throughput_test.py" \
-            --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
-            --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY")
-    else
-        echo "Running legacy load/RSS mode: $LOAD_MODE"
-        HOST="$HOST" PORT="$PORT" bash "$SCRIPT_DIR/e2e.sh" \
-            --mode "$LOAD_MODE" --duration "$LOAD_DURATION" \
-            --concurrency "$LOAD_CONCURRENCY"
-        LOAD_RESULT=$?
     fi
+    LOAD_COMMAND=(python3 "$SCRIPT_DIR/load_test.py" \
+        --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
+        --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY" \
+        --rss-pid "$UPSTREAM_PID" \
+        ${LOAD_RPS:+--rps "$LOAD_RPS"})
 
-    if [[ ${#LOAD_COMMAND[@]} -gt 0 ]]; then
-        if $PROFILE; then
-            if [[ -z "$PROFILE_OUTPUT" ]]; then
-                PROFILE_OUTPUT="$LOG_DIR/profiles/${LOAD_KIND}-${RUN_SUFFIX}"
-                KEEP_LOGS=true
-            fi
-            bash "$SCRIPT_DIR/profile_load.sh" \
-                --pid "$UPSTREAM_PID" \
-                --output "$PROFILE_OUTPUT" \
-                --frequency "$PROFILE_FREQUENCY" \
-                -- "${LOAD_COMMAND[@]}"
-        else
-            "${LOAD_COMMAND[@]}"
+    if $PROFILE; then
+        if [[ -z "$PROFILE_OUTPUT" ]]; then
+            PROFILE_OUTPUT="$LOG_DIR/profiles/${LOAD_KIND}-${RUN_SUFFIX}"
+            KEEP_LOGS=true
         fi
-        LOAD_RESULT=$?
+        bash "$SCRIPT_DIR/profile_load.sh" \
+            --pid "$UPSTREAM_PID" \
+            --output "$PROFILE_OUTPUT" \
+            --frequency "$PROFILE_FREQUENCY" \
+            -- "${LOAD_COMMAND[@]}"
+    else
+        "${LOAD_COMMAND[@]}"
     fi
+    LOAD_RESULT=$?
     set -e
     if [[ $LOAD_RESULT -ne 0 ]]; then
         RESULT=$LOAD_RESULT

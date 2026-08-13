@@ -1,18 +1,18 @@
 # Pinpoint C++ Agent live integration tests
 
-This directory contains four complementary suites:
+This directory contains two complementary suites:
 
 - `smoke_test.sh` is a deterministic correctness suite. It checks agent
   registration, the public C++ and C APIs, HTTP/gRPC propagation, all four gRPC
   RPC shapes, annotations, SQL metadata, call-stack errors, async spans,
   sampling reload, limits, and lifecycle restart.
-- `e2e.sh` is the longer-running traffic/RSS suite. It is useful for stress,
-  ASan, and Valgrind runs after the correctness suite passes.
-- `fixed_rps_test.py` is a constant-arrival-rate load test. It schedules request
-  starts at monotonic-clock deadlines, reports latency and scheduling lag, and
-  fails when errors or dropped arrivals exceed the configured thresholds.
-- `max_throughput_test.py` is an unthrottled saturation test. Its workers reuse
-  HTTP connections and issue the next request immediately after each response.
+- `load_test.py` is the load generator. With `--rps` it is a
+  constant-arrival-rate test that schedules request starts at monotonic-clock
+  deadlines, reports latency and scheduling lag, and fails when errors or
+  dropped arrivals exceed the configured thresholds. Without `--rps` it is an
+  unthrottled saturation test whose workers reuse HTTP connections and issue
+  the next request immediately after each response. `--rss-pid` additionally
+  samples the server's memory across the run (useful for leak/stress passes).
 
 The correctness stack uses separate processes because a Pinpoint agent is a
 process-global singleton:
@@ -114,18 +114,12 @@ Append a load mode to the orchestrated run:
   --load-mode full --load-duration 120 --load-concurrency 20
 ```
 
-Or run the load generator against an already-started stack:
+For maximum throughput without an RPS limit, run the generator against an
+already-started stack. `--concurrency` is the number of workers continuously
+kept busy:
 
 ```bash
-HOST=127.0.0.1 PORT=8090 ./test/e2e/e2e.sh \
-  --mode grpc-all --duration 60 --concurrency 10
-```
-
-For maximum throughput without an RPS limit, run the connection-reusing
-generator. `--concurrency` is the number of workers continuously kept busy:
-
-```bash
-python3 ./test/e2e/max_throughput_test.py \
+python3 ./test/e2e/load_test.py \
   --base-url http://127.0.0.1:8090 \
   --mode mixed --duration 60 --concurrency 100
 ```
@@ -133,31 +127,23 @@ python3 ./test/e2e/max_throughput_test.py \
 The default two-second warm-up is excluded from throughput and latency results.
 Use `--warmup 0` to disable it, `--max-error-rate` to permit expected errors, or
 `--min-rps` to enforce a performance-regression threshold. The agent must be
-ready unless `--no-require-agent` is supplied. The orchestrated stack can run
-this generator after smoke checks with:
+ready unless `--no-require-agent` is supplied.
+
+For a fixed request rate, add `--rps`:
 
 ```bash
-./test/e2e/run_e2e.sh \
-  --build-dir ./build/default/test/e2e \
-  --load-mode mixed --load-max-throughput \
-  --load-duration 60 --load-concurrency 100
-```
-
-For a fixed request rate, run the dedicated generator directly:
-
-```bash
-python3 ./test/e2e/fixed_rps_test.py \
+python3 ./test/e2e/load_test.py \
   --base-url http://127.0.0.1:8090 \
-  --mode mixed --rps 50 --duration 60 --max-in-flight 100
+  --mode mixed --rps 50 --duration 60 --concurrency 100
 ```
 
 It rotates deterministically through the endpoints in the selected mode. The
 `/error` endpoint's intentional HTTP 500 is treated as success. Arrivals are
 dropped rather than queued or emitted as catch-up bursts when the client falls
-behind or reaches `--max-in-flight`; the default pass criteria allow up to 5%
-dropped arrivals and no unexpected response errors. Use `--rps-tolerance` and
-`--max-error-rate` to change those thresholds. The agent must be ready unless
-`--no-require-agent` is supplied.
+behind or reaches the `--concurrency` in-flight bound; the default pass
+criteria allow up to 5% dropped arrivals and no unexpected response errors.
+Use `--rps-tolerance` and `--max-error-rate` to change those thresholds. The
+agent must be ready unless `--no-require-agent` is supplied.
 
 The orchestrated stack can run the same fixed-RPS pass after smoke checks:
 
@@ -169,9 +155,10 @@ The orchestrated stack can run the same fixed-RPS pass after smoke checks:
 ```
 
 With `--load-rps`, `--load-concurrency` is the maximum number of in-flight
-requests; with `--load-max-throughput`, it is the continuously busy worker
-count. With neither option, the existing concurrency-driven `e2e.sh` pass is
-used.
+requests; without it, the load phase is unthrottled and `--load-concurrency`
+is the continuously busy worker count. `run_e2e.sh` always passes the
+server's PID as `--rss-pid`, so every orchestrated load pass reports the
+server's first/max/last RSS.
 
 ## Performance profiling
 
@@ -183,7 +170,7 @@ cmake --preset profiling
 cmake --build --preset profiling
 ```
 
-Add `--profile` to either Python load mode. `run_e2e.sh` attaches to the
+Add `--profile` to either load mode. `run_e2e.sh` attaches to the
 `it_test_server` PID and selects the platform profiler automatically: xctrace's
 Time Profiler on macOS, or `perf record -F 99 --call-graph dwarf` on Linux.
 
@@ -197,7 +184,7 @@ Time Profiler on macOS, or `perf record -F 99 --call-graph dwarf` on Linux.
 # Unthrottled maximum throughput, profiled
 ./test/e2e/run_e2e.sh \
   --build-dir ./build/profiling/test/e2e \
-  --load-mode mixed --load-max-throughput --load-duration 60 \
+  --load-mode mixed --load-duration 60 \
   --load-concurrency 100 --profile --keep-logs
 ```
 
@@ -206,12 +193,12 @@ automatically. Use `--profile-output PATH` to select another location and
 `--profile-frequency N` to change the Linux sampling frequency. macOS produces
 a `.trace` bundle for Instruments; Linux produces a `perf.data`-compatible file.
 
-To profile either generator against an already-running server, use the common
+To profile the generator against an already-running server, use the common
 wrapper directly:
 
 ```bash
 ./test/e2e/profile_load.sh --pid SERVER_PID --output ./profile -- \
-  python3 ./test/e2e/fixed_rps_test.py \
+  python3 ./test/e2e/load_test.py \
     --base-url http://127.0.0.1:8090 --mode mixed --rps 50 --duration 60
 ```
 

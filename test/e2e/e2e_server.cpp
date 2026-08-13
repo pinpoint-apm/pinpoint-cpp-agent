@@ -492,42 +492,6 @@ static void trace_sql(pinpoint::SpanPtr span, const std::string& operation,
     ev->EndEvent();
 }
 
-// /db-crud: Full CRUD cycle with SQL tracing (no actual DB)
-void on_db_crud(const httplib::Request& req, httplib::Response& res) {
-    RequestTracker rt;
-    auto span = make_span(req);
-
-    trace_sql(span, "CREATE", "CREATE TABLE IF NOT EXISTS it_test_users "
-              "(id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), "
-              "email VARCHAR(100), age INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", "");
-
-    trace_sql(span, "DELETE", "DELETE FROM it_test_users", "");
-
-    std::vector<std::tuple<std::string, std::string, int>> users = {
-        {"Alice", "alice@test.com", 28},
-        {"Bob", "bob@test.com", 35},
-        {"Charlie", "charlie@test.com", 42},
-        {"Diana", "diana@test.com", 31},
-        {"Eve", "eve@test.com", 24},
-    };
-    for (auto& u : users) {
-        std::string params = std::get<0>(u) + ", " + std::get<1>(u) + ", " + std::to_string(std::get<2>(u));
-        trace_sql(span, "INSERT", "INSERT INTO it_test_users (name, email, age) VALUES (?, ?, ?)", params);
-    }
-
-    trace_sql(span, "SELECT", "SELECT * FROM it_test_users ORDER BY id", "");
-    trace_sql(span, "SELECT", "SELECT * FROM it_test_users WHERE age > ?", "30");
-    trace_sql(span, "SELECT", "SELECT COUNT(*) as cnt, AVG(age) as avg_age FROM it_test_users", "");
-    trace_sql(span, "UPDATE", "UPDATE it_test_users SET age = age + 1 WHERE name = ?", "Alice");
-    trace_sql(span, "SELECT", "SELECT name, email FROM it_test_users WHERE name LIKE ?", "%a%");
-    trace_sql(span, "DELETE", "DELETE FROM it_test_users WHERE age > ?", "40");
-    trace_sql(span, "SELECT", "SELECT * FROM non_existent_table_xyz", "");
-
-    res.status = 200;
-    res.set_content("{\"status\":\"ok\"}", "application/json");
-    finish_span(req, res, span);
-}
-
 // /db-batch: Batch insert + select SQL tracing
 void on_db_batch(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
@@ -559,7 +523,8 @@ void on_db_batch(const httplib::Request& req, httplib::Response& res) {
     finish_span(req, res, span);
 }
 
-// /db-complex: Complex queries with JOIN, subquery, aggregation (SQL tracing only)
+// /db-complex: Complex queries with CRUD cycle, JOIN, subquery, aggregation
+// (SQL tracing only)
 void on_db_complex(const httplib::Request& req, httplib::Response& res) {
     RequestTracker rt;
     auto span = make_span(req);
@@ -605,6 +570,9 @@ void on_db_complex(const httplib::Request& req, httplib::Response& res) {
               "SELECT name, age, CASE WHEN age < 30 THEN 'Young' "
               "WHEN age < 40 THEN 'Middle' ELSE 'Senior' END as age_group "
               "FROM it_test_users ORDER BY age", "");
+
+    trace_sql(span, "UPDATE", "UPDATE it_test_users SET age = age + 1 WHERE name = ?", "Alice");
+    trace_sql(span, "SELECT", "SELECT * FROM non_existent_table_xyz", "");
 
     res.status = 200;
     res.set_content("{\"status\":\"ok\",\"queries\":\"complex\"}", "application/json");
@@ -943,20 +911,14 @@ void on_ready(const httplib::Request&, httplib::Response& res) {
 // =============================================================================
 int main(int argc, char* argv[]) {
     int port = 8090;
-    bool auto_start = true;
-
-    for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--no-auto-start") == 0) {
-            auto_start = false;
-        } else {
-            port = std::atoi(argv[i]);
-        }
+    if (argc > 1) {
+        port = std::atoi(argv[1]);
     }
 
     it_test::ConfigureAgentEnvironment("cpp-it-http-upstream",
                                        "cpp-it-http-up");
 
-    if (auto_start) {
+    {
         pinpoint::AgentOptions options;
         options.app_type = pinpoint::APP_TYPE_CPP;
         options.server_info = "cpp-it-http-upstream";
@@ -974,7 +936,6 @@ int main(int argc, char* argv[]) {
     server.Post("/agent/start", on_agent_start);
     server.Post("/agent/shutdown", on_agent_shutdown);
     server.Post("/agent/reload", on_agent_reload);
-    server.Get("/agent/status", on_stats);
 
     // HTTP-only endpoints
     server.Get("/simple", on_simple);
@@ -1003,7 +964,6 @@ int main(int argc, char* argv[]) {
     printf("HTTP client endpoints enabled (target=%s)\n", g_http_target.c_str());
 
     // SQL-traced endpoints (no actual DB connection)
-    server.Get("/db-crud", on_db_crud);
     server.Get("/db-batch", on_db_batch);
     server.Get("/db-complex", on_db_complex);
 
@@ -1013,34 +973,8 @@ int main(int argc, char* argv[]) {
         std::thread([&server]() { server.stop(); }).detach();
     });
 
-    printf("\nIntegration test server starting on port %d\n", port);
-    printf("Endpoints:\n");
-    printf("  GET /simple          - minimal span\n");
-    printf("  GET /deep?depth=N    - deeply nested span events (default 20, max 256)\n");
-    printf("  GET /wide?width=N    - many sequential span events (default 50, max 10000)\n");
-    printf("  GET /annotated       - annotation-heavy spans\n");
-    printf("  GET /features        - deterministic full C++ API feature coverage\n");
-    printf("  GET /http-client     - real HTTP downstream trace propagation\n");
-    printf("  GET /mixed           - combined workload (SQL trace + HTTP client + async)\n");
-    printf("  GET /error           - error spans\n");
-    printf("  GET /stats           - server metrics (no tracing)\n");
-    printf("  GET /grpc-unary      - gRPC unary call to grpc_server\n");
-    printf("  GET /grpc-stream     - gRPC server-streaming call\n");
-    printf("  GET /grpc-client-stream?count=N - gRPC client-streaming call\n");
-    printf("  GET /grpc-bidi?count=N - gRPC bidirectional streaming (default 3, max 20)\n");
-    printf("  GET /grpc-error      - expected gRPC error propagation\n");
-    printf("  GET /grpc-all        - all four gRPC methods in sequence\n");
-    printf("  GET /db-crud         - SQL trace CRUD cycle (no actual DB)\n");
-    printf("  GET /db-batch?size=N - SQL trace batch insert+select (default 20, max 200)\n");
-    printf("  GET /db-complex      - SQL trace JOIN, subquery, aggregation\n");
-
-    printf("  POST /agent/start       - start the Pinpoint agent\n");
-    printf("  POST /agent/shutdown    - shutdown the Pinpoint agent\n");
-    printf("  POST /agent/reload?counter_rate=N - reload sampling config\n");
-    if (!auto_start) {
-        printf("\nAgent auto-start disabled. Call POST /agent/start to begin tracing.\n");
-    }
-
+    printf("\nIntegration test server starting on port %d "
+           "(see test/e2e/README.md for endpoints)\n", port);
     printf("Collector: %s\n", it_test::CollectorHost().c_str());
     if (!server.listen("0.0.0.0", port)) {
         fprintf(stderr, "Failed to start integration test server on port %d\n", port);

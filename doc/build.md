@@ -449,13 +449,14 @@ PINPOINT_CPP_COLLECTOR_HOST=collector.example.com \
   --build-dir ./build/default/test/e2e
 ```
 
-`run_e2e.sh` also takes `--load-mode`, `--load-duration` and `--load-concurrency`
-to append a load phase after the correctness checks. `e2e.sh` drives load alone,
-selecting the endpoint set with `-m` (`stress`, `db-all`, `grpc-all`, `full`),
-the duration with `-d` and the concurrency with `-c`:
+`run_e2e.sh` also takes `--load-mode`, `--load-duration`, `--load-concurrency`
+and `--load-rps` to append a load phase after the correctness checks.
+`load_test.py` drives load alone, selecting the endpoint set with `-m`
+(`stress`, `db-all`, `grpc-all`, `full`), the duration with `-d` and the
+concurrency with `-c`:
 
 ```bash
-./test/e2e/e2e.sh -m full -d 180 -c 15
+python3 ./test/e2e/load_test.py -m full -d 180 -c 15
 ```
 
 ---
