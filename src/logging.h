@@ -28,6 +28,8 @@
 #include <utility>
 #include <fmt/format.h>
 
+#include "utility.h"  // QueueDropReporter, behind LOG_WARN_THROTTLED
+
 namespace pinpoint {
 
     // Log levels
@@ -184,57 +186,6 @@ namespace pinpoint {
         Logger() {}
     };
 
-    /**
-     * @brief Per-call-site rate limiter behind the LOG_*_THROTTLED macros.
-     *
-     * Some misuse/malformed-input warnings can fire once per request on
-     * application threads (a finished span touched again, a call tree over the
-     * depth limit, a malformed trace header). Every emitted line takes the
-     * process-global logger mutex and does a synchronous write+flush, so an
-     * application that keeps hitting one serializes its request threads on the
-     * logger. Mirrors QueueDropReporter (utility.h): at most one line per
-     * interval, with suppressed repeats folded into the next granted line.
-     */
-    class LogSiteThrottle {
-    public:
-        static constexpr std::chrono::seconds kDefaultInterval{60};
-
-        constexpr explicit LogSiteThrottle(
-            std::chrono::steady_clock::duration interval = kDefaultInterval)
-            : interval_(interval.count()) {}
-
-        /**
-         * @brief Counts one occurrence at the call site.
-         *
-         * @return The number of occurrences this report covers (this one
-         *         plus everything suppressed since the previous report)
-         *         when the caller won the current interval and should log
-         *         now; 0 while rate-limited. The very first occurrence
-         *         always reports.
-         */
-        uint64_t acquire() noexcept {
-            occurrences_.fetch_add(1, std::memory_order_relaxed);
-            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto next = next_report_at_.load(std::memory_order_relaxed);
-            if (now < next) {
-                return 0;
-            }
-            // One concurrent caller wins the interval via the CAS; the
-            // losers stay silent and their occurrences surface in the
-            // winner's count.
-            if (next_report_at_.compare_exchange_strong(next, now + interval_,
-                                                        std::memory_order_relaxed)) {
-                return occurrences_.exchange(0, std::memory_order_relaxed);
-            }
-            return 0;
-        }
-
-    private:
-        std::chrono::steady_clock::rep interval_;
-        std::atomic<uint64_t> occurrences_{0};
-        std::atomic<std::chrono::steady_clock::rep> next_report_at_{0};
-    };
-
     /// @brief Flushes pending log messages and releases logger resources.
     void shutdown_logger();
 
@@ -267,20 +218,20 @@ namespace pinpoint {
     #define LOG_ERROR(...) PP_LOG(errorEnabled, logError, __VA_ARGS__)
 
     // LOG_WARN variant rate-limited per call site (each expansion owns a
-    // static LogSiteThrottle): at most one line per
-    // LogSiteThrottle::kDefaultInterval, with suppressed repeats folded into
-    // the next granted line's count. Use for warnings that can recur once per
-    // request on application threads — API misuse (already-finished span
-    // touched again, depth/sequence overflow) and malformed peer input
-    // (unparseable trace headers) — where an unthrottled line per request
-    // would serialize the host's request threads on the logger mutex and its
-    // per-line write+flush. Suppressed calls cost one relaxed increment, one
-    // clock read and one relaxed load.
+    // static QueueDropReporter in its acquire() mode): at most one line per
+    // QueueDropReporter::kDefaultReportInterval, with suppressed repeats
+    // folded into the next granted line's count. Use for warnings that can
+    // recur once per request on application threads — API misuse
+    // (already-finished span touched again, depth/sequence overflow) and
+    // malformed peer input (unparseable trace headers) — where an unthrottled
+    // line per request would serialize the host's request threads on the
+    // logger mutex and its per-line write+flush. Suppressed calls cost one
+    // relaxed increment, one clock read and one relaxed load.
     #define LOG_WARN_THROTTLED(...) \
         do { \
             ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
             if (_pp_logger.warnEnabled()) { \
-                static ::pinpoint::LogSiteThrottle _pp_throttle; \
+                static ::pinpoint::QueueDropReporter _pp_throttle; \
                 const auto _pp_occurrences = _pp_throttle.acquire(); \
                 if (_pp_occurrences > 0) { \
                     _pp_logger.logWarnThrottled(_pp_occurrences, ::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \

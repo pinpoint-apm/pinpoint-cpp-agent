@@ -51,15 +51,21 @@ namespace pinpoint {
     void superviseWorker(std::string_view name, std::chrono::milliseconds interval,
                          std::mutex& mutex, std::condition_variable& cond_var,
                          const std::function<bool()>& is_exiting,
-                         const std::function<void()>& body) {
+                         const std::function<bool()>& body,
+                         const std::function<void()>& on_error) {
         while (true) {
             try {
-                body();
-                break;
+                if (body()) {
+                    break;
+                }
+                // Restart requested without an exception; fall through to the
+                // same restart wait the handlers below use.
             } catch (const std::exception& e) {
                 LOG_ERROR("{} exception = {}", name, e.what());
+                if (on_error) on_error();
             } catch (...) {
                 LOG_ERROR("{} unknown exception", name);
+                if (on_error) on_error();
             }
 
             std::unique_lock<std::mutex> lock(mutex);

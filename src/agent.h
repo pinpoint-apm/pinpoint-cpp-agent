@@ -275,17 +275,12 @@ namespace pinpoint {
         // shutting_down_ under this lock and refuses to revive a torn-down agent.
         std::mutex lifecycle_mutex_;
 
-        /// @brief Builds a new AgentRuntime for cfg, rebuilding only the
-        /// components whose backing configuration changed relative to old_rt;
-        /// unchanged components are shared with the previous runtime so their
-        /// warmed-up state (e.g. throughput-sampler counters) survives. A null
-        /// old_rt forces a full build and is used for the initial construction.
-        std::shared_ptr<const AgentRuntime> build_runtime(
-                const std::shared_ptr<const AgentRuntime>& old_rt,
-                std::shared_ptr<const Config> cfg);
+        /// @brief Builds a new AgentRuntime for cfg. Every config-derived
+        /// component is built fresh; reloads are rare (an actual config-file
+        /// edit), so nothing is carried over from the previous runtime.
+        std::shared_ptr<const AgentRuntime> build_runtime(std::shared_ptr<const Config> cfg);
         /// @brief Builds and atomically publishes the runtime for cfg.
-        void apply_config(const std::shared_ptr<const AgentRuntime>& old_rt,
-                          std::shared_ptr<const Config> cfg);
+        void apply_config(std::shared_ptr<const Config> cfg);
         /// @brief Populates rt's HTTP header recorders for server and client.
         static void build_header_recorders(AgentRuntime& rt, const Config& cfg);
         /// @brief Opens the gRPC channels, blocks until the boot-phase

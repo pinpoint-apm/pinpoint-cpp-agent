@@ -137,7 +137,7 @@ namespace pinpoint {
         // config-file watcher — Start() does all of that. The split keeps
         // construction infallible past this point and lets tests exercise a
         // built-but-offline agent.
-        apply_config(nullptr, std::move(cfg));
+        apply_config(std::move(cfg));
     }
 
     namespace {
@@ -329,40 +329,13 @@ namespace pinpoint {
         }
     }
 
-    namespace {
-        // The reloadable components below are each derived from a specific slice
-        // of Config. These predicates tell apply_config() which slices changed so
-        // it can leave the other live components (and their warmed-up state)
-        // untouched across a reload.
-        bool sampling_config_changed(const Config& a, const Config& b) {
-            return a.sampling.type != b.sampling.type
-                || a.sampling.counter_rate != b.sampling.counter_rate
-                || a.sampling.percent_rate != b.sampling.percent_rate
-                || a.sampling.new_throughput != b.sampling.new_throughput
-                || a.sampling.cont_throughput != b.sampling.cont_throughput;
-        }
-
-        bool header_recorder_config_changed(const Config& a, const Config& b) {
-            return a.http.server.rec_request_header != b.http.server.rec_request_header
-                || a.http.server.rec_response_header != b.http.server.rec_response_header
-                || a.http.server.rec_request_cookie != b.http.server.rec_request_cookie
-                || a.http.client.rec_request_header != b.http.client.rec_request_header
-                || a.http.client.rec_response_header != b.http.client.rec_response_header
-                || a.http.client.rec_request_cookie != b.http.client.rec_request_cookie;
-        }
-    }
-
     std::shared_ptr<const AgentRuntime> AgentImpl::build_runtime(
-            const std::shared_ptr<const AgentRuntime>& old_rt,
             std::shared_ptr<const Config> cfg) {
-        // A null old_rt means the initial construction, where nothing has been
-        // built yet, so every component must be created. On a reload we already
-        // have live components and only rebuild the ones whose backing config
-        // changed — rebuilding unchanged components would needlessly discard
-        // their accumulated state (e.g. the throughput sampler's counters).
-        // Unchanged components are shared with the previous runtime instead.
-        const Config* old_cfg = old_rt ? old_rt->config.get() : nullptr;
-
+        // Every component is rebuilt unconditionally. A reload only fires when
+        // the config file's mtime actually changed (see ConfigFileWatcher), so
+        // this runs on operator edits, not on a timer: the cost is one pattern
+        // compile per edit, and the only state discarded is the throughput
+        // sampler's counters, which re-warm within an interval.
         auto rt = std::make_shared<AgentRuntime>();
         rt->config = std::move(cfg);
         // Not config-derived: every generation shares the same stats sinks,
@@ -373,68 +346,47 @@ namespace pinpoint {
         rt->url_stats = url_stats_;
         const Config& c = *rt->config;
 
-        // Rebuild sampler
-        if (!old_cfg || sampling_config_changed(*old_cfg, c)) {
-            std::unique_ptr<Sampler> sampler;
-            if (absl::EqualsIgnoreCase(c.sampling.type, PERCENT_SAMPLING)) {
-                sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
-            } else {
-                sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
-            }
-
-            // Non-positive throughput creates no limiter, so the default
-            // config gets the plain pass-through sampler.
-            rt->sampler = std::make_shared<TraceSampler>(this, std::move(sampler),
-                                                         c.sampling.new_throughput,
-                                                         c.sampling.cont_throughput);
+        std::unique_ptr<Sampler> sampler;
+        if (absl::EqualsIgnoreCase(c.sampling.type, PERCENT_SAMPLING)) {
+            sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
         } else {
-            rt->sampler = old_rt->sampler;
+            sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
         }
+        // Non-positive throughput creates no limiter, so the default config
+        // gets the plain pass-through sampler.
+        rt->sampler = std::make_shared<TraceSampler>(this, std::move(sampler),
+                                                     c.sampling.new_throughput,
+                                                     c.sampling.cont_throughput);
 
-        // Rebuild HTTP filters (changed slice → rebuild, empty config → null,
-        // unchanged → share the previous runtime's component)
-        rt->http_url_filter = (!old_cfg || old_cfg->http.server.exclude_url != c.http.server.exclude_url)
-            ? (c.http.server.exclude_url.empty() ? nullptr : std::make_shared<HttpUrlFilter>(c.http.server.exclude_url))
-            : old_rt->http_url_filter;
+        // An empty config list means the filter is off, represented as null.
+        rt->http_url_filter = c.http.server.exclude_url.empty()
+            ? nullptr : std::make_shared<HttpUrlFilter>(c.http.server.exclude_url);
+        rt->http_method_filter = c.http.server.exclude_method.empty()
+            ? nullptr : std::make_shared<HttpMethodFilter>(c.http.server.exclude_method);
+        rt->http_status_errors = c.http.server.status_errors.empty()
+            ? nullptr : std::make_shared<HttpStatusErrors>(c.http.server.status_errors);
 
-        rt->http_method_filter = (!old_cfg || old_cfg->http.server.exclude_method != c.http.server.exclude_method)
-            ? (c.http.server.exclude_method.empty() ? nullptr : std::make_shared<HttpMethodFilter>(c.http.server.exclude_method))
-            : old_rt->http_method_filter;
-
-        rt->http_status_errors = (!old_cfg || old_cfg->http.server.status_errors != c.http.server.status_errors)
-            ? (c.http.server.status_errors.empty() ? nullptr : std::make_shared<HttpStatusErrors>(c.http.server.status_errors))
-            : old_rt->http_status_errors;
-
-        // Rebuild header recorders
-        if (!old_cfg || header_recorder_config_changed(*old_cfg, c)) {
-            build_header_recorders(*rt, c);
-        } else {
-            rt->http_srv_header_recorder = old_rt->http_srv_header_recorder;
-            rt->http_cli_header_recorder = old_rt->http_cli_header_recorder;
-        }
-
+        build_header_recorders(*rt, c);
         return rt;
     }
 
-    void AgentImpl::apply_config(const std::shared_ptr<const AgentRuntime>& old_rt,
-                                 std::shared_ptr<const Config> cfg) {
+    void AgentImpl::apply_config(std::shared_ptr<const Config> cfg) {
         // Refresh the prepareSql() fast-path flag (see raw_sql_cache_enabled_).
         // Relaxed and slightly ahead of the runtime_ swap below: prepareSql
         // tolerates a stale value for the instant around a reload.
         raw_sql_cache_enabled_.store(cfg->sql.enable_raw_sql_cache,
                                      std::memory_order_relaxed);
-        runtime_.store(build_runtime(old_rt, std::move(cfg)));
+        runtime_.store(build_runtime(std::move(cfg)));
     }
 
     void AgentImpl::reloadConfig(std::shared_ptr<const Config> cfg) {
-        // Serialize writers: building the new runtime is a load-build-store
-        // read-modify-write of runtime_, so a test-driven reload and
-        // the config-file watcher thread could otherwise both build from the
-        // same old runtime and lose one of the updates. Readers do not take
-        // reload_mutex_; an unchanged generation-cache hit also avoids the
-        // AtomicSharedPtr shared source.
+        // Serialize writers so the two stores in apply_config stay paired: a
+        // test-driven reload and the config-file watcher thread could
+        // otherwise interleave and leave raw_sql_cache_enabled_ describing a
+        // different generation than the published runtime_. Readers do not
+        // take reload_mutex_.
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
-        apply_config(runtime_.load_cached_ref(), std::move(cfg));
+        apply_config(std::move(cfg));
     }
 
     void AgentImpl::init_grpc_workers() try {

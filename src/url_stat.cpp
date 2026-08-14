@@ -304,7 +304,7 @@ namespace pinpoint {
         // Restarts are paced by the send interval; only agent exit ends it.
         superviseWorker("add url stats worker", send_interval_, add_mutex_, add_cond_var_,
                         [this] { return agent_->isExiting(); },
-                        [&] { runAddUrlStatsWorker(*config); });
+                        [&] { runAddUrlStatsWorker(*config); return true; });
     }
 
     void UrlStats::runAddUrlStatsWorker(const Config& config) {
@@ -355,7 +355,7 @@ namespace pinpoint {
         // end periodic URL-stat sending for the process lifetime.
         superviseWorker("send url stats worker", send_interval_, send_mutex_, send_cond_var_,
                         [this] { return agent_->isExiting(); },
-                        [this] { runSendUrlStatsWorker(); });
+                        [this] { runSendUrlStatsWorker(); return true; });
     }
 
     void UrlStats::runSendUrlStatsWorker() {

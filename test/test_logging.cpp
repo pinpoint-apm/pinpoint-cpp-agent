@@ -439,7 +439,7 @@ TEST_F(LoggingTest, LogMacrosWork) {
     EXPECT_TRUE(content.find("test_logging.cpp") != std::string::npos);
 }
 
-// ========== LogSiteThrottle / LOG_*_THROTTLED Tests ==========
+// ========== Log-site throttle (QueueDropReporter::acquire) / LOG_*_THROTTLED Tests ==========
 
 namespace {
     size_t count_occurrences(const std::string& haystack, const std::string& needle) {
@@ -452,24 +452,24 @@ namespace {
     }
 }
 
-TEST(LogSiteThrottleTest, FirstOccurrenceAlwaysReports) {
-    LogSiteThrottle throttle;
+TEST(LogThrottleTest, FirstOccurrenceAlwaysReports) {
+    QueueDropReporter throttle;
     EXPECT_EQ(throttle.acquire(), 1u);
 }
 
-TEST(LogSiteThrottleTest, SuppressesRepeatsWithinInterval) {
-    LogSiteThrottle throttle;  // default 60s interval: the test stays inside it
+TEST(LogThrottleTest, SuppressesRepeatsWithinInterval) {
+    QueueDropReporter throttle;  // default 60s interval: the test stays inside it
     ASSERT_EQ(throttle.acquire(), 1u);
     EXPECT_EQ(throttle.acquire(), 0u);
     EXPECT_EQ(throttle.acquire(), 0u);
 }
 
-TEST(LogSiteThrottleTest, FoldsSuppressedOccurrencesIntoNextReport) {
+TEST(LogThrottleTest, FoldsSuppressedOccurrencesIntoNextReport) {
     // The window must be far wider than any plausible scheduler preemption
     // between the acquire() calls below: with a tight window (e.g. 50ms), a
     // loaded CI or sanitizer build can stall long enough for a "suppressed"
     // call to land in a fresh window and spuriously win it.
-    LogSiteThrottle throttle(std::chrono::milliseconds(500));
+    QueueDropReporter throttle(std::chrono::milliseconds(500));
     ASSERT_EQ(throttle.acquire(), 1u);
     EXPECT_EQ(throttle.acquire(), 0u);
     EXPECT_EQ(throttle.acquire(), 0u);
@@ -479,8 +479,8 @@ TEST(LogSiteThrottleTest, FoldsSuppressedOccurrencesIntoNextReport) {
     EXPECT_EQ(throttle.acquire(), 4u);
 }
 
-TEST(LogSiteThrottleTest, ExactlyOneConcurrentCallerWinsTheWindow) {
-    LogSiteThrottle throttle;  // default 60s interval: only the first window grants
+TEST(LogThrottleTest, ExactlyOneConcurrentCallerWinsTheWindow) {
+    QueueDropReporter throttle;  // default 60s interval: only the first window grants
     constexpr int kThreads = 8;
     constexpr int kCallsPerThread = 100;
     std::atomic<int> winners{0};

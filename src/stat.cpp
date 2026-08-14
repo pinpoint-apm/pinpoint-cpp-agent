@@ -377,7 +377,7 @@ namespace pinpoint {
                         std::chrono::milliseconds(config->stat.collect_interval),
                         mutex_, cond_var_,
                         [this] { return agent_->isExiting(); },
-                        [&] { runAgentStatsWorker(*config); });
+                        [&] { runAgentStatsWorker(*config); return true; });
     }
 
     void AgentStats::runAgentStatsWorker(const Config& config) {

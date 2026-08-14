@@ -690,7 +690,7 @@ namespace pinpoint {
         superviseWorker("send meta worker", tuning_.worker_restart_delay,
                         pipeline_->mutex, pipeline_->cv,
                         [this] { return pipeline_->stop_requested || agent_->isExiting(); },
-                        [this] { run_meta_worker(); });
+                        [this] { run_meta_worker(); return true; });
         // Runs on this worker thread, which the shutdown path joins under its
         // deadline — the signal phase (stopMetaWorker) stays non-blocking.
         await_in_flight_requests();
@@ -1149,7 +1149,7 @@ namespace pinpoint {
             superviseWorker("grpc command worker", tuning_.worker_restart_delay,
                             command_worker_mutex_, command_worker_cv_,
                             [this] { return stopping(); },
-                            [this] { run_command_worker(); });
+                            [this] { run_command_worker(); return true; });
         }
         stop_active_thread_count_streams();
     }
@@ -1469,7 +1469,7 @@ namespace pinpoint {
         superviseWorker("AgentInfo scheduler", tuning_.worker_restart_delay,
                         agent_info_mutex_, agent_info_cv_,
                         [this] { return should_stop_agent_info(); },
-                        [this] { run_agent_info_worker(); });
+                        [this] { run_agent_info_worker(); return true; });
     }
 
     void GrpcAgent::run_agent_info_worker() {
@@ -1667,34 +1667,17 @@ namespace pinpoint {
     }
 
     void GrpcAgent::sendPingWorker() {
-        // Supervise the loop body: a transient exception must not kill the
-        // worker for the process lifetime — without pings the collector marks
-        // the agent dead. The stream is drained on error and a fresh one is
-        // started on restart. Only a stop request or agent exit ends the
-        // worker.
-        while (true) {
-            try {
-                if (run_ping_worker()) {
-                    break;
-                }
-                // A stream start failed without a stop request: fall through
-                // to the restart delay and retry with a fresh stream, exactly
-                // like the exception path below.
-            } catch (const std::exception& e) {
-                LOG_ERROR("grpc ping worker exception = {}", e.what());
-                drain_ping_stream_on_error();
-            } catch (...) {
-                LOG_ERROR("grpc ping worker unknown exception");
-                drain_ping_stream_on_error();
-            }
-
-            std::unique_lock<std::mutex> lock(ping_worker_mutex_);
-            if (ping_cv_.wait_for(lock, tuning_.worker_restart_delay,
-                                  [this] { return stopping(); })) {
-                break;
-            }
-        }
-        LOG_INFO("grpc ping worker end");
+        // Supervised (see superviseWorker): a transient exception must not kill
+        // the worker for the process lifetime — without pings the collector
+        // marks the agent dead. run_ping_worker() returning false (a stream
+        // that failed to start) restarts with a fresh stream just like the
+        // exception path, which drains the broken stream first. Only a stop
+        // request or agent exit ends the worker.
+        superviseWorker("grpc ping worker", tuning_.worker_restart_delay,
+                        ping_worker_mutex_, ping_cv_,
+                        [this] { return stopping(); },
+                        [this] { return run_ping_worker(); },
+                        [this] { drain_ping_stream_on_error(); });
     }
 
     bool GrpcAgent::run_ping_worker() {
@@ -2464,35 +2447,15 @@ namespace pinpoint {
             return;
         }
 
-        // Supervise the loop body: a transient exception (e.g. bad_alloc
-        // while building a stats message) must not kill the worker for the
-        // process lifetime — stats would never be reported again. The stream
-        // is drained on error and a fresh one is started on restart. Only a
-        // stop request or agent exit ends the worker.
-        while (true) {
-            try {
-                if (run_stats_worker()) {
-                    break;
-                }
-                // A stream start failed without a stop request: fall through
-                // to the restart delay and retry with a fresh stream, exactly
-                // like the exception path below.
-            } catch (const std::exception& e) {
-                LOG_ERROR("grpc stats worker: exception = {}", e.what());
-                drain_stats_stream_on_error();
-            } catch (...) {
-                LOG_ERROR("grpc stats worker: unknown exception");
-                drain_stats_stream_on_error();
-            }
-
-            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            if (stats_queue_cv_.wait_for(lock, tuning_.worker_restart_delay,
-                                         [this] { return stopping(); })) {
-                break;
-            }
-        }
-
-        LOG_INFO("grpc stats worker end");
+        // Supervised (see superviseWorker) like the ping worker: a transient
+        // exception (e.g. bad_alloc while building a stats message) must not
+        // kill the worker for the process lifetime — stats would never be
+        // reported again. Only a stop request or agent exit ends the worker.
+        superviseWorker("grpc stats worker", tuning_.worker_restart_delay,
+                        stats_queue_mutex_, stats_queue_cv_,
+                        [this] { return stopping(); },
+                        [this] { return run_stats_worker(); },
+                        [this] { drain_stats_stream_on_error(); });
     }
 
     bool GrpcStats::run_stats_worker() {

@@ -57,16 +57,6 @@ namespace pinpoint {
             }, value);
         }
 
-        // Upper bound on a bind value's rendered length, without formatting:
-        // exact for strings; 24 covers "null", "false" and any int64/uint64
-        // (20 chars) or shortest-round-trip double (up to 24 chars).
-        std::size_t sqlBindValueSizeBound(const SqlBindValue& value) {
-            if (const auto* s = std::get_if<std::string_view>(&value)) {
-                return s->size();
-            }
-            return 24;
-        }
-
         std::string joinSqlBindValues(
             const std::vector<SqlBindValue>& bind_args,
             int max_bind_args_size) {
@@ -80,20 +70,12 @@ namespace pinpoint {
             // 5 punctuation chars plus at most 10 digits of a positive int.
             constexpr std::size_t kTruncationSuffixMax = 16;
 
-            // Reserve once from a cheap size estimate so the appends below
-            // never regrow the output (up to max_bind_args_size bytes of
-            // repeated geometric reallocation per SQL statement before).
-            std::size_t estimated = 0;
-            for (const auto& value : bind_args) {
-                estimated += 1 + sqlBindValueSizeBound(value);
-                if (estimated > max_size) {
-                    // The estimate says truncation is possible; its worst
-                    // case is content up to max_size plus the suffix.
-                    estimated = max_size + kTruncationSuffixMax;
-                    break;
-                }
-            }
-            joined_bind_args.reserve(estimated);
+            // The output never exceeds max_size plus the suffix. Reserve that
+            // up front, capped so a large configured limit does not allocate
+            // more than a typical bind list needs; the rest is left to the
+            // string's geometric growth.
+            constexpr std::size_t kMaxInitialReserve = 256;
+            joined_bind_args.reserve(std::min(max_size, kMaxInitialReserve) + kTruncationSuffixMax);
 
             fmt::memory_buffer scratch;
             for (std::size_t i = 0; i < bind_args.size(); ++i) {

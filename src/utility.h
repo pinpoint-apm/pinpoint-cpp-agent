@@ -114,19 +114,30 @@ namespace pinpoint {
     size_t utf8SafeCutLength(std::string_view s, size_t max_len);
 
     /**
-     * @brief Rate-limited reporter for queue-overflow drops.
+     * @brief Rate-limited event reporter: at most one report per interval, no
+     *        matter how many threads call in.
      *
-     * Producers call record() on every dropped item, from any thread; at most
-     * one report per interval is granted, carrying the cumulative drop count.
-     * During a collector outage an unlimited WARN per dropped item would flood
-     * the log from request threads, while a DEBUG line would be invisible at
-     * the default level — either way outage data loss goes unreported.
+     * Without it an unlimited WARN per event would flood the log from request
+     * threads (and serialize them on the logger's mutex and per-line flush),
+     * while a DEBUG line would be invisible at the default level — either way
+     * the event goes unreported. One caller wins each interval via a CAS; the
+     * losers stay silent and their events surface in the winner's count.
+     *
+     * Pick ONE of the three counting modes per instance and use only that
+     * one — they keep unrelated counters:
+     *   - record()          producers count each event; reports the running total
+     *   - report_if_due(n)  the producer counts internally; poll with its total
+     *   - acquire()         reports how many events this line covers, then resets
+     *
+     * The constructor is constexpr so a function-local static instance (see
+     * LOG_WARN_THROTTLED) is constant-initialized, with no thread-safe-static
+     * guard on the suppressed path.
      */
     class QueueDropReporter {
     public:
         static constexpr std::chrono::seconds kDefaultReportInterval{60};
 
-        explicit QueueDropReporter(
+        constexpr explicit QueueDropReporter(
             std::chrono::steady_clock::duration interval = kDefaultReportInterval)
             : interval_(interval) {}
 
@@ -140,18 +151,23 @@ namespace pinpoint {
          */
         uint64_t record() noexcept {
             const auto dropped = dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
-            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto next = next_report_at_.load(std::memory_order_relaxed);
-            if (now < next) {
-                return 0;
-            }
-            // One concurrent producer wins the window via the CAS; the losers
-            // stay silent and their drops surface in the winner's next count.
-            if (next_report_at_.compare_exchange_strong(
-                    next, now + interval_.count(), std::memory_order_relaxed)) {
-                return dropped;
-            }
-            return 0;
+            return win_window() ? dropped : 0;
+        }
+
+        /**
+         * @brief Counts one occurrence at a throttled log call site.
+         *
+         * @return How many occurrences this report covers (this one plus
+         *         everything suppressed since the previous report) when the
+         *         caller won the current interval and should log now; 0 while
+         *         rate-limited. The very first occurrence always reports.
+         *
+         * Unlike record(), the counter resets per report, so the granted line
+         * describes the interval it closes rather than all time.
+         */
+        uint64_t acquire() noexcept {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+            return win_window() ? dropped_.exchange(0, std::memory_order_relaxed) : 0;
         }
 
         /**
@@ -170,20 +186,25 @@ namespace pinpoint {
             if (cumulative_dropped <= last_reported_.load(std::memory_order_relaxed)) {
                 return 0;
             }
-            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-            auto next = next_report_at_.load(std::memory_order_relaxed);
-            if (now < next) {
+            if (!win_window()) {
                 return 0;
             }
-            if (next_report_at_.compare_exchange_strong(
-                    next, now + interval_.count(), std::memory_order_relaxed)) {
-                last_reported_.store(cumulative_dropped, std::memory_order_relaxed);
-                return cumulative_dropped;
-            }
-            return 0;
+            last_reported_.store(cumulative_dropped, std::memory_order_relaxed);
+            return cumulative_dropped;
         }
 
     private:
+        /// @brief True for the single caller that claims the current interval.
+        bool win_window() noexcept {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto next = next_report_at_.load(std::memory_order_relaxed);
+            if (now < next) {
+                return false;
+            }
+            return next_report_at_.compare_exchange_strong(
+                next, now + interval_.count(), std::memory_order_relaxed);
+        }
+
         const std::chrono::steady_clock::duration interval_;
         std::atomic<uint64_t> dropped_{0};
         // Cumulative count at the last granted report_if_due() report.
@@ -194,17 +215,23 @@ namespace pinpoint {
     /**
      * @brief Supervises a background worker: runs `body`, and if it escapes
      * with an exception, logs it and restarts the body after `interval` (or
-     * immediately ends on exit). A normal return ends the worker. Logs
-     * "<name> end" when the worker finishes, so an unexpected exception
-     * (e.g. bad_alloc while aggregating) cannot kill a periodic worker for
-     * the process lifetime.
+     * immediately ends on exit). Logs "<name> end" when the worker finishes,
+     * so an unexpected exception (e.g. bad_alloc while aggregating) cannot
+     * kill a periodic worker for the process lifetime.
      *
      * @param name Worker name used in the log messages.
      * @param interval Restart pacing between supervised runs.
      * @param mutex / cond_var The worker's own synchronization pair, so the
      *        restart wait wakes on the worker's stop notification.
      * @param is_exiting Predicate consulted by the restart wait.
-     * @param body One supervised run of the worker loop.
+     * @param body One supervised run of the worker loop. Returns true when
+     *        the worker is done, or false to be restarted after `interval`
+     *        exactly like the exception paths — the stream workers use that
+     *        for a stream that failed to start, which is expected rather
+     *        than exceptional.
+     * @param on_error Optional cleanup run inside the exception handlers,
+     *        before the restart wait (the stream workers drain their broken
+     *        stream here).
      *
      * Defined in utility.cpp (std::function is fine on this cold path) so
      * this header does not drag logging.h/fmt into every includer.
@@ -212,7 +239,8 @@ namespace pinpoint {
     void superviseWorker(std::string_view name, std::chrono::milliseconds interval,
                          std::mutex& mutex, std::condition_variable& cond_var,
                          const std::function<bool()>& is_exiting,
-                         const std::function<void()>& body);
+                         const std::function<bool()>& body,
+                         const std::function<void()>& on_error = {});
 
     /**
      * @brief Lazily heap-creates one instance per thread (and per call site)
