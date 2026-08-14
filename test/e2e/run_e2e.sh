@@ -12,6 +12,7 @@ LOAD_MODE=""
 LOAD_DURATION=30
 LOAD_CONCURRENCY=5
 LOAD_RPS=""
+MAX_ERROR_RATE=""
 PROFILE=false
 PROFILE_OUTPUT=""
 PROFILE_FREQUENCY=99
@@ -38,6 +39,8 @@ Options:
       --load-concurrency N  Load workers, or fixed-RPS max in-flight requests
                             (default: $LOAD_CONCURRENCY)
       --load-rps RPS        Use constant-arrival-rate load at this target RPS
+      --max-error-rate PCT  Tolerated load-phase error rate, in percent
+                            (default: 0 -- any failed request fails the run)
       --profile             Profile it_test_server during the load phase
       --profile-output PATH Profile output (.trace on macOS, perf.data on Linux)
       --profile-frequency N Linux perf sampling frequency (default: $PROFILE_FREQUENCY)
@@ -63,6 +66,7 @@ while [[ $# -gt 0 ]]; do
         --load-duration) LOAD_DURATION=$2; shift 2 ;;
         --load-concurrency) LOAD_CONCURRENCY=$2; shift 2 ;;
         --load-rps) LOAD_RPS=$2; shift 2 ;;
+        --max-error-rate) MAX_ERROR_RATE=$2; shift 2 ;;
         --profile) PROFILE=true; shift ;;
         --profile-output) PROFILE_OUTPUT=$2; shift 2 ;;
         --profile-frequency) PROFILE_FREQUENCY=$2; shift 2 ;;
@@ -81,6 +85,10 @@ if $PROFILE && [[ -z "$LOAD_MODE" && -z "$LOAD_RPS" ]]; then
 fi
 if ! $PROFILE && [[ -n "$PROFILE_OUTPUT" ]]; then
     echo "--profile-output requires --profile." >&2
+    exit 2
+fi
+if [[ -n "$MAX_ERROR_RATE" && -z "$LOAD_MODE" && -z "$LOAD_RPS" ]]; then
+    echo "--max-error-rate requires a load phase (--load-mode or --load-rps)." >&2
     exit 2
 fi
 if [[ -n "$LOAD_RPS" && -z "$LOAD_MODE" ]]; then
@@ -269,7 +277,8 @@ if [[ -n "$LOAD_MODE" ]]; then
         --base-url "http://$HOST:$PORT" --mode "$LOAD_MODE" \
         --duration "$LOAD_DURATION" --concurrency "$LOAD_CONCURRENCY" \
         --rss-pid "$UPSTREAM_PID" \
-        ${LOAD_RPS:+--rps "$LOAD_RPS"})
+        ${LOAD_RPS:+--rps "$LOAD_RPS"} \
+        ${MAX_ERROR_RATE:+--max-error-rate "$MAX_ERROR_RATE"})
 
     if $PROFILE; then
         if [[ -z "$PROFILE_OUTPUT" ]]; then

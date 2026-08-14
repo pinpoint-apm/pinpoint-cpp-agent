@@ -160,6 +160,19 @@ is the continuously busy worker count. `run_e2e.sh` always passes the
 server's PID as `--rss-pid`, so every orchestrated load pass reports the
 server's first/max/last RSS.
 
+`--max-error-rate PCT` forwards the generator's error budget, which otherwise
+defaults to 0 and fails the run on a single bad request. Raise it when a few
+tail-latency timeouts are expected rather than meaningful — a heavily
+instrumented build or a contended host can push p95 far enough that the
+occasional request reaches the generator's 30s client timeout:
+
+```bash
+./test/e2e/run_e2e.sh \
+  --build-dir ./build/default/test/e2e \
+  --load-mode full --load-duration 180 --load-concurrency 20 \
+  --max-error-rate 0.5
+```
+
 ## Performance profiling
 
 Build the integration servers with optimized code, debug symbols, and frame
