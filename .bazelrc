@@ -41,7 +41,12 @@ build:ubsan --copt=-fno-sanitize-recover=undefined
 build:ubsan --copt=-g
 build:ubsan --copt=-fno-omit-frame-pointer
 build:ubsan --linkopt=-fsanitize=undefined
+# compiler-rt supplies builtins ARM64 libgcc is missing, but selecting it leaves
+# Clang with no unwinder by default while the sanitizer runtime calls _Unwind_*,
+# so name the unwinder too. Unlike the CMake build this cannot be arch-gated in
+# a bazelrc; naming libgcc is a no-op where it was already the default.
 build:ubsan --linkopt=--rtlib=compiler-rt
+build:ubsan --linkopt=--unwindlib=libgcc
 build:ubsan --linkopt=-fsanitize-link-c++-runtime
 build:ubsan --test_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 build:ubsan --test_timeout=900

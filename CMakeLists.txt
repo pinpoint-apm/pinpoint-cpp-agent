@@ -83,11 +83,24 @@ if(SANITIZE)
   add_compile_options(-g -fno-omit-frame-pointer ${_pinpoint_sanitize_flags}
     ${_pinpoint_ubsan_ignorelist})
   set(_pinpoint_sanitize_link_flags ${_pinpoint_sanitize_flags})
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Ubuntu's Clang defaults to libgcc, but ARM64 libgcc does not provide every
-    # compiler builtin emitted by UBSan (for example __muloti4). Use the
-    # compiler-rt builtins shipped alongside Clang's sanitizer runtimes.
-    list(APPEND _pinpoint_sanitize_link_flags --rtlib=compiler-rt)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    # ARM64 libgcc does not provide every compiler builtin emitted by UBSan (for
+    # example __muloti4), so take the builtins from the compiler-rt copy shipped
+    # alongside Clang's sanitizer runtimes. x86_64 libgcc is complete and stays
+    # on the default runtime library: --rtlib=compiler-rt buys nothing there and
+    # only widens the surface described below.
+    #
+    # The unwinder has to be named explicitly alongside it. With
+    # --rtlib=compiler-rt, Clang's default --unwindlib=platform resolves to *no*
+    # unwinder on Linux, while the sanitizer runtimes call _Unwind_* to walk the
+    # stack for their reports. libgcc_s then reaches the link only as an indirect
+    # dependency of libstdc++, which ld refuses to resolve against ("DSO missing
+    # from command line"), and the first sanitized executable fails to link.
+    # Distribution Clang packages may patch that default; upstream LLVM releases
+    # do not, so the flags travel as a pair.
+    list(APPEND _pinpoint_sanitize_link_flags
+      --rtlib=compiler-rt --unwindlib=libgcc)
   endif()
   add_link_options(${_pinpoint_sanitize_link_flags})
   message(STATUS "Sanitizer enabled: ${SANITIZE}")

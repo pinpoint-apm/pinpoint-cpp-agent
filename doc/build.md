@@ -384,9 +384,13 @@ build with examples off. Notable details:
   test executable links the whole static gRPC/Abseil/BoringSSL closure, and a
   machine-wide `-j` at the link phase peaks past 17 GiB and gets `ld` OOM-killed.
 - The `ubsan` preset selects Clang because GCC 13 cannot compile the vendored
-  Abseil hash policy constexpr expressions under UB instrumentation. On Linux,
-  sanitizer links select compiler-rt explicitly; install `libclang-rt-dev` when
-  using Clang outside the provided image.
+  Abseil hash policy constexpr expressions under UB instrumentation. Install
+  `libclang-rt-dev` when using Clang outside the provided image.
+- On ARM64 Linux, sanitizer links add `--rtlib=compiler-rt --unwindlib=libgcc`,
+  because ARM64 `libgcc` lacks some builtins UBSan emits. The two flags travel
+  together: selecting compiler-rt leaves Clang with no unwinder by default, and
+  the sanitizer runtimes need one — see
+  [Sanitizers: a sanitized link cannot find `_Unwind_GetIP`](#sanitizers-a-sanitized-link-cannot-find-_unwind_getip).
 - The instrumented integration test uses a fifteen-minute timeout.
 
 The equivalent manual configuration uses the `SANITIZE` cache variable, which
@@ -497,3 +501,82 @@ Warnings such as `ld: warning: ignoring duplicate libraries: '-lm', '-lpthread'`
 (CMake) and `warning: archive library: ... the table of contents is empty`
 (Bazel, for some gRPC/protobuf static libraries) are harmless and do not affect
 the build.
+
+### Sanitizers: ThreadSanitizer aborts with "unexpected memory mapping"
+
+A sanitized build also *runs* part of what it just built — the instrumented
+`protoc` and `grpc_cpp_plugin` generate the agent's sources — so this surfaces as
+a failed codegen step rather than a failing test:
+
+```
+[2165/3342] Running cpp protocol buffer compiler on .../v1/Annotation.proto
+FAILED: [code=66] v1/Annotation.pb.h v1/Annotation.pb.cc
+FATAL: ThreadSanitizer: unexpected memory mapping 0x6530eab0b000-0x6530eab0f000
+```
+
+Where the dependencies are already built, the same message aborts every `tsan`
+test binary instead, before `main()` runs.
+
+The cause is the host's ASLR entropy, not the code or the toolchain. Kernels
+configured with `vm.mmap_rnd_bits = 32` place mappings outside the address ranges
+the ThreadSanitizer runtime expects, and it refuses to start; a hello-world built
+with `-fsanitize=thread` reproduces it in one line. Containers inherit the setting
+from the host kernel, so `docker run ... tsan` fails the same way. ASan and UBSan
+are unaffected.
+
+Either lower the entropy globally, which needs root —
+
+```bash
+sudo sysctl -w vm.mmap_rnd_bits=28
+```
+
+— or run the build and the tests with ASLR disabled, which needs no privileges.
+The personality is inherited by child processes, so wrapping the top-level
+command also covers the `protoc` invocations and the test executables:
+
+```bash
+setarch $(uname -m) -R cmake --build --preset tsan --parallel "$(nproc)"
+```
+
+```bash
+setarch $(uname -m) -R ctest --preset tsan
+```
+
+Wrap `bazel test --config=tsan` the same way, after a `bazel shutdown`: the test
+actions are spawned by the Bazel server, so a server already running with ASLR on
+keeps failing until it is restarted under `setarch`.
+
+### Sanitizers: a sanitized link cannot find `_Unwind_GetIP`
+
+A sanitized Clang build fails at the first executable it links — usually the
+fetched `protoc`, long before any agent target:
+
+```
+libclang_rt.ubsan_standalone.a(sanitizer_unwind_linux_libcdep.cpp.o): undefined reference to symbol '_Unwind_GetIP@@GCC_3.0'
+/lib/x86_64-linux-gnu/libgcc_s.so.1: error adding symbols: DSO missing from command line
+```
+
+Through `lld`, which the Bazel configs pick up, the same failure reads
+`ld.lld: error: undefined symbol: _Unwind_GetIP`.
+
+The trigger is a sanitized link that passes `--rtlib=compiler-rt` without naming
+an unwinder. Clang's default `--unwindlib=platform` resolves to *no* unwinder on
+Linux once the runtime library is compiler-rt, yet the sanitizer runtimes call
+`_Unwind_*` to walk the stack for their reports. `libgcc_s` still enters the link
+as an indirect dependency of `libstdc++`, which is exactly what `ld` refuses to
+resolve against. Distribution Clang packages may patch that default, so the same
+tree can link with the distribution compiler and fail with an upstream LLVM
+release.
+
+The build already pairs the two flags wherever it asks for compiler-rt — see
+[Sanitizers with CMake](#sanitizers-with-cmake) — so this should not appear on a
+clean checkout. If it does, because of a toolchain of your own or extra sanitizer
+flags, name the unwinder next to `--rtlib`:
+
+```bash
+cmake --preset ubsan -DCMAKE_EXE_LINKER_FLAGS=--unwindlib=libgcc
+```
+
+```bash
+bazel test --config=ubsan --linkopt=--unwindlib=libgcc //test:all
+```
