@@ -949,7 +949,7 @@ bool restart_agent_and_wait(int timeout_ms) {
 std::string watch_config_path() {
     return (std::filesystem::temp_directory_path() /
             ("pinpoint-e2e-watch-" +
-             it_test::env_or("PINPOINT_CPP_AGENT_NAME", "e2e") + ".yaml"))
+             it_test::EnvOr("PINPOINT_CPP_AGENT_NAME", "e2e") + ".yaml"))
         .string();
 }
 

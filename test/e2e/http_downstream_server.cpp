@@ -27,7 +27,7 @@ void health(const httplib::Request&, httplib::Response& res) {
     std::ostringstream body;
     body << "{\"agent_enabled\":" << (agent->Enable() ? "true" : "false")
          << ",\"collector_host\":\""
-         << it_test::env_or("PINPOINT_CPP_COLLECTOR_HOST", "") << "\"}";
+         << it_test::EnvOr("PINPOINT_CPP_COLLECTOR_HOST", "") << "\"}";
     res.set_content(body.str(), "application/json");
 }
 

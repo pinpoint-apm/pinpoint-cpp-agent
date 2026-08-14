@@ -5,7 +5,7 @@
 
 namespace it_test {
 
-inline void set_default_env(const char* key, const char* value) {
+inline void SetDefaultEnv(const char* key, const char* value) {
     if (std::getenv(key) == nullptr) {
         ::setenv(key, value, 0);
     }
@@ -16,15 +16,15 @@ inline void set_default_env(const char* key, const char* value) {
 // the stable, human-readable per-process label instead.
 inline void ConfigureAgentEnvironment(const char* application,
                                       const char* agent_name) {
-    set_default_env("PINPOINT_CPP_APPLICATION_NAME", application);
-    set_default_env("PINPOINT_CPP_AGENT_NAME", agent_name);
-    set_default_env("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
-    set_default_env("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true");
-    set_default_env("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");
-    set_default_env("PINPOINT_CPP_ENABLE_CALLSTACK_TRACE", "true");
+    SetDefaultEnv("PINPOINT_CPP_APPLICATION_NAME", application);
+    SetDefaultEnv("PINPOINT_CPP_AGENT_NAME", agent_name);
+    SetDefaultEnv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
+    SetDefaultEnv("PINPOINT_CPP_SQL_ENABLE_SQL_STATS", "true");
+    SetDefaultEnv("PINPOINT_CPP_SQL_TRACE_BIND_VALUE", "true");
+    SetDefaultEnv("PINPOINT_CPP_ENABLE_CALLSTACK_TRACE", "true");
 }
 
-inline std::string env_or(const char* key, const char* fallback) {
+inline std::string EnvOr(const char* key, const char* fallback) {
     const char* value = std::getenv(key);
     return value == nullptr ? std::string(fallback) : std::string(value);
 }
@@ -47,7 +47,7 @@ inline std::string JsonEscape(const std::string& value) {
 }
 
 inline std::string CollectorHost() {
-    return env_or("PINPOINT_CPP_COLLECTOR_HOST", "");
+    return EnvOr("PINPOINT_CPP_COLLECTOR_HOST", "");
 }
 
 }  // namespace it_test
