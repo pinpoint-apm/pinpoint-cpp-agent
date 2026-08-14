@@ -1136,21 +1136,21 @@ TEST_F(HttpTest, HttpUrlFilterAntDoubleStarCrossSegmentTest) {
 
 // ========== HttpStatusErrors: out-of-table codes ==========
 //
-// Codes in [0, TABLE_SIZE=600) live in the bitset; a configured code >= 600 falls
-// into the extra_codes_ fallback vector added by the bitset rewrite. That branch
-// has no coverage — all existing tests configure codes <= 599.
+// The bit table spans [0, TABLE_SIZE=600), which covers every code HTTP can
+// produce. A configured code outside it cannot match any real response, so it
+// is treated like a malformed token: warned about and dropped, never matched.
 TEST_F(HttpTest, HttpStatusErrorsOutOfTableCodeTest) {
-    HttpStatusErrors errors({"600", "999"});
-    EXPECT_TRUE(errors.isErrorCode(600)) << "600 == TABLE_SIZE, the first out-of-table code";
-    EXPECT_TRUE(errors.isErrorCode(999));
+    HttpStatusErrors errors({"600", "999", "-1"});
+    EXPECT_FALSE(errors.isErrorCode(600)) << "600 == TABLE_SIZE, out of range: dropped";
+    EXPECT_FALSE(errors.isErrorCode(999));
+    EXPECT_FALSE(errors.isErrorCode(-1));
     EXPECT_FALSE(errors.isErrorCode(599)) << "in-table code, not configured";
-    EXPECT_FALSE(errors.isErrorCode(601)) << "out-of-table code, not configured";
     EXPECT_FALSE(errors.isErrorCode(500));
 
-    // Out-of-table specific codes coexist with an in-table category.
+    // A dropped out-of-range token leaves the in-table category intact.
     HttpStatusErrors mixed({"5xx", "600"});
     EXPECT_TRUE(mixed.isErrorCode(503)) << "5xx category (bitset)";
-    EXPECT_TRUE(mixed.isErrorCode(600)) << "specific out-of-table code (extra_codes_)";
+    EXPECT_FALSE(mixed.isErrorCode(600)) << "out-of-range token dropped";
     EXPECT_FALSE(mixed.isErrorCode(404));
 }
 

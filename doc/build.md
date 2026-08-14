@@ -12,7 +12,6 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 | Bazel | 7.0+ |
 | CMake | 3.21+ |
 | Ninja (recommended) | Used by all CMake presets |
-| ccache (optional) | Auto-detected; speeds up incremental builds |
 | OS | Linux, macOS, Windows |
 
 ---
@@ -20,7 +19,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 ## Docker build and test environment
 
 The repository's single Dockerfile contains GCC, Clang/LLVM (including the
-sanitizer runtimes), CMake, Ninja, ccache, Bazel, and a pinned vcpkg checkout.
+sanitizer runtimes), CMake, Ninja, Bazel, and a pinned vcpkg checkout.
 Build it once, then select the build mode with the first container argument:
 
 ```bash
@@ -228,19 +227,6 @@ Use any preset without the vcpkg toolchain (including `default`) to download and
 build the pinned sources. GoogleTest is also built with FetchContent when tests
 are enabled. Installed system libraries are ignored even when they are visible
 through the default CMake search paths or `CMAKE_PREFIX_PATH`.
-
-### Compiler Cache (ccache)
-
-CMake picks up the standard launcher variables, so enable ccache with:
-
-```bash
-cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-ccache -s                 # after a build, check hit/miss counters
-```
-
-(Or export `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER` in the
-environment once.) Install ccache with `brew install ccache` (macOS) or
-`apt install ccache` (Debian/Ubuntu).
 
 ---
 
@@ -496,7 +482,6 @@ The `default` preset downloads and builds all dependencies from source on the
 first run. Use the `vcpkg` preset for managed packages, or set
 `FETCHCONTENT_BASE_DIR` to reuse one dependency cache across presets and build
 directories — see [Sharing the FetchContent cache](#sharing-the-fetchcontent-cache).
-After the first configure, `ccache` also speeds up subsequent rebuilds.
 
 ### macOS linker warnings
 

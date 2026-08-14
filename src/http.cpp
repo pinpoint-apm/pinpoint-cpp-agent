@@ -48,13 +48,9 @@ namespace pinpoint {
                 set_range(base, base + 99);
             } else {
                 auto result = stoi_(token);
-                if (result.has_value()) {
-                    const int code = result.value();
-                    if (0 <= code && code < http_status::TABLE_SIZE) {
-                        error_codes_.set(code);
-                    } else {
-                        extra_codes_.push_back(code);
-                    }
+                if (result.has_value() && 0 <= result.value() &&
+                    result.value() < http_status::TABLE_SIZE) {
+                    error_codes_.set(result.value());
                 } else {
                     LOG_WARN("ignoring invalid http status error token: {}", token);
                 }
@@ -63,10 +59,8 @@ namespace pinpoint {
     }
 
     bool HttpStatusErrors::isErrorCode(int status_code) const noexcept {
-        if (0 <= status_code && status_code < http_status::TABLE_SIZE) {
-            return error_codes_[status_code];
-        }
-        return std::find(extra_codes_.begin(), extra_codes_.end(), status_code) != extra_codes_.end();
+        return 0 <= status_code && status_code < http_status::TABLE_SIZE &&
+               error_codes_[status_code];
     }
 
     HttpHeaderRecorder::HttpHeaderRecorder(int anno_key, std::vector<std::string> cfg) 

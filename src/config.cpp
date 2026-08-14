@@ -819,58 +819,44 @@ namespace pinpoint {
     }
 
     std::string to_config_string(const Config& config) {
-        YAML::Emitter emitter;
-        emitter << YAML::BeginMap;
+        // Built as a node tree rather than emitted directly: yaml-cpp keeps map
+        // entries in insertion order, so the table order still defines the
+        // document structure, and nested maps are created by subscripting the
+        // dotted path instead of tracking an open-map stack by hand.
+        YAML::Node root(YAML::NodeType::Map);
 
-        // `open` is the stack of currently open nested maps; consecutive table
-        // entries sharing a path prefix stay inside the same map, so the table
-        // order defines the document structure.
-        std::vector<std::string_view> open;
         for (const auto& f : kConfigFields) {
             // ServiceName/ApiKey are v4-only inputs.
             if ((f.path == "ServiceName" || f.path == "ApiKey") && !config.is_v4()) {
                 continue;
             }
 
-            const std::vector<std::string_view> segs = absl::StrSplit(f.path, '.');
-            const size_t depth = segs.size() - 1;
-            size_t common = 0;
-            while (common < open.size() && common < depth && open[common] == segs[common]) {
-                ++common;
-            }
-            while (open.size() > common) {
-                emitter << YAML::EndMap;
-                open.pop_back();
-            }
-            while (open.size() < depth) {
-                emitter << YAML::Key << std::string(segs[open.size()]) << YAML::BeginMap;
-                open.push_back(segs[open.size()]);
-            }
-
-            emitter << YAML::Key << std::string(segs.back()) << YAML::Value;
+            YAML::Node value;
             if (f.path == "AgentName" && config.agent_name_ == config.agent_id_) {
                 // AgentId is runtime-generated state, not a configuration
                 // input, and is never serialized. A defaulted AgentName
                 // (= AgentId) serializes as empty so loading this YAML in a
                 // new process falls back to that process's new id instead of
                 // pinning the previous process's id as a display name.
-                emitter << std::string();
+                value = std::string();
             } else if (f.path == "ApiKey") {
                 // ApiKey is intentionally masked and never serialized in plaintext.
-                emitter << (config.api_key_.empty() ? "" : "****");
+                value = std::string(config.api_key_.empty() ? "" : "****");
             } else {
-                // yaml-cpp's stlemitter.h emits std::vector as
-                // BeginSeq/elements/EndSeq, identical to an explicit loop.
-                std::visit([&](auto ref) { emitter << ref(config); }, f.ref);
+                std::visit([&](auto ref) { value = ref(config); }, f.ref);
             }
-        }
-        while (!open.empty()) {
-            emitter << YAML::EndMap;
-            open.pop_back();
-        }
-        emitter << YAML::EndMap;
 
-        return emitter.c_str();
+            // reset() rebinds this handle to the child; plain assignment would
+            // write the child's content into the parent instead.
+            const std::vector<std::string_view> segs = absl::StrSplit(f.path, '.');
+            YAML::Node node(root);
+            for (size_t i = 0; i + 1 < segs.size(); ++i) {
+                node.reset(node[std::string(segs[i])]);
+            }
+            node[std::string(segs.back())] = value;
+        }
+
+        return YAML::Dump(root);
     }
 
     bool Config::check() const {

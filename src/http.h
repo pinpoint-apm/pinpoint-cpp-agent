@@ -44,12 +44,11 @@ namespace pinpoint {
         bool isErrorCode(int status_code) const noexcept;
 
     private:
-        // Configured tokens in [0, 599] are flattened into a bit table at
-        // construction, so the common per-span check is a bounds check plus a
-        // constant-time bit lookup. Explicit codes outside that range use the
-        // small fallback vector.
+        // Configured tokens are flattened into a bit table at construction, so
+        // the per-span check is a bounds check plus a constant-time bit lookup.
+        // The table spans every code HTTP can produce; a configured code
+        // outside it is a typo and is warned about and ignored.
         std::bitset<http_status::TABLE_SIZE> error_codes_{};
-        std::vector<int> extra_codes_{};  // configured codes outside [0, TABLE_SIZE)
     };
 
     /// @brief Captures selected HTTP headers and appends them to span annotations.
