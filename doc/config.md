@@ -117,7 +117,7 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `trace`, `debug`, `info`, `warn`, `error` |
+| `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning`, `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
 | `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
@@ -369,7 +369,7 @@ ApplicationName: "MyApp-Prod"
 AgentName: "prod-server-01"
 
 Log:
-  Level: "warn"
+  Level: "warning"
   FilePath: "/var/log/pinpoint/agent.log"
   MaxFileSize: 50
 

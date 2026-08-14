@@ -81,7 +81,7 @@ Sampling:
   CounterRate: 1             # Sample all requests
 
 Log:
-  Level: "info"              # trace, debug, info, warn, error
+  Level: "info"              # debug, info, warning, error
 ```
 
 Point the agent at it with `AgentOptions::config_file_path` before calling

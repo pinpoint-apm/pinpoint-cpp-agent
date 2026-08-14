@@ -25,7 +25,7 @@ Collector:
 
 # --- Logging ---
 Log:
-  Level: "info"          # debug / info / warn / error
+  Level: "info"          # debug / info / warning / error
   FilePath: ""           # stdout/stderr; runner captures one file per process
   MaxFileSize: 50        # MB
 

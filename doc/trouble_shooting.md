@@ -125,8 +125,8 @@ new `pt_start_agent()`; see the [C API guide](instrument_c.md#3-bootstrapping-th
 ## Logging
 
 The agent logs configuration, gRPC, and span collection activity. By default it
-writes to stdout/stderr; file logging rotates automatically. Levels are `trace`,
-`debug`, `info` (default), `warn`, `error` — see the
+writes to stdout/stderr; file logging rotates automatically. Levels are
+`debug`, `info` (default), `warning`, `error` — see the
 [Configuration Guide](config.md) for the keys and their environment variables.
 
 ```yaml
