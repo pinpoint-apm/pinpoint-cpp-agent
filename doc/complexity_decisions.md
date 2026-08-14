@@ -1,7 +1,7 @@
 # Measured Complexity Decisions
 
-Six mechanisms an over-engineering audit flagged as *possibly* removable, each
-adjudicated — five by benchmark A/B, one by correctness review. **All six stay.**
+Seven mechanisms an over-engineering audit flagged as *possibly* removable, each
+adjudicated — six by benchmark A/B, one by correctness review. **All seven stay.**
 The numbers are recorded here so a future change to the workload can revisit them
 against a baseline.
 
@@ -17,6 +17,7 @@ recipes are at the end.
 | LRU aged promotion | Promote every full-cache hit | **Keep** | 17.7x slower hits at 16 threads |
 | `HttpUrlFilter` Exact/Prefix/SegmentPrefix fast paths | Always run the Ant DP | **Keep** | 3.6x slower per request |
 | Deferred-destroy shutdown half | Rely on the keep-alive path alone | **Keep** | Cannot work: `weak_from_this()` is expired in the deleter |
+| `OwnedHandleRegistry` 32-way sharding | One `shared_mutex` over one map | **Keep** | 38x slower per C-API span at 8 threads |
 
 ## 1. `AtomicSharedPtr` ThreadCached mode (`src/atomic_shared_ptr.h`)
 
@@ -108,6 +109,41 @@ inheritance found no defect. A leak-forever alternative (~20 more lines saved)
 was rejected: stragglers that finish late would permanently leak caches that can
 reach tens of MB.
 
+## 7. `OwnedHandleRegistry` sharding (`src/tracer_c.cpp`)
+
+The C API keeps every live `pt_agent_t`/`pt_span_t` in a registry behind a
+`shared_mutex`. Lookups take a shared lock, so a single mutex looks sufficient —
+concurrent readers never block each other. But the registry's real traffic is
+not read-only: a span handle is **inserted once and erased once** around its
+5-15 lookups, and those two take the *exclusive* lock, which blocks every
+reader on that mutex. One cycle below is that whole unit (insert + 10 finds +
+erase), i.e. one traced request's worth of registry traffic.
+
+| threads | shards=1 ns/cycle | shards=4 | shards=8 | shards=32 (current) |
+|---|---|---|---|---|
+| 1 | 176 | 175 | 177 | 177 |
+| 4 | 1,509 | 718 | 122 | 128 |
+| 8 | 9,084 | 4,071 | 2,369 | 237 |
+| 14 | 31,407 | 10,123 | 5,165 | 1,185 |
+
+Un-sharded costs **38x at 8 threads** and 27x at 14. The count is not
+over-provisioned either: 8 shards is still 10x worse than 32 at 8 threads,
+because an exclusive lock on a colliding shard stalls that shard's readers too,
+and collisions stay common until the shard count is well above the thread count.
+
+The sharding is not free, and the benchmark keeps the cost visible in its
+second table. With a **pure-lookup** workload — the population pre-inserted, no
+insert/erase traffic at all — sharding is *slower*, 111 vs 45 ns/find at 14
+threads (2.5x), because a thread's handles scatter across many shard cache
+lines instead of reusing one resident map. That workload does not exist in
+production (a handle that is never inserted or erased cannot be looked up), but
+if the C API ever grows long-lived handles that are looked up far more than they
+are created, this is the number that would change the decision.
+
+One caveat the numbers do not show: the **agent** registry normally holds a
+single handle, so every lookup lands on one shard whatever the shard count.
+Sharding neither helps nor hurts there; the span registry is what it buys.
+
 ## Reproduction
 
 Build with `-DBUILD_BENCHMARKS=ON`; binaries land in `<build>/benchmark/`.
@@ -125,3 +161,8 @@ Build with `-DBUILD_BENCHMARKS=ON`; binaries land in `<build>/benchmark/`.
 - **5**: micro-bench `HttpUrlFilter::isFiltered` over the pattern/URL mix
   above; for the variant disable the three early-return classifications in
   `HttpUrlFilter::compilePattern` so everything compiles to `PatternKind::Ant`.
+- **7**: `owned_handle_registry_benchmark`. It carries the shard-count sweep
+  permanently (the registry is copied into it verbatim, with `kShardCount`
+  lifted to a template parameter, so `shards=1` is the un-sharded candidate
+  running otherwise identical code), so this comparison re-runs with the
+  benchmark.

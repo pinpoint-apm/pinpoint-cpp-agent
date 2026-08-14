@@ -32,6 +32,12 @@ add_executable(active_span_benchmark active_span_benchmark.cpp)
 target_include_directories(active_span_benchmark PRIVATE ../src)
 target_link_libraries(active_span_benchmark PRIVATE Threads::Threads)
 
+# Self-contained copy of tracer_c.cpp's OwnedHandleRegistry (it lives in an
+# anonymous namespace): sweeps the shard count to keep the sharding decision
+# re-checkable. Needs no headers from the tree.
+add_executable(owned_handle_registry_benchmark owned_handle_registry_benchmark.cpp)
+target_link_libraries(owned_handle_registry_benchmark PRIVATE Threads::Threads)
+
 # Drives a real AgentImpl, so unlike the component benchmarks above it needs
 # the library itself (and the generated protobuf headers it carries).
 add_executable(span_lifecycle_benchmark span_lifecycle_benchmark.cpp)

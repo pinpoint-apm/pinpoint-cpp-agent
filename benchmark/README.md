@@ -146,6 +146,28 @@ final phase times the `collect()` snapshot scan with 10,000 in-flight spans —
 that scan runs once per stat-collect interval, so it only needs to show no
 regression.
 
+## C handle registry sharding
+
+Sweeps the shard count of `tracer_c.cpp`'s `OwnedHandleRegistry` — the map that
+turns a `pt_span_t`/`pt_agent_t` token back into its wrapper — from 1 to 32.
+The registry lives in an anonymous namespace and cannot be included, so it is
+copied in verbatim with `kShardCount` lifted to a template parameter; `shards=1`
+is therefore the un-sharded candidate running otherwise identical code, not a
+strawman.
+
+The first table measures the production unit: insert + 10 finds + erase, one
+traced request's worth of traffic. The second holds the population fixed and
+only looks up, isolating reader contention from the exclusive-lock insert/erase
+traffic — and showing the cost the sharding does carry, since scattering a
+thread's handles across shards loses map locality. See
+[Measured Complexity Decisions](../doc/complexity_decisions.md) §7.
+
+```sh
+cmake --preset default -DBUILD_BENCHMARKS=ON
+cmake --build --preset default --target owned_handle_registry_benchmark
+./build/default/benchmark/owned_handle_registry_benchmark 400000
+```
+
 ## Span lifecycle
 
 The benchmarks above each isolate one mechanism and answer "was this data
