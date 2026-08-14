@@ -1,5 +1,30 @@
 # Microbenchmarks
 
+## Building
+
+Both build systems work. Every target here is compiled `-O3`/`NDEBUG` whatever
+the surrounding build type, because numbers from an unoptimized build are
+misleading — the per-benchmark CMake snippets below therefore use whichever
+preset is convenient.
+
+```sh
+# CMake: benchmarks are behind an option, off by default
+cmake --preset default -DBUILD_BENCHMARKS=ON
+cmake --build --preset default --target <name>
+./build/default/benchmark/<name>
+
+# Bazel: included in //..., no option needed
+bazel build -c opt //benchmark/...
+./bazel-bin/benchmark/<name>
+```
+
+The `-O3` above covers each benchmark's own translation unit. Most targets are
+header-only against `src/`, so that is the whole measured path. Two —
+`raw_sql_cache_benchmark` and `span_lifecycle_benchmark` — link
+`libpinpoint_cpp` and measure code inside it, so they also need the *library*
+optimized: a CMake `debug` preset or a Bazel `fastbuild` reports them several
+times too slow.
+
 ## Span queue
 
 This benchmark compares the former single-`std::mutex` span queue with the

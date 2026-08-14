@@ -21,6 +21,30 @@ cc_library(
     hdrs = [":generate_version_h"],
 )
 
+# The src/ headers ride in :pinpoint-cpp's srcs, which does not expose them to
+# dependents — they are implementation detail, not API. The benchmarks measure
+# those internals directly (the CMake side reaches them with
+# target_include_directories(... ../src)), so re-export them to that package
+# alone rather than widening the library's own header surface.
+#
+# Deliberately depends on nothing: the header-only benchmarks compile the
+# measured code into their own translation unit, and pulling :pinpoint-cpp in
+# here would make all of them link the library and gRPC behind it, which the
+# CMake targets do not. The two benchmarks that really need the library ask
+# for it themselves.
+cc_library(
+    name = "internal_headers",
+    hdrs = glob(["src/*.h"]) + [
+        "include/pinpoint/tracer.h",
+        "include/pinpoint/tracer_c.h",
+    ],
+    includes = [
+        "include",
+        "src",
+    ],
+    visibility = ["//benchmark:__pkg__"],
+)
+
 cc_library(
     name = "pinpoint-cpp",
     srcs = glob(["src/*.cpp", "src/*.h"]),

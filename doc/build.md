@@ -108,7 +108,15 @@ bazel build //...                # everything
 bazel build //:pinpoint-cpp      # the library only
 bazel build //example/...        # examples
 bazel build //test/e2e/...       # integration test binaries
+bazel build -c opt //benchmark/...   # microbenchmarks
 ```
+
+Benchmarks are always compiled `-O3`, so they are meaningful at any compilation
+mode; `-c opt` additionally optimizes the library, which the two targets that
+link it measure through. See [benchmark/README.md](../benchmark/README.md).
+Unlike CMake, where benchmarks sit behind `BUILD_BENCHMARKS=ON` (off by
+default), `bazel build //...` compiles them — so a change that breaks one is
+caught by the `bazel` Docker mode.
 
 ---
 
