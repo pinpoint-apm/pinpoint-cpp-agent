@@ -14,7 +14,8 @@ inline void set_default_env(const char* key, const char* value) {
 // The collector must be supplied by the CI/manual run environment.
 // The agent id is always auto-generated per process; agent_name provides
 // the stable, human-readable per-process label instead.
-inline void configure_agent_env(const char* application, const char* agent_name) {
+inline void ConfigureAgentEnvironment(const char* application,
+                                      const char* agent_name) {
     set_default_env("PINPOINT_CPP_APPLICATION_NAME", application);
     set_default_env("PINPOINT_CPP_AGENT_NAME", agent_name);
     set_default_env("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true");
@@ -47,14 +48,6 @@ inline std::string JsonEscape(const std::string& value) {
 
 inline std::string CollectorHost() {
     return env_or("PINPOINT_CPP_COLLECTOR_HOST", "");
-}
-
-// Keep the spelling used by the standalone scenarios and the server apps
-// compatible while the scripts pass per-process application/agent-name
-// identities.
-inline void ConfigureAgentEnvironment(const char* application,
-                                      const char* agent_name) {
-    configure_agent_env(application, agent_name);
 }
 
 }  // namespace it_test

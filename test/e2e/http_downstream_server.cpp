@@ -77,7 +77,8 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
 
     const int port = argc > 1 ? std::atoi(argv[1]) : 8091;
-    it_test::configure_agent_env("cpp-it-http-downstream", "it-http-downstream");
+    it_test::ConfigureAgentEnvironment("cpp-it-http-downstream",
+                                       "it-http-downstream");
     if (!pinpoint::StartAgent()) {
         std::cerr << "pinpoint agent start failed; check the agent log" << std::endl;
     }
