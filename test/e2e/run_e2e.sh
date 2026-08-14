@@ -137,6 +137,12 @@ if $RUN_FORK && [[ ! -x "$FORK_BIN" ]]; then
     exit 2
 fi
 
+# Before the servers, not after: the profiler only attaches once the smoke
+# phase is done, so an unusable perf would otherwise surface a minute in.
+if $PROFILE; then
+    bash "$SCRIPT_DIR/profile_load.sh" --check --frequency "$PROFILE_FREQUENCY"
+fi
+
 if [[ -z "$LOG_DIR" ]]; then
     LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pinpoint-cpp-it.XXXXXX")
     AUTO_LOG_DIR=true

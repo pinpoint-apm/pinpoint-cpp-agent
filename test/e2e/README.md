@@ -193,6 +193,23 @@ automatically. Use `--profile-output PATH` to select another location and
 `--profile-frequency N` to change the Linux sampling frequency. macOS produces
 a `.trace` bundle for Instruments; Linux produces a `perf.data`-compatible file.
 
+`--profile` verifies the profiler before the servers start, by taking a
+throwaway capture: an unusable `perf` fails the run in milliseconds instead of
+after the smoke phase. Check a host on its own with:
+
+```bash
+./test/e2e/profile_load.sh --check
+```
+
+Two things break Linux profiling without removing `perf` from `PATH`, and the
+check names whichever applies. On Ubuntu `/usr/bin/perf` is a dispatch wrapper
+that exits 2 when the `linux-tools-$(uname -r)` package is missing or ships no
+`perf` binary for the running kernel. Separately, a `kernel.perf_event_paranoid`
+above 2 denies `perf_event_open` to unprivileged users outright, even for a
+process `perf` started itself. Both fixes need root — lower the sysctl to 1 or
+install the matching package — or run the profiled pass in a container with
+`--cap-add=CAP_PERFMON`.
+
 To profile the generator against an already-running server, use the common
 wrapper directly:
 
