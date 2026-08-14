@@ -139,26 +139,20 @@ TEST_F(UrlStatTest, UrlStatHistogramMaxTrackingTest) {
 
 // ========== EachUrlStat Tests ==========
 
-TEST_F(UrlStatTest, EachUrlStatConstructorTest) {
-    int64_t tick = 1234567890;
-    
-    EachUrlStat stat(tick);
-    
-    EXPECT_EQ(stat.tick(), tick) << "Tick should match constructor parameter";
-    
-    // Test histogram access
-    auto& total_hist = stat.getTotalHistogram();
-    auto& fail_hist = stat.getFailHistogram();
-    
-    EXPECT_EQ(total_hist.total(), 0) << "Initial total histogram should be empty";
-    EXPECT_EQ(fail_hist.total(), 0) << "Initial fail histogram should be empty";
+TEST_F(UrlStatTest, EachUrlStatDefaultsAreEmptyTest) {
+    EachUrlStat stat;
+
+    EXPECT_EQ(stat.total.total(), 0) << "Initial total histogram should be empty";
+    EXPECT_EQ(stat.total.max(), 0);
+    EXPECT_EQ(stat.fail.total(), 0) << "Initial fail histogram should be empty";
+    EXPECT_EQ(stat.fail.max(), 0);
 }
 
 TEST_F(UrlStatTest, EachUrlStatHistogramModificationTest) {
-    EachUrlStat stat(12345);
-    
-    auto& total_hist = stat.getTotalHistogram();
-    auto& fail_hist = stat.getFailHistogram();
+    EachUrlStat stat;
+
+    auto& total_hist = stat.total;
+    auto& fail_hist = stat.fail;
     
     total_hist.add(100);
     fail_hist.add(200);
@@ -214,7 +208,7 @@ TEST_F(UrlStatTest, UrlStatSnapshotAddTest) {
     stat.end_time_ = std::chrono::system_clock::now();
     
     // Add to snapshot
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
     snapshot.add(&stat, config, tick_clock);
     
     auto& stats = snapshot.getEachStats();
@@ -239,8 +233,8 @@ TEST_F(UrlStatTest, SnapshotPreservesExactUntrimmedKey) {
     ASSERT_NE(found, stats.end());
     EXPECT_EQ(stats.size(), 1u);
     EXPECT_EQ(found->first.url_, "/api/items/42?expand=owner");
-    EXPECT_EQ(found->second.tick(), 100000);
-    EXPECT_EQ(found->second.getTotalHistogram().total(), 25);
+    EXPECT_EQ(found->first.tick_, 100000);
+    EXPECT_EQ(found->second.total.total(), 25);
 }
 
 TEST_F(UrlStatTest, SnapshotTrimPrefixAndWireFormatStayExact) {
@@ -309,8 +303,8 @@ TEST_F(UrlStatTest, SnapshotSeparatesIdenticalUrlsByTick) {
     ASSERT_NE(first_stat, stats.end());
     ASSERT_NE(second_stat, stats.end());
     EXPECT_EQ(stats.size(), 2u);
-    EXPECT_EQ(first_stat->second.getTotalHistogram().total(), 10);
-    EXPECT_EQ(second_stat->second.getTotalHistogram().total(), 20);
+    EXPECT_EQ(first_stat->second.total.total(), 10);
+    EXPECT_EQ(second_stat->second.total.total(), 20);
 }
 
 TEST_F(UrlStatTest, SnapshotRepeatedHitsAccumulateAndLimitRejectsMiss) {
@@ -344,7 +338,7 @@ TEST_F(UrlStatTest, SnapshotRepeatedHitsAccumulateAndLimitRejectsMiss) {
     EXPECT_EQ(&stats.begin()->second, stored_stat)
         << "repeated hits must reuse the stored entry";
     EXPECT_EQ(stats.begin()->first.url_, "GET " + url);
-    EXPECT_EQ(stats.begin()->second.getTotalHistogram().total(), 129);
+    EXPECT_EQ(stats.begin()->second.total.total(), 129);
 }
 
 // ========== UrlStats Class Tests ==========
@@ -689,7 +683,7 @@ TEST_F(UrlStatTest, TrimUrlPathTest) {
 TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     UrlStatSnapshot snapshot;
     Config config;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -709,8 +703,8 @@ TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     EXPECT_EQ(stats.size(), 1u) << "Same URL and tick should be aggregated into one entry";
 
     auto& entry = stats.begin()->second;
-    EXPECT_EQ(entry.getTotalHistogram().total(), 300) << "Total should be 100 + 200";
-    EXPECT_EQ(entry.getTotalHistogram().max(), 200);
+    EXPECT_EQ(entry.total.total(), 300) << "Total should be 100 + 200";
+    EXPECT_EQ(entry.total.max(), 200);
 }
 
 // Test snapshot fail aggregation honors the precomputed failed_ flag.
@@ -718,7 +712,7 @@ TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
 TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     UrlStatSnapshot snapshot;
     Config config;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -752,9 +746,9 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     EXPECT_EQ(stats.size(), 1u);
 
     auto& entry = stats.begin()->second;
-    EXPECT_EQ(entry.getTotalHistogram().total(), 450) << "All 3 should be in total histogram";
-    EXPECT_EQ(entry.getFailHistogram().total(), 200) << "Only the 500 should be in fail histogram";
-    EXPECT_EQ(entry.getFailHistogram().max(), 200);
+    EXPECT_EQ(entry.total.total(), 450) << "All 3 should be in total histogram";
+    EXPECT_EQ(entry.fail.total(), 200) << "Only the 500 should be in fail histogram";
+    EXPECT_EQ(entry.fail.max(), 200);
 }
 
 // Test that 404 success/500 failure tracks the configurable status-error rule.
@@ -762,7 +756,7 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
 TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
     UrlStatSnapshot snapshot;
     Config config;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
     auto now = std::chrono::system_clock::now();
 
     UrlStatEntry stat_404("/api/users", "GET", 404);
@@ -779,8 +773,8 @@ TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
     snapshot.add(&stat_500, config, tick_clock);
 
     auto& entry = snapshot.getEachStats().begin()->second;
-    EXPECT_EQ(entry.getTotalHistogram().total(), 400) << "Both should be counted in total";
-    EXPECT_EQ(entry.getFailHistogram().total(), 250) << "Only the 500 should be a failure under 5xx";
+    EXPECT_EQ(entry.total.total(), 400) << "Both should be counted in total";
+    EXPECT_EQ(entry.fail.total(), 250) << "Only the 500 should be a failure under 5xx";
 }
 
 // Test that configuring http.server.status_errors to include 4xx makes 404 a failure.
@@ -790,7 +784,7 @@ TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
 
     UrlStatSnapshot snapshot;
     Config config;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
     auto now = std::chrono::system_clock::now();
 
     UrlStatEntry stat_404("/api/users", "GET", 404);
@@ -810,15 +804,15 @@ TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
     snapshot.add(&stat_200, config, tick_clock);
 
     auto& entry = snapshot.getEachStats().begin()->second;
-    EXPECT_EQ(entry.getTotalHistogram().total(), 250) << "Both should be counted in total";
-    EXPECT_EQ(entry.getFailHistogram().total(), 150) << "404 should now be a failure";
+    EXPECT_EQ(entry.total.total(), 250) << "Both should be counted in total";
+    EXPECT_EQ(entry.fail.total(), 150) << "404 should now be a failure";
 }
 
 TEST_F(UrlStatTest, SnapshotLimitEnforcementTest) {
     UrlStatSnapshot snapshot;
     Config config;
     config.http.url_stat.limit = 3;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -840,7 +834,7 @@ TEST_F(UrlStatTest, SnapshotLimitEnforcementTest) {
 // comparison and the `limit > 0` reserve guard against an off-by-one or a
 // reintroduced signed/unsigned bug.
 TEST_F(UrlStatTest, SnapshotLimitZeroAndOneBoundaryTest) {
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
     const auto now = std::chrono::system_clock::now();
     auto add_n = [&](UrlStatSnapshot& snapshot, const Config& config, int n) {
         for (int i = 0; i < n; i++) {
@@ -875,7 +869,7 @@ TEST_F(UrlStatTest, SnapshotMethodPrefixTest) {
     UrlStatSnapshot snapshot;
     Config config;
     config.http.url_stat.method_prefix = true;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -906,7 +900,7 @@ TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
     UrlStatSnapshot snapshot;
     Config config;
     config.http.url_stat.method_prefix = false;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -929,7 +923,7 @@ TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
 TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
     UrlStatSnapshot snapshot;
     Config config;
-    auto& tick_clock = mock_agent_service_->getUrlStats().getTickClock();
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
 
     auto now = std::chrono::system_clock::now();
 
@@ -949,9 +943,9 @@ TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
     auto& stats = snapshot.getEachStats();
     auto& entry = stats.begin()->second;
 
-    EXPECT_EQ(entry.getTotalHistogram().total(), 300);
+    EXPECT_EQ(entry.total.total(), 300);
     // Only the 5xx code should be in the fail histogram under the default config.
-    EXPECT_EQ(entry.getFailHistogram().total(), 200) << "Only 5xx should be in fail histogram";
+    EXPECT_EQ(entry.fail.total(), 200) << "Only 5xx should be in fail histogram";
 }
 
 // ========== Additional TickClock Tests ==========
@@ -1046,19 +1040,19 @@ TEST_F(UrlStatTest, EnqueueOverflowTest) {
 
 // Test EachUrlStat separate total and fail histograms
 TEST_F(UrlStatTest, EachUrlStatSeparateHistogramsTest) {
-    EachUrlStat stat(12345);
+    EachUrlStat stat;
 
-    stat.getTotalHistogram().add(100);
-    stat.getTotalHistogram().add(200);
-    stat.getFailHistogram().add(500);
+    stat.total.add(100);
+    stat.total.add(200);
+    stat.fail.add(500);
 
-    EXPECT_EQ(stat.getTotalHistogram().total(), 300);
-    EXPECT_EQ(stat.getTotalHistogram().max(), 200);
-    EXPECT_EQ(stat.getFailHistogram().total(), 500);
-    EXPECT_EQ(stat.getFailHistogram().max(), 500);
+    EXPECT_EQ(stat.total.total(), 300);
+    EXPECT_EQ(stat.total.max(), 200);
+    EXPECT_EQ(stat.fail.total(), 500);
+    EXPECT_EQ(stat.fail.max(), 500);
 
     // Histograms are independent
-    EXPECT_NE(stat.getTotalHistogram().total(), stat.getFailHistogram().total());
+    EXPECT_NE(stat.total.total(), stat.fail.total());
 }
 
 // ========== Injected interval tests ==========

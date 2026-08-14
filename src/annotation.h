@@ -41,19 +41,15 @@ namespace pinpoint {
     /// @brief Container for annotations carrying an int and two strings.
     struct IntStringStringValue {
         int32_t intValue;
-        std::string stringValue1;
         std::string stringValue2;
-        // Set only for cache-backed SQL parameters. The aliasing shared_ptr
-        // keeps the PreparedSql owner alive without copying parameter bytes.
+        // The aliasing shared_ptr keeps the PreparedSql owner alive without
+        // copying parameter bytes.
         std::shared_ptr<const std::string> sharedStringValue1;
 
-        IntStringStringValue(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
-            : intValue(intVal), stringValue1(strVal1), stringValue2(strVal2) {}
         // strVal2 by value so a caller-owned bind-value string (see
         // SpanEventImpl::SetSqlQuery) moves in without copying up to
         // max_bind_args_size bytes; a literal still builds one std::string as
-        // before. (This overload is only reached with a shared_ptr strVal1,
-        // so widening string_view->string adds no ambiguity.)
+        // before.
         IntStringStringValue(const int32_t intVal,
                              std::shared_ptr<const std::string> strVal1,
                              std::string strVal2)
@@ -62,7 +58,7 @@ namespace pinpoint {
 
         std::string_view stringValue1View() const noexcept {
             return sharedStringValue1 ? std::string_view(*sharedStringValue1)
-                                      : std::string_view(stringValue1);
+                                      : std::string_view();
         }
     };
 
@@ -82,12 +78,9 @@ namespace pinpoint {
     /// @brief Container for annotations with binary payloads and additional strings.
     struct BytesStringStringValue {
         SqlUid bytesValue;
-        std::string stringValue1;
         std::string stringValue2;
         std::shared_ptr<const std::string> sharedStringValue1;
 
-        BytesStringStringValue(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : bytesValue(bytesVal), stringValue1(strVal1), stringValue2(strVal2) {}
         // strVal2 by value; see IntStringStringValue above.
         BytesStringStringValue(SqlUid bytesVal,
                                std::shared_ptr<const std::string> strVal1,
@@ -97,7 +90,7 @@ namespace pinpoint {
 
         std::string_view stringValue1View() const noexcept {
             return sharedStringValue1 ? std::string_view(*sharedStringValue1)
-                                      : std::string_view(stringValue1);
+                                      : std::string_view();
         }
     };
 
@@ -129,8 +122,6 @@ namespace pinpoint {
             : data(std::string(strVal)) {}
         AnnotationData(std::string_view strVal1, std::string_view strVal2)
             : data(std::pair<std::string, std::string>(strVal1, strVal2)) {}
-        AnnotationData(const int32_t intVal, std::string_view strVal1, std::string_view strVal2)
-            : data(IntStringStringValue(intVal, strVal1, strVal2)) {}
         AnnotationData(const int32_t intVal,
                        std::shared_ptr<const std::string> strVal1,
                        std::string strVal2)
@@ -138,8 +129,6 @@ namespace pinpoint {
         AnnotationData(const int64_t longVal, const int32_t intVal1, const int32_t intVal2,
                        const int32_t byteVal1, const int32_t byteVal2, std::string_view strVal)
             : data(LongIntIntByteByteStringValue(longVal, intVal1, intVal2, byteVal1, byteVal2, strVal)) {}
-        AnnotationData(SqlUid bytesVal, std::string_view strVal1, std::string_view strVal2)
-            : data(BytesStringStringValue(bytesVal, strVal1, strVal2)) {}
         AnnotationData(SqlUid bytesVal,
                        std::shared_ptr<const std::string> strVal1,
                        std::string strVal2)

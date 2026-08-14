@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -63,9 +62,7 @@ namespace pinpoint {
     /// @brief Histogram aggregating elapsed times for URL statistics.
     class UrlStatHistogram {
     public:
-        UrlStatHistogram() : total_(0), max_(0) {
-            std::fill_n(histogram_, URL_STATS_BUCKET_SIZE, 0);
-        }
+        UrlStatHistogram() = default;
         ~UrlStatHistogram() = default;
 
         /// @brief Adds an elapsed-time sample (milliseconds).
@@ -80,28 +77,17 @@ namespace pinpoint {
         }
 
     private:
-        int64_t total_;
-        int64_t max_;
+        int64_t total_{0};
+        int64_t max_{0};
         int32_t histogram_[URL_STATS_BUCKET_SIZE]{};
     };
 
 
-    /// @brief Statistics tracked for a single URL pattern and tick.
-    class EachUrlStat {
-    public:
-        explicit EachUrlStat(int64_t tick) : tickTime_(tick) {}
-        ~EachUrlStat() = default;
-
-        UrlStatHistogram& getTotalHistogram() { return totalHistogram_; }
-        const UrlStatHistogram& getTotalHistogram() const { return totalHistogram_; }
-        UrlStatHistogram& getFailHistogram() { return failedHistogram_; }
-        const UrlStatHistogram& getFailHistogram() const { return failedHistogram_; }
-        int64_t tick() const { return tickTime_; }
-
-    private:
-        UrlStatHistogram totalHistogram_;
-        UrlStatHistogram failedHistogram_;
-        int64_t tickTime_;
+    /// @brief Statistics tracked for a single URL pattern and tick. The tick
+    /// itself lives in the owning map's UrlKey.
+    struct EachUrlStat {
+        UrlStatHistogram total;
+        UrlStatHistogram fail;
     };
 
     /// @brief Key identifying URL statistics by pattern and tick.
@@ -150,7 +136,8 @@ namespace pinpoint {
         void add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
         const UrlStatMap& getEachStats() const { return urlMap_; }
 
-        /// @brief Trims a URL path to at most @p depth segments.
+        /// @brief Trims a URL path to at most @p depth segments. Production
+        /// uses the string_view form internally; this is the checkable seam.
         static std::string trim_url_path(std::string_view url, int depth);
 
     private:
@@ -190,7 +177,6 @@ namespace pinpoint {
         void addSnapshot(const UrlStatEntry* us, const Config& config);
         /// @brief Extracts the latest snapshot for transmission.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot();
-        TickClock& getTickClock() { return tick_clock_; }
 
     private:
         static constexpr size_t kQueueShardCount = 16;

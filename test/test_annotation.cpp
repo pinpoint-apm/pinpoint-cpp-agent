@@ -174,7 +174,7 @@ TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     std::string string1 = "Method";
     std::string string2 = "GET";
     
-    annotation->AppendData(key, AnnotationData(intValue, string1, string2));
+    annotation->AppendData(key, AnnotationData(intValue, std::make_shared<const std::string>(string1), string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -183,7 +183,7 @@ TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT_STRING_STRING) << "DataType should be ANNOTATION_TYPE_INT_STRING_STRING for int-string-string";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).intValue, intValue) << "Int value should match";
-    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue1, string1) << "First string should match";
+    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue1View(), string1) << "First string should match";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue2, string2) << "Second string should match";
 }
 
@@ -194,7 +194,7 @@ TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
     std::string string1 = "";
     std::string string2 = "Non-empty";
     
-    annotation->AppendData(key, AnnotationData(intValue, string1, string2));
+    annotation->AppendData(key, AnnotationData(intValue, std::make_shared<const std::string>(string1), string2));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -203,7 +203,7 @@ TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
     EXPECT_EQ(pair.first, key) << "Key should match";
     EXPECT_EQ(pair.second.type(), ANNOTATION_TYPE_INT_STRING_STRING) << "DataType should be ANNOTATION_TYPE_INT_STRING_STRING for int-string-string";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).intValue, intValue) << "Negative int value should match";
-    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue1, string1) << "Empty string should match";
+    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue1View(), string1) << "Empty string should match";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue2, string2) << "Non-empty string should match";
 }
 
@@ -296,7 +296,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringTest) {
     for (const auto& c : cases) {
         SCOPED_TRACE(c.name);
         annotation = std::make_unique<PinpointAnnotation>();
-        annotation->AppendData(c.key, AnnotationData(c.uid, c.string1, c.string2));
+        annotation->AppendData(c.key, AnnotationData(c.uid, std::make_shared<const std::string>(c.string1), c.string2));
 
         auto& annotations = annotation->getAnnotations();
         EXPECT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
@@ -308,7 +308,7 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringTest) {
         auto& bytesData = std::get<pinpoint::BytesStringStringValue>(pair.second.data);
         EXPECT_EQ(bytesData.bytesValue.size(), 16u) << "UID is always 16 bytes";
         EXPECT_EQ(bytesData.bytesValue, c.uid) << "Bytes value should match";
-        EXPECT_EQ(bytesData.stringValue1, c.string1) << "First string should match";
+        EXPECT_EQ(bytesData.stringValue1View(), c.string1) << "First string should match";
         EXPECT_EQ(bytesData.stringValue2, c.string2) << "Second string should match";
     }
 }
@@ -320,10 +320,10 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     annotation->AppendInt(1, 42);
     annotation->AppendData(2, AnnotationData("Test String"));
     annotation->AppendStringString(3, "Key", "Value");
-    annotation->AppendData(4, AnnotationData(100, "Method", "POST"));
+    annotation->AppendData(4, AnnotationData(100, std::make_shared<const std::string>("Method"), "POST"));
     annotation->AppendLongIntIntByteByteString(5, 123456789LL, 1, 2, 3, 4, "Complex");
     SqlUid bytesValue = {0xDE, 0xAD, 0xBE, 0xEF};
-    annotation->AppendData(6, AnnotationData(bytesValue, "Binary", "Data"));
+    annotation->AppendData(6, AnnotationData(bytesValue, std::make_shared<const std::string>("Binary"), "Data"));
     
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 6) << "Should have exactly 6 annotations";
@@ -353,7 +353,7 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(it->first, 4) << "Fourth annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_INT_STRING_STRING) << "Fourth annotation should be int-string-string type";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).intValue, 100) << "Fourth annotation int should match";
-    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).stringValue1, "Method") << "Fourth annotation first string should match";
+    EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).stringValue1View(), "Method") << "Fourth annotation first string should match";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).stringValue2, "POST") << "Fourth annotation second string should match";
     
     // Check fifth annotation (Complex)
@@ -375,7 +375,7 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     auto& bytesData = std::get<pinpoint::BytesStringStringValue>(it->second.data);
     SqlUid expectedBytes = {0xDE, 0xAD, 0xBE, 0xEF};
     EXPECT_EQ(bytesData.bytesValue, expectedBytes) << "Sixth annotation bytes should match";
-    EXPECT_EQ(bytesData.stringValue1, "Binary") << "Sixth annotation first string should match";
+    EXPECT_EQ(bytesData.stringValue1View(), "Binary") << "Sixth annotation first string should match";
     EXPECT_EQ(bytesData.stringValue2, "Data") << "Sixth annotation second string should match";
 }
 
@@ -568,21 +568,21 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
     SqlUid original = {0x01, 0x02, 0x03, 0x04, 0x05};
     SqlUid expected = original; // copy before the call
 
-    annotation->AppendData(key, AnnotationData(std::move(original), "s1", "s2"));
+    annotation->AppendData(key, AnnotationData(std::move(original), std::make_shared<const std::string>("s1"), "s2"));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 1);
 
     auto& bytesData = std::get<pinpoint::BytesStringStringValue>(annotations.front().second.data);
     EXPECT_EQ(bytesData.bytesValue, expected) << "Moved bytes should match original content";
-    EXPECT_EQ(bytesData.stringValue1, "s1");
+    EXPECT_EQ(bytesData.stringValue1View(), "s1");
     EXPECT_EQ(bytesData.stringValue2, "s2");
 }
 
 // Test AppendIntStringString with extreme int values
 TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
-    annotation->AppendData(510, AnnotationData(INT32_MAX, "max", "value"));
-    annotation->AppendData(511, AnnotationData(INT32_MIN, "min", "value"));
+    annotation->AppendData(510, AnnotationData(INT32_MAX, std::make_shared<const std::string>("max"), "value"));
+    annotation->AppendData(511, AnnotationData(INT32_MIN, std::make_shared<const std::string>("min"), "value"));
 
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), 2);
@@ -626,8 +626,8 @@ TEST_F(AnnotationTest, SealedAnnotationIgnoresEveryLateAppend) {
     annotation->AppendLong(102, 2);
     annotation->AppendData(103, AnnotationData("late"));
     annotation->AppendStringString(104, "a", "b");
-    annotation->AppendData(105, AnnotationData(3, "a", "b"));
-    annotation->AppendData(106, AnnotationData(SqlUid{}, "a", "b"));
+    annotation->AppendData(105, AnnotationData(3, std::make_shared<const std::string>("a"), "b"));
+    annotation->AppendData(106, AnnotationData(SqlUid{}, std::make_shared<const std::string>("a"), "b"));
     annotation->AppendLongIntIntByteByteString(107, 4, 5, 6, 7, 8, "s");
     annotation->AppendData(108, AnnotationData(int32_t{9}));
 

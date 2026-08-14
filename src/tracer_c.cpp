@@ -67,8 +67,6 @@
 
 static void pt_handle_exception(const char* func) noexcept {
     try {
-        using pinpoint::Logger;
-        using pinpoint::kFileName;
         try {
             throw;
         } catch (const std::exception& e) {

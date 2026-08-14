@@ -34,9 +34,8 @@ docker run --rm pinpoint-cpp-agent-test ubsan
 ```
 
 The remaining modes are `debug`, `coverage`, `profiling`,
-`bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. Run the image
-with `help` to print the complete list. The source tree is copied into the image;
-rebuild the image after changing source files.
+`bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. The source tree
+is copied into the image; rebuild the image after changing source files.
 
 ---
 
@@ -55,8 +54,8 @@ The IDL is already bundled inside, so the tarball builds offline with no extra
 steps.
 
 > GitHub's auto-generated "Source code (zip/tar.gz)" archives do **not**
-> include submodule contents. Prefer the release asset above; if you must use
-> the auto-generated archive, see Option C.
+> include submodule contents, and the build fails without them. Use the release
+> asset above or a git clone.
 
 ### Option B — Git clone
 
@@ -72,13 +71,6 @@ git submodule update --init --recursive
 
 CMake also auto-runs `git submodule update --init --recursive` on configure if
 the submodule directory is empty, as long as `git` is on `PATH`.
-
-### Option C — GitHub auto-generated source archive
-
-The IDL directory will be empty. CMake detects this and, since there is no
-`.git`, falls back to fetching the pinned IDL commit via
-`FetchContent_Declare(... GIT_REPOSITORY ...)`. This requires **network access
-and `git`** at configure time. For fully offline builds use Option A.
 
 ---
 

@@ -304,10 +304,6 @@ namespace pinpoint {
         return *agent_id_;
     }
 
-    const std::string& AgentImpl::getAgentName() const {
-        return agent_name_;
-    }
-
     const std::string& AgentImpl::getServiceName() const {
         return service_name_;
     }
@@ -1028,11 +1024,7 @@ namespace pinpoint {
             return {};
         }
 
-        TraceId tid;
-        tid.AgentId = std::make_shared<const std::string>(sv.substr(0, pos1));
-        tid.StartTime = *start_time;
-        tid.Sequence = *sequence;
-        return tid;
+        return TraceId{sv.substr(0, pos1), *start_time, *sequence};
     } catch (...) {
         // This function allocates (AgentId copy, log formatting); without this
         // handler an OOM would hit the noexcept boundary and terminate the host.
@@ -1093,7 +1085,7 @@ namespace pinpoint {
             return id;
         }
 
-        auto meta = std::make_unique<MetaData>(META_API, id, api_type, api_str);
+        auto meta = std::make_unique<MetaData>(ApiMeta(id, api_type, api_str));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
@@ -1119,7 +1111,7 @@ namespace pinpoint {
             return id;
         }
 
-        auto meta = std::make_unique<MetaData>(META_STRING, id, error_name, STRING_META_ERROR);
+        auto meta = std::make_unique<MetaData>(StringMeta(id, error_name, STRING_META_ERROR));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
@@ -1141,7 +1133,7 @@ namespace pinpoint {
             return id;
         }
 
-        auto meta = std::make_unique<MetaData>(META_STRING, id, sql_query, STRING_META_SQL);
+        auto meta = std::make_unique<MetaData>(StringMeta(id, sql_query, STRING_META_SQL));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return id;
@@ -1227,7 +1219,7 @@ namespace pinpoint {
         }
 
         // Cold path (first time this SQL is seen): enqueue the UID for the collector.
-        auto meta = std::make_unique<MetaData>(META_SQL_UID, uid, sql);
+        auto meta = std::make_unique<MetaData>(SqlUidMeta(uid, sql));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return uid;
@@ -1248,8 +1240,8 @@ namespace pinpoint {
             return;
         }
 
-        auto meta = std::make_unique<MetaData>(META_EXCEPTION, trace_id, span_id, url_template,
-                                               std::move(exceptions));
+        auto meta = std::make_unique<MetaData>(ExceptionMeta(trace_id, span_id, url_template,
+                                                             std::move(exceptions)));
         grpc_metadata_->enqueueMeta(std::move(meta));
     } CATCH_AND_LOG("failed to record exception meta:")
 

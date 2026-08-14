@@ -209,7 +209,7 @@ TEST_F(AgentImplTest, GetConfigReturnsCorrectValues) {
     EXPECT_EQ(agent_->getAppName(), "test-app");
     EXPECT_EQ(agent_->getAppType(), 1300);
     EXPECT_EQ(agent_->getAgentId(), "test-agent-id");
-    EXPECT_EQ(agent_->getAgentName(), "test-agent-name");
+    EXPECT_EQ(agent_->getConfig()->agent_name_, "test-agent-name");
     EXPECT_NE(agent_->getStartTime(), 0);
 }
 

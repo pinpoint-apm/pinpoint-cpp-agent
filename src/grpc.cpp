@@ -476,7 +476,7 @@ namespace pinpoint {
                                                              &call->arena);
                     async_stub->RequestExceptionMetaData(&call->ctx, request, &call->reply, on_done);
                 }
-            }, call->meta->value_);
+            }, *call->meta);
         } catch (const std::exception& e) {
             LOG_ERROR("metadata send threw an exception: {}", e.what());
             on_launch_failure(call, registered, std::move(meta), retry_count);
@@ -500,7 +500,7 @@ namespace pinpoint {
             } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
                 agent_->removeCacheSqlUid(value);
             }
-        }, meta.value_);
+        }, meta);
     }
 
     void GrpcMetadata::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {

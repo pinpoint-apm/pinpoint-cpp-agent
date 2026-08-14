@@ -17,7 +17,6 @@ cc_library(
 cc_binary(
     name = "tutorial",
     srcs = ["tutorial.cpp"],
-    tags = ["examples"],
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
@@ -29,7 +28,6 @@ cc_binary(
 cc_binary(
     name = "http_server",
     srcs = ["http_server.cpp"],
-    tags = ["examples"],
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
@@ -53,7 +51,6 @@ cc_library(
 cc_binary(
     name = "http_server_c",
     srcs = ["http_server_c.c"],
-    tags = ["examples"],
     deps = [
         ":httplib_c",
         "//:pinpoint-cpp",
@@ -64,20 +61,8 @@ cc_binary(
 cc_binary(
     name = "tutorial_c",
     srcs = ["tutorial_c.c"],
-    tags = ["examples"],
     deps = [
         ":httplib_c",
         "//:pinpoint-cpp",
-    ],
-)
-
-# Example suite (buildable without external dependencies)
-filegroup(
-    name = "all_examples",
-    srcs = [
-        ":http_server",
-        ":http_server_c",
-        ":tutorial",
-        ":tutorial_c",
     ],
 )

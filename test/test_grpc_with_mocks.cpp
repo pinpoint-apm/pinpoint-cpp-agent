@@ -124,12 +124,6 @@ void operator delete[](void* memory, const std::nothrow_t&) noexcept { std::free
 
 namespace pinpoint {
 
-static v1::PResult success_result() {
-    v1::PResult result;
-    result.set_success(true);
-    return result;
-}
-
 // Mock for the HandleCommandV2 bidirectional command stream
 class MockCmdStream : public grpc::ClientReaderWriterInterface<v1::PCmdMessage, v1::PCmdRequest> {
 public:
@@ -1116,10 +1110,10 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
     // Enqueue some metadata
-    auto api_meta = std::make_unique<MetaData>(META_API, 1, 100, "test.api");
+    auto api_meta = std::make_unique<MetaData>(ApiMeta(1, 100, "test.api"));
     agent.enqueueMeta(std::move(api_meta));
 
-    auto str_meta = std::make_unique<MetaData>(META_STRING, 2, "test.string", STRING_META_ERROR);
+    auto str_meta = std::make_unique<MetaData>(StringMeta(2, "test.string", STRING_META_ERROR));
     agent.enqueueMeta(std::move(str_meta));
 
     // Test meta worker operations
@@ -1233,7 +1227,7 @@ TEST_F(GrpcMockTest, GrpcWorkersStartAndStopCleanlyOnDeadChannelTest) {
     span_client.setMockSpanStub(std::make_unique<NiceMock<v1::MockSpanStub>>());
     stats_client.setMockStatsStub(std::make_unique<NiceMock<v1::MockStatStub>>());
 
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "dead.channel"));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "dead.channel")));
     auto span_data = make_test_span_data_ptr(*mock_agent_service_, "dead-channel-op");
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
     stats_client.enqueueStats(AGENT_STATS);
@@ -1279,9 +1273,9 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerMixedSuccessFailureTest) {
 
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.ok"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.fail"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "api.recover"));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.ok")));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "api.fail")));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(3, 100, "api.recover")));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -1309,7 +1303,7 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
     fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.retry"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.retry")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1337,7 +1331,7 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesItemWhenSendThrows) {
     fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.throw.retry"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.throw.retry")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1360,7 +1354,7 @@ TEST_F(GrpcMockTest, GrpcMetadataSkipsRpcWhenChannelNotReady) {
     EXPECT_CALL(*mock_meta_stub, RequestApiMetaData(_, _, _)).Times(0);
 
     metadata.setMockMetaStub(std::move(mock_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.not.ready"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.not.ready")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1381,7 +1375,7 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsCacheAfterRetryExhaustion) {
     fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.exhaust"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.exhaust")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1410,7 +1404,7 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsErrorCacheAfterRetryExhaustion) {
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(
-        META_STRING, 2, "error.exhaust", STRING_META_ERROR));
+        StringMeta(2, "error.exhaust", STRING_META_ERROR)));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1437,7 +1431,7 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlCacheAfterRetryExhaustion) {
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
     metadata.enqueueMeta(std::make_unique<MetaData>(
-        META_STRING, 3, "SELECT exhaust", STRING_META_SQL));
+        StringMeta(3, "SELECT exhaust", STRING_META_SQL)));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1466,7 +1460,7 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     const SqlUid uid{0, 1, 2, 3, 4, 5, 6, 7,
                      8, 9, 10, 11, 12, 13, 14, 15};
     metadata.enqueueMeta(std::make_unique<MetaData>(
-        META_SQL_UID, uid, "SELECT uid_exhaust"));
+        SqlUidMeta(uid, "SELECT uid_exhaust")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -1495,18 +1489,18 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesSuccessTest) {
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
     // Enqueue all metadata types
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "test.api"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 2, "error msg", STRING_META_ERROR));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "SELECT 1", STRING_META_SQL));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "test.api")));
+    agent.enqueueMeta(std::make_unique<MetaData>(StringMeta(2, "error msg", STRING_META_ERROR)));
+    agent.enqueueMeta(std::make_unique<MetaData>(StringMeta(3, "SELECT 1", STRING_META_SQL)));
 
     SqlUid uid = {1, 2, 3};
-    agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
+    agent.enqueueMeta(std::make_unique<MetaData>(SqlUidMeta(uid, "SELECT * FROM t")));
 
     TraceId txid{"agent", 100, 0};
     std::vector<std::unique_ptr<Exception>> exceptions;
     auto cs = std::make_unique<CallStack>("err");
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/api", std::move(exceptions)));
+    agent.enqueueMeta(std::make_unique<MetaData>(ExceptionMeta(txid, 1, "/api", std::move(exceptions))));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -1536,18 +1530,18 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerAllTypesFailureTest) {
     fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
-    agent.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "test.api"));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 2, "err", STRING_META_ERROR));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 3, "SELECT 1", STRING_META_SQL));
+    agent.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "test.api")));
+    agent.enqueueMeta(std::make_unique<MetaData>(StringMeta(2, "err", STRING_META_ERROR)));
+    agent.enqueueMeta(std::make_unique<MetaData>(StringMeta(3, "SELECT 1", STRING_META_SQL)));
 
     SqlUid uid = {1, 2, 3};
-    agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "SELECT * FROM t"));
+    agent.enqueueMeta(std::make_unique<MetaData>(SqlUidMeta(uid, "SELECT * FROM t")));
 
     TraceId txid{"agent", 100, 0};
     std::vector<std::unique_ptr<Exception>> exceptions;
     auto cs = std::make_unique<CallStack>("err");
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
-    agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 1, "/api", std::move(exceptions)));
+    agent.enqueueMeta(std::make_unique<MetaData>(ExceptionMeta(txid, 1, "/api", std::move(exceptions))));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -1607,7 +1601,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlMetaSuccessTest) {
     auto* fake = fake_meta_stub.get();
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
-    agent.enqueueMeta(std::make_unique<MetaData>(META_STRING, 1, "SELECT * FROM users", STRING_META_SQL));
+    agent.enqueueMeta(std::make_unique<MetaData>(StringMeta(1, "SELECT * FROM users", STRING_META_SQL)));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -1630,7 +1624,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendSqlUidMetaSuccessTest) {
     agent.setMockMetaStub(std::move(fake_meta_stub));
 
     SqlUid uid = {0xAA, 0xBB, 0xCC, 0xDD};
-    agent.enqueueMeta(std::make_unique<MetaData>(META_SQL_UID, uid, "INSERT INTO t VALUES (?)"));
+    agent.enqueueMeta(std::make_unique<MetaData>(SqlUidMeta(uid, "INSERT INTO t VALUES (?)")));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -1658,7 +1652,7 @@ TEST_F(GrpcMockTest, GrpcAgentSendExceptionMetaSuccessTest) {
     cs->push("app", "main", "main.cpp", 100);
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
 
-    agent.enqueueMeta(std::make_unique<MetaData>(META_EXCEPTION, txid, 999, "/api/v2/resource", std::move(exceptions)));
+    agent.enqueueMeta(std::make_unique<MetaData>(ExceptionMeta(txid, 999, "/api/v2/resource", std::move(exceptions))));
 
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                      [&agent] { agent.sendMetaWorker(); });
@@ -2119,9 +2113,9 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     span_data->getAnnotations()->AppendLong(102, 1234567890123LL);
     span_data->getAnnotations()->AppendData(103, AnnotationData("string-value"));
     span_data->getAnnotations()->AppendStringString(104, "left", "right");
-    span_data->getAnnotations()->AppendData(105, AnnotationData(7, "method", "GET"));
+    span_data->getAnnotations()->AppendData(105, AnnotationData(7, std::make_shared<const std::string>("method"), "GET"));
     span_data->getAnnotations()->AppendLongIntIntByteByteString(106, 99, 1, 2, 3, 4, "rpc");
-    span_data->getAnnotations()->AppendData(107, AnnotationData(uid, "sql", "args"));
+    span_data->getAnnotations()->AppendData(107, AnnotationData(uid, std::make_shared<const std::string>("sql"), "args"));
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
 
     ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
@@ -2713,7 +2707,7 @@ TEST_F(GrpcMockTest, GrpcMetadataResendsAfterChannelRecoveryWithoutCacheEviction
     auto* fake = fake_meta_stub.get();
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.outage.recovery"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.outage.recovery")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -2820,9 +2814,9 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
     auto* fake = fake_meta_stub.get();
     metadata.setMockMetaStub(std::move(fake_meta_stub));
 
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "overflow.api.1"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "overflow.api.2"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "overflow.api.3"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "overflow.api.1")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "overflow.api.2")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(3, 100, "overflow.api.3")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -2892,7 +2886,7 @@ TEST_F(GrpcMockTest, GrpcMetadataHonorsInjectedRetryLimit) {
     fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.injected.retry"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.injected.retry")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -2929,9 +2923,9 @@ TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
     fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "pipeline.1"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "pipeline.2"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 3, 100, "pipeline.3"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "pipeline.1")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "pipeline.2")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(3, 100, "pipeline.3")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -2972,7 +2966,7 @@ TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPerm
     auto* fake = fake_meta_stub.get();
     metadata.setMockMetaStub(std::move(fake_meta_stub));
 
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.ready.throw"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.ready.throw")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -2982,7 +2976,7 @@ TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPerm
         << "the item dequeued before the throwing readiness check must not be lost";
 
     // The permit survives too: a second item can still launch.
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.after.throw"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "api.after.throw")));
     EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)))
         << "the single permit must have been handed back after the exception";
 
@@ -3008,8 +3002,8 @@ TEST_F(GrpcMockTest, GrpcMetadataCompletionSurvivesAllocationPressureWithoutLosi
     fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
     metadata.setMockMetaStub(std::move(fake_meta_stub));
 
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "api.alloc.fail"));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 2, 100, "api.alloc.after"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.alloc.fail")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "api.alloc.after")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
@@ -3077,7 +3071,7 @@ TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {
     fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(META_API, 1, 100, "shutdown.hold"));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "shutdown.hold")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });

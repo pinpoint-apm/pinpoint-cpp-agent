@@ -295,36 +295,12 @@ namespace pinpoint {
         
         ExceptionMeta(TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
             : txid_(txid), span_id_(span_id), url_template_(url_template), exceptions_(std::move(exceptions)) {}
-        
-        ExceptionMeta(const ExceptionMeta&) = delete;
-        ExceptionMeta& operator=(const ExceptionMeta&) = delete;
-
-        ExceptionMeta(ExceptionMeta&&) = default;
-        ExceptionMeta& operator=(ExceptionMeta&&) = default;
     };
 
-    using MetaValue = std::variant<ApiMeta, StringMeta, SqlUidMeta, ExceptionMeta>;
-
-    /// @brief Type discriminator for metadata payloads.
-    enum MetaType {META_API, META_STRING, META_SQL_UID, META_EXCEPTION};
-
-    /// @brief Metadata item queued for transmission to the collector.
-    struct MetaData {
-        MetaType meta_type_;
-        MetaValue value_;
-        
-        MetaData(MetaType meta_type, int32_t id, int32_t api_type, std::string_view api_str)
-            : meta_type_(meta_type), value_(ApiMeta(id, api_type, api_str)) {}
-        
-        MetaData(MetaType meta_type, int32_t id, std::string_view str_val, StringMetaType str_type)
-            : meta_type_(meta_type), value_(StringMeta(id, str_val, str_type)) {}
-        
-        MetaData(MetaType meta_type, SqlUid uid, std::string_view sql)
-            : meta_type_(meta_type), value_(SqlUidMeta(uid, sql)) {}
-        
-        MetaData(MetaType meta_type, TraceId txid, int64_t span_id, std::string_view url_template, std::vector<std::unique_ptr<Exception>>&& exceptions)
-            : meta_type_(meta_type), value_(ExceptionMeta(txid, span_id, url_template, std::move(exceptions))) {}
-    };
+    /// @brief Metadata item queued for transmission to the collector. The
+    /// alternative it holds is the payload type; senders dispatch with
+    /// std::visit (see GrpcMetadata::launch_meta_rpc).
+    using MetaData = std::variant<ApiMeta, StringMeta, SqlUidMeta, ExceptionMeta>;
 
     // Pipeline state shared between GrpcMetadata, its worker and the async
     // completion callbacks; definitions live in grpc.cpp.

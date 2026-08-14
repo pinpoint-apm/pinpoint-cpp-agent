@@ -434,30 +434,25 @@ namespace pinpoint {
         return default_value;
     }
 
-    static bool safe_env_stob(const char* env_name, const char* env_value, bool default_value) {
-        return safe_env_parse(stob_, "Failed to parse boolean", env_name, env_value, default_value);
-    }
-
-    static int safe_env_stoi(const char* env_name, const char* env_value, int default_value) {
-        return safe_env_parse(stoi_, "Invalid integer", env_name, env_value, default_value);
-    }
-
-    static double safe_env_stod(const char* env_name, const char* env_value, double default_value) {
-        return safe_env_parse(stod_, "Invalid double", env_name, env_value, default_value);
-    }
-
     // Typed env readers keyed by the member's own type, mirroring get_into().
     // Like the yaml getters, every parse failure falls back to the CURRENT
     // member value — which at this point carries the yaml-loaded (or default)
     // setting — never a hardcoded default. A malformed env var must degrade to
     // "env override ignored", not silently clobber a value the user set in the
     // config file.
-    static void env_into(const ResolvedEnv& e, bool& v) { v = safe_env_stob(e.name.c_str(), e.value, v); }
-    static void env_into(const ResolvedEnv& e, int& v) { v = safe_env_stoi(e.name.c_str(), e.value, v); }
-    static void env_into(const ResolvedEnv& e, double& v) { v = safe_env_stod(e.name.c_str(), e.value, v); }
+    static void env_into(const ResolvedEnv& e, bool& v) {
+        v = safe_env_parse(stob_, "Failed to parse boolean", e.name.c_str(), e.value, v);
+    }
+    static void env_into(const ResolvedEnv& e, int& v) {
+        v = safe_env_parse(stoi_, "Invalid integer", e.name.c_str(), e.value, v);
+    }
+    static void env_into(const ResolvedEnv& e, double& v) {
+        v = safe_env_parse(stod_, "Invalid double", e.name.c_str(), e.value, v);
+    }
     static void env_into(const ResolvedEnv& e, std::string& v) { v = e.value; }
     static void env_into(const ResolvedEnv& e, size_t& v) {
-        v = static_cast<size_t>(safe_env_stoi(e.name.c_str(), e.value, static_cast<int>(v)));
+        v = static_cast<size_t>(
+            safe_env_parse(stoi_, "Invalid integer", e.name.c_str(), e.value, static_cast<int>(v)));
     }
     static void env_into(const ResolvedEnv& e, std::vector<std::string>& v) {
         // SkipEmpty keeps an empty (or all-commas) variable from producing

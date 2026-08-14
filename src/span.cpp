@@ -85,11 +85,6 @@ namespace pinpoint {
             finished_events.emplace_back(std::move(se));
             return;
         }
-        if (sequence < finished_events.front()->getSequence()) {
-            finished_events.insert(finished_events.begin(), std::move(se));
-            return;
-        }
-
         auto pos = std::lower_bound(
             finished_events.begin(), finished_events.end(), sequence,
             [](const std::unique_ptr<SpanEventImpl>& event, int32_t sequence) {

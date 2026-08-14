@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <mutex>
 #include <thread>
 
@@ -150,13 +151,13 @@ namespace pinpoint {
                 constexpr size_t kMaxInitialReserve = 4096;
                 urlMap_.reserve(std::min(static_cast<size_t>(config.http.url_stat.limit), kMaxInitialReserve));
             }
-            found = urlMap_.try_emplace(std::move(key), tick).first;
+            found = urlMap_.try_emplace(std::move(key)).first;
         }
 
         auto& stats = found->second;
-        stats.getTotalHistogram().add(us->elapsed_);
+        stats.total.add(us->elapsed_);
         if (us->failed_) {
-            stats.getFailHistogram().add(us->elapsed_);
+            stats.fail.add(us->elapsed_);
         }
     }
 

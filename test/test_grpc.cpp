@@ -185,20 +185,20 @@ TEST_F(GrpcTest, GrpcClientTlsUsesDefaultRootsWhenNoCertificatePathIsSet) {
 // Metadata Structure Tests
 
 TEST_F(GrpcTest, MetaDataApiTest) {
-    MetaData meta_data(META_API, 1, 100, "test.api");
-    
-    EXPECT_EQ(meta_data.meta_type_, META_API);
-    const auto& api_meta = std::get<ApiMeta>(meta_data.value_);
+    MetaData meta_data{ApiMeta(1, 100, "test.api")};
+
+    ASSERT_TRUE(std::holds_alternative<ApiMeta>(meta_data));
+    const auto& api_meta = std::get<ApiMeta>(meta_data);
     EXPECT_EQ(api_meta.id_, 1);
     EXPECT_EQ(api_meta.type_, 100);
     EXPECT_EQ(api_meta.api_str_, "test.api");
 }
 
 TEST_F(GrpcTest, MetaDataStringTest) {
-    MetaData meta_data(META_STRING, 2, "test.string", STRING_META_ERROR);
-    
-    EXPECT_EQ(meta_data.meta_type_, META_STRING);
-    const auto& str_meta = std::get<StringMeta>(meta_data.value_);
+    MetaData meta_data{StringMeta(2, "test.string", STRING_META_ERROR)};
+
+    ASSERT_TRUE(std::holds_alternative<StringMeta>(meta_data));
+    const auto& str_meta = std::get<StringMeta>(meta_data);
     EXPECT_EQ(str_meta.id_, 2);
     EXPECT_EQ(str_meta.str_val_, "test.string");
     EXPECT_EQ(str_meta.type_, STRING_META_ERROR);
@@ -254,10 +254,10 @@ TEST_F(GrpcTest, ExceptionMetaMultipleExceptionsTest) {
 
 TEST_F(GrpcTest, MetaDataSqlUidTest) {
     SqlUid uid = {1, 2, 3, 4, 5};
-    MetaData meta_data(META_SQL_UID, uid, "SELECT * FROM users");
+    MetaData meta_data{SqlUidMeta(uid, "SELECT * FROM users")};
 
-    EXPECT_EQ(meta_data.meta_type_, META_SQL_UID);
-    const auto& sql_uid_meta = std::get<SqlUidMeta>(meta_data.value_);
+    ASSERT_TRUE(std::holds_alternative<SqlUidMeta>(meta_data));
+    const auto& sql_uid_meta = std::get<SqlUidMeta>(meta_data);
     EXPECT_EQ(sql_uid_meta.uid_, uid);
     EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM users");
 }
@@ -269,10 +269,10 @@ TEST_F(GrpcTest, MetaDataExceptionTest) {
     cs->push("libcore", "deref", "ptr.cpp", 10);
     exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
 
-    MetaData meta_data(META_EXCEPTION, txid, 42, "/api/v1/resource", std::move(exceptions));
+    MetaData meta_data{ExceptionMeta(txid, 42, "/api/v1/resource", std::move(exceptions))};
 
-    EXPECT_EQ(meta_data.meta_type_, META_EXCEPTION);
-    const auto& exc_meta = std::get<ExceptionMeta>(meta_data.value_);
+    ASSERT_TRUE(std::holds_alternative<ExceptionMeta>(meta_data));
+    const auto& exc_meta = std::get<ExceptionMeta>(meta_data);
     EXPECT_EQ(exc_meta.txid_.agentId(), "agent");
     EXPECT_EQ(exc_meta.span_id_, 42);
     EXPECT_EQ(exc_meta.url_template_, "/api/v1/resource");

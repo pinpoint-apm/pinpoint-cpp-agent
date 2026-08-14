@@ -271,14 +271,14 @@ namespace pinpoint {
             url_stat->set_uri(key.url_);
 
             auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(total, each_stats.getTotalHistogram());
+            build_url_histogram(total, each_stats.total);
             url_stat->unsafe_arena_set_allocated_totalhistogram(total);
 
             auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(fail, each_stats.getFailHistogram());
+            build_url_histogram(fail, each_stats.fail);
             url_stat->unsafe_arena_set_allocated_failedhistogram(fail);
 
-            url_stat->set_timestamp(each_stats.tick());
+            url_stat->set_timestamp(key.tick_);
         }
     }  // namespace
 

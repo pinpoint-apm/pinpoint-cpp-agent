@@ -77,12 +77,3 @@ cc_test(
         ":test_common",
     ],
 )
-
-# Test suite for all tests
-test_suite(
-    name = "all_tests",
-    tests = [":" + t for t in _TESTS] + [
-        ":test_tracer_c",
-        "//test/it:agent_integration_test",
-    ],
-)

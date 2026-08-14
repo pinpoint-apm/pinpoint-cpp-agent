@@ -130,9 +130,6 @@ namespace pinpoint {
         const std::string& getAppName() const override;
         int32_t getAppType() const override;
         const std::string& getAgentId() const override;
-        // Not part of AgentService: nothing reads the agent name through the
-        // interface (the gRPC header is built from the config directly).
-        const std::string& getAgentName() const;
         const std::string& getServiceName() const override;
 
         std::shared_ptr<const Config> getConfig() const override;

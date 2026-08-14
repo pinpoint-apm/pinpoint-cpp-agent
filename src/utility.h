@@ -26,7 +26,6 @@
 #include <optional>
 #include <sys/types.h>
 #include <thread>
-#include <vector>
 #include <string_view>
 
 #if defined(__SANITIZE_ADDRESS__)
