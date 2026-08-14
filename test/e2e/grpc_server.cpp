@@ -1,6 +1,7 @@
 #include <iostream>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -121,6 +122,11 @@ void request_stop(int) { g_stop = 1; }
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Redirected stdout is block-buffered, and the process then blocks serving
+  // requests until it is killed, so run_e2e.sh's log greps can race the
+  // unflushed tail. Matches e2e_server.cpp.
+  setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+
   int port = 50051;
   if (argc > 1) {
     port = std::atoi(argv[1]);

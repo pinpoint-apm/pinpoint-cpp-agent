@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -70,6 +71,11 @@ void trace(const httplib::Request& req, httplib::Response& res) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Redirected stdout is block-buffered, and the process then blocks serving
+    // requests until it is killed, so run_e2e.sh's log greps can race the
+    // unflushed tail. Matches e2e_server.cpp.
+    setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+
     const int port = argc > 1 ? std::atoi(argv[1]) : 8091;
     it_test::configure_agent_env("cpp-it-http-downstream", "it-http-downstream");
     if (!pinpoint::StartAgent()) {
