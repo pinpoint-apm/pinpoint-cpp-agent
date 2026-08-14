@@ -2,6 +2,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,23 @@ bool WaitUntilEnabled(const pinpoint::AgentPtr& agent) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return agent->Enable();
+}
+
+// write() is declared warn_unused_result, and a (void) cast does not silence
+// that in GCC, so the result has to be handled rather than discarded. It is
+// worth handling anyway: a signal can interrupt a write, and a short write
+// would hand the parent a truncated trace id to compare.
+bool WriteAll(int fd, const char* data, size_t size) {
+    while (size > 0) {
+        const ssize_t written = write(fd, data, size);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        data += written;
+        size -= static_cast<size_t>(written);
+    }
+    return true;
 }
 
 std::string RunChild(int index, int* child_status) {
@@ -53,14 +71,16 @@ std::string RunChild(int index, int* child_status) {
         options.libs = {"fork"};
         if (!pinpoint::StartAgent(options)) {
             const char* failure = "start-failed";
-            (void)write(fds[1], failure, std::strlen(failure));
+            // Best-effort diagnostics: the _exit below already fails the run.
+            WriteAll(fds[1], failure, std::strlen(failure));
             close(fds[1]);
             _exit(2);
         }
         auto agent = pinpoint::GlobalAgent();
         if (!WaitUntilEnabled(agent)) {
             const char* failure = "collector-timeout";
-            (void)write(fds[1], failure, std::strlen(failure));
+            // Best-effort diagnostics: the _exit below already fails the run.
+            WriteAll(fds[1], failure, std::strlen(failure));
             close(fds[1]);
             _exit(2);
         }
@@ -70,10 +90,13 @@ std::string RunChild(int index, int* child_status) {
         const std::string trace_id = span->GetTraceId();
         span->NewSpanEvent("fork-child-work")->EndEvent();
         span->EndSpan();
-        (void)write(fds[1], trace_id.data(), trace_id.size());
+        // This one is load-bearing: the parent compares the trace id it reads
+        // here, so a failed or partial send has to fail the child rather than
+        // leave the parent asserting on a truncated value.
+        const bool sent = WriteAll(fds[1], trace_id.data(), trace_id.size());
         close(fds[1]);
         agent->Shutdown();
-        _exit(trace_id.empty() ? 3 : 0);
+        _exit((trace_id.empty() || !sent) ? 3 : 0);
     }
 
     close(fds[1]);
