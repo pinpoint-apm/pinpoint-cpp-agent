@@ -265,14 +265,24 @@ namespace pinpoint {
         // stall takeSnapshot (the send path) for the entire batch.
         constexpr size_t kEntriesPerSnapshotLock = 64;
 
+        // Hoisted out of the loop, and swapped only into shards that hold
+        // something. The worker wakes on the empty→non-empty transition, so it
+        // runs about once per enqueue under load; building a deque per shard
+        // meant kQueueShardCount allocations per call — nearly all of them for
+        // shards that were empty — to move a handful of entries. Reuse is safe
+        // because the drain loop below always leaves batch empty, and keeping
+        // its buffer is what removes the allocation. A non-empty shard gets
+        // that buffer in exchange, which its next enqueue reuses.
+        std::queue<UrlStatEntry> batch;
+
         for (auto& shard : queue_shards_) {
-            std::queue<UrlStatEntry> batch;
             {
                 std::lock_guard<std::mutex> shard_lock(shard.mutex_);
-                batch.swap(shard.queue_);
-                if (!batch.empty()) {
-                    pending_.fetch_sub(static_cast<int64_t>(batch.size()), std::memory_order_relaxed);
+                if (shard.queue_.empty()) {
+                    continue;
                 }
+                batch.swap(shard.queue_);
+                pending_.fetch_sub(static_cast<int64_t>(batch.size()), std::memory_order_relaxed);
             }
 
             while (!batch.empty()) {
