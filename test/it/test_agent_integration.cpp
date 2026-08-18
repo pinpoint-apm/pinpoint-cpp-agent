@@ -2073,8 +2073,7 @@ TEST_F(AgentIntegrationTest, RetriesPeriodicAgentInfoResendAfterFailure) {
     cfg_.agent_info_refresh_interval_ms = 200;
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
-    const auto registered = collector_.snapshot().agent_infos.size();
-    ASSERT_GE(registered, 1U);
+    ASSERT_GE(collector_.snapshot().agent_infos.size(), 1U);
 
     // Armed only now, so boot registration keeps its own success and the
     // fault lands on a re-send instead.
@@ -2082,17 +2081,26 @@ TEST_F(AgentIntegrationTest, RetriesPeriodicAgentInfoResendAfterFailure) {
                         grpc::StatusCode::UNAVAILABLE,
                         "periodic re-send rejected");
 
-    // The failed attempt and its retry both reach the collector.
-    ASSERT_TRUE(collector_.WaitFor([registered](const auto& snapshot) {
-        return snapshot.agent_infos.size() >= registered + 2;
+    // The failed attempt and its retry both reach the collector. Locate the
+    // injected failure instead of assuming its index: a periodic re-send can
+    // land between the snapshot above and FailNext arming, shifting every
+    // later entry by one.
+    const auto find_failed = [](const std::vector<RpcResult>& results) {
+        return std::find_if(results.begin(), results.end(), [](const RpcResult& r) {
+            return r.status_code == grpc::StatusCode::UNAVAILABLE;
+        });
+    };
+    ASSERT_TRUE(collector_.WaitFor([&find_failed](const auto& snapshot) {
+        const auto results = results_for(snapshot, CollectorRpc::AgentInfo);
+        const auto failed = find_failed(results);
+        return failed != results.end() && std::next(failed) != results.end();
     }, kWaitTimeout));
 
     const auto results = results_for(collector_.snapshot(), CollectorRpc::AgentInfo);
-    ASSERT_GE(results.size(), registered + 2);
-    const auto& failed = results[registered];
-    const auto& retried = results[registered + 1];
-    EXPECT_EQ(failed.status_code, grpc::StatusCode::UNAVAILABLE);
-    EXPECT_FALSE(failed.response_success);
+    const auto failed = find_failed(results);
+    ASSERT_NE(failed, results.end());
+    EXPECT_FALSE(failed->response_success);
+    const auto& retried = *std::next(failed);
     EXPECT_EQ(retried.status_code, grpc::StatusCode::OK);
     EXPECT_TRUE(retried.response_success);
     // A best-effort cycle must never take the agent offline.
