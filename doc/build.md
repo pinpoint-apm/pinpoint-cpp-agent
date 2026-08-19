@@ -12,7 +12,7 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 | Bazel | 7.0+ |
 | CMake | 3.21+ |
 | Ninja (recommended) | Used by all CMake presets |
-| OS | Linux, macOS, Windows |
+| OS | Linux, macOS |
 
 ---
 

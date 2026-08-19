@@ -6,10 +6,10 @@ This guide helps you get started with the Pinpoint C++ Agent (`pinpoint-cpp-agen
 
 ## Prerequisites
 
-- **Pinpoint Collector**: Version 2.4.0 or higher
+- **Pinpoint Collector**: Version 3.1.0 or higher
 - **C++ Compiler**: Supporting C++17 or higher
 - **Build System**: CMake 3.21+ or Bazel 7.0+
-- **Operating System**: Linux, macOS, or Windows
+- **Operating System**: Linux or macOS
 
 ---
 
@@ -101,9 +101,6 @@ Or set `PINPOINT_CPP_CONFIG_FILE` in the environment.
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
 export PINPOINT_CPP_AGENT_NAME="my-agent-name"
 export PINPOINT_CPP_COLLECTOR_HOST="localhost"
-export PINPOINT_CPP_COLLECTOR_AGENT_PORT="9991"
-export PINPOINT_CPP_COLLECTOR_SPAN_PORT="9993"
-export PINPOINT_CPP_COLLECTOR_STAT_PORT="9992"
 ```
 
 ### Option 3: Configuration String
@@ -161,10 +158,7 @@ void on_users(const httplib::Request& req, httplib::Response& res) {
     HttpHeaderReader req_reader(req.headers);
     auto span = agent->NewSpan("MyService", req.path, req.method, req_reader);
 
-    auto end_point = req.get_header_value("Host");
-    if (end_point.empty()) {
-        end_point = req.local_addr + ":" + std::to_string(req.local_port);
-    }
+    auto end_point = req.local_addr + ":" + std::to_string(req.local_port);
     // Records the remote address, endpoint and request headers in one call
     pinpoint::helper::TraceHttpServerRequest(span, req.remote_addr, end_point, req_reader);
 
