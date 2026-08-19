@@ -72,14 +72,10 @@ The `example/` directory contains complete working examples:
 
 - **[proxy.cpp](example/proxy.cpp)** — HTTP proxy: client-side tracing and cross-process context propagation
 - **[server.cpp](example/server.cpp)** — HTTP backend: server-side tracing, a MySQL span event, and an async span
-- **[README.md](example/README.md)** — how to run the full distributed-trace demo: proxy → server → MySQL
 
 More examples are in the
 [pinpoint-cpp-examples](https://github.com/pinpoint-apm/pinpoint-cpp-examples)
-repository. For C applications, see the
-[civetweb example](https://github.com/pinpoint-apm/pinpoint-cpp-examples/tree/main/civetweb)
-and the
-[nginx module](https://github.com/pinpoint-apm/pinpoint-cpp-examples/blob/main/nginx/ngx_http_pinpoint_module.c).
+repository.
 
 ## Documentation
 
