@@ -14,7 +14,7 @@ The agent merges configuration from three sources. **Later sources override earl
 
 Values are normalised (clamped into range) after the merge.
 
-> **Environment variables are read only while building the initial configuration** (before the agent exists). Once the agent is running, a [hot reload](#configuration-hot-reload) rebuilds the config from the file **without re-reading environment variables** — so a value provided only via an env var is fixed for the agent's lifetime and cannot change at runtime.
+> **Environment variables are read only while building the initial configuration** (before the agent exists). Once the agent is running, a [hot reload](#configuration-hot-reload) rebuilds the config from the file **without re-reading environment variables** — an env-sourced value survives reloads as long as the watched file does not set that key, but if the file later adds a reloadable key, the file value overrides the env-sourced one from then on.
 
 ### Method 1: YAML Configuration File
 
@@ -118,7 +118,7 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning`, `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
-| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout/stderr. Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
 `LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.
@@ -194,7 +194,7 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 |---|---|---|---|---|
 | `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). Values other than `PERCENT` use counter sampling. |
 | `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions. `0` = disable. |
-| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Negative values become `0`; positive values below `0.01` become `0.01`; values above `100` become `100`. |
+| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Negative values become `0` (never sample); non-negative values below `0.01` — including exactly `0` — become `0.01`; values above `100` become `100`. To disable percent sampling, use a negative value, not `0`. |
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
@@ -258,7 +258,7 @@ Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are d
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. Bind values are recorded only when this is greater than `0`; negative values are clamped to `0`. An argument that would exceed a positive limit is omitted and the value ends with `...(N)`. |
-| `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Aggregate execution counts even for unsampled traces. |
+| `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Record SQL metadata keyed by UID (`SQL-UID` annotation) instead of ID (`SQL-ID`), for collectors that aggregate SQL statistics by uid. Applies to sampled spans only. |
 | `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAW_SQL_CACHE` | bool | `true` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
 
@@ -289,19 +289,28 @@ startup. Inline YAML strings are not watched.
 
 ### Reloadable vs. Non-Reloadable Options
 
-Options that define the agent's identity or its gRPC connection targets are
-**non-reloadable** — changing them requires an application restart.
+Options that define the agent's identity, its collector transport (connection
+targets plus agent-info and span-batch tuning), the stat pipeline, URL
+statistics, the span queue size, or the watcher itself are **non-reloadable** —
+changing them requires an application restart.
 
 | Category | Options | Reloadable? |
 |---|---|---|
 | Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
-| Collector / gRPC connection | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*` | No |
+| Collector / gRPC transport | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*`, `Collector.AgentInfo.*`, `Collector.SpanBatch.*` | No |
+| Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
+| URL statistics | `Http.CollectUrlStat`, `Http.UrlStat*` | No |
+| Span queue | `Span.QueueSize` | No |
 | Config-file watcher | `EnableConfigFileWatcher` | No |
+| Logging | `Log.Level`, `Log.FilePath`, `Log.MaxFileSize` | **Yes** |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
+| Per-span limits | `Span.MaxEventDepth`, `Span.MaxEventSequence`, `Span.EventChunkSize` | **Yes** (spans created after the reload) |
+| Callstack capture | `EnableCallstackTrace` | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue` | **Yes** |
+| Startup-only toggles | `Enable`, `IsContainer` | Accepted into the config, but without effect — both are consumed only at startup (the gRPC workers keep their boot snapshot), so editing them mid-run changes nothing. |
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —
 the running value is kept — and logged as a warning, while reloadable changes in
@@ -309,12 +318,13 @@ the same file still take effect.
 
 ### What Is Rebuilt
 
-Each component is rebuilt **only if its backing configuration changed**, so
-untouched components keep running as-is with their accumulated state (such as
-throughput-sampler counters): the sampler (`Sampling.*`), the URL filter
+Every config-derived component is rebuilt on **every** reload, whether or not
+its backing configuration changed: the sampler (`Sampling.*`), the URL filter
 (`ExcludeUrl`), the method filter (`ExcludeMethod`), the status error codes
 (`StatusCodeErrors`), and the header recorders (any server- or client-side
-header/cookie list).
+header/cookie list). A reload only fires on an actual file edit, so the cost
+is one pattern compile per edit; the one piece of accumulated state discarded
+is the throughput sampler's counters, which re-warm within one interval.
 
 Rebuilt components are published together in a **single atomic swap**, so
 in-flight requests can never observe a half-applied reload. Each span snapshots
@@ -322,8 +332,12 @@ the configuration once at creation, so per-span options (e.g. `Span.MaxEventDept
 `Span.EventChunkSize`, `Sql.EnableSqlStats`, `Sql.TraceBindValue`) take effect for
 spans **created after** the reload; an already-open span keeps its values.
 
-A successful reload logs `agent config reloaded`; a warning is logged instead if
-the file cannot be parsed or changed a non-reloadable field.
+Every reload that runs ends with `agent config reloaded` — including the two
+failure cases, which log first and then proceed: a file that cannot be parsed
+logs a `yaml parsing exception` **error** and the reload continues with the
+running values, and a change to a non-reloadable field logs a warning naming
+the retained fields while reloadable changes in the same file still take
+effect.
 
 ---
 

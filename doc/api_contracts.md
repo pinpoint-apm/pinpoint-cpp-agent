@@ -79,7 +79,7 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 
 ## 6. `GetSpanEvent()` Returns the Innermost Active Event
 
-`GetSpanEvent()` returns the top of the event stack: the most recently created event that has not ended. It never returns null — when the span is finished or has no active event, it returns a shared no-op event and logs `abnormal span - has no event`. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `SpanEventPtr` returned by `NewSpanEvent()` explicitly.
+`GetSpanEvent()` returns the top of the event stack: the most recently created event that has not ended. It never returns null — a span with no active event returns a shared no-op event and logs `abnormal span - has no event`; a finished span returns the same no-op event but logs `span is already finished`; an overflowed span returns the disabled event without logging. Do not assume it refers to a specific event you created earlier; in helper functions, prefer passing the `SpanEventPtr` returned by `NewSpanEvent()` explicitly.
 
 ## 7. Annotation Rules
 

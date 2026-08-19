@@ -172,8 +172,8 @@ span->SetStartTime(start_time);                          // override start time
 ### Inspecting Span State
 
 ```cpp
-auto& trace_id = span->GetTraceId();
-std::cout << "Trace: " << trace_id.ToString() << std::endl;
+std::string trace_id = span->GetTraceId();  // "<agent_id>^<start_time>^<sequence>"
+std::cout << "Trace: " << trace_id << std::endl;
 
 int64_t span_id = span->GetSpanId();
 
@@ -436,9 +436,10 @@ protocols by mapping trace keys to your own metadata format.
 
 ### Tracing a Server Handler
 
-The complete, compiling version of this pattern is
-[`example/http_server.cpp`](../example/http_server.cpp); wrapping every handler
-once keeps the tracing out of the business logic:
+[`example/http_server.cpp`](../example/http_server.cpp) is a complete,
+compiling single-handler variant (an inline `make_span()` helper instead of a
+wrapper); the pattern below wraps every handler once, which keeps the tracing
+out of the business logic:
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -571,7 +572,6 @@ pinpoint::SERVICE_TYPE_CASSANDRA_QUERY  // Cassandra
 - Wrap DB access in helper methods so every query is traced consistently.
 - Use the correct `SERVICE_TYPE_*` constant for the backend.
 - Sanitize SQL text and parameters before recording — never log passwords or secrets.
-- See [`example/tutorial.cpp`](../example/tutorial.cpp) for a full working example.
 
 ---
 

@@ -206,9 +206,10 @@ automatically. Use `--profile-output PATH` to select another location and
 `--profile-frequency N` to change the Linux sampling frequency. macOS produces
 a `.trace` bundle for Instruments; Linux produces a `perf.data`-compatible file.
 
-`--profile` verifies the profiler before the servers start, by taking a
-throwaway capture: an unusable `perf` fails the run in milliseconds instead of
-after the smoke phase. Check a host on its own with:
+`--profile` verifies the profiler before the servers start. On Linux it takes
+a throwaway `perf` capture, so an unusable `perf` fails the run in milliseconds
+instead of after the smoke phase; on macOS it checks that `xcrun`/`xctrace` are
+available without recording anything. Check a host on its own with:
 
 ```bash
 ./test/e2e/profile_load.sh --check

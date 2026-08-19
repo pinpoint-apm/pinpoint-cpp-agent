@@ -30,10 +30,10 @@ cause is recorded.
 | `agent start failed: ...` | Configuration or setup error; the line names the cause. |
 | `failed to init grpc workers: ...` | gRPC bring-up error. |
 | `failed to send AgentInfo` | The collector is not reachable yet. Retried indefinitely. |
-| *(nothing at all)* | A deliberate `Enable: false` returns `false` and logs nothing — see [Disabling the Agent](#disabling-the-agent). |
+| `config: ...` dump, then nothing | A deliberate `Enable: false`: the resolved-config dump (which itself shows `Enable: false`) is written, then the agent goes quiet — no `AgentInfo sent`, no error line. See [Disabling the Agent](#disabling-the-agent). |
 
-Set `Log.Level: "debug"` for the full picture, including the resolved
-configuration. Whatever the log says, **a failed agent start never affects the
+The resolved configuration is logged at `info`; set `Log.Level: "debug"` for
+the full picture of gRPC and worker activity. Whatever the log says, **a failed agent start never affects the
 application**: every tracing call degrades to a safe no-op, the application runs
 exactly as it would without the agent, and only the traces are lost.
 
@@ -54,8 +54,9 @@ Enable: false
 
 > **A deliberate disable returns `false`, just like a failure.** `Enable: false`
 > and a real configuration error are indistinguishable from the return value
-> alone, and the disable is the one case that writes **nothing** to the agent
-> log — so the usual "check the agent log" message points at an empty log. In a
+> alone; the agent log tells them apart. A disabled start still writes the
+> resolved-config dump (`config: ...`, which itself shows `Enable: false`) and
+> then goes quiet — no `AgentInfo sent`, but no error line either. In a
 > deployment that may be configured with `Enable: false`, either skip the
 > `StartAgent()` call when you know tracing is off, or word the message so it
 > does not read as an error (e.g. "pinpoint tracing is not active"). Everything
@@ -125,7 +126,7 @@ new `pt_start_agent()`; see the [C API guide](instrument_c.md#3-bootstrapping-th
 ## Logging
 
 The agent logs configuration, gRPC, and span collection activity. By default it
-writes to stdout/stderr; file logging rotates automatically. Levels are
+writes to stdout (all levels, including errors); file logging rotates automatically. Levels are
 `debug`, `info` (default), `warning`, `error` — see the
 [Configuration Guide](config.md) for the keys and their environment variables.
 
@@ -148,17 +149,18 @@ EnableCallstackTrace: true   # stack traces on recorded errors
 
 **Diagnosis:** read the agent log — see [Verifying Agent Startup](#verifying-agent-startup)
 for what each entry means and why `Enable()` right after `StartAgent()` diagnoses
-nothing. An **empty** agent log next to a `false` return points at `Enable: false`
-rather than a broken configuration; check that first.
+nothing. A `false` return whose log shows the `config:` dump (with
+`Enable: false`) and no error line points at a deliberate disable rather than a
+broken configuration; check that first.
 
 **Solutions:**
 
 1. **Check the required fields** — `ApplicationName` and `Collector.Host` must be set.
 2. **Verify collector connectivity** — see [Cannot Connect to Collector](#cannot-connect-to-collector).
 3. **Check permissions** — the log directory must be writable.
-4. **Check the *resolved* configuration** — with `Log.Level: "debug"` the agent
-   logs the configuration it actually resolved, after the file, environment
-   variables and defaults have been merged. This is the fastest way to catch a
+4. **Check the *resolved* configuration** — the agent logs the configuration it
+   actually resolved (the `config:` dump, at `info` level), after the file,
+   environment variables and defaults have been merged. This is the fastest way to catch a
    setting that never took effect: a typo'd YAML key, a stale `PINPOINT_CPP_*`
    variable overriding the file, or a value clamped into range.
 

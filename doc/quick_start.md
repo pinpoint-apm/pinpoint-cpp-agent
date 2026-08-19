@@ -213,9 +213,11 @@ int main() {
 }
 ```
 
-See the full working program — several handlers, nested span events, URL
-statistics — in [`example/http_server.cpp`](../example/http_server.cpp), and SQL
-tracing in [`example/tutorial.cpp`](../example/tutorial.cpp).
+See the full working program — a traced handler with nested span events and URL
+statistics — in [`example/http_server.cpp`](../example/http_server.cpp), and
+outgoing-call and async-span tracing in
+[`example/tutorial.cpp`](../example/tutorial.cpp). SQL tracing is covered in
+[Instrumentation Guide §8](instrument.md#8-database-and-backend-instrumentation).
 
 ### Build and Run
 

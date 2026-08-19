@@ -98,7 +98,9 @@ the hook simply loses whatever was still queued in that process.
 - **Instance count**: N workers = N agent instances on the collector and in
   the UI. Size `worker_processes` (and the collector) with that in mind.
 - **Threads**: each worker runs the agent's background threads (~10) plus
-  gRPC's internal threads. They are started with all signals blocked, so
+  gRPC's internal threads. They are started with all signals blocked except
+  the synchronous fatal ones (`SIGSEGV`, `SIGBUS`, `SIGFPE`, `SIGILL`,
+  `SIGABRT`, `SIGSYS`, which must stay deliverable to a faulting thread), so
   process-directed signals (nginx's `SIGTERM`/`SIGQUIT`/`SIGHUP` to a worker)
   are always delivered to the host's own threads, never to an agent thread.
 - **Collector connections**: each worker maintains its own gRPC channels.

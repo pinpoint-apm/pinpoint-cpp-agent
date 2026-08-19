@@ -316,8 +316,11 @@ pt_span_destroy(span);  /* release the handle              */
 ### Inspecting span state
 
 ```c
-pt_trace_id_t tid = pt_span_get_trace_id(span);
-printf("agent_id=%s seq=%" PRId64 "\n", tid.agent_id, tid.sequence);
+/* Wire form "<agent_id>^<start_time>^<sequence>", snprintf semantics:
+ * the return value is the full length; PT_TRACE_ID_MAX never truncates. */
+char tid[PT_TRACE_ID_MAX];
+pt_span_get_trace_id(span, tid, sizeof(tid));
+printf("trace_id=%s\n", tid);  /* empty string for a noop/unsampled span */
 
 int64_t span_id = pt_span_get_span_id(span);
 
@@ -659,7 +662,8 @@ Rules:
 - Create the async span before the parent span ends.
 - The async span's lifetime is independent of the parent span after creation.
 
-See `example/tutorial_c.c` (step 3) for a complete async span example.
+See the `run_async_span()` function in `example/tutorial_c.c` for a complete
+async span example.
 
 ---
 

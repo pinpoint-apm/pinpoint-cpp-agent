@@ -77,7 +77,7 @@ while a span request is stalled.
 
 ## Collector-outage scenarios
 
-Three scenarios assert that the host application never degrades with the
+Four scenarios assert that the host application never degrades with the
 collector:
 
 - An agent started during a sustained outage keeps retrying registration,
