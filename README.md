@@ -17,6 +17,20 @@ Pinpoint C++ Agent enables you to monitor C++ applications using Pinpoint. Devel
 
 ## Building from Source
 
+Clone the repository with its submodules (the Protobuf/gRPC service definitions live in a git submodule):
+
+```bash
+git clone --recurse-submodules https://github.com/pinpoint-apm/pinpoint-cpp-agent.git
+```
+
+Or, if you already cloned without the flag:
+
+```bash
+git submodule update --init --recursive
+```
+
+Then build:
+
 ```bash
 # CMake
 cmake --preset default
