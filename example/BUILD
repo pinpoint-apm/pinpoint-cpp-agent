@@ -13,10 +13,10 @@ cc_library(
     ],
 )
 
-# Tutorial example
+# Distributed tracing demo: proxy -> server -> (simulated) MySQL.
 cc_binary(
-    name = "tutorial",
-    srcs = ["tutorial.cpp"],
+    name = "distributed_proxy",
+    srcs = ["proxy.cpp"],
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
@@ -24,45 +24,12 @@ cc_binary(
     ],
 )
 
-# HTTP Server example
 cc_binary(
-    name = "http_server",
-    srcs = ["http_server.cpp"],
+    name = "distributed_server",
+    srcs = ["server.cpp"],
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
         "//3rd_party:httplib",
-    ],
-)
-
-# Pure-C wrapper around cpp-httplib used by the C-only examples.
-# Built as C++ internally; exposes a pure-C header.
-cc_library(
-    name = "httplib_c",
-    srcs = ["httplib_c.cpp"],
-    hdrs = ["httplib_c.h"],
-    includes = ["."],
-    deps = [
-        "//3rd_party:httplib",
-    ],
-)
-
-# HTTP Server example (C port)
-cc_binary(
-    name = "http_server_c",
-    srcs = ["http_server_c.c"],
-    deps = [
-        ":httplib_c",
-        "//:pinpoint-cpp",
-    ],
-)
-
-# Tutorial example (C port)
-cc_binary(
-    name = "tutorial_c",
-    srcs = ["tutorial_c.c"],
-    deps = [
-        ":httplib_c",
-        "//:pinpoint-cpp",
     ],
 )

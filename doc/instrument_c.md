@@ -261,7 +261,7 @@ pt_header_reader_t hdr_reader = {
 };
 ```
 
-> **Tip**: If your HTTP library's `get` and `for_each` function signatures already match `pt_reader_get_fn` and `pt_header_for_each_fn`, assign them directly without writing adapter functions — see [`example/http_server_c.c`](../example/http_server_c.c) for a concrete example.
+> **Tip**: If your HTTP library's `get` and `for_each` function signatures already match `pt_reader_get_fn` and `pt_header_for_each_fn`, assign them directly without writing adapter functions.
 
 ---
 
@@ -379,8 +379,6 @@ pt_span_event_t e1 = pt_span_new_event(span, "outer");
 pt_span_event_end(e1);         /* ends outer */
 pt_span_event_destroy(e1);
 ```
-
-See `example/http_server_c.c` (`record_nested_events`) for an extended nesting example.
 
 ---
 
@@ -507,9 +505,7 @@ pt_span_t span = pt_agent_new_span_with_reader(
 Context is injected through the span event that represents the outbound call:
 build the outbound header map, wrap it in a `pt_context_writer_t`, and call
 `pt_span_event_inject_context(se, &writer)` before issuing the request. A full
-example is in [Outbound HTTP client call](#outbound-http-client-call) below, and
-a working one using `hlc_mutable_headers_t` in
-[`example/tutorial_c.c`](../example/tutorial_c.c).
+example is in [Outbound HTTP client call](#outbound-http-client-call) below.
 
 ---
 
@@ -580,11 +576,6 @@ static void handle_request(const my_request_t* req, my_response_t* res) {
     pt_agent_destroy(agent);  /* releases the pt_global_agent() handle wrapper */
 }
 ```
-
-The full compiling version is [`example/http_server_c.c`](../example/http_server_c.c).
-For an end-to-end two-hop trace (client + server), run `example/tutorial_c`
-alongside `example/http_server_c` — `tutorial_c` sends requests to port 8090 and
-demonstrates inbound context extraction, outbound injection, and async spans.
 
 ### Outbound HTTP client call
 
@@ -661,9 +652,6 @@ Rules:
 - Each async span must be ended with `pt_span_end()` **exactly once**.
 - Create the async span before the parent span ends.
 - The async span's lifetime is independent of the parent span after creation.
-
-See the `run_async_span()` function in `example/tutorial_c.c` for a complete
-async span example.
 
 ---
 
@@ -777,4 +765,4 @@ PT_API_TYPE_INVOCATION  /* 200 */
 - [config.md](config.md) — full configuration reference
 - [trouble_shooting.md](trouble_shooting.md) — startup contract and diagnostics
 - API header: [`include/pinpoint/tracer_c.h`](../include/pinpoint/tracer_c.h)
-- Examples: [`example/http_server_c.c`](../example/http_server_c.c), [`example/tutorial_c.c`](../example/tutorial_c.c)
+- C examples: the [civetweb example](https://github.com/pinpoint-apm/pinpoint-cpp-examples/tree/main/civetweb) and the [nginx module](https://github.com/pinpoint-apm/pinpoint-cpp-examples/blob/main/nginx/ngx_http_pinpoint_module.c) in [pinpoint-cpp-examples](https://github.com/pinpoint-apm/pinpoint-cpp-examples)

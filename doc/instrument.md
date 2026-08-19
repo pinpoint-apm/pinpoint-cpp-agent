@@ -436,10 +436,10 @@ protocols by mapping trace keys to your own metadata format.
 
 ### Tracing a Server Handler
 
-[`example/http_server.cpp`](../example/http_server.cpp) is a complete,
-compiling single-handler variant (an inline `make_span()` helper instead of a
-wrapper); the pattern below wraps every handler once, which keeps the tracing
-out of the business logic:
+[`example/server.cpp`](../example/server.cpp) is a complete, compiling
+single-handler variant (an inline `make_span()` helper instead of a wrapper);
+the pattern below wraps every handler once, which keeps the tracing out of
+the business logic:
 
 ```cpp
 #include "pinpoint/tracer.h"
@@ -876,4 +876,4 @@ agent log usually names the bug before you have to reason about it.
 - [Troubleshooting Guide](trouble_shooting.md) — startup contract and diagnostics
 - [C API Guide](instrument_c.md) — the same API for plain C
 - API header: [`include/pinpoint/tracer.h`](../include/pinpoint/tracer.h)
-- Examples: [`example/`](../example/) (`http_server.cpp`, `tutorial.cpp`)
+- Examples: [`example/`](../example/) (`proxy.cpp`, `server.cpp`)

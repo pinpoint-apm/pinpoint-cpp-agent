@@ -213,10 +213,10 @@ int main() {
 }
 ```
 
-See the full working program — a traced handler with nested span events and URL
-statistics — in [`example/http_server.cpp`](../example/http_server.cpp), and
-outgoing-call and async-span tracing in
-[`example/tutorial.cpp`](../example/tutorial.cpp). SQL tracing is covered in
+See the full working programs — client-side tracing with context propagation
+in [`example/proxy.cpp`](../example/proxy.cpp), and server-side tracing with a
+SQL span event and an async span in
+[`example/server.cpp`](../example/server.cpp). SQL tracing is covered in
 [Instrumentation Guide §8](instrument.md#8-database-and-backend-instrumentation).
 
 ### Build and Run
@@ -245,9 +245,9 @@ The request appears in the Pinpoint Web UI as a transaction for
    covers HTTP request/response tracing, database query tracing, distributed
    tracing, error handling, asynchronous work, and the API contracts you must
    respect. For plain C, see the [C API Guide](instrument_c.md).
-2. **Explore Examples**: the `example/` directory has complete working programs
-   for C++ (`http_server.cpp`, `tutorial.cpp`) and C (`http_server_c.c`,
-   `tutorial_c.c`).
+2. **Explore Examples**: the `example/` directory has a complete distributed
+   tracing demo (`proxy.cpp`, `server.cpp`) with a run script; see
+   [example/README.md](../example/README.md).
 3. **Configure Advanced Options**: see the [Configuration Guide](config.md) for
    sampling strategies, URL statistics, SQL bind values, logging, and stats.
 
