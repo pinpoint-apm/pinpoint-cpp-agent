@@ -256,6 +256,32 @@ TEST_F(AgentImplTest, NewSpanWithValidTraceIdHeaderIsSampled) {
     EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
 }
 
+TEST_F(AgentImplTest, NewSpanWithHeaderMapExtractsContext) {
+    // The map-based overload runs the same extraction funnel as a reader.
+    std::map<std::string, std::string> headers{
+        {std::string(HEADER_TRACE_ID), "upstream-agent^1700000000^7"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
+    EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
+}
+
+TEST_F(AgentImplTest, NewSpanWithEmptyHeaderMapStartsFreshTrace) {
+    auto span = agent_->NewSpan("test-op", "/test/rpc", {});
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "no inbound context starts a fresh sampled trace";
+}
+
+TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapReturnsNoop) {
+    std::map<std::string, std::string> headers{
+        {std::string(HEADER_TRACE_ID), "this-is-not-a-valid-trace-id"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
+}
+
 TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderReturnsNoop) {
     // Same sampling decision, but the malformed inbound trace id fails to parse.
     // NewSpan must fall back to a non-sampled noop span instead of recording a

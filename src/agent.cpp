@@ -751,6 +751,36 @@ namespace pinpoint {
         return NewSpan(operation, rpc_point, "", reader);
     }
 
+    namespace {
+        // TraceContextReader over a caller-built map of canonical Pinpoint
+        // propagation headers, so the map-based NewSpan overload reuses the
+        // reader-based extraction funnel unchanged.
+        class MapTraceContextReader final : public TraceContextReader {
+        public:
+            explicit MapTraceContextReader(const std::map<std::string, std::string>& headers)
+                : headers_(headers) {}
+
+            std::optional<std::string_view> Get(std::string_view key) const override {
+                // Keys are the short canonical Pinpoint-* names, so the lookup
+                // string stays within SSO.
+                const auto it = headers_.find(std::string(key));
+                if (it == headers_.end()) {
+                    return std::nullopt;
+                }
+                return std::string_view(it->second);
+            }
+
+        private:
+            const std::map<std::string, std::string>& headers_;
+        };
+    }
+
+    SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
+                               const std::map<std::string, std::string>& pinpoint_headers) {
+        MapTraceContextReader reader(pinpoint_headers);
+        return NewSpan(operation, rpc_point, "", reader);
+    }
+
     SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
                                std::string_view method, TraceContextReader& reader) try {
         // Every NewSpan overload funnels through here, so this is the single

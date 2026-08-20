@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -361,6 +362,13 @@ namespace pinpoint {
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) = 0;
         /// @brief Creates a new span, also recording the HTTP @p method.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
+        /// @brief Creates a new span, extracting context from a pre-extracted
+        ///        map of Pinpoint propagation headers keyed by their canonical
+        ///        names (e.g. HEADER_TRACE_ID). Callers that already dumped the
+        ///        Pinpoint-* headers (binding layers) pass them here instead of
+        ///        implementing a TraceContextReader.
+        virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point,
+                                const std::map<std::string, std::string>& pinpoint_headers) = 0;
         /// @brief Returns whether agent initialization succeeded and tracing is
         ///        enabled. Individual spans may still be rejected by sampling.
         ///        Always false for an agent handle inherited across fork() —
