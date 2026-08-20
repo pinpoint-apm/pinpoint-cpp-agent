@@ -384,6 +384,12 @@ namespace pinpoint {
         /// @brief Finalizes the span and queues it for asynchronous delivery.
         void EndSpan() override;
         SpanPtr NewAsyncSpan(std::string_view async_operation) override;
+        SpanPtr NewAsyncSpan(std::string_view async_operation,
+                             int32_t async_id, int32_t async_sequence) override;
+        SpanEventPtr RecordSpanEvent(std::string_view operation, int32_t service_type,
+                                     int32_t sequence, int32_t depth,
+                                     int64_t start_time_ms, int64_t end_time_ms,
+                                     int32_t async_id) override;
 
         /**
          * @brief Extracts a span context from an inbound propagation carrier.

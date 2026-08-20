@@ -301,6 +301,35 @@ namespace pinpoint {
         /// child is a distinct instance that the other thread then uses
         /// exclusively. See the Span thread-safety contract above.
         virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
+        /// @brief Creates an asynchronous child span linked by caller-supplied
+        ///        async ids, for wrappers that manage span events outside this
+        ///        library (see RecordSpanEvent).
+        ///
+        /// The single-argument overload reads the async link from this span's
+        /// active native span event; a wrapper that records its events itself
+        /// has none, so it assigns `async_id` to its own parent event (flushed
+        /// later with that event) and passes the per-event `async_sequence`
+        /// here instead.
+        virtual SpanPtr NewAsyncSpan(std::string_view async_operation,
+                                     int32_t async_id, int32_t async_sequence) = 0;
+        /// @brief Records one already-completed span event (batch replay).
+        ///
+        /// For wrappers that create, position and time their span events
+        /// themselves and flush them in one batch at span end: sequence,
+        /// depth and both timestamps (epoch milliseconds) come from the
+        /// caller instead of this span's own counters and clock. The returned
+        /// event is open so the caller can apply annotations and the other
+        /// SpanEvent setters; it MUST be finalized with EndEvent() before the
+        /// next RecordSpanEvent or EndSpan call. `async_id` marks an event
+        /// that spawned async children (NONE_ASYNC_ID otherwise). Events
+        /// beyond the configured max depth/sequence are dropped (a shared
+        /// no-op event is returned).
+        virtual SpanEventPtr RecordSpanEvent(std::string_view operation,
+                                             int32_t service_type,
+                                             int32_t sequence, int32_t depth,
+                                             int64_t start_time_ms,
+                                             int64_t end_time_ms,
+                                             int32_t async_id) = 0;
 
         /// @brief Returns the distributed trace identifier for the span in its
         ///        wire form (`agentId^startTime^sequence`), or an empty string

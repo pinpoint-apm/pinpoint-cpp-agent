@@ -585,6 +585,62 @@ namespace pinpoint {
         return async_span;
     } CATCH_AND_LOG_RETURN("new async span", noopSpan())
 
+    SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation,
+                                   int32_t async_id, int32_t async_sequence) try {
+        CHECK_FINISHED_WITH_RETURN(noopSpan());
+
+        // The caller manages its span events outside this library (see
+        // RecordSpanEvent), so the async link arrives as arguments instead of
+        // being stamped onto this span's (empty) native event stack; the
+        // caller flushes async_id with its own parent event.
+        auto async_span = std::make_shared<SpanImpl>(agent_, "", "", runtime_);
+        async_span->data_->setTraceId(data_->getTraceId());
+        async_span->data_->setSpanId(data_->getSpanId());
+        async_span->data_->setAsyncId(async_id);
+        async_span->data_->setAsyncSequence(async_sequence);
+
+        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), "");
+        auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
+        async_se->setApiId(async_api_id);
+        async_se->SetServiceType(SERVICE_TYPE_ASYNC);
+        async_span->data_->addSpanEvent(std::move(async_se));
+
+        return async_span;
+    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
+
+    SpanEventPtr SpanImpl::RecordSpanEvent(std::string_view operation, int32_t service_type,
+                                           int32_t sequence, int32_t depth,
+                                           int64_t start_time_ms, int64_t end_time_ms,
+                                           int32_t async_id) try {
+        CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
+        checkOwnerThread();
+
+        // Backstop only: a wrapper batching events enforces these limits at
+        // event-creation time with its own copy of the config. Dropping here
+        // keeps a misconfigured wrapper from growing the span unbounded.
+        const auto& cfg = config_;
+        if (depth >= cfg->span.max_event_depth || sequence >= cfg->span.max_event_sequence) {
+            LOG_WARN_THROTTLED("recorded span event exceeds maximum depth/sequence. (depth:{}, seq:{})",
+                               depth, sequence);
+            return noopSpanEvent();
+        }
+
+        auto se = std::make_unique<SpanEventImpl>(this, operation);
+        se->SetServiceType(service_type);
+        // addSpanEvent reserves this span's own counters; a replayed event
+        // carries its wrapper-assigned position instead, so overwrite them.
+        // The depth reservation stays balanced — finish() decrements it.
+        auto* event = data_->addSpanEvent(std::move(se));
+        event->setSequence(sequence);
+        event->setDepth(depth);
+        event->setStartTime(start_time_ms);
+        event->setEndTime(end_time_ms);
+        if (async_id != NONE_ASYNC_ID) {
+            event->setAsyncId(async_id);
+        }
+        return event;
+    } CATCH_AND_LOG_RETURN("record span event", noopSpanEvent())
+
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
         CHECK_FINISHED();
         // Gate at entry creation: with URL stats disabled (the default) the

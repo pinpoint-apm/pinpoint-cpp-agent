@@ -95,6 +95,12 @@ namespace pinpoint {
         const std::string& getOperationName() const { return operation_; }
 
         int64_t getStartTime() const { return start_time_; }
+        /// @brief Overrides the start timestamp (epoch ms) for batch-replayed
+        /// events (Span::RecordSpanEvent), whose timing is caller-recorded.
+        void setStartTime(int64_t start_time_ms) { start_time_ = start_time_ms; }
+        /// @brief Presets the end timestamp (epoch ms): finish() then computes
+        /// elapsed from it instead of the wall clock. 0 = use the wall clock.
+        void setEndTime(int64_t end_time_ms) { end_time_ = end_time_ms; }
         /// @brief Start offset relative to the parent span.
         void setStartElapsed(int32_t elapsed) { start_elapsed_ = elapsed; }
         int32_t getStartElapsed() const { return start_elapsed_; }
@@ -150,6 +156,9 @@ namespace pinpoint {
         int32_t sequence_{0};
         int32_t depth_{0};
         int64_t start_time_;
+        // Caller-preset end timestamp (epoch ms) for batch-replayed events;
+        // 0 means finish() stamps the wall clock as before.
+        int64_t end_time_{0};
         int32_t start_elapsed_{0};
         int32_t elapsed_{0};
         int64_t next_span_id_{0};

@@ -436,6 +436,76 @@ TEST_F(SpanTest, SpanImplGetSpanEventTest) {
     EXPECT_NE(active_event, nullptr) << "Should return active span event";
 }
 
+// Wrapper-recorded events (batch replay) carry caller-supplied position and
+// timing: the recorded chunk must keep them verbatim, and elapsed must come
+// from the preset end time instead of the wall clock.
+TEST_F(SpanTest, RecordSpanEventReplaysPositionAndTimingTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    const int64_t start_ms = 1700000000000;
+    const int64_t end_ms = start_ms + 250;
+    auto event = span.RecordSpanEvent("replayed-op", 2100, 3, 2,
+                                      start_ms, end_ms, 77);
+    ASSERT_NE(event, nullptr);
+    event->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0]->getSequence(), 3) << "caller-assigned sequence kept";
+    EXPECT_EQ(events[0]->getDepth(), 2) << "caller-assigned depth kept";
+    EXPECT_EQ(events[0]->getServiceType(), 2100);
+    EXPECT_EQ(events[0]->getStartTime(), start_ms) << "caller-recorded start kept";
+    EXPECT_EQ(events[0]->getEndElapsed(), 250)
+        << "elapsed must come from the preset end time, not the wall clock";
+    EXPECT_EQ(events[0]->getAsyncId(), 77) << "async link flushed with the event";
+}
+
+// The configured max depth/sequence backstop drops out-of-range records with
+// a shared no-op event; the rest of the batch still records.
+TEST_F(SpanTest, RecordSpanEventEnforcesLimitsTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    const int64_t now_ms = 1700000000000;
+    auto over_seq = span.RecordSpanEvent("dropped", 2100, 100000, 1,
+                                         now_ms, now_ms, NONE_ASYNC_ID);
+    over_seq->EndEvent();  // no-op on the shared noop event
+    auto over_depth = span.RecordSpanEvent("dropped", 2100, 0, 100000,
+                                           now_ms, now_ms, NONE_ASYNC_ID);
+    over_depth->EndEvent();
+    auto kept = span.RecordSpanEvent("kept", 2100, 0, 1,
+                                     now_ms, now_ms, NONE_ASYNC_ID);
+    kept->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 1u)
+        << "records past the limits are dropped, the valid one is kept";
+}
+
+// The caller-id NewAsyncSpan overload must not require a native top event:
+// wrappers that batch their events have none while the span is live.
+TEST_F(SpanTest, NewAsyncSpanWithCallerIdsTest) {
+    auto span = std::make_shared<SpanImpl>(
+        mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    auto async_span = span->NewAsyncSpan("bg-op", 42, 3);
+    ASSERT_NE(async_span, nullptr);
+    auto* impl = dynamic_cast<SpanImpl*>(async_span.get());
+    ASSERT_NE(impl, nullptr)
+        << "must hand out a real span even with an empty native event stack";
+    EXPECT_EQ(impl->getSpanData()->getAsyncId(), 42);
+    EXPECT_EQ(impl->getSpanData()->getAsyncSequence(), 3);
+    EXPECT_EQ(impl->getSpanData()->getSpanId(), span->GetSpanId())
+        << "async child records under the parent's span id";
+    EXPECT_NE(impl->getSpanData()->topSpanEvent(), nullptr)
+        << "the root async event is created as in the classic overload";
+
+    async_span->EndSpan();
+    span->EndSpan();
+}
+
 // EndEvent is guarded like EndSpan: a duplicate end is a warning no-op and
 // must not pop another (still-active) event from the span's stack.
 TEST_F(SpanTest, SpanEventEndEventDuplicateGuardTest) {

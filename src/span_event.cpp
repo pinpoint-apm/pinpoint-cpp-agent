@@ -191,12 +191,18 @@ namespace pinpoint {
         // a chunk.
         annotations_.seal();
         span_->data_->decrEventDepth();
+        // Batch-replayed events (Span::RecordSpanEvent) carry their real end
+        // time, recorded by the wrapper when the event actually ended; only
+        // live events fall back to the wall clock.
+        const auto end_time = end_time_ != 0
+            ? end_time_
+            : to_milli_seconds(std::chrono::system_clock::now());
         // system_clock can step backwards (NTP); never report a negative
         // elapsed time. Only the low side is clamped: the wire field is
         // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a
         // user-supplied start time in seconds instead of ms) wraps.
         elapsed_ = static_cast<int32_t>(
-            std::max<int64_t>(to_milli_seconds(std::chrono::system_clock::now()) - start_time_, 0));
+            std::max<int64_t>(end_time - start_time_, 0));
     }
 
     void SpanEventImpl::releaseRetiredPayload() noexcept {
