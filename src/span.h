@@ -436,6 +436,10 @@ namespace pinpoint {
         void SetAnnotation(int32_t key,
                            std::string_view value1,
                            std::string_view value2) override;
+        void SetAnnotation(int32_t key, int64_t long_value,
+                           int32_t int_value1, int32_t int_value2,
+                           int32_t byte_value1, int32_t byte_value2,
+                           std::string_view string_value) override;
         const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }

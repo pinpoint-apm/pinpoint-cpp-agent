@@ -395,6 +395,28 @@ TEST_F(SpanTest, SpanImplConstructorTest) {
     EXPECT_GE(span.GetSpanId(), 0) << "Span ID should be non-negative";
 }
 
+TEST_F(SpanTest, SpanImplCompoundAnnotationTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    // The public composite overload (the ANNOTATION_HTTP_PROXY_HEADER payload
+    // shape) must land as a LONG_INT_INT_BYTE_BYTE_STRING annotation.
+    span.SetAnnotation(ANNOTATION_HTTP_PROXY_HEADER,
+                       int64_t{1755678900123}, 2, 150, 10, 20, "backend");
+
+    auto& annotations = span.getSpanData()->getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1) << "Should have exactly 1 annotation";
+    auto& pair = annotations.front();
+    EXPECT_EQ(pair.first, ANNOTATION_HTTP_PROXY_HEADER);
+    ASSERT_EQ(pair.second.type(), ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING);
+    auto& value = std::get<LongIntIntByteByteStringValue>(pair.second.data);
+    EXPECT_EQ(value.longValue, 1755678900123);
+    EXPECT_EQ(value.intValue1, 2);
+    EXPECT_EQ(value.intValue2, 150);
+    EXPECT_EQ(value.byteValue1, 10);
+    EXPECT_EQ(value.byteValue2, 20);
+    EXPECT_EQ(value.stringValue, "backend");
+}
+
 TEST_F(SpanTest, SpanImplNewSpanEventTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     

@@ -326,6 +326,14 @@ namespace pinpoint {
         virtual void SetAnnotation(int32_t key,
                                    std::string_view value1,
                                    std::string_view value2) = 0;
+        /// @brief Records a composite long/int/int/byte/byte/string annotation
+        ///        (the ANNOTATION_HTTP_PROXY_HEADER payload shape). The view is
+        ///        consumed during this call and copied only when the span is
+        ///        recording.
+        virtual void SetAnnotation(int32_t key, int64_t long_value,
+                                   int32_t int_value1, int32_t int_value2,
+                                   int32_t byte_value1, int32_t byte_value2,
+                                   std::string_view string_value) = 0;
     };
 
     /// @brief Interface exposed to application code for creating spans.

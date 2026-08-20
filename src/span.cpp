@@ -340,6 +340,16 @@ namespace pinpoint {
         data_->getAnnotations()->AppendData(key, AnnotationData(value1, value2));
     } CATCH_AND_LOG("set annotation")
 
+    void SpanImpl::SetAnnotation(int32_t key, int64_t long_value,
+                                 int32_t int_value1, int32_t int_value2,
+                                 int32_t byte_value1, int32_t byte_value2,
+                                 std::string_view string_value) try {
+        CHECK_FINISHED();
+        data_->getAnnotations()->AppendData(
+            key, AnnotationData(long_value, int_value1, int_value2,
+                                byte_value1, byte_value2, string_value));
+    } CATCH_AND_LOG("set annotation")
+
     void SpanImpl::record_chunk(bool final) const try {
         auto chunk = std::make_unique<SpanChunk>(data_, final);
         chunk->optimizeSpanEvents();
