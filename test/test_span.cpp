@@ -395,6 +395,48 @@ TEST_F(SpanTest, SpanImplConstructorTest) {
     EXPECT_GE(span.GetSpanId(), 0) << "Span ID should be non-negative";
 }
 
+TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
+    mock_agent_service_->setAppName("resolved-app");
+    mock_agent_service_->setAppType(7777);
+    mock_agent_service_->setServiceName("resolved-service");
+    mock_agent_service_->publishConfig([](Config& config) {
+        config.span.max_event_depth = 7;
+        config.span.max_event_sequence = 11;
+        config.http.server.rec_request_header = {"X-First"};
+        config.http.client.rec_response_header = {"X-Client"};
+    });
+
+    SpanImpl first(mock_agent_service_.get(), "first", "/first");
+    const auto first_config = first.GetConfigSnapshot();
+    EXPECT_EQ(first_config.application_name, "resolved-app");
+    EXPECT_EQ(first_config.application_type, 7777);
+    EXPECT_EQ(first_config.service_name, "resolved-service");
+    EXPECT_EQ(first_config.max_event_depth, 7);
+    EXPECT_EQ(first_config.max_event_sequence, 11);
+    EXPECT_EQ(first_config.http_server_headers[HTTP_REQUEST],
+              std::vector<std::string>{"X-First"});
+    EXPECT_EQ(first_config.http_client_headers[HTTP_RESPONSE],
+              std::vector<std::string>{"X-Client"});
+
+    mock_agent_service_->publishConfig([](Config& config) {
+        config.span.max_event_depth = 17;
+        config.span.max_event_sequence = 23;
+        config.http.server.rec_request_header = {"X-Reloaded"};
+    });
+
+    // An existing span keeps the generation it was admitted under.
+    EXPECT_EQ(first.GetConfigSnapshot().max_event_depth, 7);
+    EXPECT_EQ(first.GetConfigSnapshot().http_server_headers[HTTP_REQUEST],
+              std::vector<std::string>{"X-First"});
+
+    SpanImpl reloaded(mock_agent_service_.get(), "reloaded", "/reloaded");
+    const auto reloaded_config = reloaded.GetConfigSnapshot();
+    EXPECT_EQ(reloaded_config.max_event_depth, 17);
+    EXPECT_EQ(reloaded_config.max_event_sequence, 23);
+    EXPECT_EQ(reloaded_config.http_server_headers[HTTP_REQUEST],
+              std::vector<std::string>{"X-Reloaded"});
+}
+
 TEST_F(SpanTest, SpanImplCompoundAnnotationTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
 

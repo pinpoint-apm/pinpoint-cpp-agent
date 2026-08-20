@@ -261,6 +261,22 @@ namespace pinpoint {
     /// thread, is unsupported and can race with event mutation or span teardown.
     using SpanEventPtr = SpanEvent*;
 
+    /// @brief Final resolved configuration captured by one span at creation.
+    ///
+    /// Binding layers that manage propagation, header annotations or event
+    /// positions outside this library use this snapshot instead of re-parsing
+    /// the agent's input configuration. Header arrays are indexed by
+    /// HeaderType (HTTP_REQUEST / HTTP_RESPONSE / HTTP_COOKIE).
+    struct SpanConfigSnapshot {
+        std::string application_name;
+        int32_t application_type = APP_TYPE_CPP;
+        std::string service_name;
+        int32_t max_event_depth = 0;
+        int32_t max_event_sequence = 0;
+        std::array<std::vector<std::string>, 3> http_server_headers;
+        std::array<std::vector<std::string>, 3> http_client_headers;
+    };
+
     /**
      * @brief Interface implemented by concrete spans managed by the Pinpoint agent.
      *
@@ -339,6 +355,11 @@ namespace pinpoint {
         virtual int64_t GetSpanId() = 0;
         /// @brief Indicates whether the span is sampled.
         virtual bool IsSampled() = 0;
+        /// @brief Returns the final config generation captured by this span.
+        ///
+        /// The default keeps third-party Span implementations source-compatible;
+        /// production sampled spans override it with their native snapshot.
+        virtual SpanConfigSnapshot GetConfigSnapshot() const { return {}; }
 
         /// @brief Sets the span service type.
         virtual void SetServiceType(int32_t service_type) = 0;

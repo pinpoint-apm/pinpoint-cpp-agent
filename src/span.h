@@ -433,6 +433,7 @@ namespace pinpoint {
         std::string GetTraceId() override;
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
+        SpanConfigSnapshot GetConfigSnapshot() const override;
         // Annotation overloads are out-of-line because string payload copies
         // and list growth must stay inside the exception boundary in span.cpp.
         // A finished span is a warning no-op.

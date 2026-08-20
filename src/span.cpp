@@ -253,6 +253,22 @@ namespace pinpoint {
         data_->setRpcName(rpc_point);
     }
 
+    SpanConfigSnapshot SpanImpl::GetConfigSnapshot() const {
+        SpanConfigSnapshot snapshot;
+        snapshot.application_name = agent_->getAppName();
+        snapshot.application_type = agent_->getAppType();
+        snapshot.service_name = agent_->getServiceName();
+        snapshot.max_event_depth = config_->span.max_event_depth;
+        snapshot.max_event_sequence = config_->span.max_event_sequence;
+        snapshot.http_server_headers[HTTP_REQUEST] = config_->http.server.rec_request_header;
+        snapshot.http_server_headers[HTTP_RESPONSE] = config_->http.server.rec_response_header;
+        snapshot.http_server_headers[HTTP_COOKIE] = config_->http.server.rec_request_cookie;
+        snapshot.http_client_headers[HTTP_REQUEST] = config_->http.client.rec_request_header;
+        snapshot.http_client_headers[HTTP_RESPONSE] = config_->http.client.rec_response_header;
+        snapshot.http_client_headers[HTTP_COOKIE] = config_->http.client.rec_request_cookie;
+        return snapshot;
+    }
+
     void SpanImpl::checkOwnerThread() {
         const auto current = std::this_thread::get_id();
         // Fast path: an already-bound span does a plain relaxed load. Even a
