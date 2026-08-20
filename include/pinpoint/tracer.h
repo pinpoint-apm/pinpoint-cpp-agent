@@ -179,6 +179,16 @@ namespace pinpoint {
         ///        each frame in the call stack.
         virtual void ForEach(std::function<void(std::string_view module, std::string_view function, std::string_view file, int line)> callback) const = 0;
     };
+
+    /// @brief One pre-collected call stack frame for the frame-list SetError
+    ///        overload. The views are consumed during that call and copied
+    ///        only when the event is recording.
+    struct CallStackFrame {
+        std::string_view module;
+        std::string_view function;
+        std::string_view file;
+        int line;
+    };
     
     class Span;
     using SpanPtr = std::shared_ptr<Span>;
@@ -204,6 +214,10 @@ namespace pinpoint {
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
         /// @brief Stores an error message along with call stack details.
         virtual void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) = 0;
+        /// @brief Stores an error message along with a pre-collected call
+        ///        stack (innermost-last, the order a reader would emit).
+        virtual void SetError(std::string_view error_name, std::string_view error_message,
+                              const std::vector<CallStackFrame>& frames) = 0;
         /// @brief Records a SQL query and comma-separated bound parameters.
         virtual void SetSqlQuery(std::string_view sql_query,
                                  const std::vector<SqlBindValue>& bind_args) = 0;

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 
 #include "pinpoint/tracer.h"
 #include "annotation.h"
@@ -25,6 +26,7 @@
 namespace pinpoint {
 
     class AgentService;
+    class CallStack;
     class SpanImpl;
 
     /// @brief Concrete span event implementation that records timing and metadata.
@@ -44,6 +46,8 @@ namespace pinpoint {
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames) override;
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
@@ -123,6 +127,11 @@ namespace pinpoint {
         int32_t getApiId() const { return api_id_; }
 
     private:
+        /// @brief Shared tail of the callstack SetError overloads: wrap the
+        /// built call stack in an Exception on the parent span and stamp the
+        /// exception-id annotation.
+        void recordException(std::unique_ptr<CallStack> callstack);
+
         /// @brief True (after logging a warning) once the event is finished,
         /// signalling that a recording accessor or mutator must no-op. A
         /// finished event may already sit in a chunk under serialization on
@@ -191,6 +200,8 @@ namespace pinpoint {
         void SetError(std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message) override {}
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames) override {}
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}

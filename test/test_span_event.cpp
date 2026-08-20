@@ -279,6 +279,48 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
     EXPECT_EQ(stack_frames[3].line, 100);
 }
 
+TEST_F(SpanEventTest, SetErrorWithFrameListTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    // The frame-list overload records the same Exception the reader overload
+    // does, without a CallStackReader round trip.
+    std::vector<CallStackFrame> frames = {
+        {"myapp.views", "handler", "/src/views.py", 42},
+        {"myapp.db", "query", "/src/db.py", 7},
+    };
+    span_event.SetError("RuntimeError", "frame list error", frames);
+
+    EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
+    EXPECT_EQ(span_event.getErrorString(), "frame list error") << "Error message should be set";
+
+    const auto& exceptions = test_span_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1) << "One exception should be added";
+
+    const auto& callstack = exceptions[0]->getCallStack();
+    EXPECT_EQ(callstack.getErrorMessage(), "frame list error");
+    const auto& stack_frames = callstack.getStack();
+    ASSERT_EQ(stack_frames.size(), 2);
+    EXPECT_EQ(stack_frames[0].module, "myapp.views");
+    EXPECT_EQ(stack_frames[0].function, "handler");
+    EXPECT_EQ(stack_frames[0].file, "/src/views.py");
+    EXPECT_EQ(stack_frames[0].line, 42);
+    EXPECT_EQ(stack_frames[1].function, "query");
+    EXPECT_EQ(stack_frames[1].line, 7);
+}
+
+TEST_F(SpanEventTest, SetErrorWithEmptyFrameListTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    span_event.SetError("EmptyStackError", "empty frame list", {});
+
+    EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
+    // An empty pre-collected stack still records the Exception, like an
+    // empty reader does.
+    const auto& exceptions = test_span_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 1);
+    EXPECT_EQ(exceptions[0]->getCallStack().getStack().size(), 0);
+}
+
 TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;

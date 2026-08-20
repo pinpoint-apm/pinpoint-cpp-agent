@@ -257,14 +257,38 @@ namespace pinpoint {
                 callstack->push(module, function, file, line);
                 return;
             });
-
-            auto exception = std::make_unique<Exception>(std::move(callstack));
-            const auto exception_id = exception->getId();
-            if (span_->addException(std::move(exception))) {
-                annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
-            }
+            recordException(std::move(callstack));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
+        }
+    }
+
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message,
+                                 const std::vector<CallStackFrame>& frames) {
+        if (warnIfFinished()) return;
+        SetError(error_name, error_message);
+
+        const auto& cfg = span_->config_;
+        if (!cfg->enable_callstack_trace) {
+            return;
+        }
+
+        try {
+            auto callstack = std::make_unique<CallStack>(error_message);
+            for (const auto& frame : frames) {
+                callstack->push(frame.module, frame.function, frame.file, frame.line);
+            }
+            recordException(std::move(callstack));
+        } catch (const std::exception& e) {
+            LOG_ERROR("call stack trace exception = {}", e.what());
+        }
+    }
+
+    void SpanEventImpl::recordException(std::unique_ptr<CallStack> callstack) {
+        auto exception = std::make_unique<Exception>(std::move(callstack));
+        const auto exception_id = exception->getId();
+        if (span_->addException(std::move(exception))) {
+            annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
         }
     }
 
