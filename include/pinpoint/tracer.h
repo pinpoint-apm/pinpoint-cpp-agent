@@ -227,6 +227,11 @@ namespace pinpoint {
         /// @brief Injects the trace context for the outbound call represented
         ///        by this span event into an outbound carrier.
         virtual void InjectContext(TraceContextWriter& writer) = 0;
+        /// @brief Records the child span id propagated downstream as the
+        ///        Pinpoint-SpanID header, for callers that build the outbound
+        ///        propagation headers themselves instead of using
+        ///        InjectContext (which generates and records one internally).
+        virtual void SetNextSpanId(int64_t next_span_id) = 0;
 
         /// @brief Records a 32-bit integer annotation on this span event.
         virtual void SetAnnotation(int32_t key, int32_t value) = 0;

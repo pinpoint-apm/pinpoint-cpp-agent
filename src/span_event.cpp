@@ -348,6 +348,13 @@ namespace pinpoint {
         span_->injectContext(writer, generateNextSpanId(), destination_id_);
     } CATCH_AND_LOG("inject context")
 
+    void SpanEventImpl::SetNextSpanId(int64_t next_span_id) try {
+        // Same guard as InjectContext: next_span_id_ is read by the gRPC
+        // worker once this event sits in a chunk.
+        if (warnIfFinished()) return;
+        next_span_id_ = next_span_id;
+    } CATCH_AND_LOG("set next span id")
+
     void DisabledSpanEvent::EndEvent() {
         // The shared per-span instance stands in for every overflowed event,
         // so it cannot carry a per-instance finished flag; the span's overflow

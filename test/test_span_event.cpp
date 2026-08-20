@@ -426,12 +426,26 @@ TEST_F(SpanEventTest, GenerateNextSpanIdTest) {
 
 TEST_F(SpanEventTest, GenerateMultipleSpanIdsTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
-    
+
     int64_t id1 = span_event.generateNextSpanId();
     int64_t id2 = span_event.generateNextSpanId();
-    
+
     EXPECT_NE(id1, id2) << "Generated span IDs should be different";
     EXPECT_EQ(span_event.getNextSpanId(), id2) << "Next span ID should be the last generated ID";
+}
+
+TEST_F(SpanEventTest, SetNextSpanIdRecordsCallerGeneratedIdTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    // Callers that build the propagation headers themselves hand the child
+    // span id over instead of letting InjectContext generate one.
+    span_event.SetNextSpanId(int64_t{987654321});
+    EXPECT_EQ(span_event.getNextSpanId(), 987654321);
+
+    span_event.finish();
+    span_event.SetNextSpanId(int64_t{111});
+    EXPECT_EQ(span_event.getNextSpanId(), 987654321)
+        << "SetNextSpanId must no-op after finish";
 }
 
 // ========== Header Recording Tests ==========

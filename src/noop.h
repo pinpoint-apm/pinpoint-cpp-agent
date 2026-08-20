@@ -67,6 +67,7 @@ namespace pinpoint {
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override {}
+        void SetNextSpanId(int64_t next_span_id) override {}
 
         void SetAnnotation(int32_t key, int32_t value) override {}
         void SetAnnotation(int32_t key, int64_t value) override {}

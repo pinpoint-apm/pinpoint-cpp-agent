@@ -54,6 +54,7 @@ namespace pinpoint {
         /// @brief Writes this event's outbound context (trace id, generated
         /// child span id, parent app info) into a propagation carrier.
         void InjectContext(TraceContextWriter& writer) override;
+        void SetNextSpanId(int64_t next_span_id) override;
         // Out-of-line: string copies and list growth must stay inside the
         // exception boundary in span_event.cpp. A finished event no-ops.
         void SetAnnotation(int32_t key, int32_t value) override;
@@ -206,6 +207,9 @@ namespace pinpoint {
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void InjectContext(TraceContextWriter& writer) override;
+        // The overflowed event is never recorded, so a caller-generated child
+        // span id is not stored either — same as InjectContext above.
+        void SetNextSpanId(int64_t next_span_id) override {}
 
         void SetAnnotation(int32_t key, int32_t value) override {}
         void SetAnnotation(int32_t key, int64_t value) override {}
