@@ -290,6 +290,15 @@ namespace pinpoint {
         return runtime ? runtime->config : nullptr;
     }
 
+    SpanConfigSnapshot AgentImpl::GetConfigSnapshot() const try {
+        const auto config = getConfig();
+        return config ? make_config_snapshot(*this, *config) : SpanConfigSnapshot{};
+    } catch (...) {
+        // Public API boundary: snapshot building only copies strings/vectors,
+        // but an allocation failure must not leak into the embedder.
+        return {};
+    }
+
     // Served from the construction-time snapshot (see ctor): these never change
     // for the agent's lifetime, so no atomic config_ load is needed.
     const std::string& AgentImpl::getAppName() const {

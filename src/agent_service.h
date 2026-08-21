@@ -201,4 +201,11 @@
       virtual UrlStats& getUrlStats() = 0;
    };
 
+   /// @brief Builds the resolved SpanConfigSnapshot (revision included) from
+   ///        one agent identity + config generation. Shared by
+   ///        SpanImpl::GetConfigSnapshot (the generation the span captured)
+   ///        and AgentImpl::GetConfigSnapshot (the current generation).
+   ///        Defined in span.cpp.
+   SpanConfigSnapshot make_config_snapshot(const AgentService& agent, const Config& config);
+
  }  // namespace pinpoint

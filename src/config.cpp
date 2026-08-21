@@ -575,6 +575,8 @@ namespace pinpoint {
         // ones applied at first load) instead of reverting to its default.
         // On a first load the Config member initializers are the defaults.
         auto config = old ? std::make_shared<Config>(*old) : std::make_shared<Config>();
+        // Each generation gets a distinguishable revision (see Config::revision).
+        config->revision = old ? old->revision + 1 : 1;
         bool is_container_set = false;
         const auto prefix = effective_env_prefix(options);
 

@@ -219,6 +219,33 @@ TEST_F(AgentImplTest, GetConfigReturnsSharedPtr) {
     EXPECT_EQ(config->app_name_, "test-app");
 }
 
+TEST_F(AgentImplTest, GetConfigSnapshotTracksReloadedGenerations) {
+    auto first = std::make_shared<Config>(*cfg_);
+    first->revision = 1;
+    first->http.server.rec_request_header = {"X-First"};
+    agent_->reloadConfig(first);
+    auto snapshot = agent_->GetConfigSnapshot();
+    EXPECT_EQ(snapshot.revision, 1);
+    EXPECT_EQ(snapshot.application_name, "test-app");
+    EXPECT_EQ(snapshot.max_event_depth, 32);
+    EXPECT_EQ(snapshot.http_server_headers[HTTP_REQUEST],
+              std::vector<std::string>{"X-First"});
+
+    // A span created now reports the same revision, and a reload moves both.
+    auto span = agent_->NewSpan("op", "/rpc");
+    EXPECT_EQ(span->GetConfigRevision(), 1);
+    span->EndSpan();
+
+    auto next = std::make_shared<Config>(*first);
+    next->revision = 2;
+    next->http.server.rec_request_header = {"X-Reloaded"};
+    agent_->reloadConfig(next);
+    snapshot = agent_->GetConfigSnapshot();
+    EXPECT_EQ(snapshot.revision, 2);
+    EXPECT_EQ(snapshot.http_server_headers[HTTP_REQUEST],
+              std::vector<std::string>{"X-Reloaded"});
+}
+
 TEST_F(AgentImplTest, GenerateTraceIdIncrementsSequence) {
     auto tid1 = agent_->generateTraceId();
     auto tid2 = agent_->generateTraceId();

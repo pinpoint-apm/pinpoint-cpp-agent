@@ -152,6 +152,14 @@ namespace pinpoint {
      * overrides. Nested structures keep related options together for readability.
      */
     struct Config {
+        // Config generation counter, not a configuration input: make_config()
+        // stamps 1 on the first load and old->revision + 1 on every reload,
+        // so each published generation is distinguishable by value. Spans and
+        // SpanConfigSnapshot carry it out to binding layers, which cache the
+        // resolved snapshot and re-fetch only when the revision moved.
+        // Directly-constructed Configs (tests) keep 0 ("no resolved config").
+        int64_t revision = 0;
+
         std::string app_name_;
         // Not a configuration input: the agent id is always auto-generated
         // (base64 of a UUIDv7) by make_config()'s identity resolution, so it

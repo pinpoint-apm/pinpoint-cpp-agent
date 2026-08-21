@@ -275,6 +275,12 @@ namespace pinpoint {
         int32_t max_event_sequence = 0;
         std::array<std::vector<std::string>, 3> http_server_headers;
         std::array<std::vector<std::string>, 3> http_client_headers;
+        /// Config generation this snapshot was built from: 1 for the initial
+        /// load, incremented by each config-file hot reload. 0 means the
+        /// snapshot carries no resolved config (default-constructed). Binding
+        /// layers cache the agent snapshot and compare this against
+        /// Span::GetConfigRevision() to refresh only when a reload happened.
+        int64_t revision = 0;
     };
 
     /**
@@ -360,6 +366,14 @@ namespace pinpoint {
         /// The default keeps third-party Span implementations source-compatible;
         /// production sampled spans override it with their native snapshot.
         virtual SpanConfigSnapshot GetConfigSnapshot() const { return {}; }
+        /// @brief Returns the revision of the config generation captured by
+        ///        this span (SpanConfigSnapshot::revision) without building
+        ///        the snapshot. Binding layers compare it against their cached
+        ///        Agent::GetConfigSnapshot() revision on every span creation
+        ///        and re-fetch the snapshot only when a reload bumped it. The
+        ///        default (0, "no resolved config") keeps third-party Span
+        ///        implementations source-compatible.
+        virtual int64_t GetConfigRevision() const { return 0; }
 
         /// @brief Sets the span service type.
         virtual void SetServiceType(int32_t service_type) = 0;
@@ -424,6 +438,13 @@ namespace pinpoint {
         ///        implementing a TraceContextReader.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point,
                                 const std::map<std::string, std::string>& pinpoint_headers) = 0;
+        /// @brief Returns the agent's current resolved config snapshot.
+        ///        Binding layers fetch it once after StartAgent() and again
+        ///        whenever a created span reports a GetConfigRevision() newer
+        ///        than the cached snapshot's revision. The default (an empty
+        ///        snapshot with revision 0) keeps third-party Agent
+        ///        implementations source-compatible.
+        virtual SpanConfigSnapshot GetConfigSnapshot() const { return {}; }
         /// @brief Returns whether agent initialization succeeded and tracing is
         ///        enabled. Individual spans may still be rejected by sampling.
         ///        Always false for an agent handle inherited across fork() —

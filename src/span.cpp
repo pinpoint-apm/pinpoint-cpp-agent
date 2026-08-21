@@ -253,20 +253,25 @@ namespace pinpoint {
         data_->setRpcName(rpc_point);
     }
 
-    SpanConfigSnapshot SpanImpl::GetConfigSnapshot() const {
+    SpanConfigSnapshot make_config_snapshot(const AgentService& agent, const Config& config) {
         SpanConfigSnapshot snapshot;
-        snapshot.application_name = agent_->getAppName();
-        snapshot.application_type = agent_->getAppType();
-        snapshot.service_name = agent_->getServiceName();
-        snapshot.max_event_depth = config_->span.max_event_depth;
-        snapshot.max_event_sequence = config_->span.max_event_sequence;
-        snapshot.http_server_headers[HTTP_REQUEST] = config_->http.server.rec_request_header;
-        snapshot.http_server_headers[HTTP_RESPONSE] = config_->http.server.rec_response_header;
-        snapshot.http_server_headers[HTTP_COOKIE] = config_->http.server.rec_request_cookie;
-        snapshot.http_client_headers[HTTP_REQUEST] = config_->http.client.rec_request_header;
-        snapshot.http_client_headers[HTTP_RESPONSE] = config_->http.client.rec_response_header;
-        snapshot.http_client_headers[HTTP_COOKIE] = config_->http.client.rec_request_cookie;
+        snapshot.application_name = agent.getAppName();
+        snapshot.application_type = agent.getAppType();
+        snapshot.service_name = agent.getServiceName();
+        snapshot.max_event_depth = config.span.max_event_depth;
+        snapshot.max_event_sequence = config.span.max_event_sequence;
+        snapshot.http_server_headers[HTTP_REQUEST] = config.http.server.rec_request_header;
+        snapshot.http_server_headers[HTTP_RESPONSE] = config.http.server.rec_response_header;
+        snapshot.http_server_headers[HTTP_COOKIE] = config.http.server.rec_request_cookie;
+        snapshot.http_client_headers[HTTP_REQUEST] = config.http.client.rec_request_header;
+        snapshot.http_client_headers[HTTP_RESPONSE] = config.http.client.rec_response_header;
+        snapshot.http_client_headers[HTTP_COOKIE] = config.http.client.rec_request_cookie;
+        snapshot.revision = config.revision;
         return snapshot;
+    }
+
+    SpanConfigSnapshot SpanImpl::GetConfigSnapshot() const {
+        return make_config_snapshot(*agent_, *config_);
     }
 
     void SpanImpl::checkOwnerThread() {

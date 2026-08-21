@@ -311,6 +311,20 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
 }
 
+TEST_F(ConfigTest, RevisionStampsEachGeneration) {
+    // Not a configuration input: 1 on the first load, +1 per reload, so
+    // binding layers can detect a published generation change by value.
+    auto first = make_config();
+    EXPECT_EQ(first->revision, 1);
+
+    auto reloaded = make_config(first);
+    EXPECT_EQ(reloaded->revision, 2);
+    EXPECT_EQ(make_config(reloaded)->revision, 3);
+
+    // A fresh first load (no old config) restarts at 1.
+    EXPECT_EQ(make_config()->revision, 1);
+}
+
 TEST_F(ConfigTest, GeneratedAgentIdTest) {
     auto config = make_config();
     

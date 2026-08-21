@@ -111,6 +111,10 @@ namespace pinpoint {
         /// false (with a one-time error log) for an agent inherited across
         /// fork() — see warn_fork_inheritance().
         bool Enable() override;
+        /// @brief Returns the current resolved config snapshot (see
+        /// Agent::GetConfigSnapshot). Empty (revision 0) when no runtime has
+        /// been published.
+        SpanConfigSnapshot GetConfigSnapshot() const override;
         /// @brief True when this agent was started in the current process (or
         /// not started at all); false for a handle inherited across fork().
         bool ownedByThisProcess() const { return owner_pid_ == 0 || owner_pid_ == current_pid(); }

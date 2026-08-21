@@ -400,6 +400,7 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     mock_agent_service_->setAppType(7777);
     mock_agent_service_->setServiceName("resolved-service");
     mock_agent_service_->publishConfig([](Config& config) {
+        config.revision = 1;
         config.span.max_event_depth = 7;
         config.span.max_event_sequence = 11;
         config.http.server.rec_request_header = {"X-First"};
@@ -407,7 +408,9 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     });
 
     SpanImpl first(mock_agent_service_.get(), "first", "/first");
+    EXPECT_EQ(first.GetConfigRevision(), 1);
     const auto first_config = first.GetConfigSnapshot();
+    EXPECT_EQ(first_config.revision, 1);
     EXPECT_EQ(first_config.application_name, "resolved-app");
     EXPECT_EQ(first_config.application_type, 7777);
     EXPECT_EQ(first_config.service_name, "resolved-service");
@@ -419,18 +422,22 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
               std::vector<std::string>{"X-Client"});
 
     mock_agent_service_->publishConfig([](Config& config) {
+        config.revision = 2;
         config.span.max_event_depth = 17;
         config.span.max_event_sequence = 23;
         config.http.server.rec_request_header = {"X-Reloaded"};
     });
 
-    // An existing span keeps the generation it was admitted under.
+    // An existing span keeps the generation (and revision) it was admitted under.
+    EXPECT_EQ(first.GetConfigRevision(), 1);
     EXPECT_EQ(first.GetConfigSnapshot().max_event_depth, 7);
     EXPECT_EQ(first.GetConfigSnapshot().http_server_headers[HTTP_REQUEST],
               std::vector<std::string>{"X-First"});
 
     SpanImpl reloaded(mock_agent_service_.get(), "reloaded", "/reloaded");
+    EXPECT_EQ(reloaded.GetConfigRevision(), 2);
     const auto reloaded_config = reloaded.GetConfigSnapshot();
+    EXPECT_EQ(reloaded_config.revision, 2);
     EXPECT_EQ(reloaded_config.max_event_depth, 17);
     EXPECT_EQ(reloaded_config.max_event_sequence, 23);
     EXPECT_EQ(reloaded_config.http_server_headers[HTTP_REQUEST],
