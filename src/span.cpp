@@ -266,6 +266,7 @@ namespace pinpoint {
         snapshot.http_client_headers[HTTP_REQUEST] = config.http.client.rec_request_header;
         snapshot.http_client_headers[HTTP_RESPONSE] = config.http.client.rec_response_header;
         snapshot.http_client_headers[HTTP_COOKIE] = config.http.client.rec_request_cookie;
+        snapshot.sql_trace_bind_value = config.sql.trace_bind_value;
         snapshot.revision = config.revision;
         return snapshot;
     }

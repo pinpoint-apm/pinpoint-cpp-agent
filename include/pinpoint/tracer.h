@@ -275,6 +275,17 @@ namespace pinpoint {
         int32_t max_event_sequence = 0;
         std::array<std::vector<std::string>, 3> http_server_headers;
         std::array<std::vector<std::string>, 3> http_client_headers;
+        /// Resolved Sql.TraceBindValue. A binding layer that formats bind
+        /// arguments itself needs this: the agent gates its own bind-value
+        /// formatting on the same setting, so without it the binding would have
+        /// to guess, and passing values it should not have collected is a
+        /// privacy leak rather than a cosmetic mismatch.
+        ///
+        /// Defaults to false, unlike Config::sql::trace_bind_value, which
+        /// defaults to true: a default-constructed snapshot means "no resolved
+        /// config" (see revision), and for a capture flag the no-information
+        /// answer has to be "do not capture".
+        bool sql_trace_bind_value = false;
         /// Config generation this snapshot was built from: 1 for the initial
         /// load, incremented by each config-file hot reload. 0 means the
         /// snapshot carries no resolved config (default-constructed). Binding
