@@ -89,8 +89,10 @@ namespace pinpoint {
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, TraceContextReader& reader) override;
         /// @brief Creates an HTTP span, also recording the request method.
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) override;
-        /// @brief Creates a span from a pre-extracted Pinpoint header map.
+        /// @brief Creates a span from a pre-extracted Pinpoint header map,
+        /// also recording the HTTP request method.
         SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point,
+                        std::string_view method,
                         const std::map<std::string, std::string>& pinpoint_headers) override;
         /// @brief Injects the StartAgent() options used by the config-file
         /// watcher and config reloads. Called by StartAgent() before Start();

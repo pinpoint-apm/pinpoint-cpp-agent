@@ -447,7 +447,12 @@ namespace pinpoint {
         ///        names (e.g. HEADER_TRACE_ID). Callers that already dumped the
         ///        Pinpoint-* headers (binding layers) pass them here instead of
         ///        implementing a TraceContextReader.
+        ///        @p method is the HTTP request method, needed for the
+        ///        Http.Server.ExcludeMethod filter — that filter is skipped for
+        ///        an empty method, which means "not HTTP" (messaging consumers,
+        ///        gRPC) exactly as it does on the reader overload above.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point,
+                                std::string_view method,
                                 const std::map<std::string, std::string>& pinpoint_headers) = 0;
         /// @brief Returns the agent's current resolved config snapshot.
         ///        Binding layers fetch it once after StartAgent() and again

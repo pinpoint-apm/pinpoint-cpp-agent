@@ -284,27 +284,38 @@ TEST_F(AgentImplTest, NewSpanWithValidTraceIdHeaderIsSampled) {
 }
 
 TEST_F(AgentImplTest, NewSpanWithHeaderMapExtractsContext) {
-    // The map-based overload runs the same extraction funnel as a reader.
+    // The map-based creator runs the same extraction funnel as a reader.
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "upstream-agent^1700000000^7"},
     };
-    auto span = agent_->NewSpan("test-op", "/test/rpc", headers);
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
     ASSERT_NE(span, nullptr);
     EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
     EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
 }
 
 TEST_F(AgentImplTest, NewSpanWithEmptyHeaderMapStartsFreshTrace) {
-    auto span = agent_->NewSpan("test-op", "/test/rpc", {});
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", {});
     ASSERT_NE(span, nullptr);
     EXPECT_TRUE(span->IsSampled()) << "no inbound context starts a fresh sampled trace";
+}
+
+TEST_F(AgentImplTest, NewSpanWithHeaderMapAndMethodExtractsContext) {
+    // An unfiltered method must not change what the header map yields.
+    std::map<std::string, std::string> headers{
+        {std::string(HEADER_TRACE_ID), "upstream-agent^1700000000^7"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "GET", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
+    EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
 }
 
 TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapReturnsNoop) {
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "this-is-not-a-valid-trace-id"},
     };
-    auto span = agent_->NewSpan("test-op", "/test/rpc", headers);
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
     ASSERT_NE(span, nullptr);
     EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
 }
@@ -826,7 +837,37 @@ TEST_F(AgentImplTest, MethodFilterExcludesMatchingMethod) {
 
     NoopTraceContextReader reader;
     auto span = agent->NewSpan("op", "/api", "OPTIONS", reader);
+    EXPECT_FALSE(span->IsSampled()) << "an excluded method should yield a noop span";
     span->EndSpan();
+
+    agent->Shutdown();
+}
+
+TEST_F(AgentImplTest, MethodFilterAppliesToHeaderMapOverload) {
+    // Binding layers create spans from a pre-extracted header map; without a
+    // method on that path the filter is skipped (NewSpan treats an empty
+    // method as "not HTTP"), which is the reason the overload exists.
+    auto cfg = make_test_config();
+    cfg->http.server.exclude_method = {"options"};
+    auto agent = make_test_agent(cfg);
+    wait_agent_enabled(agent);
+
+    const std::map<std::string, std::string> no_headers;
+
+    auto excluded = agent->NewSpan("op", "/api", "OPTIONS", no_headers);
+    EXPECT_FALSE(excluded->IsSampled()) << "matching is case-insensitive";
+    EXPECT_EQ(excluded->GetSpanId(), 0) << "a filtered span is the noop span";
+    excluded->EndSpan();
+
+    auto admitted = agent->NewSpan("op", "/api", "GET", no_headers);
+    EXPECT_TRUE(admitted->IsSampled());
+    admitted->EndSpan();
+
+    // An empty method means "not HTTP" (messaging consumers, gRPC): never
+    // filtered, matching the reader overload.
+    auto unfiltered = agent->NewSpan("op", "/api", "", no_headers);
+    EXPECT_TRUE(unfiltered->IsSampled());
+    unfiltered->EndSpan();
 
     agent->Shutdown();
 }

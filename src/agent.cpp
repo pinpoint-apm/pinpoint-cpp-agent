@@ -785,9 +785,10 @@ namespace pinpoint {
     }
 
     SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
+                               std::string_view method,
                                const std::map<std::string, std::string>& pinpoint_headers) {
         MapTraceContextReader reader(pinpoint_headers);
-        return NewSpan(operation, rpc_point, "", reader);
+        return NewSpan(operation, rpc_point, method, reader);
     }
 
     SpanPtr AgentImpl::NewSpan(std::string_view operation, std::string_view rpc_point,
