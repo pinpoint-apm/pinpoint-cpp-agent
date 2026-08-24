@@ -271,8 +271,13 @@ namespace pinpoint {
         return snapshot;
     }
 
-    SpanConfigSnapshot SpanImpl::GetConfigSnapshot() const {
-        return make_config_snapshot(*agent_, *config_);
+    SpanConfigSnapshot SpanImpl::GetConfigSnapshot() const try {
+        return config_ ? make_config_snapshot(*agent_, *config_) : SpanConfigSnapshot{};
+    } catch (...) {
+        // Public API boundary, same as AgentImpl::GetConfigSnapshot: snapshot
+        // building only copies strings/vectors, but an allocation failure
+        // must not leak into the embedder.
+        return {};
     }
 
     void SpanImpl::checkOwnerThread() {
