@@ -25,6 +25,7 @@
 #include <chrono>
 #include <array>
 #include <optional>
+#include <sys/types.h>
 
 #include "active_span.h"
 #include "agent_service.h"
@@ -103,6 +104,21 @@ namespace pinpoint {
         /// @brief One supervised run of the collect loop; agentStatsWorker
         /// restarts it after a transient exception.
         void runAgentStatsWorker(const Config& config);
+        /**
+         * @brief True when this object was created in another process, i.e.
+         *        the host forked and the child reached an inherited agent.
+         *
+         * The active-span registry is the one per-request structure a span
+         * touches without going through AgentImpl, so AgentImpl's own guards
+         * (tracing_active, the pid-guarded teardown) do not cover it. Its
+         * add/drop/collect all take a shard mutex, and a mutex some thread
+         * held at the fork instant is inherited locked with no thread left in
+         * the child to unlock it — the caller would block forever. A span
+         * created before the fork is exactly such a caller: the child runs on
+         * the forking thread's stack, so EndSpan on that span is reached
+         * directly, not through the agent.
+         */
+        bool inheritedAcrossFork() const noexcept;
         /// @brief Drains every per-thread shard in one sweep: response-time
         /// avg/max plus the six sampler-outcome counts, all into `stat`.
         void collectAndResetRequestStats(AgentStatsSnapshot& stat);
@@ -173,7 +189,12 @@ namespace pinpoint {
         std::array<ResponseTimeShard, kResponseTimeShardCount> response_time_shards_;
 
         ActiveSpanRegistry active_spans_;
-        
+        // Process that created this object, so the registry's shard mutexes
+        // are only ever locked by the process that owns them. Set in the
+        // constructor, which is the last point at which "the process this
+        // registry belongs to" is unambiguous. See inheritedAcrossFork().
+        pid_t owner_pid_{0};
+
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         int batch_{0};
         int collect_interval_{0};

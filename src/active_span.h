@@ -140,6 +140,20 @@ namespace pinpoint {
             node.linked_.store(false, std::memory_order_release);
         }
 
+        /**
+         * @brief Forgets @p node without touching a shard.
+         *
+         * For a caller that has determined this registry's shards are not
+         * safe to lock — the registry belongs to another process, so a shard
+         * mutex may be inherited locked (see AgentStats' fork guard). The
+         * list itself is deliberately left alone: it is the owning process's
+         * copy that matters, and this process must not walk it. Clearing
+         * `linked_` keeps the destructor backstop from retrying the drop.
+         */
+        static void abandon(ActiveSpanNode& node) noexcept {
+            node.linked_.store(false, std::memory_order_release);
+        }
+
         /// @brief Buckets every linked span's age at @p sample_time_ms into
         /// the Pinpoint active-request histogram (<1s, <3s, <5s, >=5s).
         void collect(int32_t buckets[4], int64_t sample_time_ms) {

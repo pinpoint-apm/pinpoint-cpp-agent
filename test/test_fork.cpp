@@ -37,7 +37,9 @@
 #include "../src/grpc.h"
 #include "../src/config.h"
 #include "../src/object_name.h"
+#include "../src/stat.h"
 #include "../include/pinpoint/tracer.h"
+#include "mock_agent_service.h"
 #include "testable_grpc.h"
 
 namespace pinpoint {
@@ -334,6 +336,63 @@ TEST(ForkLifecycleTest, ChildStoreRefreshesInheritedAtomicSharedPtrSnapshot) {
     ASSERT_EQ(waitpid(pid, &status, 0), pid);
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+// The active-span registry is the one per-request structure a span reaches
+// without going through AgentImpl, so the agent's own pid guards (Enable,
+// tracing_active, the pid-guarded teardown) do not cover it. Every entry
+// point takes a shard mutex, and a mutex some thread held at the fork
+// instant is inherited locked with no thread left in the child to unlock it
+// — a span created before the fork and ended in the child, on the forking
+// thread's own stack, would block there forever. In the child the inherited
+// registry must be inert instead.
+TEST(ForkLifecycleTest, InheritedActiveSpanRegistryIsInertInChild) {
+    MockAgentService mock;
+    AgentStats stats(&mock);
+
+    // A request in flight at the moment of the fork.
+    constexpr int64_t kStartTime = 1234567890;
+    ActiveSpanNode parent_node;
+    stats.addActiveSpan(parent_node, 4242, kStartTime);
+    ASSERT_TRUE(parent_node.isLinked());
+
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        // The parent's in-flight span is not this process's: the histogram
+        // must come back empty rather than from walking the inherited list.
+        int32_t buckets[4] = {-1, -1, -1, -1};
+        stats.collectActiveRequests(buckets, kStartTime + 100);
+        const bool histogram_empty = buckets[0] == 0 && buckets[1] == 0 &&
+                                     buckets[2] == 0 && buckets[3] == 0;
+
+        // Registering here must not link into the inherited shards either.
+        ActiveSpanNode child_node;
+        stats.addActiveSpan(child_node, 99, kStartTime);
+        const bool child_unlinked = !child_node.isLinked();
+
+        // Ending the pre-fork span must return, and must leave the node no
+        // longer reporting itself as linked, or the destructor backstop
+        // retries the drop for as long as the span object lives.
+        stats.dropActiveSpan(parent_node);
+        const bool parent_abandoned = !parent_node.isLinked();
+
+        _exit((histogram_empty && child_unlinked && parent_abandoned) ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status)) << "child blocked or died in the inherited registry";
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "an inherited active-span registry must be inert in the child";
+
+    // The child got its own copy-on-write pages, so the owner's list is
+    // untouched and still usable here.
+    EXPECT_TRUE(parent_node.isLinked());
+    int32_t buckets[4] = {0, 0, 0, 0};
+    stats.collectActiveRequests(buckets, kStartTime + 100);
+    EXPECT_EQ(buckets[0] + buckets[1] + buckets[2] + buckets[3], 1);
+    stats.dropActiveSpan(parent_node);
 }
 
 } // namespace pinpoint

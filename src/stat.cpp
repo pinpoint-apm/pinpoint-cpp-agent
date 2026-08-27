@@ -44,6 +44,7 @@ namespace pinpoint {
     AgentStats::AgentStats(AgentService* agent) : agent_(agent) {
         sc_clk_tck_ = sysconf(_SC_CLK_TCK);
         sc_nprocessors_onln_ = sysconf(_SC_NPROCESSORS_ONLN);
+        owner_pid_ = current_pid();
     }
 
     using FileCloser = std::unique_ptr<FILE, int (*)(FILE*)>;
@@ -323,17 +324,45 @@ namespace pinpoint {
         }
     }
 
+    // The registry's own fork guard. It lives here rather than in the
+    // registry because active_span.h is header-only so the benchmark can
+    // include it against nothing but <thread> — reaching current_pid() from
+    // there would drag utility.cpp into that target. One relaxed atomic load
+    // per call, the same price AgentImpl::tracing_active already pays once
+    // per NewSpan (see utility.h on why current_pid() is not getpid()).
+    bool AgentStats::inheritedAcrossFork() const noexcept {
+        return owner_pid_ != current_pid();
+    }
+
     // Thin delegates: the registry logic lives header-only in active_span.h
     // so benchmark/active_span_benchmark.cpp measures the production code.
     void AgentStats::addActiveSpan(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
+        if (inheritedAcrossFork()) {
+            return;
+        }
         active_spans_.add(node, span_id, start_time);
     }
 
     void AgentStats::dropActiveSpan(ActiveSpanNode& node) {
+        if (inheritedAcrossFork()) {
+            // Not ours to unlink, but the node must stop reporting itself as
+            // linked or the destructor backstop retries this forever.
+            ActiveSpanRegistry::abandon(node);
+            return;
+        }
         active_spans_.drop(node);
     }
 
     void AgentStats::collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms) {
+        if (inheritedAcrossFork()) {
+            // The parent's in-flight requests are not this process's; the
+            // histogram it would build from them is wrong as well as unsafe.
+            active_requests[0] = 0;
+            active_requests[1] = 0;
+            active_requests[2] = 0;
+            active_requests[3] = 0;
+            return;
+        }
         active_spans_.collect(active_requests, sample_time_ms);
     }
 
