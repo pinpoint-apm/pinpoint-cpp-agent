@@ -33,6 +33,7 @@ namespace {
 
 RpcMetadata copy_metadata(const grpc::ServerContext& context) {
     RpcMetadata metadata;
+    metadata.peer = context.peer();
     for (const auto& [key, value] : context.client_metadata()) {
         metadata.values.emplace(
             std::string(key.data(), key.size()),

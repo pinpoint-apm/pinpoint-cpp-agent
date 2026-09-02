@@ -54,6 +54,10 @@ enum class CollectorRpc {
 /** A copy of the client metadata attached to one gRPC call. */
 struct RpcMetadata {
     std::multimap<std::string, std::string> values;
+    /** grpc::ServerContext::peer(): "ipv4:127.0.0.1:<port>". The client's
+     *  ephemeral port identifies the connection the call arrived on, so a
+     *  changed peer proves the agent moved to a new channel. */
+    std::string peer;
 
     std::optional<std::string> value(std::string_view key) const;
     std::vector<std::string> all(std::string_view key) const;

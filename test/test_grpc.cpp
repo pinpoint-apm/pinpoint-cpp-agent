@@ -29,8 +29,22 @@
 #include "../src/config.h"
 #include "../include/pinpoint/tracer.h"
 #include "mock_agent_service.h"
+#include "mock_helpers.h"
 
 namespace pinpoint {
+
+namespace {
+
+// Exposes the transport snapshot and the per-client stop for the channel
+// rotation tests below. Uses the real readyChannel() against real channels.
+class RotationProbeGrpcSpan : public GrpcSpan {
+public:
+    using GrpcSpan::GrpcSpan;
+    std::shared_ptr<const Transport> transport() const { return current_transport<SpanStub>(); }
+    void stop() { request_stop(); }
+};
+
+}  // namespace
 
 class GrpcTest : public ::testing::Test {
 protected:
@@ -328,6 +342,161 @@ TEST_F(GrpcTest, GrpcClientReadyChannelRefusesToWaitWhenAgentIsExiting) {
     EXPECT_FALSE(client.readyChannel());
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1))
         << "readyChannel must not enter the outage backoff once the agent is exiting";
+
+    client.closeChannel();
+}
+
+// ========== Connection renewal: jitter and channel rotation ==========
+
+TEST(RandomizeIntervalTest, StaysWithinFactorBoundsAndVaries) {
+    std::mt19937_64 rng(42);
+    const auto base = std::chrono::milliseconds(1000);
+    auto lo = base;
+    auto hi = base;
+    for (int i = 0; i < 1000; ++i) {
+        const auto value = randomize_interval(base, 0.1, rng);
+        EXPECT_GE(value.count(), 900);
+        EXPECT_LE(value.count(), 1100);
+        lo = std::min(lo, value);
+        hi = std::max(hi, value);
+    }
+    EXPECT_LT(lo, base) << "jitter must spread below the base interval";
+    EXPECT_GT(hi, base) << "jitter must spread above the base interval";
+}
+
+TEST(RandomizeIntervalTest, NoJitterWhenFactorOrIntervalIsZero) {
+    std::mt19937_64 rng(7);
+    EXPECT_EQ(randomize_interval(std::chrono::milliseconds(1000), 0.0, rng).count(), 1000);
+    EXPECT_EQ(randomize_interval(std::chrono::milliseconds(1000), -1.0, rng).count(), 1000);
+    EXPECT_EQ(randomize_interval(std::chrono::milliseconds(0), 0.1, rng).count(), 0);
+}
+
+// Default configuration: rotation code never publishes anything, so the
+// transport openChannel() built is the one every readiness check returns.
+TEST_F(GrpcTest, ChannelRotationIsInertWhenDisabled) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+    ASSERT_EQ(cfg->collector.grpc.channel.channel_max_age_ms, 0) << "rotation must be off by default";
+
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->generation, 1u);
+
+    ASSERT_TRUE(client.readyChannel());
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.transport(), first) << "with rotation disabled the transport must never change";
+
+    client.closeChannel();
+    EXPECT_EQ(client.transport(), nullptr);
+}
+
+// Make-before-break against a live server: once the channel is older than its
+// max age, readyChannel() publishes a READY successor with a new generation
+// and leaves the previous transport intact for whoever still holds it.
+TEST_F(GrpcTest, ChannelRotationReplacesAgedChannelOnceSuccessorIsReady) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+    cfg->collector.grpc.channel.channel_max_age_ms = 20;
+
+    GrpcClientTuning tuning;
+    tuning.channel_rotation_ready_timeout = std::chrono::seconds(5);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.transport(), first) << "a channel younger than its max age is kept";
+
+    // Past 20ms +-10%.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_TRUE(client.readyChannel());
+    const auto second = client.transport();
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second, first) << "an aged channel must be replaced";
+    EXPECT_EQ(second->generation, 2u);
+    EXPECT_GT(second->created_at, first->created_at);
+    ASSERT_NE(second->channel, nullptr);
+    EXPECT_EQ(second->channel->GetState(false), GRPC_CHANNEL_READY)
+        << "make-before-break: the successor is published only once READY";
+    ASSERT_NE(first->channel, nullptr);
+    EXPECT_EQ(first->channel->GetState(false), GRPC_CHANNEL_READY)
+        << "the previous channel is left alone for the calls still on it";
+
+    client.closeChannel();
+}
+
+// Collector down (port 1 refuses connections): neither the current channel
+// nor a successor can become READY. The rotation spends at most its timeout
+// on the successor and keeps the current transport; readyChannel() then
+// enters its usual outage wait, which a stop request interrupts.
+TEST_F(GrpcTest, ChannelRotationKeepsCurrentChannelWhenSuccessorNeverReady) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_port = 1;
+    cfg->collector.grpc.channel.channel_max_age_ms = 1;
+
+    GrpcClientTuning tuning;
+    tuning.channel_rotation_ready_timeout = std::chrono::milliseconds(300);
+    tuning.backoff_sleep_slice = std::chrono::milliseconds(50);
+    tuning.reconnect_initial_interval = std::chrono::milliseconds(100);
+    tuning.reconnect_max_interval = std::chrono::milliseconds(100);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    auto ready = std::async(std::launch::async, [&client] { return client.readyChannel(); });
+    // 300ms of successor wait, then the outage backoff on the current channel.
+    EXPECT_EQ(ready.wait_for(std::chrono::milliseconds(500)), std::future_status::timeout);
+    client.stop();
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_FALSE(ready.get());
+    EXPECT_EQ(client.transport(), first)
+        << "an unready successor must never replace the current transport";
+    EXPECT_EQ(first->generation, 1u);
+
+    client.closeChannel();
+}
+
+// Shutdown racing a rotation: the successor wait is long, but a stop request
+// ends it within one backoff slice, publishing nothing.
+TEST_F(GrpcTest, ChannelRotationAbandonsWaitWhenStopRequested) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_port = 1;
+    cfg->collector.grpc.channel.channel_max_age_ms = 1;
+
+    GrpcClientTuning tuning;
+    tuning.channel_rotation_ready_timeout = std::chrono::seconds(30);
+    tuning.backoff_sleep_slice = std::chrono::milliseconds(50);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    auto ready = std::async(std::launch::async, [&client] { return client.readyChannel(); });
+    // Well inside the 30s successor wait.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto stop_at = std::chrono::steady_clock::now();
+    client.stop();
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+        << "a stop must interrupt the rotation wait";
+    EXPECT_LT(std::chrono::steady_clock::now() - stop_at, std::chrono::seconds(1));
+    EXPECT_FALSE(ready.get());
+    EXPECT_EQ(client.transport(), first);
 
     client.closeChannel();
 }

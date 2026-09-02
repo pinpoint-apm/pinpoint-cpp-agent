@@ -1430,7 +1430,7 @@ public:
     using TestableGrpcAgent::TestableGrpcAgent;
 
 protected:
-    void create_stub() override {
+    void create_stub(const std::shared_ptr<grpc::Channel>&) override {
         throw std::runtime_error("injected channel bring-up failure");
     }
 };

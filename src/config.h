@@ -53,6 +53,12 @@ namespace pinpoint {
         constexpr int GRPC_KEEPALIVE_TIMEOUT_MS = 60 * 1000;
         constexpr int GRPC_MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
         constexpr int GRPC_SENDER_QUEUE_SIZE = 1000;
+        // Periodic connection renewal, both disabled (0) like the Java agent's
+        // defaults (3153600000000 ms, "disabled" by convention there):
+        //   CHANNEL_MAX_AGE_MS <-> profiler.transport.grpc.loadbalancer.renew.period.millis
+        //   STREAM_MAX_AGE_MS  <-> profiler.transport.grpc.span.sender.rpc.age.max.millis
+        constexpr int GRPC_CHANNEL_MAX_AGE_MS = 0;
+        constexpr int GRPC_STREAM_MAX_AGE_MS = 0;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
@@ -120,6 +126,8 @@ namespace pinpoint {
         constexpr const char* GRPC_MAX_SEND_MESSAGE_SIZE = "GRPC_MAX_SEND_MESSAGE_SIZE";
         constexpr const char* GRPC_MAX_RECEIVE_MESSAGE_SIZE = "GRPC_MAX_RECEIVE_MESSAGE_SIZE";
         constexpr const char* GRPC_SENDER_QUEUE_SIZE = "GRPC_SENDER_QUEUE_SIZE";
+        constexpr const char* GRPC_CHANNEL_MAX_AGE_MS = "GRPC_CHANNEL_MAX_AGE_MS";
+        constexpr const char* GRPC_STREAM_MAX_AGE_MS = "GRPC_STREAM_MAX_AGE_MS";
         constexpr const char* IS_CONTAINER = "IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
@@ -215,6 +223,15 @@ namespace pinpoint {
             int max_send_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
             int max_receive_message_size = defaults::GRPC_MAX_MESSAGE_SIZE;
             int sender_queue_size = defaults::GRPC_SENDER_QUEUE_SIZE;
+            // Connection renewal (see GrpcClient::rotate_channel_if_due and
+            // the stream max-age handling in grpc.cpp). A channel older than
+            // channel_max_age_ms is replaced by a freshly connected one, and a
+            // long-lived stream (ping/stat/command) older than
+            // stream_max_age_ms is closed and reopened, so agents stuck to one
+            // backend behind an L4 load balancer spread out again. Both are
+            // jittered by +-10% and 0 disables them (negative normalizes to 0).
+            int channel_max_age_ms = defaults::GRPC_CHANNEL_MAX_AGE_MS;
+            int stream_max_age_ms = defaults::GRPC_STREAM_MAX_AGE_MS;
         };
 
         struct {

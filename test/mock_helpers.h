@@ -24,10 +24,40 @@
 #include <string_view>
 #include <vector>
 
+#include <grpcpp/security/server_credentials.h>
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+
 #include "../include/pinpoint/tracer.h"
 #include "../src/span.h"
+#include "v1/Service.grpc.pb.h"
 
 namespace pinpoint {
+
+// A listening gRPC server that implements nothing: enough for a client channel
+// to reach READY (TCP connect + HTTP/2 settings exchange), which is all the
+// channel-rotation tests need. Every RPC issued on it fails with UNIMPLEMENTED
+// (the generated base Service is registered only because ServerBuilder refuses
+// to start a server that has no service and no polled completion queue).
+struct BareGrpcServer {
+    int port{0};
+    v1::Agent::Service unimplemented;
+    std::unique_ptr<grpc::Server> server;
+
+    BareGrpcServer() {
+        grpc::ServerBuilder builder;
+        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+        builder.RegisterService(&unimplemented);
+        server = builder.BuildAndStart();
+    }
+    ~BareGrpcServer() {
+        if (server) {
+            server->Shutdown();
+        }
+    }
+    BareGrpcServer(const BareGrpcServer&) = delete;
+    BareGrpcServer& operator=(const BareGrpcServer&) = delete;
+};
 
 // The by-value factory is used only for in-place SpanData unit tests that never
 // serialize, and SpanData is non-movable (atomic members) so it cannot set a

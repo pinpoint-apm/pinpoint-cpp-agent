@@ -64,7 +64,7 @@ public:
     GrpcRequestStatus registerAgent() override { return SEND_OK; }
 
 protected:
-    void create_stub() override {}
+    void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
 };
 
 class TestableGrpcMetadata : public GrpcMetadata {
@@ -79,7 +79,7 @@ public:
     bool readyChannel() override { return false; }
 
 protected:
-    void create_stub() override {}
+    void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
 };
 
 class TestableGrpcSpan : public GrpcSpan {
@@ -94,7 +94,7 @@ public:
     bool readyChannel() override { return false; }
 
 protected:
-    void create_stub() override {}
+    void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
 };
 
 class TestableGrpcStats : public GrpcStats {
@@ -109,7 +109,7 @@ public:
     bool readyChannel() override { return false; }
 
 protected:
-    void create_stub() override {}
+    void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
 };
 
 // The full client set for AgentImpl construction, stubs already injected.

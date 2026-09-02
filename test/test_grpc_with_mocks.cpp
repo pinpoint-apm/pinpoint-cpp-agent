@@ -3421,4 +3421,118 @@ TEST_F(GrpcMockTest, GrpcCommandReconnectHonorsInjectedBackoff) {
     if (worker.joinable()) worker.join();
 }
 
+// ============================================================
+// Channel rotation while a SendSpanBatch is still in flight on the previous
+// transport: the pending call's snapshot must keep that transport alive until
+// its completion callback has run (stub access invariant, grpc.h). Real
+// channels to a bare in-process server drive the real readyChannel() path;
+// the fake stubs only stand in for the RPC itself.
+// ============================================================
+
+namespace {
+
+// Publishes a fresh FakeSpanStub on every channel (the initial open and each
+// rotation) so the test can see which transport a batch was launched on.
+class RotatingFakeStubGrpcSpan : public GrpcSpan {
+public:
+    RotatingFakeStubGrpcSpan(AgentService* agent, const GrpcClientTuning& tuning)
+        : GrpcSpan(agent->getConfig(), tuning) {
+        agent_ = agent;
+    }
+
+    std::weak_ptr<const Transport> transportRef() const { return current_transport<SpanStub>(); }
+
+    uint32_t generation() const {
+        const auto transport = current_transport<SpanStub>();
+        return transport ? transport->generation : 0;
+    }
+
+    // Raw: each stub is owned by its transport and dies with it.
+    FakeSpanStub* stub(size_t index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return index < stubs_.size() ? stubs_[index] : nullptr;
+    }
+
+    bool waitForStubCount(size_t count, std::chrono::milliseconds timeout) {
+        return wait_for_condition([&] {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return stubs_.size() >= count;
+        }, timeout);
+    }
+
+protected:
+    void create_stub(const std::shared_ptr<grpc::Channel>& channel) override {
+        auto stub = std::make_unique<FakeSpanStub>();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stubs_.push_back(stub.get());
+        }
+        set_span_stub(std::move(stub), channel);
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<FakeSpanStub*> stubs_;
+};
+
+}  // namespace
+
+TEST_F(GrpcMockTest, GrpcSpanRotationKeepsPreviousTransportAliveWhileBatchInFlight) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.grpc.channel.channel_max_age_ms = 200;
+
+    GrpcClientTuning tuning;
+    tuning.channel_rotation_ready_timeout = std::chrono::seconds(5);
+    RotatingFakeStubGrpcSpan span_client(mock_agent_service_.get(), tuning);
+    span_client.openChannel();
+    ASSERT_EQ(span_client.generation(), 1u);
+    auto* first_stub = span_client.stub(0);
+    ASSERT_NE(first_stub, nullptr);
+    first_stub->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
+
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                        [&span_client] { span_client.sendSpanWorker(); });
+
+    // A batch launched on transport #1 whose completion is withheld.
+    auto held_span = make_test_span_data_ptr(*mock_agent_service_, "held-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(held_span, true));
+    ASSERT_TRUE(first_stub->waitForBatchCount(1, std::chrono::seconds(5)));
+    const auto previous = span_client.transportRef();
+    ASSERT_FALSE(previous.expired());
+
+    // Age the channel past 200ms +-10%, then send again: the worker's
+    // readyChannel() rotates to transport #2 and the new batch goes there.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    auto later_span = make_test_span_data_ptr(*mock_agent_service_, "later-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(later_span, true));
+    ASSERT_TRUE(span_client.waitForStubCount(2, std::chrono::seconds(5)));
+    auto* second_stub = span_client.stub(1);
+    ASSERT_NE(second_stub, nullptr);
+    ASSERT_TRUE(second_stub->waitForBatchCount(1, std::chrono::seconds(5)));
+    EXPECT_EQ(span_client.generation(), 2u);
+
+    // The client let go of transport #1, but the in-flight batch pins it.
+    EXPECT_FALSE(previous.expired())
+        << "a transport with a call in flight must outlive its replacement";
+
+    // Completing the held call releases the last snapshot.
+    first_stub->releaseHeldCallbacks(grpc::Status::OK);
+    first_stub = nullptr;  // owned by transport #1, which is gone from here
+    EXPECT_TRUE(wait_for_condition([&previous] { return previous.expired(); },
+                                   std::chrono::seconds(2)))
+        << "once the last call on it completes, the previous transport is destroyed";
+    EXPECT_EQ(second_stub->batchCount(), 1u);
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+}
+
 } // namespace pinpoint

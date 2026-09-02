@@ -142,6 +142,21 @@ namespace pinpoint {
             channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, options.max_send_message_size);
             channel_args.SetInt(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH, options.max_receive_message_size);
 
+            // Channel rotation exists to land on a different backend, which
+            // takes a new TCP connection. By default C-core shares
+            // subchannels (connections) between channels with the same
+            // target and arguments through a process-wide pool, so a rotation
+            // successor would simply reuse the connection of the channel it
+            // replaces — and the agent/metadata/command channels to the agent
+            // port already ride one shared connection. A per-channel pool
+            // gives each channel, and therefore each successor, its own
+            // connection; the old one closes once the previous transport's
+            // last snapshot is released. Left at the default while rotation
+            // is off so existing deployments keep their connection count.
+            if (options.channel_max_age_ms > 0) {
+                channel_args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
+            }
+
             return channel_args;
         }
 
@@ -153,10 +168,11 @@ namespace pinpoint {
             auto channel_args = make_channel_arguments(options);
 
             LOG_INFO("create {} grpc channel: addr={}, ssl={}, keepaliveTimeMs={}, keepaliveTimeoutMs={}, "
-                     "maxSendMessageSize={}, maxReceiveMessageSize={}",
+                     "maxSendMessageSize={}, maxReceiveMessageSize={}, channelMaxAgeMs={}, streamMaxAgeMs={}",
                      client_name, addr, config.collector.grpc.ssl.enable, options.keepalive_time_ms,
                      options.keepalive_timeout_ms, options.max_send_message_size,
-                     options.max_receive_message_size);
+                     options.max_receive_message_size, options.channel_max_age_ms,
+                     options.stream_max_age_ms);
             return grpc::CreateCustomChannel(addr, credentials, channel_args);
         }
 
@@ -197,6 +213,21 @@ namespace pinpoint {
         attempt_ = 0;
     }
 
+    // Java: IntervalFunction.ofRandomized(x, 0.1) for both renewal periods.
+    constexpr double kRenewalJitterFactor = 0.1;
+
+    std::chrono::milliseconds randomize_interval(std::chrono::milliseconds interval, double factor,
+                                                 std::mt19937_64& rng) {
+        const auto jitter = std::max(0.0, factor);
+        if (interval.count() <= 0 || jitter <= 0.0) {
+            return interval;
+        }
+        std::uniform_real_distribution<double> distribution(1.0 - jitter, 1.0 + jitter);
+        const auto scaled = static_cast<double>(interval.count()) * distribution(rng);
+        return std::chrono::milliseconds(
+            std::max<std::chrono::milliseconds::rep>(1, std::llround(scaled)));
+    }
+
     GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
                            const GrpcClientTuning& tuning)
         : config_{std::move(config)}, tuning_{tuning}, client_type_(client_type),
@@ -214,11 +245,13 @@ namespace pinpoint {
 
     void GrpcClient::openChannel() {
         std::unique_lock<std::mutex> lock(channel_mutex_);
-        if (channel_) {
+        // Idempotent on the channel, not the transport: a test-injected bare
+        // stub (null channel) still lets this build the channel and run
+        // create_stub(), exactly as before the transport bundling.
+        if (const auto transport = transport_.load(); transport && transport->channel) {
             return;
         }
-        channel_ = build_channel(*config_, client_type_);
-        create_stub();
+        create_stub(build_channel(*config_, client_type_));
     }
 
     void GrpcClient::setAgentService(AgentService* agent) {
@@ -278,8 +311,8 @@ namespace pinpoint {
         }
     }
 
-    bool GrpcClient::wait_channel_ready(std::chrono::milliseconds delay) const {
-        auto state = channel_->GetState(true);
+    bool GrpcClient::wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const {
+        auto state = channel.GetState(true);
         if (state == GRPC_CHANNEL_READY) {
             return true;
         }
@@ -303,8 +336,8 @@ namespace pinpoint {
 
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto wait_for = std::min(remaining, tuning_.backoff_sleep_slice);
-            channel_->WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
-            state = channel_->GetState(false);
+            channel.WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
+            state = channel.GetState(false);
         }
 
         return state == GRPC_CHANNEL_READY;
@@ -316,14 +349,26 @@ namespace pinpoint {
             return false;
         }
 
-        if (channel_->GetState(false) != GRPC_CHANNEL_READY) {
+        // Every worker passes here right before it uses its stub, so this is
+        // the cycle boundary where an aged channel gets replaced. A no-op
+        // unless rotation is configured and due.
+        rotate_channel_if_due();
+
+        const auto transport = transport_.load();
+        if (!transport || !transport->channel) {
+            // Never opened (or a test injected a bare stub), or closed.
+            return false;
+        }
+        auto& channel = *transport->channel;
+
+        if (channel.GetState(false) != GRPC_CHANNEL_READY) {
             while (true) {
                 if (stopping()) {
                     return false;
                 }
                 const auto delay = channel_ready_backoff_.next_delay();
                 LOG_INFO("{} grpc channel is not ready; retry for {}ms", client_name_, delay.count());
-                if (wait_channel_ready(delay)) {
+                if (wait_channel_ready(channel, delay)) {
                     channel_ready_backoff_.reset();
                     break;
                 }
@@ -332,6 +377,76 @@ namespace pinpoint {
             channel_ready_backoff_.reset();
         }
         return true;
+    }
+
+    void GrpcClient::arm_channel_rotation(std::chrono::steady_clock::time_point from) {
+        const auto max_age = std::chrono::milliseconds(config_->collector.grpc.channel.channel_max_age_ms);
+        channel_rotate_at_ = max_age.count() > 0
+            ? from + randomize_interval(max_age, kRenewalJitterFactor, jitter_rng_)
+            : std::chrono::steady_clock::time_point::max();
+    }
+
+    void GrpcClient::rotate_channel_if_due() noexcept try {
+        // Runs under channel_mutex_ (readyChannel), on the client's worker.
+        const auto now = std::chrono::steady_clock::now();
+        if (now < channel_rotate_at_ || stopping()) {
+            return;
+        }
+        const auto current = transport_.load();
+        if (!current || !current->channel) {
+            return;  // closed, or a test-injected bare stub: nothing to renew
+        }
+        const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - current->created_at).count();
+        LOG_INFO("{} grpc channel #{} is {}ms old (max age {}ms): connecting a successor",
+                 client_name_, current->generation, age_ms,
+                 config_->collector.grpc.channel.channel_max_age_ms);
+
+        // Make-before-break: the successor must be READY before it replaces
+        // anything, and it is not required that the current channel be READY
+        // — when the collector just came back, moving to the successor is the
+        // faster recovery. wait_channel_ready() checks stopping() every
+        // slice, so a shutdown starting during the wait abandons the rotation.
+        auto successor = build_channel(*config_, client_type_);
+        const bool ready = wait_channel_ready(*successor, tuning_.channel_rotation_ready_timeout);
+        const auto ready_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - now).count();
+        if (!ready || stopping()) {
+            // Keep the working channel; the successor dies with this scope.
+            // Retry one jittered period from now rather than in a tight loop.
+            LOG_WARN("{} grpc channel rotation abandoned: successor not ready after {}ms (state {}); "
+                     "keeping channel #{}", client_name_, ready_ms,
+                     static_cast<int>(successor->GetState(false)), current->generation);
+            arm_channel_rotation(std::chrono::steady_clock::now());
+            return;
+        }
+        // Publishes the successor with its stub in one store and re-arms the
+        // next rotation. This client's reference to the previous transport
+        // ends here; calls still running on it hold their own snapshots.
+        create_stub(successor);
+        LOG_INFO("{} grpc channel #{} replaced by #{}: old age {}ms, successor ready in {}ms",
+                 client_name_, current->generation, transport_generation_, age_ms, ready_ms);
+    } catch (const std::exception& e) {
+        LOG_ERROR("{} grpc channel rotation failed: {}; keeping the current channel", client_name_, e.what());
+        arm_channel_rotation(std::chrono::steady_clock::now());
+    } catch (...) {
+        LOG_ERROR("{} grpc channel rotation failed: unknown exception; keeping the current channel", client_name_);
+        arm_channel_rotation(std::chrono::steady_clock::now());
+    }
+
+    std::chrono::milliseconds GrpcClient::next_stream_max_age() {
+        const auto max_age = std::chrono::milliseconds(config_->collector.grpc.channel.stream_max_age_ms);
+        if (max_age.count() <= 0) {
+            return std::chrono::milliseconds::zero();
+        }
+        return randomize_interval(max_age, kRenewalJitterFactor, jitter_rng_);
+    }
+
+    void GrpcClient::arm_stream_expiry() {
+        const auto max_age = next_stream_max_age();
+        stream_expires_at_ = max_age.count() > 0
+            ? std::chrono::steady_clock::now() + max_age
+            : std::chrono::steady_clock::time_point::max();
     }
 
     //GrpcMetadata
@@ -346,6 +461,9 @@ namespace pinpoint {
         std::unique_ptr<MetaData> meta;     // retained for retry / cache release
         int retry_count{0};
         std::string_view operation_name{};  // static literal, for logging
+        // Pins the channel (and stub) this RPC was launched on until the
+        // callback has run — see the stub access invariant in grpc.h.
+        std::shared_ptr<const GrpcClient::Transport> transport;
     };
 
     // Metadata queued for (re)send.
@@ -425,8 +543,8 @@ namespace pinpoint {
         pipeline_->completed.reserve(static_cast<size_t>(pipeline_->max_permits) * 4);
     }
 
-    void GrpcMetadata::create_stub() {
-        set_meta_stub(v1::Metadata::NewStub(channel_));
+    void GrpcMetadata::create_stub(const std::shared_ptr<grpc::Channel>& channel) {
+        set_meta_stub(v1::Metadata::NewStub(channel), channel);
     }
 
     void GrpcMetadata::launch_meta_rpc(std::unique_ptr<MetaData> meta, int retry_count) {
@@ -461,10 +579,18 @@ namespace pinpoint {
                 registered = true;
             }
 
-            // Deliberately NOT under channel_mutex_: meta_stub_ is created by
-            // openChannel() before this worker starts and gRPC stubs are
-            // thread-safe.
-            auto* async_stub = meta_stub_->async();
+            // Not under channel_mutex_ (see the stub access invariant in
+            // grpc.h): the stub comes from an owning transport snapshot that
+            // `call` keeps until its completion callback has run, so a
+            // channel rotation cannot destroy the channel this RPC is on.
+            // Null only after closeChannel(); treat that like a failed launch
+            // so the item takes the normal retry path.
+            const auto transport = current_transport<MetaStub>();
+            if (transport == nullptr) {
+                throw std::runtime_error("metadata channel is closed");
+            }
+            call->transport = transport;
+            auto* async_stub = transport->stub->async();
             std::visit([&](auto&& value) {
                 using T = std::decay_t<decltype(value)>;
                 if constexpr (std::is_same_v<T, ApiMeta>) {
@@ -932,8 +1058,14 @@ namespace pinpoint {
                 }
             }
 
+            // Snapshot held for the whole stream: pins the channel it runs
+            // on across a command-channel rotation (stub access invariant,
+            // grpc.h). Null only after closeChannel().
+            const auto transport = owner_->current_transport<CommandStub>();
             google::protobuf::Empty reply;
-            auto writer = owner_->command_stub_->CommandStreamActiveThreadCount(context_.get(), &reply);
+            auto writer = transport
+                ? transport->stub->CommandStreamActiveThreadCount(context_.get(), &reply)
+                : nullptr;
             if (writer == nullptr) {
                 LOG_WARN("failed to start active thread count stream: writer is null");
                 {
@@ -1000,8 +1132,8 @@ namespace pinpoint {
     GrpcCommand::GrpcCommand(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
         : GrpcClient(AGENT, std::move(config), tuning) {}
 
-    void GrpcCommand::create_stub() {
-        set_command_stub(v1::ProfilerCommandService::NewStub(channel_));
+    void GrpcCommand::create_stub(const std::shared_ptr<grpc::Channel>& channel) {
+        set_command_stub(v1::ProfilerCommandService::NewStub(channel), channel);
     }
 
     GrpcCommand::~GrpcCommand() {
@@ -1054,7 +1186,12 @@ namespace pinpoint {
         response.mutable_commonresponse()->set_responseid(request.requestid());
         response.set_message(request.commandecho().message());
 
-        const auto status = command_stub_->CommandEcho(&ctx, response, &reply);
+        // Snapshot for this one unary call (stub access invariant, grpc.h).
+        const auto transport = current_transport<CommandStub>();
+        if (transport == nullptr) {
+            return write_fail_message(request, stream, "command channel closed");
+        }
+        const auto status = transport->stub->CommandEcho(&ctx, response, &reply);
         if (!status.ok()) {
             LOG_INFO("command echo response failed: {}, {}",
                      static_cast<int>(status.error_code()), status.error_message());
@@ -1227,6 +1364,16 @@ namespace pinpoint {
             grpc::ClientContext context;
             build_grpc_context(&context, ++socket_id_);
             context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header());
+            // Stream max age (Java SpanGrpcDataSender's rpc max age): this
+            // worker sits in a blocking Read() for the stream's whole life,
+            // so there is no loop boundary at which to check an expiry. A
+            // deadline lets gRPC end the stream instead; the resulting
+            // DEADLINE_EXCEEDED close is recognized below and reconnects
+            // without the failure delay.
+            const auto stream_max_age = next_stream_max_age();
+            if (stream_max_age.count() > 0) {
+                context.set_deadline(std::chrono::system_clock::now() + stream_max_age);
+            }
 
             const StreamContextGuard context_guard(this, &context);
 
@@ -1240,8 +1387,16 @@ namespace pinpoint {
                 break;
             }
 
+            // Snapshot for the whole session (stub access invariant, grpc.h).
+            // Null only after closeChannel(), which runs once this worker
+            // has been signaled to stop.
+            const auto transport = current_transport<CommandStub>();
+            if (transport == nullptr) {
+                break;
+            }
             LOG_INFO("connect to command service stream");
-            auto stream = command_stub_->HandleCommandV2(&context);
+            auto stream = transport->stub->HandleCommandV2(&context);
+            bool expired_by_max_age = false;
             if (stream == nullptr) {
                 LOG_WARN("failed to connect to command service stream: stream is null");
             } else {
@@ -1261,7 +1416,12 @@ namespace pinpoint {
                 }
                 stream->WritesDone();
                 const auto status = stream->Finish();
-                if (!status.ok() && !stopping()) {
+                expired_by_max_age = stream_max_age.count() > 0 &&
+                                     status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED;
+                if (expired_by_max_age) {
+                    LOG_INFO("command service stream reached its max age ({}ms), reopening",
+                             stream_max_age.count());
+                } else if (!status.ok() && !stopping()) {
                     LOG_INFO("command service stream closed: {}, {}",
                              static_cast<int>(status.error_code()), status.error_message());
                 } else {
@@ -1274,7 +1434,11 @@ namespace pinpoint {
                 cleanup_active_thread_count_streams();
             }
 
-            if (stopping() || wait_reconnect_delay(reconnect_backoff.next_delay())) {
+            if (stopping()) {
+                break;
+            }
+            // A planned max-age close is not a failure: reopen at once.
+            if (!expired_by_max_age && wait_reconnect_delay(reconnect_backoff.next_delay())) {
                 break;
             }
         }
@@ -1306,8 +1470,8 @@ namespace pinpoint {
     GrpcAgent::GrpcAgent(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
         : GrpcClient(AGENT, std::move(config), tuning) {}
 
-    void GrpcAgent::create_stub() {
-        set_agent_stub(v1::Agent::NewStub(channel_));
+    void GrpcAgent::create_stub(const std::shared_ptr<grpc::Channel>& channel) {
+        set_agent_stub(v1::Agent::NewStub(channel), channel);
     }
 
     GrpcAgent::~GrpcAgent() {
@@ -1361,13 +1525,19 @@ namespace pinpoint {
         grpc::ClientContext ctx;
         v1::PResult reply;
 
-        // Deliberately NOT under channel_mutex_: agent_stub_ is created by
-        // openChannel() before any AgentInfo send and gRPC stubs are
-        // thread-safe. Holding the mutex across this blocking call would stall
-        // the ping worker's readyChannel() for up to the request deadline —
-        // and conversely readyChannel()'s unbounded backoff would park this
-        // thread for a whole collector outage, uninterruptible by
-        // stopAgentInfo().
+        // Not under channel_mutex_ (see the stub access invariant in grpc.h):
+        // this thread takes its own owning transport snapshot and holds it
+        // across the call, so the ping worker rotating the agent channel
+        // meanwhile cannot destroy the channel this send is on. Holding the
+        // mutex instead would stall the ping worker's readyChannel() for up
+        // to the request deadline — and conversely readyChannel()'s unbounded
+        // backoff would park this thread for a whole collector outage,
+        // uninterruptible by stopAgentInfo().
+        const auto transport = current_transport<AgentStub>();
+        if (transport == nullptr) {
+            LOG_ERROR("failed to register the agent: channel is closed");
+            return SEND_FAIL;
+        }
         build_grpc_context(&ctx, 0);
 
         google::protobuf::Arena arena;
@@ -1375,7 +1545,7 @@ namespace pinpoint {
         build_agent_info(agent_info, &arena);
 
         set_request_deadline(ctx);
-        const grpc::Status status = agent_stub_->RequestAgentInfo(&ctx, *agent_info, &reply);
+        const grpc::Status status = transport->stub->RequestAgentInfo(&ctx, *agent_info, &reply);
 
         if (status.ok()) {
             LOG_INFO("success to register the agent");  
@@ -1537,6 +1707,13 @@ namespace pinpoint {
         if (!readyChannel()) {
             return false;
         }
+        // readyChannel() just ran the rotation, and this worker is the sole
+        // rotator, so this snapshot is the transport the session opens on
+        // (stub access invariant, grpc.h). Null only after closeChannel().
+        const auto transport = current_transport<AgentStub>();
+        if (transport == nullptr) {
+            return false;
+        }
 
         // Build the context fully before publishing it: everything that can
         // throw runs while stream_context_/grpc_status_ still describe the
@@ -1561,7 +1738,8 @@ namespace pinpoint {
         // loops read false as "stopping" and exit for the process lifetime,
         // while the supervisor retries a thrown transient failure.
         try {
-            agent_stub_->async()->PingSession(stream_context_.get(), this);
+            transport->stub->async()->PingSession(stream_context_.get(), this);
+            arm_stream_expiry();
 
             ping_stream_closing_ = false;
 
@@ -1730,6 +1908,18 @@ namespace pinpoint {
 
         while (true) {
             lock.unlock();
+            if (stream_expired()) {
+                // Stream max age: end this session through the normal finish
+                // path (StartWritesDone once, wait for OnDone) and open a
+                // fresh one, which also gives channel rotation its turn.
+                // Checked once per ping interval, so that is the effective
+                // granularity of the age.
+                LOG_INFO("ping stream reached its max age, reopening");
+                finish_ping_stream();
+                if (!start_ping_stream()) {
+                    return false;
+                }
+            }
             if (write_and_await_ping_stream() == STREAM_DONE) {
                 if (!start_ping_stream()) {
                     return false;
@@ -1773,6 +1963,9 @@ namespace pinpoint {
         google::protobuf::Arena arena;
         v1::PSpanMessageBatch* request{nullptr};
         v1::PSpanResultBatch reply;
+        // Pins the channel (and stub) this batch was launched on until the
+        // callback has run — see the stub access invariant in grpc.h.
+        std::shared_ptr<const GrpcClient::Transport> transport;
     };
 
     // Permit accounting and in-flight call registry shared between GrpcSpan
@@ -1813,8 +2006,8 @@ namespace pinpoint {
         inflight_->permits = inflight_->max_permits;
     }
 
-    void GrpcSpan::create_stub() {
-        set_span_stub(v1::Span::NewStub(channel_));
+    void GrpcSpan::create_stub(const std::shared_ptr<grpc::Channel>& channel) {
+        set_span_stub(v1::Span::NewStub(channel), channel);
     }
 
     bool GrpcSpan::try_acquire_permit(std::chrono::milliseconds timeout) {
@@ -1984,6 +2177,16 @@ namespace pinpoint {
         };
         try {
             pending = std::make_shared<PendingSpanBatch>();
+            // Snapshot before paying the serialization cost. It rides in
+            // `pending`, so the channel this batch goes out on outlives the
+            // call even if the worker rotates to a successor meanwhile (stub
+            // access invariant, grpc.h). Null only after closeChannel():
+            // treated like a synchronous launch failure.
+            const auto transport = current_transport<SpanStub>();
+            if (transport == nullptr) {
+                throw std::runtime_error("span channel is closed");
+            }
+            pending->transport = transport;
             pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
             // Reserve up front, like build_grpc_span does for span events: a
             // growing RepeatedPtrField doubles its pointer array, and on an arena
@@ -2020,7 +2223,7 @@ namespace pinpoint {
             // Captures the shared in-flight state, never `this`: the callback
             // may fire after this GrpcSpan (or the whole agent) is destroyed.
             auto state = inflight_;
-            span_stub_->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
+            transport->stub->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
                 [state, pending, batch_count](const grpc::Status& status) {
                     state->completeCall(pending);
                     if (!status.ok()) {
@@ -2099,9 +2302,11 @@ namespace pinpoint {
         if (!remaining.empty()) {
             // readyChannel() refuses to wait once the agent is exiting, so probe
             // the channel state directly and send only over a live connection.
-            // channel_ is null if the agent was never brought online via Start()
-            // (openChannel() opens it), in which case there is nothing to flush to.
-            const auto channel = channel_;
+            // The transport (or its channel) is null if the agent was never
+            // brought online via Start() (openChannel() opens it), in which
+            // case there is nothing to flush to.
+            const auto transport = current_transport<SpanStub>();
+            const auto channel = transport ? transport->channel : nullptr;
             if (channel && channel->GetState(false) == GRPC_CHANNEL_READY) {
                 LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
                 const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->collector.span_batch.size));
@@ -2192,13 +2397,19 @@ namespace pinpoint {
     GrpcStats::GrpcStats(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
         : GrpcClient(STATS, std::move(config), tuning) {}
 
-    void GrpcStats::create_stub() {
-        set_stats_stub(v1::Stat::NewStub(channel_));
+    void GrpcStats::create_stub(const std::shared_ptr<grpc::Channel>& channel) {
+        set_stats_stub(v1::Stat::NewStub(channel), channel);
     }
 
     bool GrpcStats::start_stats_stream() {
         LOG_DEBUG("start_stats_stream");
         if (!readyChannel()) {
+            return false;
+        }
+        // See start_ping_stream(): this worker is the sole rotator, so the
+        // transport readyChannel() left current is this session's.
+        const auto transport = current_transport<StatStub>();
+        if (transport == nullptr) {
             return false;
         }
 
@@ -2227,7 +2438,8 @@ namespace pinpoint {
         // "stopping" and exit for the process lifetime, while the supervisor
         // retries a thrown transient failure.
         try {
-            stats_stub_->async()->SendAgentStat(stream_context_.get(), &reply_, this);
+            transport->stub->async()->SendAgentStat(stream_context_.get(), &reply_, this);
+            arm_stream_expiry();
 
             stats_stream_closing_ = false;
 
@@ -2478,6 +2690,18 @@ namespace pinpoint {
             if (stop) {
                 finish_stats_stream();
                 return true;
+            }
+
+            if (stream_expired()) {
+                // Stream max age: reopen between writes, never mid-write, so
+                // no stat payload is lost — the tokens stay queued and go out
+                // on the fresh stream. Also gives channel rotation its turn
+                // (start_stats_stream runs readyChannel).
+                LOG_INFO("stats stream reached its max age, reopening");
+                finish_stats_stream();
+                if (!start_stats_stream()) {
+                    return false;
+                }
             }
 
             if (write_and_await_stats_stream() == STREAM_DONE) {

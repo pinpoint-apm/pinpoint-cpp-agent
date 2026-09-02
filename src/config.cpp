@@ -359,6 +359,8 @@ namespace pinpoint {
         {"Collector.Grpc.MaxSendMessageSize", REF(collector.grpc.channel.max_send_message_size), FIXED, env::GRPC_MAX_SEND_MESSAGE_SIZE},
         {"Collector.Grpc.MaxReceiveMessageSize", REF(collector.grpc.channel.max_receive_message_size), FIXED, env::GRPC_MAX_RECEIVE_MESSAGE_SIZE},
         {"Collector.Grpc.SenderQueueSize", REF(collector.grpc.channel.sender_queue_size), FIXED, env::GRPC_SENDER_QUEUE_SIZE},
+        {"Collector.Grpc.ChannelMaxAgeMs", REF(collector.grpc.channel.channel_max_age_ms), FIXED, env::GRPC_CHANNEL_MAX_AGE_MS},
+        {"Collector.Grpc.StreamMaxAgeMs", REF(collector.grpc.channel.stream_max_age_ms), FIXED, env::GRPC_STREAM_MAX_AGE_MS},
         {"Collector.AgentInfo.RefreshIntervalMs", REF(collector.agent_info.refresh_interval_ms), FIXED, env::AGENT_INFO_REFRESH_INTERVAL_MS},
         {"Collector.AgentInfo.SendRetryIntervalMs", REF(collector.agent_info.send_retry_interval_ms), FIXED, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS},
         {"Collector.AgentInfo.MaxTryPerAttempt", REF(collector.agent_info.max_try_per_attempt), FIXED, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT},
@@ -738,6 +740,11 @@ namespace pinpoint {
                  defaults::GRPC_MAX_MESSAGE_SIZE, "grpc max receive message size");
         in_range(channel.sender_queue_size, MIN_GRPC_QUEUE_SIZE, MAX_GRPC_QUEUE_SIZE,
                  defaults::GRPC_SENDER_QUEUE_SIZE, "grpc sender queue size");
+        // 0 disables; a negative value means the same thing, normalized so
+        // the effective value shows in the config dump. No lower bound: any
+        // positive age is honored (tests run rotation in milliseconds).
+        at_least(channel.channel_max_age_ms, 0, defaults::GRPC_CHANNEL_MAX_AGE_MS, "grpc channel max age");
+        at_least(channel.stream_max_age_ms, 0, defaults::GRPC_STREAM_MAX_AGE_MS, "grpc stream max age");
 
         // Auto-detect only on the first load. On a reload the value is already
         // seeded from the running config (env- or file-sourced) at the top of

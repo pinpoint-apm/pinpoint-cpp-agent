@@ -40,6 +40,7 @@
 #include "v1/Service.grpc.pb.h"
 
 #include "agent_service.h"
+#include "atomic_shared_ptr.h"
 #include "callstack.h"
 #include "sharded_bounded_queue.h"
 #include "span.h"
@@ -127,6 +128,11 @@ namespace pinpoint {
         std::chrono::milliseconds span_shutdown_await_timeout{3000};
         /// Minimum spacing between cumulative span-queue-drop reports.
         std::chrono::seconds span_queue_drop_log_interval{60};
+
+        /// Bounded wait for a channel-rotation successor to become READY
+        /// before the rotation is abandoned and the current channel kept
+        /// (see GrpcClient::rotate_channel_if_due).
+        std::chrono::milliseconds channel_rotation_ready_timeout{3000};
     };
 
     /// @brief Exponential backoff with jitter for reconnect attempts.
@@ -155,11 +161,55 @@ namespace pinpoint {
     };
 
     /**
+     * @brief Java IntervalFunction.ofRandomized(interval, factor): a uniform
+     *        draw from [interval * (1 - factor), interval * (1 + factor)].
+     *
+     * Deliberately not ExponentialBackoff: this jitters a renewal period, not
+     * a retry delay — it never escalates or resets. Takes the caller's rng so
+     * a test can seed it.
+     */
+    std::chrono::milliseconds randomize_interval(std::chrono::milliseconds interval, double factor,
+                                                 std::mt19937_64& rng);
+
+    /**
      * @brief Base client encapsulating the channel management shared by all
      *        gRPC workers.
+     *
+     * Stub access invariant. A channel and the stub bound to it travel
+     * together in one immutable Transport, published through `transport_`
+     * (an Uncached AtomicSharedPtr) by exactly two writers: openChannel() on
+     * the agent's init thread, once, and rotate_channel_if_due() on the
+     * client's own worker thread, at a cycle boundary. Every reader takes an
+     * owning snapshot with current_transport<Stub>() and holds it for the
+     * whole call or stream session — PendingSpanBatch / PendingMetaRpc keep
+     * theirs until their completion callback has run, the AgentInfo sender
+     * and the active-thread-count streams keep theirs in a local — so a
+     * rotation that publishes a successor can never destroy a channel that
+     * still carries a call: the last snapshot holder releases it. The
+     * long-lived streams (ping, stat, command) need no extra pin because
+     * their worker is the sole rotator and only rotates while opening a new
+     * stream, after the previous one delivered OnDone / Finish. gRPC stubs
+     * are thread-safe, so a snapshot may be used from any thread. Nothing
+     * here takes channel_mutex_, which readyChannel() holds only to serialize
+     * its readiness wait (and the rotation inside it) against openChannel()
+     * and closeChannel().
      */
     class GrpcClient {
     public:
+        /// One channel and the stub bound to it. Immutable once published;
+        /// the unit rotate_channel_if_due() swaps. `channel` is null when a
+        /// test injected a bare stub (set_*_stub without a channel).
+        struct Transport {
+            virtual ~Transport() = default;
+            std::shared_ptr<grpc::Channel> channel{};
+            std::chrono::steady_clock::time_point created_at{};
+            uint32_t generation{0};  // 1 for the channel openChannel() built, +1 per rotation
+        };
+        template <typename Stub>
+        struct StubTransport final : Transport {
+            std::unique_ptr<Stub> stub{};
+        };
+
         GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
                    const GrpcClientTuning& tuning = {});
         void setAgentService(AgentService* agent);
@@ -171,15 +221,18 @@ namespace pinpoint {
          * `grpc::CreateCustomChannel()` triggers `grpc_init` and starts gRPC's
          * own background threads, which must not happen until the agent is
          * started in the process that will use it (StartAgent() runs in each
-         * worker, after any fork). Idempotent.
+         * worker, after any fork). Idempotent on the channel: an opened
+         * channel is kept, while a test-injected bare stub (no channel) still
+         * lets it build the channel and run create_stub().
          */
         void openChannel();
         /// @brief Blocks until the channel is ready; false if the client is
-        ///        stopping first.
+        ///        stopping first, or no channel was opened. Also the one
+        ///        place channel rotation runs (see rotate_channel_if_due()).
         virtual bool readyChannel();
         void closeChannel() {
             std::unique_lock<std::mutex> lock(channel_mutex_);
-            channel_.reset();
+            transport_.store(nullptr);
         }
 
     protected:
@@ -192,10 +245,28 @@ namespace pinpoint {
         // subclasses can shorten values between construction and starting a
         // worker; production code never writes it after the constructor.
         GrpcClientTuning tuning_{};
-        std::shared_ptr<grpc::Channel> channel_{};
+        // See the stub access invariant in the class comment.
+        AtomicSharedPtr<const Transport> transport_{};
         std::mutex channel_mutex_{};
         std::string client_name_{};
         ClientType client_type_;
+
+        // Channel rotation state, touched only by the publishing thread (see
+        // the stub access invariant): the next due time, re-armed with fresh
+        // jitter at every publish and after an abandoned attempt, and the
+        // jitter source. The rng is seeded at the first publish rather than
+        // in the constructor: the constructor may run before fork(), and
+        // workers sharing one seed would renew their connections in lockstep.
+        std::chrono::steady_clock::time_point channel_rotate_at_{
+            std::chrono::steady_clock::time_point::max()};
+        std::mt19937_64 jitter_rng_{};
+        uint32_t transport_generation_{0};
+        // Stream max age (Java SpanGrpcDataSender's rpc max age): the expiry
+        // armed by arm_stream_expiry() when a ping/stat stream opens; max()
+        // while disabled. The command stream uses a ClientContext deadline
+        // instead (see run_command_worker).
+        std::chrono::steady_clock::time_point stream_expires_at_{
+            std::chrono::steady_clock::time_point::max()};
 
         // Socket-id-independent gRPC headers, built lazily on the first
         // build_grpc_context() call and reused for every request afterwards
@@ -225,12 +296,80 @@ namespace pinpoint {
             return stop_requested_.load(std::memory_order_relaxed) || agent_->isExiting();
         }
 
-        /// @brief Blocks until the channel is ready or the delay is exceeded.
-        bool wait_channel_ready(std::chrono::milliseconds delay) const;
+        /// @brief Blocks until @p channel is ready or the delay is exceeded.
+        bool wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const;
 
-        /// @brief Creates the concrete service stub from `channel_`. Called by
-        ///        openChannel(); each derived client binds its own stub type.
-        virtual void create_stub() = 0;
+        /// @brief Owning snapshot of the current transport, typed for this
+        ///        client's stub; null before openChannel() / after
+        ///        closeChannel(). Hold it for the whole call.
+        template <typename Stub>
+        std::shared_ptr<const StubTransport<Stub>> current_transport() const {
+            return std::static_pointer_cast<const StubTransport<Stub>>(transport_.load());
+        }
+
+        /// @brief Publishes @p channel and @p stub as the current transport
+        ///        in one atomic store, arming the next rotation. The derived
+        ///        set_*_stub() helpers (tests) and create_stub() route here.
+        template <typename Stub>
+        void publish_transport(std::shared_ptr<grpc::Channel> channel, std::unique_ptr<Stub> stub) {
+            auto transport = std::make_shared<StubTransport<Stub>>();
+            transport->channel = std::move(channel);
+            transport->stub = std::move(stub);
+            transport->created_at = std::chrono::steady_clock::now();
+            transport->generation = ++transport_generation_;
+            if (transport->generation == 1) {
+                // First publish: openChannel() on the init thread, which is
+                // always post-fork (or a test injecting a stub) — see the
+                // seeding note at jitter_rng_.
+                jitter_rng_.seed(std::random_device{}());
+            }
+            arm_channel_rotation(transport->created_at);
+            transport_.store(std::move(transport));
+        }
+
+        /// @brief Creates this client's service stub on @p channel and
+        ///        publishes both via publish_transport(). Called by
+        ///        openChannel() and by a successful rotation.
+        virtual void create_stub(const std::shared_ptr<grpc::Channel>& channel) = 0;
+
+        /**
+         * @brief Channel rotation, the C++ equivalent of the Java agent's
+         *        SubconnectionExpiringLoadBalancer.
+         *
+         * No-op while `channel_max_age_ms` is 0 or the current transport is
+         * younger than its jittered max age. Otherwise make-before-break:
+         * builds a successor channel, waits up to
+         * `tuning_.channel_rotation_ready_timeout` for it to become READY,
+         * and only then publishes it through create_stub(); the previous
+         * transport lives on in the snapshots of whatever calls still use it.
+         * A successor that does not become READY in time (collector down) is
+         * dropped and the current channel kept, so an outage never costs the
+         * working connection. Abandoned when the client is stopping. Never
+         * throws: a failure to build the successor is logged and treated like
+         * an unready one. Either way the next attempt is re-armed one
+         * jittered period out.
+         *
+         * Runs inside readyChannel() under channel_mutex_, i.e. at every
+         * worker's cycle boundary: before a span batch or metadata item is
+         * sent, and while a ping/stat/command stream is (re)opened.
+         *
+         * ponytail: an abandoned attempt waits a full period before retrying;
+         * keep the candidate and poll it per cycle if faster recovery after
+         * a failed successor ever matters.
+         */
+        void rotate_channel_if_due() noexcept;
+        /// @brief Re-arms channel_rotate_at_ one jittered max age after
+        ///        @p from; max() while rotation is disabled.
+        void arm_channel_rotation(std::chrono::steady_clock::time_point from);
+
+        /// @brief Jittered lifetime for the stream about to open, or zero
+        ///        while `stream_max_age_ms` is disabled.
+        std::chrono::milliseconds next_stream_max_age();
+        /// @brief Arms stream_expires_at_ for a stream opening now.
+        void arm_stream_expiry();
+        bool stream_expired() const {
+            return std::chrono::steady_clock::now() >= stream_expires_at_;
+        }
 
         void build_grpc_context(grpc::ClientContext* context, unsigned long socket_id) const;
 
@@ -320,12 +459,13 @@ namespace pinpoint {
         void stopMetaWorker();
 
     protected:
-        void set_meta_stub(std::unique_ptr<v1::Metadata::StubInterface> stub) { meta_stub_ = std::move(stub); }
-        void create_stub() override;
+        using MetaStub = v1::Metadata::StubInterface;
+        void set_meta_stub(std::unique_ptr<MetaStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
+            publish_transport(std::move(channel), std::move(stub));
+        }
+        void create_stub(const std::shared_ptr<grpc::Channel>& channel) override;
 
     private:
-        std::unique_ptr<v1::Metadata::StubInterface> meta_stub_{};
-
         // Queues, retry schedule, permits, in-flight registry and completed
         // outcomes, all under the pipeline's one mutex. Heap-resident and
         // shared with the async completion callbacks — never `this` — so a
@@ -373,15 +513,14 @@ namespace pinpoint {
         void stopCommandWorker();
 
     protected:
-        void set_command_stub(std::unique_ptr<v1::ProfilerCommandService::StubInterface> stub) {
-            command_stub_ = std::move(stub);
+        using CommandStub = v1::ProfilerCommandService::StubInterface;
+        void set_command_stub(std::unique_ptr<CommandStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
+            publish_transport(std::move(channel), std::move(stub));
         }
-        void create_stub() override;
+        void create_stub(const std::shared_ptr<grpc::Channel>& channel) override;
 
     private:
         class ActiveThreadCountStream;
-
-        std::unique_ptr<v1::ProfilerCommandService::StubInterface> command_stub_{};
 
         std::mutex command_worker_mutex_{};
         std::condition_variable command_worker_cv_{};
@@ -456,8 +595,11 @@ namespace pinpoint {
         void OnDone(const grpc::Status& s) override;
 
     protected:
-        void set_agent_stub(std::unique_ptr<v1::Agent::StubInterface> stub) { agent_stub_ = std::move(stub); }
-        void create_stub() override;
+        using AgentStub = v1::Agent::StubInterface;
+        void set_agent_stub(std::unique_ptr<AgentStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
+            publish_transport(std::move(channel), std::move(stub));
+        }
+        void create_stub(const std::shared_ptr<grpc::Channel>& channel) override;
 
     private:
         struct ServerMetaData {
@@ -465,8 +607,6 @@ namespace pinpoint {
             std::vector<std::string> vm_args;
             std::vector<std::string> service_libs;
         };
-
-        std::unique_ptr<v1::Agent::StubInterface> agent_stub_{};
 
         v1::PPing ping_{}, pong_{};
         std::mutex ping_worker_mutex_{};
@@ -551,12 +691,13 @@ namespace pinpoint {
         void stopSpanWorker();
 
     protected:
-        void set_span_stub(std::unique_ptr<v1::Span::StubInterface> stub) { span_stub_ = std::move(stub); }
-        void create_stub() override;
+        using SpanStub = v1::Span::StubInterface;
+        void set_span_stub(std::unique_ptr<SpanStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
+            publish_transport(std::move(channel), std::move(stub));
+        }
+        void create_stub(const std::shared_ptr<grpc::Channel>& channel) override;
 
     private:
-        std::unique_ptr<v1::Span::StubInterface> span_stub_{};
-
         ShardedBoundedQueue<std::unique_ptr<SpanChunk>> span_queue_;
 
         // Queue operations never take this wait mutex. It only closes the race
@@ -609,8 +750,11 @@ namespace pinpoint {
         void OnDone(const grpc::Status& status) override;
 
     protected:
-        void set_stats_stub(std::unique_ptr<v1::Stat::StubInterface> stub) { stats_stub_ = std::move(stub); }
-        void create_stub() override;
+        using StatStub = v1::Stat::StubInterface;
+        void set_stats_stub(std::unique_ptr<StatStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
+            publish_transport(std::move(channel), std::move(stub));
+        }
+        void create_stub(const std::shared_ptr<grpc::Channel>& channel) override;
 
         // At most one token per StatsType (enqueueStats coalesces), so the
         // queue never holds more than two entries and needs no capacity
@@ -621,7 +765,6 @@ namespace pinpoint {
         std::condition_variable stats_queue_cv_{};
 
     private:
-        std::unique_ptr<v1::Stat::StubInterface> stats_stub_{};
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
         google::protobuf::Empty reply_{};

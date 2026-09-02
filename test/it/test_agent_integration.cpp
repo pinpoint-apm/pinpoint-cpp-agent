@@ -24,6 +24,7 @@
 #include <map>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -347,6 +348,26 @@ std::vector<RpcResult> results_for(const CollectorSnapshot& snapshot,
     return results;
 }
 
+// Connections the recorded calls arrived on: the client's ephemeral port in
+// grpc::ServerContext::peer() changes with every new channel, so more than
+// one distinct peer proves a channel rotation happened.
+size_t distinct_peers(const std::vector<RpcMetadata>& streams) {
+    std::set<std::string> peers;
+    for (const auto& metadata : streams) {
+        peers.insert(metadata.peer);
+    }
+    return peers.size();
+}
+
+template <typename Message>
+size_t distinct_peers(const std::vector<Received<Message>>& received) {
+    std::set<std::string> peers;
+    for (const auto& record : received) {
+        peers.insert(record.metadata.peer);
+    }
+    return peers.size();
+}
+
 bool has_result(const CollectorSnapshot& snapshot,
                 CollectorRpc rpc,
                 grpc::StatusCode code,
@@ -461,6 +482,10 @@ protected:
         // Production default is minutes. Left long enough that the periodic
         // re-sender never fires mid-test unless a test shortens it.
         int agent_info_refresh_interval_ms{60000};
+        // Connection renewal, off (0) like production; the renewal tests
+        // set both to a few hundred milliseconds.
+        int grpc_channel_max_age_ms{0};
+        int grpc_stream_max_age_ms{0};
         std::string_view server_record_request_headers{"[x-request-id]"};
         std::string_view server_exclude_urls{"[/excluded/**]"};
     };
@@ -545,6 +570,9 @@ protected:
             << "  AgentPort: " << collector_.agent_port() << "\n"
             << "  SpanPort: " << collector_.span_port() << "\n"
             << "  StatPort: " << collector_.stat_port() << "\n"
+            << "  Grpc:\n"
+            << "    ChannelMaxAgeMs: " << cfg_.grpc_channel_max_age_ms << "\n"
+            << "    StreamMaxAgeMs: " << cfg_.grpc_stream_max_age_ms << "\n"
             << "  AgentInfo:\n"
             << "    RefreshIntervalMs: " << cfg_.agent_info_refresh_interval_ms << "\n"
             << "    SendRetryIntervalMs: 50\n"
@@ -692,6 +720,16 @@ protected:
         ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Span));
         ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Stat));
         ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Agent));
+    }
+};
+
+// Connection renewal: every channel is replaced once it is 300ms (+-10%) old
+// and the long-lived streams are reopened at the same age.
+class ConnectionRenewalIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        cfg_.grpc_channel_max_age_ms = 300;
+        cfg_.grpc_stream_max_age_ms = 300;
     }
 };
 
@@ -1981,6 +2019,99 @@ TEST_F(AgentIntegrationTest, ReconnectsAfterEndpointAndCommandStreamFailures) {
         return find_span_by_rpc(snapshot, "/span-after-reconnect").has_value();
     }, std::chrono::seconds(20)));
     EXPECT_TRUE(agent_->Enable());
+}
+
+// Steady traffic across several renewal periods: the span, metadata, stat and
+// command channels all move to new connections (distinct peers) while every
+// span and every metadata item still arrives exactly once, and the stat and
+// command streams are reopened on the renewed channels.
+TEST_F(ConnectionRenewalIntegrationTest, RenewsChannelsAndStreamsWithoutLosingData) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // ~1.5s of traffic, i.e. several 300ms periods. Each span carries its own
+    // operation name so every one of them also produces one ApiMetaData RPC
+    // over the metadata channel.
+    constexpr int kSpans = 60;
+    for (int i = 0; i < kSpans; ++i) {
+        auto span = agent_->NewSpan("renewal.op." + std::to_string(i),
+                                    "/renewal/" + std::to_string(i));
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+        std::this_thread::sleep_for(25ms);
+    }
+
+    const auto renewal_spans = [](const CollectorSnapshot& snapshot) {
+        size_t count = 0;
+        for (const auto& message : all_span_messages(snapshot)) {
+            if (message.has_span() && message.span().has_acceptevent() &&
+                message.span().acceptevent().rpc().rfind("/renewal/", 0) == 0) {
+                ++count;
+            }
+        }
+        return count;
+    };
+    const auto renewal_apis = [](const CollectorSnapshot& snapshot) {
+        std::set<std::string> apis;
+        for (const auto& received : snapshot.api_metadata) {
+            if (received.message.apiinfo().rfind("renewal.op.", 0) == 0) {
+                apis.insert(received.message.apiinfo());
+            }
+        }
+        return apis.size();
+    };
+    ASSERT_TRUE(collector_.WaitFor([&](const auto& snapshot) {
+        return renewal_spans(snapshot) >= kSpans &&
+               renewal_apis(snapshot) >= kSpans &&
+               distinct_peers(snapshot.stat_streams) >= 2 &&
+               distinct_peers(snapshot.command_streams_v2) >= 2;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    EXPECT_EQ(renewal_spans(snapshot), static_cast<size_t>(kSpans))
+        << "every span must arrive exactly once across channel rotations";
+    EXPECT_EQ(renewal_apis(snapshot), static_cast<size_t>(kSpans))
+        << "every metadata item must arrive across channel rotations";
+    EXPECT_GE(distinct_peers(snapshot.span_batches), 2u)
+        << "span batches must arrive over more than one connection";
+    EXPECT_GE(distinct_peers(snapshot.api_metadata), 2u)
+        << "metadata must arrive over more than one connection";
+    EXPECT_GE(snapshot.stat_streams.size(), 2u)
+        << "the stat stream must be reopened once it reaches its max age";
+    EXPECT_GE(snapshot.command_streams_v2.size(), 2u)
+        << "the command stream must be reopened once its deadline expires";
+    EXPECT_TRUE(agent_->Enable());
+}
+
+// The ping stream checks its age once per ping interval, which production
+// sets to 60s, so this drives AgentImpl with the production gRPC clients and
+// a short injected interval to watch the ping stream and the agent channel
+// renew against the real collector endpoint.
+TEST_F(ConnectionRenewalIntegrationTest, ReopensPingStreamAndRotatesAgentChannel) {
+    ASSERT_NO_FATAL_FAILURE(StartCollector());
+    auto config = make_config(agent_options());
+    ASSERT_NE(config, nullptr);
+
+    GrpcClientTuning tuning;
+    tuning.ping_interval = 50ms;
+    auto agent = AgentImpl::createShared(
+        config,
+        std::make_unique<GrpcAgent>(config, tuning),
+        std::make_unique<GrpcMetadata>(config, tuning),
+        std::make_unique<GrpcSpan>(config, tuning),
+        std::make_unique<GrpcStats>(config, tuning),
+        nullptr, kApplicationType);
+    ASSERT_TRUE(agent->Start());
+
+    // Session 1 from startup, then one per 300ms (+-10%) expiry. From the
+    // second reopen on the agent channel is past its own max age, so at least
+    // one session must arrive over a new connection.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return snapshot.ping_streams.size() >= 3 &&
+               distinct_peers(snapshot.ping_streams) >= 2;
+    }, kWaitTimeout));
+    EXPECT_TRUE(agent->Enable());
+
+    agent->Shutdown();
 }
 
 TEST_F(AgentIntegrationTest, ReconnectsStatStreamAfterServerError) {

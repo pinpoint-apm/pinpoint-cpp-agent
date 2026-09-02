@@ -128,6 +128,8 @@ Collector:
     MaxSendMessageSize: 5242880
     MaxReceiveMessageSize: 6291456
     SenderQueueSize: 1100
+    ChannelMaxAgeMs: 3600000
+    StreamMaxAgeMs: 1800000
   AgentInfo:
     RefreshIntervalMs: 60000
     SendRetryIntervalMs: 25
@@ -253,7 +255,11 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.keepalive_timeout_ms, 60000) << "Default keepalive timeout should be 60s";
     EXPECT_EQ(config->collector.grpc.channel.max_send_message_size, 4 * 1024 * 1024) << "Default max send size should be 4MiB";
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 4 * 1024 * 1024) << "Default max receive size should be 4MiB";
-    
+    // Connection renewal is opt-in: existing deployments must keep one
+    // channel and one stream for the process lifetime.
+    EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 0) << "Channel rotation should be disabled by default";
+    EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 0) << "Stream max age should be disabled by default";
+
     // Test sampling defaults
     EXPECT_EQ(config->sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
     EXPECT_EQ(config->sampling.counter_rate, 1) << "Default counter rate should be 1";
@@ -371,6 +377,8 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_send_message_size, 5242880) << "gRPC max send size should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 6291456) << "gRPC max receive size should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 1100) << "gRPC sender queue size should match YAML";
+    EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 3600000) << "gRPC channel max age should match YAML";
+    EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 1800000) << "gRPC stream max age should match YAML";
 
     // Test sampling configuration
     EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
@@ -507,7 +515,9 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(full_env(env::GRPC_MAX_SEND_MESSAGE_SIZE).c_str(), "33333", 1);
     setenv(full_env(env::GRPC_SENDER_QUEUE_SIZE).c_str(), "4444", 1);
     setenv(full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE).c_str(), "55555", 1);
-    
+    setenv(full_env(env::GRPC_CHANNEL_MAX_AGE_MS).c_str(), "600000", 1);
+    setenv(full_env(env::GRPC_STREAM_MAX_AGE_MS).c_str(), "300000", 1);
+
     auto config = make_config();
     
     // Test environment variable values
@@ -543,6 +553,8 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_send_message_size, 33333) << "gRPC max send size should match environment variable";
     EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 4444) << "gRPC sender queue should match environment variable";
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 55555) << "gRPC max receive size should match environment variable";
+    EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 600000) << "gRPC channel max age should match environment variable";
+    EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 300000) << "gRPC stream max age should match environment variable";
 }
 
 // Regression: is_container is reloadable and is NOT restored by
@@ -2192,6 +2204,8 @@ Collector:
     MaxSendMessageSize: -2
     MaxReceiveMessageSize: -2
     SenderQueueSize: 0
+    ChannelMaxAgeMs: -5
+    StreamMaxAgeMs: -1
 )");
 
     const auto config = make_config();
@@ -2202,6 +2216,10 @@ Collector:
     EXPECT_EQ(channel.max_send_message_size, defaults::GRPC_MAX_MESSAGE_SIZE);
     EXPECT_EQ(channel.max_receive_message_size, defaults::GRPC_MAX_MESSAGE_SIZE);
     EXPECT_EQ(channel.sender_queue_size, defaults::GRPC_SENDER_QUEUE_SIZE);
+    // Negative renewal ages mean "disabled", normalized to the 0 that
+    // grpc.cpp treats as off.
+    EXPECT_EQ(channel.channel_max_age_ms, 0);
+    EXPECT_EQ(channel.stream_max_age_ms, 0);
 }
 
 // Zero is valid for gRPC keepalive controls, -1 means an unlimited message
