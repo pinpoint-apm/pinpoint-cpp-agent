@@ -284,11 +284,9 @@ namespace pinpoint {
 
     void AgentStats::initAgentStats() {
         // Callers must NOT hold mutex_ (the worker calls this before taking
-        // it; GrpcStats::empty_stats_queue calls it from the gRPC stats
-        // thread on queue overflow / slow-channel recovery). Locking here
-        // keeps batch_ and the collect-time/CPU-time bookkeeping from racing
-        // the worker's collection cycle, which reads and writes the same
-        // non-atomic fields under mutex_.
+        // it). Locking here keeps batch_ and the collect-time/CPU-time
+        // bookkeeping from racing the worker's collection cycle, which reads
+        // and writes the same non-atomic fields under mutex_.
         std::lock_guard<std::mutex> lock(mutex_);
         // A failed reading leaves the baseline empty; getCpuLoad then reports
         // 0 and establishes the baseline on the first successful sample.
@@ -435,6 +433,10 @@ namespace pinpoint {
                 }
 
                 if (batch_ >= config.stat.batch_count) {
+                    // Hand the finished cycle to the sender before enqueuing
+                    // its token (see copySnapshots): from the next tick on
+                    // the working slots are overwritten in place.
+                    completed_batch_ = agent_stats_snapshots_;
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);

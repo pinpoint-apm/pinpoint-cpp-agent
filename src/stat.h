@@ -84,15 +84,22 @@ namespace pinpoint {
         void incrSkipCont() { responseTimeShard().skip_cont_.fetch_add(1, std::memory_order_relaxed); }
 
         /**
-         * @brief Returns a copy of the snapshot batch, taken under the stats mutex.
+         * @brief Returns a copy of the last completed collection cycle.
          *
-         * Safe to serialize on another thread (the gRPC stats stream) while the
-         * worker keeps overwriting slots for the next collection cycle — reading
-         * the vector without the mutex races those writes.
+         * The worker fills agent_stats_snapshots_ in place and copies it into
+         * completed_batch_ when a cycle ends, right before it enqueues the
+         * AGENT_STATS token. The token carries no payload: the gRPC stats
+         * stream reads this whenever it gets to the token, so the payload is
+         * the finished cycle no matter how late that is. (Handing out the
+         * working vector meant a stream stalled longer than one collect
+         * interval sent slots the next cycle had already overwritten — mixed
+         * timestamps, then the same slots again on the next token.) Only a
+         * stall longer than a whole cycle loses data: the next completion
+         * replaces an unsent batch, and the pending token sends the newer one.
          */
         std::vector<AgentStatsSnapshot> copySnapshots() {
             std::lock_guard<std::mutex> lock(mutex_);
-            return agent_stats_snapshots_;
+            return completed_batch_;
         }
 
         void initAgentStats();
@@ -196,6 +203,8 @@ namespace pinpoint {
         pid_t owner_pid_{0};
 
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
+        // Last completed cycle; see copySnapshots().
+        std::vector<AgentStatsSnapshot> completed_batch_;
         int batch_{0};
         int collect_interval_{0};
         

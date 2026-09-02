@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <random>
 #include <string>
 #include <string_view>
@@ -91,10 +90,6 @@ namespace pinpoint {
         /// Slice for the channel-ready wait loop so stop requests are
         /// noticed while a longer backoff delay elapses.
         std::chrono::milliseconds backoff_sleep_slice{1000};
-        /// Channel recovery at least this slow stales client-owned queues
-        /// (see on_slow_channel_recovery()).
-        std::chrono::seconds slow_recovery_threshold{5};
-
         /// Bounded wait for a stream to deliver OnDone at shutdown before
         /// escalating to TryCancel.
         std::chrono::milliseconds stream_finish_timeout{3000};
@@ -132,10 +127,6 @@ namespace pinpoint {
         std::chrono::milliseconds span_shutdown_await_timeout{3000};
         /// Minimum spacing between cumulative span-queue-drop reports.
         std::chrono::seconds span_queue_drop_log_interval{60};
-
-        /// Stats payloads pending on the stream before new ones are dropped
-        /// (an overflow also marks the queued stats stale).
-        size_t max_stats_queue_size{2};
     };
 
     /// @brief Exponential backoff with jitter for reconnect attempts.
@@ -245,10 +236,6 @@ namespace pinpoint {
 
         /// @brief Applies the tuned unary request deadline to @p context.
         void set_request_deadline(grpc::ClientContext& context) const;
-
-        /// @brief Notifies derived clients that channel recovery took long
-        ///        enough to stale client-owned queues.
-        virtual void on_slow_channel_recovery(std::chrono::seconds) {}
     };
 
     /// @brief Metadata describing an API string cached on the collector.
@@ -607,7 +594,8 @@ namespace pinpoint {
                            const GrpcClientTuning& tuning = {});
         ~GrpcStats() override = default;
 
-        /// @brief Queues a statistics payload; @p stats selects which to build.
+        /// @brief Queues a token for @p stats; the payload is read from the
+        ///        producer's buffer when the token is consumed (see next_write).
         void enqueueStats(StatsType stats) noexcept;
         /// @brief Worker loop that streams statistics.
         void sendStatsWorker();
@@ -620,21 +608,20 @@ namespace pinpoint {
     protected:
         void set_stats_stub(std::unique_ptr<v1::Stat::StubInterface> stub) { stats_stub_ = std::move(stub); }
         void create_stub() override;
-        void on_slow_channel_recovery(std::chrono::seconds elapsed) override;
-        bool empty_stats_queue_if_requested() noexcept;
+
+        // At most one token per StatsType (enqueueStats coalesces), so the
+        // queue never holds more than two entries and needs no capacity
+        // bound. Protected so tests can inspect what a stalled stream left
+        // pending.
+        std::vector<StatsType> stats_queue_{};
+        std::mutex stats_queue_mutex_{};
+        std::condition_variable stats_queue_cv_{};
 
     private:
         std::unique_ptr<v1::Stat::StubInterface> stats_stub_{};
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
         google::protobuf::Empty reply_{};
-
-        std::queue<StatsType> stats_queue_{};
-        std::mutex stats_queue_mutex_{};
-        std::condition_variable stats_queue_cv_{};
-        // Rate-limited overflow reporting (see QueueDropReporter).
-        QueueDropReporter stats_drop_reporter_{};
-        std::atomic<bool> force_stats_queue_empty_{false};
         // Set once per stats stream session when the stream starts shutting
         // down, so StartWritesDone()/RemoveHold() run exactly once no matter
         // which of the write-failure / write-timeout / finish paths fires
@@ -654,7 +641,6 @@ namespace pinpoint {
         void drain_stats_stream_on_error() noexcept;
 
         GrpcStreamStatus next_write();
-        void empty_stats_queue() noexcept;
         // Worker loop body; sendStatsWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
         // start failed, so the supervisor retries with a fresh stream.

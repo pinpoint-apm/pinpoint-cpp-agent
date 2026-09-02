@@ -316,7 +316,6 @@ namespace pinpoint {
             return false;
         }
 
-        const auto wait_start = std::chrono::steady_clock::now();
         if (channel_->GetState(false) != GRPC_CHANNEL_READY) {
             while (true) {
                 if (stopping()) {
@@ -331,11 +330,6 @@ namespace pinpoint {
             }
         } else {
             channel_ready_backoff_.reset();
-        }
-
-        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - wait_start);
-        if (elapsed >= tuning_.slow_recovery_threshold) {
-            on_slow_channel_recovery(elapsed);
         }
         return true;
     }
@@ -2186,11 +2180,6 @@ namespace pinpoint {
         set_stats_stub(v1::Stat::NewStub(channel_));
     }
 
-    void GrpcStats::on_slow_channel_recovery(std::chrono::seconds elapsed) {
-        force_stats_queue_empty_.store(true, std::memory_order_release);
-        LOG_DEBUG("stats queue marked stale after slow channel recovery: {}s", elapsed.count());
-    }
-
     bool GrpcStats::start_stats_stream() {
         LOG_DEBUG("start_stats_stream");
         if (!readyChannel()) {
@@ -2382,9 +2371,12 @@ namespace pinpoint {
             }
 
             stats = stats_queue_.front();
-            stats_queue_.pop();
+            stats_queue_.erase(stats_queue_.begin());
         }
 
+        // The payload is read now, not when the token was enqueued: AgentStats
+        // publishes its finished cycle before enqueuing (copySnapshots), and
+        // the URL snapshot swap takes everything aggregated so far.
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
             msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().copySnapshots(), &arena_));
@@ -2410,25 +2402,21 @@ namespace pinpoint {
             return;
         }
 
-        bool dropped_now = false;
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-
-            if (stats_queue_.size() < tuning_.max_stats_queue_size) {
-                stats_queue_.push(stats);
-            } else {
-                force_stats_queue_empty_.store(true, std::memory_order_release);
-                dropped_now = true;
-            }
-        }
-
-        // Reported outside the lock, at WARN so outage data loss is visible
-        // at the default log level, rate-limited so a stalled stream cannot
-        // repeat it every collect interval for hours.
-        if (dropped_now) {
-            if (const auto dropped = stats_drop_reporter_.record()) {
-                LOG_WARN("stats queue overflow: {} dropped in total (max queue size {})",
-                         dropped, tuning_.max_stats_queue_size);
+            // One token per type. The token carries no payload — next_write
+            // reads the producer's buffer (the last completed AgentStats
+            // cycle, the current URL snapshot) when it consumes the token —
+            // so a second token of the same type queued behind a stalled
+            // stream would only send that same buffer again. This also bounds
+            // the queue at two entries without a capacity check, and a stall
+            // never discards anything: the producers keep their data until
+            // the stream drains it. (The former cap of two purged the queue,
+            // the AgentStats counters and the URL snapshot on the third token
+            // or on a channel recovery slower than 5s — every collector
+            // restart cost up to a minute of stats.)
+            if (std::find(stats_queue_.begin(), stats_queue_.end(), stats) == stats_queue_.end()) {
+                stats_queue_.push_back(stats);
             }
         }
 
@@ -2436,37 +2424,6 @@ namespace pinpoint {
         // immediately block on stats_queue_mutex_ (matches enqueueSpan).
         stats_queue_cv_.notify_one();
     } CATCH_AND_LOG("failed to enqueue stats:")
-
-    void GrpcStats::empty_stats_queue() noexcept try {
-        std::queue<StatsType> temp_queue;
-        
-        {
-            std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            
-            stats_queue_.swap(temp_queue);
-        }
-        
-        agent_->getAgentStats().initAgentStats();
-        // clear URL stat snapshot
-        (void)agent_->getUrlStats().takeSnapshot();
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to empty stats queue: exception = {}", e.what());
-    }
-
-    bool GrpcStats::empty_stats_queue_if_requested() noexcept try {
-        if (!force_stats_queue_empty_.exchange(false, std::memory_order_acq_rel)) {
-            return false;
-        }
-
-        empty_stats_queue();
-        return true;
-    } catch (const std::exception &e) {
-        LOG_ERROR("failed to empty stats queue if requested: exception = {}", e.what());
-        return false;
-    } catch (...) {
-        LOG_ERROR("failed to empty stats queue if requested: unknown exception");
-        return false;
-    }
 
     void GrpcStats::sendStatsWorker() {
         // Boot-time decision: both flags are non-reloadable (see
@@ -2512,11 +2469,6 @@ namespace pinpoint {
                     return false;
                 }
             }
-            // The staleness flag is also set by a queue overflow while the
-            // stream stays up; consume it every cycle so it cannot linger
-            // and purge fresh stats at an unrelated reconnect much later.
-            empty_stats_queue_if_requested();
-
             lock.lock();
         }
     }

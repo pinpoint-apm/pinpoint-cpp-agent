@@ -203,6 +203,54 @@ TEST_F(StatTest, GetAgentStatSnapshotsTest) {
         << "Snapshots batch should be accessible";
 }
 
+// The gRPC stats stream reads copySnapshots() when it consumes the
+// AGENT_STATS token, which a stalled stream can delay well past the next
+// collect tick. It must still get the cycle the token was enqueued for:
+// handing out the working vector meant that with a 2-slot batch a copy taken
+// between two publications was [tick 3, tick 2] — the next cycle's first
+// slot in front of the pending cycle's second.
+TEST_F(StatTest, CopySnapshotsHoldsCompletedBatchWhileNextCycleCollects) {
+    auto& cfg = *mock_agent_service_->mutableConfig();
+    cfg.stat.enable = true;
+    cfg.stat.collect_interval = 20;  // ms
+    cfg.stat.batch_count = 2;
+
+    EXPECT_TRUE(agent_stats_->copySnapshots().empty()) << "no cycle has completed yet";
+
+    std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (mock_agent_service_->recorded_stats_calls_.load() < 1 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto first = agent_stats_->copySnapshots();
+
+    // Poll across the whole window until the second cycle is published: every
+    // copy must be a complete cycle, i.e. slots in collection order.
+    bool consistent = true;
+    while (mock_agent_service_->recorded_stats_calls_.load() < 2 &&
+           std::chrono::steady_clock::now() < deadline) {
+        const auto copy = agent_stats_->copySnapshots();
+        if (copy.size() != 2 || copy[0].sample_time_ > copy[1].sample_time_) {
+            consistent = false;
+            break;
+        }
+        std::this_thread::yield();
+    }
+
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker_thread.join();
+
+    ASSERT_GE(mock_agent_service_->recorded_stats_calls_.load(), 2);
+    ASSERT_EQ(first.size(), 2U);
+    EXPECT_GT(first[0].sample_time_, 0);
+    EXPECT_LE(first[0].sample_time_, first[1].sample_time_);
+    EXPECT_TRUE(consistent)
+        << "slot 0 was overwritten by the next cycle while its batch was still pending";
+}
+
 // ========== AgentStats Class Tests ==========
 
 TEST_F(StatTest, AgentStatsConstructorTest) {

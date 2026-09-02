@@ -707,8 +707,10 @@ public:
 
     bool readyChannel() override { return ready_channel_; }
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
-    void markSlowChannelRecoveryForTest() { on_slow_channel_recovery(std::chrono::seconds(5)); }
-    bool emptyStatsQueueIfRequestedForTest() { return empty_stats_queue_if_requested(); }
+    std::vector<StatsType> queuedStatsForTest() {
+        std::lock_guard<std::mutex> lock(stats_queue_mutex_);
+        return stats_queue_;
+    }
 
 private:
     // Toggled by the test body while the worker thread polls readyChannel();
@@ -1138,47 +1140,36 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
 
 // GrpcStats Tests with Mock Stubs
 
-TEST_F(GrpcMockTest, GrpcStatsOverflowRequestsStatsQueuePurge) {
+// A token carries no payload: next_write reads the producer's buffer when it
+// consumes the token. So while the stream is stalled, repeated tokens of one
+// type must coalesce into the one already pending, and nothing may be
+// discarded — the payload is whatever the producers hold once the stream
+// drains the queue. (The former design capped the queue at two tokens and,
+// on the third one or on a channel recovery slower than 5s, purged the queue
+// together with the AgentStats counters and the URL snapshot.)
+TEST_F(GrpcMockTest, GrpcStatsStallCoalescesTokensAndKeepsProducerData) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
 
     mock_agent_service_->getAgentStats().incrSampleNew();
-    UrlStatEntry url_stat{"/overflow", "GET", 200};
+    UrlStatEntry url_stat{"/stalled", "GET", 200};
     url_stat.end_time_ = std::chrono::system_clock::now();
     url_stat.elapsed_ = 10;
     mock_agent_service_->getUrlStats().addSnapshot(&url_stat, *mock_agent_service_->getConfig());
 
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.enqueueStats(URL_STATS);
-    stats_client.enqueueStats(AGENT_STATS);
+    // Three collection cycles and two URL-stat ticks pass with no consumer.
+    for (const auto stats : {AGENT_STATS, URL_STATS, AGENT_STATS, URL_STATS, AGENT_STATS}) {
+        stats_client.enqueueStats(stats);
+    }
 
-    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
-    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
-
-    AgentStatsSnapshot agent_snapshot;
-    mock_agent_service_->getAgentStats().collectAgentStat(agent_snapshot);
-    EXPECT_EQ(agent_snapshot.num_sample_new_, 0);
-    EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().empty());
-}
-
-TEST_F(GrpcMockTest, GrpcStatsSlowChannelRecoveryRequestsStatsQueuePurge) {
-    TestableGrpcStats stats_client(mock_agent_service_.get());
-
-    mock_agent_service_->getAgentStats().incrSampleNew();
-    UrlStatEntry url_stat{"/reconnect", "GET", 200};
-    url_stat.end_time_ = std::chrono::system_clock::now();
-    url_stat.elapsed_ = 10;
-    mock_agent_service_->getUrlStats().addSnapshot(&url_stat, *mock_agent_service_->getConfig());
-
-    stats_client.enqueueStats(AGENT_STATS);
-    stats_client.markSlowChannelRecoveryForTest();
-
-    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
-    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
+    EXPECT_EQ(stats_client.queuedStatsForTest(), (std::vector<StatsType>{AGENT_STATS, URL_STATS}))
+        << "one pending token per type, in first-enqueued order";
 
     AgentStatsSnapshot agent_snapshot;
     mock_agent_service_->getAgentStats().collectAgentStat(agent_snapshot);
-    EXPECT_EQ(agent_snapshot.num_sample_new_, 0);
-    EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().empty());
+    EXPECT_EQ(agent_snapshot.num_sample_new_, 1)
+        << "a stalled stream must not reset the AgentStats counters";
+    EXPECT_EQ(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().size(), 1U)
+        << "a stalled stream must not discard the URL snapshot";
 }
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
@@ -3087,25 +3078,6 @@ TEST_F(GrpcMockTest, GrpcMetadataShutdownAwaitForInFlightIsBounded) {
     // A late completion after the worker is gone must stay safe: the
     // callback touches only the shared pipeline state.
     fake->releaseHeldCallbacks(grpc::Status::OK);
-}
-
-TEST_F(GrpcMockTest, GrpcStatsHonorsInjectedQueueCapacity) {
-    GrpcClientTuning tuning;
-    tuning.max_stats_queue_size = 4;
-    TestableGrpcStats stats_client(mock_agent_service_.get(), tuning);
-
-    // Four payloads fit the injected capacity (the default is 2): no
-    // overflow purge may be requested yet.
-    for (int i = 0; i < 4; ++i) {
-        stats_client.enqueueStats(AGENT_STATS);
-    }
-    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest())
-        << "enqueues within the injected capacity must not request a purge";
-
-    // The fifth payload overflows and marks the queued stats stale.
-    stats_client.enqueueStats(AGENT_STATS);
-    EXPECT_TRUE(stats_client.emptyStatsQueueIfRequestedForTest());
-    EXPECT_FALSE(stats_client.emptyStatsQueueIfRequestedForTest());
 }
 
 TEST_F(GrpcMockTest, GrpcCommandHonorsInjectedActiveThreadCountStreamCap) {
