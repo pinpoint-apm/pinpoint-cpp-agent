@@ -101,6 +101,37 @@ namespace pinpoint {
             return grpc::SslCredentials(ssl_options);
         }
 
+        // Only keepalive and message-size limits are set here; the rest of
+        // the HTTP/2 tuning the Java (DefaultChannelFactory.setupClientOption)
+        // and Go (grpc.go dialOptions) agents configure is deliberately left
+        // at the gRPC C-core defaults, which are already better or equal:
+        //
+        // - Flow control window: unset means BDP probing stays on
+        //   (chttp2_transport.cc reads GRPC_ARG_HTTP2_BDP_PROBE with
+        //   value_or(true)) and TransportFlowControl::PeriodicUpdate() sizes
+        //   the receive window from the measured bandwidth-delay product,
+        //   max(4MB, 2*BDP) under low memory pressure. Java calls
+        //   NettyChannelBuilder.flowControlWindow(1MiB), which sets
+        //   autoFlowControl=false, and Go calls WithInitialWindowSize /
+        //   WithInitialConnWindowSize(1MiB), which set StaticWindowSize=true so
+        //   no bdpEstimator is created (http2_client.go): both run a fixed 1MiB
+        //   window with auto-tuning off. GRPC_ARG_HTTP2_STREAM_LOOKAHEAD_BYTES
+        //   would not give parity either: it only seeds the target that
+        //   PeriodicUpdate() then overwrites on every BDP ping.
+        // - Max header list size: Java/Go set 8KB for inbound metadata. The
+        //   C-core default is already an 8KB soft / 16KB hard limit
+        //   (metadata_info.h); setting GRPC_ARG_MAX_METADATA_SIZE=8KB would only
+        //   shrink the hard limit to 10KB.
+        // - Write buffer: GRPC_ARG_HTTP2_WRITE_BUFFER_SIZE applies only to
+        //   writes flagged GRPC_WRITE_BUFFER_HINT, which this agent never sets,
+        //   so it would be a no-op. Go's WithWriteBufferSize (socket write
+        //   batching) and Java's WRITE_BUFFER_WATER_MARK (Netty writability)
+        //   have no C-core counterpart.
+        // - Connect timeout: no C-core equivalent of Netty's
+        //   CONNECT_TIMEOUT_MILLIS; the closest, GRPC_ARG_MIN_RECONNECT_BACKOFF_MS
+        //   (doubles as the min connect timeout in subchannel.cc), is not
+        //   needed because readyChannel() + ExponentialBackoff already manage
+        //   reconnects. TCP_NODELAY is always on in the C-core posix engine.
         grpc::ChannelArguments make_channel_arguments(const Config::GrpcChannelOptions& options) {
             grpc::ChannelArguments channel_args;
 
