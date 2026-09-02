@@ -261,10 +261,10 @@ namespace pinpoint {
             std::chrono::steady_clock::time_point::max()};
         std::mt19937_64 jitter_rng_{};
         uint32_t transport_generation_{0};
-        // Stream max age (Java SpanGrpcDataSender's rpc max age): the expiry
-        // armed by arm_stream_expiry() when a ping/stat stream opens; max()
-        // while disabled. The command stream uses a ClientContext deadline
-        // instead (see run_command_worker).
+        // Ping/stat renewal deadline: the earlier of the configured stream
+        // max age (Java SpanGrpcDataSender's rpc max age) and the current
+        // channel's rotation time. max() while both are disabled. The command
+        // stream uses the same calculation as a ClientContext deadline.
         std::chrono::steady_clock::time_point stream_expires_at_{
             std::chrono::steady_clock::time_point::max()};
 
@@ -365,7 +365,17 @@ namespace pinpoint {
         /// @brief Jittered lifetime for the stream about to open, or zero
         ///        while `stream_max_age_ms` is disabled.
         std::chrono::milliseconds next_stream_max_age();
-        /// @brief Arms stream_expires_at_ for a stream opening now.
+        /**
+         * @brief Lifetime of the stream about to open, capped by the time
+         *        remaining until this channel is due for rotation.
+         *
+         * This cap is what makes ChannelMaxAgeMs sufficient on its own for
+         * long-lived ping/stat/command streams: they finish through their
+         * normal safe path, then readyChannel() rotates before reopening.
+         * Returns zero only when both renewal controls are disabled.
+         */
+        std::chrono::milliseconds next_stream_renewal_delay();
+        /// @brief Arms stream_expires_at_ from next_stream_renewal_delay().
         void arm_stream_expiry();
         bool stream_expired() const {
             return std::chrono::steady_clock::now() >= stream_expires_at_;

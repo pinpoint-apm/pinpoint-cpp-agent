@@ -442,10 +442,27 @@ namespace pinpoint {
         return randomize_interval(max_age, kRenewalJitterFactor, jitter_rng_);
     }
 
+    std::chrono::milliseconds GrpcClient::next_stream_renewal_delay() {
+        auto delay = next_stream_max_age();
+        if (channel_rotate_at_ == std::chrono::steady_clock::time_point::max()) {
+            return delay;
+        }
+
+        // readyChannel() runs immediately before a stream is opened, so a due
+        // rotation has normally just been completed (or a failed attempt has
+        // been re-armed). Clamp a sub-millisecond remainder to 1ms so a valid
+        // channel deadline never turns into the zero sentinel for "disabled".
+        const auto remaining = channel_rotate_at_ - std::chrono::steady_clock::now();
+        const auto channel_delay = std::max(
+            std::chrono::milliseconds{1},
+            std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
+        return delay.count() <= 0 ? channel_delay : std::min(delay, channel_delay);
+    }
+
     void GrpcClient::arm_stream_expiry() {
-        const auto max_age = next_stream_max_age();
-        stream_expires_at_ = max_age.count() > 0
-            ? std::chrono::steady_clock::now() + max_age
+        const auto renewal_delay = next_stream_renewal_delay();
+        stream_expires_at_ = renewal_delay.count() > 0
+            ? std::chrono::steady_clock::now() + renewal_delay
             : std::chrono::steady_clock::time_point::max();
     }
 
@@ -1364,15 +1381,15 @@ namespace pinpoint {
             grpc::ClientContext context;
             build_grpc_context(&context, ++socket_id_);
             context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header());
-            // Stream max age (Java SpanGrpcDataSender's rpc max age): this
-            // worker sits in a blocking Read() for the stream's whole life,
-            // so there is no loop boundary at which to check an expiry. A
-            // deadline lets gRPC end the stream instead; the resulting
-            // DEADLINE_EXCEEDED close is recognized below and reconnects
-            // without the failure delay.
-            const auto stream_max_age = next_stream_max_age();
-            if (stream_max_age.count() > 0) {
-                context.set_deadline(std::chrono::system_clock::now() + stream_max_age);
+            // This worker sits in a blocking Read() for the stream's whole
+            // life, so there is no loop boundary at which to check either the
+            // stream max age or the channel-rotation deadline. End at the
+            // earlier one; the resulting DEADLINE_EXCEEDED close is planned
+            // and reconnects without the failure delay. readyChannel() then
+            // rotates the channel when that was the deadline which fired.
+            const auto renewal_delay = next_stream_renewal_delay();
+            if (renewal_delay.count() > 0) {
+                context.set_deadline(std::chrono::system_clock::now() + renewal_delay);
             }
 
             const StreamContextGuard context_guard(this, &context);
@@ -1396,7 +1413,7 @@ namespace pinpoint {
             }
             LOG_INFO("connect to command service stream");
             auto stream = transport->stub->HandleCommandV2(&context);
-            bool expired_by_max_age = false;
+            bool expired_for_renewal = false;
             if (stream == nullptr) {
                 LOG_WARN("failed to connect to command service stream: stream is null");
             } else {
@@ -1416,11 +1433,11 @@ namespace pinpoint {
                 }
                 stream->WritesDone();
                 const auto status = stream->Finish();
-                expired_by_max_age = stream_max_age.count() > 0 &&
-                                     status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED;
-                if (expired_by_max_age) {
-                    LOG_INFO("command service stream reached its max age ({}ms), reopening",
-                             stream_max_age.count());
+                expired_for_renewal = renewal_delay.count() > 0 &&
+                                      status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED;
+                if (expired_for_renewal) {
+                    LOG_INFO("command service stream reached its renewal deadline ({}ms), reopening",
+                             renewal_delay.count());
                 } else if (!status.ok() && !stopping()) {
                     LOG_INFO("command service stream closed: {}, {}",
                              static_cast<int>(status.error_code()), status.error_message());
@@ -1437,8 +1454,8 @@ namespace pinpoint {
             if (stopping()) {
                 break;
             }
-            // A planned max-age close is not a failure: reopen at once.
-            if (!expired_by_max_age && wait_reconnect_delay(reconnect_backoff.next_delay())) {
+            // A planned renewal close is not a failure: reopen at once.
+            if (!expired_for_renewal && wait_reconnect_delay(reconnect_backoff.next_delay())) {
                 break;
             }
         }
@@ -1909,12 +1926,12 @@ namespace pinpoint {
         while (true) {
             lock.unlock();
             if (stream_expired()) {
-                // Stream max age: end this session through the normal finish
-                // path (StartWritesDone once, wait for OnDone) and open a
-                // fresh one, which also gives channel rotation its turn.
-                // Checked once per ping interval, so that is the effective
-                // granularity of the age.
-                LOG_INFO("ping stream reached its max age, reopening");
+                // End through the normal finish path, then reopen. The expiry
+                // is the earlier of StreamMaxAgeMs and the current channel's
+                // rotation deadline, so ChannelMaxAgeMs works independently.
+                // Checked once per ping interval, which is the effective
+                // granularity of the deadline.
+                LOG_INFO("ping stream reached its renewal deadline, reopening");
                 finish_ping_stream();
                 if (!start_ping_stream()) {
                     return false;
@@ -2693,11 +2710,12 @@ namespace pinpoint {
             }
 
             if (stream_expired()) {
-                // Stream max age: reopen between writes, never mid-write, so
-                // no stat payload is lost — the tokens stay queued and go out
-                // on the fresh stream. Also gives channel rotation its turn
-                // (start_stats_stream runs readyChannel).
-                LOG_INFO("stats stream reached its max age, reopening");
+                // Reopen between writes, never mid-write, so no stat payload
+                // is lost. The expiry is the earlier of StreamMaxAgeMs and
+                // the channel-rotation deadline, so ChannelMaxAgeMs works
+                // independently; the queued token goes out on the fresh
+                // stream after readyChannel() rotates when due.
+                LOG_INFO("stats stream reached its renewal deadline, reopening");
                 finish_stats_stream();
                 if (!start_stats_stream()) {
                     return false;

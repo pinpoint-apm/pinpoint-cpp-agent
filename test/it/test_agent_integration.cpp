@@ -733,6 +733,15 @@ protected:
     }
 };
 
+// Regression fixture: channel renewal must not depend on StreamMaxAgeMs.
+class ChannelOnlyRenewalIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        cfg_.grpc_channel_max_age_ms = 300;
+        cfg_.grpc_stream_max_age_ms = 0;
+    }
+};
+
 // Models an application that starts while the collector is unhealthy: the
 // ports accept connections but every RPC keeps failing until EndOutage().
 // Unlike CollectorUnavailableAtStartupIntegrationTest, the rejected
@@ -2082,11 +2091,22 @@ TEST_F(ConnectionRenewalIntegrationTest, RenewsChannelsAndStreamsWithoutLosingDa
     EXPECT_TRUE(agent_->Enable());
 }
 
-// The ping stream checks its age once per ping interval, which production
-// sets to 60s, so this drives AgentImpl with the production gRPC clients and
-// a short injected interval to watch the ping stream and the agent channel
-// renew against the real collector endpoint.
-TEST_F(ConnectionRenewalIntegrationTest, ReopensPingStreamAndRotatesAgentChannel) {
+// ChannelMaxAgeMs by itself must close the long-lived stat and command
+// streams at a safe boundary, giving readyChannel() a chance to rotate.
+TEST_F(ChannelOnlyRenewalIntegrationTest, RotatesStatAndCommandChannels) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return distinct_peers(snapshot.stat_streams) >= 2 &&
+               distinct_peers(snapshot.command_streams_v2) >= 2;
+    }, kWaitTimeout));
+    EXPECT_TRUE(agent_->Enable());
+}
+
+// The ping stream checks its renewal deadline once per ping interval, which
+// production sets to 60s. Use a short injected interval to prove that
+// ChannelMaxAgeMs alone reopens the stream and rotates the agent channel.
+TEST_F(ChannelOnlyRenewalIntegrationTest, ReopensPingStreamAndRotatesAgentChannel) {
     ASSERT_NO_FATAL_FAILURE(StartCollector());
     auto config = make_config(agent_options());
     ASSERT_NE(config, nullptr);
@@ -2102,11 +2122,11 @@ TEST_F(ConnectionRenewalIntegrationTest, ReopensPingStreamAndRotatesAgentChannel
         nullptr, kApplicationType);
     ASSERT_TRUE(agent->Start());
 
-    // Session 1 from startup, then one per 300ms (+-10%) expiry. From the
-    // second reopen on the agent channel is past its own max age, so at least
-    // one session must arrive over a new connection.
+    // Session 1 from startup, then one reopen after the 300ms (+-10%) channel
+    // deadline. The reopened session must arrive over a new connection even
+    // though StreamMaxAgeMs is disabled.
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-        return snapshot.ping_streams.size() >= 3 &&
+        return snapshot.ping_streams.size() >= 2 &&
                distinct_peers(snapshot.ping_streams) >= 2;
     }, kWaitTimeout));
     EXPECT_TRUE(agent->Enable());
