@@ -311,6 +311,9 @@ namespace pinpoint {
         ~GrpcMetadata() override = default;
 
         /// @brief Adds metadata to the outbound queue (ownership transferred).
+        ///        On overflow the NEW item is dropped and its cache entry
+        ///        released so the id is re-registered and re-sent on next use;
+        ///        the rationale is at the definition.
         void enqueueMeta(std::unique_ptr<MetaData> meta) noexcept;
         /// @brief Worker loop that sends metadata payloads.
         void sendMetaWorker();

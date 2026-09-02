@@ -2809,6 +2809,12 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
     metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "overflow.api.2")));
     metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(3, 100, "overflow.api.3")));
 
+    // The dropped item's cache entry is released synchronously on the
+    // producer thread, before any worker runs: otherwise the id stays
+    // marked published and is never re-sent.
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 1)
+        << "the overflow-dropped metadata must release its cache entry";
+
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
 
@@ -2821,6 +2827,8 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 1)
+        << "the two delivered items must keep their cache entries";
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {

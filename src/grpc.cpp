@@ -528,6 +528,22 @@ namespace pinpoint {
         }, meta);
     }
 
+    // Overflow policy: a full queue drops the NEWEST item — deliberately the
+    // opposite of the span queue's head-drop. Metadata has no recency value
+    // (an ApiMeta says the same thing whenever it is sent), so the span
+    // argument for keeping the latest telemetry does not apply. What does
+    // differ between old and new is how many recorded spans already reference
+    // the id: the producer registers the id in the agent cache before
+    // enqueueing, and every later cache hit reuses it without re-publishing.
+    // A full queue means a stalled pipeline, so the item at the head has
+    // accumulated references from every span that hit its cache entry while
+    // it waited; dropping it (and releasing its entry, which any drop must
+    // do — see below) orphans all of them. The newest item has been referenced
+    // only by the trace that just created it, so dropping it orphans the
+    // least. It also keeps the critical section to a size check and one
+    // push_back, with no second item to carry out of the lock for release.
+    // Java's metadata sender (GrpcDataSender: offer() failure) behaves the
+    // same way.
     void GrpcMetadata::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         if (meta == nullptr || (agent_ != nullptr && agent_->isExiting())) {
             return;
