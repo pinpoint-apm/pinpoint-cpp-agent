@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -43,7 +44,9 @@ protected:
 
     void TearDown() override {
         Logger::getInstance().shutdown();
-        // Reset to default info level for other tests
+        // Reset to default info level for other tests, and back to stdout mode
+        // so the closed-after-shutdown drop does not silence them.
+        Logger::getInstance().setFileLogger("", 0);
         Logger::getInstance().setLogLevel("info");
         cleanup();
     }
@@ -374,6 +377,56 @@ TEST_F(LoggingTest, ShutdownCanBeCalledMultipleTimes) {
     Logger::getInstance().shutdown();
     Logger::getInstance().shutdown(); // Should not crash
     Logger::getInstance().shutdown();
+}
+
+// A straggler logging after shutdown must not fall back to std::cout: the
+// agent is embedded in hosts whose stdout belongs to the host, not to us.
+TEST_F(LoggingTest, FileLoggerDropsLogsAfterShutdown) {
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().logInfo("test.cpp", 1, "before shutdown");
+    Logger::getInstance().shutdown();
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logInfo("test.cpp", 2, "after shutdown straggler");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(captured.empty()) << "leaked to stdout: " << captured;
+    auto content = read_file(log_file_.string());
+    EXPECT_TRUE(content.find("before shutdown") != std::string::npos);
+    EXPECT_TRUE(content.find("after shutdown straggler") == std::string::npos);
+}
+
+// The suppression is tied to the original sink: a logger that was on stdout
+// all along keeps writing there, which is where its lines already went.
+TEST_F(LoggingTest, StdoutLoggerKeepsWritingAfterShutdown) {
+    Logger::getInstance().setFileLogger("", 0);
+    Logger::getInstance().shutdown();
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logInfo("test.cpp", 1, "after shutdown on stdout");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(captured.find("after shutdown on stdout") != std::string::npos);
+}
+
+// Restart (a second StartAgent) reconfigures the file logger, which must lift
+// the closed state instead of leaving the agent permanently mute.
+TEST_F(LoggingTest, SetFileLoggerReopensAfterShutdown) {
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().shutdown();
+    // Repeated shutdowns (do_shutdown plus the teardown runner) stay closed.
+    Logger::getInstance().shutdown();
+
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().logInfo("test.cpp", 1, "after restart");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_TRUE(content.find("after restart") != std::string::npos);
 }
 
 TEST_F(LoggingTest, ShutdownLogger) {

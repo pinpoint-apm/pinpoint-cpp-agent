@@ -49,6 +49,7 @@ namespace pinpoint {
     void Logger::setFileLogger(const std::string& log_file_path, const int max_size) {
         std::lock_guard<std::mutex> lock(mutex_);
 
+        closed_ = false;
         file_path_ = log_file_path;
         // max_size is the rotation threshold in MB. Guard against non-positive
         // values: a negative size cast to uint64_t and scaled by 1 MiB would
@@ -88,6 +89,13 @@ namespace pinpoint {
             file_stream_->close();
         }
         file_stream_.reset();
+        // Only a file sink is silenced; a stdout logger keeps writing where
+        // it always did. Latched rather than assigned, so the repeated
+        // shutdown_logger() calls on the teardown paths (which see
+        // file_enabled_ already false) do not un-close the logger.
+        if (file_enabled_) {
+            closed_ = true;
+        }
         file_enabled_ = false;
     }
 
@@ -116,6 +124,10 @@ namespace pinpoint {
                        level_str, file, line, message);
 
         std::lock_guard<std::mutex> lock(mutex_);
+
+        if (closed_) {
+            return;
+        }
 
         if (file_enabled_ && file_stream_) {
             file_stream_->write(buf.data(), static_cast<std::streamsize>(buf.size()));
