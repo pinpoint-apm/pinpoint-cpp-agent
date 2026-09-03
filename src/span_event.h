@@ -27,6 +27,7 @@ namespace pinpoint {
 
     class AgentService;
     class CallStack;
+    class SpanData;
     class SpanImpl;
 
     /// @brief Concrete span event implementation that records timing and metadata.
@@ -136,8 +137,22 @@ namespace pinpoint {
     private:
         /// @brief Shared tail of the callstack SetError overloads: wrap the
         /// built call stack in an Exception on the parent span and stamp the
-        /// exception-id annotation.
-        void recordException(std::unique_ptr<CallStack> callstack);
+        /// exception-id annotation. `span` comes from the caller's
+        /// spanIfAlive() check, so it is never the dead-span case.
+        void recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack);
+
+        /**
+         * @brief The parent span while it is alive, else nullptr (after a
+         *        warning).
+         *
+         * The single gate for every access to SpanImpl state. This event is
+         * owned by the SpanData, which outlives the SpanImpl whenever a chunk
+         * is still in flight — and user code may hold this event as a raw
+         * SpanEventPtr just as long (see doc/api_contracts.md sections 4/5).
+         * Dereferencing the span unguarded from such a late call would be a
+         * use-after-free, so no new method may reach the span any other way.
+         */
+        SpanImpl* spanIfAlive() const;
 
         /// @brief True (after logging a warning) once the event is finished,
         /// signalling that a recording accessor or mutator must no-op. A
@@ -146,10 +161,12 @@ namespace pinpoint {
         /// annotation-list growth) would be a data race.
         bool warnIfFinished() const;
 
-        // Non-owning by design. SpanData owns SpanEventImpl instances for the
-        // parent span's lifetime, while this raw pointer lets hot event
-        // operations avoid weak_ptr::lock() and refcount traffic.
-        SpanImpl* span_;
+        // Non-owning by design: this event lives inside that SpanData, so
+        // the pointer is valid for as long as the event itself is, and hot
+        // event operations pay no weak_ptr::lock() or refcount traffic. The
+        // parent span is reached through it (see spanIfAlive) rather than
+        // being cached here, because the span dies first.
+        SpanData* data_;
         AgentService* agent_;
         int32_t service_type_;
         std::string operation_;
@@ -193,13 +210,15 @@ namespace pinpoint {
      *        limit, not a sampling decision.
      *
      * One instance per span, created lazily on first overflow and owned by the
-     * SpanImpl. Since every overflowed event of the span shares it, the kept
-     * destination reflects the most recent SetDestination call (used only for
-     * the Pinpoint-Host header).
+     * span's SpanData — not by the SpanImpl — so a user-held pointer to it has
+     * exactly the lifetime of a real span event's (see SpanData::getOwner).
+     * Since every overflowed event of the span shares it, the kept destination
+     * reflects the most recent SetDestination call (used only for the
+     * Pinpoint-Host header).
      */
     class DisabledSpanEvent final : public SpanEvent {
     public:
-        explicit DisabledSpanEvent(SpanImpl* span) : span_(span) {}
+        explicit DisabledSpanEvent(SpanData* data) : data_(data) {}
         ~DisabledSpanEvent() override {}
 
         void SetServiceType(int32_t type) override {}
@@ -232,7 +251,9 @@ namespace pinpoint {
         void EndEvent() override;
 
     private:
-        SpanImpl* span_;
+        // The owning SpanData; the parent span is reached through it only
+        // while it is still alive (see InjectContext).
+        SpanData* data_;
         std::string destination_id_;
     };
 

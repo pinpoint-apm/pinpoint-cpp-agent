@@ -57,6 +57,15 @@ namespace pinpoint {
             }, value);
         }
 
+        // Injection policy for an event whose span is already gone: the
+        // trace and span ids live in the span, so no valid context can be
+        // built any more. Tell the downstream not to start a trace of its own
+        // instead of writing a half context — the same header an unsampled
+        // span writes (see UnsampledSpanEvent::InjectContext).
+        void injectDeadSpanContext(TraceContextWriter& writer) {
+            writer.Set(HEADER_SAMPLED, "s0");
+        }
+
         std::string joinSqlBindValues(
             const std::vector<SqlBindValue>& bind_args,
             int max_bind_args_size) {
@@ -101,11 +110,13 @@ namespace pinpoint {
     std::atomic<int64_t> Exception::exception_id_gen{1};
 
     SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation) :
-        span_(span),
+        // The span data, not the span: it owns this event and outlives the
+        // SpanImpl (see spanIfAlive).
+        data_(span->data_.get()),
         agent_(span->agent_),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {
-        assert(span_ != nullptr);
+        assert(data_ != nullptr);
         assert(agent_ != nullptr);
 
         if (!operation.empty()) {
@@ -118,6 +129,18 @@ namespace pinpoint {
         if (api_id_ <= 0) {
             operation_ = operation;
         }
+    }
+
+    SpanImpl* SpanEventImpl::spanIfAlive() const {
+        // Nulled by ~SpanImpl. A SpanData still pinned by an in-flight chunk
+        // keeps this event (and any raw SpanEventPtr user code holds) alive
+        // past its span, so every span access degrades to a logged no-op here
+        // instead of a use-after-free.
+        auto* span = data_->getOwner();
+        if (span == nullptr) {
+            LOG_WARN("span event outlived its span");
+        }
+        return span;
     }
 
     bool SpanEventImpl::warnIfFinished() const {
@@ -169,7 +192,11 @@ namespace pinpoint {
         }
         // Pass the identity so the span can detect (and unwind) out-of-order
         // ends instead of finishing whatever event happens to be on top.
-        span_->endSpanEvent(this);
+        // A dead span has nothing left to unwind: the event never reaches a
+        // chunk, which is what dropping a span without EndSpan means anyway.
+        if (auto* span = spanIfAlive()) {
+            span->endSpanEvent(this);
+        }
     } catch (const std::exception& e) {
         // Like EndSpan: EndEvent runs in host destructors — including this
         // library's own helper::ScopedSpanEvent — where an escaping
@@ -190,7 +217,7 @@ namespace pinpoint {
         // be under serialization on the gRPC worker once this event reaches
         // a chunk.
         annotations_.seal();
-        span_->data_->decrEventDepth();
+        data_->decrEventDepth();
         // Batch-replayed events (Span::RecordSpanEvent) carry their real end
         // time, recorded by the wrapper when the event actually ended; only
         // live events fall back to the wall clock.
@@ -248,15 +275,17 @@ namespace pinpoint {
         error_string_ = abbreviateErrorString(error_message);
         // Propagate to the owning span (the async child span for async
         // events) so PSpan.err and the URL stat failure flag see it.
-        span_->markSpanError(error_name, error_message);
+        if (auto* span = spanIfAlive()) {
+            span->markSpanError(error_name, error_message);
+        }
     } CATCH_AND_LOG("set error")
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
         if (warnIfFinished()) return;
         SetError(error_name, error_message);
 
-        const auto& cfg = span_->config_;
-        if (!cfg->enable_callstack_trace) {
+        auto* span = spanIfAlive();
+        if (span == nullptr || !span->config_->enable_callstack_trace) {
             return;
         }
 
@@ -266,7 +295,7 @@ namespace pinpoint {
                 callstack->push(module, function, file, line);
                 return;
             });
-            recordException(std::move(callstack));
+            recordException(*span, std::move(callstack));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
@@ -277,8 +306,8 @@ namespace pinpoint {
         if (warnIfFinished()) return;
         SetError(error_name, error_message);
 
-        const auto& cfg = span_->config_;
-        if (!cfg->enable_callstack_trace) {
+        auto* span = spanIfAlive();
+        if (span == nullptr || !span->config_->enable_callstack_trace) {
             return;
         }
 
@@ -287,20 +316,20 @@ namespace pinpoint {
             for (const auto& frame : frames) {
                 callstack->push(frame.module, frame.function, frame.file, frame.line);
             }
-            recordException(std::move(callstack));
+            recordException(*span, std::move(callstack));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
     }
 
-    void SpanEventImpl::recordException(std::unique_ptr<CallStack> callstack) {
+    void SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack) {
         // Repeated call-stack SetError calls on one event are the cause chain
         // of a single exception (Java records them under one exceptionId with
         // an increasing depth), so they reuse the id of the first link and are
         // annotated only once.
         auto exception = std::make_unique<Exception>(std::move(callstack), exception_id_);
         const auto exception_id = exception->getId();
-        if (span_->addException(std::move(exception)) && exception_id_ == 0) {
+        if (span.addException(std::move(exception)) && exception_id_ == 0) {
             annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
             exception_id_ = exception_id;
         }
@@ -310,7 +339,9 @@ namespace pinpoint {
         std::string_view sql_query,
         const std::vector<SqlBindValue>& bind_args) try {
         if (warnIfFinished()) return;
-        const auto& config = span_->config_;
+        auto* span = spanIfAlive();
+        if (span == nullptr) return;
+        const auto& config = span->config_;
         const auto mode = config->sql.enable_sql_stats
             ? SqlMetaMode::Uid
             : SqlMetaMode::Id;
@@ -355,11 +386,16 @@ namespace pinpoint {
 
     void SpanEventImpl::InjectContext(TraceContextWriter& writer) try {
         // Guarded like every other mutator: generateNextSpanId() writes a
-        // field the gRPC worker reads once this event sits in a chunk, and a
-        // finished event can outlive span_ itself (retired events are kept
-        // alive by SpanData after the SpanImpl has been destroyed).
+        // field the gRPC worker reads once this event sits in a chunk. An
+        // event can also outlive the SpanImpl itself (SpanData keeps it alive
+        // for an in-flight chunk), hence the second guard.
         if (warnIfFinished()) return;
-        span_->injectContext(writer, generateNextSpanId(), destination_id_);
+        auto* span = spanIfAlive();
+        if (span == nullptr) {
+            injectDeadSpanContext(writer);
+            return;
+        }
+        span->injectContext(writer, generateNextSpanId(), destination_id_);
     } CATCH_AND_LOG("inject context")
 
     void SpanEventImpl::SetNextSpanId(int64_t next_span_id) try {
@@ -371,10 +407,13 @@ namespace pinpoint {
 
     void DisabledSpanEvent::EndEvent() {
         // The shared per-span instance stands in for every overflowed event,
-        // so it cannot carry a per-instance finished flag; the span's overflow
-        // counter provides the duplicate-end guard instead (warns and refuses
-        // to touch the real event stack once no overflow is pending).
-        span_->endDisabledSpanEvent();
+        // so it cannot carry a per-instance finished flag; the span data's
+        // overflow counter provides the duplicate-end guard instead (warns and
+        // refuses to touch the real event stack once no overflow is pending).
+        // The counter lives in the span data precisely so this stays safe
+        // after the SpanImpl is gone — an overflowed event is ended through a
+        // pointer that outlives the span just like a real event's does.
+        data_->endDisabledSpanEvent();
     }
 
     void DisabledSpanEvent::SetDestination(std::string_view dest) try {
@@ -386,7 +425,12 @@ namespace pinpoint {
         // id is not stored anywhere either — the same shape as the Java
         // agent, where recordNextSpanId on the DisableSpanEventRecorder is a
         // no-op but the full header set is still written.
-        span_->injectContext(writer, generate_span_id(), destination_id_);
+        auto* span = data_->getOwner();
+        if (span == nullptr) {
+            injectDeadSpanContext(writer);
+            return;
+        }
+        span->injectContext(writer, generate_span_id(), destination_id_);
     } CATCH_AND_LOG("inject context")
 
 } // namespace pinpoint

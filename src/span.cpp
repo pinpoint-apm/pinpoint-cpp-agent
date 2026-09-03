@@ -108,6 +108,28 @@ namespace pinpoint {
         }
     }
 
+    void SpanData::endDisabledSpanEvent() {
+        // Consume one overflow placeholder, using a CAS loop so two
+        // concurrent calls cannot both decrement the same value and drive
+        // overflow_ negative. Overflowed events are never on the stack, so
+        // this must never fall through to a real pop.
+        int32_t pending = overflow_.load(std::memory_order_relaxed);
+        while (pending > 0) {
+            if (overflow_.compare_exchange_weak(pending, pending - 1,
+                                                std::memory_order_relaxed)) {
+                return;
+            }
+        }
+        LOG_WARN("span event is already finished");
+    }
+
+    DisabledSpanEvent* SpanData::disabledSpanEvent() {
+        if (!disabled_event_) {
+            disabled_event_ = std::make_unique<DisabledSpanEvent>(this);
+        }
+        return disabled_event_.get();
+    }
+
     void SpanData::takeFinishedEvents(std::vector<SpanEventImpl*>& out) {
         out.clear();
         if (finished_events.empty()) {
@@ -212,10 +234,19 @@ namespace pinpoint {
 
     #define CHECK_OVERFLOW_WITH_RETURN(retval) \
         do { \
-            if (overflow_ > 0) { return (retval); } \
+            if (data_->isEventOverflowed()) { return (retval); } \
         } while(0)
 
     SpanImpl::~SpanImpl() {
+        // Unlink first: the span data (and the span events it owns, including
+        // the shared overflow placeholder) can outlive this object in a chunk
+        // still in flight, and user code may hold raw SpanEventPtr handles
+        // into it. From here on every event->span access is a guarded no-op
+        // instead of a use-after-free (see SpanEventImpl::spanIfAlive).
+        // data_ is never null: the only way past the constructor's
+        // make_shared is with it set.
+        data_->setOwner(nullptr);
+
         // Self-heals spans dropped without EndSpan, and is the hard backstop
         // for the intrusive node: active_node_ lives inside this object, so a
         // still-linked node here would leave dangling pointers in its shard
@@ -238,7 +269,6 @@ namespace pinpoint {
         agent_(agent),
         runtime_(std::move(runtime)),
         data_(nullptr),
-        overflow_(0),
         finished_(false),
         url_stat_{},
         exceptions_{} {
@@ -250,6 +280,7 @@ namespace pinpoint {
         // serialized (grpc_builders guards on api_id > 0).
         const auto api_id = operation.empty() ? 0 : agent_->cacheApi(operation, API_TYPE_WEB_REQUEST);
         data_ = std::make_shared<SpanData>(operation, app_type, api_id);
+        data_->setOwner(this);
         data_->setRpcName(rpc_point);
     }
 
@@ -312,7 +343,7 @@ namespace pinpoint {
         const auto seq = data_->getEventSequence();
 
         if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
-            overflow_++;
+            data_->incrEventOverflow();
             // Throttled: an app that routinely exceeds the limits would hit
             // this once per discarded event, serializing its request threads
             // on the logger mutex and its per-line write+flush.
@@ -320,7 +351,7 @@ namespace pinpoint {
             // Overflow is a profiling depth limit, not a sampling decision:
             // the returned event records nothing but still propagates the full
             // trace context, so the distributed trace is not cut here.
-            return disabledSpanEvent();
+            return data_->disabledSpanEvent();
         }
 
         auto se = std::make_unique<SpanEventImpl>(this, operation);
@@ -333,7 +364,7 @@ namespace pinpoint {
         // While overflowed, the top of the stack is a discarded event: hand
         // out the disabled event so InjectContext keeps working (see
         // NewSpanEvent).
-        CHECK_OVERFLOW_WITH_RETURN(disabledSpanEvent());
+        CHECK_OVERFLOW_WITH_RETURN(data_->disabledSpanEvent());
 
         auto se = data_->topSpanEvent();
         if (!se) {
@@ -395,22 +426,6 @@ namespace pinpoint {
         if (data_->getFinishedEventsCount() >= static_cast<size_t>(config_->span.event_chunk_size)) {
             record_chunk(false);
         }
-    }
-
-    void SpanImpl::endDisabledSpanEvent() {
-        CHECK_FINISHED();
-
-        // Consume one overflow placeholder, using a CAS loop so two
-        // concurrent calls cannot both decrement the same value and drive
-        // overflow_ negative. Overflowed events are never on the stack, so
-        // this must never fall through to a real pop.
-        int32_t pending = overflow_.load();
-        while (pending > 0) {
-            if (overflow_.compare_exchange_weak(pending, pending - 1)) {
-                return;
-            }
-        }
-        LOG_WARN("span event is already finished");
     }
 
     void SpanImpl::EndSpan() try {
@@ -481,13 +496,6 @@ namespace pinpoint {
             }
         } catch (...) {
         }
-    }
-
-    SpanEventPtr SpanImpl::disabledSpanEvent() {
-        if (!disabled_event_) {
-            disabled_event_ = std::make_unique<DisabledSpanEvent>(this);
-        }
-        return disabled_event_.get();
     }
 
     void SpanImpl::injectContext(TraceContextWriter& writer, int64_t next_span_id, std::string_view host) {

@@ -19,7 +19,7 @@ agent log.
 A `Span` instance — including every `SpanEvent` it hands out — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked (the event stack, string fields, annotation lists), so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
 
 - The agent binds a span to the first thread that calls `NewSpanEvent()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`.
-- Because binding is lazy, a **complete handoff** is allowed: create the span on thread A, pass the `SpanPtr` to thread B, and never touch it from A again (the thread examples in [instrument.md §10](instrument.md#10-asynchronous-and-background-work) rely on this).
+- Because binding is lazy, a **complete handoff** is allowed — but only *before* the span records anything: the owning thread is fixed by the **first `NewSpanEvent()`/`RecordSpanEvent()` call**, so create the span on thread A, pass the `SpanPtr` to thread B before any event is created, and never touch it from A again (the thread examples in [instrument.md §10](instrument.md#10-asynchronous-and-background-work) rely on this). Once the first event exists, the span belongs to that thread for good; handing it on afterwards logs `span accessed from another thread`.
 - To trace work that runs **concurrently** with the parent, do not share the span. Call `NewAsyncSpan()` *on the span's owning thread* and hand the returned child span to the worker; the child follows the same single-thread rule on its own thread.
 
 ## 2. End Exactly Once, and Record Before Ending
@@ -60,10 +60,11 @@ Span events form a stack. Calling `EndEvent()` on an outer event while an inner 
 
 ## 4. `SpanEventPtr` Is Non-Owning
 
-`SpanEventPtr` is a raw pointer whose object is owned by the parent span:
+`SpanEventPtr` is a raw pointer whose object is owned by the parent span's internal data:
 
-- It stays valid only while you hold the parent `SpanPtr`. Calling into an already-ended event while the span is alive is a safe warning no-op; calling through a pointer that **outlives the span** is a use-after-free.
-- Do not cache these pointers in long-lived structures. Obtain them, use them, and let them go within the span's scope.
+- It stays valid only while you hold the parent `SpanPtr`. Calling into an already-ended event while the span is alive is a safe warning no-op.
+- Do not cache these pointers in long-lived structures. Obtain them, use them, and let them go within the span's scope. **Once the last `SpanPtr` is released, every `SpanEventPtr` it handed out is dangling** — including the shared disabled event of §5, which has exactly the same lifetime as a real event's.
+- A call that does slip past the span's release is handled defensively rather than crashing *when the event object itself is still alive* (the agent keeps ended events alive while a chunk is in flight): it logs `span event outlived its span` and records nothing, and `InjectContext()` falls back to writing only `Pinpoint-Sampled: s0` — no valid trace context can be built without the span, so the downstream service is told not to trace instead of continuing a broken one. This is a backstop for a contract violation, not a supported pattern: the release order is not yours to observe, so treat a dangling `SpanEventPtr` as a use-after-free.
 
 ## 5. Event Depth and Count Limits (Overflow)
 
@@ -73,6 +74,7 @@ Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and
 - `InjectContext()` **still writes the full trace context**, so downstream services continue the distributed trace. Overflow limits profiling detail; it is not a sampling decision.
 - You must still call `EndEvent()` exactly once for each overflowed `NewSpanEvent()` call — the span balances an internal overflow counter with it.
 - The disabled event is a single shared object per span, so `SetDestination()` values from interleaved overflowed calls can bleed into each other's `Pinpoint-Host` header.
+- Its lifetime and its post-span behavior match a real span event's exactly (§4): it is owned by the same span data, not by the span object, and after the span is gone `EndEvent()` is a no-op and `InjectContext()` writes only `Pinpoint-Sampled: s0`.
 - `NewAsyncSpan()` called while the span is overflowed returns a no-op span.
 
 If the overflow warning appears regularly, create fewer, coarser span events per transaction or raise the limits in the configuration.

@@ -1485,6 +1485,58 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
+// Lifetime parity between the two event kinds (ASan): SpanData outlives its
+// SpanImpl whenever a chunk is still in flight, and user code may hold both a
+// real SpanEventPtr and the shared overflow placeholder that long. Calling
+// either one after the span is destroyed must be a guarded no-op, not a
+// use-after-free — the disabled event used to dereference the dead span.
+TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 2;   // one real event, then overflow
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    auto span = std::make_unique<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    span->extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    auto* real = span->NewSpanEvent("real-event");
+    auto* overflowed = span->NewSpanEvent("overflowed-event");  // depth 2 >= max 2
+
+    // Pin the span data the way a chunk in flight on the gRPC span worker
+    // does, then drop the span while both events are still open.
+    auto data = span->getSpanData();
+    span.reset();
+
+    EXPECT_EQ(data->getOwner(), nullptr) << "the span unlinks itself on destruction";
+
+    // Every path that used to reach through to the span: no crash, no ASan
+    // report, nothing recorded.
+    MockTraceContextWriter writer;
+    overflowed->SetDestination("downstream:8080");
+    overflowed->InjectContext(writer);
+    EXPECT_EQ(writer.Get(HEADER_SAMPLED).value(), "s0")
+        << "a dead span cannot produce a context; downstream must not trace";
+    EXPECT_FALSE(writer.Get(HEADER_TRACE_ID).has_value());
+    overflowed->EndEvent();
+    overflowed->EndEvent();  // over-ending stays guarded too
+
+    MockTraceContextWriter real_writer;
+    real->SetError("late", "after the span is gone");
+    real->SetAnnotation(12, 42);
+    real->InjectContext(real_writer);
+    EXPECT_EQ(real_writer.Get(HEADER_SAMPLED).value(), "s0");
+    EXPECT_FALSE(real_writer.Get(HEADER_TRACE_ID).has_value());
+    real->EndEvent();
+    real->EndEvent();
+
+    EXPECT_EQ(data->getFinishedEventsCount(), 0u)
+        << "an event ended after its span is gone reaches no chunk";
+}
+
 // ========== SpanImpl Event Chunking ==========
 
 TEST_F(SpanTest, SpanImplEventChunkingTest) {

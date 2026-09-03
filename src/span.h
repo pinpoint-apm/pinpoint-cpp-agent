@@ -131,6 +131,41 @@ namespace pinpoint {
         void setFlags(int flags) { flags_ = flags; }
         int getFlags() const { return flags_; }
 
+        /**
+         * @brief The SpanImpl this data belongs to, or nullptr once that span
+         *        has been destroyed.
+         *
+         * SpanData outlives its span whenever a chunk is still in flight on a
+         * gRPC worker, while the span events it owns are handed to user code
+         * as raw (non-owning) SpanEventPtr. Routing every event->span access
+         * through this pointer — see SpanEventImpl::spanIfAlive() — turns what
+         * would be a use-after-free into a guarded no-op. Set by the SpanImpl
+         * constructor, cleared by ~SpanImpl. Atomic for the same reason as
+         * SpanImpl::owner_thread_id_: the detection path runs exactly when the
+         * single-thread contract is being bent.
+         */
+        SpanImpl* getOwner() const { return owner_.load(std::memory_order_relaxed); }
+        void setOwner(SpanImpl* owner) { owner_.store(owner, std::memory_order_relaxed); }
+
+        /// @brief Counts overflowed (discarded) span events still awaiting
+        /// their EndEvent. Kept here, not in SpanImpl, so the shared
+        /// DisabledSpanEvent below can be ended after the span is gone.
+        void incrEventOverflow() { overflow_.fetch_add(1, std::memory_order_relaxed); }
+        bool isEventOverflowed() const { return overflow_.load(std::memory_order_relaxed) > 0; }
+        /**
+         * @brief Consumes one pending overflow placeholder.
+         *
+         * Called by DisabledSpanEvent::EndEvent. Overflowed events are never
+         * pushed onto the event stack, so ending one must not pop a real
+         * event; it only balances NewSpanEvent's overflow counter. Warns when
+         * there is no pending overflow (duplicate end).
+         */
+        void endDisabledSpanEvent();
+        /// @brief The span's shared overflow placeholder, created on first
+        /// overflow and owned here so it outlives the SpanImpl exactly as the
+        /// real span events do.
+        DisabledSpanEvent* disabledSpanEvent();
+
         int32_t getEventSequence() const { return event_sequence_.load(std::memory_order_relaxed); }
         int32_t getEventDepth() const { return event_depth_.load(std::memory_order_relaxed); }
         /// @brief Reserves the next event sequence and depth for a new span event.
@@ -250,6 +285,12 @@ namespace pinpoint {
         // concurrent NewSpanEvent calls.
         std::atomic<int32_t> event_sequence_{0};
         std::atomic<int32_t> event_depth_{1};
+        // Outstanding overflow placeholders; see incrEventOverflow(). An
+        // idempotency guard for a duplicate end, NOT a concurrency guarantee.
+        std::atomic<int32_t> overflow_{0};
+        // See getOwner(). Null before the SpanImpl constructor links it and
+        // after ~SpanImpl unlinks it.
+        std::atomic<SpanImpl*> owner_{nullptr};
 
         int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
         int flags_{SPAN_FLAG_NONE};
@@ -303,6 +344,13 @@ namespace pinpoint {
         // each event's owned heap (strings, annotations) once the chunk is done
         // with it, so a long-lived span grows by a fixed-size husk per event.
         std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
+        // Handed out instead of a real event while the event stack is
+        // overflowed (Java agent's DisableSpanEvent parity): records nothing
+        // but still injects trace context. Created lazily on the first
+        // overflow, one shared instance per span. Owned here rather than by
+        // the SpanImpl so a user-held pointer to it stays valid for as long as
+        // a real event's does — see getOwner().
+        std::unique_ptr<DisabledSpanEvent> disabled_event_;
 
         // Owned by value: a span that records no annotation pays no heap.
         PinpointAnnotation annotations_;
@@ -362,8 +410,9 @@ namespace pinpoint {
      *          and the `SpanData` string/annotation buffers are unsynchronized,
      *          and releasing the span on one thread frees span events still
      *          referenced through raw pointers on another. The
-     *          `finished_`/`overflow_` atomics are idempotency guards (a
-     *          repeated EndSpan is a no-op), NOT a concurrency guarantee.
+     *          `finished_` flag and the span data's `overflow_` counter are
+     *          idempotency guards (a repeated EndSpan is a no-op), NOT a
+     *          concurrency guarantee.
      */
     class SpanImpl final : public Span {
     public:
@@ -418,15 +467,6 @@ namespace pinpoint {
          * against duplicate ends before delegating here.
          */
         void endSpanEvent(SpanEventImpl* se);
-        /**
-         * @brief Consumes one pending overflow placeholder.
-         *
-         * Impl-level only: called by DisabledSpanEvent::EndEvent. Overflowed
-         * events are never pushed onto the stack, so ending one must not pop a
-         * real event; it only balances NewSpanEvent's overflow counter. Warns
-         * when there is no pending overflow (duplicate end).
-         */
-        void endDisabledSpanEvent();
 
         // Out-of-line: getTraceIdWire() lazily builds (and the return copies)
         // a string, so this needs the exception boundary in span.cpp.
@@ -495,7 +535,6 @@ namespace pinpoint {
             // even when a config reload lands mid-span.
             std::shared_ptr<const Config> config_;
             std::shared_ptr<SpanData> data_;
-            std::atomic<int32_t> overflow_;
             std::atomic<bool> finished_;
             // Registration in the active-request registry (see active_span.h):
             // linked by extractContext, unlinked by EndSpan; the destructor and
@@ -504,12 +543,6 @@ namespace pinpoint {
             ActiveSpanNode active_node_;
             std::optional<UrlStatEntry> url_stat_;
             std::vector<std::unique_ptr<Exception>> exceptions_;
-            // Handed out instead of a real event while the event stack is
-            // overflowed (Java agent's DisableSpanEvent parity): records
-            // nothing but still injects full trace context. Created lazily on
-            // the first overflow, one shared instance per span.
-            std::unique_ptr<DisabledSpanEvent> disabled_event_;
-            SpanEventPtr disabledSpanEvent();
 
             // Owning-thread guard enforcing the Span single-thread contract
             // (see pinpoint/tracer.h). Bound lazily on the first NewSpanEvent
