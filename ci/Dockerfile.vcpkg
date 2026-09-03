@@ -1,0 +1,110 @@
+# syntax=docker/dockerfile:1
+#
+# CI build environment: Ubuntu + build tools + vcpkg with this project's whole
+# dependency closure already compiled into a baked-in binary cache.
+#
+# The image deliberately contains NO agent source, so one image serves every
+# commit, branch and pull request. A CI job checks the source out into
+# /workspace and runs the `vcpkg` preset; vcpkg restores gRPC, Protobuf,
+# Abseil, yaml-cpp, fmt and GoogleTest from the cache instead of compiling
+# them. On a 20-core host that is 13 seconds instead of the 11 minutes the
+# closure takes to build, and slower CI hardware gains proportionally more.
+#
+# Build from the repository root, not from ci/: every COPY below resolves
+# against the build context, and the context must contain vcpkg.json.
+#
+#   docker build -f ci/Dockerfile.vcpkg -t pinpoint-cpp-build-env .
+#   docker run --rm -v "$PWD:/workspace" pinpoint-cpp-build-env pinpoint-vcpkg-build
+#
+# Published as pinpointdocker/pinpoint-cpp-build-env, so a pipeline can pull it
+# instead of building it. Bump the published version when the dependency
+# closure changes, i.e. whenever vcpkg.json changes.
+#
+# The dependency versions come from vcpkg.json: the manifest is the only build
+# input copied in, and the vcpkg checkout is pinned to the commit named by its
+# `builtin-baseline`, so the image can never drift from the manifest it serves.
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# OpenSSL's configure is a Perl program and several ports script with python3;
+# zip/unzip/tar unpack the binary cache archives. Editing this list invalidates
+# every layer below it, which means recompiling the whole dependency closure.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        git \
+        ninja-build \
+        perl \
+        pkg-config \
+        python3 \
+        tar \
+        unzip \
+        zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# A CI checkout is owned by the runner's uid, not by the uid the container
+# runs as. Git refuses to operate in a tree it considers foreign, which would
+# break the `git submodule update --init` that CMake runs on configure when
+# the pinpoint-grpc-idl submodule is empty.
+RUN git config --system --add safe.directory '*'
+
+ENV VCPKG_ROOT=/opt/vcpkg \
+    VCPKG_DISABLE_METRICS=1 \
+    PATH=/opt/vcpkg:$PATH
+
+# Read-only so the cache cannot be mutated by a build, and so vcpkg never
+# attempts a write that would fail when the container runs as a non-root uid.
+# A dependency bump that misses the cache still builds correctly, just slowly.
+ENV VCPKG_BINARY_SOURCES="clear;files,/opt/vcpkg-cache,read"
+
+COPY vcpkg.json /opt/vcpkg-manifest/vcpkg.json
+
+# Pin vcpkg to the manifest's own builtin-baseline. Reading the commit out of
+# the manifest rather than repeating it in an ARG keeps the two in lockstep:
+# bumping the baseline in vcpkg.json is enough to move the image.
+RUN baseline="$(sed -n \
+        's/.*"builtin-baseline"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
+        /opt/vcpkg-manifest/vcpkg.json)" \
+    && test -n "${baseline}" \
+    && echo "Pinning vcpkg to builtin-baseline ${baseline}" \
+    && git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" \
+    && git -C "${VCPKG_ROOT}" checkout --quiet "${baseline}" \
+    && "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+
+# Compile the dependency closure once and keep only the binary-cache archives.
+# `--clean-after-build` drops each port's buildtree as it finishes, so peak
+# layer size stays near the closure size rather than the sum of all buildtrees.
+# The installed tree is discarded too: the preset installs into its own build
+# directory at run time and restores those packages from the cache.
+WORKDIR /opt/vcpkg-manifest
+RUN mkdir -p /opt/vcpkg-cache \
+    && VCPKG_BINARY_SOURCES="clear;files,/opt/vcpkg-cache,readwrite" \
+       vcpkg install --clean-after-build \
+    && rm -rf /opt/vcpkg-manifest/vcpkg_installed \
+    && rm -rf "${VCPKG_ROOT}/buildtrees" "${VCPKG_ROOT}/packages" \
+    && find "${VCPKG_ROOT}/downloads" -maxdepth 1 -type f -delete \
+    && git -C "${VCPKG_ROOT}" gc --quiet --prune=all \
+    && du -sh /opt/vcpkg-cache "${VCPKG_ROOT}"
+
+# Put back, empty and world-writable, the three directories the step above
+# emptied. vcpkg takes an exclusive lock at buildtrees/vcpkg-running.lock on
+# every invocation, including one that only restores from the cache, and a port
+# that misses the cache also writes into packages/ and downloads/. They live
+# under root-owned /opt, so without this a container run as a non-root uid
+# (GitLab CI, a Kubernetes or OpenShift runner with runAsNonRoot) dies at
+# configure time on `take_exclusive_file_lock: No such file or directory`.
+RUN mkdir -p "${VCPKG_ROOT}/buildtrees" "${VCPKG_ROOT}/packages" \
+        "${VCPKG_ROOT}/downloads" \
+    && chmod 1777 "${VCPKG_ROOT}/buildtrees" "${VCPKG_ROOT}/packages" \
+        "${VCPKG_ROOT}/downloads"
+
+COPY ci/docker-vcpkg-build.sh /usr/local/bin/pinpoint-vcpkg-build
+RUN chmod +x /usr/local/bin/pinpoint-vcpkg-build
+
+WORKDIR /workspace
+CMD ["bash"]

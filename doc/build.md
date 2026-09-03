@@ -18,7 +18,15 @@ This document describes how to build the Pinpoint C++ Agent from source. Two bui
 
 ## Docker build and test environment
 
-The repository's single Dockerfile contains GCC, Clang/LLVM (including the
+Two images cover two different jobs. `Dockerfile` runs every preset against a
+source tree baked into the image, which suits local verification of a change
+across build modes. `ci/Dockerfile.vcpkg` is a source-free CI environment with the
+`vcpkg` dependency closure already compiled; see
+[CI image with prebuilt vcpkg dependencies](#ci-image-with-prebuilt-vcpkg-dependencies).
+
+### All-preset test runner
+
+`Dockerfile` contains GCC, Clang/LLVM (including the
 sanitizer runtimes), CMake, Ninja, Bazel, and a pinned vcpkg checkout.
 Build it once, then select the build mode with the first container argument:
 
@@ -35,6 +43,102 @@ docker run --rm pinpoint-cpp-agent-test ubsan
 The remaining modes are `debug`, `coverage`, `profiling`,
 `bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. The source tree
 is copied into the image; rebuild the image after changing source files.
+
+### CI image with prebuilt vcpkg dependencies
+
+`ci/Dockerfile.vcpkg` builds an Ubuntu 24.04 image carrying the build tools, a
+vcpkg checkout pinned to `vcpkg.json`'s `builtin-baseline`, and the manifest's
+entire dependency closure already compiled into a vcpkg binary cache at
+`/opt/vcpkg-cache`. It contains **no agent source**, so one image serves every
+commit, branch and pull request:
+
+```bash
+docker build -f ci/Dockerfile.vcpkg -t pinpoint-cpp-build-env .
+```
+
+A prebuilt copy is published, so most jobs do not need to build it at all:
+
+```bash
+docker pull pinpointdocker/pinpoint-cpp-build-env:1.0.0
+```
+
+A job then checks the source out and builds it. vcpkg restores gRPC, Protobuf,
+Abseil, yaml-cpp, fmt and GoogleTest from the cache instead of compiling them,
+which is the whole point of the image:
+
+```bash
+docker run --rm -v "$PWD:/workspace" \
+    pinpointdocker/pinpoint-cpp-build-env:1.0.0 pinpoint-vcpkg-build
+```
+
+In GitHub Actions the image is a job container and the checkout is a step:
+
+```yaml
+jobs:
+  vcpkg:
+    runs-on: ubuntu-latest
+    container: pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: pinpoint-vcpkg-build
+```
+
+Both `1.0.0` and `latest` point at the same image; prefer the version tag in a
+pipeline so that republishing `latest` after a dependency bump cannot change
+what an old commit builds against.
+
+`pinpoint-vcpkg-build` ([ci/docker-vcpkg-build.sh](../ci/docker-vcpkg-build.sh))
+runs `cmake --preset vcpkg`, `cmake --build --preset vcpkg` and
+`ctest --preset vcpkg`, timing each phase so a slow log shows at a glance
+whether the cost landed in the dependency restore (configure) or in the agent's
+own code (build). `PINPOINT_BUILD_JOBS` overrides parallelism and
+`PINPOINT_CTEST_ARGS` passes extra arguments to ctest. Run the three commands
+directly instead when the CI system wants its own step boundaries.
+
+Measured on a 20-core x86-64 host, from a bare container to green tests:
+
+| Phase | Cold, no cache | With this image |
+|---|---|---|
+| Dependency closure (14 packages) | 11 min | **13 s** (restored) |
+| Checkout | — | 1 s |
+| Build (146 targets, `-j20`) | — | 33 s |
+| `ctest` (24 tests) | — | 79 s |
+| **Total** | | **~2 min** |
+
+`ctest` is the largest remaining slice, and `agent_integration_test` is 56 s of
+it. It talks to an in-process mock collector over real sockets, so it stays
+serial; the other 23 tests finish in about 23 s together.
+
+Building the image itself takes about 13 minutes and yields 1.95 GB (899 MB of
+binary cache, 410 MB of vcpkg checkout, the rest base image and toolchain), so
+push it to a registry once per dependency bump rather than rebuilding it per
+job. gRPC alone is 7.6 minutes of that.
+
+Two properties are worth knowing before wiring this into a pipeline:
+
+- **Only the `vcpkg` preset benefits.** `asan`, `tsan`, `ubsan` and `coverage`
+  set `PINPOINT_FORCE_FETCHCONTENT`, because a dependency must carry the same
+  instrumentation as the agent and a prebuilt copy cannot; `default` never
+  consults vcpkg at all. Those presets compile dependencies from source no
+  matter which image they run in — use the all-preset runner above for them.
+- **The image tracks `vcpkg.json`.** The vcpkg commit is read out of the
+  manifest's `builtin-baseline` during the image build, so the two cannot drift,
+  but bumping a dependency version or the baseline does require rebuilding the
+  image. Until it is rebuilt the build still succeeds: vcpkg simply compiles
+  whatever the cache does not cover, at full cost.
+
+Two things in the image exist purely to survive how CI runners invoke it.
+`git config --system --add safe.directory '*'`, because a checkout is owned by
+the runner's uid rather than the container's, and without it Git refuses to read
+the repository — failing the `git submodule update --init` that CMake runs on
+configure against an otherwise valid checkout. And `buildtrees/`, `packages/`
+and `downloads/` under `$VCPKG_ROOT` are left present and world-writable,
+because vcpkg takes an exclusive lock at `buildtrees/vcpkg-running.lock` on
+every invocation, restores included; a container running as a non-root uid
+cannot create that path under root-owned `/opt` otherwise, and fails at
+configure time.
 
 ---
 
@@ -82,6 +186,7 @@ pinpoint-cpp-agent/
 ├── CMakeLists.txt       # CMake: root build file (toolchain-agnostic)
 ├── CMakePresets.json    # CMake: standard, debug, coverage, profiling, sanitizer presets
 ├── vcpkg.json           # vcpkg manifest (used by the `vcpkg` preset)
+├── ci/                  # CI build image (Dockerfile.vcpkg) and its build script
 ├── include/             # Public headers
 │   └── pinpoint/
 │       ├── tracer.h
