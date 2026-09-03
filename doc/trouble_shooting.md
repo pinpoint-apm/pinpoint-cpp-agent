@@ -17,6 +17,16 @@ it is normally still `false` right after `StartAgent()` returns — that is not 
 error, and checking it there proves nothing. Use `Enable()` only as a fast-fail
 guard before creating a span, never as a startup success check.
 
+**Nothing is recorded until that registration succeeds.** `NewSpan()` returns
+noop spans and no agent, URL or system statistics are collected for the whole
+wait; none of it is buffered and replayed afterwards, so those transactions are
+simply lost. Registration is retried indefinitely, and the agent logs an INFO
+line every 30 seconds while it waits (`still waiting for agent registration
+after ...`). A collector whose **agent port (9991) alone** is unreachable
+therefore produces zero spans even with 9992/9993 open — check that port first
+when the agent looks alive but the UI stays empty. (The Java agent differs here:
+it sends spans while registration retries in the background.)
+
 **A `false` return is a *synchronous* configuration or setup failure** (it never
 throws). Nothing is installed as the global agent, and a later `StartAgent()`
 call retries from scratch. Print a message pointing at the agent log, where the
@@ -30,6 +40,7 @@ cause is recorded.
 | `agent start failed: ...` | Configuration or setup error; the line names the cause. |
 | `failed to init grpc workers: ...` | gRPC bring-up error. |
 | `failed to send AgentInfo` | The collector is not reachable yet. Retried indefinitely. |
+| `still waiting for agent registration after ...` | Registration has not succeeded yet; tracing stays off (noop spans, no stats) until it does. Logged every 30s. |
 | `config: ...` dump, then nothing | A deliberate `Enable: false`: the resolved-config dump (which itself shows `Enable: false`) is written, then the agent goes quiet — no `AgentInfo sent`, no error line. See [Disabling the Agent](#disabling-the-agent). |
 
 The resolved configuration is logged at `info`; set `Log.Level: "debug"` for
@@ -242,7 +253,9 @@ Logs show connection or gRPC errors.
    9992, `SpanPort` 9993) point at a running, healthy collector.
 2. Test connectivity to each port, e.g. `telnet <host> 9991`, `nslookup <host>`.
 3. Allow gRPC ports 9991–9993 through firewalls and network policies
-   (e.g. Kubernetes).
+   (e.g. Kubernetes). All three are required: with only the agent port (9991)
+   blocked the agent never registers, and tracing stays off entirely — see
+   [Verifying Agent Startup](#verifying-agent-startup).
 
 ### Missing Distributed Tracing
 

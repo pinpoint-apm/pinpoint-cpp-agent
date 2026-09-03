@@ -465,6 +465,8 @@ namespace pinpoint {
         ///        enabled. Individual spans may still be rejected by sampling.
         ///        Always false for an agent handle inherited across fork() —
         ///        each process must obtain its own agent via StartAgent().
+        ///        False until registration with the collector succeeds: see
+        ///        StartAgent() for what is (not) recorded until then.
         virtual bool Enable() = 0;
         /// @brief Stops the agent and waits for its workers to finish. Pending
         ///        spans are submitted when a channel is available, but delivery
@@ -549,6 +551,15 @@ namespace pinpoint {
      * channels, registers with the collector and starts the workers. It does
      * NOT wait for collector connection or registration; Enable() flips to
      * true once registration succeeds.
+     *
+     * @warning Nothing is recorded before that first registration succeeds:
+     * NewSpan() returns noop spans and no agent, URL or system statistics are
+     * collected, so a collector whose agent port (9991) alone is unreachable
+     * yields zero spans even though the span and stat ports are open. The
+     * registration is retried indefinitely, and the agent logs an INFO line
+     * every 30 seconds while it waits, naming this consequence. This differs
+     * from the Java agent, which sends spans while registration retries in
+     * the background.
      *
      * @return true when the agent was launched and installed as the global
      * agent — obtain the handle with GlobalAgent(). false on a configuration

@@ -1770,6 +1770,13 @@ namespace pinpoint {
         ExponentialBackoff retry_backoff(retry_interval, 1.0,
                                          tuning_.reconnect_randomization_factor,
                                          retry_interval * 2);
+        // Tracing is off for the whole wait (NewSpan() is a noop, no stats are
+        // collected), and the per-attempt failure lines say nothing about that
+        // consequence. Report it periodically so an operator watching a silent
+        // agent — e.g. one whose agent port alone is blocked — can tell this
+        // wait apart from a healthy but idle agent.
+        const auto started = std::chrono::steady_clock::now();
+        auto next_log = started + tuning_.registration_wait_log_interval;
         while (!agent_->isExiting()) {
             try {
                 if (send_agent_info_once()) {
@@ -1778,6 +1785,13 @@ namespace pinpoint {
             } CATCH_AND_LOG("register agent")
             if (wait_agent_info_until(std::chrono::steady_clock::now() + retry_backoff.next_delay())) {
                 return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_log) {
+                LOG_INFO("still waiting for agent registration after {}ms: tracing stays disabled "
+                         "(NewSpan is a noop and no stats are collected) until the collector accepts AgentInfo",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count());
+                next_log = now + tuning_.registration_wait_log_interval;
             }
         }
         return false;

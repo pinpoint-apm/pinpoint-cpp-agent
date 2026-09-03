@@ -855,8 +855,9 @@ private:
 // GrpcAgent whose registerAgent() is a counting stub, for AgentInfo scheduler tests
 class CountingAgentInfoGrpcAgent : public GrpcAgent {
 public:
-    CountingAgentInfoGrpcAgent(std::shared_ptr<const Config> config, GrpcRequestStatus result)
-        : GrpcAgent(std::move(config)), result_(result) {}
+    CountingAgentInfoGrpcAgent(std::shared_ptr<const Config> config, GrpcRequestStatus result,
+                               const GrpcClientTuning& tuning = {})
+        : GrpcAgent(std::move(config), tuning), result_(result) {}
 
     GrpcRequestStatus registerAgent() override {
         ++calls_;
@@ -3876,6 +3877,29 @@ TEST_F(GrpcMockTest, GrpcAgentPromptOnDoneLogsNoWarning) {
     run_ping_finish_with_held_on_done(*mock_agent_service_, tuning, std::chrono::milliseconds(0), &log);
     EXPECT_EQ(log.find("still waiting"), std::string::npos) << log;
     EXPECT_EQ(log.find("[warning]"), std::string::npos) << log;
+}
+
+TEST_F(GrpcMockTest, GrpcAgentLogsPeriodicallyWhileWaitingForRegistration) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    GrpcClientTuning tuning;
+    tuning.registration_wait_log_interval = std::chrono::milliseconds(50);
+
+    CountingAgentInfoGrpcAgent grpc_agent(cfg, SEND_FAIL, tuning);
+    grpc_agent.setAgentService(mock_agent_service_.get());
+
+    std::string log;
+    {
+        LogCapture capture;
+        ScopedWorker registrar([this] { mock_agent_service_->setExiting(true); },
+                               [&grpc_agent] { grpc_agent.registerAgentWithRetry(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        mock_agent_service_->setExiting(true);
+        registrar.join();
+        log = capture.text();
+    }
+    // Timing slack: at least half of the ~6 intervals must have been reported.
+    EXPECT_GE(LogCapture::count(log, "still waiting for agent registration"), 3u) << log;
 }
 
 } // namespace pinpoint

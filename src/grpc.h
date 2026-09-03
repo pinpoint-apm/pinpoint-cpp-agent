@@ -97,6 +97,11 @@ namespace pinpoint {
         /// Interval between WARN lines while a worker waits, with no upper
         /// bound, for a stream's OnDone (see GrpcClient::await_stream_done).
         std::chrono::milliseconds stream_wait_warn_interval{3000};
+        /// Interval between INFO lines while boot registration retries, with
+        /// no upper bound, for the collector to accept the first AgentInfo
+        /// (see GrpcAgent::registerAgentWithRetry). Tracing stays off for the
+        /// whole wait, so the log must say why nothing is being recorded.
+        std::chrono::milliseconds registration_wait_log_interval{30000};
         /// Bounded wait for a stream write to complete (for the ping stream:
         /// write + server pong) before cancellation is requested and the
         /// worker begins stream cleanup.
@@ -666,6 +671,9 @@ namespace pinpoint {
         /// @brief Boot-phase registration: sends AgentInfo repeatedly until the
         /// collector accepts it. Blocks the caller (the agent's init thread);
         /// stopAgentInfo() or agent exit interrupts the retry wait.
+        /// Reports the wait with an INFO line every
+        /// tuning_.registration_wait_log_interval, since NewSpan() is a noop
+        /// and no stats are collected until this returns true.
         /// @return true once registration succeeded, false when stopped first.
         bool registerAgentWithRetry();
 
