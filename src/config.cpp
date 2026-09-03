@@ -43,7 +43,70 @@
 #include "config.h"
 #include "object_name.h"
 
+namespace YAML {
+    // One `Span.IgnoreErrors` entry: `{ name: <exact error name>,
+    // message_contains: <substring> }`. Both keys are optional (an absent one
+    // matches anything) and, like every other config key, matched
+    // case-insensitively; unknown keys are ignored. A non-map entry fails the
+    // decode, which yaml-cpp reports as the BadConversion get_yaml() logs
+    // before falling back to the current value.
+    template <>
+    struct convert<pinpoint::IgnoreErrorRule> {
+        static Node encode(const pinpoint::IgnoreErrorRule& rule) {
+            Node node(NodeType::Map);
+            node["Name"] = rule.name;
+            node["MessageContains"] = rule.message_contains;
+            return node;
+        }
+
+        static bool decode(const Node& node, pinpoint::IgnoreErrorRule& rule) {
+            if (!node.IsMap()) {
+                return false;
+            }
+            for (const auto& kv : node) {
+                if (!kv.first.IsScalar() || !kv.second.IsScalar()) {
+                    return false;
+                }
+                const auto& key = kv.first.Scalar();
+                if (absl::EqualsIgnoreCase(key, "Name")) {
+                    rule.name = kv.second.Scalar();
+                } else if (absl::EqualsIgnoreCase(key, "MessageContains") ||
+                           absl::EqualsIgnoreCase(key, "Message_Contains")) {
+                    rule.message_contains = kv.second.Scalar();
+                }
+            }
+            return true;
+        }
+    };
+}  // namespace YAML
+
 namespace pinpoint {
+
+    bool is_ignored_error(const std::vector<IgnoreErrorRule>& rules,
+                          const std::string_view error_name, const std::string_view error_message) {
+        return std::any_of(rules.begin(), rules.end(), [&](const IgnoreErrorRule& rule) {
+            // An empty field is a wildcard, so a rule is "name and/or
+            // message" — Java's class-name / exception-message@contains
+            // matchers, ANDed the same way.
+            return (rule.name.empty() || rule.name == error_name) &&
+                   (rule.message_contains.empty() || absl::StrContains(error_message, rule.message_contains));
+        });
+    }
+
+    // Drops rules that match everything (both fields empty): silencing every
+    // error is never what an operator meant by an ignore list, and a typo in
+    // the key names would otherwise produce exactly that.
+    static std::vector<IgnoreErrorRule> drop_empty_rules(std::vector<IgnoreErrorRule> rules) {
+        const auto end = std::remove_if(rules.begin(), rules.end(), [](const IgnoreErrorRule& r) {
+            return r.name.empty() && r.message_contains.empty();
+        });
+        if (end != rules.end()) {
+            LOG_WARN("ignoring {} Span.IgnoreErrors rule(s) without a name or a message substring",
+                     std::distance(end, rules.end()));
+            rules.erase(end, rules.end());
+        }
+        return rules;
+    }
 
     // Returns the effective env var prefix for the options: the configured
     // one, or the default when unset.
@@ -302,6 +365,9 @@ namespace pinpoint {
     static void get_into(const YAML::Node& y, std::string_view key, size_t& v) {
         v = static_cast<size_t>(get_yaml(y, key, static_cast<int>(v), "int"));
     }
+    static void get_into(const YAML::Node& y, std::string_view key, std::vector<IgnoreErrorRule>& v) {
+        v = drop_empty_rules(get_yaml(y, key, v, "ignore error rule vector"));
+    }
 
     // ---- Configuration field table ------------------------------------
     //
@@ -315,7 +381,8 @@ namespace pinpoint {
     using FieldGetter = const T& (*)(const Config&);
     using FieldRef = std::variant<FieldGetter<bool>, FieldGetter<int>, FieldGetter<double>,
                                   FieldGetter<size_t>, FieldGetter<std::string>,
-                                  FieldGetter<std::vector<std::string>>>;
+                                  FieldGetter<std::vector<std::string>>,
+                                  FieldGetter<std::vector<IgnoreErrorRule>>>;
 
     struct ConfigField {
         std::string_view path;
@@ -380,6 +447,7 @@ namespace pinpoint {
         {"Span.MaxEventDepth", REF(span.max_event_depth), RELOAD, env::SPAN_MAX_EVENT_DEPTH},
         {"Span.MaxEventSequence", REF(span.max_event_sequence), RELOAD, env::SPAN_MAX_EVENT_SEQUENCE},
         {"Span.EventChunkSize", REF(span.event_chunk_size), RELOAD, env::SPAN_EVENT_CHUNK_SIZE},
+        {"Span.IgnoreErrors", REF(span.ignore_errors), RELOAD, env::SPAN_IGNORE_ERRORS},
         {"Http.CollectUrlStat", REF(http.url_stat.enable), FIXED, env::HTTP_COLLECT_URL_STAT},
         {"Http.UrlStatLimit", REF(http.url_stat.limit), FIXED, env::HTTP_URL_STAT_LIMIT},
         {"Http.UrlStatQueueSize", REF(http.url_stat.queue_size), FIXED, env::HTTP_URL_STAT_QUEUE_SIZE},
@@ -456,6 +524,21 @@ namespace pinpoint {
     static void env_into(const ResolvedEnv& e, size_t& v) {
         v = static_cast<size_t>(
             safe_env_parse(stoi_, "Invalid integer", e.name.c_str(), e.value, static_cast<int>(v)));
+    }
+    static void env_into(const ResolvedEnv& e, std::vector<IgnoreErrorRule>& v) {
+        // Flat spelling of the YAML list of maps: comma separated
+        // "<name>[@<message substring>]" entries, so "@timeout" is a
+        // message-only rule. SkipEmpty for the same reason as below.
+        std::vector<IgnoreErrorRule> rules;
+        for (const std::string_view entry : absl::StrSplit(e.value, ',', absl::SkipEmpty())) {
+            const auto at = entry.find('@');
+            if (at == std::string_view::npos) {
+                rules.push_back({std::string(entry), {}});
+            } else {
+                rules.push_back({std::string(entry.substr(0, at)), std::string(entry.substr(at + 1))});
+            }
+        }
+        v = drop_empty_rules(std::move(rules));
     }
     static void env_into(const ResolvedEnv& e, std::vector<std::string>& v) {
         // SkipEmpty keeps an empty (or all-commas) variable from producing

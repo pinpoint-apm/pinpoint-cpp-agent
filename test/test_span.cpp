@@ -1807,6 +1807,92 @@ TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     EXPECT_EQ(stats.begin()->second.fail.total(), 10) << "failed histogram must count the event-only error";
 }
 
+// ========== Span.IgnoreErrors Tests ==========
+
+namespace {
+    // Builds the PSpan the collector would see from the last recorded chunk.
+    v1::PSpan* last_recorded_pspan(MockAgentService& agent, google::protobuf::Arena& arena) {
+        if (agent.recorded_spans_.empty()) {
+            return nullptr;
+        }
+        return build_grpc_span(std::move(agent.recorded_spans_.back()), &arena);
+    }
+}
+
+// The C++ counterpart of Java's profiler.ignore-error-handler: a matched error
+// is still recorded as exceptionInfo, it just does not fail the transaction.
+TEST_F(SpanTest, SpanIgnoreErrorsKeepsExceptionInfoWithoutErrTest) {
+    mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.SetError("NotFound", "no such user");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0) << "an ignored error must not fail the span";
+    ASSERT_TRUE(pspan->has_exceptioninfo()) << "the error is still reported, only unmarked";
+    EXPECT_EQ(pspan->exceptioninfo().stringvalue().value(), "no such user");
+    EXPECT_GE(mock_agent_service_->getCachedErrorId("NotFound"), 0);
+}
+
+TEST_F(SpanTest, SpanIgnoreErrorsUnregisteredNameStillMarksErrTest) {
+    mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.SetError("SQLException", "connection refused");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 1) << "a name outside the ignore list must still fail the span";
+    EXPECT_TRUE(pspan->has_exceptioninfo());
+}
+
+// A rule with only message_contains matches any name, like Java's
+// exception-message@contains matcher on its own.
+TEST_F(SpanTest, SpanIgnoreErrorsMessageContainsTest) {
+    mock_agent_service_->mutableConfig()->span.ignore_errors = {{"", "canceled by client"}};
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.SetError("RuntimeError", "request canceled by client");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0);
+    EXPECT_TRUE(pspan->has_exceptioninfo());
+}
+
+// Both SetError paths share shouldMarkError(), so the span-event path (which
+// propagates into PSpan.err and the URL stat failure flag) honors it too.
+TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
+    mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.SetStatusCode(200);
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    auto se = span.NewSpanEvent("db-query");
+    se->SetError("NotFound", "no such row");
+    se->EndEvent();
+    span.EndSpan();
+
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_);
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0);
+    ASSERT_EQ(pspan->spanevent_size(), 1);
+    EXPECT_TRUE(pspan->spanevent(0).has_exceptioninfo())
+        << "the event still carries the exception, only the span is unmarked";
+}
+
 // ========== SpanChunk Optimize Multi-Event Test ==========
 
 TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {

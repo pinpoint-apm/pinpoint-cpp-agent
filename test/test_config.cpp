@@ -687,6 +687,48 @@ sampling:
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 12.5) << "mixed-case double key should resolve";
 }
 
+// Span.IgnoreErrors is a list of maps, so it needs its own yaml-cpp decoder;
+// this pins the accepted spellings and the all-empty rule guard.
+TEST_F(ConfigTest, SpanIgnoreErrorsYamlTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  IgnoreErrors:
+    - name: "NotFound"
+    - message_contains: "canceled by client"
+    - name: "HttpError"
+      MessageContains: "404"
+    - {}
+)");
+
+    auto config = make_config();
+
+    ASSERT_EQ(config->span.ignore_errors.size(), 3u) << "the rule with no matcher must be dropped";
+    EXPECT_EQ(config->span.ignore_errors[0], (IgnoreErrorRule{"NotFound", ""}));
+    EXPECT_EQ(config->span.ignore_errors[1], (IgnoreErrorRule{"", "canceled by client"}));
+    EXPECT_EQ(config->span.ignore_errors[2], (IgnoreErrorRule{"HttpError", "404"}));
+
+    EXPECT_TRUE(is_ignored_error(config->span.ignore_errors, "NotFound", "anything"));
+    EXPECT_TRUE(is_ignored_error(config->span.ignore_errors, "AnyError", "request canceled by client"));
+    EXPECT_TRUE(is_ignored_error(config->span.ignore_errors, "HttpError", "status 404"));
+    EXPECT_FALSE(is_ignored_error(config->span.ignore_errors, "HttpError", "status 500"))
+        << "name and message of one rule are ANDed";
+    EXPECT_FALSE(is_ignored_error(config->span.ignore_errors, "SQLException", "connection refused"));
+}
+
+// The flat env spelling: comma separated "<name>[@<message substring>]".
+TEST_F(ConfigTest, SpanIgnoreErrorsEnvTest) {
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "MyApp", 1);
+    setenv(full_env(env::SPAN_IGNORE_ERRORS).c_str(), "NotFound,@canceled,HttpError@404,", 1);
+
+    auto config = make_config();
+
+    ASSERT_EQ(config->span.ignore_errors.size(), 3u);
+    EXPECT_EQ(config->span.ignore_errors[0], (IgnoreErrorRule{"NotFound", ""}));
+    EXPECT_EQ(config->span.ignore_errors[1], (IgnoreErrorRule{"", "canceled"}));
+    EXPECT_EQ(config->span.ignore_errors[2], (IgnoreErrorRule{"HttpError", "404"}));
+}
+
 TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set YAML config
     set_config_string(partial_config_yaml_);

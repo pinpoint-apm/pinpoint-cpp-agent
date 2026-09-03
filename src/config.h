@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <sys/types.h>
@@ -110,6 +111,7 @@ namespace pinpoint {
         constexpr const char* SPAN_MAX_EVENT_DEPTH = "SPAN_MAX_EVENT_DEPTH";
         constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "SPAN_MAX_EVENT_SEQUENCE";
         constexpr const char* SPAN_EVENT_CHUNK_SIZE = "SPAN_EVENT_CHUNK_SIZE";
+        constexpr const char* SPAN_IGNORE_ERRORS = "SPAN_IGNORE_ERRORS";
         constexpr const char* SPAN_BATCH_SIZE = "SPAN_BATCH_SIZE";
         constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "SPAN_BATCH_FLUSH_INTERVAL_MS";
         constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "SPAN_BATCH_COLLECT_DEADLINE_MS";
@@ -153,6 +155,29 @@ namespace pinpoint {
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
         constexpr const char* ENABLE_CONFIG_FILE_WATCHER = "ENABLE_CONFIG_FILE_WATCHER";
     }
+
+    /**
+     * @brief One `Span.IgnoreErrors` rule: an error matching it is recorded
+     *        (exceptionInfo) but does not mark the span as failed.
+     *
+     * C++ counterpart of Java's `profiler.ignore-error-handler.<id>.*`,
+     * limited to its two leaf matchers: `class-name` (exact) and
+     * `exception-message@contains` (substring). An empty field matches
+     * anything, so a rule with both empty is dropped at load time — it would
+     * silence every error.
+     */
+    struct IgnoreErrorRule {
+        std::string name;              // exact error name, empty = any
+        std::string message_contains;  // error message substring, empty = any
+    };
+
+    inline bool operator==(const IgnoreErrorRule& a, const IgnoreErrorRule& b) {
+        return a.name == b.name && a.message_contains == b.message_contains;
+    }
+
+    /// @brief Whether @p rules suppress the error-mark for this error.
+    bool is_ignored_error(const std::vector<IgnoreErrorRule>& rules,
+                          std::string_view error_name, std::string_view error_message);
 
     /**
      * @brief Aggregated runtime configuration used by the Pinpoint agent.
@@ -282,6 +307,9 @@ namespace pinpoint {
             // value assigned to size_t would wrap past the minimum check in
             // Config::check(), silently disabling span-event chunk flushing.
             int event_chunk_size = defaults::SPAN_EVENT_CHUNK_SIZE;
+            // Errors matched here are recorded but never mark the span as
+            // failed (see is_ignored_error / SpanImpl::markSpanError).
+            std::vector<IgnoreErrorRule> ignore_errors;
         } span;
 
         struct {

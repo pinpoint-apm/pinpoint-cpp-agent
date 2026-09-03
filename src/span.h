@@ -534,9 +534,24 @@ namespace pinpoint {
             bool isStatusFail(int status) const;
             // Single point that flips SpanData::err_: span-level SetError,
             // 5xx status codes, and SpanEventImpl::SetError all route here
-            // (Java ORs every recordException into the shared errorCode). If
-            // an ignore-error filter is ever added, it belongs in this helper.
+            // (Java ORs every recordException into the shared errorCode).
             void markSpanError() { data_->setErr(1); }
+            // The overload both SetError paths use, so the Span.IgnoreErrors
+            // filter is applied in exactly one place. A status code carries
+            // no error name or message, so SetStatusCode keeps the plain
+            // overload — Java's ignore handler is throwable-only too.
+            void markSpanError(std::string_view error_name, std::string_view error_message) {
+                if (shouldMarkError(error_name, error_message)) {
+                    markSpanError();
+                }
+            }
+            // False when the error matches a Span.IgnoreErrors rule: it is
+            // still recorded as exceptionInfo, it just does not fail the
+            // transaction (Java's profiler.ignore-error-handler). config_ is
+            // never null, so no fallback is needed here.
+            bool shouldMarkError(std::string_view error_name, std::string_view error_message) const {
+                return !is_ignored_error(config_->span.ignore_errors, error_name, error_message);
+            }
             // Exceptions only drain at EndSpan (unlike span events, which
             // chunk-flush mid-span), so a retry loop on a long-lived span
             // would grow this without bound — each entry carries a full

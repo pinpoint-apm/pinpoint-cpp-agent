@@ -214,8 +214,50 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 | `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. |
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
+| `Span.IgnoreErrors` | `PINPOINT_CPP_SPAN_IGNORE_ERRORS` | list of `{ Name, MessageContains }` | empty | Errors matching a rule are still reported (`exceptionInfo`) but do not mark the transaction as failed. See below. |
 
 > Negative or invalid values are coerced to safe defaults during `make_config()`.
+
+### Ignoring Errors (`Span.IgnoreErrors`)
+
+The C++ counterpart of the Java agent's
+`profiler.ignore-error-handler.<id>.class-name|exception-message@contains`,
+covering its two leaf matchers. Typical use is keeping 4xx-style business
+exceptions out of the failure statistics while still recording them.
+
+Each rule has two optional fields; an omitted field matches anything, and the
+two are **ANDed** within a rule. Rules are ORed: an error is ignored when any
+rule matches. A rule with neither field set is dropped at load time (it would
+silence every error) with a warning.
+
+| Field | Matching |
+|---|---|
+| `Name` | Exact match against the error name passed to `SetError(name, message)`. |
+| `MessageContains` | Substring (case-sensitive) of the error message. |
+
+```yaml
+Span:
+  IgnoreErrors:
+    - Name: "NotFound"                        # any NotFound, whatever the message
+    - MessageContains: "canceled by client"   # any error whose message contains it
+    - Name: "HttpError"                       # both must match
+      MessageContains: "404"
+```
+
+The environment variable takes the same list flattened to comma-separated
+`<name>[@<message substring>]` entries; a leading `@` makes a message-only
+rule:
+
+```
+PINPOINT_CPP_SPAN_IGNORE_ERRORS="NotFound,@canceled by client,HttpError@404"
+```
+
+Both `Span.SetError()` and `SpanEvent.SetError()` honour the list, so an
+ignored error recorded on a span event neither sets `PSpan.err` nor flags the
+URL statistics entry as failed. `Span.SetStatusCode()` is unaffected — it
+carries no error name or message, and Java's ignore handler is likewise
+throwable-only. Java's `nested` / `parent` matchers and the `ErrorCategory`
+bitmask are not implemented.
 
 ---
 
@@ -309,6 +351,7 @@ changing them requires an application restart.
 | Logging | `Log.Level`, `Log.FilePath`, `Log.MaxFileSize` | **Yes** |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | Per-span limits | `Span.MaxEventDepth`, `Span.MaxEventSequence`, `Span.EventChunkSize` | **Yes** (spans created after the reload) |
+| Ignored errors | `Span.IgnoreErrors` | **Yes** (spans created after the reload) |
 | Callstack capture | `EnableCallstackTrace` | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
