@@ -688,13 +688,9 @@ TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
     MockCallStackReader reader;
     reader.AddFrame("module", "function", "file.cpp", 42);
 
-    span.NewSpanEvent("failing-event");
-    auto* se = span.getSpanData()->topSpanEvent();
-    ASSERT_NE(se, nullptr);
-
-    const auto count_exception_ids = [se] {
+    const auto count_exception_ids = [](SpanEventImpl* event) {
         size_t count = 0;
-        for (const auto& [key, data] : se->getAnnotations()->getAnnotations()) {
+        for (const auto& [key, data] : event->getAnnotations()->getAnnotations()) {
             if (key == ANNOTATION_EXCEPTION_ID) {
                 count++;
             }
@@ -702,17 +698,29 @@ TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
         return count;
     };
 
-    // Fill the buffer to its cap (SpanImpl::kMaxBufferedExceptions).
+    span.NewSpanEvent("failing-event");
+    auto* se = span.getSpanData()->topSpanEvent();
+    ASSERT_NE(se, nullptr);
+
+    // Fill the buffer to its cap (SpanImpl::kMaxBufferedExceptions). All of
+    // them are one cause chain on this event, so the id is annotated once.
     constexpr size_t kMaxBufferedExceptions = 100;
     for (size_t i = 0; i < kMaxBufferedExceptions; i++) {
         se->SetError("Error", "boom", reader);
     }
-    EXPECT_EQ(count_exception_ids(), kMaxBufferedExceptions);
+    EXPECT_EQ(count_exception_ids(se), 1u)
+        << "One chain on one event annotates its exception id once";
 
-    se->SetError("Error", "one-too-many", reader); // dropped: buffer is full
-    EXPECT_EQ(count_exception_ids(), kMaxBufferedExceptions)
+    // A different event starts its own chain, but the buffer is full, so the
+    // exception is dropped and must leave no id behind.
+    span.NewSpanEvent("dropped-event");
+    auto* dropped = span.getSpanData()->topSpanEvent();
+    ASSERT_NE(dropped, nullptr);
+    dropped->SetError("Error", "one-too-many", reader);
+    EXPECT_EQ(count_exception_ids(dropped), 0u)
         << "A dropped exception must not add an exception-id annotation";
 
+    dropped->EndEvent();
     se->EndEvent();
     span.EndSpan();
 }

@@ -1113,7 +1113,9 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     EXPECT_EQ(exception.spanid(), root_span_id);
     EXPECT_EQ(exception.uritemplate(), "/orders/{id}");
     ASSERT_EQ(exception.exceptions_size(), 1);
-    EXPECT_EQ(exception.exceptions(0).exceptionclassname(), "orders");
+    EXPECT_EQ(exception.exceptions(0).exceptionclassname(), "DatabaseError")
+        << "The class name is the SetError name, not the top frame's module";
+    EXPECT_EQ(exception.exceptions(0).exceptiondepth(), 0);
     EXPECT_EQ(exception.exceptions(0).exceptionmessage(), "connection refused");
     ASSERT_EQ(exception.exceptions(0).stacktraceelement_size(), 2);
     EXPECT_EQ(exception.exceptions(0).stacktraceelement(1).methodname(), "execute");
@@ -3501,7 +3503,9 @@ TEST_F(AgentIntegrationTest, FlushesExceptionMetadataForAsyncSpans) {
     // fallback value.
     EXPECT_EQ(exception->message.uritemplate(), "NULL");
     ASSERT_EQ(exception->message.exceptions_size(), 1);
-    EXPECT_EQ(exception->message.exceptions(0).exceptionclassname(), "worker");
+    EXPECT_EQ(exception->message.exceptions(0).exceptionclassname(), "AsyncJobError")
+        << "The class name is the SetError name, not the top frame's module";
+    EXPECT_EQ(exception->message.exceptions(0).exceptiondepth(), 0);
     EXPECT_EQ(exception->message.exceptions(0).exceptionmessage(),
               "async job failed");
     ASSERT_EQ(exception->message.exceptions(0).stacktraceelement_size(), 1);

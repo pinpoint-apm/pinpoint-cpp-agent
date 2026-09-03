@@ -261,7 +261,7 @@ namespace pinpoint {
         }
 
         try {
-            auto callstack = std::make_unique<CallStack>(error_message);
+            auto callstack = std::make_unique<CallStack>(error_message, error_name, start_time_);
             reader.ForEach([&](std::string_view module, std::string_view function, std::string_view file, int line) {
                 callstack->push(module, function, file, line);
                 return;
@@ -283,7 +283,7 @@ namespace pinpoint {
         }
 
         try {
-            auto callstack = std::make_unique<CallStack>(error_message);
+            auto callstack = std::make_unique<CallStack>(error_message, error_name, start_time_);
             for (const auto& frame : frames) {
                 callstack->push(frame.module, frame.function, frame.file, frame.line);
             }
@@ -294,10 +294,15 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::recordException(std::unique_ptr<CallStack> callstack) {
-        auto exception = std::make_unique<Exception>(std::move(callstack));
+        // Repeated call-stack SetError calls on one event are the cause chain
+        // of a single exception (Java records them under one exceptionId with
+        // an increasing depth), so they reuse the id of the first link and are
+        // annotated only once.
+        auto exception = std::make_unique<Exception>(std::move(callstack), exception_id_);
         const auto exception_id = exception->getId();
-        if (span_->addException(std::move(exception))) {
+        if (span_->addException(std::move(exception)) && exception_id_ == 0) {
             annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
+            exception_id_ = exception_id;
         }
     }
 

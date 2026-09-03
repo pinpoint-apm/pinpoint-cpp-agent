@@ -37,9 +37,22 @@ namespace pinpoint {
     /// @brief Collects stack frames and contextual information for a captured exception.
     class CallStack {
     public:
-        CallStack(std::string_view error_message) : error_message_(truncated(error_message, kMaxErrorMessageLength)),
-                                               error_time_{to_milli_seconds(std::chrono::system_clock::now())},
-                                               stack_{} {}
+        /**
+         * @brief Captures an error message, its class name and its start time.
+         *
+         * @param error_message Message recorded with the exception.
+         * @param error_name Exception class name, as the caller named it
+         *        (PException.exceptionClassName). Empty falls back to the top
+         *        frame's module in the metadata builder.
+         * @param error_time Start time (epoch ms) of the span event the
+         *        exception belongs to, matching Java's ExceptionWrapper
+         *        startTime. 0 stamps the wall clock instead.
+         */
+        CallStack(std::string_view error_message, std::string_view error_name = {}, int64_t error_time = 0)
+            : error_message_(truncated(error_message, kMaxErrorMessageLength)),
+              error_name_(truncated(error_name, kMaxFrameStringLength)),
+              error_time_{error_time > 0 ? error_time : to_milli_seconds(std::chrono::system_clock::now())},
+              stack_{} {}
 
         /// @brief Adds a frame to the call stack.
         void push(std::string_view module, std::string_view function, std::string_view file, int line) {
@@ -65,6 +78,11 @@ namespace pinpoint {
          */
         const std::string& getErrorMessage() const {
             return error_message_;
+        }
+
+        /// @brief Returns the recorded exception class name (may be empty).
+        const std::string& getErrorName() const {
+            return error_name_;
         }
 
         /// @brief Returns the timestamp of the error in milliseconds.
@@ -102,6 +120,7 @@ namespace pinpoint {
         }
 
         std::string error_message_;
+        std::string error_name_;
         int64_t error_time_;
         std::vector<StackFrame> stack_;
     };
@@ -109,7 +128,16 @@ namespace pinpoint {
     /// @brief Wraps a captured call stack with an identifier suitable for transmission.
     class Exception {
     public:
-        Exception(std::unique_ptr<CallStack> callstack) : id_{exception_id_gen.fetch_add(1)}, callstack_(std::move(callstack)) {}
+        /**
+         * @brief Wraps a call stack, optionally joining an existing chain.
+         *
+         * @param callstack Captured frames.
+         * @param chain_id Id of the exception chain this call stack continues
+         *        (Java's per-context exceptionId). 0 starts a new chain, which
+         *        generates the next id.
+         */
+        Exception(std::unique_ptr<CallStack> callstack, int64_t chain_id = 0)
+            : id_{chain_id > 0 ? chain_id : exception_id_gen.fetch_add(1)}, callstack_(std::move(callstack)) {}
 
         /// @brief Returns the generated exception identifier.
         int64_t getId() const { return id_; }

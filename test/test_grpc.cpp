@@ -25,6 +25,8 @@
 #include <unistd.h>
 
 #include "../src/grpc.h"
+#include "../src/grpc_builders.h"
+#include "../src/callstack.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
 #include "../include/pinpoint/tracer.h"
@@ -272,6 +274,63 @@ TEST_F(GrpcTest, ExceptionMetaMultipleExceptionsTest) {
 
     ExceptionMeta meta(txid, 1, "/multi", std::move(exceptions));
     EXPECT_EQ(meta.exceptions_.size(), 3u);
+}
+
+// Call stacks recorded under one chain id are the links of a single
+// exception: depth counts up from 0 in record order and the caller's error
+// name — not the top frame's module — is the class name.
+TEST_F(GrpcTest, ExceptionMetadataChainDepthTest) {
+    TraceId txid{"agent", 100, 7};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+
+    auto cause = std::make_unique<CallStack>("root cause", "IOException", 1700000000000);
+    cause->push("libdb", "connect", "db.cpp", 11);
+    auto first = std::make_unique<Exception>(std::move(cause));
+    const auto chain_id = first->getId();
+    exceptions.push_back(std::move(first));
+
+    auto wrapper = std::make_unique<CallStack>("wrapped", "SQLException", 1700000000000);
+    wrapper->push("libapp", "query", "app.cpp", 22);
+    exceptions.push_back(std::make_unique<Exception>(std::move(wrapper), chain_id));
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_exception_metadata(txid, 42, "/api/*", exceptions, &arena);
+    ASSERT_NE(wire, nullptr);
+    ASSERT_EQ(wire->exceptions_size(), 2);
+
+    EXPECT_EQ(wire->exceptions(0).exceptionid(), chain_id);
+    EXPECT_EQ(wire->exceptions(0).exceptiondepth(), 0);
+    EXPECT_EQ(wire->exceptions(0).exceptionclassname(), "IOException");
+    EXPECT_EQ(wire->exceptions(0).exceptionmessage(), "root cause");
+    EXPECT_EQ(wire->exceptions(0).starttime(), 1700000000000);
+
+    EXPECT_EQ(wire->exceptions(1).exceptionid(), chain_id);
+    EXPECT_EQ(wire->exceptions(1).exceptiondepth(), 1);
+    EXPECT_EQ(wire->exceptions(1).exceptionclassname(), "SQLException");
+}
+
+// Unrelated exceptions each start their own chain at depth 0, and a call
+// stack recorded without an error name keeps the top-frame fallback.
+TEST_F(GrpcTest, ExceptionMetadataIndependentExceptionsTest) {
+    TraceId txid{"agent", 100, 8};
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    for (int i = 0; i < 2; i++) {
+        auto cs = std::make_unique<CallStack>("error" + std::to_string(i));
+        cs->push("libmod", "fn", "f.cpp", i);
+        exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
+    }
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_exception_metadata(txid, 1, "/multi", exceptions, &arena);
+    ASSERT_EQ(wire->exceptions_size(), 2);
+
+    EXPECT_NE(wire->exceptions(0).exceptionid(), wire->exceptions(1).exceptionid());
+    EXPECT_EQ(wire->exceptions(0).exceptiondepth(), 0);
+    EXPECT_EQ(wire->exceptions(1).exceptiondepth(), 0);
+    EXPECT_EQ(wire->exceptions(0).exceptionclassname(), "libmod")
+        << "no error name falls back to the top frame's module";
+    EXPECT_GT(wire->exceptions(0).starttime(), 0)
+        << "no supplied start time stamps the wall clock";
 }
 
 // MetaData with SQL UID and Exception types

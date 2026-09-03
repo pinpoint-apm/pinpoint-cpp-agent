@@ -166,6 +166,9 @@ namespace pinpoint {
         std::string destination_id_;
         int32_t error_func_id_{0};
         std::string error_string_;
+        // Id shared by every call stack recorded on this event (one exception
+        // chain); 0 until the first one is buffered.
+        int64_t exception_id_{0};
         int32_t async_id_{NONE_ASYNC_ID};
         int32_t async_seq_gen_{0};
         int32_t api_id_{0};

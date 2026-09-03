@@ -110,6 +110,8 @@ The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry 
 - The call-stack overload `SetError(name, message, CallStackReader&)` exists only on `SpanEvent`, and records frames only when `EnableCallstackTrace: true` is set in the configuration (default `false`).
 - The error **message** is abbreviated to 256 bytes, matching the Java agent's `StringUtils.abbreviate(message, 256)`: a longer message is cut at the last whole UTF-8 character within 256 bytes and gains a `...(<original length>)` suffix. Put anything longer (a full SQL statement, a response body) in its own annotation, not in the error message.
 - At most **100 exceptions with call stacks are buffered per span**; further ones are dropped. Buffered exceptions are transmitted only at `EndSpan()` — a span kept open for a very long time delays them and grows memory.
+- Every call-stack `SetError()` on the **same span event** is treated as one cause chain, matching the Java agent: the recorded exceptions share a single `exceptionId`, the annotation carrying that id is written once, and `PException.exceptionDepth` counts up **from 0** in record order (a single exception is depth 0). Call stacks recorded on *different* span events are independent exceptions, each with its own id and depth 0.
+- On the wire, `PException.exceptionClassName` is the `name` argument of `SetError(name, message, ...)`; only a call stack recorded without a name falls back to the top frame's module. `PException.startTime` is the **span event's start time** (including one overridden with `SetStartTime()`), not the moment the frames were collected.
 
 ## 10. Clock and `SetStartTime()` Caveats
 

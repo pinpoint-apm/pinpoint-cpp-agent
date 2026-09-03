@@ -377,24 +377,50 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
 TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;
-    
+
     reader.AddFrame("/lib/app.so", "testFunc", "/src/test.cpp", 1);
-    
-    auto before_time = to_milli_seconds(std::chrono::system_clock::now());
-    
+
     span_event.SetError("TimeTestError", "Testing timestamp", reader);
-    
-    auto after_time = to_milli_seconds(std::chrono::system_clock::now());
-    
+
     // Verify exception
     const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
-    
+
     const auto& callstack = exceptions[0]->getCallStack();
-    
-    int64_t error_time = callstack.getErrorTime();
-    EXPECT_GE(error_time, before_time) << "Error time should be after or equal to before time";
-    EXPECT_LE(error_time, after_time) << "Error time should be before or equal to after time";
+
+    // The exception is timed by the span event it belongs to (Java's
+    // ExceptionWrapper startTime), not by when the frames were collected.
+    EXPECT_EQ(callstack.getErrorTime(), span_event.getStartTime())
+        << "Error time should be the span event start time";
+    EXPECT_EQ(callstack.getErrorName(), "TimeTestError")
+        << "Error name should be kept as the exception class name";
+}
+
+// Repeated call-stack SetError calls on one event form a cause chain: they
+// share the first exception id, so the metadata builder can number them.
+TEST_F(SpanEventTest, SetErrorWithCallStackChainSharesExceptionIdTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    span_event.SetError("SQLException", "wrapped",
+                        std::vector<CallStackFrame>{{"libapp", "query", "app.cpp", 22}});
+    span_event.SetError("IOException", "root cause",
+                        std::vector<CallStackFrame>{{"libdb", "connect", "db.cpp", 11}});
+
+    const auto& exceptions = test_span_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 2u);
+    EXPECT_EQ(exceptions[0]->getId(), exceptions[1]->getId())
+        << "Chained call stacks should share one exception id";
+    EXPECT_EQ(exceptions[0]->getCallStack().getErrorName(), "SQLException");
+    EXPECT_EQ(exceptions[1]->getCallStack().getErrorName(), "IOException");
+
+    // Only the first link stamps the annotation; the id is annotated once.
+    int annotation_count = 0;
+    for (const auto& [key, value] : span_event.getAnnotations()->getAnnotations()) {
+        if (key == ANNOTATION_EXCEPTION_ID) {
+            annotation_count++;
+        }
+    }
+    EXPECT_EQ(annotation_count, 1) << "The exception id should be annotated once per chain";
 }
 
 // ========== Async Operations Tests ==========
