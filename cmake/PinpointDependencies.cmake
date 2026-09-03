@@ -71,7 +71,7 @@ else()
   FetchContent_Declare(
     gRPC
     GIT_REPOSITORY https://github.com/grpc/grpc.git
-    GIT_TAG        v1.76.0
+    GIT_TAG        v1.81.1
   )
   set(FETCHCONTENT_QUIET OFF)
   set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)

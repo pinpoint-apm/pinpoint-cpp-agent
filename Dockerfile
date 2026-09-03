@@ -14,7 +14,7 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BAZEL_VERSION=7.4.1
-ARG VCPKG_BASELINE=b781af668027bbf77f2f827f47b5c6cd8d825c08
+ARG VCPKG_BASELINE=3a7f104b742b48a79c6a92cdbc0b6ef23987cc60
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
