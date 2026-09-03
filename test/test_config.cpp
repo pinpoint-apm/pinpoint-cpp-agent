@@ -157,7 +157,7 @@ Http:
   CollectUrlStat: true
   UrlStatLimit: 2048
   UrlStatQueueSize: 4096
-  UrlStatEnableTrimPath: false
+  UrlStatEnableTrimPath: true
   UrlStatTrimPathDepth: 3
   UrlStatMethodPrefix: true
   
@@ -289,7 +289,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_FALSE(config->http.url_stat.enable) << "URL stat should be disabled by default";
     EXPECT_EQ(config->http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "Default URL stat queue size should be 1024";
-    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Enable trim path should be false by default";
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
     EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
     
@@ -406,7 +406,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_TRUE(config->http.url_stat.enable) << "URL stat enable should match YAML";
     EXPECT_EQ(config->http.url_stat.limit, 2048) << "URL stat limit should match YAML";
     EXPECT_EQ(config->http.url_stat.queue_size, 4096) << "URL stat queue size should match YAML";
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
+    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
     EXPECT_TRUE(config->http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
     
@@ -504,7 +504,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
     setenv(full_env(env::SQL_ENABLE_RAW_SQL_CACHE).c_str(), "true", 1);
     setenv(full_env(env::SQL_TRACE_BIND_VALUE).c_str(), "true", 1);
-    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "false", 1);
+    setenv(full_env(env::HTTP_URL_STAT_ENABLE_TRIM_PATH).c_str(), "true", 1);
     setenv(full_env(env::HTTP_URL_STAT_QUEUE_SIZE).c_str(), "333", 1);
     setenv(full_env(env::AGENT_INFO_REFRESH_INTERVAL_MS).c_str(), "120000", 1);
     setenv(full_env(env::AGENT_INFO_SEND_RETRY_INTERVAL_MS).c_str(), "50", 1);
@@ -539,7 +539,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled as per environment variable";
     
     // Test HTTP environment variable values
-    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
+    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
     EXPECT_EQ(config->http.url_stat.queue_size, 333) << "URL stat queue size should match environment variable";
 
     EXPECT_EQ(config->collector.agent_info.refresh_interval_ms, 120000) << "AgentInfo refresh interval should match environment variable";
@@ -1490,7 +1490,7 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
         {"Http", "CollectUrlStat", env::HTTP_COLLECT_URL_STAT,
          [](const Config& c) { return c.http.url_stat.enable; }, false, true, "CollectUrlStat"},
         {"Http", "UrlStatEnableTrimPath", env::HTTP_URL_STAT_ENABLE_TRIM_PATH,
-         [](const Config& c) { return c.http.url_stat.enable_trim_path; }, true, true, "UrlStatEnableTrimPath"},
+         [](const Config& c) { return c.http.url_stat.enable_trim_path; }, false, true, "UrlStatEnableTrimPath"},
     };
 
     const auto yaml_for = [](const BoolKey& k, const char* value) {
@@ -1556,7 +1556,7 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
 }
 
 // The boolean value parsers are shared by every key, so the accepted spellings
-// are walked once: YAML spellings against UrlStatEnableTrimPath (default true,
+// are walked once: YAML spellings against Stat.Enable (default true,
 // making a parsed false observable) and environment spellings against
 // EnableCallstackTrace (default false, making a parsed true observable).
 // Unparseable spellings fall back to the key's default.
@@ -1571,8 +1571,8 @@ TEST_F(ConfigTest, BooleanValueSpellingsTest) {
     };
     for (const auto& s : yaml_spellings) {
         SCOPED_TRACE(std::string("yaml: ") + s.text);
-        set_config_string(std::string("Http:\n  UrlStatEnableTrimPath: ") + s.text + "\n");
-        EXPECT_EQ(make_config()->http.url_stat.enable_trim_path, s.expected);
+        set_config_string(std::string("Stat:\n  Enable: ") + s.text + "\n");
+        EXPECT_EQ(make_config()->stat.enable, s.expected);
     }
 
     set_config_string("");

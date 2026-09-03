@@ -37,6 +37,10 @@
 
 namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
+    // Stand-in key for a span that recorded URL stats without a URL, so the
+    // server shows an identifiable bucket instead of an empty string
+    // (Java: URITemplate.NULL_URI, Go: "UNKNOWN_URL").
+    constexpr std::string_view URL_STAT_UNKNOWN = "UNKNOWN_URL";
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
 
     // Production intervals; UrlStats accepts overrides so tests can drive the

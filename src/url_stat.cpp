@@ -134,9 +134,14 @@ namespace pinpoint {
         }
 
         const auto tick = tick_clock.tick(us->end_time_);
+        // An empty pattern would aggregate under an unreadable empty key on
+        // the server; bucket it under the same stand-in Java/Go use.
+        const std::string_view url = us->url_pattern_.empty()
+            ? URL_STAT_UNKNOWN
+            : std::string_view{us->url_pattern_};
         const auto trimmed = config.http.url_stat.enable_trim_path
-            ? trim_url_path_view(us->url_pattern_, config.http.url_stat.trim_path_depth)
-            : TrimmedUrlPath{us->url_pattern_, false};
+            ? trim_url_path_view(url, config.http.url_stat.trim_path_depth)
+            : TrimmedUrlPath{url, false};
         auto key = UrlKey{
             build_url_stat_key(*us, trimmed, config.http.url_stat.method_prefix),
             tick};

@@ -237,6 +237,61 @@ TEST_F(UrlStatTest, SnapshotPreservesExactUntrimmedKey) {
     EXPECT_EQ(found->second.total.total(), 25);
 }
 
+TEST_F(UrlStatTest, SnapshotKeepsUriTemplateByDefault) {
+    UrlStatSnapshot snapshot;
+    Config config;  // defaults: trimming off, matching the Java agent
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/api/users/{id}", "GET", 200);
+    stat.elapsed_ = 30;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(200));
+    snapshot.add(&stat, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    ASSERT_EQ(stats.size(), 1u);
+    EXPECT_EQ(stats.begin()->first.url_, "/api/users/{id}")
+        << "the recorded URI template must be aggregated verbatim by default";
+}
+
+TEST_F(UrlStatTest, SnapshotTrimsWhenOptedIn) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = true;
+    config.http.url_stat.trim_path_depth = 1;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/api/users/123", "GET", 200);
+    stat.elapsed_ = 30;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(200));
+    snapshot.add(&stat, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    ASSERT_EQ(stats.size(), 1u);
+    EXPECT_EQ(stats.begin()->first.url_, "/api/*");
+}
+
+TEST_F(UrlStatTest, SnapshotBucketsEmptyUrlUnderUnknownConstant) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("", "GET", 200);
+    stat.elapsed_ = 5;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(300));
+    snapshot.add(&stat, config, tick_clock);
+
+    UrlStatSnapshot trimmed_snapshot;
+    Config trim_config;
+    trim_config.http.url_stat.enable_trim_path = true;
+    trimmed_snapshot.add(&stat, trim_config, tick_clock);
+
+    ASSERT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.getEachStats().begin()->first.url_, URL_STAT_UNKNOWN);
+    ASSERT_EQ(trimmed_snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(trimmed_snapshot.getEachStats().begin()->first.url_, URL_STAT_UNKNOWN)
+        << "trimming must not turn the stand-in key back into an empty string";
+}
+
 TEST_F(UrlStatTest, SnapshotTrimPrefixAndWireFormatStayExact) {
     UrlStatSnapshot snapshot;
     Config config;
