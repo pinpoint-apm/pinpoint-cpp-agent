@@ -106,7 +106,7 @@ The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry 
 
 ## 9. Error Recording and Exception Buffering
 
-- `SetError()` on the **span** marks the whole transaction as failed; `SetError()` on a **span event** marks only that step. Record at the granularity of the failure.
+- `SetError()` on the **span** marks the whole transaction as failed. `SetError()` on a **span event** records the error on that step **and also marks the transaction as failed** (`PSpan.err = 1`, URL stat failed histogram) — the same as Java, where every `recordException` is OR-ed into the shared error code. For an async span event the failure lands on that async span. There is no way to record a step error without failing the transaction; use an annotation for informational failures.
 - The call-stack overload `SetError(name, message, CallStackReader&)` exists only on `SpanEvent`, and records frames only when `EnableCallstackTrace: true` is set in the configuration (default `false`).
 - At most **100 exceptions with call stacks are buffered per span**; further ones are dropped. Buffered exceptions are transmitted only at `EndSpan()` — a span kept open for a very long time delays them and grows memory.
 

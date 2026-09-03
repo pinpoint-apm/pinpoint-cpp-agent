@@ -28,6 +28,7 @@
 #include "../src/config.h"
 #include "../src/agent_service.h"
 #include "../src/url_stat.h"
+#include "../src/grpc_builders.h"
 #include "../src/stat.h"
 #include "../src/callstack.h"
 #include "../src/noop.h"
@@ -1767,6 +1768,43 @@ TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
     EXPECT_EQ(last->getSpanData()->getErrorString(), "something went wrong");
     // The error name "Error" should have been cached
     EXPECT_GE(mock_agent_service_->getCachedErrorId("Error"), 0);
+}
+
+// An exception recorded only on a span event (DB/external call) must fail the
+// whole transaction like Java: PSpan.err == 1 and the URL stat entry counts in
+// the failed histogram, even with a 200 status.
+TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.SetStatusCode(200);
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    auto se = span.NewSpanEvent("db-query");
+    se->SetError("SQLException", "connection refused");
+    se->EndEvent();
+    span.EndSpan();
+
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_);
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto chunk = std::move(mock_agent_service_->recorded_spans_.back());
+    google::protobuf::Arena arena;
+    auto* pspan = build_grpc_span(std::move(chunk), &arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 1);
+
+    // Same flag drives the failed histogram of the URL stat snapshot.
+    UrlStatEntry entry("/api/users", "GET", 200);
+    entry.elapsed_ = 10;
+    entry.failed_ = mock_agent_service_->last_url_stat_failed_;
+    entry.end_time_ = std::chrono::system_clock::now();
+    UrlStatSnapshot snapshot;
+    Config config;
+    TickClock tick_clock(URL_STAT_TICK_INTERVAL.count());
+    snapshot.add(&entry, config, tick_clock);
+    auto& stats = snapshot.getEachStats();
+    ASSERT_EQ(stats.size(), 1u);
+    EXPECT_EQ(stats.begin()->second.fail.total(), 10) << "failed histogram must count the event-only error";
 }
 
 // ========== SpanChunk Optimize Multi-Event Test ==========

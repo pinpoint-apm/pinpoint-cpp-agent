@@ -532,6 +532,11 @@ namespace pinpoint {
             // atomic runtime load. Falls back to the agent call for spans
             // constructed without a snapshot (tests).
             bool isStatusFail(int status) const;
+            // Single point that flips SpanData::err_: span-level SetError,
+            // 5xx status codes, and SpanEventImpl::SetError all route here
+            // (Java ORs every recordException into the shared errorCode). If
+            // an ignore-error filter is ever added, it belongs in this helper.
+            void markSpanError() { data_->setErr(1); }
             // Exceptions only drain at EndSpan (unlike span events, which
             // chunk-flush mid-span), so a retry loop on a long-lived span
             // would grow this without bound — each entry carries a full

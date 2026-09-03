@@ -716,7 +716,7 @@ namespace pinpoint {
 
         data_->setErrorFuncId(agent_->cacheError(error_name));
         data_->setErrorString(error_message);
-        data_->setErr(1);
+        markSpanError();
     } CATCH_AND_LOG("set error")
 
     void SpanImpl::SetStatusCode(int status) {
@@ -724,7 +724,7 @@ namespace pinpoint {
 
         data_->getAnnotations()->AppendInt(ANNOTATION_HTTP_STATUS_CODE, status);
         if (isStatusFail(status)) {
-            data_->setErr(1);
+            markSpanError();
         }
     }
 
@@ -762,7 +762,10 @@ namespace pinpoint {
         }
         url_stat_->end_time_ = data_->getEndTime();
         url_stat_->elapsed_ = data_->getElapsed();
-        url_stat_->failed_ = isStatusFail(url_stat_->status_code_);
+        // A span-event exception (DB/external call) fails the transaction too,
+        // matching Java's URI stat status = (errorCode == 0).
+        url_stat_->failed_ = isStatusFail(url_stat_->status_code_) ||
+                             data_->getErr() != SPAN_ERR_NONE;
         agent_->recordUrlStat(std::move(*url_stat_), *config_);
         url_stat_.reset();
     }
