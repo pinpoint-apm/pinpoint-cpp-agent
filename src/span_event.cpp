@@ -245,7 +245,7 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) try {
         if (warnIfFinished()) return;
         error_func_id_ = agent_->cacheError(error_name);
-        error_string_ = error_message;
+        error_string_ = abbreviateErrorString(error_message);
         // Propagate to the owning span (the async child span for async
         // events) so PSpan.err and the URL stat failure flag see it.
         span_->markSpanError(error_name, error_message);

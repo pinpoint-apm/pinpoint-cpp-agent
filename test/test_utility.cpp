@@ -374,4 +374,61 @@ TEST(UtilityTest, CurrentPidRefreshesInForkedChild) {
            "never the cached parent pid";
 }
 
+// ========== abbreviateErrorString ==========
+//
+// Java caps the recorded exception message at
+// StringUtils.abbreviate(msg, 256): over the cap it keeps the first 256 and
+// appends "...(<original length>)"; at or under the cap it keeps the message
+// untouched. An uncapped message (a driver error carrying a whole SQL
+// statement) rides along in every span that records it.
+
+TEST(UtilityTest, AbbreviateErrorStringKeepsMessageAtOrUnderCap) {
+    const std::string at_cap(kMaxErrorStringLength, 'a');
+    EXPECT_EQ(abbreviateErrorString(at_cap), at_cap)
+        << "a message exactly at the cap is not abbreviated, as in Java";
+    EXPECT_EQ(abbreviateErrorString("short"), "short");
+    EXPECT_EQ(abbreviateErrorString(""), "");
+}
+
+TEST(UtilityTest, AbbreviateErrorStringAbbreviatesAsciiOverCap) {
+    const std::string msg(300, 'a');
+
+    const std::string abbreviated = abbreviateErrorString(msg);
+
+    EXPECT_EQ(abbreviated, std::string(kMaxErrorStringLength, 'a') + "...(300)");
+    EXPECT_EQ(abbreviated.substr(0, kMaxErrorStringLength), msg.substr(0, kMaxErrorStringLength));
+}
+
+TEST(UtilityTest, AbbreviateErrorStringAbbreviatesOneOverCap) {
+    const std::string msg(kMaxErrorStringLength + 1, 'a');
+
+    EXPECT_EQ(abbreviateErrorString(msg),
+              std::string(kMaxErrorStringLength, 'a') + "...(257)");
+}
+
+// The cut is by byte, so a Korean message lands mid-character at 256 and must
+// be pulled back to the character boundary: the result flows into a protobuf
+// string field, which rejects invalid UTF-8.
+TEST(UtilityTest, AbbreviateErrorStringKeepsUtf8BoundaryIntact) {
+    std::string msg;
+    for (int i = 0; i < 300; i++) {
+        msg += "가";  // 3 bytes each: 300 chars = 900 bytes
+    }
+    ASSERT_EQ(msg.length(), 900u);
+
+    const std::string abbreviated = abbreviateErrorString(msg);
+
+    // 256 bytes would split the 86th character, so 85 whole characters survive.
+    const size_t kept = 85 * 3;
+    EXPECT_EQ(abbreviated, msg.substr(0, kept) + "...(900)");
+    EXPECT_EQ(kept % 3, 0u) << "cut must not split a multibyte character";
+    EXPECT_LE(kept, kMaxErrorStringLength);
+    for (size_t i = 0; i < kept; i++) {
+        const auto byte = static_cast<unsigned char>(abbreviated[i]);
+        const bool is_continuation = (byte & 0xC0) == 0x80;
+        EXPECT_EQ(is_continuation, i % 3 != 0)
+            << "byte " << i << " is not where its UTF-8 sequence puts it";
+    }
+}
+
 } // namespace pinpoint

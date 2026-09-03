@@ -108,6 +108,7 @@ The `rpc_point` argument of `NewSpan()` is not interned — it may safely carry 
 
 - `SetError()` on the **span** marks the whole transaction as failed. `SetError()` on a **span event** records the error on that step **and also marks the transaction as failed** (`PSpan.err = 1`, URL stat failed histogram) — the same as Java, where every `recordException` is OR-ed into the shared error code. For an async span event the failure lands on that async span. There is no way to record a step error without failing the transaction; use an annotation for informational failures.
 - The call-stack overload `SetError(name, message, CallStackReader&)` exists only on `SpanEvent`, and records frames only when `EnableCallstackTrace: true` is set in the configuration (default `false`).
+- The error **message** is abbreviated to 256 bytes, matching the Java agent's `StringUtils.abbreviate(message, 256)`: a longer message is cut at the last whole UTF-8 character within 256 bytes and gains a `...(<original length>)` suffix. Put anything longer (a full SQL statement, a response body) in its own annotation, not in the error message.
 - At most **100 exceptions with call stacks are buffered per span**; further ones are dropped. Buffered exceptions are transmitted only at `EndSpan()` — a span kept open for a very long time delays them and grows memory.
 
 ## 10. Clock and `SetStartTime()` Caveats

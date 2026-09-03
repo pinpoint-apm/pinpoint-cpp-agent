@@ -715,7 +715,7 @@ namespace pinpoint {
         CHECK_FINISHED();
 
         data_->setErrorFuncId(agent_->cacheError(error_name));
-        data_->setErrorString(error_message);
+        data_->setErrorString(abbreviateErrorString(error_message));
         markSpanError(error_name, error_message);
     } CATCH_AND_LOG("set error")
 

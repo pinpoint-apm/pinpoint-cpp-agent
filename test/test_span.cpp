@@ -1893,6 +1893,19 @@ TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
         << "the event still carries the exception, only the span is unmarked";
 }
 
+TEST_F(SpanTest, SpanImplSetErrorAbbreviatesLongMessageTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    const std::string msg(300, 'a');
+
+    span.SetError("SQLException", msg);
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& last = mock_agent_service_->recorded_spans_.back();
+    EXPECT_EQ(last->getSpanData()->getErrorString(), abbreviateErrorString(msg))
+        << "Error message should be capped like Java's StringUtils.abbreviate(msg, 256)";
+}
+
 // ========== SpanChunk Optimize Multi-Event Test ==========
 
 TEST_F(SpanTest, SpanChunkOptimizeMultipleEventsTest) {

@@ -1096,7 +1096,9 @@ TEST_F(SpanEventTest, LongErrorMessageTest) {
 
     span_event.SetError("LargeError", long_msg);
 
-    EXPECT_EQ(span_event.getErrorString(), long_msg);
+    EXPECT_EQ(span_event.getErrorString(), abbreviateErrorString(long_msg))
+        << "the 50 KB message is abbreviated, not carried whole in the span event";
+    EXPECT_EQ(span_event.getErrorString(), std::string(kMaxErrorStringLength, 'E') + "...(50000)");
     EXPECT_GT(span_event.getErrorFuncId(), 0);
 }
 

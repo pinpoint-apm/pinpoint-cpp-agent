@@ -113,6 +113,29 @@ namespace pinpoint {
      */
     size_t utf8SafeCutLength(std::string_view s, size_t max_len);
 
+    /// @brief Cap on the error string carried by a span or span event,
+    ///        matching the 256 Java passes to StringUtils.abbreviate().
+    inline constexpr size_t kMaxErrorStringLength = 256;
+
+    /**
+     * @brief Abbreviates an error message the way Java's
+     * StringUtils.abbreviate(msg, 256) does.
+     *
+     * Java's AbstractRecorder.recordException stores
+     * StringUtils.abbreviate(throwable.getMessage(), 256): a message within
+     * the cap is kept verbatim, a longer one keeps its first 256 and gains a
+     * "...(<original length>)" suffix naming the length that was dropped.
+     * Uncapped, a single driver error carrying a whole SQL statement inflates
+     * every span that records it.
+     *
+     * The cut is by byte, not by Java char — that is the unit the payload is
+     * billed in, the unit the agent's other truncations (SQL, callstack) use,
+     * and identical to Java for ASCII messages. utf8SafeCutLength keeps the
+     * cut off a multibyte boundary so the result stays valid UTF-8 for
+     * protobuf.
+     */
+    std::string abbreviateErrorString(std::string_view msg);
+
     /**
      * @brief Rate-limited event reporter: at most one report per interval, no
      *        matter how many threads call in.

@@ -217,6 +217,15 @@ namespace pinpoint {
         return max_len;
     }
 
+    std::string abbreviateErrorString(std::string_view msg) {
+        if (msg.length() <= kMaxErrorStringLength) {
+            return std::string{msg};
+        }
+        std::string abbreviated{msg.substr(0, utf8SafeCutLength(msg, kMaxErrorStringLength))};
+        abbreviated.append("...(").append(std::to_string(msg.length())).append(")");
+        return abbreviated;
+    }
+
     std::optional<int> stoi_(std::string_view str) {
         int result{};
         return absl::SimpleAtoi(str, &result) ? std::optional<int>(result) : std::nullopt;
