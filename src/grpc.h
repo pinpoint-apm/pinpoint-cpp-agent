@@ -143,6 +143,19 @@ namespace pinpoint {
         /// before the rotation is abandoned and the current channel kept
         /// (see GrpcClient::rotate_channel_if_due).
         std::chrono::milliseconds channel_rotation_ready_timeout{3000};
+
+        /// Stream-stall escalation (see GrpcClient::record_stream_stall):
+        /// Java SimpleStreamState's limitCount / limitTime pair, applied to
+        /// stream write timeouts. A channel rotation is forced once at least
+        /// `stream_stall_limit_count` consecutive timeouts have been recorded
+        /// AND the first of them is at least `stream_stall_limit_time` old.
+        /// Both must hold, so one timed-out write never costs a working
+        /// channel. Defaults: the ping stream needs ~3 ping intervals of
+        /// silence; the stat stream, whose tokens arrive every collect
+        /// interval, needs the time window as well. A count <= 0 disables
+        /// the escalation.
+        int stream_stall_limit_count{3};
+        std::chrono::milliseconds stream_stall_limit_time{30000};
     };
 
     /// @brief Exponential backoff with jitter for reconnect attempts.
@@ -271,6 +284,13 @@ namespace pinpoint {
             std::chrono::steady_clock::time_point::max()};
         std::mt19937_64 jitter_rng_{};
         uint32_t transport_generation_{0};
+        // Stream-stall escalation state (see record_stream_stall). Like the
+        // rotation state above, touched only by the client's worker thread:
+        // write_and_await_*_stream() records on it and rotate_channel_if_due()
+        // consumes it, and both run on that thread — never in a gRPC
+        // callback. Zero for the clients without a long-lived stream.
+        int stream_stall_count_{0};
+        std::chrono::steady_clock::time_point first_stream_stall_at_{};
         // Ping/stat renewal deadline: the earlier of the configured stream
         // max age (Java SpanGrpcDataSender's rpc max age) and the current
         // channel's rotation time. max() while both are disabled. The command
@@ -347,7 +367,9 @@ namespace pinpoint {
          *        SubconnectionExpiringLoadBalancer.
          *
          * No-op while `channel_max_age_ms` is 0 or the current transport is
-         * younger than its jittered max age. Otherwise make-before-break:
+         * younger than its jittered max age, unless the stream-stall limit
+         * has been reached (record_stream_stall), which forces one rotation
+         * regardless of age and configuration. Otherwise make-before-break:
          * builds a successor channel, waits up to
          * `tuning_.channel_rotation_ready_timeout` for it to become READY,
          * and only then publishes it through create_stub(); the previous
@@ -371,6 +393,35 @@ namespace pinpoint {
         /// @brief Re-arms channel_rotate_at_ one jittered max age after
         ///        @p from; max() while rotation is disabled.
         void arm_channel_rotation(std::chrono::steady_clock::time_point from);
+
+        /**
+         * @brief Records a stream write that hit `stream_write_timeout`.
+         *
+         * The one stall signal this agent has: the channel stays READY (an
+         * intermediary keeps HTTP/2 keepalive satisfied) while the collector
+         * backend behind it stops reading the ping/stat stream. Neither the
+         * channel-ready backoff nor age-based rotation notices, so without
+         * this the worker reopens stream after stream on the same stalled
+         * backend forever (Java's SimpleStreamState restarts only the stream
+         * too; Go has no counterpart). Once the two-condition limit in
+         * GrpcClientTuning is reached, the next rotate_channel_if_due() —
+         * i.e. the readyChannel() that reopens the stream — forces a
+         * make-before-break rotation whose successor gets its own connection
+         * (see build_channel). A stream that ends with an error status does
+         * not count: gRPC noticed that failure itself and the usual
+         * reconnect handles it. GrpcSpan's unary batches are not fed here
+         * either: their DEADLINE_EXCEEDED conflates a stalled backend with
+         * slow processing, and their completions run on gRPC threads.
+         *
+         * Worker thread only, like the rotation state it feeds.
+         */
+        void record_stream_stall();
+        /// @brief A write completed (ping answered / stat write acknowledged):
+        ///        the backend is reading, forget the stalls so far. Same
+        ///        role as channel_ready_backoff_.reset().
+        void record_stream_write_ok() { stream_stall_count_ = 0; }
+        /// @brief True once both stall limits hold at @p now.
+        bool stream_stall_limit_reached(std::chrono::steady_clock::time_point now) const;
 
         /// @brief Jittered lifetime for the stream about to open, or zero
         ///        while `stream_max_age_ms` is disabled.

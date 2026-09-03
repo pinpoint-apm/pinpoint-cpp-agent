@@ -42,6 +42,16 @@ public:
     using GrpcSpan::GrpcSpan;
     std::shared_ptr<const Transport> transport() const { return current_transport<SpanStub>(); }
     void stop() { request_stop(); }
+    // Stream-stall escalation is exercised by driving the same signals the
+    // ping/stat workers feed (record_stream_stall / record_stream_write_ok)
+    // and then running the real readyChannel() rotation. GrpcSpan has no
+    // stream itself, so nothing else touches these counters here.
+    void recordStreamStall() { record_stream_stall(); }
+    void recordStreamWriteOk() { record_stream_write_ok(); }
+    uint32_t generation() const {
+        const auto t = transport();
+        return t ? t->generation : 0;
+    }
 };
 
 }  // namespace
@@ -497,6 +507,179 @@ TEST_F(GrpcTest, ChannelRotationAbandonsWaitWhenStopRequested) {
     EXPECT_LT(std::chrono::steady_clock::now() - stop_at, std::chrono::seconds(1));
     EXPECT_FALSE(ready.get());
     EXPECT_EQ(client.transport(), first);
+
+    client.closeChannel();
+}
+
+// ========== Stream-stall escalation: forced channel rotation ==========
+//
+// The ping/stat workers call record_stream_stall() on every write timeout
+// (channel healthy, backend not reading) and record_stream_write_ok() on a
+// completed write. These drive the same real readyChannel() rotation path the
+// age-based renewal uses. A short stall window and a live BareGrpcServer let
+// the successor reach READY so the forced rotation actually publishes.
+
+// (a) Under the count limit, and (below) under the time limit, readyChannel()
+//     must not rotate: the stream is recycled but the channel is untouched.
+TEST_F(GrpcTest, StreamStallBelowLimitDoesNotRotateChannel) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+    ASSERT_EQ(cfg->collector.grpc.channel.channel_max_age_ms, 0) << "age rotation must stay off";
+
+    GrpcClientTuning tuning;
+    tuning.stream_stall_limit_count = 3;
+    tuning.stream_stall_limit_time = std::chrono::milliseconds(0);  // isolate the count condition
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    ASSERT_EQ(client.generation(), 1u);
+
+    // Two stalls: one short of the three-count limit.
+    client.recordStreamStall();
+    ASSERT_TRUE(client.readyChannel());
+    client.recordStreamStall();
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.generation(), 1u) << "below the count limit the channel must be kept";
+
+    client.closeChannel();
+}
+
+// The time condition alone: enough stalls, but not yet spanning the window.
+TEST_F(GrpcTest, StreamStallBeforeTimeWindowDoesNotRotateChannel) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+
+    GrpcClientTuning tuning;
+    tuning.stream_stall_limit_count = 1;
+    tuning.stream_stall_limit_time = std::chrono::seconds(30);  // never elapses in-test
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    ASSERT_EQ(client.generation(), 1u);
+
+    client.recordStreamStall();
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.generation(), 1u)
+        << "the count is met but the stall window has not elapsed: no rotation";
+
+    client.closeChannel();
+}
+
+// (b) Both limits satisfied: readyChannel() forces a make-before-break
+//     rotation to a fresh generation, even with age rotation disabled.
+TEST_F(GrpcTest, StreamStallAtLimitForcesChannelRotation) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+    ASSERT_EQ(cfg->collector.grpc.channel.channel_max_age_ms, 0)
+        << "the forced rotation must work with age rotation disabled";
+
+    GrpcClientTuning tuning;
+    tuning.stream_stall_limit_count = 3;
+    tuning.stream_stall_limit_time = std::chrono::milliseconds(20);
+    tuning.channel_rotation_ready_timeout = std::chrono::seconds(5);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->generation, 1u);
+
+    // Three stalls spanning the 20ms window.
+    client.recordStreamStall();
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    client.recordStreamStall();
+    client.recordStreamStall();
+    ASSERT_TRUE(client.readyChannel());
+
+    const auto second = client.transport();
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(second->generation, 2u) << "the stalled channel must be replaced";
+    EXPECT_NE(second, first);
+    ASSERT_NE(second->channel, nullptr);
+    EXPECT_EQ(second->channel->GetState(false), GRPC_CHANNEL_READY)
+        << "make-before-break: the successor is published only once READY";
+
+    // The evidence is consumed: an immediately following readyChannel() with
+    // no new stalls must not rotate again.
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.generation(), 2u) << "a forced rotation resets the stall count";
+
+    client.closeChannel();
+}
+
+// (c) A completed write resets the count: stalls that would otherwise reach
+//     the limit are forgotten once the backend answers.
+TEST_F(GrpcTest, StreamWriteOkResetsStallCount) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.span_port = server.port;
+
+    GrpcClientTuning tuning;
+    tuning.stream_stall_limit_count = 3;
+    tuning.stream_stall_limit_time = std::chrono::milliseconds(0);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    ASSERT_EQ(client.generation(), 1u);
+
+    client.recordStreamStall();
+    client.recordStreamStall();
+    client.recordStreamWriteOk();  // backend read a write: clear the streak
+    client.recordStreamStall();
+    client.recordStreamStall();
+    ASSERT_TRUE(client.readyChannel());
+    EXPECT_EQ(client.generation(), 1u)
+        << "a completed write between stalls must prevent the limit being reached";
+
+    client.closeChannel();
+}
+
+// (d) The successor never becomes READY (collector down): the current channel
+//     is kept, and the consumed stall count means the worker does not spin on
+//     rotation attempts — a fresh limit's worth of stalls is needed again.
+TEST_F(GrpcTest, StreamStallKeepsCurrentChannelWhenSuccessorNeverReady) {
+    // Point at a refused port so no successor can connect.
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_port = 1;
+
+    GrpcClientTuning tuning;
+    tuning.stream_stall_limit_count = 1;
+    tuning.stream_stall_limit_time = std::chrono::milliseconds(0);
+    tuning.channel_rotation_ready_timeout = std::chrono::milliseconds(200);
+    tuning.backoff_sleep_slice = std::chrono::milliseconds(50);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+    const auto first = client.transport();
+    ASSERT_NE(first, nullptr);
+
+    // Force the rotation from the worker's angle: readyChannel() runs the
+    // stall-forced rotate, whose successor never reaches READY. Since the
+    // current channel is a refused port too, readyChannel()'s own readiness
+    // wait would then block, so drive rotate_channel_if_due() directly by
+    // asserting the outcome on the transport rather than readyChannel()'s
+    // return. Run it off-thread and stop it out of the readiness wait.
+    client.recordStreamStall();
+    auto ready = std::async(std::launch::async, [&client] { return client.readyChannel(); });
+    // 200ms successor wait, then the outage backoff on the current channel.
+    EXPECT_EQ(ready.wait_for(std::chrono::milliseconds(400)), std::future_status::timeout);
+    client.stop();
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_FALSE(ready.get());
+    EXPECT_EQ(client.transport(), first)
+        << "an unready successor must never replace the current transport";
+    EXPECT_EQ(first->generation, 1u);
 
     client.closeChannel();
 }

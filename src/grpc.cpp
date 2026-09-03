@@ -132,7 +132,8 @@ namespace pinpoint {
         //   (doubles as the min connect timeout in subchannel.cc), is not
         //   needed because readyChannel() + ExponentialBackoff already manage
         //   reconnects. TCP_NODELAY is always on in the C-core posix engine.
-        grpc::ChannelArguments make_channel_arguments(const Config::GrpcChannelOptions& options) {
+        grpc::ChannelArguments make_channel_arguments(const Config::GrpcChannelOptions& options,
+                                                      bool private_connection) {
             grpc::ChannelArguments channel_args;
 
             channel_args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, options.keepalive_time_ms);
@@ -153,26 +154,42 @@ namespace pinpoint {
             // connection; the old one closes once the previous transport's
             // last snapshot is released. Left at the default while rotation
             // is off so existing deployments keep their connection count.
-            if (options.channel_max_age_ms > 0) {
+            //
+            // The exception is the successor of a stall-forced rotation
+            // (GrpcClient::record_stream_stall), which needs its own
+            // connection whatever the configuration: in the shared pool it
+            // would reuse the very connection the stalled backend sits on
+            // and the rotation would be a no-op. Making the local pool
+            // unconditional instead would cost every deployment two extra
+            // connections to the agent port; a config flag for the escalation
+            // would leave the stall loop in place for everyone who has not
+            // heard of the flag. Paying the extra connection only from the
+            // moment a stall actually forces a rotation keeps the default
+            // count unchanged until the feature is needed. The connection the
+            // stalled channel shared with the metadata/command channels stays
+            // theirs — they carry no stall signal, same as in Java.
+            if (options.channel_max_age_ms > 0 || private_connection) {
                 channel_args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
             }
 
             return channel_args;
         }
 
-        std::shared_ptr<grpc::Channel> build_channel(const Config& config, ClientType client_type) {
+        std::shared_ptr<grpc::Channel> build_channel(const Config& config, ClientType client_type,
+                                                     bool private_connection = false) {
             const auto& options = config.collector.grpc.channel;
             const auto client_name = grpc_client_name(client_type);
             const auto addr = absl::StrCat(config.collector.host, ":", grpc_collector_port(config, client_type));
             auto credentials = make_channel_credentials(config.collector.grpc.ssl, client_name);
-            auto channel_args = make_channel_arguments(options);
+            auto channel_args = make_channel_arguments(options, private_connection);
 
             LOG_INFO("create {} grpc channel: addr={}, ssl={}, keepaliveTimeMs={}, keepaliveTimeoutMs={}, "
-                     "maxSendMessageSize={}, maxReceiveMessageSize={}, channelMaxAgeMs={}, streamMaxAgeMs={}",
+                     "maxSendMessageSize={}, maxReceiveMessageSize={}, channelMaxAgeMs={}, streamMaxAgeMs={}, "
+                     "privateConnection={}",
                      client_name, addr, config.collector.grpc.ssl.enable, options.keepalive_time_ms,
                      options.keepalive_timeout_ms, options.max_send_message_size,
                      options.max_receive_message_size, options.channel_max_age_ms,
-                     options.stream_max_age_ms);
+                     options.stream_max_age_ms, options.channel_max_age_ms > 0 || private_connection);
             return grpc::CreateCustomChannel(addr, credentials, channel_args);
         }
 
@@ -386,10 +403,23 @@ namespace pinpoint {
             : std::chrono::steady_clock::time_point::max();
     }
 
+    void GrpcClient::record_stream_stall() {
+        if (stream_stall_count_++ == 0) {
+            first_stream_stall_at_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    bool GrpcClient::stream_stall_limit_reached(std::chrono::steady_clock::time_point now) const {
+        return tuning_.stream_stall_limit_count > 0 &&
+               stream_stall_count_ >= tuning_.stream_stall_limit_count &&
+               now - first_stream_stall_at_ >= tuning_.stream_stall_limit_time;
+    }
+
     void GrpcClient::rotate_channel_if_due() noexcept try {
         // Runs under channel_mutex_ (readyChannel), on the client's worker.
         const auto now = std::chrono::steady_clock::now();
-        if (now < channel_rotate_at_ || stopping()) {
+        const bool stalled = stream_stall_limit_reached(now);
+        if ((!stalled && now < channel_rotate_at_) || stopping()) {
             return;
         }
         const auto current = transport_.load();
@@ -398,16 +428,34 @@ namespace pinpoint {
         }
         const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - current->created_at).count();
-        LOG_INFO("{} grpc channel #{} is {}ms old (max age {}ms): connecting a successor",
-                 client_name_, current->generation, age_ms,
-                 config_->collector.grpc.channel.channel_max_age_ms);
+        if (stalled) {
+            LOG_WARN("{} grpc channel #{}: {} stream write timeouts in {}ms without a completed write; "
+                     "connecting a successor", client_name_, current->generation, stream_stall_count_,
+                     std::chrono::duration_cast<std::chrono::milliseconds>(now - first_stream_stall_at_).count());
+            // This attempt consumes the recorded stalls whatever its outcome.
+            // A successor that becomes READY deserves a clean slate; one that
+            // does not (collector down, or a proxy admitting no further
+            // connections) must not turn every following write timeout into
+            // another channel_rotation_ready_timeout wait — with the counter
+            // kept, each recycled stream would force a rotation at once and
+            // the worker would spend its time building successors. Reset,
+            // the next attempt needs the same evidence as this one: another
+            // limit_count stalls spanning limit_time.
+            stream_stall_count_ = 0;
+        } else {
+            LOG_INFO("{} grpc channel #{} is {}ms old (max age {}ms): connecting a successor",
+                     client_name_, current->generation, age_ms,
+                     config_->collector.grpc.channel.channel_max_age_ms);
+        }
 
         // Make-before-break: the successor must be READY before it replaces
         // anything, and it is not required that the current channel be READY
         // — when the collector just came back, moving to the successor is the
         // faster recovery. wait_channel_ready() checks stopping() every
         // slice, so a shutdown starting during the wait abandons the rotation.
-        auto successor = build_channel(*config_, client_type_);
+        // A stall-forced successor gets its own connection even while
+        // rotation is off (see make_channel_arguments).
+        auto successor = build_channel(*config_, client_type_, stalled);
         const bool ready = wait_channel_ready(*successor, tuning_.channel_rotation_ready_timeout);
         const auto ready_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - now).count();
@@ -1965,12 +2013,17 @@ namespace pinpoint {
             // lifetime — pings stop and the stream never cycles to a healthy
             // backend. Cancel so the caller rebuilds the stream instead.
             LOG_WARN("ping response timed out, recycling ping stream");
+            // Counted towards a forced channel rotation: the recycled stream
+            // alone would land on the same stalled backend (record_stream_stall).
+            record_stream_stall();
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
             // TryCancel is best-effort. The reactor still must not be
             // abandoned while the call is outstanding, so wait for OnDone.
             stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        } else if (grpc_status_ == STREAM_CONTINUE) {
+            record_stream_write_ok();  // pong received: the backend is reading
         }
 
         if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
@@ -2613,6 +2666,10 @@ namespace pinpoint {
                 // shutdown hang on join. Cancel so the caller rebuilds the
                 // stream instead.
                 LOG_WARN("stats write timed out, recycling stats stream");
+                // Counted towards a forced channel rotation: the recycled
+                // stream alone would land on the same stalled backend
+                // (record_stream_stall).
+                record_stream_stall();
                 // Close before cancelling: unlike the ping stream (whose
                 // re-armed read always surfaces the cancellation), a
                 // write-only stream has no pending op once a racing
@@ -2636,6 +2693,7 @@ namespace pinpoint {
                 return STREAM_DONE;
             }
             // STREAM_CONTINUE: the write completed; loop for the next payload.
+            record_stream_write_ok();
         }
     }
 
