@@ -772,6 +772,14 @@ All three are configured under `Sampling.*` — see the
   only the limiter. This is the production-friendly option: it caps trace volume
   regardless of traffic spikes.
 
+  The limiter is a **token bucket** on a monotonic clock, matching the Java and
+  Go agents: it holds up to `Throughput` tokens and refills at `Throughput`
+  tokens per second, so an idle period buys at most one second of burst. It is
+  not a fixed wall-clock window, which would let a spike straddling a second
+  boundary through at twice the configured rate. A freshly built limiter starts
+  empty, so the first transaction after startup or a config reload passes and
+  the rest are paced at the refill interval.
+
 ### Sampling Best Practices
 
 - **Let the root service control sampling** — continue transactions follow the

@@ -23,47 +23,104 @@
 
 namespace pinpoint {
 
+// Fake clock: the bucket only ever reads time through now_nanos(), so the
+// refill schedule can be tested without sleeping.
+class FakeClockLimiter final : public RateLimiter {
+public:
+    explicit FakeClockLimiter(const uint64_t tps) : RateLimiter(tps) {}
+
+    void advance_ms(const int64_t ms) { now_ns_ += ms * 1000000; }
+    int64_t elapsed_ms() const { return now_ns_ / 1000000; }
+
+protected:
+    int64_t now_nanos() const override { return now_ns_; }
+
+private:
+    int64_t now_ns_{0};
+};
+
 class RateLimiterTest : public ::testing::Test {};
 
-// Basic functionality test - verify allow() returns true when tokens are available
-TEST_F(RateLimiterTest, BasicAllowTest) {
-    RateLimiter limiter(5); // 5 TPS (5 requests per second)
-    
-    // First 5 requests should be allowed
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(limiter.allow()) << "Request " << i << " should be allowed";
-    }
-}
+// A fresh bucket is empty: the first call goes through and the next one has to
+// wait a full token interval, exactly like a freshly created Guava RateLimiter.
+TEST_F(RateLimiterTest, FirstCallPassesThenPacesAtTps) {
+    FakeClockLimiter limiter(10); // one token per 100ms
 
-// Rate limiting test - verify false is returned after tokens are exhausted
-TEST_F(RateLimiterTest, RateLimitingTest) {
-    RateLimiter limiter(3); // 3 TPS
-    
-    // First 3 requests should be allowed
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_TRUE(limiter.allow()) << "Request " << i << " should be allowed";
-    }
-    
-    // 4th request should be denied
-    EXPECT_FALSE(limiter.allow()) << "4th request should be denied";
-    EXPECT_FALSE(limiter.allow()) << "5th request should be denied";
-}
+    EXPECT_TRUE(limiter.allow()) << "first call should pass";
+    EXPECT_FALSE(limiter.allow()) << "no token is due yet";
 
-// Token bucket refill test - verify tokens are refilled after time passes
-TEST_F(RateLimiterTest, TokenRefillTest) {
-    RateLimiter limiter(2); // 2 TPS
-    
-    // Exhaust all tokens
-    EXPECT_TRUE(limiter.allow());
-    EXPECT_TRUE(limiter.allow());
+    limiter.advance_ms(50);
+    EXPECT_FALSE(limiter.allow()) << "half an interval is not a token";
+
+    limiter.advance_ms(50);
+    EXPECT_TRUE(limiter.allow()) << "one interval elapsed, one token due";
     EXPECT_FALSE(limiter.allow());
-    
-    // After waiting 1 second, tokens should be refilled
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    
-    EXPECT_TRUE(limiter.allow()) << "After 1 second, request should be allowed";
-    EXPECT_TRUE(limiter.allow()) << "Second request after refill should be allowed";
-    EXPECT_FALSE(limiter.allow()) << "Third request should be denied";
+}
+
+// Acceptance criteria: at tps=10, called every 50ms, the first second admits at
+// most 10 and no 200ms window around a second boundary admits more than 11.
+// A fixed wall-clock window would admit up to 2 * tps across the boundary.
+TEST_F(RateLimiterTest, SteadyCallsNeverExceedTps) {
+    FakeClockLimiter limiter(10);
+
+    int first_second = 0;
+    int around_boundary = 0;
+    int total = 0;
+
+    for (int i = 0; i < 100; ++i) { // 100 calls x 50ms = 5 seconds
+        const auto at_ms = limiter.elapsed_ms();
+        if (limiter.allow()) {
+            ++total;
+            if (at_ms < 1000) {
+                ++first_second;
+            }
+            if (at_ms >= 900 && at_ms <= 1100) {
+                ++around_boundary;
+            }
+        }
+        limiter.advance_ms(50);
+    }
+
+    EXPECT_LE(first_second, 10) << "first second must not exceed tps";
+    EXPECT_LE(around_boundary, 11) << "no burst at the second boundary";
+    EXPECT_EQ(total, 50) << "5 seconds at 10 tps";
+}
+
+// After an idle second the bucket holds one second of tokens, not more.
+TEST_F(RateLimiterTest, IdleBurstIsCappedAtTps) {
+    FakeClockLimiter limiter(10);
+
+    EXPECT_TRUE(limiter.allow());
+    limiter.advance_ms(1000);
+
+    int allowed = 0;
+    for (int i = 0; i < 50; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+
+    EXPECT_EQ(allowed, 10) << "one idle second must not release more than tps";
+    EXPECT_FALSE(limiter.allow());
+}
+
+// Idling for longer does not accumulate: the bucket stops at tps stored tokens,
+// plus the one call Guava lets through when the bucket is empty but the clock
+// has caught up with the next token.
+TEST_F(RateLimiterTest, LongIdleDoesNotAccumulate) {
+    FakeClockLimiter limiter(3);
+
+    EXPECT_TRUE(limiter.allow());
+    limiter.advance_ms(5000);
+
+    int allowed = 0;
+    for (int i = 0; i < 20; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+
+    EXPECT_EQ(allowed, 4) << "5 idle seconds still cap the bucket at tps (+1 due token)";
 }
 
 // 0 TPS test - all requests should be denied
@@ -76,21 +133,24 @@ TEST_F(RateLimiterTest, ZeroTpsTest) {
     }
 }
 
-TEST_F(RateLimiterTest, HighTpsTest) {
-    RateLimiter limiter(1000); // 1000 TPS
-    
-    // All 1000 requests should be allowed
-    int allowed_count = 0;
-    for (int i = 0; i < 1000; ++i) {
+// The default clock path (steady_clock) refills too.
+TEST_F(RateLimiterTest, RealClockRefillTest) {
+    RateLimiter limiter(10); // one token per 100ms
+
+    EXPECT_TRUE(limiter.allow());
+    EXPECT_FALSE(limiter.allow());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    int allowed = 0;
+    for (int i = 0; i < 10; ++i) {
         if (limiter.allow()) {
-            allowed_count++;
+            allowed++;
         }
     }
-    
-    EXPECT_EQ(allowed_count, 1000) << "All 1000 requests should be allowed";
-    
-    // 1001st request should be denied
-    EXPECT_FALSE(limiter.allow()) << "1001st request should be denied";
+
+    EXPECT_GE(allowed, 1) << "tokens should refill on the real clock";
+    EXPECT_LE(allowed, 4) << "250ms must not release a full second of tokens";
 }
 
 TEST_F(RateLimiterTest, ThreadSafetyTest) {
@@ -124,50 +184,17 @@ TEST_F(RateLimiterTest, ThreadSafetyTest) {
     EXPECT_GT(total_allowed, 0) << "At least some requests should be allowed";
 }
 
-// Time boundary test - behavior within the same second
-TEST_F(RateLimiterTest, SameSecondTest) {
-    RateLimiter limiter(3); // 3 TPS
-    
-    // Make rapid consecutive requests (within the same second)
-    bool results[5];
-    for (int i = 0; i < 5; ++i) {
-        results[i] = limiter.allow();
-    }
-    
-    // First 3 should be true, the rest should be false
-    EXPECT_TRUE(results[0]);
-    EXPECT_TRUE(results[1]);
-    EXPECT_TRUE(results[2]);
-    EXPECT_FALSE(results[3]);
-    EXPECT_FALSE(results[4]);
-}
-
 // ========== Edge Case Tests ==========
 
-// Bucket does NOT accumulate unused tokens across seconds
-TEST_F(RateLimiterTest, BucketDoesNotAccumulateTest) {
-    RateLimiter limiter(3);
-
-    // Use only 1 token out of 3
-    EXPECT_TRUE(limiter.allow());
-
-    // Wait 3 seconds (unused tokens should NOT carry over)
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-
-    // Should get exactly 3 tokens (not 3 + accumulated)
-    int allowed = 0;
-    for (int i = 0; i < 10; ++i) {
-        if (limiter.allow()) {
-            allowed++;
-        }
-    }
-    EXPECT_EQ(allowed, 3) << "After long sleep, bucket should reset to exactly tps (3), not accumulate";
-}
-
-// Thread safety: exactly tps tokens consumed when demand exceeds supply
+// Thread safety: with the clock frozen on a full bucket, concurrent callers
+// consume exactly the tokens on hand - no lost update, no double refill.
 TEST_F(RateLimiterTest, ThreadSafetyExactCountTest) {
     const uint64_t tps = 50;
-    RateLimiter limiter(tps);
+    FakeClockLimiter limiter(tps);
+
+    EXPECT_TRUE(limiter.allow());
+    limiter.advance_ms(1000); // bucket refilled to its cap, clock frozen from here
+
     const int num_threads = 20;
     const int requests_per_thread = 10; // 200 total requests > 50 tps
 
@@ -196,9 +223,8 @@ TEST_F(RateLimiterTest, ThreadSafetyExactCountTest) {
 
 // Repeated deny after exhaustion (calling allow many times after bucket is empty)
 TEST_F(RateLimiterTest, RepeatedDenyAfterExhaustionTest) {
-    RateLimiter limiter(2);
+    FakeClockLimiter limiter(2);
 
-    EXPECT_TRUE(limiter.allow());
     EXPECT_TRUE(limiter.allow());
 
     // Call allow() many more times - all should be false

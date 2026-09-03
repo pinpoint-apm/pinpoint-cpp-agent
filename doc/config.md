@@ -373,7 +373,8 @@ its backing configuration changed: the sampler (`Sampling.*`), the URL filter
 (`StatusCodeErrors`), and the header recorders (any server- or client-side
 header/cookie list). A reload only fires on an actual file edit, so the cost
 is one pattern compile per edit; the one piece of accumulated state discarded
-is the throughput sampler's counters, which re-warm within one interval.
+is the throughput sampler's token buckets, which start empty and refill to
+their `Throughput` cap within one second.
 
 Rebuilt components are published together in a **single atomic swap**, so
 in-flight requests can never observe a half-applied reload. Each span snapshots

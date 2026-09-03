@@ -22,32 +22,41 @@
 namespace pinpoint {
 
     /**
-     * @brief Fixed-window rate limiter used for sampling throughput limits.
+     * @brief Token bucket rate limiter used for sampling throughput limits.
      *
-     * The window second and the remaining tokens are packed into a single
-     * 64-bit atomic, so refill-and-consume is one CAS: there is no
-     * reset-in-progress flag for other threads to spin on. A refill and a
-     * concurrent decrement may contend, but one CAS fails and retries against
-     * the state published by the other instead of losing an update.
+     * Capacity is `tps` tokens and the refill rate is `tps` tokens per second
+     * off a monotonic clock, which is what the Java agent gets from Guava's
+     * `RateLimiter.create(tps)` (SmoothBursty, one second of burst) and the Go
+     * agent from `rate.NewLimiter(rate.Every(time.Second/tps), tps)`. A fixed
+     * wall-clock window would instead admit up to 2*tps across a second
+     * boundary and tie the window to wall time.
+     *
+     * The whole bucket is one 64-bit atomic: the theoretical arrival time of
+     * the next token, in nanoseconds. Tokens are the distance between that
+     * time and now (capped at one second's worth), so refill and consume are a
+     * single CAS with no fractional-token state to keep in sync, and a losing
+     * CAS retries against the time the winner published instead of refilling
+     * twice.
      */
     class RateLimiter {
     public:
         explicit RateLimiter(uint64_t tps);
+        virtual ~RateLimiter() = default;
 
         /**
-         * @brief Consumes a token if available, resetting the bucket once per second.
+         * @brief Consumes a token if one is available.
          *
          * @return `true` when the call is permitted.
          */
         bool allow();
 
-    private:
-        static uint64_t current_second();
-        static uint64_t pack(uint64_t second, uint32_t tokens);
-        static uint64_t state_second(uint64_t state);
-        static uint32_t state_tokens(uint64_t state);
+    protected:
+        /// @brief Monotonic now in nanoseconds; overridden by tests to inject a fake clock.
+        virtual int64_t now_nanos() const;
 
-        const uint32_t token_;
-        std::atomic<uint64_t> state_;
+    private:
+        const int64_t interval_;    // nanoseconds per token; 0 disables the limiter
+        const int64_t burst_;       // nanoseconds of tokens a full bucket holds (one second)
+        std::atomic<int64_t> next_; // arrival time of the next token, kUnused until first use
     };
 }

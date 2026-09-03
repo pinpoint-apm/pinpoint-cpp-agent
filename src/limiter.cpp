@@ -17,75 +17,65 @@
 #include "limiter.h"
 #include <algorithm>
 #include <chrono>
+#include <limits>
 
 namespace pinpoint {
 
     namespace {
-        constexpr uint64_t kSecondMask = 0xFFFFFFFFull;
+        constexpr int64_t kNanosPerSecond = 1000000000;
+
+        // The bucket has not been used yet: the first allow() starts the clock
+        // and hands out a single token, the state a freshly created Guava
+        // RateLimiter is in.
+        constexpr int64_t kUnused = std::numeric_limits<int64_t>::min();
+
+        // Above one token per nanosecond the interval would round to zero, so
+        // the rate is clamped there; a limiter that fine is unlimited anyway.
+        int64_t clamped_tps(const uint64_t tps) {
+            return static_cast<int64_t>(std::min<uint64_t>(tps, kNanosPerSecond));
+        }
     }
 
-    RateLimiter::RateLimiter(uint64_t tps)
-        : token_(static_cast<uint32_t>(std::min(tps, kSecondMask))),
-          state_(pack(current_second(), token_)) {
+    RateLimiter::RateLimiter(const uint64_t tps)
+        : interval_(tps == 0 ? 0 : kNanosPerSecond / clamped_tps(tps)),
+          burst_(interval_ * clamped_tps(tps)),
+          next_(kUnused) {
     }
 
-    uint64_t RateLimiter::current_second() {
-        // Truncated to 32 bits by pack(). steady_clock counts from boot, so a
-        // wrap takes ~136 years; window changes are detected by inequality,
-        // which stays correct across a wrap.
-        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now().time_since_epoch()).count());
-    }
-
-    uint64_t RateLimiter::pack(uint64_t second, uint32_t tokens) {
-        return ((second & kSecondMask) << 32) | tokens;
-    }
-
-    uint64_t RateLimiter::state_second(uint64_t state) {
-        return state >> 32;
-    }
-
-    uint32_t RateLimiter::state_tokens(uint64_t state) {
-        return static_cast<uint32_t>(state);
+    int64_t RateLimiter::now_nanos() const {
+        // steady_clock, not system_clock: the bucket must not refill (or stall)
+        // because someone stepped the wall clock.
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
     bool RateLimiter::allow() {
-        if (token_ == 0) {
+        if (interval_ == 0) {
             return false;
         }
 
-        // No data is published through state_; it is a self-contained
-        // counter, so relaxed ordering is sufficient everywhere.
-        auto state = state_.load(std::memory_order_relaxed);
+        // No data is published through next_; it is a self-contained counter,
+        // so relaxed ordering is sufficient everywhere.
+        auto next = next_.load(std::memory_order_relaxed);
 
         for (;;) {
             // Re-read the clock on every attempt: a failed CAS means another
-            // thread moved the state, possibly into a newer second.
-            const auto now = current_second() & kSecondMask;
-            const auto second = state_second(state);
+            // thread consumed a token, possibly a long time ago.
+            const auto now = now_nanos();
 
-            // Refill only when the clock is ahead of the stored window. A
-            // thread whose `now` went stale at a second boundary (another
-            // thread already published the next window) must not CAS the
-            // window backward with a full bucket — that would double-admit
-            // the new second. It consumes from the stored window instead.
-            // Forward distance is taken mod 2^32, so wrap stays correct.
-            if (second != now && ((now - second) & kSecondMask) < 0x80000000ull) {
-                // New window: refill and consume one token in a single CAS.
-                if (state_.compare_exchange_weak(state, pack(now, token_ - 1),
-                                                 std::memory_order_relaxed)) {
-                    return true;
-                }
-                continue;
-            }
-
-            const auto tokens = state_tokens(state);
-            if (tokens == 0) {
+            // Refill. The tokens on hand are (now - next) / interval_, so
+            // moving next_ no further back than now - burst_ caps an idle
+            // bucket at exactly tps tokens - the refill cannot be applied
+            // twice because the CAS below publishes the consumed state from
+            // the same value it was computed on.
+            const auto refilled = next == kUnused ? now : std::max(next, now - burst_);
+            if (refilled > now) {
+                // The next token is not due yet.
                 return false;
             }
 
-            if (state_.compare_exchange_weak(state, pack(second, tokens - 1),
-                                             std::memory_order_relaxed)) {
+            if (next_.compare_exchange_weak(next, refilled + interval_,
+                                            std::memory_order_relaxed)) {
                 return true;
             }
         }

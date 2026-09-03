@@ -234,16 +234,6 @@ UriStatTotals uri_stat_totals(const CollectorSnapshot& snapshot,
     return totals;
 }
 
-void wait_for_fresh_rate_limit_window() {
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch());
-    const auto within_second = elapsed.count() % 1000;
-    if (within_second > 100) {
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(1005 - within_second));
-    }
-}
-
 std::optional<v1::PSpan> find_span_by_rpc(const CollectorSnapshot& snapshot,
                                           std::string_view rpc) {
     for (const auto& message : all_span_messages(snapshot)) {
@@ -1689,9 +1679,10 @@ TEST_F(AgentIntegrationTest,
         return agent_stat_count(snapshot) >= 1;
     }, kWaitTimeout));
     const auto baseline = agent_stat_count(collector_.snapshot());
-    wait_for_fresh_rate_limit_window();
 
-    const std::array<bool, 4> expected_new{true, true, false, false};
+    // The token bucket starts empty and refills at NewThroughput per second,
+    // so a back-to-back burst gets one span through, not NewThroughput of them.
+    const std::array<bool, 4> expected_new{true, false, false, false};
     const auto parent_trace_id = DriveSamplingPattern(
         "sampling.throughput.new", "/sampling/throughput/new/", expected_new);
     ASSERT_FALSE(parent_trace_id.empty());
@@ -1705,7 +1696,7 @@ TEST_F(AgentIntegrationTest,
 
     ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
         const auto totals = transaction_totals_after(snapshot, baseline);
-        return totals.sampled_new >= 2 && totals.skipped_new >= 2 &&
+        return totals.sampled_new >= 1 && totals.skipped_new >= 3 &&
                totals.sampled_continuation >= 1 &&
                totals.skipped_continuation >= 2 &&
                count_spans_by_rpc(
@@ -1714,8 +1705,8 @@ TEST_F(AgentIntegrationTest,
 
     const auto snapshot = collector_.snapshot();
     const auto totals = transaction_totals_after(snapshot, baseline);
-    EXPECT_EQ(totals.sampled_new, 2);
-    EXPECT_EQ(totals.skipped_new, 2);
+    EXPECT_EQ(totals.sampled_new, 1);
+    EXPECT_EQ(totals.skipped_new, 3);
     EXPECT_EQ(totals.unsampled_new, 0);
     EXPECT_EQ(totals.sampled_continuation, 1);
     EXPECT_EQ(totals.skipped_continuation, 2);

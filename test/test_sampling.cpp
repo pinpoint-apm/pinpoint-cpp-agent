@@ -342,14 +342,12 @@ TEST_F(SamplingTest, TraceSamplerNewLimiterTest) {
     const int new_tps = 3;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     
-    // First new_tps calls should be allowed, then blocked
-    for (int i = 0; i < new_tps; ++i) {
-        EXPECT_TRUE(trace_sampler.isNewSampled()) << "New call " << i << " should be allowed";
-    }
-    
-    // Next calls should be blocked by rate limiter
+    // The token bucket starts empty and refills at new_tps/s, so back-to-back
+    // calls get one token and then wait 1/new_tps of a second for the next.
+    EXPECT_TRUE(trace_sampler.isNewSampled()) << "First new call should be allowed";
+
     for (int i = 0; i < 5; ++i) {
-        EXPECT_FALSE(trace_sampler.isNewSampled()) << "New call " << (new_tps + i) << " should be blocked";
+        EXPECT_FALSE(trace_sampler.isNewSampled()) << "New call " << (i + 1) << " should be blocked";
     }
     
     // Continue samples should not be limited (no continue limiter)
@@ -369,14 +367,11 @@ TEST_F(SamplingTest, TraceSamplerContinueLimiterTest) {
         EXPECT_TRUE(trace_sampler.isNewSampled()) << "New call " << i << " should be sampled";
     }
     
-    // First continue_tps calls should be allowed, then blocked
-    for (int i = 0; i < continue_tps; ++i) {
-        EXPECT_TRUE(trace_sampler.isContinueSampled()) << "Continue call " << i << " should be allowed";
-    }
-    
-    // Next continue calls should be blocked by rate limiter
+    // One token from the fresh bucket, then the refill interval applies.
+    EXPECT_TRUE(trace_sampler.isContinueSampled()) << "First continue call should be allowed";
+
     for (int i = 0; i < 5; ++i) {
-        EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Continue call " << (continue_tps + i) << " should be blocked";
+        EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Continue call " << (i + 1) << " should be blocked";
     }
 }
 
@@ -386,16 +381,11 @@ TEST_F(SamplingTest, TraceSamplerBothLimitersTest) {
     const int continue_tps = 3;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, continue_tps);
     
-    // Test new samples with limiter
-    for (int i = 0; i < new_tps; ++i) {
-        EXPECT_TRUE(trace_sampler.isNewSampled()) << "New call " << i << " should be allowed";
-    }
+    // Each limiter hands out one token from its fresh bucket, then paces.
+    EXPECT_TRUE(trace_sampler.isNewSampled()) << "First new call should be allowed";
     EXPECT_FALSE(trace_sampler.isNewSampled()) << "Additional new call should be blocked";
-    
-    // Test continue samples with limiter
-    for (int i = 0; i < continue_tps; ++i) {
-        EXPECT_TRUE(trace_sampler.isContinueSampled()) << "Continue call " << i << " should be allowed";
-    }
+
+    EXPECT_TRUE(trace_sampler.isContinueSampled()) << "First continue call should be allowed";
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Additional continue call should be blocked";
 }
 
@@ -409,10 +399,9 @@ TEST_F(SamplingTest, TraceSamplerWithBlockingSamplerTest) {
         EXPECT_FALSE(trace_sampler.isNewSampled()) << "New call " << i << " should be blocked by sampler";
     }
     
-    // Continue samples should still be allowed (rate limiter only)
-    for (int i = 0; i < 10; ++i) {
-        EXPECT_TRUE(trace_sampler.isContinueSampled()) << "Continue call " << i << " should be allowed";
-    }
+    // Continue samples reach the rate limiter, which allows the one token its
+    // fresh bucket holds.
+    EXPECT_TRUE(trace_sampler.isContinueSampled()) << "First continue call should be allowed";
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Additional continue call should be blocked by rate limiter";
 }
 
@@ -496,15 +485,16 @@ TEST_F(SamplingTest, TraceSamplerStatsSkipNewTest) {
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     auto& stats = mock_service_->getAgentStats();
 
-    // First 2 pass, next 3 get rate limited (skipped)
+    // One token from the fresh bucket passes, the next 4 get rate limited
+    // (skipped) - the bucket refills at new_tps/s, far slower than this loop.
     for (int i = 0; i < 5; ++i) {
         trace_sampler.isNewSampled();
     }
 
     AgentStatsSnapshot snapshot;
     stats.collectAgentStat(snapshot);
-    EXPECT_EQ(snapshot.num_sample_new_, new_tps) << "Should have " << new_tps << " sampled new traces";
-    EXPECT_EQ(snapshot.num_skip_new_, 3) << "Should have 3 skipped new traces";
+    EXPECT_EQ(snapshot.num_sample_new_, 1) << "Should have 1 sampled new trace";
+    EXPECT_EQ(snapshot.num_skip_new_, 4) << "Should have 4 skipped new traces";
     EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
 }
 
@@ -515,15 +505,15 @@ TEST_F(SamplingTest, TraceSamplerStatsSkipContTest) {
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, continue_tps);
     auto& stats = mock_service_->getAgentStats();
 
-    // First 3 pass, next 4 get rate limited
+    // One token from the fresh bucket passes, the next 6 get rate limited.
     for (int i = 0; i < 7; ++i) {
         trace_sampler.isContinueSampled();
     }
 
     AgentStatsSnapshot snapshot;
     stats.collectAgentStat(snapshot);
-    EXPECT_EQ(snapshot.num_sample_cont_, continue_tps) << "Should have " << continue_tps << " sampled continue traces";
-    EXPECT_EQ(snapshot.num_skip_cont_, 4) << "Should have 4 skipped continue traces";
+    EXPECT_EQ(snapshot.num_sample_cont_, 1) << "Should have 1 sampled continue trace";
+    EXPECT_EQ(snapshot.num_skip_cont_, 6) << "Should have 6 skipped continue traces";
 }
 
 // Test TraceSampler unsample_new stats when sampler rejects
@@ -551,10 +541,9 @@ TEST_F(SamplingTest, TraceSamplerNullSamplerTest) {
         EXPECT_FALSE(trace_sampler.isNewSampled()) << "Null sampler should reject new sample " << i;
     }
 
-    // Continue samples should still be allowed (up to rate limit)
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(trace_sampler.isContinueSampled()) << "Continue call " << i << " should be allowed";
-    }
+    // Continue samples still reach the rate limiter, which hands out the one
+    // token its fresh bucket holds.
+    EXPECT_TRUE(trace_sampler.isContinueSampled()) << "First continue call should be allowed";
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Should be blocked after rate limit exhausted";
 }
 
@@ -575,15 +564,15 @@ TEST_F(SamplingTest, TraceSamplerPartialSamplingWithLimiterTest) {
     const int new_tps = 2;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
 
-    // Pattern: sampler alternates false/true, rate limiter allows first 2 true results
+    // Pattern: sampler alternates false/true, the fresh bucket has one token
     // Call 1: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
     // Call 2: sampler=true, limiter allows -> true
     EXPECT_TRUE(trace_sampler.isNewSampled());
     // Call 3: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
-    // Call 4: sampler=true, limiter allows -> true
-    EXPECT_TRUE(trace_sampler.isNewSampled());
+    // Call 4: sampler=true, limiter blocks (refill is 1/new_tps of a second) -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
     // Call 5: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
     // Call 6: sampler=true, limiter blocks -> false
@@ -596,15 +585,13 @@ TEST_F(SamplingTest, TraceSamplerRefillTest) {
     const int new_tps = 2;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     
-    // Exhaust the rate limiter
-    for (int i = 0; i < new_tps; ++i) {
-        EXPECT_TRUE(trace_sampler.isNewSampled()) << "Initial call " << i << " should be allowed";
-    }
+    // Exhaust the rate limiter: a fresh bucket holds a single token
+    EXPECT_TRUE(trace_sampler.isNewSampled()) << "Initial call should be allowed";
     EXPECT_FALSE(trace_sampler.isNewSampled()) << "Additional call should be blocked";
-    
-    // Wait for refill (1 second)
+
+    // Wait for refill (1 second, i.e. new_tps tokens)
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    
+
     // Should be able to make calls again
     for (int i = 0; i < new_tps; ++i) {
         EXPECT_TRUE(trace_sampler.isNewSampled()) << "After refill call " << i << " should be allowed";
