@@ -468,6 +468,50 @@ namespace pinpoint {
 
     //GrpcMetadata
 
+    namespace {
+        // Whether a failed metadata RPC is worth sending again. Go's agent
+        // (grpc.go isRetryableError) retries exactly these two and nothing
+        // else; every other code is a verdict the same request earns again,
+        // so retrying it only burns permits and retry-schedule slots while a
+        // schema mismatch or an auth failure rejects every item.
+        //
+        //   UNAVAILABLE       - collector restarting, LB draining, connection
+        //                       dropped. The next attempt sees a new state.
+        //   DEADLINE_EXCEEDED - slow collector or congested link; the item was
+        //                       possibly never processed. Metadata upserts are
+        //                       keyed by id and idempotent, so a duplicate
+        //                       delivery is harmless.
+        //
+        // Deliberately not retried, each for its own reason:
+        //
+        //   RESOURCE_EXHAUSTED - either the message exceeds a size limit (a
+        //     resend never gets smaller) or the collector is shedding load, in
+        //     which case resending adds to what it is shedding — and
+        //     meta_retry_delay is a fixed delay, not a backoff, so it cannot
+        //     wait the overload out either.
+        //   ABORTED - a concurrency/transaction conflict. Metadata writes are
+        //     idempotent upserts with no such conflict to lose, and a retry
+        //     would re-enter whatever conflict the collector did report.
+        //   INTERNAL - a server-side bug or a broken framing/compression
+        //     contract. Same request, same failure.
+        //   UNKNOWN - a server exception carrying no status, or a status that
+        //     could not be parsed; in Pinpoint's collector the common source
+        //     is an application-level exception on the request itself, which
+        //     repeats. Java's hedging config (HedgingServiceConfigBuilder
+        //     DEFAULT_STATUS_CODES = UNKNOWN, UNAVAILABLE) does include it,
+        //     but hedging fires a parallel attempt to beat latency rather
+        //     than re-sending a verdict, so it is not evidence that a retry
+        //     helps here. Go leaves it out; so do we.
+        //
+        // Every code left out still gets its cache entry released on the drop,
+        // so the id is regenerated and re-sent from a later span once the
+        // cause is gone — recovery without a retry loop.
+        bool is_retryable_meta_status(grpc::StatusCode code) {
+            return code == grpc::StatusCode::UNAVAILABLE ||
+                   code == grpc::StatusCode::DEADLINE_EXCEEDED;
+        }
+    }
+
     // Heap-resident state for a single async metadata RPC. Lives as long as
     // the completion callback's shared_ptr keeps it alive.
     struct PendingMetaRpc {
@@ -777,7 +821,10 @@ namespace pinpoint {
         }
         // Treat a thrown build/launch exception like any other failed RPC so
         // the item is retried and, after exhaustion, its cache entry is
-        // released. The metadata is owned by the call once it was moved in;
+        // released. The status filter in process_completed does not apply
+        // here: there is no reply to judge, and what throws on this path
+        // (allocation, a closed channel) is the transient kind anyway.
+        // The metadata is owned by the call once it was moved in;
         // before that, the `meta` parameter still owns it.
         auto owned = (call != nullptr && call->meta != nullptr) ? std::move(call->meta)
                                                                 : std::move(meta);
@@ -857,19 +904,47 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done) {
+        // Both drop paths below release the cache entry themselves instead of
+        // going through retry_or_drop: that release is the item's one and only
+        // release (the retry path releases only on exhaustion), and it runs
+        // outside the pipeline mutex — the worker holds no lock here — as the
+        // lock order documented in retry_or_drop requires. The permit is not
+        // touched: completeCall returned it before queueing the outcome.
         for (auto& call : done) {
             if (call->status.ok() && call->reply.success()) {
                 LOG_DEBUG("success to send {} metadata", call->operation_name);
                 continue;
             }
+
             if (!call->status.ok()) {
+                if (!is_retryable_meta_status(call->status.error_code())) {
+                    LOG_ERROR("drop {} metadata: status {} is not retryable, {}",
+                              call->operation_name,
+                              static_cast<int>(call->status.error_code()),
+                              call->status.error_message());
+                    release_failed_cache(*call->meta);
+                    continue;
+                }
                 LOG_ERROR("failed to send {} metadata: {}, {}", call->operation_name,
                           static_cast<int>(call->status.error_code()),
                           call->status.error_message());
-            } else {
-                LOG_INFO("failed to send {} metadata: PResult.success=false", call->operation_name);
+                retry_or_drop(std::move(call->meta), call->retry_count + 1);
+                continue;
             }
-            retry_or_drop(std::move(call->meta), call->retry_count + 1);
+
+            // Transport succeeded, the collector answered "no". PResult.success
+            // is a verdict on the request's content (bad id, unsupported field,
+            // rejected payload), and the retry would replay the same bytes for
+            // the same verdict, so this is dropped like a non-retryable status
+            // rather than retried. Java retries it (GrpcDataSender treats every
+            // non-OK outcome alike) and Go never reads the field at all, so
+            // neither agent is evidence that retrying works. Releasing the
+            // cache entry keeps the recovery path: a later span re-registers
+            // the id and sends a *new* request, which is the only thing that
+            // can produce a different answer.
+            LOG_ERROR("drop {} metadata: collector rejected it (PResult.success=false), {}",
+                      call->operation_name, call->reply.message());
+            release_failed_cache(*call->meta);
         }
     }
 

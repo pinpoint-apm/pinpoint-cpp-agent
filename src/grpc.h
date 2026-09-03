@@ -459,9 +459,11 @@ namespace pinpoint {
      * Metadata items are independent unary RPCs (the collector keys each by
      * its id), so they are pipelined: the worker launches async sends behind
      * a small in-flight permit cap and processes completions as they arrive,
-     * mirroring GrpcSpan's async batch path. Failed items re-enter the retry
-     * schedule; exhausted items release their cache entry so the id is
-     * regenerated and re-sent later.
+     * mirroring GrpcSpan's async batch path. Items that failed transiently
+     * re-enter the retry schedule; items rejected for good (a non-retryable
+     * status, or PResult.success=false) are dropped at once, and either way a
+     * dropped item releases its cache entry so the id is regenerated and
+     * re-sent later.
      */
     class GrpcMetadata : public GrpcClient {
     public:
@@ -505,7 +507,9 @@ namespace pinpoint {
         // through the normal retry path.
         void on_launch_failure(const std::shared_ptr<PendingMetaRpc>& call, bool registered,
                                std::unique_ptr<MetaData> meta, int retry_count);
-        // Handles completed calls: success logs, failure re-enters retry.
+        // Handles completed calls: success logs; a transient failure re-enters
+        // the retry schedule, a permanent one (see is_retryable_meta_status)
+        // is dropped with its cache entry released.
         void process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done);
         // Schedules the item's next retry, or releases its cache entry once
         // the retry budget is exhausted. `retry_count` counts this failure.

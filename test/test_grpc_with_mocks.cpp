@@ -311,6 +311,13 @@ public:
         mode_ = mode;
     }
 
+    // Status returned by ReplyMode::ERROR_STATUS (default UNAVAILABLE), so a
+    // test can hold one code for an unbounded number of attempts.
+    void setErrorStatus(grpc::Status status) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        error_status_ = std::move(status);
+    }
+
     // Scripted per-type outcomes, consumed FIFO before the default mode —
     // the async equivalent of gmock WillOnce chains.
     void pushReply(MetaRpc rpc, grpc::Status status, bool result_success) {
@@ -509,7 +516,7 @@ private:
                         to_invoke = std::move(on_done);
                         break;
                     case ReplyMode::ERROR_STATUS:
-                        status = grpc::Status(grpc::StatusCode::UNAVAILABLE, "fake unavailable");
+                        status = error_status_;
                         to_invoke = std::move(on_done);
                         break;
                     case ReplyMode::HOLD:
@@ -556,6 +563,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     ReplyMode mode_{ReplyMode::OK};
+    grpc::Status error_status_{grpc::StatusCode::UNAVAILABLE, "fake unavailable"};
     std::array<size_t, 5> counts_{};
     std::array<std::deque<ScriptedReply>, 5> scripted_{};
     std::vector<v1::PApiMetaData> api_requests_;
@@ -1283,31 +1291,139 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerMixedSuccessFailureTest) {
     EXPECT_EQ(fake->apiRequest(2).apiinfo(), "api.recover");
 }
 
-TEST_F(GrpcMockTest, GrpcMetadataRetriesFailedResultWithoutEvictingCache) {
+// PResult.success=false is the collector rejecting the request's content, not
+// a delivery failure: resending the same bytes earns the same answer, so the
+// item is dropped at once and its cache entry released, letting a later span
+// re-register the id and send a genuinely new request.
+TEST_F(GrpcMockTest, GrpcMetadataDropsRejectedResultAndEvictsCache) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
     metadata.setRetryDelay(std::chrono::milliseconds(50));
 
     auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
     auto* fake = fake_meta_stub.get();
-    // PResult.success=false on the first attempt, success on the retry.
-    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, false);
-    fake->pushReply(FakeMetadataStub::MetaRpc::API, grpc::Status::OK, true);
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::RESULT_FAIL);
 
     metadata.setMockMetaStub(std::move(fake_meta_stub));
-    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.retry")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.rejected")));
 
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
 
-    // PResult.success=false must be retried after the (shrunk) retry delay
-    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 2, std::chrono::seconds(5)));
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_api_count_.load() >= 1; },
+        std::chrono::seconds(5)));
+    // Well past the 50ms retry delay: a scheduled retry would have fired.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    mock_agent_service_->setExiting(true);
     metadata.stopMetaWorker();
-
     if (meta_worker.joinable()) meta_worker.join();
 
-    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 1);
+}
+
+// Retry decision by status code, mirroring Go's isRetryableError: only
+// UNAVAILABLE and DEADLINE_EXCEEDED are worth resending. Everything else is a
+// verdict the same request earns again, so it costs one attempt, not four.
+// Either way the cache entry is released exactly once.
+TEST_F(GrpcMockTest, GrpcMetadataRetriesOnlyTransientStatusCodes) {
+    struct Case {
+        grpc::StatusCode code;
+        size_t expected_attempts;  // initial send + scheduled retries
+    };
+    const Case cases[] = {
+        {grpc::StatusCode::UNAVAILABLE, 4},
+        {grpc::StatusCode::DEADLINE_EXCEEDED, 4},
+        {grpc::StatusCode::INVALID_ARGUMENT, 1},
+        {grpc::StatusCode::UNIMPLEMENTED, 1},
+        {grpc::StatusCode::PERMISSION_DENIED, 1},
+        {grpc::StatusCode::UNAUTHENTICATED, 1},
+        {grpc::StatusCode::NOT_FOUND, 1},
+        {grpc::StatusCode::RESOURCE_EXHAUSTED, 1},
+        {grpc::StatusCode::ABORTED, 1},
+        {grpc::StatusCode::INTERNAL, 1},
+        {grpc::StatusCode::UNKNOWN, 1},
+    };
+
+    for (const auto& c : cases) {
+        SCOPED_TRACE("status code " + std::to_string(static_cast<int>(c.code)));
+        const auto released_before = mock_agent_service_->removed_api_count_.load();
+
+        TestableGrpcMetadata metadata(mock_agent_service_.get());
+        metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+        auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+        auto* fake = fake_meta_stub.get();
+        fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
+        fake->setErrorStatus(grpc::Status(c.code, "scripted failure"));
+
+        metadata.setMockMetaStub(std::move(fake_meta_stub));
+        metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.status")));
+
+        ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                         [&metadata] { metadata.sendMetaWorker(); });
+
+        // Both outcomes end in exactly one cache release: immediately for a
+        // permanent status, after retry exhaustion for a transient one.
+        EXPECT_TRUE(wait_for_condition(
+            [this, released_before] {
+                return mock_agent_service_->removed_api_count_.load() > released_before;
+            },
+            std::chrono::seconds(10)));
+        // Long enough for another retry to fire if one were scheduled.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        metadata.stopMetaWorker();
+        if (meta_worker.joinable()) meta_worker.join();
+
+        EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), c.expected_attempts);
+        EXPECT_EQ(mock_agent_service_->removed_api_count_.load() - released_before, 1);
+    }
+}
+
+// A permanent status must not tie up the pipeline: no retry-schedule slot is
+// taken (one attempt per item), and every permit comes back, so far more
+// items than meta_max_concurrent_requests still drain and the next healthy
+// send goes out immediately.
+TEST_F(GrpcMockTest, GrpcMetadataNonRetryableFailuresFreePermitsAndRetryQueue) {
+    constexpr int kItems = 20;  // >> meta_max_concurrent_requests (4)
+
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
+    fake->setErrorStatus(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "schema mismatch"));
+
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    for (int i = 0; i < kItems; ++i) {
+        metadata.enqueueMeta(std::make_unique<MetaData>(
+            ApiMeta(i + 1, 100, "api.permanent." + std::to_string(i))));
+    }
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_api_count_.load() >= kItems; },
+        std::chrono::seconds(10)));
+
+    // The pipeline is not stalled: with the fault cleared, the very next item
+    // is sent — impossible if the drops had kept their permits.
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::OK);
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        StringMeta(1, "error.after.drops", STRING_META_ERROR)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::STRING, 1,
+                                          std::chrono::seconds(5)));
+
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    // One attempt each: no item ever entered the retry schedule.
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), static_cast<size_t>(kItems));
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), kItems);
+    EXPECT_EQ(mock_agent_service_->removed_error_count_.load(), 0);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataRetriesItemWhenSendThrows) {

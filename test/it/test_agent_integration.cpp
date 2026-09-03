@@ -1881,7 +1881,11 @@ TEST_F(AgentIntegrationTest, DroppedSpanReleasesActiveRequestWithoutSendingSpan)
               0U);
 }
 
-TEST_F(AgentIntegrationTest, RetriesMetadataAfterGrpcAndApplicationErrors) {
+// UNAVAILABLE is transient, so the item is rescheduled; an application-level
+// rejection is not retried at all. Both recover the same way in the end: the
+// dropped item releases its cache entry, so the next use of the name
+// re-registers it under a fresh id and sends a genuinely new request.
+TEST_F(AgentIntegrationTest, RetriesTransientMetadataFailureButNotRejection) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
     collector_.FailNext(CollectorRpc::ApiMetadata,
@@ -1893,25 +1897,49 @@ TEST_F(AgentIntegrationTest, RetriesMetadataAfterGrpcAndApplicationErrors) {
     const auto api_id = impl_->cacheApi("fault.retry.api", API_TYPE_DEFAULT);
     ASSERT_GT(api_id, 0);
 
+    // Attempt 1 fails with UNAVAILABLE and is retried; attempt 2 comes back
+    // rejected and ends the item there.
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-        const auto matching_requests = std::count_if(
-            snapshot.api_metadata.begin(), snapshot.api_metadata.end(),
-            [](const auto& received) {
-                return received.message.apiinfo() == "fault.retry.api";
-            });
-        return matching_requests >= 3 &&
-               results_for(snapshot, CollectorRpc::ApiMetadata).size() >= 3;
+        return results_for(snapshot, CollectorRpc::ApiMetadata).size() >= 2;
     }, kWaitTimeout));
 
-    const auto results = results_for(collector_.snapshot(),
-                                     CollectorRpc::ApiMetadata);
-    ASSERT_GE(results.size(), 3U);
+    // The rejection released the cache entry, so the same name now yields a
+    // new id and publishes again. Polled because the release happens on the
+    // metadata worker; every call before it is a plain cache hit that sends
+    // nothing, so exactly one extra request follows.
+    int32_t resent_id = api_id;
+    ASSERT_TRUE(wait_until([&] {
+        resent_id = impl_->cacheApi("fault.retry.api", API_TYPE_DEFAULT);
+        return resent_id != api_id;
+    }));
+    ASSERT_GT(resent_id, 0);
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return results_for(snapshot, CollectorRpc::ApiMetadata).size() >= 3;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    const auto results = results_for(snapshot, CollectorRpc::ApiMetadata);
+    ASSERT_EQ(results.size(), 3U);
     EXPECT_EQ(results[0].status_code, grpc::StatusCode::UNAVAILABLE);
     EXPECT_FALSE(results[0].response_success);
     EXPECT_EQ(results[1].status_code, grpc::StatusCode::OK);
     EXPECT_FALSE(results[1].response_success);
     EXPECT_EQ(results[2].status_code, grpc::StatusCode::OK);
     EXPECT_TRUE(results[2].response_success);
+
+    // Three requests for the name: the failed send, its retry, and the
+    // re-registration — the rejection itself was never resent.
+    std::vector<int32_t> sent_ids;
+    for (const auto& received : snapshot.api_metadata) {
+        if (received.message.apiinfo() == "fault.retry.api") {
+            sent_ids.push_back(received.message.apiid());
+        }
+    }
+    ASSERT_EQ(sent_ids.size(), 3U);
+    EXPECT_EQ(sent_ids[0], api_id);
+    EXPECT_EQ(sent_ids[1], api_id);
+    EXPECT_EQ(sent_ids[2], resent_id);
     EXPECT_TRUE(agent_->Enable());
 }
 
