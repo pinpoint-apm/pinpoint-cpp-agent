@@ -148,6 +148,7 @@ namespace pinpoint {
         constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
         constexpr const char* SQL_ENABLE_RAW_SQL_CACHE = "SQL_ENABLE_RAW_SQL_CACHE";
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
+        constexpr const char* SQL_REMOVE_COMMENTS = "SQL_REMOVE_COMMENTS";
         constexpr const char* CONFIG_FILE = "CONFIG_FILE";
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
         constexpr const char* ENABLE_CONFIG_FILE_WATCHER = "ENABLE_CONFIG_FILE_WATCHER";
@@ -317,6 +318,9 @@ namespace pinpoint {
             bool enable_sql_stats = false;
             bool enable_raw_sql_cache = true;
             bool trace_bind_value = true;
+            // Strip SQL comments before normalization. Off by default like the
+            // Java agent; turning it on changes SQL ids/UIDs of commented SQL.
+            bool remove_comments = false;
         } sql;
 
         /**

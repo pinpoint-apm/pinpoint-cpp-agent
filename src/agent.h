@@ -33,6 +33,7 @@
 #include "cache.h"
 #include "sampling.h"
 #include "span.h"
+#include "sql.h"
 #include "stat.h"
 #include "grpc.h"
 #include "url_stat.h"
@@ -210,6 +211,9 @@ namespace pinpoint {
         std::unique_ptr<SqlUidCache> sql_uid_cache_{};
         std::unique_ptr<RawSqlCache> raw_sql_id_cache_{};
         std::unique_ptr<RawSqlCache> raw_sql_uid_cache_{};
+        // Immutable after the ctor (Sql.RemoveComments is startup-only) and
+        // normalize() keeps all state local, so it is shared by every thread.
+        std::unique_ptr<const SqlNormalizer> sql_normalizer_{};
         mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
         mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
         // Mirror of config->sql.enable_raw_sql_cache, refreshed by

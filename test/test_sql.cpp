@@ -27,15 +27,20 @@ namespace pinpoint {
 class SqlTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Default: comments are kept, like the Java agent.
         normalizer_ = std::make_unique<SqlNormalizer>();
+        // Opt-in comment removal (Sql.RemoveComments=true).
+        remove_comments_ = std::make_unique<SqlNormalizer>(2048, true);
     }
 
     void TearDown() override {
         normalizer_.reset();
+        remove_comments_.reset();
     }
 
 protected:
     std::unique_ptr<SqlNormalizer> normalizer_;
+    std::unique_ptr<SqlNormalizer> remove_comments_;
 };
 
 static std::vector<std::string> ParseOutputParameter(std::string_view output_params) {
@@ -311,28 +316,28 @@ TEST_F(SqlTest, MixedParametersTest) {
 // ========== Comment Removal Tests ==========
 
 TEST_F(SqlTest, LineCommentRemovalTest) {
-    auto result = normalizer_->normalize("SELECT * FROM users -- This is a comment");
+    auto result = remove_comments_->normalize("SELECT * FROM users -- This is a comment");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
     EXPECT_EQ(result.parameters, "");
     
-    result = normalizer_->normalize("SELECT * FROM users -- Comment\nWHERE id = 1");
+    result = remove_comments_->normalize("SELECT * FROM users -- Comment\nWHERE id = 1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0#");
     EXPECT_EQ(result.parameters, "1");
 }
 
 TEST_F(SqlTest, BlockCommentRemovalTest) {
-    auto result = normalizer_->normalize("SELECT * /* This is a block comment */ FROM users");
+    auto result = remove_comments_->normalize("SELECT * /* This is a block comment */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
     
-    result = normalizer_->normalize("SELECT * /* Multi\nline\ncomment */ FROM users");
+    result = remove_comments_->normalize("SELECT * /* Multi\nline\ncomment */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test // single-line comment removal (matches Java agent behavior)
 TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
-    auto result = normalizer_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
+    auto result = remove_comments_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a=0#");
     EXPECT_EQ(result.parameters, "1");
 }
@@ -345,52 +350,42 @@ TEST_F(SqlTest, DivisionOperatorPreservedTest) {
 }
 
 TEST_F(SqlTest, MixedCommentsTest) {
-    auto result = normalizer_->normalize("SELECT * /* block */ FROM users -- line comment");
+    auto result = remove_comments_->normalize("SELECT * /* block */ FROM users -- line comment");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users ");
     EXPECT_EQ(result.parameters, "");
 }
 
 TEST_F(SqlTest, CommentsWithParametersTest) {
-    auto result = normalizer_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
+    auto result = remove_comments_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users  WHERE id = 0# ");
     EXPECT_EQ(result.parameters, "456");
 }
 
-// Removing a comment must not merge the tokens around it: a single space is
-// spliced in when both neighbors are non-space, and a digit right after the
-// removed comment starts a numeric literal.
-TEST_F(SqlTest, CommentRemovalTokenSeparationTest) {
-    auto result = normalizer_->normalize("SELECT/*c*/1 FROM t");
-    EXPECT_EQ(result.normalized_sql, "SELECT 0# FROM t");
-    EXPECT_EQ(result.parameters, "1");
+// Java parity (ParserContext with removeComments=true): a removed comment
+// leaves nothing behind — no space is spliced in and the number-token flag is
+// not touched, so the surrounding tokens merge exactly as Java merges them.
+TEST_F(SqlTest, CommentRemovalLeavesNoSeparatorTest) {
+    auto result = remove_comments_->normalize("SELECT/*c*/1 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT1 FROM t");
+    EXPECT_EQ(result.parameters, "");
 
-    result = normalizer_->normalize("SELECT a FROM t WHERE a=1--c\nAND b=2");
-    EXPECT_EQ(result.normalized_sql, "SELECT a FROM t WHERE a=0# AND b=1#");
+    result = remove_comments_->normalize("SELECT a FROM t WHERE a=1--c\nAND b=2");
+    EXPECT_EQ(result.normalized_sql, "SELECT a FROM t WHERE a=0#AND b=1#");
     EXPECT_EQ(result.parameters, "1,2");
 
-    result = normalizer_->normalize("SELECT col1/*c*/2 FROM t");
-    EXPECT_EQ(result.normalized_sql, "SELECT col1 0# FROM t");
-    EXPECT_EQ(result.parameters, "2");
+    result = remove_comments_->normalize("SELECT col1/*c*/2 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT col12 FROM t");
+    EXPECT_EQ(result.parameters, "");
 
-    // No space is spliced in when whitespace already separates the tokens.
-    result = normalizer_->normalize("SELECT * /*c*/ FROM t");
+    result = remove_comments_->normalize("SELECT * /*c*/ FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM t");
     EXPECT_EQ(result.parameters, "");
-}
 
-// The '//' line-comment branch shares the same token-separation splice as '/* */'
-// and '--' (src/sql.cpp), but the existing '//' removal test has whitespace before
-// the comment, so its splice branch never fires. Cover the no-surrounding-space
-// case directly: without the splice, "SELECT//c\n1" would merge to "SELECT1" and
-// the digit would not be re-detected as a numeric literal.
-TEST_F(SqlTest, SlashSlashCommentRemovalTokenSeparationTest) {
-    auto result = normalizer_->normalize("SELECT//c\n1 FROM t");
-    EXPECT_EQ(result.normalized_sql, "SELECT 0# FROM t");
-    EXPECT_EQ(result.parameters, "1");
+    result = remove_comments_->normalize("SELECT//c\n1 FROM t");
+    EXPECT_EQ(result.normalized_sql, "SELECT1 FROM t");
+    EXPECT_EQ(result.parameters, "");
 
-    // When the character following the removed '//' comment is already
-    // whitespace, no extra space is spliced in (no double space).
-    result = normalizer_->normalize("SELECT//c\n FROM t");
+    result = remove_comments_->normalize("SELECT//c\n FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT FROM t");
     EXPECT_EQ(result.parameters, "");
 }
@@ -424,9 +419,9 @@ TEST_F(SqlTest, StringLiteralHandlingTest) {
 // Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
-    // The trailing quote opens an unterminated (empty) literal, which still
-    // gets its placeholder (1$) so the parameter list stays index-aligned.
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'1$");
+    // The trailing quote opens an unterminated (empty) literal: like Java, only
+    // the quote is kept and no placeholder is emitted.
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
     EXPECT_EQ(result.parameters, "John\\,");
 }
 
@@ -490,7 +485,7 @@ TEST_F(SqlTest, VeryLongSqlTest) {
 
 // Test SQL with only comments
 TEST_F(SqlTest, OnlyCommentsTest) {
-    auto result = normalizer_->normalize("/* This is only a comment */");
+    auto result = remove_comments_->normalize("/* This is only a comment */");
     EXPECT_EQ(result.normalized_sql, "");
     EXPECT_EQ(result.parameters, "");
 }
@@ -515,7 +510,7 @@ TEST_F(SqlTest, Utf8SafeTruncationTest) {
     SqlNormalizer cut_mid_char(12);
     auto result = cut_mid_char.normalize("SELECT '\xEA\xB0\x80\xEA\xB0\x80'");
     EXPECT_EQ(result.parameters, "\xEA\xB0\x80");
-    EXPECT_EQ(result.normalized_sql, "SELECT '0$");
+    EXPECT_EQ(result.normalized_sql, "SELECT '");
 
     // A limit landing exactly on a character boundary keeps every byte.
     SqlNormalizer cut_on_boundary(14);
@@ -530,16 +525,16 @@ TEST_F(SqlTest, Utf8SafeTruncationTest) {
 }
 
 // An unterminated string literal (e.g. SQL truncated at max_sql_length in the
-// middle of a string) still emits its placeholder, so the extracted parameter
-// list stays index-aligned with the normalized SQL.
-TEST_F(SqlTest, UnterminatedStringLiteralPlaceholderTest) {
+// middle of a string) keeps only its opening quote and emits no placeholder;
+// its content is still recorded in the parameters (Java/Go parity).
+TEST_F(SqlTest, UnterminatedStringLiteralNoPlaceholderTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE a = 'x' AND b = 'unclosed");
-    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a = '0$' AND b = '1$");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a = '0$' AND b = '");
     EXPECT_EQ(result.parameters, "x,unclosed");
 
     SqlNormalizer short_normalizer(20);
     result = short_normalizer.normalize("SELECT 'long literal cut off by the length limit'");
-    EXPECT_EQ(result.normalized_sql, "SELECT '0$");
+    EXPECT_EQ(result.normalized_sql, "SELECT '");
     EXPECT_EQ(result.parameters, "long literal");
 }
 
@@ -577,7 +572,7 @@ TEST_F(SqlTest, ParameterIndexingAccuracyTest) {
 }
 
 TEST_F(SqlTest, NestedQuotesAndCommentsTest) {
-    auto result = normalizer_->normalize("SELECT 'Comment /* not really */' FROM table WHERE id = 123 -- 'not a string'");
+    auto result = remove_comments_->normalize("SELECT 'Comment /* not really */' FROM table WHERE id = 123 -- 'not a string'");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM table WHERE id = 1# ");
     EXPECT_EQ(result.parameters, "Comment /* not really */,123");
 }
@@ -610,7 +605,7 @@ TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
 }
 
 TEST_F(SqlTest, UnclosedBlockCommentTest) {
-    auto result = normalizer_->normalize("SELECT * FROM users /* unclosed comment");
+    auto result = remove_comments_->normalize("SELECT * FROM users /* unclosed comment");
     // Everything after /* should be consumed as comment
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
     EXPECT_EQ(result.parameters, "");
@@ -659,14 +654,14 @@ TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
 }
 
 TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
-    auto result = normalizer_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
+    auto result = remove_comments_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT  *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test block comment immediately followed by string literal
 TEST_F(SqlTest, BlockCommentFollowedByStringTest) {
-    auto result = normalizer_->normalize("SELECT /* comment */'hello' FROM t");
+    auto result = remove_comments_->normalize("SELECT /* comment */'hello' FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM t");
     EXPECT_EQ(result.parameters, "hello");
 }
@@ -680,14 +675,14 @@ TEST_F(SqlTest, NumberAtEndOfSqlTest) {
 
 // Test line comment with \r\n line endings
 TEST_F(SqlTest, LineCommentCRLFTest) {
-    auto result = normalizer_->normalize("SELECT * -- comment\r\nFROM users");
+    auto result = remove_comments_->normalize("SELECT * -- comment\r\nFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test line comment with only \r (carriage return)
 TEST_F(SqlTest, LineCommentCROnlyTest) {
-    auto result = normalizer_->normalize("SELECT * -- comment\rFROM users");
+    auto result = remove_comments_->normalize("SELECT * -- comment\rFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * ");
     EXPECT_EQ(result.parameters, "");
 }
@@ -802,6 +797,41 @@ TEST_F(SqlTest, MultipleDecimalPointsTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 1.2.3");
     // Document current behavior: treated as a single numeric token
     EXPECT_TRUE(result.parameters.find("1.2.3") != std::string::npos);
+}
+
+// ========== Java parity golden cases ==========
+//
+// Expected values are the Java agent's DefaultSqlNormalizer output
+// (removeComments=false, the default on both sides). The normalized SQL is
+// the SQL id/UID cache key and PSqlMetaData.sql, so it must match byte for
+// byte.
+
+TEST_F(SqlTest, JavaParityGoldenCases) {
+    ExpectNormalize(*normalizer_,
+        "select * from t where a = 1.5e3 and b = 'it''s' and c = \"col1\" -- comment",
+        "select * from t where a = 0# and b = '1$' and c = \"col1\" -- comment", "1.5e3,it''s");
+    ExpectNormalize(*normalizer_,
+        "a = -1 and b = 1e-3 and c = 0x1F",
+        "a = -0# and b = 1#-2# and c = 3#x1F", "1,1e,3,0");
+    ExpectNormalize(*normalizer_,
+        "select t1.col2, t1.5 from t where id = 10 and name = 'a,b' and n2 = 'x''y'",
+        "select t1.col2, t1.5 from t where id = 0# and name = '1$' and n2 = '2$'", "10,a,,b,x''y");
+    ExpectNormalize(*normalizer_,
+        "s = 'a\\'b' and n = 3",
+        "s = '0$'b'", "a\\, and n = 3");
+    ExpectNormalize(*normalizer_,
+        "select /*+ INDEX(t idx) */ 1, \"2\", '' , 'z' from t /* multi\n line 42 */ where x = ?",
+        "select /*+ INDEX(t idx) */ 0#, \"1#\", '' , '2$' from t /* multi\n line 42 */ where x = ?", "1,2,z");
+    ExpectNormalize(*normalizer_,
+        "SELECT/*c*/1 FROM t WHERE 테이블1 = 2 and 名前 = '値'",
+        "SELECT/*c*/1 FROM t WHERE 테이블0# = 1# and 名前 = '2$'", "1,2,値");
+    ExpectNormalize(*normalizer_,
+        "select $1, $2 from t where a=$3 and b = 4",
+        "select $1, $2 from t where a=$3 and b = 0#", "4");
+    ExpectNormalize(*normalizer_, "select 'abc", "select '", "abc");
+    ExpectNormalize(*normalizer_,
+        "insert into t values (1,2,3), ('a','b','c') // trailing",
+        "insert into t values (0#,1#,2#), ('3$','4$','5$') // trailing", "1,2,3,a,b,c");
 }
 
 // ========== Ported Java DefaultSqlNormalizer Tests ==========

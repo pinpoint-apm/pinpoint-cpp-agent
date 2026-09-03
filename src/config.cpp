@@ -399,6 +399,7 @@ namespace pinpoint {
         {"Sql.EnableSqlStats", REF(sql.enable_sql_stats), RELOAD, env::SQL_ENABLE_SQL_STATS},
         {"Sql.EnableRawSqlCache", REF(sql.enable_raw_sql_cache), RELOAD, env::SQL_ENABLE_RAW_SQL_CACHE},
         {"Sql.TraceBindValue", REF(sql.trace_bind_value), RELOAD, env::SQL_TRACE_BIND_VALUE},
+        {"Sql.RemoveComments", REF(sql.remove_comments), FIXED, env::SQL_REMOVE_COMMENTS},
         {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
         {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
     };

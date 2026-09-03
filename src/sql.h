@@ -38,12 +38,15 @@ namespace pinpoint {
     * SQL normalizer for APM tracing. Replaces numeric literals with indexed
     * placeholders (0#, 1#, ...) and string literals with '0$', '1$', ...,
     * optionally strips comments, and extracts both literal kinds in order
-    * (comma-separated).
+    * (comma-separated). Byte-compatible with the Java agent's
+    * DefaultSqlNormalizer: the output is the SQL id/UID cache key.
     */
     class SqlNormalizer {
     public:
-        /// Comments are removed by default, matching the Java agent's JDBC option.
-        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = true);
+        /// Comments are kept by default, matching the Java agent
+        /// (removeComments=false). When removed, nothing is put in their
+        /// place — again like Java.
+        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = false);
         ~SqlNormalizer() = default;
 
         /// Normalizes and extracts both literal kinds in a single pass.

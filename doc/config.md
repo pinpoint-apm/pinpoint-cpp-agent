@@ -263,6 +263,7 @@ Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are d
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Record SQL metadata keyed by UID (`SQL-UID` annotation) instead of ID (`SQL-ID`), for collectors that aggregate SQL statistics by uid. Applies to sampled spans only. |
 | `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAW_SQL_CACHE` | bool | `true` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
+| `Sql.RemoveComments` | `PINPOINT_CPP_SQL_REMOVE_COMMENTS` | bool | `false` | Strip SQL comments (`/* */`, `--`, `//`) before normalization, without inserting anything in their place. Off by default so comments (e.g. Oracle `/*+ INDEX */` hints) stay visible and the normalized SQL, and therefore the SQL id/UID, is byte-identical to the Java agent. Startup-only: changing it mid-run would re-key already cached SQL. |
 
 ---
 
@@ -303,6 +304,7 @@ changing them requires an application restart.
 | Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
 | URL statistics | `Http.CollectUrlStat`, `Http.UrlStat*` | No |
 | Span queue | `Span.QueueSize` | No |
+| SQL comment removal | `Sql.RemoveComments` | No |
 | Config-file watcher | `EnableConfigFileWatcher` | No |
 | Logging | `Log.Level`, `Log.FilePath`, `Log.MaxFileSize` | **Yes** |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |

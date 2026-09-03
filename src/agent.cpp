@@ -130,6 +130,7 @@ namespace pinpoint {
         sql_uid_cache_ = std::make_unique<SqlUidCache>(cache_size);
         raw_sql_id_cache_ = std::make_unique<RawSqlCache>(cache_size);
         raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(cache_size);
+        sql_normalizer_ = std::make_unique<const SqlNormalizer>(64 * 1024, cfg->sql.remove_comments);
 
         // Initial build: no previous runtime, so every component is created
         // and published together in one atomic store. The constructor stays
@@ -1179,13 +1180,7 @@ namespace pinpoint {
             return std::nullopt;
         }
 
-        // SqlNormalizer has immutable configuration and normalize() keeps all
-        // state local, so one process-wide instance is safe for concurrent use.
-        // Leaked like the other exit-surviving singletons (Logger, the global
-        // agent holder): user threads can still call prepareSql during static
-        // destruction when the process exits without Shutdown(), and a
-        // function-local static would already be destroyed at that point.
-        static const SqlNormalizer& normalizer = *new SqlNormalizer(64 * 1024);
+        const SqlNormalizer& normalizer = *sql_normalizer_;
         // One relaxed load instead of a runtime snapshot lookup plus owning
         // Config copy: this runs once per SQL statement and only needs this flag.
         const bool enable_raw_sql_cache =

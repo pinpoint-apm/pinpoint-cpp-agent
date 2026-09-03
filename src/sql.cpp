@@ -35,10 +35,6 @@ namespace pinpoint {
             return std::isdigit(static_cast<unsigned char>(c)) != 0;
         }
 
-        bool isSpace(char c) {
-            return std::isspace(static_cast<unsigned char>(c)) != 0;
-        }
-
         void appendParameterSeparator(SqlNormalizeResult& result) {
             if (!result.parameters.empty()) {
                 result.parameters += ',';
@@ -87,23 +83,9 @@ namespace pinpoint {
         // Tracks whether the next digit begins a numeric literal. Mirrors the Java
         // ParserContext.numberTokenStartEnable flag: a digit that follows an identifier
         // character (e.g. "col1") is part of the identifier, not a literal.
+        // Comments never touch the flag, kept or removed: like Java, a removed
+        // comment leaves no separator behind ("SELECT/*c*/1" -> "SELECT1").
         bool number_token_start_enable = true;
-
-        // A removed comment is still a token separator: without this, removal
-        // would butt the surrounding tokens together ("SELECT/*c*/1" ->
-        // "SELECT1") and the digit after the comment would inherit the
-        // identifier state of the character before it. Splice in one space
-        // only when both neighbors are non-space, so removal never doubles
-        // existing whitespace. Kept comments (remove_comments_ == false) are
-        // left untouched to stay byte-compatible with the Java parser.
-        auto separate_removed_comment = [&](size_t comment_end) {
-            const char following = lookAhead1(sql, comment_end);
-            if (!result.normalized_sql.empty() && !isSpace(result.normalized_sql.back()) &&
-                following != '\0' && !isSpace(following)) {
-                result.normalized_sql += ' ';
-                number_token_start_enable = true;
-            }
-        };
 
         for (size_t i = 0; i < sql_length; ++i) {
             char c = sql[i];
@@ -114,15 +96,9 @@ namespace pinpoint {
                     if (next_c == '*') {
                         i = readComment(sql, sql_length, i, "/*", "*/",
                             remove_comments_ ? nullptr : &result.normalized_sql);
-                        if (remove_comments_) {
-                            separate_removed_comment(i);
-                        }
                     } else if (next_c == '/') {
                         i = readComment(sql, sql_length, i, "//", "\n",
                             remove_comments_ ? nullptr : &result.normalized_sql);
-                        if (remove_comments_) {
-                            separate_removed_comment(i);
-                        }
                     } else {
                         number_token_start_enable = true;
                         result.normalized_sql += c;
@@ -133,9 +109,6 @@ namespace pinpoint {
                     if (next_c == '-') {
                         i = readComment(sql, sql_length, i, "--", "\n",
                             remove_comments_ ? nullptr : &result.normalized_sql);
-                        if (remove_comments_) {
-                            separate_removed_comment(i);
-                        }
                     } else {
                         number_token_start_enable = true;
                         result.normalized_sql += c;
@@ -194,14 +167,14 @@ namespace pinpoint {
             appendParameterChar(result, state_ch);
         }
 
-        // The parameter list already received its separator and content, so the
-        // placeholder must be emitted even when the literal is unterminated
-        // (e.g. the SQL was cut at max_sql_length mid-string); otherwise the
-        // parameter indexes no longer line up with the normalized SQL.
-        appendParameterIndex(result.normalized_sql, result.param_index);
-        result.normalized_sql += kSymbolReplace;
-        ++result.param_index;
+        // Java/Go parity: an unterminated literal (unbalanced quote, or SQL
+        // cut at max_sql_length mid-string) keeps only the opening quote. Its
+        // content is still recorded in the parameters, but no placeholder is
+        // emitted.
         if (closed) {
+            appendParameterIndex(result.normalized_sql, result.param_index);
+            result.normalized_sql += kSymbolReplace;
+            ++result.param_index;
             result.normalized_sql += quote_char;
         }
 
