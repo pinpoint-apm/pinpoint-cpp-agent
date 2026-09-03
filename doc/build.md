@@ -71,7 +71,9 @@ docker run --rm -v "$PWD:/workspace" \
     pinpointdocker/pinpoint-cpp-build-env:1.0.0 pinpoint-vcpkg-build
 ```
 
-In GitHub Actions the image is a job container and the checkout is a step:
+In GitHub Actions the image is a job container and the checkout is a step.
+[.github/workflows/build.yml](../.github/workflows/build.yml) does exactly
+that on every pull request and every push to `main`:
 
 ```yaml
 jobs:
@@ -84,6 +86,10 @@ jobs:
           submodules: recursive
       - run: pinpoint-vcpkg-build
 ```
+
+`push` is restricted to `main` there so a branch in this repository is built
+once by `pull_request` rather than twice, and `concurrency` cancels a run that
+a newer push has made obsolete.
 
 Both `1.0.0` and `latest` point at the same image; prefer the version tag in a
 pipeline so that republishing `latest` after a dependency bump cannot change

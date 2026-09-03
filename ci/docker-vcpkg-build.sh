@@ -10,8 +10,27 @@
 # PINPOINT_CTEST_ARGS  extra ctest arguments, e.g. "-E agent_integration_test"
 set -euo pipefail
 
+# A container CPU limit is a CFS quota, not a smaller cpuset, so nproc still
+# reports every core on the host and -j$(nproc) oversubscribes a capped runner
+# by a wide margin: 20 compilers sharing four cores' worth of quota thrash
+# memory and stall. Prefer the quota when the cgroup declares one.
+detect_jobs() {
+    local quota period
+    if [ -r /sys/fs/cgroup/cpu.max ]; then                    # cgroup v2
+        read -r quota period < /sys/fs/cgroup/cpu.max
+    elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then     # cgroup v1
+        quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
+        period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+    fi
+    case "${quota:-}" in
+        ''|max|-1|0) nproc; return ;;
+    esac
+    # Round down, but never below 1: --cpus=0.5 must not yield -j0.
+    echo $(( quota / period > 0 ? quota / period : 1 ))
+}
+
 source_dir="${1:-$PWD}"
-jobs="${PINPOINT_BUILD_JOBS:-$(nproc)}"
+jobs="${PINPOINT_BUILD_JOBS:-$(detect_jobs)}"
 cd "${source_dir}"
 
 test -f CMakePresets.json || {

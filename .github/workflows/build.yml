@@ -1,0 +1,53 @@
+name: Build and test
+
+# Runs the CMake `vcpkg` preset inside the prebuilt build image, which already
+# carries the whole dependency closure in a vcpkg binary cache, so a job
+# compiles agent code rather than gRPC/Protobuf/Abseil. See the CI image
+# section of doc/build.md.
+#
+# The image version is pinned rather than tracking `latest`: republishing the
+# image after a dependency bump must not silently change what an existing
+# commit builds against. Bump it here when vcpkg.json changes.
+
+on:
+  # `push` is limited to main so that a pull request from a branch in this
+  # repository is built once, by pull_request, instead of twice.
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request makes the in-flight run
+# obsolete; do not keep paying for it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vcpkg:
+    name: CMake vcpkg preset
+    runs-on: ubuntu-latest
+    container: pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    steps:
+      # The Protobuf/gRPC service definitions are a submodule, and the build
+      # needs them; the image's system-wide safe.directory setting is what lets
+      # git read a checkout owned by the runner's uid.
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # Deliberately the script from the checkout, not the `pinpoint-vcpkg-build`
+      # copy baked into the image: the image supplies the toolchain and the
+      # dependency cache, the commit supplies its own build recipe. A fix to
+      # the recipe is then an ordinary pull request instead of an image
+      # republish, and every commit is built by the script it shipped with.
+      # Configures, builds and runs ctest, timing each phase. The test preset
+      # already prints failing test output, so a red job needs no extra logs.
+      - name: Configure, build and test
+        run: ./ci/docker-vcpkg-build.sh
