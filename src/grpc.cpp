@@ -701,7 +701,13 @@ namespace pinpoint {
         try {
             std::unique_lock<std::mutex> lock(pipeline_->mutex);
 
-            if (pipeline_->queue.size() + pipeline_->retry_queue.size() < max_queue_size) {
+            // Only the new queue is charged: the retry schedule is bounded
+            // separately (tuning_.meta_retry_queue_size). One shared budget
+            // let a collector outage migrate items into retry_queue and
+            // shrink the room for new metadata, and since every drop here
+            // releases the cache entry, the same metadata came back from the
+            // next span — drops feeding their own inflow.
+            if (pipeline_->queue.size() < max_queue_size) {
                 // deque::push_back gives the strong guarantee and PendingMeta's
                 // move cannot throw, so `pending` still owns the metadata
                 // whenever this block is left by exception.
@@ -723,10 +729,10 @@ namespace pinpoint {
             // threw. Reported outside the lock, at WARN so outage data loss is
             // visible by default, rate-limited so a full queue cannot flood
             // the log. The label names this drop's cause; the count is
-            // cumulative across both.
+            // cumulative across every cause, retry-queue overflow included.
             if (const auto dropped = meta_drop_reporter_.record()) {
                 LOG_WARN("metadata {}: {} dropped in total (max queue size {})",
-                         enqueue_threw ? "enqueue failed" : "queue overflow",
+                         enqueue_threw ? "enqueue failed" : "new queue overflow",
                          dropped, max_queue_size);
             }
             // The producer registered the id in the agent caches before
@@ -796,8 +802,30 @@ namespace pinpoint {
         LOG_DEBUG("retry metadata send: retryCount={}/{}", retry_count, tuning_.meta_retry_max_attempts);
         PendingMeta pending{std::move(meta), retry_count,
                             std::chrono::steady_clock::now() + tuning_.meta_retry_delay};
+        // Overflow policy: a full retry schedule head-drops — the opposite of
+        // enqueueMeta's newest-drop, because the schedule is ordered by due
+        // time and the incoming item is always the last one due (every retry
+        // uses the same fixed delay). Dropping the newest would therefore
+        // freeze the schedule on whatever entered it first and deny every
+        // later failure a retry at all; head-dropping keeps the freshest
+        // failures, which are the ones whose spans the collector is still
+        // receiving, and guarantees forward progress under a sustained
+        // outage. The dropped item is not lost for good: releasing its cache
+        // entry (below, as every drop path must) re-registers and re-sends
+        // the id on its next use, which is the recovery an unbounded,
+        // memory-eating schedule buys nothing over.
+        std::unique_ptr<MetaData> evicted;
         try {
             std::lock_guard<std::mutex> lock(pipeline_->mutex);
+            if (!pipeline_->retry_queue.empty() &&
+                pipeline_->retry_queue.size() >= tuning_.meta_retry_queue_size) {
+                // Ownership moves out here and the release happens after the
+                // lock, so this item is released exactly once even if the
+                // emplace below throws.
+                auto oldest = pipeline_->retry_queue.begin();
+                evicted = std::move(oldest->second.meta);
+                pipeline_->retry_queue.erase(oldest);
+            }
             pipeline_->retry_queue.emplace(pending.available_at, std::move(pending));
             // No notify: this runs on the worker thread — the only waiter on
             // the pipeline cv — which re-examines the retry queue on its next
@@ -813,6 +841,18 @@ namespace pinpoint {
             if (pending.meta) {
                 release_failed_cache(*pending.meta);
             }
+        }
+        if (evicted != nullptr) {
+            // Same rate-limited reporter (and cumulative count) as the
+            // enqueue-side drops, with its own label so an outage's retry
+            // pressure is distinguishable from new-metadata pressure.
+            if (const auto dropped = meta_drop_reporter_.record()) {
+                LOG_WARN("metadata retry queue overflow: {} dropped in total "
+                         "(oldest dropped, max retry queue size {})",
+                         dropped, tuning_.meta_retry_queue_size);
+            }
+            // Outside the pipeline mutex, for the lock-order reason above.
+            release_failed_cache(*evicted);
         }
     }
 

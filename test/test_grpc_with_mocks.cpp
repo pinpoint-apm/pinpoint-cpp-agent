@@ -2831,6 +2831,81 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
         << "the two delivered items must keep their cache entries";
 }
 
+// The new queue and the retry schedule hold independent budgets: a retry
+// backlog built up during a collector outage must not consume the room for
+// new metadata. It used to — one sender_queue_size covered both — and since
+// every drop releases the cache entry, the dropped item came straight back
+// from the next span, so drops fed their own inflow.
+//
+// A readiness failure (not a stub error) drives the retries here: it moves an
+// item from the queue into the retry schedule without any RPC, and the long
+// retry delay keeps it parked there for the whole test.
+TEST_F(GrpcMockTest, GrpcMetadataRetryBacklogDoesNotStarveNewMetaQueue) {
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.sender_queue_size = 2;
+
+    GrpcClientTuning tuning;
+    tuning.meta_retry_queue_size = 1;
+    tuning.meta_retry_delay = std::chrono::seconds(60);
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    // The collector is down for the rest of the test: every dequeued item
+    // fails its readiness check and enters the retry schedule.
+    metadata.setReadyChannel(false);
+
+    const SqlUid uid{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "retry.head")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(SqlUidMeta(uid, "SELECT retry_tail")));
+
+    {
+        ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                                 [&metadata] { metadata.sendMetaWorker(); });
+
+        // Both items reach the retry schedule, whose cap is 1: the second
+        // head-drops the first, releasing the ApiMeta's cache entry.
+        EXPECT_TRUE(wait_for_condition(
+            [this] { return mock_agent_service_->removed_api_count_.load() >= 1; },
+            std::chrono::seconds(5)))
+            << "the head-dropped retry must release its cache entry";
+        // Give a second (wrong) release the chance to land before the counts
+        // below are read.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        metadata.stopMetaWorker();
+        if (meta_worker.joinable()) meta_worker.join();
+    }
+
+    // Exactly one release for the head-dropped item, and none for the item
+    // still parked in the retry schedule.
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 1)
+        << "the head-dropped retry must release its cache entry exactly once";
+    EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_, 0)
+        << "the retained retry must keep its cache entry";
+
+    // The worker is stopped, so the retry schedule stays full (1/1) and the
+    // new queue stays empty for the rest of the test.
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "new.after.backlog.1")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(3, 100, "new.after.backlog.2")));
+
+    // A full retry schedule must not shrink the new queue: both items fit its
+    // own budget of 2. Under the shared budget the second was dropped here,
+    // its cache entry released, and the same metadata re-enqueued by the next
+    // span that used it.
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 1)
+        << "new metadata must be accepted while the retry schedule is full";
+
+    // The two bounds still cap the pipeline: the new queue is now full too,
+    // so the next item is dropped, holding the total at 2 + 1.
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(4, 100, "new.after.backlog.3")));
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 2)
+        << "the new queue must still enforce its own bound";
+    EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_, 0);
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 0u)
+        << "no RPC can have been sent while the channel was never ready";
+}
+
 TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 

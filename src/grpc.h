@@ -106,6 +106,16 @@ namespace pinpoint {
         /// released, and the delay between them.
         int meta_retry_max_attempts{3};
         std::chrono::milliseconds meta_retry_delay{1000};
+        /// Cap on the retry schedule, held separately from the new-metadata
+        /// queue's sender_queue_size budget. Sharing one budget let a
+        /// collector outage fill it with retries and starve new metadata,
+        /// whose drop path releases the cache entry and so re-enqueues the
+        /// same item from the next span — a drop-feeds-inflow amplification
+        /// loop (Go's grpc.go metaGrpcTimeOut comment records the same
+        /// failure). Java (HashedWheelTimer) and Go (goroutine + permit)
+        /// keep retries off the send queue entirely; two bounds are the
+        /// equivalent here. Overflow policy: see GrpcMetadata::retry_or_drop.
+        size_t meta_retry_queue_size{1000};
         /// Concurrently in-flight metadata RPCs. Unary sends are pipelined
         /// behind this permit cap instead of serialized one blocking call at
         /// a time: a high error rate produces one exception metadata per
@@ -460,6 +470,8 @@ namespace pinpoint {
         ~GrpcMetadata() override = default;
 
         /// @brief Adds metadata to the outbound queue (ownership transferred).
+        ///        Only the new-metadata queue is charged for this item — the
+        ///        retry schedule has its own bound (meta_retry_queue_size).
         ///        On overflow the NEW item is dropped and its cache entry
         ///        released so the id is re-registered and re-sent on next use;
         ///        the rationale is at the definition.
@@ -497,6 +509,7 @@ namespace pinpoint {
         void process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done);
         // Schedules the item's next retry, or releases its cache entry once
         // the retry budget is exhausted. `retry_count` counts this failure.
+        // A full retry schedule head-drops (rationale at the definition).
         void retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count);
         // Bounded wait for in-flight calls at shutdown, escalating to
         // TryCancel (mirrors GrpcSpan::await_in_flight_requests).
