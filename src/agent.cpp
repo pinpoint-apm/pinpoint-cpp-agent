@@ -254,7 +254,7 @@ namespace pinpoint {
         }
 
         try {
-            init_thread_ = std::thread{&AgentImpl::init_grpc_workers, this};
+            init_thread_ = spawn_worker(kInit, [this] { init_grpc_workers(); });
         } catch (...) {
             if (config_watcher_) {
                 config_watcher_->stop();
@@ -433,16 +433,16 @@ namespace pinpoint {
         // never touch enabled_.
         grpc_agent_->startAgentInfo();
 
-        ping_thread_ = std::thread{&GrpcAgent::sendPingWorker, grpc_agent_.get()};
-        meta_thread_ = std::thread{&GrpcMetadata::sendMetaWorker, grpc_metadata_.get()};
-        span_thread_ = std::thread{&GrpcSpan::sendSpanWorker, grpc_span_.get()};
-        stat_thread_ = std::thread{&GrpcStats::sendStatsWorker, grpc_stat_.get()};
+        ping_thread_ = spawn_worker(kPing, [this] { grpc_agent_->sendPingWorker(); });
+        meta_thread_ = spawn_worker(kMeta, [this] { grpc_metadata_->sendMetaWorker(); });
+        span_thread_ = spawn_worker(kSpan, [this] { grpc_span_->sendSpanWorker(); });
+        stat_thread_ = spawn_worker(kStat, [this] { grpc_stat_->sendStatsWorker(); });
         if (grpc_command_) {
-            command_thread_ = std::thread{&GrpcCommand::commandWorker, grpc_command_.get()};
+            command_thread_ = spawn_worker(kCommand, [this] { grpc_command_->commandWorker(); });
         }
-        url_stat_add_thread_ = std::thread{&UrlStats::addUrlStatsWorker, url_stats_.get()};
-        url_stat_send_thread_ = std::thread{&UrlStats::sendUrlStatsWorker, url_stats_.get()};
-        agent_stat_thread_ = std::thread{&AgentStats::agentStatsWorker, agent_stats_.get()};
+        url_stat_add_thread_ = spawn_worker(kUrlStatAdd, [this] { url_stats_->addUrlStatsWorker(); });
+        url_stat_send_thread_ = spawn_worker(kUrlStatSend, [this] { url_stats_->sendUrlStatsWorker(); });
+        agent_stat_thread_ = spawn_worker(kAgentStat, [this] { agent_stats_->agentStatsWorker(); });
 
         // All workers are up: enable span recording. A shutdown racing this
         // init must not re-enable an agent being torn down.
@@ -557,6 +557,42 @@ namespace pinpoint {
         }
     }
 
+    std::thread AgentImpl::spawn_worker(Worker worker, std::function<void()> body) {
+        const unsigned bit = 1u << worker;
+        running_workers_.fetch_or(bit, std::memory_order_relaxed);
+        try {
+            // Clearing the bit dereferences `this` after the body returns,
+            // which is safe for the same reason the body itself is: every
+            // worker is joined (or kept alive by the teardown reaper) before
+            // the agent is destroyed.
+            return std::thread{[this, bit, body = std::move(body)] {
+                body();
+                running_workers_.fetch_and(~bit, std::memory_order_relaxed);
+            }};
+        } catch (...) {
+            running_workers_.fetch_and(~bit, std::memory_order_relaxed);
+            throw;
+        }
+    }
+
+    std::string AgentImpl::running_worker_names() const {
+        static constexpr const char* kNames[kWorkerCount] = {
+            "init", "ping", "meta", "span", "stat", "command",
+            "url-stat-add", "url-stat-send", "agent-stat",
+        };
+        const unsigned running = running_workers_.load(std::memory_order_relaxed);
+        std::string names;
+        for (unsigned i = 0; i < kWorkerCount; ++i) {
+            if (running & (1u << i)) {
+                names += names.empty() ? "" : ", ";
+                names += kNames[i];
+            }
+        }
+        // Empty means the straggler is outside these threads: the config
+        // watcher's stop, the AgentInfo scheduler's join or a closeChannel().
+        return names.empty() ? "none (config watcher, AgentInfo scheduler or channel close)" : names;
+    }
+
     bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
         // The workers dereference `this` (isExiting/getConfig/getAgentStats),
         // so they must be joined, never detached, before the members they use
@@ -582,6 +618,7 @@ namespace pinpoint {
             // stragglers never finish.
             std::shared_ptr<AgentImpl> keep_alive;
             bool delete_when_done{false};
+            std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
         };
 
         std::shared_ptr<TeardownState> state;
@@ -604,7 +641,11 @@ namespace pinpoint {
                     // flush; flush again for everything the stragglers
                     // logged since. Logger is a never-destroyed singleton
                     // with an idempotent, mutex-guarded shutdown.
-                    try { LOG_INFO("agent shutdown: background teardown finished"); } catch (...) {}
+                    try {
+                        LOG_INFO("agent shutdown: background teardown finished {}ms after shutdown began",
+                                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - state->started).count());
+                    } catch (...) {}
                     try { shutdown_logger(); } catch (...) {}
                 }
                 if (delete_when_done) {
@@ -650,8 +691,8 @@ namespace pinpoint {
         if (keep_alive == nullptr && !may_defer_destroy) {
             try {
                 LOG_WARN("agent shutdown exceeded the {}ms deadline; not shared-owned, "
-                         "waiting for workers to finish",
-                         agent_shutdown_deadline().count());
+                         "waiting for workers to finish; worker threads not yet joined: {}",
+                         agent_shutdown_deadline().count(), running_worker_names());
             } catch (...) {}
             runner.join();
             return false;
@@ -680,9 +721,10 @@ namespace pinpoint {
         runner.detach();
         try {
             LOG_WARN("agent shutdown exceeded the {}ms deadline; workers keep draining "
-                     "in the background and the agent is {} when they finish",
+                     "in the background and the agent is {} when they finish; "
+                     "worker threads not yet joined: {}",
                      agent_shutdown_deadline().count(),
-                     defer_destroy ? "destroyed" : "released");
+                     defer_destroy ? "destroyed" : "released", running_worker_names());
         } catch (...) {}
         return defer_destroy;
     }

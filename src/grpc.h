@@ -94,6 +94,9 @@ namespace pinpoint {
         /// Bounded wait for a stream to deliver OnDone at shutdown before
         /// escalating to TryCancel.
         std::chrono::milliseconds stream_finish_timeout{3000};
+        /// Interval between WARN lines while a worker waits, with no upper
+        /// bound, for a stream's OnDone (see GrpcClient::await_stream_done).
+        std::chrono::milliseconds stream_wait_warn_interval{3000};
         /// Bounded wait for a stream write to complete (for the ping stream:
         /// write + server pong) before cancellation is requested and the
         /// worker begins stream cleanup.
@@ -328,6 +331,23 @@ namespace pinpoint {
 
         /// @brief Blocks until @p channel is ready or the delay is exceeded.
         bool wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const;
+
+        /**
+         * @brief Waits under @p lock (stream_mutex_) until grpc_status_ ==
+         *        STREAM_DONE, logging a WARN every
+         *        tuning_.stream_wait_warn_interval it is still waiting.
+         *
+         * The one wait in this agent with no upper bound, and deliberately
+         * so: this object IS the stream's reactor, and the gRPC callback API
+         * forbids releasing a reactor while its call is outstanding — an
+         * abandoned reactor is a use-after-free when OnDone finally arrives.
+         * TryCancel() only requests completion, it gives no bound on it. So
+         * the wait keeps waiting; the log makes it visible which client is
+         * stuck at which @p stage (finish / drain / recycle) and for how
+         * long, which is what a slow-shutdown report needs. Nothing is
+         * logged when OnDone arrives within the first interval.
+         */
+        void await_stream_done(std::unique_lock<std::mutex>& lock, std::string_view stage);
 
         /// @brief Owning snapshot of the current transport, typed for this
         ///        client's stub; null before openChannel() / after

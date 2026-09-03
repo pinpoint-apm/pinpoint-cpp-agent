@@ -18,6 +18,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
+#include <string>
 #include <thread>
 #include <memory>
 #include <mutex>
@@ -242,6 +244,17 @@ namespace pinpoint {
         std::thread url_stat_send_thread_;
         std::thread agent_stat_thread_;
 
+        /// One bit per worker thread above, set by spawn_worker() before the
+        /// thread exists and cleared as its body returns. Read only when the
+        /// shutdown deadline expires, to name the threads not yet joined:
+        /// std::thread::joinable() cannot be asked that while the teardown
+        /// runner is join()ing them (a data race on the thread object).
+        enum Worker : unsigned {
+            kInit, kPing, kMeta, kSpan, kStat, kCommand,
+            kUrlStatAdd, kUrlStatSend, kAgentStat, kWorkerCount
+        };
+        std::atomic<unsigned> running_workers_{0};
+
         // Serializes reloadConfig() writers. Building a new AgentRuntime is a
         // load-build-store on runtime_, so two concurrent reloads could both
         // build from the same old runtime and lose one update. Readers do not
@@ -330,6 +343,10 @@ namespace pinpoint {
         bool teardown_workers_with_deadline(bool may_defer_destroy) noexcept;
         /// @brief Joins the init thread and every gRPC worker thread.
         void wait_grpc_workers();
+        /// @brief Spawns @p body on a std::thread tracked in running_workers_.
+        std::thread spawn_worker(Worker worker, std::function<void()> body);
+        /// @brief Names of the workers whose thread has not returned yet.
+        std::string running_worker_names() const;
         /// @brief Performs the actual shutdown work (workers, watcher, logger)
         /// without touching the global_agent singleton. Safe to call from the
         /// destructor — does not lock global_agent_mutex, never throws.

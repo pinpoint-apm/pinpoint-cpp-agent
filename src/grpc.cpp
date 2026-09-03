@@ -328,13 +328,23 @@ namespace pinpoint {
         }
     }
 
+    void GrpcClient::await_stream_done(std::unique_lock<std::mutex>& lock, std::string_view stage) {
+        const auto started = std::chrono::steady_clock::now();
+        while (!stream_cv_.wait_for(lock, tuning_.stream_wait_warn_interval,
+                                    [this] { return grpc_status_ == STREAM_DONE; })) {
+            const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
+            LOG_WARN("{} grpc stream {}: still waiting for OnDone after {}ms "
+                     "(the reactor cannot be released until the call completes)",
+                     client_name_, stage, waited.count());
+        }
+    }
+
     bool GrpcClient::wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const {
         auto state = channel.GetState(true);
         if (state == GRPC_CHANNEL_READY) {
             return true;
         }
-
-        LOG_INFO("wait {} grpc channel ready: state = {}", client_name_, static_cast<int>(state));
 
         // Elapsed-time math on steady_clock: a wall-clock step (NTP) must not
         // stretch or truncate the retry window. gRPC's WaitForStateChange only
@@ -379,12 +389,22 @@ namespace pinpoint {
         auto& channel = *transport->channel;
 
         if (channel.GetState(false) != GRPC_CHANNEL_READY) {
+            // One line per backoff step (3s growing to 30s), carrying the
+            // cumulative wait: this loop holds channel_mutex_, so a
+            // closeChannel()/openChannel() blocked during shutdown is
+            // blocked here, and a slow-shutdown report needs to see it.
+            const auto waiting_since = std::chrono::steady_clock::now();
             while (true) {
                 if (stopping()) {
                     return false;
                 }
                 const auto delay = channel_ready_backoff_.next_delay();
-                LOG_INFO("{} grpc channel is not ready; retry for {}ms", client_name_, delay.count());
+                const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - waiting_since);
+                LOG_INFO("{} grpc channel not ready (state {}): waited {}ms so far holding channel_mutex_, "
+                         "next check window {}ms",
+                         client_name_, static_cast<int>(channel.GetState(false)), waited.count(),
+                         delay.count());
                 if (wait_channel_ready(channel, delay)) {
                     channel_ready_backoff_.reset();
                     break;
@@ -1966,9 +1986,7 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // TryCancel is best-effort. The reactor still must not be
-            // abandoned while the call is outstanding, so wait for OnDone.
-            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            await_stream_done(lock, "ping finish");
         }
     }
 
@@ -1987,7 +2005,7 @@ namespace pinpoint {
         }
         close_ping_stream_locked();
         stream_context_->TryCancel();
-        stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        await_stream_done(lock, "ping drain on worker error");
     } catch (...) {
     }
 
@@ -1999,7 +2017,7 @@ namespace pinpoint {
             // The stream broke while idle. StartWrite() is not allowed after
             // StartWritesDone(), so just wait for OnDone; the old call must
             // also fully finish before the caller replaces stream_context_.
-            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            await_stream_done(lock, "ping closed while idle");
             return STREAM_DONE;
         }
 
@@ -2019,9 +2037,7 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // TryCancel is best-effort. The reactor still must not be
-            // abandoned while the call is outstanding, so wait for OnDone.
-            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            await_stream_done(lock, "ping write-timeout recycle");
         } else if (grpc_status_ == STREAM_CONTINUE) {
             record_stream_write_ok();  // pong received: the backend is reading
         }
@@ -2681,7 +2697,7 @@ namespace pinpoint {
                 }
                 // TryCancel is best-effort. With the hold released, keep the
                 // reactor alive and wait for the call's eventual OnDone.
-                stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+                await_stream_done(lock, "stats write-timeout recycle");
             }
 
             if (grpc_status_ == STREAM_DONE) {
@@ -2718,9 +2734,7 @@ namespace pinpoint {
             if (stream_context_ != nullptr) {
                 stream_context_->TryCancel();
             }
-            // TryCancel is best-effort. The reactor still must not be
-            // abandoned while the call is outstanding, so wait for OnDone.
-            stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+            await_stream_done(lock, "stats finish");
         }
     }
 
@@ -2736,7 +2750,7 @@ namespace pinpoint {
         }
         close_stats_stream_locked();
         stream_context_->TryCancel();
-        stream_cv_.wait(lock, [this] { return grpc_status_ == STREAM_DONE; });
+        await_stream_done(lock, "stats drain on worker error");
     } catch (...) {
     }
 

@@ -22,6 +22,8 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -33,6 +35,7 @@
 #include <vector>
 
 #include "../src/grpc.h"
+#include "../src/logging.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
 #include "../src/span.h"
@@ -3724,6 +3727,155 @@ TEST_F(GrpcMockTest, GrpcSpanRotationKeepsPreviousTransportAliveWhileBatchInFlig
     mock_agent_service_->setExiting(true);
     span_client.stopSpanWorker();
     if (worker.joinable()) worker.join();
+}
+
+
+// ============================================================
+// Unbounded OnDone waits stay observable
+// ============================================================
+
+// A callback stream whose OnDone only the test delivers: the mock equivalent
+// of a collector that never completes the call, not even after TryCancel.
+// Binds itself to the reactor so StartCall/StartRead/StartWritesDone/holds
+// land here instead of in a null gRPC stream.
+class HeldPingStream final : public grpc::ClientCallbackReaderWriter<v1::PPing, v1::PPing> {
+public:
+    explicit HeldPingStream(grpc::ClientBidiReactor<v1::PPing, v1::PPing>* reactor)
+        : reactor_(reactor) { BindReactor(reactor); }
+
+    void StartCall() override {}
+    void Write(const v1::PPing*, grpc::WriteOptions) override { write_pending_ = true; }
+    void WritesDone() override { writes_done_ = true; }
+    void Read(v1::PPing*) override {}
+    void AddHold(int) override {}
+    void RemoveHold() override {}
+
+    bool writePending() const { return write_pending_; }
+    bool writesDone() const { return writes_done_; }
+    // Ack the ping and deliver a pong, off the worker thread like gRPC does.
+    void pong() { reactor_->OnWriteDone(true); reactor_->OnReadDone(true); }
+    void deliverOnDone() { reactor_->OnDone(grpc::Status::CANCELLED); }
+
+private:
+    grpc::ClientBidiReactor<v1::PPing, v1::PPing>* reactor_;
+    std::atomic<bool> write_pending_{false};
+    std::atomic<bool> writes_done_{false};
+};
+
+class HeldPingAgentStub final : public NiceMock<v1::MockAgentStub> {
+public:
+    HeldPingAgentStub() : async_(this) {}
+    async_interface* async() override { return &async_; }
+    HeldPingStream* stream() const { return stream_.load(); }
+
+private:
+    class Async final : public async_interface {
+    public:
+        explicit Async(HeldPingAgentStub* owner) : owner_(owner) {}
+        void RequestAgentInfo(grpc::ClientContext*, const v1::PAgentInfo*, v1::PResult*,
+                              std::function<void(grpc::Status)>) override {}
+        void RequestAgentInfo(grpc::ClientContext*, const v1::PAgentInfo*, v1::PResult*,
+                              grpc::ClientUnaryReactor*) override {}
+        void PingSession(grpc::ClientContext*,
+                         grpc::ClientBidiReactor<v1::PPing, v1::PPing>* reactor) override {
+            owner_->stream_.store(owner_->streams_.emplace_back(
+                std::make_unique<HeldPingStream>(reactor)).get());
+        }
+    private:
+        HeldPingAgentStub* owner_;
+    };
+
+    Async async_;
+    std::vector<std::unique_ptr<HeldPingStream>> streams_;  // worker thread only
+    std::atomic<HeldPingStream*> stream_{nullptr};
+};
+
+// Routes the agent log into a file for the test's lifetime.
+class LogCapture {
+public:
+    LogCapture() : path_(std::filesystem::temp_directory_path() /
+                         "pinpoint_grpc_with_mocks_log.txt") {
+        Logger::getInstance().shutdown();
+        std::filesystem::remove(path_);
+        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setFileLogger(path_.string(), 10);
+    }
+    ~LogCapture() {
+        Logger::getInstance().shutdown();
+        Logger::getInstance().setFileLogger("", 0);
+        std::error_code ec;
+        std::filesystem::remove(path_, ec);
+    }
+    std::string text() {
+        Logger::getInstance().shutdown();
+        std::ifstream ifs(path_);
+        return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
+    }
+    static size_t count(const std::string& text, std::string_view needle) {
+        size_t n = 0;
+        for (auto pos = text.find(needle); pos != std::string::npos; pos = text.find(needle, pos + 1)) ++n;
+        return n;
+    }
+private:
+    std::filesystem::path path_;
+};
+
+// Runs a ping stream up to the finish path with OnDone withheld and stores
+// the captured log once the worker has exited. `hold_for` is how long OnDone
+// is withheld after the finish path asked for WritesDone.
+static void run_ping_finish_with_held_on_done(MockAgentService& service,
+                                              const GrpcClientTuning& tuning,
+                                              std::chrono::milliseconds hold_for,
+                                              std::string* log_out) {
+    TestableGrpcAgent agent(&service, tuning);
+    auto stub = std::make_unique<HeldPingAgentStub>();
+    auto* held = stub.get();
+    agent.setMockAgentStub(std::move(stub));
+
+    LogCapture log;
+    ScopedWorker ping_worker([&agent] { agent.stopPingWorker(); },
+                             [&agent] { agent.sendPingWorker(); });
+    // First ping written: answer it so the worker parks in its interval wait.
+    ASSERT_TRUE(wait_for_condition(
+        [held] { return held->stream() != nullptr && held->stream()->writePending(); },
+        std::chrono::seconds(3)));
+    held->stream()->pong();
+
+    service.setExiting(true);
+    agent.stopPingWorker();
+    ASSERT_TRUE(wait_for_condition([held] { return held->stream()->writesDone(); },
+                                   std::chrono::seconds(3)));
+    std::this_thread::sleep_for(hold_for);
+    held->stream()->deliverOnDone();
+    ping_worker.join();
+    *log_out = log.text();
+}
+
+TEST_F(GrpcMockTest, GrpcAgentWarnsPeriodicallyWhileOnDoneIsWithheld) {
+    GrpcClientTuning tuning;
+    tuning.stream_finish_timeout = std::chrono::milliseconds(20);
+    tuning.stream_wait_warn_interval = std::chrono::milliseconds(50);
+
+    // 20ms bounded wait, then ~6 warn intervals of withheld OnDone.
+    std::string log;
+    run_ping_finish_with_held_on_done(*mock_agent_service_, tuning, std::chrono::milliseconds(350), &log);
+    // Timing slack: at least half the intervals must have been reported, and
+    // the wait must still have ended normally (the worker joined above).
+    EXPECT_GE(LogCapture::count(log, "agent grpc stream ping finish: still waiting for OnDone"), 3u)
+        << log;
+}
+
+TEST_F(GrpcMockTest, GrpcAgentPromptOnDoneLogsNoWarning) {
+    GrpcClientTuning tuning;
+    tuning.stream_finish_timeout = std::chrono::milliseconds(1000);
+    tuning.stream_wait_warn_interval = std::chrono::milliseconds(50);
+
+    // OnDone arrives inside the bounded wait: the normal path must not gain
+    // any warning from the periodic reporting.
+    std::string log;
+    run_ping_finish_with_held_on_done(*mock_agent_service_, tuning, std::chrono::milliseconds(0), &log);
+    EXPECT_EQ(log.find("still waiting"), std::string::npos) << log;
+    EXPECT_EQ(log.find("[warning]"), std::string::npos) << log;
 }
 
 } // namespace pinpoint
