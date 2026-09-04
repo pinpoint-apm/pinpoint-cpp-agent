@@ -431,6 +431,62 @@ TEST_F(SpanEventTest, ExceptionChainRateLimitSkipsChainContinuations) {
         << "Both links belong to the same chain";
 }
 
+namespace {
+    // The limiter reads time only through now_nanos(), so a fake clock makes
+    // the refill deterministic without sleeping (test_limiter.cpp uses the
+    // same seam for the bucket's own tests).
+    class SteppedClockLimiter final : public RateLimiter {
+    public:
+        explicit SteppedClockLimiter(uint64_t tps) : RateLimiter(tps) {}
+        void advance_ms(int64_t ms) { now_ns_ += ms * 1000000; }
+
+    protected:
+        int64_t now_nanos() const override { return now_ns_; }
+
+    private:
+        int64_t now_ns_{0};
+    };
+}
+
+// The mirror of the test above, for a chain that was refused rather than
+// admitted: the refusal has to stick. Re-asking the limiter at the cause link
+// charges one logical chain twice and, once a token has refilled, records the
+// cause as a fresh chain whose head was never sent.
+TEST_F(SpanEventTest, ExceptionChainRateLimitLatchesTheRefusal) {
+    auto limiter = std::make_shared<SteppedClockLimiter>(10);  // one token per 100ms
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = mock_agent_service_->getConfig();
+    runtime->exception_chain_limiter = limiter;
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "op", "rpc", runtime);
+
+    MockCallStackReader head;
+    head.AddFrame("/lib/app.so", "head", "/src/head.cpp", 1);
+    MockCallStackReader cause;
+    cause.AddFrame("/lib/app.so", "cause", "/src/cause.cpp", 2);
+
+    // The fresh bucket's one token goes to the first event's chain.
+    auto admitted = make_test_span_event(*span, "op1");
+    admitted.SetError("First", "first", head);
+    ASSERT_EQ(span->getExceptions().size(), 1u);
+
+    // The next event's chain finds the bucket empty.
+    auto refused = make_test_span_event(*span, "op2");
+    refused.SetError("Head", "head", head);
+    ASSERT_EQ(span->getExceptions().size(), 1u) << "an empty bucket refuses a new chain";
+
+    // A token refills before the refused chain's cause link arrives.
+    limiter->advance_ms(100);
+    refused.SetError("Cause", "cause", cause);
+    EXPECT_EQ(span->getExceptions().size(), 1u)
+        << "a refused chain must not resume at its cause link";
+
+    // And that token went unspent, so the next chain still gets it.
+    auto next = make_test_span_event(*span, "op3");
+    next.SetError("Next", "next", head);
+    EXPECT_EQ(span->getExceptions().size(), 2u)
+        << "the refused chain must not have charged the refilled token";
+}
+
 TEST_F(SpanEventTest, ExceptionChainRateLimitUnlimitedWhenNoLimiter) {
     // callstack_trace_new_throughput <= 0 builds no limiter (build_runtime),
     // which must keep the pre-limit behaviour.

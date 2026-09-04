@@ -188,6 +188,11 @@ namespace pinpoint {
         // Id shared by every call stack recorded on this event (one exception
         // chain); 0 until the first one is buffered.
         int64_t exception_id_{0};
+        // Java's DISABLED sampling state for this event's chain: set once the
+        // chain is refused by the rate limiter or a link cannot be buffered,
+        // and never cleared, so the rest of the chain is neither recorded nor
+        // charged a second time (see recordException).
+        bool exception_chain_disabled_{false};
         int32_t async_id_{NONE_ASYNC_ID};
         int32_t async_seq_gen_{0};
         int32_t api_id_{0};

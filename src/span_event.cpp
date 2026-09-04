@@ -340,12 +340,31 @@ namespace pinpoint {
         // A rejected chain keeps the plain error (SetError already ran and
         // marked the span); only the call stack is dropped, which is what
         // Java's DISABLED sampling state does.
+        //
+        // That verdict is latched for the rest of the chain, because Java's
+        // DISABLED state lives in the trace context and every later link
+        // reads it back. Asking per link instead would charge one logical
+        // chain several times over, and once a token refilled mid-chain it
+        // would record a cause link as a brand new chain with its head
+        // missing - the half-recorded chain the reuse above exists to avoid.
+        if (exception_chain_disabled_) {
+            return;
+        }
         if (exception_id_ == 0 && !span.allowNewExceptionChain()) {
+            exception_chain_disabled_ = true;
             return;
         }
         auto exception = std::make_unique<Exception>(std::move(callstack), exception_id_);
         const auto exception_id = exception->getId();
-        if (span.addException(std::move(exception)) && exception_id_ == 0) {
+        if (!span.addException(std::move(exception))) {
+            // Buffer full. It does not shrink before EndSpan, so every later
+            // link would be dropped too — and latching here is what keeps a
+            // dropped first link from letting the next one charge the limiter
+            // for a chain that cannot be stored either.
+            exception_chain_disabled_ = true;
+            return;
+        }
+        if (exception_id_ == 0) {
             annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
             exception_id_ = exception_id;
         }
