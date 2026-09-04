@@ -770,9 +770,10 @@ decision.
 All three are configured under `Sampling.*` — see the
 [Configuration Guide](config.md#sampling-configuration) for keys and ranges.
 
-- **CounterSampler** (`Type: COUNTER`) — samples 1 out of every N transactions
-  with an atomic counter. `CounterRate: 1` samples everything (development),
-  `10` samples 10%, `0` samples nothing.
+- **CounterSampler** (`Type: COUNTER`, or Java's `COUNTING`) — samples 1 out of
+  every N transactions with an atomic counter, starting with the first one:
+  `CounterRate: 10` admits transactions 1, 11, 21, … `CounterRate: 1` samples
+  everything (development), `10` samples 10%, `0` samples nothing.
 - **PercentSampler** (`Type: PERCENT`) — samples a configured percentage,
   deterministic for a given call sequence. `PercentRate` is clamped to
   `[0.01, 100]`.

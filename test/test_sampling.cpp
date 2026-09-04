@@ -63,19 +63,35 @@ TEST_F(SamplingTest, CounterSamplerOneRateTest) {
     }
 }
 
-// Test CounterSampler with rate N - should return true every Nth call
+// Test CounterSampler with rate N - should return true on the first call of
+// every N-call cycle (Java CountingSampler phase: counter starts at 0)
 TEST_F(SamplingTest, CounterSamplerNRateTest) {
     const int rate = 3;
     CounterSampler sampler(rate);
-    
-    // Test pattern: false, false, true, false, false, true, ...
+
+    // Test pattern: true, false, false, true, false, false, ...
     for (int cycle = 0; cycle < 3; ++cycle) {
         for (int i = 0; i < rate; ++i) {
-            bool expected = (i == rate - 1);
-            EXPECT_EQ(sampler.isSampled(), expected) 
+            bool expected = (i == 0);
+            EXPECT_EQ(sampler.isSampled(), expected)
                 << "Cycle " << cycle << ", call " << i << " should return " << expected;
         }
     }
+}
+
+// The first request must be sampled: the counter is tested before it is
+// incremented, so rate=10 samples requests 1, 11, 21, ... like Java's
+// CountingSampler, not 10, 20, 30 (which hides the first request entirely
+// on low-traffic deployments and in tests).
+TEST_F(SamplingTest, CounterSamplerSamplesFirstRequestTest) {
+    const int rate = 10;
+    CounterSampler sampler(rate);
+
+    EXPECT_TRUE(sampler.isSampled()) << "Request 1 should be sampled";
+    for (int i = 2; i <= rate; ++i) {
+        EXPECT_FALSE(sampler.isSampled()) << "Request " << i << " should be unsampled";
+    }
+    EXPECT_TRUE(sampler.isSampled()) << "Request " << (rate + 1) << " should be sampled";
 }
 
 TEST_F(SamplingTest, CounterSamplerThreadSafetyTest) {
@@ -284,11 +300,11 @@ TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2);
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
 
-    // Test pattern: false, true, false, true, ...
-    EXPECT_FALSE(trace_sampler.isNewSampled());
+    // Test pattern: true, false, true, false, ...
     EXPECT_TRUE(trace_sampler.isNewSampled());
     EXPECT_FALSE(trace_sampler.isNewSampled());
     EXPECT_TRUE(trace_sampler.isNewSampled());
+    EXPECT_FALSE(trace_sampler.isNewSampled());
 
     // Continue samples should always be true
     EXPECT_TRUE(trace_sampler.isContinueSampled());
@@ -423,8 +439,9 @@ TEST_F(SamplingTest, CounterSamplerLargeRateTest) {
     const int rate = 1000000;
     CounterSampler sampler(rate);
 
-    // First (rate - 1) calls should return false
-    for (int i = 0; i < 10; ++i) {
+    // The first call is sampled, the following (rate - 1) are not
+    EXPECT_TRUE(sampler.isSampled()) << "First call should return true for large rate";
+    for (int i = 1; i < 10; ++i) {
         EXPECT_FALSE(sampler.isSampled()) << "Call " << i << " should return false for large rate";
     }
 }
@@ -551,10 +568,10 @@ TEST_F(SamplingTest, TraceSamplerNullSamplerTest) {
 TEST_F(SamplingTest, CounterSamplerRate2PatternTest) {
     CounterSampler sampler(2);
 
-    // Pattern: false, true, false, true, ...
+    // Pattern: true, false, true, false, ...
     for (int cycle = 0; cycle < 5; ++cycle) {
-        EXPECT_FALSE(sampler.isSampled()) << "Cycle " << cycle << " first call should be false";
-        EXPECT_TRUE(sampler.isSampled()) << "Cycle " << cycle << " second call should be true";
+        EXPECT_TRUE(sampler.isSampled()) << "Cycle " << cycle << " first call should be true";
+        EXPECT_FALSE(sampler.isSampled()) << "Cycle " << cycle << " second call should be false";
     }
 }
 
@@ -564,18 +581,18 @@ TEST_F(SamplingTest, TraceSamplerPartialSamplingWithLimiterTest) {
     const int new_tps = 2;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
 
-    // Pattern: sampler alternates false/true, the fresh bucket has one token
-    // Call 1: sampler=false -> false
-    EXPECT_FALSE(trace_sampler.isNewSampled());
-    // Call 2: sampler=true, limiter allows -> true
+    // Pattern: sampler alternates true/false, the fresh bucket has one token
+    // Call 1: sampler=true, limiter allows -> true
     EXPECT_TRUE(trace_sampler.isNewSampled());
-    // Call 3: sampler=false -> false
+    // Call 2: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
-    // Call 4: sampler=true, limiter blocks (refill is 1/new_tps of a second) -> false
+    // Call 3: sampler=true, limiter blocks (refill is 1/new_tps of a second) -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
-    // Call 5: sampler=false -> false
+    // Call 4: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
-    // Call 6: sampler=true, limiter blocks -> false
+    // Call 5: sampler=true, limiter blocks -> false
+    EXPECT_FALSE(trace_sampler.isNewSampled());
+    // Call 6: sampler=false -> false
     EXPECT_FALSE(trace_sampler.isNewSampled());
 }
 

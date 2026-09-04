@@ -827,6 +827,43 @@ Sampling:
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
 }
 
+// Java spells the counter mode COUNTING (SamplerType), so a Java config must
+// port over unchanged; anything unrecognised falls back to COUNTER the way
+// Java's SamplerType.of() does.
+TEST_F(ConfigTest, SamplingTypeCountingAliasTest) {
+    std::string counting_yaml = R"(
+Sampling:
+  Type: "COUNTING"
+)";
+    set_config_string(counting_yaml);
+    auto config = make_config();
+    EXPECT_EQ(config->sampling.type, "COUNTER") << "COUNTING should be canonicalised to COUNTER";
+
+    std::string lowercase_counting_yaml = R"(
+Sampling:
+  Type: "counting"
+)";
+    set_config_string(lowercase_counting_yaml);
+    config = make_config();
+    EXPECT_EQ(config->sampling.type, "COUNTER") << "The COUNTING alias should be case-insensitive";
+
+    std::string unknown_yaml = R"(
+Sampling:
+  Type: "SOMETHING-ELSE"
+)";
+    set_config_string(unknown_yaml);
+    config = make_config();
+    EXPECT_EQ(config->sampling.type, "COUNTER") << "An unknown sampling type should fall back to COUNTER";
+
+    std::string percent_yaml = R"(
+Sampling:
+  Type: "percent"
+)";
+    set_config_string(percent_yaml);
+    config = make_config();
+    EXPECT_EQ(config->sampling.type, "percent") << "A recognised type should be left as written";
+}
+
 // ========== Error Handling Tests ==========
 
 TEST_F(ConfigTest, InvalidYamlHandlingTest) {

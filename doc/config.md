@@ -200,8 +200,8 @@ What the collector receives in each `PAgentStat` row, since the C++ agent has no
 
 | YAML Key | Environment Variable | Type | Default | Range / Notes |
 |---|---|---|---|---|
-| `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). Values other than `PERCENT` use counter sampling. |
-| `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions. `0` = disable. |
+| `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). `"COUNTING"` — the Java agent's name for the same mode — is accepted as an alias for `"COUNTER"`. An unrecognised value logs a warning and falls back to `"COUNTER"`. |
+| `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions, starting with the first one. `0` = disable. |
 | `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Negative values become `0` (never sample); non-negative values below `0.01` — including exactly `0` — become `0.01`; values above `100` become `100`. To disable percent sampling, use a negative value, not `0`. |
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
@@ -209,6 +209,21 @@ What the collector receives in each `PAgentStat` row, since the C++ agent has no
 Throughput limiting is not a separate `Sampling.Type`; it is enabled automatically when `NewThroughput` or `ContinueThroughput` is greater than `0`. How the samplers behave, and how the decision propagates across services, is described in [Instrumentation Guide §11](instrument.md#11-sampling-policy).
 
 > Out-of-range values are automatically normalised (clamped) by the agent during `make_config()`.
+
+### Counter sampling phase
+
+The counter is tested **before** it is incremented, so the first transaction after startup — or after a config reload, which rebuilds the sampler — is always sampled, then every Nth one after it: `CounterRate: 10` samples transactions 1, 11, 21, … This matches the Java agent's `CountingSampler` (`counter.getAndIncrement()`). Sampling the Nth transaction first instead would hide the very first request, which is what a low-traffic service or a manual smoke test usually looks at.
+
+### PercentRate rounding differs from Java and Go, deliberately
+
+`PercentRate` is stored internally as hundredths of a percent, and the C++ agent **rounds to nearest** (`std::lround`) where the Java and Go agents truncate. A configured `0.29` therefore samples 0.29% here and 0.28% in Java.
+
+The divergence is intentional. Java's truncation is not a policy but an artifact of `(long) (rate * 100)` on a `double`: `0.29 * 100` is `28.999999999999996` in IEEE-754, so the cast drops a hundredth. Rounding gives the operator the rate they typed. Nothing depends on the two agents agreeing:
+
+- The rate is a purely local admission decision. It is never sent to the collector and never appears on the wire, so there is no server or cross-agent compatibility cost — unlike, say, a trace-ID format.
+- The worst-case difference is one hundredth of a percentage point, which is the resolution of the setting itself (`0.01` is the minimum accepted rate).
+
+Note that the percent sampler's *phase* still differs from Java's: `PercentRate: 50` admits the 2nd, 4th, … transaction here, where Java admits the 1st, 3rd, … The frequency is identical. This is a consequence of the C++ agent handling `PercentRate: 100` by clamping instead of Java's separate `TrueSampler`, and it is not addressed here.
 
 ---
 

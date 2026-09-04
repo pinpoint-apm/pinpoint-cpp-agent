@@ -27,10 +27,17 @@ namespace pinpoint {
             return false;
         }
 
+        // The pre-increment value is what gets tested, so the counter starts
+        // at 0 and the first request after startup (or a config reload) is
+        // sampled, then every rate_-th one after it. Same phase as Java's
+        // CountingSampler (counter.getAndIncrement()); testing the
+        // post-increment value instead would sample requests N, 2N, ... and
+        // hide the first request on low-traffic or test deployments.
+        //
         // Pure counter with no cross-thread ordering requirement: relaxed
         // avoids the full barrier the default seq_cst RMW costs on every
         // sampling decision (this runs once per incoming request).
-        const auto count = sampling_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto count = sampling_count_.fetch_add(1, std::memory_order_relaxed);
         const uint64_t r = count % rate_;
         return r == 0;
     }

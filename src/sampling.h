@@ -34,6 +34,8 @@ namespace pinpoint {
     // Shutdown() — a dynamic destructor here would make that a use-after-free.
     /// @brief Sampling mode that relies on counter-based periodic selection.
     inline constexpr std::string_view COUNTER_SAMPLING = "COUNTER";
+    /// @brief Java's name for counter sampling (`SamplerType.COUNTING`), accepted as an alias.
+    inline constexpr std::string_view COUNTING_SAMPLING = "COUNTING";
     /// @brief Sampling mode that uses percentage-based selection.
     inline constexpr std::string_view PERCENT_SAMPLING = "PERCENT";
     /// @brief Maximum supported percent rate (stored as hundredths of a percent).
@@ -60,7 +62,7 @@ namespace pinpoint {
             rate_ = rate;
         }
 
-        /// @brief Returns `true` every `rate_` calls.
+        /// @brief Returns `true` on the first call and every `rate_` calls after it.
         bool isSampled() noexcept override;
     };
 

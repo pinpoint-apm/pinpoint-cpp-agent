@@ -761,6 +761,19 @@ namespace pinpoint {
         in_range(config->stat.collect_interval, MIN_STAT_INTERVAL_MS, MAX_STAT_INTERVAL_MS,
                  defaults::STAT_INTERVAL_MS, "stat collect interval");
 
+        // Java names the counter mode COUNTING (SamplerType), so accept that
+        // spelling as an alias and canonicalise it here — the rest of the
+        // agent only ever compares against COUNTER/PERCENT. An unrecognised
+        // value falls back to the default, mirroring SamplerType.of().
+        if (absl::EqualsIgnoreCase(config->sampling.type, COUNTING_SAMPLING)) {
+            config->sampling.type = std::string(COUNTER_SAMPLING);
+        } else if (!absl::EqualsIgnoreCase(config->sampling.type, COUNTER_SAMPLING) &&
+                   !absl::EqualsIgnoreCase(config->sampling.type, PERCENT_SAMPLING)) {
+            LOG_WARN("sampling type '{}' is unknown, using default: {}",
+                     config->sampling.type, COUNTER_SAMPLING);
+            config->sampling.type = std::string(COUNTER_SAMPLING);
+        }
+
         at_least(config->sampling.counter_rate, 0, 0, "sampling counter rate");
         if (config->sampling.percent_rate < 0.0) {
             LOG_WARN("sampling percent rate {} is invalid, using default: {}",

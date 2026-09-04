@@ -1631,8 +1631,10 @@ TEST_F(AgentIntegrationTest,
     }, kWaitTimeout));
     const auto baseline = agent_stat_count(collector_.snapshot());
 
-    const std::array<bool, 6> expected{false, false, true,
-                                      false, false, true};
+    // The counter is tested before it is incremented, so the first
+    // transaction after startup is sampled and then every third one.
+    const std::array<bool, 6> expected{true, false, false,
+                                       true, false, false};
     const auto sampled_trace_id = DriveSamplingPattern(
         "sampling.counter", "/sampling/counter/", expected);
     ASSERT_FALSE(sampled_trace_id.empty());
