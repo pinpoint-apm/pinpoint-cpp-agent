@@ -1588,6 +1588,47 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 4u);
 }
 
+// The queued metadata keeps the whole normalized SQL — it is the id/uid cache
+// key the eviction paths above look up — and only the transmitted copy is
+// abbreviated, where Java's SqlCacheService abbreviates it: first
+// kMaxSqlMetaLength bytes plus a "...(<original length>)" suffix.
+TEST_F(GrpcMockTest, GrpcMetadataAbbreviatesSqlOverMetadataCapOnTheWire) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    const std::string long_sql(70000, 'a');
+    const std::string expected =
+        std::string(kMaxSqlMetaLength, 'a') + "...(70000)";
+    const SqlUid uid{0, 1, 2, 3, 4, 5, 6, 7,
+                     8, 9, 10, 11, 12, 13, 14, 15};
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        StringMeta(7, long_sql, STRING_META_SQL)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        SqlUidMeta(uid, long_sql)));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1,
+                                          std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1,
+                                          std::chrono::seconds(5)));
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(fake->sqlRequest(0).sql(), expected);
+    EXPECT_EQ(fake->sqlUidRequest(0).sql(), expected);
+    EXPECT_EQ(fake->sqlRequest(0).sqlid(), 7);
+    // Both were accepted, so neither cache entry was released.
+    EXPECT_EQ(mock_agent_service_->removed_sql_count_.load(), 0);
+    EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_.load(), 0);
+}
+
 // ============================================================
 // All metadata types sent successfully via worker
 // ============================================================

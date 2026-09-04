@@ -3062,7 +3062,8 @@ TEST_F(AgentIntegrationTest, SerializesEveryTypedSqlBindValueOnTheWire) {
     const auto& value = annotation->value().bytesstringstringvalue();
     EXPECT_TRUE(value.stringvalue1().value().empty());
     EXPECT_EQ(value.stringvalue2().value(),
-              "null,alpha,true,false,-7,8,-9000000000,10000000000,1.5,2.25");
+              "null, alpha, true, false, -7, 8, -9000000000, 10000000000, "
+              "1.5, 2.25");
 }
 
 TEST_F(AgentIntegrationTest,
@@ -3648,11 +3649,13 @@ TEST_F(AgentIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
     const auto* uid_annotation = find_annotation(events[0].annotation(),
                                                  ANNOTATION_SQL_UID);
     ASSERT_NE(uid_annotation, nullptr);
-    // "0123456789,abcdefgh" fills 19 of the 20 allowed bytes; the third value
-    // no longer fits, so the join stops and appends the truncation marker.
+    // "0123456789, abcdefgh" fills exactly the 20 allowed bytes; the third
+    // value no longer fits, so the join stops and — like Java's
+    // BindValueUtils — reports how many bind values there were after the
+    // separator it had already appended.
     EXPECT_EQ(uid_annotation->value().bytesstringstringvalue()
                   .stringvalue2().value(),
-              "0123456789,abcdefgh...(20)");
+              "0123456789, abcdefgh, ...(3)");
 }
 
 TEST_F(AgentIntegrationTest,

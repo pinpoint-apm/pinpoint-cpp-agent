@@ -219,7 +219,8 @@ namespace pinpoint {
         ///        stack (innermost-last, the order a reader would emit).
         virtual void SetError(std::string_view error_name, std::string_view error_message,
                               const std::vector<CallStackFrame>& frames) = 0;
-        /// @brief Records a SQL query and comma-separated bound parameters.
+        /// @brief Records a SQL query and its bound parameters, joined with
+        ///        ", " up to the configured bind-value size limit.
         virtual void SetSqlQuery(std::string_view sql_query,
                                  const std::vector<SqlBindValue>& bind_args) = 0;
         /// @brief Records HTTP headers into the event.

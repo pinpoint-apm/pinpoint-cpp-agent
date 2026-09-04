@@ -277,6 +277,22 @@ TEST(UtilityTest, GenerateSqlUidSimilarInputsDifferentOutput) {
     EXPECT_NE(uid1, uid2);
 }
 
+// The UID is the collector's key for SQL metadata, so its bytes are a wire
+// format: MurmurHash3_x64_128 (seed 0) serialized little-endian, the layout
+// Guava's Hashing.murmur3_128().asBytes() gives the Java agent. Pinning the
+// bytes catches both a hash change and a host-byte-order leak — the halves
+// are assembled by shifts, so a big-endian build must produce these too.
+TEST(UtilityTest, GenerateSqlUidMatchesLittleEndianMurmur3Golden) {
+    EXPECT_EQ(generate_sql_uid("SELECT 1"),
+              (SqlUid{0xe2, 0x90, 0x06, 0xb0, 0x53, 0x2c, 0x94, 0x92,
+                      0x29, 0x87, 0x44, 0x15, 0xd4, 0x9a, 0x1b, 0x53}));
+    EXPECT_EQ(generate_sql_uid("select * from t where a = 0#"),
+              (SqlUid{0xd5, 0x42, 0x42, 0xc8, 0xa7, 0x41, 0xd4, 0xcc,
+                      0x7b, 0xae, 0x4f, 0xa2, 0x8d, 0x0c, 0x1e, 0xf1}));
+    // murmur3_128 of an empty input with seed 0 is all zeros on both sides.
+    EXPECT_EQ(generate_sql_uid(""), SqlUid{});
+}
+
 TEST(UtilityTest, QueueDropReporterFirstDropReportsThenRateLimits) {
     QueueDropReporter reporter(std::chrono::hours(1));
 
@@ -429,6 +445,29 @@ TEST(UtilityTest, AbbreviateErrorStringKeepsUtf8BoundaryIntact) {
         EXPECT_EQ(is_continuation, i % 3 != 0)
             << "byte " << i << " is not where its UTF-8 sequence puts it";
     }
+}
+
+// ========== abbreviateString / kMaxSqlMetaLength ==========
+//
+// PSqlMetaData.sql and PSqlUidMetaData.sql carry the normalized SQL
+// abbreviated at 65536 bytes, where Java's SqlCacheService applies
+// StringUtils.abbreviate(sql, profiler.jdbc.maxsqllength). The id/UID is
+// keyed on the whole normalized SQL, so the suffix is the only place the
+// original length survives.
+TEST(UtilityTest, AbbreviateStringKeepsInputAtOrUnderCap) {
+    EXPECT_EQ(abbreviateString("SELECT 0#", kMaxSqlMetaLength), "SELECT 0#");
+    const std::string at_cap(kMaxSqlMetaLength, 'a');
+    EXPECT_EQ(abbreviateString(at_cap, kMaxSqlMetaLength), at_cap);
+    EXPECT_EQ(abbreviateString("", kMaxSqlMetaLength), "");
+}
+
+TEST(UtilityTest, AbbreviateStringAppendsOriginalLengthOverCap) {
+    const std::string sql(70000, 'a');
+
+    const std::string abbreviated = abbreviateString(sql, kMaxSqlMetaLength);
+
+    EXPECT_EQ(abbreviated, std::string(kMaxSqlMetaLength, 'a') + "...(70000)");
+    EXPECT_EQ(abbreviated.size(), kMaxSqlMetaLength + 10);
 }
 
 } // namespace pinpoint

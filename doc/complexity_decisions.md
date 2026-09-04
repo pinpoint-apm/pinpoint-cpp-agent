@@ -63,7 +63,7 @@ shard's map never re-hashes it. Hashing again inside the map costs one extra
 | 190 B (benchmark query) | 14.6 ns | +58% |
 | 1 KB | 41.3 ns | +164% |
 | 8 KB | 301 ns | 12x |
-| 64 KB (max SQL length) | 2.4 µs | 96x |
+| 64 KB (raw SQL cache limit) | 2.4 µs | 96x |
 
 The raw SQL cache exists to make hits ~76x cheaper than re-normalizing; giving a
 growing fraction of that back per lookup defeats it exactly where SQL is large.

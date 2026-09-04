@@ -553,8 +553,14 @@ void executeQuery(pinpoint::SpanPtr span,
 ```
 
 `SqlBindValue` accepts null, boolean, signed and unsigned integer, floating-point,
-and `std::string_view` values. Values are converted to text and joined with commas
-before the configured bind-value size limit is applied.
+and `std::string_view` values. Values are converted to text and joined with `", "`
+until the configured bind-value size limit is reached; the rest are replaced by a
+`...(<number of bind values>)` marker.
+
+There is no length limit on the `sql` argument itself: the statement is normalized
+whole and the full normalized text keys the SQL id/UID, so only the copy sent as
+SQL metadata is abbreviated (see
+[SQL Length Handling](config.md#sql-length-handling)).
 
 ### Supported Database Service Types
 

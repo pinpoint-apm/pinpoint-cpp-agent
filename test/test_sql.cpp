@@ -483,6 +483,32 @@ TEST_F(SqlTest, VeryLongSqlTest) {
     EXPECT_TRUE(result.normalized_sql.length() <= 2048); // Should be truncated to max_sql_length
 }
 
+// The agent's normalizer only enforces a hard memory cap, so a statement over
+// the 64 KiB metadata cap is still normalized whole: that output is the SQL
+// id/UID cache key, and Java likewise hashes the full normalized SQL and
+// abbreviates only PSqlMetaData.sql (SqlCacheService).
+TEST_F(SqlTest, NormalizesPastMetadataCapUpToHardCap) {
+    SqlNormalizer agent_normalizer(kMaxNormalizedSqlLength);
+    const std::string filler(70000, 'a');
+    const std::string long_sql =
+        "SELECT * FROM users WHERE name = 'x' AND note = '" + filler + "'";
+
+    auto result = agent_normalizer.normalize(long_sql);
+
+    EXPECT_EQ(result.normalized_sql,
+              "SELECT * FROM users WHERE name = '0$' AND note = '1$'");
+    EXPECT_EQ(result.parameters, "x," + filler);
+}
+
+TEST_F(SqlTest, StopsNormalizingAtHardCap) {
+    SqlNormalizer agent_normalizer(kMaxNormalizedSqlLength);
+    const std::string over_cap(kMaxNormalizedSqlLength + 1000, 'a');
+
+    auto result = agent_normalizer.normalize("SELECT " + over_cap);
+
+    EXPECT_EQ(result.normalized_sql.length(), kMaxNormalizedSqlLength);
+}
+
 // Test SQL with only comments
 TEST_F(SqlTest, OnlyCommentsTest) {
     auto result = remove_comments_->normalize("/* This is only a comment */");

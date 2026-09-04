@@ -117,22 +117,32 @@ namespace pinpoint {
     ///        matching the 256 Java passes to StringUtils.abbreviate().
     inline constexpr size_t kMaxErrorStringLength = 256;
 
+    /// @brief Cap on the SQL text carried by PSqlMetaData/PSqlUidMetaData,
+    ///        matching the 65536 (profiler.jdbc.maxsqllength) Java passes to
+    ///        StringUtils.abbreviate() in SqlCacheService.
+    inline constexpr size_t kMaxSqlMetaLength = 64 * 1024;
+
+    /**
+     * @brief Abbreviates @p s the way Java's StringUtils.abbreviate(s,
+     * max_len) does: a string within the cap is returned verbatim, a longer
+     * one keeps its first @p max_len bytes and gains a
+     * "...(<original length>)" suffix naming the length that was dropped.
+     *
+     * The cut is by byte, not by Java char — that is the unit the payload is
+     * billed in, the unit the agent's other truncations use, and identical to
+     * Java for ASCII input. utf8SafeCutLength keeps the cut off a multibyte
+     * boundary so the result stays valid UTF-8 for protobuf.
+     */
+    std::string abbreviateString(std::string_view s, size_t max_len);
+
     /**
      * @brief Abbreviates an error message the way Java's
      * StringUtils.abbreviate(msg, 256) does.
      *
      * Java's AbstractRecorder.recordException stores
-     * StringUtils.abbreviate(throwable.getMessage(), 256): a message within
-     * the cap is kept verbatim, a longer one keeps its first 256 and gains a
-     * "...(<original length>)" suffix naming the length that was dropped.
-     * Uncapped, a single driver error carrying a whole SQL statement inflates
-     * every span that records it.
-     *
-     * The cut is by byte, not by Java char — that is the unit the payload is
-     * billed in, the unit the agent's other truncations (SQL, callstack) use,
-     * and identical to Java for ASCII messages. utf8SafeCutLength keeps the
-     * cut off a multibyte boundary so the result stays valid UTF-8 for
-     * protobuf.
+     * StringUtils.abbreviate(throwable.getMessage(), 256). Uncapped, a single
+     * driver error carrying a whole SQL statement inflates every span that
+     * records it.
      */
     std::string abbreviateErrorString(std::string_view msg);
 

@@ -217,13 +217,17 @@ namespace pinpoint {
         return max_len;
     }
 
-    std::string abbreviateErrorString(std::string_view msg) {
-        if (msg.length() <= kMaxErrorStringLength) {
-            return std::string{msg};
+    std::string abbreviateString(std::string_view s, size_t max_len) {
+        if (s.length() <= max_len) {
+            return std::string{s};
         }
-        std::string abbreviated{msg.substr(0, utf8SafeCutLength(msg, kMaxErrorStringLength))};
-        abbreviated.append("...(").append(std::to_string(msg.length())).append(")");
+        std::string abbreviated{s.substr(0, utf8SafeCutLength(s, max_len))};
+        abbreviated.append("...(").append(std::to_string(s.length())).append(")");
         return abbreviated;
+    }
+
+    std::string abbreviateErrorString(std::string_view msg) {
+        return abbreviateString(msg, kMaxErrorStringLength);
     }
 
     std::optional<int> stoi_(std::string_view str) {
@@ -250,13 +254,29 @@ namespace pinpoint {
         // MurmurHash3_x64_128 produces 16 bytes (128 bits) of output
         static_assert(SqlUid{}.size() == kMurmurHashOutputSize,
                       "SqlUid size must match MurmurHash3_x64_128 output");
-        SqlUid result{};
         // MurmurHash3 takes an int length; clamp so a >2 GiB input (never
         // produced by the normalizer, which caps SQL length, but this is a
         // public utility) cannot go negative in the cast.
         const auto length = static_cast<int>(std::min<size_t>(
             sql.length(), static_cast<size_t>(std::numeric_limits<int>::max())));
-        MurmurHash3_x64_128(sql.data(), length, kMurmurHashSeed, result.data());
+
+        // The UID travels on the wire and is the collector's key, so its bytes
+        // must not depend on the host's byte order. Take the hash's two 64-bit
+        // halves and serialize them little-endian instead of letting
+        // MurmurHash3 store the host representation: that is the layout Guava's
+        // Hashing.murmur3_128().hashBytes(...).asBytes() produces for the Java
+        // agent (see UidGenerator.Murmur), and the one every existing
+        // little-endian build already emits.
+        uint64_t halves[2] = {0, 0};
+        MurmurHash3_x64_128(sql.data(), length, kMurmurHashSeed, halves);
+
+        SqlUid result{};
+        for (size_t half = 0; half < 2; ++half) {
+            for (size_t byte = 0; byte < sizeof(uint64_t); ++byte) {
+                result[half * sizeof(uint64_t) + byte] =
+                    static_cast<unsigned char>(halves[half] >> (8 * byte));
+            }
+        }
         return result;
     }
 

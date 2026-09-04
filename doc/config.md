@@ -320,12 +320,20 @@ Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are d
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. Bind values are recorded only when this is greater than `0`; negative values are clamped to `0`. An argument that would exceed a positive limit is omitted and the value ends with `...(N)`. |
+| `Sql.MaxBindArgsSize` | `PINPOINT_CPP_SQL_MAX_BIND_ARGS_SIZE` | int | `1024` | Max bytes of SQL bind arguments to record. Bind values are recorded only when this is greater than `0`; negative values are clamped to `0`. Values are joined with `", "` and an argument that would exceed a positive limit is omitted, the value ending with `...(<number of bind values>)` — the separator and marker the Java agent's `BindValueUtils.bindValueToString` produces. |
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Record SQL metadata keyed by UID (`SQL-UID` annotation) instead of ID (`SQL-ID`), for collectors that aggregate SQL statistics by uid. Applies to sampled spans only. |
 | `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAW_SQL_CACHE` | bool | `true` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.CacheLengthLimit` | `PINPOINT_CPP_SQL_CACHE_LENGTH_LIMIT` | int | `2048` | Statement length at or above which SQL bypasses the SQL-UID cache and the raw-SQL caches, bounding their memory at entries x this limit instead of at the largest statement ever seen. A bypassed statement is still traced correctly, but its UID metadata is re-sent on every use and its raw text is re-normalized every time. Compared against the raw text for the raw caches and the normalized text for the UID cache. `-1` caches everything (pre-limit behaviour), `0` caches nothing. Startup-only. Mirrors the Java agent's `profiler.jdbc.sqlcachelengthlimit`. The `SQL-ID` cache is deliberately exempt: its ids come from a sequence, so bypassing it would burn a new id and a new metadata record on every use. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
 | `Sql.RemoveComments` | `PINPOINT_CPP_SQL_REMOVE_COMMENTS` | bool | `false` | Strip SQL comments (`/* */`, `--`, `//`) before normalization, without inserting anything in their place. Off by default so comments (e.g. Oracle `/*+ INDEX */` hints) stay visible and the normalized SQL, and therefore the SQL id/UID, is byte-identical to the Java agent. Startup-only: changing it mid-run would re-key already cached SQL. |
+
+### SQL Length Handling
+
+Not configurable, but wire-visible, and matching the Java agent:
+
+- A statement is normalized **whole**, and the **complete** normalized SQL is the SQL id cache key and the input to the SQL UID hash (MurmurHash3-128, little-endian — `UidGenerator.Murmur` in Java). Two agents therefore report the same id/UID for the same statement however long it is.
+- Only the copy transmitted in `PSqlMetaData.sql` / `PSqlUidMetaData.sql` is abbreviated, at **65536 bytes** (Java's `profiler.jdbc.maxsqllength`, applied by `SqlCacheService`): the first 65536 bytes — cut back to a whole UTF-8 character — plus a `...(<original length>)` suffix.
+- A hard cap of **1 MiB** on the text the normalizer processes protects against a pathological statement; past it the SQL is cut before normalization, and the id/UID then covers only the retained prefix.
 
 ---
 

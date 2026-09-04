@@ -740,14 +740,22 @@ namespace pinpoint {
                         call->operation_name = "sql";
                         auto* request = google::protobuf::Arena::Create<v1::PSqlMetaData>(&call->arena);
                         request->set_sqlid(value.id_);
-                        request->set_sql(value.str_val_);
+                        // Only the transmitted copy is abbreviated, exactly
+                        // where Java's SqlCacheService abbreviates it. The
+                        // queued StringMeta keeps the whole normalized SQL:
+                        // that is the id cache key removeCacheSql() evicts
+                        // after retry exhaustion.
+                        request->set_sql(abbreviateString(value.str_val_, kMaxSqlMetaLength));
                         async_stub->RequestSqlMetaData(&call->ctx, request, &call->reply, on_done);
                     }
                 } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
                     call->operation_name = "sql uid";
                     auto* request = google::protobuf::Arena::Create<v1::PSqlUidMetaData>(&call->arena);
                     request->set_sqluid(std::string(value.uid_.begin(), value.uid_.end()));
-                    request->set_sql(value.sql_);
+                    // As above: the UID was generated from the whole
+                    // normalized SQL, which SqlUidMeta still carries as the
+                    // uid cache key, and only this copy is abbreviated.
+                    request->set_sql(abbreviateString(value.sql_, kMaxSqlMetaLength));
                     async_stub->RequestSqlUidMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
                     call->operation_name = "exception";

@@ -126,8 +126,9 @@ namespace pinpoint {
         // would ping-pong across all request threads.
         //
         // Sql.CacheLengthLimit additionally caps what the SQL caches may
-        // retain (see kNoCacheLengthLimit): without it a 1024-entry cache
-        // holding 64KB statements is 64MB, three times over. Startup-only,
+        // retain (see kNoCacheLengthLimit): the normalizer admits statements
+        // up to kMaxNormalizedSqlLength, so without it a 1024-entry cache is
+        // ~1GB in the worst case, three times over. Startup-only,
         // like the cache sizes themselves. Deliberately not applied to
         // sql_cache_: its ids come from a sequence, so a bypassed statement
         // would burn a fresh id — and a fresh StringMeta — on every single
@@ -145,7 +146,8 @@ namespace pinpoint {
             cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
         raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(
             cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
-        sql_normalizer_ = std::make_unique<const SqlNormalizer>(64 * 1024, cfg->sql.remove_comments);
+        sql_normalizer_ = std::make_unique<const SqlNormalizer>(
+            kMaxNormalizedSqlLength, cfg->sql.remove_comments);
 
         // Initial build: no previous runtime, so every component is created
         // and published together in one atomic store. The constructor stays

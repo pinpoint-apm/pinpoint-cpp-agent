@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
         iterations = static_cast<size_t>(std::stoull(argv[1]));
     }
 
-    SqlNormalizer normalizer(64 * 1024);
+    SqlNormalizer normalizer(kMaxNormalizedSqlLength);
     IdCache canonical_cache(1024);
     auto warm_normalized = normalizer.normalize(kRawSql);
     canonical_cache.get(warm_normalized.normalized_sql);

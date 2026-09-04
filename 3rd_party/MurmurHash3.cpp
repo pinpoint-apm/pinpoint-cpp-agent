@@ -11,7 +11,6 @@
 
 #include "MurmurHash3.h"
 
-#include <cstring>
 
 //-----------------------------------------------------------------------------
 // Platform-specific functions and macros
@@ -57,20 +56,32 @@ inline uint64_t rotl64 ( uint64_t x, int8_t r )
 // handle aligned reads, do the conversion here
 
 // The key is an arbitrary byte pointer, so it is not guaranteed to be 4/8-byte
-// aligned. Reading it through an integer pointer is undefined behaviour; memcpy
-// compiles to the same single load on every platform we build for.
+// aligned; reading it through an integer pointer is undefined behaviour. The
+// blocks are assembled little-endian byte by byte rather than memcpy'd, so the
+// digest does not depend on the host byte order: the hash keys wire-visible
+// SQL UIDs that must match the Java agent's Guava murmur3_128, which is
+// little-endian everywhere. On a little-endian target the shifts fold back
+// into the same single load.
 FORCE_INLINE uint32_t getblock32 ( const uint8_t * p, int i )
 {
-  uint32_t value;
-  std::memcpy(&value, p + i * static_cast<int>(sizeof(value)), sizeof(value));
-  return value;
+  const uint8_t * b = p + i * static_cast<int>(sizeof(uint32_t));
+  return   static_cast<uint32_t>(b[0])
+        | (static_cast<uint32_t>(b[1]) <<  8)
+        | (static_cast<uint32_t>(b[2]) << 16)
+        | (static_cast<uint32_t>(b[3]) << 24);
 }
 
 FORCE_INLINE uint64_t getblock64 ( const uint8_t * p, int i )
 {
-  uint64_t value;
-  std::memcpy(&value, p + i * static_cast<int>(sizeof(value)), sizeof(value));
-  return value;
+  const uint8_t * b = p + i * static_cast<int>(sizeof(uint64_t));
+  return   static_cast<uint64_t>(b[0])
+        | (static_cast<uint64_t>(b[1]) <<  8)
+        | (static_cast<uint64_t>(b[2]) << 16)
+        | (static_cast<uint64_t>(b[3]) << 24)
+        | (static_cast<uint64_t>(b[4]) << 32)
+        | (static_cast<uint64_t>(b[5]) << 40)
+        | (static_cast<uint64_t>(b[6]) << 48)
+        | (static_cast<uint64_t>(b[7]) << 56);
 }
 
 //-----------------------------------------------------------------------------

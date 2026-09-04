@@ -75,31 +75,41 @@ namespace pinpoint {
             }
 
             const auto max_size = static_cast<std::size_t>(max_bind_args_size);
-            // Room for the "...(<max_bind_args_size>)" truncation suffix:
-            // 5 punctuation chars plus at most 10 digits of a positive int.
-            constexpr std::size_t kTruncationSuffixMax = 16;
+            // Separator and truncation marker both follow Java's
+            // BindValueUtils.bindValueToString: values are joined with ", "
+            // and a dropped tail is reported as "...(<number of bind values>)"
+            // — the count, not the byte limit, so the reader can tell how many
+            // values the statement had. This string is display-only (the
+            // SQL_BINDVALUE annotation); the placeholders the web substitutes
+            // come from the normalizer's parameters, which keep their own
+            // separator.
+            constexpr std::string_view kSeparator = ", ";
+            // Room for the "...(<bind arg count>)" marker: 5 punctuation
+            // chars plus at most 20 digits of a size_t.
+            constexpr std::size_t kTruncationSuffixMax = 25;
 
-            // The output never exceeds max_size plus the suffix. Reserve that
-            // up front, capped so a large configured limit does not allocate
-            // more than a typical bind list needs; the rest is left to the
-            // string's geometric growth.
+            // The output never exceeds max_size plus a separator and the
+            // marker. Reserve that up front, capped so a large configured
+            // limit does not allocate more than a typical bind list needs;
+            // the rest is left to the string's geometric growth.
             constexpr std::size_t kMaxInitialReserve = 256;
-            joined_bind_args.reserve(std::min(max_size, kMaxInitialReserve) + kTruncationSuffixMax);
+            joined_bind_args.reserve(std::min(max_size, kMaxInitialReserve) +
+                                     kSeparator.size() + kTruncationSuffixMax);
 
             fmt::memory_buffer scratch;
             for (std::size_t i = 0; i < bind_args.size(); ++i) {
                 const auto arg = sqlBindValueView(bind_args[i], scratch);
-                const std::size_t separator_size = i == 0 ? 0 : 1;
-                const std::size_t remaining_size = max_size - joined_bind_args.size();
-                if (separator_size > remaining_size ||
-                    arg.size() > remaining_size - separator_size) {
-                    fmt::format_to(std::back_inserter(joined_bind_args),
-                                   "...({})", max_bind_args_size);
-                    break;
-                }
-
+                // Java appends the separator after every value but the last,
+                // so it precedes whatever comes next: the value, or the marker
+                // that stands in for the values left out.
                 if (i != 0) {
-                    joined_bind_args.push_back(',');
+                    joined_bind_args.append(kSeparator);
+                }
+                if (joined_bind_args.size() >= max_size ||
+                    arg.size() > max_size - joined_bind_args.size()) {
+                    fmt::format_to(std::back_inserter(joined_bind_args),
+                                   "...({})", bind_args.size());
+                    break;
                 }
                 joined_bind_args.append(arg);
             }

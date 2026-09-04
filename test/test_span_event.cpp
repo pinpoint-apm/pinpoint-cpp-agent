@@ -808,9 +808,11 @@ TEST_F(SpanEventTest, SetSqlQueryFormatsVariantParameters) {
 
     auto& annotations = span_event.getAnnotations()->getAnnotations();
     ASSERT_EQ(annotations.size(), 1U);
+    // ", " separator, as Java's BindValueUtils.bindValueToString joins with.
     EXPECT_EQ(std::get<IntStringStringValue>(
                   annotations.front().second.data).stringValue2,
-              "-7,42,-9000000000,18000000000,3.5,2.25,true,false,null,hello");
+              "-7, 42, -9000000000, 18000000000, 3.5, 2.25, true, false, "
+              "null, hello");
 }
 
 TEST_F(SpanEventTest, SetSqlQuerySameQueryTest) {
@@ -882,13 +884,28 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   at_limit_annotations.front().second.data).stringValue2,
               "1234");
 
+    // The marker names the number of bind values, like Java's
+    // BindValueUtils.appendLength(sb, bindValueArray.length) — not the byte
+    // limit that stopped the join.
     auto over_limit = make_test_span_event(*test_span_, "over-limit");
     over_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"12345"});
     auto& over_limit_annotations = over_limit.getAnnotations()->getAnnotations();
     ASSERT_EQ(over_limit_annotations.size(), 1U);
     EXPECT_EQ(std::get<IntStringStringValue>(
                   over_limit_annotations.front().second.data).stringValue2,
-              "...(4)");
+              "...(1)");
+
+    // Java appends the separator after every value but the last, so a tail
+    // dropped after a value that did fit reads "1234, ...(2)".
+    auto tail_dropped = make_test_span_event(*test_span_, "tail-dropped");
+    tail_dropped.SetSqlQuery("SELECT * FROM users WHERE id = ? AND n = ?",
+                             {"1234", "5"});
+    auto& tail_dropped_annotations =
+        tail_dropped.getAnnotations()->getAnnotations();
+    ASSERT_EQ(tail_dropped_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  tail_dropped_annotations.front().second.data).stringValue2,
+              "1234, ...(2)");
 }
 
 TEST_F(SpanEventTest, SetSqlQueryDoesNotTraceBindValueWhenLimitIsZero) {

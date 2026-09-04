@@ -70,8 +70,11 @@ namespace pinpoint {
             return result;
         }
         
-        // Limit SQL length to prevent memory issues. The cut is UTF-8 aware
-        // so a truncated query never ends in a partial multibyte character.
+        // Hard memory cap only (kMaxNormalizedSqlLength), not the metadata
+        // cap: the full normalized SQL below it is the id/UID cache key, and
+        // the abbreviation that PSqlMetaData.sql carries happens when that
+        // message is built. The cut is UTF-8 aware so a truncated query never
+        // ends in a partial multibyte character.
         sql = sql.substr(0, utf8SafeCutLength(sql, max_sql_length_));
         if (sql.empty()) {
             return result;

@@ -517,6 +517,28 @@ TEST_F(AgentImplTest, PrepareSqlHonoursConfiguredCacheLengthLimit) {
     agent->Shutdown();
 }
 
+// A statement past the 64 KiB metadata cap is normalized whole and its UID
+// covers every byte of that output, as in Java: SqlCacheService hashes the
+// full normalized SQL and abbreviates only the copy PSqlMetaData.sql carries.
+// Cutting the normalizer's input at the cap instead (the earlier behavior)
+// produced a UID the Java agent never derives for the same statement.
+TEST_F(AgentImplTest, PrepareSqlUidCoversNormalizedSqlPastMetadataCap) {
+    const std::string wide_projection(70000, 'a');
+    const std::string raw_sql =
+        "SELECT " + wide_projection + " FROM t WHERE id = 7";
+    const std::string normalized =
+        "SELECT " + wide_projection + " FROM t WHERE id = 0#";
+    ASSERT_GT(normalized.length(), kMaxSqlMetaLength);
+
+    auto prepared = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
+
+    ASSERT_TRUE(prepared.has_value());
+    ASSERT_NE(*prepared, nullptr);
+    EXPECT_EQ(std::get<SqlUid>((*prepared)->identity),
+              generate_sql_uid(normalized));
+    EXPECT_EQ((*prepared)->parameters, "7");
+}
+
 TEST_F(AgentImplTest, PrepareSqlReturnsNulloptWhenAgentDisabled) {
     // Shutdown() clears enabled_; prepareSql must then short-circuit to nullopt
     // for both namespaces instead of normalizing or touching the caches.

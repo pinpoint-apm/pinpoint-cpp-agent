@@ -150,7 +150,7 @@ public:
 
     std::optional<PreparedSqlRef> prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const override try {
-        static const SqlNormalizer normalizer(64 * 1024);
+        static const SqlNormalizer normalizer(kMaxNormalizedSqlLength);
         // One locked snapshot for the whole call: reading the config_ member
         // directly would race publishConfig()'s pointer swap on another
         // thread (and could even drop the last reference mid-read).
