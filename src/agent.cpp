@@ -385,6 +385,15 @@ namespace pinpoint {
                                                      c.sampling.new_throughput,
                                                      c.sampling.cont_throughput);
 
+        // Java's ExceptionChainSampler: an error storm produces one exception
+        // metadata per errored span, so new chains are admitted at most
+        // CallstackTraceNewThroughput per second and the rest are recorded as
+        // plain errors without a call stack. Non-positive is unlimited, null.
+        rt->exception_chain_limiter = c.callstack_trace_new_throughput > 0
+            ? std::make_shared<RateLimiter>(
+                  static_cast<uint64_t>(c.callstack_trace_new_throughput))
+            : nullptr;
+
         // An empty config list means the filter is off, represented as null.
         rt->http_url_filter = c.http.server.exclude_url.empty()
             ? nullptr : std::make_shared<HttpUrlFilter>(c.http.server.exclude_url);

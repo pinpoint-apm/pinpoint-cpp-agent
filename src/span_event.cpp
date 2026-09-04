@@ -336,7 +336,13 @@ namespace pinpoint {
         // Repeated call-stack SetError calls on one event are the cause chain
         // of a single exception (Java records them under one exceptionId with
         // an increasing depth), so they reuse the id of the first link and are
-        // annotated only once.
+        // annotated only once — and only the first link is rate limited.
+        // A rejected chain keeps the plain error (SetError already ran and
+        // marked the span); only the call stack is dropped, which is what
+        // Java's DISABLED sampling state does.
+        if (exception_id_ == 0 && !span.allowNewExceptionChain()) {
+            return;
+        }
         auto exception = std::make_unique<Exception>(std::move(callstack), exception_id_);
         const auto exception_id = exception->getId();
         if (span.addException(std::move(exception)) && exception_id_ == 0) {

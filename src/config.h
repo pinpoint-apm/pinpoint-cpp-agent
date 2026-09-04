@@ -66,6 +66,9 @@ namespace pinpoint {
         // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
         constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
+        // New exception chains admitted per second. Mirrors the Java agent's
+        // profiler.exceptiontrace.new.throughput (1000).
+        constexpr int CALLSTACK_TRACE_NEW_THROUGHPUT = 1000;
         constexpr const char* LOG_LEVEL = "info";
 
         constexpr int32_t SPAN_SERVICE_TYPE = SERVICE_TYPE_CPP;
@@ -156,6 +159,7 @@ namespace pinpoint {
         constexpr const char* SQL_REMOVE_COMMENTS = "SQL_REMOVE_COMMENTS";
         constexpr const char* CONFIG_FILE = "CONFIG_FILE";
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
+        constexpr const char* CALLSTACK_TRACE_NEW_THROUGHPUT = "CALLSTACK_TRACE_NEW_THROUGHPUT";
         constexpr const char* ENABLE_CONFIG_FILE_WATCHER = "ENABLE_CONFIG_FILE_WATCHER";
     }
 
@@ -226,6 +230,10 @@ namespace pinpoint {
         bool enable = true;
         bool is_container = false;
         bool enable_callstack_trace = false;
+        // New exception chains admitted per second, agent-wide, so an error
+        // storm cannot flood the metadata queue (Java's ExceptionChainSampler).
+        // 0 = unlimited. See SpanImpl::allowNewExceptionChain.
+        int callstack_trace_new_throughput = defaults::CALLSTACK_TRACE_NEW_THROUGHPUT;
         // Opt-in for the config-file watcher (hot reload). Consumed once by
         // Start() to decide whether the watcher is installed, so it is
         // non-reloadable: with the watcher off nothing observes the file,

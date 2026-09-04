@@ -364,6 +364,7 @@ Not configurable, but wire-visible, and matching the Java agent:
 |---|---|---|---|---|
 | `IsContainer` | `PINPOINT_CPP_IS_CONTAINER` | bool | auto-detected | Checks `/.dockerenv` or `KUBERNETES_SERVICE_HOST`. Set explicitly if auto-detection fails. |
 | `EnableCallstackTrace` | `PINPOINT_CPP_ENABLE_CALLSTACK_TRACE` | bool | `false` | Capture stack trace when recording errors. |
+| `CallstackTraceNewThroughput` | `PINPOINT_CPP_CALLSTACK_TRACE_NEW_THROUGHPUT` | int | `1000` | New exception chains admitted per second, agent-wide. `0` = unlimited; a negative value falls back to the default. Mirrors the Java agent's `profiler.exceptiontrace.new.throughput`. Only the **first** call stack of a chain is charged — a cause chain is never recorded half-way — and a refused chain is still reported as a plain error (`exceptionInfo` and the failed-transaction mark), it just carries no call stack. See [Java feature gap](java_feature_gap.md). |
 | `EnableConfigFileWatcher` | `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHER` | bool | `false` | Watch the YAML config file and hot-reload changes at runtime. See [Configuration Hot Reload](#configuration-hot-reload). Non-reloadable: evaluated once at agent start. |
 
 ---

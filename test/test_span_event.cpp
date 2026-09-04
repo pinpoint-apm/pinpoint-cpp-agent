@@ -374,6 +374,79 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_NE(id1, id2) << "Exception IDs should be different";
 }
 
+// ========== Exception chain rate limit (Java ExceptionChainSampler) ==========
+
+// A span riding a runtime snapshot whose new-exception-chain budget is @p tps
+// per second. Production spans always carry a snapshot (NewSpan builds one);
+// the fixture span deliberately carries none, which is the unlimited path the
+// tests above exercise.
+static std::shared_ptr<SpanImpl> make_chain_limited_span(MockAgentService& agent, uint64_t tps) {
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = agent.getConfig();
+    runtime->exception_chain_limiter = std::make_shared<RateLimiter>(tps);
+    return std::make_shared<SpanImpl>(&agent, "test-operation", "test-rpc", std::move(runtime));
+}
+
+TEST_F(SpanEventTest, ExceptionChainRateLimitDropsCallStackOnly) {
+    auto span = make_chain_limited_span(*mock_agent_service_, 1);
+    auto event1 = make_test_span_event(*span, "op1");
+    auto event2 = make_test_span_event(*span, "op2");
+
+    MockCallStackReader reader1;
+    reader1.AddFrame("/lib/app.so", "function1", "/src/file1.cpp", 10);
+    MockCallStackReader reader2;
+    reader2.AddFrame("/lib/app.so", "function2", "/src/file2.cpp", 20);
+
+    event1.SetError("Error1", "First error", reader1);
+    event2.SetError("Error2", "Second error", reader2);
+
+    // One chain per second: the first is admitted, the second is refused.
+    EXPECT_EQ(span->getExceptions().size(), 1u)
+        << "The second new exception chain should be rate limited away";
+
+    // The refused chain is still a plain error - only the call stack is lost,
+    // which is what Java's DISABLED sampling state produces.
+    EXPECT_EQ(event2.getErrorString(), "Second error");
+    EXPECT_GT(event2.getErrorFuncId(), 0);
+    EXPECT_EQ(span->getSpanData()->getErr(), 1) << "The span is still marked failed";
+}
+
+TEST_F(SpanEventTest, ExceptionChainRateLimitSkipsChainContinuations) {
+    auto span = make_chain_limited_span(*mock_agent_service_, 1);
+    auto event = make_test_span_event(*span, "op1");
+
+    MockCallStackReader cause;
+    cause.AddFrame("/lib/app.so", "cause", "/src/cause.cpp", 1);
+    MockCallStackReader wrapper;
+    wrapper.AddFrame("/lib/app.so", "wrapper", "/src/wrapper.cpp", 2);
+
+    // Two call-stack SetError calls on ONE event are the cause chain of a
+    // single exception, so only the first consumes budget.
+    event.SetError("Cause", "cause", cause);
+    event.SetError("Wrapper", "wrapper", wrapper);
+
+    const auto& exceptions = span->getExceptions();
+    ASSERT_EQ(exceptions.size(), 2u) << "A chain must never be recorded half-way";
+    EXPECT_EQ(exceptions[0]->getId(), exceptions[1]->getId())
+        << "Both links belong to the same chain";
+}
+
+TEST_F(SpanEventTest, ExceptionChainRateLimitUnlimitedWhenNoLimiter) {
+    // callstack_trace_new_throughput <= 0 builds no limiter (build_runtime),
+    // which must keep the pre-limit behaviour.
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = mock_agent_service_->getConfig();
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "op", "rpc", std::move(runtime));
+
+    for (int i = 0; i < 5; ++i) {
+        auto event = make_test_span_event(*span, "op");
+        MockCallStackReader reader;
+        reader.AddFrame("/lib/app.so", "f", "/src/f.cpp", i);
+        event.SetError("Error", "boom", reader);
+    }
+    EXPECT_EQ(span->getExceptions().size(), 5u);
+}
+
 TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader reader;

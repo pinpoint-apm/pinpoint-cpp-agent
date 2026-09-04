@@ -470,6 +470,7 @@ namespace pinpoint {
         {"Sql.RemoveComments", REF(sql.remove_comments), FIXED, env::SQL_REMOVE_COMMENTS},
         {"Sql.CacheLengthLimit", REF(sql.cache_length_limit), FIXED, env::SQL_CACHE_LENGTH_LIMIT},
         {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
+        {"CallstackTraceNewThroughput", REF(callstack_trace_new_throughput), RELOAD, env::CALLSTACK_TRACE_NEW_THROUGHPUT},
         {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
     };
 #undef REF
@@ -818,6 +819,9 @@ namespace pinpoint {
                  defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS, "agent info send retry interval");
         at_least(config->collector.agent_info.max_try_per_attempt, 1,
                  defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT, "agent info max try per attempt");
+
+        at_least(config->callstack_trace_new_throughput, 0,
+                 defaults::CALLSTACK_TRACE_NEW_THROUGHPUT, "callstack trace new throughput");
 
         at_least(config->sql.max_bind_args_size, 0, 0, "sql max bind args size");
         // UNLIMITED_SIZE (-1) is the only valid negative: anything below it

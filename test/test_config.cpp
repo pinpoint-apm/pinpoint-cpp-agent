@@ -315,6 +315,25 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     
     // Test CallStack trace default
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
+    EXPECT_EQ(config->callstack_trace_new_throughput, 1000)
+        << "Default exception chain throughput should be Java's 1000/s";
+}
+
+// A negative budget would build a RateLimiter from a huge unsigned value
+// (build_runtime casts to uint64_t), so it falls back to the default instead.
+// 0 is the documented "unlimited" value and must survive validation.
+TEST_F(ConfigTest, CallstackTraceNewThroughputValidationTest) {
+    set_config_string("CallstackTraceNewThroughput: -1\n");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->callstack_trace_new_throughput, 1000)
+        << "Negative exception chain throughput should fall back to the default";
+
+    set_config_string("CallstackTraceNewThroughput: 0\n");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->callstack_trace_new_throughput, 0)
+        << "0 means unlimited and must be kept";
 }
 
 TEST_F(ConfigTest, RevisionStampsEachGeneration) {

@@ -27,6 +27,7 @@ namespace pinpoint {
     class HttpMethodFilter;
     class HttpStatusErrors;
     class HttpHeaderRecorder;
+    class RateLimiter;
     class AgentStats;
     class UrlStats;
 
@@ -49,6 +50,10 @@ namespace pinpoint {
         std::shared_ptr<HttpUrlFilter> http_url_filter;
         std::shared_ptr<HttpMethodFilter> http_method_filter;
         std::shared_ptr<HttpStatusErrors> http_status_errors;
+        // Agent-wide budget for NEW exception chains (Java's
+        // ExceptionChainSampler). Null means unlimited, which is what a
+        // non-positive Config::callstack_trace_new_throughput builds.
+        std::shared_ptr<RateLimiter> exception_chain_limiter;
         std::array<std::shared_ptr<HttpHeaderRecorder>, 3> http_srv_header_recorder;
         std::array<std::shared_ptr<HttpHeaderRecorder>, 3> http_cli_header_recorder;
         // Not config-derived: the agent's stats sinks, carried unchanged into

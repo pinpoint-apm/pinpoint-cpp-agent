@@ -585,6 +585,18 @@ namespace pinpoint {
             bool shouldMarkError(std::string_view error_name, std::string_view error_message) const {
                 return !is_ignored_error(config_->span.ignore_errors, error_name, error_message);
             }
+            // Java's ExceptionChainSampler.isNewSampled(): a NEW exception
+            // chain is admitted only while the agent-wide budget of
+            // Config::callstack_trace_new_throughput chains per second holds.
+            // Links continuing an already-admitted chain are never limited, so
+            // a cause chain is never recorded half-way. A span created without
+            // a runtime snapshot (tests) has no limiter and stays unlimited.
+            bool allowNewExceptionChain() const {
+                if (!runtime_ || !runtime_->exception_chain_limiter) {
+                    return true;
+                }
+                return runtime_->exception_chain_limiter->allow();
+            }
             // Exceptions only drain at EndSpan (unlike span events, which
             // chunk-flush mid-span), so a retry loop on a long-lived span
             // would grow this without bound — each entry carries a full
