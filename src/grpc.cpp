@@ -595,11 +595,15 @@ namespace pinpoint {
         std::shared_ptr<const GrpcClient::Transport> transport;
     };
 
-    // Metadata queued for (re)send.
+    // Metadata queued for (re)send, or — with release_only — parked purely so
+    // its cache entry is released later rather than now.
     struct PendingMeta {
         std::unique_ptr<MetaData> meta;
         int retry_count{0};
         std::chrono::steady_clock::time_point available_at{};
+        // Nothing is sent when this comes due: the worker releases the cache
+        // entry and drops the item. See GrpcMetadata::schedule_cache_release.
+        bool release_only{false};
     };
 
     // Every coordination point of the metadata pipeline under one mutex/cv:
@@ -909,7 +913,15 @@ namespace pinpoint {
         }
     }
 
-    void GrpcMetadata::retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count) {
+    void GrpcMetadata::schedule_cache_release(std::unique_ptr<MetaData> meta) {
+        // retry_count 0 so it cannot land in the exhaustion branch below: this
+        // item is not being retried, it is waiting out the delay that keeps
+        // the re-registration from happening on the very next span.
+        retry_or_drop(std::move(meta), 0, /*release_only=*/true);
+    }
+
+    void GrpcMetadata::retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count,
+                                     bool release_only) {
         if (agent_->isExiting()) {
             return;
         }
@@ -922,9 +934,14 @@ namespace pinpoint {
             release_failed_cache(*meta);
             return;
         }
-        LOG_DEBUG("retry metadata send: retryCount={}/{}", retry_count, tuning_.meta_retry_max_attempts);
+        if (release_only) {
+            LOG_DEBUG("park metadata cache release for {}ms", tuning_.meta_retry_delay.count());
+        } else {
+            LOG_DEBUG("retry metadata send: retryCount={}/{}", retry_count, tuning_.meta_retry_max_attempts);
+        }
         PendingMeta pending{std::move(meta), retry_count,
-                            std::chrono::steady_clock::now() + tuning_.meta_retry_delay};
+                            std::chrono::steady_clock::now() + tuning_.meta_retry_delay,
+                            release_only};
         // Overflow policy: a full retry schedule head-drops — the opposite of
         // enqueueMeta's newest-drop, because the schedule is ordered by due
         // time and the incoming item is always the last one due (every retry
@@ -980,12 +997,21 @@ namespace pinpoint {
     }
 
     void GrpcMetadata::process_completed(std::vector<std::shared_ptr<PendingMetaRpc>>& done) {
-        // Both drop paths below release the cache entry themselves instead of
-        // going through retry_or_drop: that release is the item's one and only
-        // release (the retry path releases only on exhaustion), and it runs
-        // outside the pipeline mutex — the worker holds no lock here — as the
-        // lock order documented in retry_or_drop requires. The permit is not
-        // touched: completeCall returned it before queueing the outcome.
+        // Both drop paths below hand the item to schedule_cache_release rather
+        // than releasing inline: the release is the item's one and only one
+        // (the retry path releases only on exhaustion), but doing it here is
+        // what makes the next span miss the cache and re-send immediately —
+        // one rejection per round trip, forever, against a collector that has
+        // already said no. Parking it for a retry delay turns that into one
+        // probe per delay per id. Either way the release itself runs outside
+        // the pipeline mutex, as the lock order documented in retry_or_drop
+        // requires. The permit is not touched: completeCall returned it before
+        // queueing the outcome.
+        //
+        // The reports are rate-limited for the same reason: a rejecting
+        // collector is one condition, not one condition per id, and an
+        // unthrottled line per rejection serializes the worker on the logger
+        // mutex and its per-line flush. The first rejection always reports.
         for (auto& call : done) {
             if (call->status.ok() && call->reply.success()) {
                 LOG_DEBUG("success to send {} metadata", call->operation_name);
@@ -994,11 +1020,14 @@ namespace pinpoint {
 
             if (!call->status.ok()) {
                 if (!is_retryable_meta_status(call->status.error_code())) {
-                    LOG_ERROR("drop {} metadata: status {} is not retryable, {}",
-                              call->operation_name,
-                              static_cast<int>(call->status.error_code()),
-                              call->status.error_message());
-                    release_failed_cache(*call->meta);
+                    if (const auto rejected = meta_reject_reporter_.record()) {
+                        LOG_ERROR("drop {} metadata: status {} is not retryable, {} "
+                                  "({} rejected in total)",
+                                  call->operation_name,
+                                  static_cast<int>(call->status.error_code()),
+                                  call->status.error_message(), rejected);
+                    }
+                    schedule_cache_release(std::move(call->meta));
                     continue;
                 }
                 LOG_ERROR("failed to send {} metadata: {}, {}", call->operation_name,
@@ -1018,9 +1047,12 @@ namespace pinpoint {
             // cache entry keeps the recovery path: a later span re-registers
             // the id and sends a *new* request, which is the only thing that
             // can produce a different answer.
-            LOG_ERROR("drop {} metadata: collector rejected it (PResult.success=false), {}",
-                      call->operation_name, call->reply.message());
-            release_failed_cache(*call->meta);
+            if (const auto rejected = meta_reject_reporter_.record()) {
+                LOG_ERROR("drop {} metadata: collector rejected it "
+                          "(PResult.success=false), {} ({} rejected in total)",
+                          call->operation_name, call->reply.message(), rejected);
+            }
+            schedule_cache_release(std::move(call->meta));
         }
     }
 
@@ -1079,7 +1111,9 @@ namespace pinpoint {
         done.reserve(static_cast<size_t>(pipeline_->max_permits) * 4);
         while (true) {
             // The inner loop exits with either completed outcomes swapped
-            // into `done`, or one item popped with a permit held.
+            // into `done`, or one item popped with a permit held. A popped
+            // item is normally sent; a release_only one hands the permit
+            // straight back (see below) rather than launching anything.
             PendingMeta item;
             {
                 std::unique_lock<std::mutex> lock(pipeline_->mutex);
@@ -1125,6 +1159,22 @@ namespace pinpoint {
             if (!done.empty()) {
                 process_completed(done);
                 done.clear();
+                continue;
+            }
+
+            // A parked cache release, not a send: its delay has expired, so
+            // release the id and let a later span re-register it. Needs no
+            // channel, so it is handled before the readiness check — hand the
+            // permit back first, since nothing will complete to return it.
+            if (item.release_only) {
+                {
+                    std::lock_guard<std::mutex> lock(pipeline_->mutex);
+                    ++pipeline_->permits;
+                }
+                pipeline_->cv.notify_all();
+                if (item.meta != nullptr) {
+                    release_failed_cache(*item.meta);
+                }
                 continue;
             }
 

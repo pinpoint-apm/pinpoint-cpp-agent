@@ -537,9 +537,14 @@ namespace pinpoint {
      * a small in-flight permit cap and processes completions as they arrive,
      * mirroring GrpcSpan's async batch path. Items that failed transiently
      * re-enter the retry schedule; items rejected for good (a non-retryable
-     * status, or PResult.success=false) are dropped at once, and either way a
+     * status, or PResult.success=false) are not retried. Either way the
      * dropped item releases its cache entry so the id is regenerated and
-     * re-sent later.
+     * re-sent later — but that release is what feeds the next span's cache
+     * miss, so on the rejection path it is scheduled rather than immediate
+     * (see schedule_cache_release): releasing inline turned one permanently
+     * rejecting collector into a re-send per span, bounded only by the
+     * in-flight permits, with an error line each. Parking the id for one
+     * retry delay first makes the recovery probe periodic instead.
      */
     class GrpcMetadata : public GrpcClient {
     public:
@@ -574,6 +579,11 @@ namespace pinpoint {
         std::shared_ptr<MetaPipeline> pipeline_{};
         // Rate-limited overflow reporting (see QueueDropReporter).
         QueueDropReporter meta_drop_reporter_{};
+        // Permanent rejections report on their own window rather than sharing
+        // the one above: "the very first drop always reports" is per reporter,
+        // and a collector that starts refusing metadata must show up in the
+        // log right then, even if queue-overflow drops just closed a window.
+        QueueDropReporter meta_reject_reporter_{};
 
         void release_failed_cache(const MetaData& meta) const;
         // Builds the type-specific request and launches the async RPC; the
@@ -590,7 +600,15 @@ namespace pinpoint {
         // Schedules the item's next retry, or releases its cache entry once
         // the retry budget is exhausted. `retry_count` counts this failure.
         // A full retry schedule head-drops (rationale at the definition).
-        void retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count);
+        // With `release_only` the scheduled entry is not re-sent: when it
+        // comes due the worker only releases the cache entry.
+        void retry_or_drop(std::unique_ptr<MetaData> meta, int retry_count,
+                           bool release_only = false);
+        // Parks a permanently rejected item for one retry delay and releases
+        // its cache entry when that expires, so the id becomes re-registerable
+        // at a bounded rate instead of on the very next span (see the class
+        // comment). Same schedule, budget and overflow policy as a retry.
+        void schedule_cache_release(std::unique_ptr<MetaData> meta);
         // Bounded wait for in-flight calls at shutdown, escalating to
         // TryCancel (mirrors GrpcSpan::await_in_flight_requests).
         void await_in_flight_requests();

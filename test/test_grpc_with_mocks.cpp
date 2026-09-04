@@ -1326,6 +1326,57 @@ TEST_F(GrpcMockTest, GrpcMetadataDropsRejectedResultAndEvictsCache) {
     EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 1);
 }
 
+// Regression: the cache release that follows a permanent rejection must not
+// happen the moment the collector says no. Releasing the entry is what makes
+// the next span miss the cache and re-send, so an inline release turns one
+// permanently rejecting collector into a send per span, paced only by the
+// in-flight permits and logged each time. The id is parked for one retry
+// delay first, which spaces the recovery probe out without abandoning it.
+// Both rejection paths (a non-retryable status here, PResult.success=false in
+// the test above) go through the same parking.
+TEST_F(GrpcMockTest, GrpcMetadataDelaysCacheReleaseAfterPermanentRejection) {
+    constexpr auto kDelay = std::chrono::milliseconds(800);
+    constexpr auto kWellInsideDelay = std::chrono::milliseconds(200);
+
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(kDelay);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
+    fake->setErrorStatus(grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "no such method"));
+
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.rejected")));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+
+    // The item is sent once and refused.
+    ASSERT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1,
+                                          std::chrono::seconds(5)));
+
+    // An inline release would already have landed by now; the parked one
+    // cannot, so nothing has re-opened the id for the next span yet.
+    std::this_thread::sleep_for(kWellInsideDelay);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 0)
+        << "the cache release must wait out the retry delay, not fire inline";
+
+    // Once the delay expires the entry is released, so a later span can
+    // re-register the id and probe the collector again.
+    EXPECT_TRUE(wait_for_condition(
+        [this] { return mock_agent_service_->removed_api_count_.load() == 1; },
+        std::chrono::seconds(5)))
+        << "the parked release must still happen, or the id never recovers";
+
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    // Parking reuses the retry schedule, but a parked entry is a release, not
+    // a resend: the rejected request must never go out twice.
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
+}
+
 // Retry decision by status code, mirroring Go's isRetryableError: only
 // UNAVAILABLE and DEADLINE_EXCEEDED are worth resending. Everything else is a
 // verdict the same request earns again, so it costs one attempt, not four.
@@ -1367,8 +1418,9 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesOnlyTransientStatusCodes) {
         ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                          [&metadata] { metadata.sendMetaWorker(); });
 
-        // Both outcomes end in exactly one cache release: immediately for a
-        // permanent status, after retry exhaustion for a transient one.
+        // Both outcomes end in exactly one cache release, one retry delay
+        // later: parked for a permanent status, after retry exhaustion for a
+        // transient one.
         EXPECT_TRUE(wait_for_condition(
             [this, released_before] {
                 return mock_agent_service_->removed_api_count_.load() > released_before;
@@ -1385,10 +1437,11 @@ TEST_F(GrpcMockTest, GrpcMetadataRetriesOnlyTransientStatusCodes) {
     }
 }
 
-// A permanent status must not tie up the pipeline: no retry-schedule slot is
-// taken (one attempt per item), and every permit comes back, so far more
-// items than meta_max_concurrent_requests still drain and the next healthy
-// send goes out immediately.
+// A permanent status must not tie up the pipeline: the item is attempted once
+// and never resent, and every permit comes back, so far more items than
+// meta_max_concurrent_requests still drain and the next healthy send goes out
+// immediately. Each one does take a retry-schedule slot on its way out — that
+// is the parked cache release — but only until its delay expires.
 TEST_F(GrpcMockTest, GrpcMetadataNonRetryableFailuresFreePermitsAndRetryQueue) {
     constexpr int kItems = 20;  // >> meta_max_concurrent_requests (4)
 
@@ -1424,7 +1477,7 @@ TEST_F(GrpcMockTest, GrpcMetadataNonRetryableFailuresFreePermitsAndRetryQueue) {
     metadata.stopMetaWorker();
     if (meta_worker.joinable()) meta_worker.join();
 
-    // One attempt each: no item ever entered the retry schedule.
+    // One attempt each: no item was ever resent.
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), static_cast<size_t>(kItems));
     EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), kItems);
     EXPECT_EQ(mock_agent_service_->removed_error_count_.load(), 0);
