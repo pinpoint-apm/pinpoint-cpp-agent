@@ -775,8 +775,9 @@ All three are configured under `Sampling.*` — see the
   `CounterRate: 10` admits transactions 1, 11, 21, … `CounterRate: 1` samples
   everything (development), `10` samples 10%, `0` samples nothing.
 - **PercentSampler** (`Type: PERCENT`) — samples a configured percentage,
-  deterministic for a given call sequence. `PercentRate` is clamped to
-  `[0.01, 100]`.
+  deterministic for a given call sequence and also starting with the first
+  transaction: `PercentRate: 50` admits transactions 1, 3, 5, … `PercentRate`
+  is clamped to `[0.01, 100]`, and `100` always samples.
 - **Throughput limiting** — wraps whichever base sampler is configured with
   per-second caps, enabled automatically when `NewThroughput` or
   `ContinueThroughput` is greater than `0` (`0` = unlimited). New transactions

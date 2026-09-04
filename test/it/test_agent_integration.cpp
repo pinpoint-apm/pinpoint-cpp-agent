@@ -3175,9 +3175,10 @@ TEST_F(AgentIntegrationTest, AppliesPercentSamplingPattern) {
 
     const auto baseline = agent_stat_count(collector_.snapshot());
 
-    // PercentSampler accumulates rate (50% == 5000/10000) per request, so
-    // admission alternates deterministically: skip, sample, skip, sample.
-    const std::array<bool, 4> expected{false, true, false, true};
+    // PercentSampler accumulates rate (50% == 5000/10000) per request and admits
+    // on a remainder in (0, rate], so admission alternates deterministically
+    // starting with the first request: sample, skip, sample, skip.
+    const std::array<bool, 4> expected{true, false, true, false};
     DriveSamplingPattern("sampling.percent", "/sampling/percent/", expected);
 
     ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {

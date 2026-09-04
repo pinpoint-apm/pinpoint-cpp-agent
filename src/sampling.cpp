@@ -49,11 +49,28 @@ namespace pinpoint {
             return false;
         }
 
+        // A full rate is always-sample. Java has no such branch because
+        // PercentRateSampler rejects samplingRate >= MAX and PercentSamplerFactory
+        // hands that case to TrueSampler; the constructor clamp folds it in here
+        // instead, and the admission test below would never fire for it (the
+        // remainder is 0 on every call).
+        if (rate_ >= MAX_PERCENT_RATE) {
+            return true;
+        }
+
         // Relaxed for the same reason as CounterSampler: only the counter
         // value itself matters, not its ordering against other memory.
+        //
+        // The admission window is (0, rate_], matching Java's PercentRateSampler
+        // (`remainder > 0 && remainder <= samplingRate`). Testing [0, rate_)
+        // instead samples just as often but shifts the phase by one, so the first
+        // transaction after startup (or a config reload) is never sampled:
+        // `PercentRate: 50` would admit the 2nd, 4th, ... request where Java
+        // admits the 1st, 3rd, ... Same reasoning as CounterSampler testing the
+        // pre-increment value.
         const auto count = sampling_count_.fetch_add(rate_, std::memory_order_relaxed) + rate_;
         const uint64_t r = count % MAX_PERCENT_RATE;
-        return static_cast<int>(r) < rate_;
+        return r > 0 && r <= static_cast<uint64_t>(rate_);
     }
 
     bool TraceSampler::isNewSampled() noexcept {

@@ -223,7 +223,7 @@ The divergence is intentional. Java's truncation is not a policy but an artifact
 - The rate is a purely local admission decision. It is never sent to the collector and never appears on the wire, so there is no server or cross-agent compatibility cost — unlike, say, a trace-ID format.
 - The worst-case difference is one hundredth of a percentage point, which is the resolution of the setting itself (`0.01` is the minimum accepted rate).
 
-Note that the percent sampler's *phase* still differs from Java's: `PercentRate: 50` admits the 2nd, 4th, … transaction here, where Java admits the 1st, 3rd, … The frequency is identical. This is a consequence of the C++ agent handling `PercentRate: 100` by clamping instead of Java's separate `TrueSampler`, and it is not addressed here.
+The *phase* does match Java: the sampler admits on a remainder in `(0, rate]`, like Java's `PercentRateSampler`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup or a config reload is always sampled. `PercentRate: 100` is short-circuited to always-sample, which is where Java uses a separate `TrueSampler`.
 
 ---
 

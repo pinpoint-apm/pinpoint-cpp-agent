@@ -139,6 +139,27 @@ TEST_F(SamplingTest, PercentSamplerZeroRateTest) {
     }
 }
 
+// The first request must be sampled, same as CounterSampler and Java's
+// PercentRateSampler: the admission window is (0, rate_], so 50% samples
+// requests 1, 3, 5, ... A [0, rate_) window keeps the frequency but shifts the
+// phase by one, hiding the first request on low-traffic deployments and in tests.
+TEST_F(SamplingTest, PercentSamplerSamplesFirstRequestTest) {
+    PercentSampler half(50.0);
+    for (int i = 1; i <= 6; ++i) {
+        const bool expected = (i % 2) == 1;
+        EXPECT_EQ(half.isSampled(), expected)
+            << "Request " << i << " at 50% should be " << (expected ? "sampled" : "unsampled");
+    }
+
+    // Same at a rate that only admits once per cycle: request 1, then 101, ...
+    PercentSampler one_percent(1.0);
+    EXPECT_TRUE(one_percent.isSampled()) << "Request 1 at 1% should be sampled";
+    for (int i = 2; i <= 100; ++i) {
+        EXPECT_FALSE(one_percent.isSampled()) << "Request " << i << " at 1% should be unsampled";
+    }
+    EXPECT_TRUE(one_percent.isSampled()) << "Request 101 at 1% should be sampled";
+}
+
 // Out-of-range rates are clamped in the constructor: a negative rate behaves
 // as never-sample (like CounterSampler's <= 0 guard) and a rate above 100%
 // behaves as always-sample, even without the config-layer validation.
@@ -201,9 +222,9 @@ TEST_F(SamplingTest, PercentSamplerTinyRateRoundsToDisabledTest) {
 }
 
 // The upper rounding edge turns a sub-100% rate into unconditional sampling:
-// lround(99.999*100)=10000=MAX_PERCENT_RATE, which the constructor clamp accepts as
-// the always-sample value (count % MAX is always < MAX). Distinct from the clamp
-// branch, which only fires for clearly out-of-range inputs (e.g. 250.0).
+// lround(99.999*100)=10000=MAX_PERCENT_RATE, which isSampled() short-circuits to
+// always-sample (Java routes that rate to TrueSampler instead). Distinct from the
+// clamp branch, which only fires for clearly out-of-range inputs (e.g. 250.0).
 TEST_F(SamplingTest, PercentSamplerNearFullRateRoundsUpToAlwaysSampleTest) {
     PercentSampler sampler(99.999);
     for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
