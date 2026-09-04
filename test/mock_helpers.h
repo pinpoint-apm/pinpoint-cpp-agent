@@ -76,6 +76,15 @@ inline std::shared_ptr<SpanData> make_test_span_data_ptr(AgentService& agent, st
     return data;
 }
 
+// A SpanImpl built directly rather than through NewSpan carries no trace id, so
+// seed one whenever the test serializes the span: build_grpc_transaction_id
+// asserts a non-empty trace id (stripped by NDEBUG, so a release-only run hides
+// the violation), mirroring production where NewSpan always resolves one first.
+inline SpanImpl& seed_test_trace_id(SpanImpl& span, AgentService& agent) {
+    span.getSpanData()->setTraceId(agent.generateTraceId());
+    return span;
+}
+
 inline SpanEventImpl make_test_span_event(SpanImpl& span, std::string_view operation) {
     return SpanEventImpl(&span, operation);
 }

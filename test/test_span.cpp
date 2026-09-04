@@ -1835,6 +1835,7 @@ TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
 // the failed histogram, even with a 200 status.
 TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
     span.SetStatusCode(200);
     span.SetUrlStat("/api/users", "GET", 200);
 
@@ -1885,6 +1886,7 @@ TEST_F(SpanTest, SpanIgnoreErrorsKeepsExceptionInfoWithoutErrTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
     span.SetError("NotFound", "no such user");
     span.EndSpan();
 
@@ -1901,6 +1903,7 @@ TEST_F(SpanTest, SpanIgnoreErrorsUnregisteredNameStillMarksErrTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
     span.SetError("SQLException", "connection refused");
     span.EndSpan();
 
@@ -1917,6 +1920,7 @@ TEST_F(SpanTest, SpanIgnoreErrorsMessageContainsTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"", "canceled by client"}};
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
     span.SetError("RuntimeError", "request canceled by client");
     span.EndSpan();
 
@@ -1933,6 +1937,7 @@ TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
     span.SetStatusCode(200);
     span.SetUrlStat("/api/users", "GET", 200);
 
