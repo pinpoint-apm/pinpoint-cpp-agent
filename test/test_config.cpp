@@ -1384,6 +1384,43 @@ Sql:
         << "Raw SQL cache should be disabled by environment variable";
 }
 
+TEST_F(ConfigTest, SqlCacheLengthLimitTest) {
+    auto default_config = make_config();
+    EXPECT_EQ(default_config->sql.cache_length_limit, 2048)
+        << "SQL cache length limit should default to the Java agent's 2048";
+
+    set_config_string(R"(
+Sql:
+  CacheLengthLimit: 4096
+)");
+    auto yaml_config = make_config();
+    EXPECT_EQ(yaml_config->sql.cache_length_limit, 4096)
+        << "SQL cache length limit should be read from YAML";
+
+    set_config_string("");
+    setenv(full_env(env::SQL_CACHE_LENGTH_LIMIT).c_str(), "512", 1);
+    auto env_config = make_config();
+    EXPECT_EQ(env_config->sql.cache_length_limit, 512)
+        << "SQL cache length limit should be read from the environment";
+
+    // -1 disables the bypass; anything below it would cast to a huge size_t
+    // at the use site and disable it silently, so it falls back to the default.
+    unsetenv(full_env(env::SQL_CACHE_LENGTH_LIMIT).c_str());
+    set_config_string(R"(
+Sql:
+  CacheLengthLimit: -1
+)");
+    EXPECT_EQ(make_config()->sql.cache_length_limit, -1)
+        << "-1 must survive as the 'cache everything' sentinel";
+
+    set_config_string(R"(
+Sql:
+  CacheLengthLimit: -2
+)");
+    EXPECT_EQ(make_config()->sql.cache_length_limit, 2048)
+        << "Out-of-range negative limit should fall back to the default";
+}
+
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
     // Test negative bind args size
     set_config_string(R"(

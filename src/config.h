@@ -63,6 +63,8 @@ namespace pinpoint {
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
+        // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
+        constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         constexpr const char* LOG_LEVEL = "info";
 
@@ -147,6 +149,7 @@ namespace pinpoint {
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
+        constexpr const char* SQL_CACHE_LENGTH_LIMIT = "SQL_CACHE_LENGTH_LIMIT";
         constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
         constexpr const char* SQL_ENABLE_RAW_SQL_CACHE = "SQL_ENABLE_RAW_SQL_CACHE";
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
@@ -352,6 +355,12 @@ namespace pinpoint {
             // Strip SQL comments before normalization. Off by default like the
             // Java agent; turning it on changes SQL ids/UIDs of commented SQL.
             bool remove_comments = false;
+            // Length at or above which a SQL statement bypasses the SQL-UID
+            // and raw-SQL caches, keeping their memory bounded by
+            // entries x this limit instead of by the largest statement seen.
+            // -1 disables the bypass (cache everything), 0 bypasses
+            // everything. Java parity: profiler.jdbc.sqlcachelengthlimit.
+            int cache_length_limit = defaults::SQL_CACHE_LENGTH_LIMIT;
         } sql;
 
         /**

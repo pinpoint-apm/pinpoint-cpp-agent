@@ -110,6 +110,34 @@ TEST_F(CacheTest, RawSqlCacheOversizedStatementBypassesStorage) {
     EXPECT_EQ(generator_calls, 2);
 }
 
+// The limit is inclusive: a statement exactly at it bypasses storage, one
+// byte under it is cached. Pins the boundary shared with SqlUidCache so the
+// two cannot drift apart.
+TEST_F(CacheTest, RawSqlCacheLengthLimitIsInclusive) {
+    RawSqlCache cache(16, 4, 10);
+    auto generator = [] { return prepared_sql("1", 1); };
+
+    const std::string at_limit(10, 'a');
+    EXPECT_FALSE(cache.get(at_limit, 0, generator).found);
+    EXPECT_FALSE(cache.get(at_limit, 0, generator).found)
+        << "a statement at the limit must never be stored";
+
+    const std::string under_limit(9, 'a');
+    EXPECT_FALSE(cache.get(under_limit, 0, generator).found);
+    EXPECT_TRUE(cache.get(under_limit, 0, generator).found)
+        << "a statement under the limit must still be cached";
+}
+
+// kNoCacheLengthLimit restores the pre-limit behaviour (Sql.CacheLengthLimit: -1).
+TEST_F(CacheTest, RawSqlCacheNoLengthLimitCachesLongStatements) {
+    RawSqlCache cache(16, 4, kNoCacheLengthLimit);
+    auto generator = [] { return prepared_sql("1", 1); };
+
+    const std::string long_sql(3000, 'a');
+    EXPECT_FALSE(cache.get(long_sql, 0, generator).found);
+    EXPECT_TRUE(cache.get(long_sql, 0, generator).found);
+}
+
 TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
     RawSqlCache cache(64, 8);
     std::atomic<int> generator_calls{0};
@@ -1081,6 +1109,39 @@ TEST_F(SqlUidCacheTest, UidConsistencyTest) {
         EXPECT_EQ(uid2, uid3) << "Same SQL should get same UID across different cache instances";
         EXPECT_EQ(uid1, uid3) << "Same SQL should get same UID across different cache instances";
     }
+}
+
+// A statement at or above Sql.CacheLengthLimit is never stored, so `found`
+// stays false on every use. That flag is the exact predicate
+// AgentImpl::cacheSqlUid enqueues the UID metadata on, so two misses here mean
+// two metadata sends — the bounded-memory-for-repeated-metadata trade Java's
+// UidCache bypass makes.
+TEST_F(SqlUidCacheTest, LengthLimitBypassesStorageAndReportsEveryUseAsNew) {
+    SqlUidCache cache(1024, 16, 2048);
+
+    const std::string long_sql(3000, 'a');
+    const auto first = cache.get(long_sql);
+    const auto second = cache.get(long_sql);
+
+    EXPECT_FALSE(first.found);
+    EXPECT_FALSE(second.found) << "the entry must not have been cached";
+    EXPECT_EQ(first.value, second.value)
+        << "the UID is a content hash, so bypassing keeps it stable";
+    EXPECT_EQ(first.value.size(), 16u);
+
+    // Under the limit the cache still works as before.
+    const std::string short_sql(2047, 'a');
+    EXPECT_FALSE(cache.get(short_sql).found);
+    EXPECT_TRUE(cache.get(short_sql).found);
+}
+
+// kNoCacheLengthLimit restores the pre-limit behaviour (Sql.CacheLengthLimit: -1).
+TEST_F(SqlUidCacheTest, NoLengthLimitCachesLongStatements) {
+    SqlUidCache cache(1024, 16, kNoCacheLengthLimit);
+
+    const std::string long_sql(3000, 'a');
+    EXPECT_FALSE(cache.get(long_sql).found);
+    EXPECT_TRUE(cache.get(long_sql).found);
 }
 
 // Sharded UID cache: remove() must route by the same hash as get() so the

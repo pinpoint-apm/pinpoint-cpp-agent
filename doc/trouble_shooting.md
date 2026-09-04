@@ -223,7 +223,14 @@ The agent starts successfully but no traces appear.
 
    Http:
      UrlStatLimit: 512         # Reduce from default 1024
+
+   Sql:
+     CacheLengthLimit: 512     # Reduce from default 2048
    ```
+
+   The SQL caches hold up to 1024 entries each, so `Sql.CacheLengthLimit`
+   is what bounds them: statements at or above it are never cached. Lower it
+   if the application issues large generated SQL.
 
 ### High CPU Usage or Slow Responses
 

@@ -430,6 +430,13 @@ namespace pinpoint {
     // cache still leaves each shard a useful 64-entry LRU slice.
     inline constexpr size_t kDefaultCacheShardCount = 16;
 
+    // Key length at or above which the SQL caches below bypass storage
+    // entirely (see Config::sql.cache_length_limit / Sql.CacheLengthLimit).
+    // Bounds their memory by entries x limit instead of by the largest
+    // statement ever seen. kNoCacheLengthLimit disables the bypass.
+    inline constexpr size_t kNoCacheLengthLimit = static_cast<size_t>(-1);
+    inline constexpr size_t kDefaultCacheLengthLimit = 2048;
+
     /**
      * @brief Hash-sharded front over N independent LruCacheImpl instances.
      *
@@ -615,9 +622,9 @@ namespace pinpoint {
     public:
         explicit RawSqlCache(size_t max_size,
                              size_t shard_count = kDefaultCacheShardCount,
-                             size_t max_cacheable_length = 64 * 1024)
+                             size_t cache_length_limit = kDefaultCacheLengthLimit)
             : cache_(max_size, shard_count),
-              max_cacheable_length_(max_cacheable_length) {}
+              cache_length_limit_(cache_length_limit) {}
 
         RawSqlCache(const RawSqlCache&) = delete;
         RawSqlCache& operator=(const RawSqlCache&) = delete;
@@ -628,9 +635,11 @@ namespace pinpoint {
         RawSqlCacheResult get(std::string_view raw_sql,
                               uint64_t metadata_epoch,
                               Generator&& generator) {
-            // Very large statements remain correct but bypass the cache so one
-            // pathological key cannot pin an excessive amount of memory.
-            if (raw_sql.size() > max_cacheable_length_) {
+            // Long statements remain correct but bypass the cache so one
+            // pathological key cannot pin an excessive amount of memory. Only
+            // normalization is repaid here: the generator resolves the id/uid
+            // through the inner cache, which keeps its own entry.
+            if (raw_sql.size() >= cache_length_limit_) {
                 return RawSqlCacheResult{generator(), false};
             }
             return cache_.get(
@@ -640,7 +649,7 @@ namespace pinpoint {
 
     private:
         ShardedLruCache<PreparedSqlRef, RawSqlCacheShardTraits> cache_;
-        const size_t max_cacheable_length_;
+        const size_t cache_length_limit_;
     };
 
     /**
@@ -716,8 +725,10 @@ namespace pinpoint {
     class SqlUidCache {
     public:
         explicit SqlUidCache(size_t max_size,
-                             size_t shard_count = kDefaultCacheShardCount)
-            : cache_(max_size, shard_count) {}
+                             size_t shard_count = kDefaultCacheShardCount,
+                             size_t cache_length_limit = kDefaultCacheLengthLimit)
+            : cache_(max_size, shard_count),
+              cache_length_limit_(cache_length_limit) {}
         ~SqlUidCache() = default;
 
         // Delete copy and move operations
@@ -729,10 +740,19 @@ namespace pinpoint {
         /**
          * @brief Looks up or inserts an SQL UID entry.
          *
+         * Statements at or above the length limit are never stored: the UID is
+         * a content hash, so recomputing it is free of side effects and yields
+         * the same bytes. `found` stays false for them, which makes the caller
+         * re-send the UID metadata on every use — the same trade Java's
+         * UidCache bypass makes.
+         *
          * @param key Normalized SQL string (no allocation on cache hit).
          * @return Cache result containing UID bytes and whether the entry existed.
          */
         SqlUidCacheResult get(std::string_view key) {
+            if (key.size() >= cache_length_limit_) {
+                return SqlUidCacheResult{generate_sql_uid(key), false};
+            }
             return cache_.get(key, [&key]() {
                 return generate_sql_uid(key);
             });
@@ -753,6 +773,7 @@ namespace pinpoint {
 
     private:
         ShardedLruCache<SqlUid, StringCacheShardTraits> cache_;
+        const size_t cache_length_limit_;
     };
 
 } // namespace pinpoint

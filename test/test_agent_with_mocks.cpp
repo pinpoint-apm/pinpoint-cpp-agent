@@ -478,6 +478,45 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
     EXPECT_EQ(*id_entry, *id_hit);
 }
 
+// Sql.CacheLengthLimit must reach the SQL caches the ctor builds: a statement
+// at or above it is prepared afresh on every use (a new PreparedSql instead of
+// the shared cached one) so the caches cannot be pinned by one huge statement.
+// The identity stays stable, because it is derived from the normalized text.
+TEST_F(AgentImplTest, PrepareSqlLongStatementBypassesRawCache) {
+    const std::string raw_sql =
+        "SELECT * FROM users WHERE name = '" + std::string(3000, 'x') + "'";
+
+    for (const auto mode : {SqlMetaMode::Id, SqlMetaMode::Uid}) {
+        auto first = agent_->prepareSql(raw_sql, mode);
+        auto second = agent_->prepareSql(raw_sql, mode);
+
+        ASSERT_TRUE(first.has_value());
+        ASSERT_TRUE(second.has_value());
+        ASSERT_NE(*first, nullptr);
+        ASSERT_NE(*second, nullptr);
+        EXPECT_NE(*first, *second) << "the raw entry must not have been cached";
+        EXPECT_EQ((*first)->identity, (*second)->identity);
+    }
+}
+
+// A limit small enough to catch ordinary statements proves the value comes
+// from the config and is not the hardcoded default.
+TEST_F(AgentImplTest, PrepareSqlHonoursConfiguredCacheLengthLimit) {
+    auto cfg = make_test_config();
+    cfg->sql.cache_length_limit = 8;
+    auto agent = make_test_agent(cfg);
+    wait_agent_enabled(agent, 3000);
+
+    constexpr std::string_view raw_sql = "SELECT * FROM users WHERE id = 42";
+    auto first = agent->prepareSql(raw_sql, SqlMetaMode::Id);
+    auto second = agent->prepareSql(raw_sql, SqlMetaMode::Id);
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_NE(*first, *second);
+    agent->Shutdown();
+}
+
 TEST_F(AgentImplTest, PrepareSqlReturnsNulloptWhenAgentDisabled) {
     // Shutdown() clears enabled_; prepareSql must then short-circuit to nullopt
     // for both namespaces instead of normalizing or touching the caches.

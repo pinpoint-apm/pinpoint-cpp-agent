@@ -124,12 +124,27 @@ namespace pinpoint {
         // ShardedLruCache): the api cache in particular is hit once per span
         // plus once per named span event, so a single rwlock's cache line
         // would ping-pong across all request threads.
+        //
+        // Sql.CacheLengthLimit additionally caps what the SQL caches may
+        // retain (see kNoCacheLengthLimit): without it a 1024-entry cache
+        // holding 64KB statements is 64MB, three times over. Startup-only,
+        // like the cache sizes themselves. Deliberately not applied to
+        // sql_cache_: its ids come from a sequence, so a bypassed statement
+        // would burn a fresh id — and a fresh StringMeta — on every single
+        // use. Java bypasses only the UID cache, for the same reason.
+        const size_t sql_cache_length_limit =
+            cfg->sql.cache_length_limit < 0
+                ? kNoCacheLengthLimit
+                : static_cast<size_t>(cfg->sql.cache_length_limit);
         api_cache_ = std::make_unique<ApiIdCache>(cache_size);
         error_cache_ = std::make_unique<IdCache>(cache_size);
         sql_cache_ = std::make_unique<IdCache>(cache_size);
-        sql_uid_cache_ = std::make_unique<SqlUidCache>(cache_size);
-        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(cache_size);
-        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(cache_size);
+        sql_uid_cache_ = std::make_unique<SqlUidCache>(
+            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
+        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(
+            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
+        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(
+            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
         sql_normalizer_ = std::make_unique<const SqlNormalizer>(64 * 1024, cfg->sql.remove_comments);
 
         // Initial build: no previous runtime, so every component is created
