@@ -20,6 +20,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <string_view>
+#include <vector>
 
 #include "../src/stat.h"
 #include "../src/url_stat.h"
@@ -92,6 +94,85 @@ TEST_F(StatTest, CpuLoadStaysBoundedAcrossSequentialCollectsTest) {
     EXPECT_TRUE(in_unit_range(second.process_cpu_time_))
         << "process cpu load must stay clamped to [0,1] on the delta path, got "
         << second.process_cpu_time_;
+}
+
+// The Linux reader maps VmHWM (peak *resident* set) onto heap_max, not VmPeak
+// (peak *virtual* address space): heap_alloc is VmRSS, so a virtual peak
+// reported a max the used value could never approach. /proc does not exist on
+// macOS, so the mapping is pinned by feeding the parser sample text directly.
+TEST(ProcStatusParseTest, HeapMaxComesFromVmHWMNotVmPeak) {
+    // Trimmed /proc/self/status, field order and spacing as the kernel writes it.
+    constexpr std::string_view sample =
+        "Name:\tpinpoint\n"
+        "State:\tS (sleeping)\n"
+        "Threads:\t7\n"
+        "VmPeak:\t 4194304 kB\n"
+        "VmSize:\t 2097152 kB\n"
+        "VmHWM:\t   65536 kB\n"
+        "VmRSS:\t   32768 kB\n"
+        "voluntary_ctxt_switches:\t12\n";
+
+    const auto status = AgentStats::parseProcStatus(sample);
+
+    EXPECT_EQ(status.heap_alloc, 32768LL * 1024) << "heap_alloc is VmRSS in bytes";
+    EXPECT_EQ(status.heap_max, 65536LL * 1024) << "heap_max must be VmHWM, not VmPeak";
+    EXPECT_EQ(status.num_threads, 7);
+}
+
+// Missing fields stay 0 rather than picking up a neighbouring line's value,
+// and the last line needs no trailing newline to be parsed.
+TEST(ProcStatusParseTest, MissingFieldsStayZero) {
+    const auto status = AgentStats::parseProcStatus("Name:\tpinpoint\nVmRSS:\t   1024 kB");
+
+    EXPECT_EQ(status.heap_alloc, 1024LL * 1024);
+    EXPECT_EQ(status.heap_max, 0) << "no VmHWM line means no peak reading";
+    EXPECT_EQ(status.num_threads, 0);
+    EXPECT_EQ(AgentStats::parseProcStatus("").heap_max, 0);
+}
+
+// collectInterval must be the gap actually measured between collections, not
+// the configured value: the collect timer fires late under load and the
+// collector divides the row's counters by whatever interval it is handed
+// (Java's CollectJob reports the same measured gap). The first collection has
+// no predecessor, so it reports the setting. Driven through the real worker,
+// which is where the configured interval is known.
+TEST_F(StatTest, CollectIntervalIsMeasuredExceptForTheFirstCollectionTest) {
+    constexpr int configured_ms = 200;
+    constexpr size_t batch_count = 3;
+    auto& config = mock_agent_service_->mutableConfig();
+    config->stat.enable = true;
+    config->stat.collect_interval = configured_ms;
+    config->stat.batch_count = static_cast<int>(batch_count);
+
+    std::thread worker([this] { agent_stats_->agentStatsWorker(); });
+
+    // copySnapshots() stays empty until a batch completes, so the first
+    // non-empty read is the worker's first batch — i.e. its first collection
+    // is batch[0]. A whole further batch (600ms) would have to elapse between
+    // two 10ms polls for that to stop holding.
+    std::vector<AgentStatsSnapshot> batch;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+        batch = agent_stats_->copySnapshots();
+        if (batch.size() == batch_count) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker.join();
+
+    ASSERT_EQ(batch.size(), batch_count) << "the worker never completed a batch";
+    EXPECT_EQ(batch[0].interval_, configured_ms)
+        << "the first collection has no predecessor to measure against";
+    for (size_t i = 1; i < batch.size(); i++) {
+        // Wide bounds: this pins "measured, not the constant" without making
+        // the test depend on the scheduler hitting the interval exactly.
+        EXPECT_GE(batch[i].interval_, configured_ms / 2)
+            << "snapshot " << i << " interval must reflect the elapsed period";
+        EXPECT_LT(batch[i].interval_, configured_ms * 25)
+            << "snapshot " << i << " interval is implausibly long";
+    }
 }
 
 TEST_F(StatTest, CollectResponseTimeTest) {

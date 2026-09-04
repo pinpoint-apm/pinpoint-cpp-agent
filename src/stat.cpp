@@ -22,6 +22,8 @@
 #include <memory>
 #include <mutex>
 #include <cctype>
+#include <string>
+#include <string_view>
 #include <unistd.h>
 #include <functional>
 #include <thread>
@@ -152,29 +154,56 @@ namespace pinpoint {
         return CpuLoad{sys_load, proc_load};
     }
 
-#ifndef __APPLE__
     // Helper to parse integers from /proc/self/status lines
-    static std::optional<int64_t> parse_int_value(const char* buf, size_t buf_size, const char* prefix) {
-        size_t prefix_len = strlen(prefix);
-        if (strncmp(buf, prefix, prefix_len) != 0) {
+    static std::optional<int64_t> parse_int_value(std::string_view line, std::string_view prefix) {
+        if (line.substr(0, prefix.size()) != prefix) {
             return std::nullopt;
         }
 
-        const char* p = buf + prefix_len;
-        const char* buf_end = buf + buf_size;
+        const char* p = line.data() + prefix.size();
+        const char* line_end = line.data() + line.size();
 
         // Skip whitespace (cast: passing a negative char to isspace/isdigit is UB)
-        while (p < buf_end && isspace(static_cast<unsigned char>(*p))) p++;
+        while (p < line_end && isspace(static_cast<unsigned char>(*p))) p++;
 
         // Extract digits only (values may have trailing units like "kB")
         const char* digit_start = p;
-        while (p < buf_end && isdigit(static_cast<unsigned char>(*p))) p++;
+        while (p < line_end && isdigit(static_cast<unsigned char>(*p))) p++;
         if (p > digit_start) {
             return stoi_(std::string_view(digit_start, p - digit_start));
         }
         return std::nullopt;
     }
-#endif
+
+    // heap_max comes from VmHWM (peak *resident* set), not VmPeak (peak
+    // *virtual* address space): heap_alloc is VmRSS, and pairing a resident
+    // current with a virtual peak reported a max the used value could never
+    // approach — a process that merely reserves address space looked like it
+    // used almost no memory. macOS reads resident_size/resident_size_max for
+    // the same reason.
+    AgentStats::ProcessStatus AgentStats::parseProcStatus(std::string_view status_text) {
+        ProcessStatus status{0, 0, 0};
+
+        while (!status_text.empty()) {
+            const auto eol = status_text.find('\n');
+            const auto line = status_text.substr(0, eol);
+
+            if (const auto val = parse_int_value(line, "VmRSS:")) {
+                status.heap_alloc = *val * 1024;  // kB to bytes
+            } else if (const auto val = parse_int_value(line, "VmHWM:")) {
+                status.heap_max = *val * 1024;  // kB to bytes
+            } else if (const auto val = parse_int_value(line, "Threads:")) {
+                status.num_threads = *val;
+            }
+
+            if (eol == std::string_view::npos) {
+                break;
+            }
+            status_text.remove_prefix(eol + 1);
+        }
+
+        return status;
+    }
 
     AgentStats::ProcessStatus AgentStats::getProcessStatus() {
         ProcessStatus status{0, 0, 0};
@@ -213,21 +242,14 @@ namespace pinpoint {
         }
         const FileCloser closer(fd, fclose);
 
+        // Read the file whole and hand it to the shared parser, so the field
+        // mapping the unit test exercises is the one running in production.
+        std::string status_text;
         char buf[kProcStatusBufferSize] = {};
-        int found = 0;
         while (fgets(buf, sizeof(buf), fd) != nullptr) {
-            if (auto val = parse_int_value(buf, sizeof(buf), "VmRSS:")) {
-                status.heap_alloc = *val * 1024;  // kB to bytes
-                found++;
-            } else if (auto val = parse_int_value(buf, sizeof(buf), "VmPeak:")) {
-                status.heap_max = *val * 1024;  // kB to bytes
-                found++;
-            } else if (auto val = parse_int_value(buf, sizeof(buf), "Threads:")) {
-                status.num_threads = *val;
-                found++;
-            }
-            if (found == 3) break;
+            status_text.append(buf);
         }
+        status = parseProcStatus(status_text);
 #endif
 
         return status;
@@ -297,6 +319,7 @@ namespace pinpoint {
         resetAgentStats();
 
         last_collect_time_ = std::chrono::system_clock::now();
+        first_collect_ = true;
         batch_ = 0;
     }
 
@@ -370,8 +393,13 @@ namespace pinpoint {
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);
-        stat.interval_ = collect_interval_;
-        
+        // Measured, not configured: the collect timer fires late under load,
+        // and the collector treats this as the window the row's counters were
+        // accumulated over (Java's CollectJob reports the same measured gap).
+        // The first collection has no predecessor, so it reports the setting.
+        stat.interval_ = first_collect_ ? collect_interval_ : period.count();
+        first_collect_ = false;
+
         const auto cpu_load = getCpuLoad(period);
         stat.system_cpu_time_ = cpu_load.sys_load;
         stat.process_cpu_time_ = cpu_load.proc_load;

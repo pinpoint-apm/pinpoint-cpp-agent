@@ -27,6 +27,7 @@
 #include "../src/grpc.h"
 #include "../src/grpc_builders.h"
 #include "../src/callstack.h"
+#include "../src/stat.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
 #include "../include/pinpoint/tracer.h"
@@ -822,6 +823,35 @@ TEST(GrpcMetadataTest, V4Headers) {
     EXPECT_EQ(m.at("servicename"), "my-service");
     EXPECT_EQ(m.at("apikey"), "secret-key");
     EXPECT_EQ(m.at("agentid"), "AZLxoH6LfD2fLhorPE1ebw");
+}
+
+// The JVM non-heap pools and the old-generation GC counters have no C++
+// source, so they must travel as the uncollected sentinel (-1, Java's
+// UNCOLLECTED_VALUE) and not as 0: PJvmGc's fields are proto3
+// implicit-presence scalars, so an unset field reads back as 0 on the
+// collector and gets stored and plotted as a real measurement.
+TEST(GrpcAgentStatBuilderTest, UncollectedJvmFieldsTravelAsMinusOne) {
+    AgentStatsSnapshot stat;
+    stat.sample_time_ = 1700000000000;
+    stat.interval_ = 5123;
+    stat.heap_alloc_size_ = 32768;
+    stat.heap_max_size_ = 65536;
+
+    google::protobuf::Arena arena;
+    const auto* batch = build_agent_stat_batch({stat}, &arena);
+
+    ASSERT_EQ(batch->agentstat_size(), 1);
+    const auto& agent_stat = batch->agentstat(0);
+    EXPECT_EQ(agent_stat.collectinterval(), 5123) << "the measured interval must reach the wire";
+
+    const auto& gc = agent_stat.gc();
+    EXPECT_EQ(gc.jvmmemoryheapused(), 32768) << "resident memory is collected, so it is sent as-is";
+    EXPECT_EQ(gc.jvmmemoryheapmax(), 65536);
+    EXPECT_EQ(gc.jvmmemorynonheapused(), UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(gc.jvmmemorynonheapmax(), UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(gc.jvmgcoldcount(), UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(gc.jvmgcoldtime(), UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(gc.type(), v1::JVM_GC_TYPE_UNKNOWN);
 }
 
 TEST(GrpcMetadataTest, SocketIdNeverInBaseHeaderSet) {

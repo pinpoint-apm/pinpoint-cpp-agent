@@ -227,10 +227,12 @@ namespace pinpoint {
             memory_stat->set_type(v1::JVM_GC_TYPE_UNKNOWN);
             memory_stat->set_jvmmemoryheapused(stat.heap_alloc_size_);
             memory_stat->set_jvmmemoryheapmax(stat.heap_max_size_);
-            memory_stat->set_jvmmemorynonheapused(0);
-            memory_stat->set_jvmmemorynonheapmax(0);
-            memory_stat->set_jvmgcoldcount(0);
-            memory_stat->set_jvmgcoldtime(0);
+            // Not collected by the C++ agent: report the uncollected sentinel
+            // rather than 0, which the UI would plot as a real measurement.
+            memory_stat->set_jvmmemorynonheapused(UNCOLLECTED_STAT_VALUE);
+            memory_stat->set_jvmmemorynonheapmax(UNCOLLECTED_STAT_VALUE);
+            memory_stat->set_jvmgcoldcount(UNCOLLECTED_STAT_VALUE);
+            memory_stat->set_jvmgcoldtime(UNCOLLECTED_STAT_VALUE);
             agent_stat->unsafe_arena_set_allocated_gc(memory_stat);
 
             auto* cpu_load = google::protobuf::Arena::Create<v1::PCpuLoad>(arena);

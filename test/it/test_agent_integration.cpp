@@ -1169,7 +1169,12 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
     const auto* agent_stat = sampled_new_agent_stat(snapshot);
     ASSERT_NE(agent_stat, nullptr);
     EXPECT_GT(agent_stat->timestamp(), 0);
-    EXPECT_EQ(agent_stat->collectinterval(), 1000);
+    // The measured period since the previous collection, not BatchInterval
+    // (1000ms) exactly — only the first row of a run reports the setting, and
+    // this is whichever row carried the sampled transaction. The exact value
+    // is pinned by test_stat's CollectIntervalIsMeasured... test.
+    EXPECT_GE(agent_stat->collectinterval(), 500);
+    EXPECT_LT(agent_stat->collectinterval(), 10000);
     ASSERT_TRUE(agent_stat->has_responsetime());
     ASSERT_TRUE(agent_stat->has_totalthread());
     EXPECT_GT(agent_stat->totalthread().totalthreadcount(), 0);

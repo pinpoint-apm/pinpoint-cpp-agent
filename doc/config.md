@@ -188,6 +188,12 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 | `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. Valid range: `1`-`100`. |
 | `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`60000`. |
 
+What the collector receives in each `PAgentStat` row, since the C++ agent has no JVM to report on:
+
+- **Memory** is the process's **resident** memory, not a JVM heap: `jvmMemoryHeapUsed` is the current resident set (`VmRSS` on Linux, Mach `resident_size` on macOS) and `jvmMemoryHeapMax` is the resident **high-water mark** (`VmHWM` / `resident_size_max`). Both are process-wide totals — code, stacks and mapped files included — so the Inspector's "Heap Usage" chart reads as process memory growth, and `Max` is the largest resident set the process has ever held rather than a configured limit. Neither value counts address space that was only reserved.
+- **Non-heap and GC** (`jvmMemoryNonHeapUsed`, `jvmMemoryNonHeapMax`, `jvmGcOldCount`, `jvmGcOldTime`) are **not collected** and travel as **`-1`**, the same uncollected sentinel the Java agent sends (`MemoryMetric.UNCOLLECTED_VALUE`). `gcType` is always `JVM_GC_TYPE_UNKNOWN`. They cannot simply be omitted: they are proto3 implicit-presence scalars, so an unset field arrives at the collector as `0` and would be stored and plotted as a real measurement.
+- **`collectInterval`** is the interval **actually measured** since the previous collection, not `Stat.BatchInterval` — a collect tick delayed by load reports the longer period it really covered, matching the Java agent's `CollectJob`. The very first row of a collector run has no predecessor and reports the configured value. CPU load in the same row is computed over that same measured period.
+
 ---
 
 ## Sampling Configuration

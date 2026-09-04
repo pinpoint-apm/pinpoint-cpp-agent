@@ -44,6 +44,15 @@ namespace pinpoint {
     // the active-thread-count command response (grpc.cpp) — the collector
     // interprets both against the same schema, so they must always agree.
     constexpr int32_t ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
+
+    // Pinpoint's "this metric was not collected" sentinel, matching the Java
+    // agent's MemoryMetric/GarbageCollectorMetric UNCOLLECTED_VALUE. Sent for
+    // the PJvmGc fields the C++ agent has no source for (the JVM non-heap
+    // pools and the old-generation GC counters). It cannot be expressed by
+    // leaving the fields unset: they are proto3 implicit-presence scalars, so
+    // the collector's mapper reads an omitted field back as 0 and cannot tell
+    // it apart from a genuine 0 — which is what made the UI draw flat 0 lines.
+    constexpr int64_t UNCOLLECTED_STAT_VALUE = -1;
     class Exception;
     class SpanChunk;
     class UrlStatSnapshot;

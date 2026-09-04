@@ -25,6 +25,7 @@
 #include <chrono>
 #include <array>
 #include <optional>
+#include <string_view>
 #include <sys/types.h>
 
 #include "active_span.h"
@@ -34,7 +35,10 @@ namespace pinpoint {
     /// @brief Snapshot of runtime statistics collected from the agent process.
     struct AgentStatsSnapshot {
         int64_t    sample_time_{0};
-        int64_t    interval_{0}; 
+        // Milliseconds actually elapsed since the previous collection, not the
+        // configured interval: the collect timer fires late under load and the
+        // collector divides this row's counters by the value it is given.
+        int64_t    interval_{0};
         double     system_cpu_time_{0};
         double     process_cpu_time_{0};
         int64_t    num_threads_{0};
@@ -107,6 +111,22 @@ namespace pinpoint {
         void collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms);
         void resetAgentStats();
 
+        struct ProcessStatus {
+            int64_t heap_alloc;
+            int64_t heap_max;
+            int64_t num_threads;
+        };
+
+        /**
+         * @brief Maps the /proc/self/status fields the agent reports.
+         *
+         * Public and compiled on every platform only so the field mapping can
+         * be unit-tested with injected sample text — /proc does not exist on
+         * macOS, where getProcessStatus() uses Mach instead and never calls
+         * this.
+         */
+        static ProcessStatus parseProcStatus(std::string_view status_text);
+
     private:
         /// @brief One supervised run of the collect loop; agentStatsWorker
         /// restarts it after a transient exception.
@@ -134,12 +154,6 @@ namespace pinpoint {
         struct CpuLoad {
             double sys_load;
             double proc_load;
-        };
-        
-        struct ProcessStatus {
-            int64_t heap_alloc;
-            int64_t heap_max;
-            int64_t num_threads;
         };
         
         // System metrics helpers
@@ -187,6 +201,9 @@ namespace pinpoint {
         
         // Statistics Data
         std::chrono::system_clock::time_point last_collect_time_;
+        // No predecessor to measure against yet, so the first collection after
+        // initAgentStats() reports the configured interval.
+        bool first_collect_{true};
         // Empty until the first successful CPU-time reading: a failed reading
         // must not become a 0 baseline (it would make the next delta span the
         // whole process lifetime and clamp to a bogus 100% load).
