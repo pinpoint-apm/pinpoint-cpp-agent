@@ -127,7 +127,7 @@ The C API's `start_time_ms` arguments take **milliseconds** since the Unix epoch
 
 ## 11. Noop and Unsampled Spans Are Deliberately Silent
 
-`NewSpan()` never returns null. When the agent is disabled, not started or not yet registered with the collector (registration is retried indefinitely and tracing stays off — with no statistics collected either — until it succeeds; see [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup)), the URL/method is excluded by filters, or sampling rejects the transaction, you receive a no-op or unsampled span on which every call succeeds and records nothing:
+`NewSpan()` never returns null. When the agent is disabled or not started, the URL/method is excluded by filters, or sampling rejects the transaction, you receive a no-op or unsampled span on which every call succeeds and records nothing:
 
 - `IsSampled()` returns `false`, `GetTraceId()` returns an empty string, and `GetSpanId()` returns 0 for no-op spans (unsampled spans do carry a real span id).
 - Use `IsSampled()` to skip *expensive data collection only* — do **not** skip creating span events and calling `InjectContext()` on outbound calls. An unsampled span's event still writes `Pinpoint-Sampled: s0`, which tells downstream services not to trace the request. Skipping the injection makes downstream agents treat the call as a brand-new transaction and sample it, producing broken partial traces.

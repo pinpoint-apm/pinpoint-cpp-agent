@@ -420,20 +420,11 @@ namespace pinpoint {
             grpc_command_->openChannel();
         }
 
-        // Boot-phase registration: block here until the collector accepts the
-        // first AgentInfo, retrying indefinitely. The other workers are only
-        // spawned after that first success. A shutdown during the wait aborts
-        // the bring-up: request_stop_workers() signals stopAgentInfo's cv
-        // before this thread is joined, which wakes the retry sleep.
-        if (!grpc_agent_->registerAgentWithRetry()) {
-            return;
-        }
-
-        // Registered: start the periodic AgentInfo re-sender and the rest of
-        // the workers. Post-boot AgentInfo send failures are tolerated and
-        // never touch enabled_.
-        grpc_agent_->startAgentInfo();
-
+        // Workers come up before registration, matching DefaultAgent.java,
+        // which enters RUNNING and leaves AgentInfoSender retrying in the
+        // background. Registration gates nothing here: spans and stats travel
+        // on their own channels, so an agent whose collector agent port (9991)
+        // alone is blocked keeps tracing instead of going silent.
         ping_thread_ = spawn_worker(kPing, [this] { grpc_agent_->sendPingWorker(); });
         meta_thread_ = spawn_worker(kMeta, [this] { grpc_metadata_->sendMetaWorker(); });
         span_thread_ = spawn_worker(kSpan, [this] { grpc_span_->sendSpanWorker(); });
@@ -460,6 +451,20 @@ namespace pinpoint {
                 enabled_ = false;
             }
         }
+
+        // Registration runs last on this same init thread: it retries
+        // indefinitely and now gates only the periodic AgentInfo re-sender,
+        // which has nothing to re-send before the first success. A shutdown
+        // during the wait ends it — request_stop_workers() signals
+        // stopAgentInfo's cv before this thread is joined, waking the retry
+        // sleep — and leaves the workers above to the normal teardown.
+        if (!grpc_agent_->registerAgentWithRetry()) {
+            return;
+        }
+
+        // Registered: start the periodic AgentInfo re-sender. Post-boot
+        // AgentInfo send failures are tolerated and never touch enabled_.
+        grpc_agent_->startAgentInfo();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to init grpc workers: exception = {}", e.what());
         enabled_ = false;

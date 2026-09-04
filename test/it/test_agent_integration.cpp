@@ -497,8 +497,12 @@ protected:
         ConfigureBeforeAgentStart();
 
         ASSERT_NO_FATAL_FAILURE(StartTestAgent());
+        // Enable() no longer implies registration — the workers come up first
+        // and AgentInfo retries behind them — so wait for an accepted
+        // registration, not merely for an attempt to have been recorded.
         ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-            return !snapshot.agent_infos.empty();
+            return has_result(snapshot, CollectorRpc::AgentInfo,
+                              grpc::StatusCode::OK, true);
         }, kWaitTimeout));
         ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }));
     }
@@ -744,6 +748,34 @@ protected:
         ASSERT_NO_FATAL_FAILURE(StartTestAgent());
     }
 };
+
+// Models a network that exposes the span and stat ports but not the agent
+// port (9991) — a firewall or service mesh rule that misses one of the three.
+// Registration can never succeed here, so the agent must trace anyway.
+class AgentPortBlockedIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override {
+        ASSERT_NO_FATAL_FAILURE(StartCollector());
+        ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Agent));
+        ASSERT_NO_FATAL_FAILURE(StartTestAgent());
+    }
+};
+
+TEST_F(AgentPortBlockedIntegrationTest, TracesWhileRegistrationKeepsRetrying) {
+    ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }))
+        << "Enable() must not wait for a registration that cannot succeed";
+
+    auto span = agent_->NewSpan("blocked.agent.port", "/traced-without-registration");
+    ASSERT_TRUE(span->IsSampled()) << "spans recorded before registration must still be sampled";
+    span->EndSpan();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return count_spans_by_rpc(snapshot, "/traced-without-registration") == 1;
+    }, kWaitTimeout)) << "the span endpoint must receive the span while registration retries";
+
+    EXPECT_TRUE(collector_.snapshot().agent_infos.empty())
+        << "precondition: the agent endpoint is down, so no AgentInfo can have landed";
+}
 
 TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
@@ -2280,12 +2312,13 @@ TEST_F(AgentIntegrationTest, RetriesPeriodicAgentInfoResendAfterFailure) {
 }
 
 TEST_F(CollectorUnavailableAtStartupIntegrationTest,
-       EnablesAndStartsAllGrpcWorkersAfterCollectorRecovery) {
-    // The init thread may keep retrying indefinitely, but it must not expose a
-    // half-started agent or start any downstream worker before AgentInfo is
-    // accepted.
+       EnablesBeforeRegistrationAndRecoversEveryChannel) {
+    // The workers do not wait for AgentInfo, so the agent is enabled while the
+    // init thread is still retrying registration against a dead collector.
+    // Nothing can reach the collector yet — every endpoint is down.
     std::this_thread::sleep_for(300ms);
-    EXPECT_FALSE(agent_->Enable());
+    EXPECT_TRUE(agent_->Enable())
+        << "Enable() must not wait for a collector that is not listening";
     const auto outage_snapshot = collector_.snapshot();
     EXPECT_TRUE(outage_snapshot.agent_infos.empty());
     EXPECT_TRUE(outage_snapshot.ping_streams.empty());
@@ -2335,9 +2368,10 @@ TEST_F(CollectorUnavailableAtStartupIntegrationTest,
 TEST_F(CollectorUnavailableAtStartupIntegrationTest,
        ShutdownInterruptsInitialCollectorWait) {
     // Give the init thread time to enter the channel-readiness backoff while
-    // all three collector endpoints remain unavailable.
+    // all three collector endpoints remain unavailable. Tracing is already on;
+    // what must stay interruptible is the init thread's registration retry.
     std::this_thread::sleep_for(300ms);
-    ASSERT_FALSE(agent_->Enable());
+    ASSERT_TRUE(agent_->Enable());
 
     const auto started = std::chrono::steady_clock::now();
     agent_->Shutdown();
@@ -2353,26 +2387,30 @@ TEST_F(CollectorUnavailableAtStartupIntegrationTest,
 }
 
 TEST_F(CollectorOutageAtStartupIntegrationTest,
-       ServesNoopSpansDuringOutageAndEnablesTracingAfterRecovery) {
-    // The agent must keep retrying registration against the failing
-    // collector without ever coming online.
+       TracesThroughOutageAndRegistersAfterRecovery) {
+    // The agent must keep retrying registration against the failing collector,
+    // and stay online while it does.
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return results_for(snapshot, CollectorRpc::AgentInfo).size() >= 3;
     }, kWaitTimeout));
-    EXPECT_FALSE(agent_->Enable());
+    EXPECT_TRUE(agent_->Enable())
+        << "a failing registration must not disable tracing";
 
-    // The application's own work proceeds normally; the disabled agent hands
-    // the shared noop span to every request.
+    // Requests are traced for real, not served the shared noop span. The
+    // outage keeps the spans from landing, exactly as it would for an agent
+    // that had registered before the collector went bad.
     for (int request = 0; request < 5; ++request) {
         auto span = agent_->NewSpan("startup.outage", "/startup-outage");
-        ASSERT_NO_FATAL_FAILURE(expect_noop_span(span));
+        EXPECT_NE(span, noopSpan());
+        EXPECT_TRUE(span->IsSampled());
+        EXPECT_FALSE(span->GetTraceId().empty());
+        span->EndSpan();
         EXPECT_EQ(handle_instrumented_request(*agent_, "/startup-outage",
                                               request),
                   request * 2 + 1);
     }
 
-    // Nothing but the rejected registration attempts may have reached the
-    // collector: no downstream worker starts before AgentInfo is accepted.
+    // Every registration attempt is still failing.
     {
         const auto snapshot = collector_.snapshot();
         const auto attempts = results_for(snapshot, CollectorRpc::AgentInfo);
@@ -2380,10 +2418,8 @@ TEST_F(CollectorOutageAtStartupIntegrationTest,
         for (const auto& result : attempts) {
             EXPECT_EQ(result.status_code, grpc::StatusCode::UNAVAILABLE);
         }
-        EXPECT_TRUE(all_span_messages(snapshot).empty());
-        EXPECT_TRUE(snapshot.ping_streams.empty());
-        EXPECT_TRUE(snapshot.stat_streams.empty());
-        EXPECT_TRUE(snapshot.command_streams_v2.empty());
+        EXPECT_TRUE(all_span_messages(snapshot).empty())
+            << "the outage fails every send, so nothing lands until it ends";
     }
 
     // Collector recovers: the ongoing registration retry loop must succeed
@@ -2407,9 +2443,11 @@ TEST_F(CollectorOutageAtStartupIntegrationTest,
 
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return find_span_by_rpc(snapshot,
-                                "/startup-outage-recovered").has_value() &&
-               !snapshot.pings.empty();
-    }, std::chrono::seconds(20)));
+                                "/startup-outage-recovered").has_value();
+    }, std::chrono::seconds(20))) << "recovered span never reached the collector";
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.pings.empty();
+    }, std::chrono::seconds(20))) << "ping stream never recovered";
     EXPECT_TRUE(agent_->Enable());
 }
 
