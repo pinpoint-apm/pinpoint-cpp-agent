@@ -465,8 +465,8 @@ namespace pinpoint {
         ///        enabled. Individual spans may still be rejected by sampling.
         ///        Always false for an agent handle inherited across fork() —
         ///        each process must obtain its own agent via StartAgent().
-        ///        Turns true once the workers are up, which does not wait for
-        ///        collector registration — see StartAgent().
+        ///        False until registration with the collector succeeds: see
+        ///        StartAgent() for what is (not) recorded until then.
         virtual bool Enable() = 0;
         /// @brief Stops the agent and waits for its workers to finish. Pending
         ///        spans are submitted when a channel is available, but delivery
@@ -548,17 +548,18 @@ namespace pinpoint {
      * The call returns as soon as initialization is launched: the config-file
      * watcher is installed (only when enabled via `EnableConfigFileWatcher`,
      * which defaults to false) and an initialization thread opens the gRPC
-     * channels, starts the workers and then registers with the collector. It
-     * does NOT wait for collector connection or registration; Enable() flips
-     * to true once the workers are up, before registration is attempted.
+     * channels, registers with the collector and starts the workers. It does
+     * NOT wait for collector connection or registration; Enable() flips to
+     * true once registration succeeds.
      *
-     * @note Registration is not a precondition for tracing, matching the Java
-     * agent: spans and statistics are sent as soon as the workers are up,
-     * while AgentInfo registration retries indefinitely in the background. An
-     * agent whose collector agent port (9991) alone is unreachable therefore
-     * keeps recording — it just stays out of the server's agent list until
-     * AgentInfo lands, and the agent logs an INFO line every 30 seconds while
-     * it waits.
+     * @warning Nothing is recorded before that first registration succeeds:
+     * NewSpan() returns noop spans and no agent, URL or system statistics are
+     * collected, so a collector whose agent port (9991) alone is unreachable
+     * yields zero spans even though the span and stat ports are open. The
+     * registration is retried indefinitely, and the agent logs an INFO line
+     * every 30 seconds while it waits, naming this consequence. This differs
+     * from the Java agent, which sends spans while registration retries in
+     * the background.
      *
      * @return true when the agent was launched and installed as the global
      * agent — obtain the handle with GlobalAgent(). false on a configuration
