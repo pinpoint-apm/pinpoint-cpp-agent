@@ -597,6 +597,29 @@ namespace pinpoint {
                 }
                 return runtime_->exception_chain_limiter->allow();
             }
+            // Java's DefaultSqlCountService: a transaction running more than
+            // Sql.ErrorCount SQL statements is marked failed, which is how an
+            // N+1 query pattern surfaces in the UI. An already-failed
+            // transaction is skipped (Java's shared.getErrorCode() != 0
+            // guard), so the counter stops once anything else failed the span.
+            // Counted per span, where Java counts per trace root: a C++ async
+            // span is an independent SpanImpl with its own SpanData, so its
+            // statements are not charged to the span that spawned it.
+            // markSpanError() without a name deliberately bypasses
+            // Span.IgnoreErrors, like SetStatusCode - there is no throwable to
+            // match a rule against.
+            void countSqlExecution() {
+                const auto limit = config_->sql.error_count;
+                if (limit <= 0 || data_->getErr() != SPAN_ERR_NONE) {
+                    return;
+                }
+                if (++sql_count_ >= limit) {
+                    markSpanError();
+                }
+            }
+            // Owner-thread-only, like exceptions_ (see the class warning), so
+            // a plain int is enough.
+            int sql_count_{0};
             // Exceptions only drain at EndSpan (unlike span events, which
             // chunk-flush mid-span), so a retry loop on a long-lived span
             // would grow this without bound — each entry carries a full

@@ -469,6 +469,7 @@ namespace pinpoint {
         {"Sql.TraceBindValue", REF(sql.trace_bind_value), RELOAD, env::SQL_TRACE_BIND_VALUE},
         {"Sql.RemoveComments", REF(sql.remove_comments), FIXED, env::SQL_REMOVE_COMMENTS},
         {"Sql.CacheLengthLimit", REF(sql.cache_length_limit), FIXED, env::SQL_CACHE_LENGTH_LIMIT},
+        {"Sql.ErrorCount", REF(sql.error_count), RELOAD, env::SQL_ERROR_COUNT},
         {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
         {"CallstackTraceNewThroughput", REF(callstack_trace_new_throughput), RELOAD, env::CALLSTACK_TRACE_NEW_THROUGHPUT},
         {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
@@ -824,6 +825,7 @@ namespace pinpoint {
                  defaults::CALLSTACK_TRACE_NEW_THROUGHPUT, "callstack trace new throughput");
 
         at_least(config->sql.max_bind_args_size, 0, 0, "sql max bind args size");
+        at_least(config->sql.error_count, 0, defaults::SQL_ERROR_COUNT, "sql error count");
         // UNLIMITED_SIZE (-1) is the only valid negative: anything below it
         // would cast to a huge size_t at the use site (AgentImpl's ctor) and
         // silently disable the bypass.

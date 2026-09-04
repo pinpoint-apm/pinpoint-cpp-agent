@@ -365,6 +365,10 @@ namespace pinpoint {
         if (!prepared || !*prepared) {
             return;
         }
+        // One recorded SQL execution for this transaction. Charged where Java
+        // charges it (SqlCountService.recordSqlCount, once the SQL annotation
+        // is built), so a statement the normalizer rejected is not counted.
+        span->countSqlExecution();
 
         std::string joined_bind_args;
         if (config->sql.trace_bind_value) {

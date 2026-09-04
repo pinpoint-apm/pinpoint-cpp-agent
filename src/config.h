@@ -65,6 +65,9 @@ namespace pinpoint {
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
         constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
+        // SQL statements one transaction may run before it is marked failed.
+        // Mirrors the Java agent's profiler.sql.error.count (100).
+        constexpr int SQL_ERROR_COUNT = 100;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         // New exception chains admitted per second. Mirrors the Java agent's
         // profiler.exceptiontrace.new.throughput (1000).
@@ -157,6 +160,7 @@ namespace pinpoint {
         constexpr const char* SQL_ENABLE_RAW_SQL_CACHE = "SQL_ENABLE_RAW_SQL_CACHE";
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
         constexpr const char* SQL_REMOVE_COMMENTS = "SQL_REMOVE_COMMENTS";
+        constexpr const char* SQL_ERROR_COUNT = "SQL_ERROR_COUNT";
         constexpr const char* CONFIG_FILE = "CONFIG_FILE";
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
         constexpr const char* CALLSTACK_TRACE_NEW_THROUGHPUT = "CALLSTACK_TRACE_NEW_THROUGHPUT";
@@ -369,6 +373,12 @@ namespace pinpoint {
             // -1 disables the bypass (cache everything), 0 bypasses
             // everything. Java parity: profiler.jdbc.sqlcachelengthlimit.
             int cache_length_limit = defaults::SQL_CACHE_LENGTH_LIMIT;
+            // SQL statements one transaction may run before the span is
+            // marked failed, which is how an N+1 query pattern surfaces in
+            // the UI. 0 = never mark. Java parity: profiler.sql.error.count,
+            // whose profiler.sql.error.enable=false is this field set to 0.
+            // See SpanImpl::countSqlExecution.
+            int error_count = defaults::SQL_ERROR_COUNT;
         } sql;
 
         /**

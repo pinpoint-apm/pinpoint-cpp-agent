@@ -313,6 +313,8 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_TRUE(config->sql.enable_raw_sql_cache) << "Raw SQL cache should be enabled by default";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled by default";
     
+    EXPECT_EQ(config->sql.error_count, 100) << "Default sql error count should be Java's 100";
+
     // Test CallStack trace default
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
     EXPECT_EQ(config->callstack_trace_new_throughput, 1000)
@@ -334,6 +336,21 @@ TEST_F(ConfigTest, CallstackTraceNewThroughputValidationTest) {
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->callstack_trace_new_throughput, 0)
         << "0 means unlimited and must be kept";
+}
+
+// 0 is the documented "never mark" value (Java's profiler.sql.error.enable
+// =false) and must survive validation; a negative value is meaningless and
+// falls back to the default.
+TEST_F(ConfigTest, SqlErrorCountValidationTest) {
+    set_config_string("Sql:\n  ErrorCount: 0\n");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sql.error_count, 0) << "0 disables SQL-count error marking";
+
+    set_config_string("Sql:\n  ErrorCount: -1\n");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sql.error_count, 100) << "Negative sql error count falls back to the default";
 }
 
 TEST_F(ConfigTest, RevisionStampsEachGeneration) {

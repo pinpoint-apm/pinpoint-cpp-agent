@@ -816,6 +816,66 @@ TEST_F(SpanEventTest, MultipleSpanEventsTest) {
 
 // ========== SQL Query Tests ==========
 
+// ========== SQL count -> span error (Java DefaultSqlCountService) ==========
+
+// Runs @p count distinct statements, one per span event, on the fixture span.
+static void run_sql_statements(SpanImpl& span, int count) {
+    for (int i = 0; i < count; ++i) {
+        auto event = make_test_span_event(span, "query");
+        event.SetSqlQuery("SELECT * FROM t WHERE id = " + std::to_string(i), {});
+    }
+}
+
+TEST_F(SpanEventTest, SqlCountBelowLimitLeavesSpanClean) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 3;
+    applyConfigToFreshSpan(config);
+
+    run_sql_statements(*test_span_, 2);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "Below Sql.ErrorCount the transaction must stay successful";
+}
+
+TEST_F(SpanEventTest, SqlCountAtLimitMarksSpanFailed) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 3;
+    applyConfigToFreshSpan(config);
+
+    run_sql_statements(*test_span_, 3);
+    EXPECT_EQ(test_span_data_->getErr(), 1)
+        << "The Nth statement marks the transaction failed, as in Java";
+}
+
+TEST_F(SpanEventTest, SqlCountZeroDisablesMarking) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 0;
+    applyConfigToFreshSpan(config);
+
+    run_sql_statements(*test_span_, 50);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "0 is Java's profiler.sql.error.enable=false";
+}
+
+TEST_F(SpanEventTest, SqlCountIsNotChargedToTheAsyncParent) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 2;
+    applyConfigToFreshSpan(config);
+
+    // NewAsyncSpan needs a live event on the parent's stack, which only
+    // NewSpanEvent pushes (make_test_span_event builds a detached event).
+    test_span_->NewSpanEvent("caller");
+    auto async_span = test_span_->NewAsyncSpan("async");
+    ASSERT_NE(async_span, nullptr);
+    auto* async_impl = dynamic_cast<SpanImpl*>(async_span.get());
+    ASSERT_NE(async_impl, nullptr);
+
+    run_sql_statements(*async_impl, 2);
+    EXPECT_EQ(async_impl->getSpanData()->getErr(), 1)
+        << "The async span counts its own statements";
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "and they are not charged to the span that spawned it";
+}
+
 TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     
