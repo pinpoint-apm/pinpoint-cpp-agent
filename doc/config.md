@@ -118,7 +118,7 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning`, `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
-| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. A path that cannot be opened (or reopened after a rotation) falls back to stdout for the rest of the process, so a broken path shows up as agent lines on the host's stdout rather than as silence. After `Shutdown()` a configured file logger writes nothing more, fallback included — the host's stdout stays clean. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 
 `LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.

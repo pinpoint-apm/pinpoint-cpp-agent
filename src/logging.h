@@ -179,12 +179,14 @@ namespace pinpoint {
         std::uint64_t max_file_size_{0};
         std::uint64_t current_file_size_{0};
         bool file_enabled_{false};
-        // Set by shutdown() when the sink being closed was a file, cleared by
+        // Set by shutdown() when a log file was configured, cleared by
         // setFileLogger(). Once closed, write() drops lines instead of falling
         // back to std::cout: the agent is embedded in hosts (nginx) whose
         // stdout must not be polluted by stragglers that log after shutdown.
         // A logger that was in stdout mode all along stays on stdout, since
-        // that is where its lines were already going.
+        // that is where its lines were already going — but a file logger
+        // currently degraded to stdout (see file_enabled_) is still a file
+        // logger and is silenced like any other.
         bool closed_{false};
         std::unique_ptr<std::ofstream> file_stream_;
         mutable std::mutex mutex_;

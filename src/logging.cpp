@@ -90,10 +90,14 @@ namespace pinpoint {
         }
         file_stream_.reset();
         // Only a file sink is silenced; a stdout logger keeps writing where
-        // it always did. Latched rather than assigned, so the repeated
-        // shutdown_logger() calls on the teardown paths (which see
-        // file_enabled_ already false) do not un-close the logger.
-        if (file_enabled_) {
+        // it always did. Keyed on the configured path rather than on
+        // file_enabled_, which is cleared whenever the file sink fails: an
+        // open or a post-rotation reopen that failed leaves a file logger
+        // writing to std::cout with file_enabled_ false, and that is exactly
+        // the logger whose stragglers must not keep reaching the host's
+        // stdout. Latched rather than assigned, so the repeated
+        // shutdown_logger() calls on the teardown paths do not un-close it.
+        if (!file_path_.empty()) {
             closed_ = true;
         }
         file_enabled_ = false;

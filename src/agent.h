@@ -344,7 +344,14 @@ namespace pinpoint {
         /// by deferring destruction to the helper when the SharedDeleter is
         /// the caller (may_defer_destroy). Returns true when destruction was
         /// deferred — the caller must then not destroy the object.
-        bool teardown_workers_with_deadline(bool may_defer_destroy) noexcept;
+        ///
+        /// @param runner_detached Set to true only when the helper was
+        ///        detached, i.e. log lines are still to come from it and from
+        ///        the workers it is draining. The caller must leave the logger
+        ///        open in that case and let the helper close it, or those
+        ///        lines — the ones that make a slow teardown observable — are
+        ///        dropped by the post-shutdown guard.
+        bool teardown_workers_with_deadline(bool may_defer_destroy, bool& runner_detached) noexcept;
         /// @brief Joins the init thread and every gRPC worker thread.
         void wait_grpc_workers();
         /// @brief Spawns @p body on a std::thread tracked in running_workers_.

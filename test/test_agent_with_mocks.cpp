@@ -845,6 +845,50 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
         << "the reaper must release the agent once the wedged worker finishes";
 }
 
+// Regression: a detached reaper keeps logging after Shutdown() returns — the
+// stragglers' output and its own completion line are what make an overrun
+// teardown observable at all. So do_shutdown() must leave the logger open for
+// it and let the reaper close it; closing it on the way out puts those lines
+// behind the post-shutdown drop guard, where they are lost.
+TEST(AgentShutdownDeadlineTest, DetachedTeardownRunnerStillReachesTheLog) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
+
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto agent = make_wedged_agent(make_test_config(), &wedged);
+
+    const auto log_file =
+        (std::filesystem::temp_directory_path() / "pinpoint_detached_teardown.log").string();
+    std::error_code ec;
+    std::filesystem::remove(log_file, ec);
+
+    // However this test exits, put the logger back on stdout: shutdown()
+    // leaves a file logger closed, which would mute every later test.
+    struct LoggerGuard {
+        ~LoggerGuard() { Logger::getInstance().setFileLogger("", 0); }
+    } logger_guard;
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setFileLogger(log_file, 10);
+
+    agent->Shutdown();  // returns on the deadline with the reaper detached
+
+    std::weak_ptr<AgentImpl> weak = agent;
+    agent.reset();
+    wedged->release();
+    // The reaper releases its keep-alive as it exits, which is after it has
+    // logged its completion line and closed the logger.
+    ASSERT_TRUE(wait_for_condition([&] { return weak.expired(); }, std::chrono::seconds(5)))
+        << "the reaper must release the agent once the wedged worker finishes";
+
+    std::ifstream ifs(log_file);
+    const std::string content{std::istreambuf_iterator<char>(ifs),
+                              std::istreambuf_iterator<char>()};
+    EXPECT_NE(content.find("background teardown finished"), std::string::npos)
+        << "the detached reaper's completion line never reached the log; log was:\n"
+        << content;
+
+    std::filesystem::remove(log_file, ec);
+}
+
 // Dropping the last reference WITHOUT Shutdown() must be just as bounded:
 // the SharedDeleter runs the teardown under the deadline and, on expiry,
 // defers destruction to the teardown runner instead of joining unbounded.

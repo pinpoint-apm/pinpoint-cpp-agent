@@ -620,7 +620,9 @@ namespace pinpoint {
         return names.empty() ? "none (config watcher, AgentInfo scheduler or channel close)" : names;
     }
 
-    bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
+    bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy,
+                                                   bool& runner_detached) noexcept {
+        runner_detached = false;
         // The workers dereference `this` (isExiting/getConfig/getAgentStats),
         // so they must be joined, never detached, before the members they use
         // are destroyed — abandoning a straggler would be a use-after-free.
@@ -664,10 +666,12 @@ namespace pinpoint {
                 }
                 state->cv.notify_all();
                 if (abandoned) {
-                    // do_shutdown() already returned and ran its logger
-                    // flush; flush again for everything the stragglers
-                    // logged since. Logger is a never-destroyed singleton
-                    // with an idempotent, mutex-guarded shutdown.
+                    // do_shutdown() returned without closing the logger
+                    // precisely so this line, and whatever the stragglers
+                    // logged on the way out, are still recorded; closing it
+                    // is this thread's job now that nothing else will write.
+                    // Logger is a never-destroyed singleton with an
+                    // idempotent, mutex-guarded shutdown.
                     try {
                         LOG_INFO("agent shutdown: background teardown finished {}ms after shutdown began",
                                  std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -746,6 +750,10 @@ namespace pinpoint {
             return false;
         }
         runner.detach();
+        // The helper owns the logger's close from here (see the header): its
+        // completion line and everything the draining workers log still have
+        // to get through.
+        runner_detached = true;
         try {
             LOG_WARN("agent shutdown exceeded the {}ms deadline; workers keep draining "
                      "in the background and the agent is {} when they finish; "
@@ -1018,10 +1026,20 @@ namespace pinpoint {
             return false;
         }
 
-        const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
+        bool runner_detached = false;
+        const bool destroy_deferred =
+            teardown_workers_with_deadline(may_defer_destroy, runner_detached);
         // Nothing below may touch members: on the deferred-destroy path the
         // runner owns the object from here and may already have deleted it.
-        try { shutdown_logger(); } catch (...) {}
+        // runner_detached is a local, so reading it stays safe.
+        //
+        // Closing the logger here would drop exactly the lines a detached
+        // runner exists to produce — the stragglers' output and its own
+        // "teardown finished" line — so on that path the runner closes it
+        // instead, once there is nothing left to write.
+        if (!runner_detached) {
+            try { shutdown_logger(); } catch (...) {}
+        }
         return destroy_deferred;
     }
 

@@ -398,6 +398,37 @@ TEST_F(LoggingTest, FileLoggerDropsLogsAfterShutdown) {
     EXPECT_TRUE(content.find("after shutdown straggler") == std::string::npos);
 }
 
+// Regression: a file logger whose file will not open falls back to std::cout
+// for the rest of the process, with file_enabled_ false. Shutdown must
+// silence it all the same — it is still a file logger, and it is the one
+// whose stragglers would otherwise keep landing on the host's stdout.
+TEST_F(LoggingTest, UnopenableFileLoggerDropsLogsAfterShutdown) {
+    const auto missing_dir = std::filesystem::temp_directory_path() / "pinpoint_no_such_dir";
+    std::error_code ec;
+    std::filesystem::remove_all(missing_dir, ec);
+    ASSERT_FALSE(std::filesystem::exists(missing_dir));
+
+    Logger::getInstance().setFileLogger((missing_dir / "agent.log").string(), 10);
+
+    // The fallback is in force: the line goes to stdout while the agent runs.
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logInfo("test.cpp", 1, "while running");
+    std::cout.flush();
+    EXPECT_NE(testing::internal::GetCapturedStdout().find("while running"), std::string::npos)
+        << "a failed log file should degrade to stdout, not to silence";
+
+    Logger::getInstance().shutdown();
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logInfo("test.cpp", 2, "after shutdown straggler");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
+}
+
 // The suppression is tied to the original sink: a logger that was on stdout
 // all along keeps writing there, which is where its lines already went.
 TEST_F(LoggingTest, StdoutLoggerKeepsWritingAfterShutdown) {
