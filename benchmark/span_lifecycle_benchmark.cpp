@@ -107,7 +107,7 @@ namespace benchmark {
         bool readyChannel() override { return false; }
 
     protected:
-        void create_stub() override {}
+        void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
     };
 
     class BenchGrpcMetadata final : public GrpcMetadata {
@@ -117,7 +117,7 @@ namespace benchmark {
         bool readyChannel() override { return false; }
 
     protected:
-        void create_stub() override {}
+        void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
     };
 
     class BenchGrpcSpan final : public GrpcSpan {
@@ -127,7 +127,7 @@ namespace benchmark {
         bool readyChannel() override { return false; }
 
     protected:
-        void create_stub() override {}
+        void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
     };
 
     class BenchGrpcStats final : public GrpcStats {
@@ -137,7 +137,7 @@ namespace benchmark {
         bool readyChannel() override { return false; }
 
     protected:
-        void create_stub() override {}
+        void create_stub(const std::shared_ptr<grpc::Channel>&) override {}
     };
 
     // Serves the propagation headers an upstream Pinpoint agent would send.
