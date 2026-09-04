@@ -29,6 +29,7 @@ A `Span` instance — including every `SpanEvent` it hands out — must be used 
 - A duplicate `EndSpan()`/`EndEvent()` logs `span (event) is already finished` and does nothing.
 - After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `SetAnnotation()`. The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
 - A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span.
+- `RecordSpanEvent()` (batch replay, for wrappers that time their events themselves) is the one exception: the event it returns is **already finished**, because the call supplies both timestamps. Record everything through its arguments — setters on the returned handle are warning no-ops — and do not call `EndEvent()` on it, which would log `span event is already finished`.
 
 This is why RAII guards are the recommended pattern:
 `helper::ScopedSpanEvent` for events (see
@@ -57,6 +58,8 @@ void handleRequest() {
 ## 3. End Span Events in Nesting (LIFO) Order
 
 Span events form a stack. Calling `EndEvent()` on an outer event while an inner event is still open implicitly finishes every event nested above it and logs `span event ended out of order`. Likewise, `EndSpan()` force-finishes all still-open events and logs `N span event(s) not ended by user code`. The trace survives, but implicitly finished events get the wrong end time — their duration silently stretches to the enclosing end call.
+
+**Unbalanced end policy (differs from the Java agent).** An `EndSpan()` that arrives with events still on the stack is not treated as a fatal inconsistency: every open event is **auto-closed at the `EndSpan()` timestamp, kept in the final chunk, and the span is sent as usual**. The Java agent does the opposite — `DefaultTrace.close()` dumps the call stack and **discards the span entirely** when the stack is not empty — so a C++ transaction that a Java agent would drop still shows up in Pinpoint, with the unbalanced events' durations stretched to the span end. Treat the `N span event(s) not ended by user code` warning as an instrumentation bug to fix, not as a lost span. An async child span is the one legitimate case: its root event stays open until `EndSpan()` by design and is excluded from that count.
 
 ## 4. `SpanEventPtr` Is Non-Owning
 

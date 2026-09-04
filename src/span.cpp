@@ -678,7 +678,6 @@ namespace pinpoint {
         se->SetServiceType(service_type);
         // addSpanEvent reserves this span's own counters; a replayed event
         // carries its wrapper-assigned position instead, so overwrite them.
-        // The depth reservation stays balanced — finish() decrements it.
         auto* event = data_->addSpanEvent(std::move(se));
         event->setSequence(sequence);
         event->setDepth(depth);
@@ -687,6 +686,16 @@ namespace pinpoint {
         if (async_id != NONE_ASYNC_ID) {
             event->setAsyncId(async_id);
         }
+        // A replayed event arrives already complete — both timestamps are the
+        // caller's — so end it here rather than waiting for an EndEvent a
+        // wrapper may never send. That returns addSpanEvent's depth
+        // reservation before this call does, so a missed EndEvent can no
+        // longer drift the span into early overflow, and no replayed event is
+        // left on the stack for EndSpan to close out of order. The returned
+        // handle is therefore already finished (see pinpoint/tracer.h): its
+        // setters are warning no-ops and a later EndEvent() is the
+        // duplicate-end no-op.
+        endSpanEvent(event);
         return event;
     } CATCH_AND_LOG_RETURN("record span event", noopSpanEvent())
 
