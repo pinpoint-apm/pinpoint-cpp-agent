@@ -362,6 +362,14 @@ namespace pinpoint {
     }
 
     namespace {
+        // Java ProxyRequestAnnotationFactory.APP_MAX_LENGTH. The app name comes
+        // straight out of an untrusted proxy header, so an uncapped value would
+        // inflate every span it touches. Deliberately a plain cut: Java's
+        // StringUtils.abbreviate(app, 32) also appends "...(<original
+        // length>)", which utility.h's abbreviateErrorString reproduces if that
+        // parity is ever wanted here.
+        constexpr size_t kProxyAppMaxLength = 32;
+
         struct ProxyHeaderValues {
             std::string_view t_val;
             std::string_view D_val;
@@ -476,7 +484,13 @@ namespace pinpoint {
                     received_time = 0;
                 }
             }
-            if (!values.app_val.empty()) app = std::string(values.app_val);
+            if (!values.app_val.empty()) {
+                // utf8SafeCutLength keeps the cut off a multibyte boundary, so
+                // the capped name stays valid UTF-8 for the protobuf string
+                // field (same reason SQL and callstack truncation use it).
+                app = std::string(values.app_val.substr(
+                    0, utf8SafeCutLength(values.app_val, kProxyAppMaxLength)));
+            }
             code = 1;
         }
 

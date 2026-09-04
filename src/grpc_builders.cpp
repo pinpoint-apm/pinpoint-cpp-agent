@@ -52,15 +52,28 @@ namespace pinpoint {
         template<class... Ts>
         overloaded(Ts...) -> overloaded<Ts...>;
 
+        // Java SpanMessageMapper.DEFAULT_END_POINT / DEFAULT_REMOTE_ADDRESS:
+        // an accept event whose endpoint or remote address was never set goes
+        // out as "UNKNOWN", not as an empty string. The distinction is
+        // collector-visible — the server UI renders an empty caller address as
+        // a blank cell, while "UNKNOWN" reads as "the agent could not tell".
+        // Only PAcceptEvent gets the default in Java; PSpanChunk.endPoint and
+        // PMessageEvent.endPoint keep their empty value, so neither is touched.
+        constexpr std::string_view kUnknownAddress = "UNKNOWN";
+
+        std::string_view or_unknown(const std::string& value) {
+            return value.empty() ? kUnknownAddress : std::string_view(value);
+        }
+
         v1::PAcceptEvent* build_accept_event(SpanData* span, google::protobuf::Arena* arena) {
             auto* accept_event = google::protobuf::Arena::Create<v1::PAcceptEvent>(arena);
 
-            accept_event->set_endpoint(span->getEndPoint());
+            const auto end_point = or_unknown(span->getEndPoint());
+            accept_event->set_endpoint(end_point.data(), end_point.size());
             accept_event->set_rpc(span->getRpcName());
 
-            if (auto& remote_addr = span->getRemoteAddr(); !remote_addr.empty()) {
-                accept_event->set_remoteaddr(remote_addr);
-            }
+            const auto remote_addr = or_unknown(span->getRemoteAddr());
+            accept_event->set_remoteaddr(remote_addr.data(), remote_addr.size());
 
             if (!span->getParentAppName().empty()) {
                 auto* parent_info = google::protobuf::Arena::Create<v1::PParentInfo>(arena);

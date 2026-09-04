@@ -2078,6 +2078,54 @@ TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
         << "the event still carries the exception, only the span is unmarked";
 }
 
+// ========== PAcceptEvent UNKNOWN Defaults ==========
+
+// Java SpanMessageMapper defaults an unset remoteAddr/endPoint to "UNKNOWN"
+// (DEFAULT_REMOTE_ADDRESS / DEFAULT_END_POINT). A span with neither set --
+// nor an acceptor host to fall back on -- must serialize the same way here.
+TEST_F(SpanTest, AcceptEventDefaultsUnsetEndPointAndRemoteAddrToUnknownTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    ASSERT_TRUE(pspan->has_acceptevent());
+    EXPECT_EQ(pspan->acceptevent().endpoint(), "UNKNOWN");
+    EXPECT_EQ(pspan->acceptevent().remoteaddr(), "UNKNOWN");
+    EXPECT_EQ(pspan->acceptevent().rpc(), "test-rpc") << "rpc keeps its real value";
+}
+
+// The default must not shadow a value the caller did set, including one that
+// only reaches the wire through the acceptor-host fallback in SpanData.
+TEST_F(SpanTest, AcceptEventKeepsSetEndPointAndRemoteAddrTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetEndPoint("orders.internal:8443");
+    span.SetRemoteAddress("192.0.2.10");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    ASSERT_TRUE(pspan->has_acceptevent());
+    EXPECT_EQ(pspan->acceptevent().endpoint(), "orders.internal:8443");
+    EXPECT_EQ(pspan->acceptevent().remoteaddr(), "192.0.2.10");
+
+    SpanImpl host_only(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(host_only, *mock_agent_service_);
+    host_only.SetAcceptorHost("gateway.example.test");
+    host_only.EndSpan();
+
+    google::protobuf::Arena host_arena;
+    auto* host_pspan = last_recorded_pspan(*mock_agent_service_, host_arena);
+    ASSERT_NE(host_pspan, nullptr);
+    ASSERT_TRUE(host_pspan->has_acceptevent());
+    EXPECT_EQ(host_pspan->acceptevent().endpoint(), "gateway.example.test");
+    EXPECT_EQ(host_pspan->acceptevent().remoteaddr(), "gateway.example.test");
+}
+
 TEST_F(SpanTest, SpanImplSetErrorAbbreviatesLongMessageTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     const std::string msg(300, 'a');

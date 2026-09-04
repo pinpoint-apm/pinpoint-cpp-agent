@@ -169,6 +169,11 @@ auto start_time = std::chrono::system_clock::now();
 span->SetStartTime(start_time);                          // override start time
 ```
 
+`SetRemoteAddress` and `SetEndPoint` both default to the acceptor host when you
+do not call them. With no acceptor host either, the span reaches the collector
+with `remoteAddr` and `endPoint` set to `"UNKNOWN"` (matching the Java agent)
+rather than an empty string.
+
 ### Inspecting Span State
 
 ```cpp

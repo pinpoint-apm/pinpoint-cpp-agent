@@ -852,6 +852,43 @@ TEST_F(HttpTest, SetProxyHeaderAppTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
+// The app name is attacker-controlled, so it is capped like Java's
+// ProxyRequestAnnotationFactory.APP_MAX_LENGTH (32). The cut is by byte and
+// never splits a multibyte character.
+TEST_F(HttpTest, SetProxyHeaderAppIsCappedAt32Bytes) {
+    auto app_of = [](const std::string& app_val) -> std::string {
+        std::map<std::string, std::string> headers = {
+            {"Pinpoint-ProxyApp", "t=1234567890 app=" + app_val}
+        };
+        MockHeaderReader reader(headers);
+        auto annotation = std::make_shared<PinpointAnnotation>();
+        HttpTracerUtil::setProxyHeader(reader, annotation.get());
+        for (const auto& [key, data] : annotation->getAnnotations()) {
+            if (key == ANNOTATION_HTTP_PROXY_HEADER) {
+                return std::get<LongIntIntByteByteStringValue>(data.data).stringValue;
+            }
+        }
+        return "<missing>";  // proxy annotation missing
+    };
+
+    const std::string forty(40, 'a');
+    EXPECT_EQ(app_of(forty), std::string(32, 'a')) << "40-char app must be cut to 32";
+
+    // At and below the cap the value is untouched.
+    EXPECT_EQ(app_of("MyApp"), "MyApp");
+    EXPECT_EQ(app_of(std::string(32, 'b')), std::string(32, 'b'));
+
+    // 11 three-byte characters = 33 bytes: the cut lands one byte inside the
+    // 11th, so the whole partial character is dropped rather than split.
+    std::string multibyte;
+    for (int i = 0; i < 11; i++) {
+        multibyte += "\xEC\x95\x88";  // U+C548
+    }
+    ASSERT_EQ(multibyte.size(), 33u);
+    EXPECT_EQ(app_of(multibyte), multibyte.substr(0, 30))
+        << "a byte cut must not split a UTF-8 sequence";
+}
+
 // Test setProxyHeader with a malformed token: a token without '=' must be
 // skipped on its own instead of swallowing the following tokens
 TEST_F(HttpTest, SetProxyHeaderMalformedTokenTest) {
