@@ -2833,10 +2833,13 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
     auto* real_event = span->NewSpanEvent("depth.level1");
     ASSERT_NE(real_event, nullptr);
     real_event->SetDestination("depth-destination");
+    auto* nested_event = span->NewSpanEvent("depth.level2");
+    ASSERT_NE(nested_event, nullptr);
 
-    // MaxEventDepth is 2, so this nested event overflows into the shared
-    // disabled event that records nothing.
-    auto* overflowed = span->NewSpanEvent("depth.level2.discarded");
+    // MaxEventDepth is an inclusive limit (Java DefaultCallStack parity), so
+    // depth 1 and 2 are recorded and only this third nesting level overflows
+    // into the shared disabled event that records nothing.
+    auto* overflowed = span->NewSpanEvent("depth.level3.discarded");
     ASSERT_NE(overflowed, nullptr);
     overflowed->SetDestination("discarded-destination");
     EXPECT_EQ(span->GetSpanEvent(), overflowed);
@@ -2861,6 +2864,7 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
 
     // Ending the overflowed placeholder must not desync the event stack.
     overflowed->EndEvent();
+    nested_event->EndEvent();
     real_event->EndEvent();
     span->EndSpan();
 
@@ -2883,13 +2887,14 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
         return find_span_by_rpc(snapshot, "/overflow-depth").has_value() &&
                find_span_by_rpc(snapshot, "/overflow-continued").has_value() &&
                find_span_by_rpc(snapshot, "/overflow-sequence").has_value() &&
-               events_for_span(snapshot, span_id).size() >= 1 &&
+               events_for_span(snapshot, span_id).size() >= 2 &&
                events_for_span(snapshot, sequence_span_id).size() >= 4;
     }, kWaitTimeout));
 
     const auto snapshot = collector_.snapshot();
     const auto depth_events = events_for_span(snapshot, span_id);
-    ASSERT_EQ(depth_events.size(), 1U);
+    ASSERT_EQ(depth_events.size(), 2U)
+        << "depth 1 and 2 are recorded; only the third nesting level is dropped";
     ASSERT_TRUE(depth_events[0].has_nextevent());
     EXPECT_EQ(depth_events[0].nextevent().messageevent().destinationid(),
               "depth-destination");

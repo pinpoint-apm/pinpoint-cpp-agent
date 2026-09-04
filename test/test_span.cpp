@@ -1338,15 +1338,15 @@ TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
 TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
 
-    // Config max_event_depth is 64. Push events to reach the limit.
-    // Each NewSpanEvent increments depth, starting from 1.
+    // Config max_event_depth is 64, and max_event_depth is inclusive (Java
+    // DefaultCallStack parity): depth 1..64 are recorded.
     std::vector<SpanEventPtr> events;
-    for (int i = 0; i < 63; i++) {
+    for (int i = 0; i < 64; i++) {
         auto se = span.NewSpanEvent("event-" + std::to_string(i));
         events.push_back(se);
     }
 
-    // Next event should overflow (depth = 64 >= max_event_depth=64)
+    // Next event should overflow (depth = 65 > max_event_depth=64)
     auto overflow_event = span.NewSpanEvent("overflow-event");
     EXPECT_NE(overflow_event, nullptr) << "Should return disabled event on overflow";
 
@@ -1355,12 +1355,50 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     overflow_event->EndEvent();
 
     // Now ending the real events should work
-    for (int i = 62; i >= 0; i--) {
+    for (int i = 63; i >= 0; i--) {
         events[i]->EndEvent();
     }
 
     span.EndSpan();
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+// max_event_depth is an inclusive limit, matching Java DefaultCallStack
+// (isOverflow() compares `maxDepth < index`): MaxEventDepth=3 records events
+// at depth 1, 2 and 3, and only the fourth nesting level is discarded.
+TEST_F(SpanTest, SpanImplEventDepthLimitIsInclusiveTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 3;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    std::vector<SpanEventPtr> events;
+    for (int i = 0; i < 3; i++) {
+        auto* se = span.NewSpanEvent("depth-" + std::to_string(i + 1));
+        ASSERT_NE(se, noopSpanEvent()) << "depth " << (i + 1) << " must be recorded";
+        events.push_back(se);
+    }
+
+    auto* overflowed = span.NewSpanEvent("depth-4");
+    EXPECT_EQ(overflowed, span.GetSpanEvent())
+        << "the 4th nesting level must hand out the shared disabled event";
+    EXPECT_NE(overflowed, events[2]) << "the 4th nesting level must not be recorded";
+    overflowed->EndEvent();
+
+    for (int i = 2; i >= 0; i--) {
+        events[i]->EndEvent();
+    }
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& chunk = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
+    ASSERT_EQ(chunk.size(), 3u) << "exactly the events at depth 1..3 are recorded";
+    EXPECT_EQ(chunk[0]->getDepth(), 1);
+    EXPECT_EQ(chunk[1]->getDepth(), 2);
+    EXPECT_EQ(chunk[2]->getDepth(), 3);
 }
 
 TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
@@ -1411,8 +1449,9 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     reader.SetContext(HEADER_SPAN_ID, "555");
     span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
-    auto real = span.NewSpanEvent("real-event");
-    auto overflowed = span.NewSpanEvent("overflowed-event"); // depth 2 >= max 2
+    auto outer = span.NewSpanEvent("outer-event");           // depth 1 <= max 2
+    auto real = span.NewSpanEvent("real-event");             // depth 2 <= max 2
+    auto overflowed = span.NewSpanEvent("overflowed-event"); // depth 3 > max 2
     EXPECT_NE(overflowed, noopSpanEvent())
         << "Overflow should hand out the disabled event, not the plain noop";
     EXPECT_EQ(span.GetSpanEvent(), overflowed)
@@ -1435,6 +1474,7 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     EXPECT_EQ(span.GetSpanEvent(), real)
         << "After the overflow resolves, the real top event is handed out again";
     real->EndEvent();
+    outer->EndEvent();
     span.EndSpan();
 
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
@@ -1447,8 +1487,8 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
 // no-op that never falls through to pop a real event off the stack.
 TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
     auto config = std::make_shared<Config>();
-    // A fresh span starts at event depth 1, so max_event_depth=2 admits exactly
-    // one real event; the next NewSpanEvent overflows.
+    // max_event_depth is inclusive, so max_event_depth=2 admits exactly two
+    // nested real events; the third NewSpanEvent overflows.
     config->span.max_event_depth = 2;
     config->span.max_event_sequence = 512;
     config->span.event_chunk_size = 100;
@@ -1458,9 +1498,10 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
     MockTraceContextReader reader;
     span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
-    auto* real = span.NewSpanEvent("real-event");           // depth 1 < 2 -> real, depth -> 2
-    auto* overflow1 = span.NewSpanEvent("overflow-1");       // depth 2 >= 2 -> overflow_=1
-    auto* overflow2 = span.NewSpanEvent("overflow-2");       // still overflowed -> overflow_=2
+    auto* outer = span.NewSpanEvent("outer-event");           // depth 1 <= 2 -> real
+    auto* real = span.NewSpanEvent("real-event");             // depth 2 <= 2 -> real, depth -> 3
+    auto* overflow1 = span.NewSpanEvent("overflow-1");        // depth 3 > 2 -> overflow_=1
+    auto* overflow2 = span.NewSpanEvent("overflow-2");        // still overflowed -> overflow_=2
     EXPECT_EQ(overflow1, overflow2)
         << "overflowed events reuse the one shared DisabledSpanEvent instance";
     EXPECT_NE(overflow1, real);
@@ -1481,6 +1522,7 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
         << "over-ending the disabled event must not pop the still-active real event";
 
     real->EndEvent();
+    outer->EndEvent();
     span.EndSpan();
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
@@ -1492,7 +1534,7 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
 // use-after-free — the disabled event used to dereference the dead span.
 TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     auto config = std::make_shared<Config>();
-    config->span.max_event_depth = 2;   // one real event, then overflow
+    config->span.max_event_depth = 2;   // two real events, then overflow
     config->span.max_event_sequence = 512;
     config->span.event_chunk_size = 100;
     mock_agent_service_->reloadConfig(config);
@@ -1503,8 +1545,9 @@ TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     reader.SetContext(HEADER_SPAN_ID, "555");
     span->extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
 
-    auto* real = span->NewSpanEvent("real-event");
-    auto* overflowed = span->NewSpanEvent("overflowed-event");  // depth 2 >= max 2
+    span->NewSpanEvent("outer-event");                          // depth 1 <= max 2
+    auto* real = span->NewSpanEvent("real-event");              // depth 2 <= max 2
+    auto* overflowed = span->NewSpanEvent("overflowed-event");  // depth 3 > max 2
 
     // Pin the span data the way a chunk in flight on the gRPC span worker
     // does, then drop the span while both events are still open.
@@ -2068,10 +2111,11 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanOverflowTest) {
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
 
-    // Push one real event
+    // Push real events up to the inclusive depth limit
+    auto e0 = span.NewSpanEvent("e0");
     auto e1 = span.NewSpanEvent("e1");
 
-    // This should overflow (depth now 3 >= 2)
+    // This should overflow (depth now 3 > 2)
     auto e2 = span.NewSpanEvent("e2-overflow");
 
     // NewAsyncSpan should return noop when overflow > 0
@@ -2081,6 +2125,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanOverflowTest) {
     // Clean up
     e2->EndEvent(); // overflow--
     e1->EndEvent(); // real event
+    e0->EndEvent(); // real event
     span.EndSpan();
 }
 

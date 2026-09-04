@@ -334,6 +334,20 @@ namespace pinpoint {
         assert(false && "SpanImpl accessed from a thread other than its owner");
     }
 
+    /**
+     * @brief Tells whether an event at (depth, sequence) exceeds the per-span
+     * limits, matching Java DefaultCallStack::isOverflow().
+     *
+     * `depth` is 1-based (the first event of a span sits at depth 1), so
+     * `Span.MaxEventDepth` is inclusive: depth == max is the deepest event
+     * still recorded. Java compares `maxDepth < index` for the same reason;
+     * the sequence side is exclusive there too (`maxSequence <= sequence`).
+     * Shared by both event entry points so the two cannot drift apart.
+     */
+    static bool is_event_overflow(const Config& cfg, int32_t depth, int32_t sequence) {
+        return depth > cfg.span.max_event_depth || sequence >= cfg.span.max_event_sequence;
+    }
+
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         checkOwnerThread();
@@ -342,7 +356,7 @@ namespace pinpoint {
         const auto depth = data_->getEventDepth();
         const auto seq = data_->getEventSequence();
 
-        if (depth >= cfg->span.max_event_depth || seq >= cfg->span.max_event_sequence) {
+        if (is_event_overflow(*cfg, depth, seq)) {
             data_->incrEventOverflow();
             // Throttled: an app that routinely exceeds the limits would hit
             // this once per discarded event, serializing its request threads
@@ -654,7 +668,7 @@ namespace pinpoint {
         // event-creation time with its own copy of the config. Dropping here
         // keeps a misconfigured wrapper from growing the span unbounded.
         const auto& cfg = config_;
-        if (depth >= cfg->span.max_event_depth || sequence >= cfg->span.max_event_sequence) {
+        if (is_event_overflow(*cfg, depth, sequence)) {
             LOG_WARN_THROTTLED("recorded span event exceeds maximum depth/sequence. (depth:{}, seq:{})",
                                depth, sequence);
             return noopSpanEvent();

@@ -68,7 +68,7 @@ Span events form a stack. Calling `EndEvent()` on an outer event while an inner 
 
 ## 5. Event Depth and Count Limits (Overflow)
 
-Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and the total event count by `Span.MaxEventSequence` (default 5000). When either cap is reached, `NewSpanEvent()` logs `span event maximum depth/sequence exceeded` and returns a shared **disabled event** instead:
+Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and the total event count by `Span.MaxEventSequence` (default 5000). Depth is 1-based and the cap is **inclusive** — with `MaxEventDepth: 3` the events at depth 1, 2 and 3 are recorded and the fourth nesting level overflows (same allowance as the Java agent's `DefaultCallStack`). When either cap is exceeded, `NewSpanEvent()` logs `span event maximum depth/sequence exceeded` and returns a shared **disabled event** instead:
 
 - It records nothing — operation name, timings, SQL, errors, and annotations are discarded.
 - `InjectContext()` **still writes the full trace context**, so downstream services continue the distributed trace. Overflow limits profiling detail; it is not a sampling decision.
