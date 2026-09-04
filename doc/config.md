@@ -270,11 +270,28 @@ bitmask are not implemented.
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
 | `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered while waiting for aggregation; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. |
-| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `false` | Enable URL path trimming for normalisation. Unlike the Java agent, which aggregates the recorded URI template verbatim, enabling this collapses templates too (`/api/users/{id}` → `/api/*`); leave it off unless the caller can only supply raw URLs. |
+| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. **Set this to `false` if the caller passes a URL pattern** — see the note below. |
 | `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is (depth `2`: `/api/users` → `/api/users`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
 
 A request recorded without a URL is aggregated under the key `UNKNOWN_URL` (matching the Java/Go agents) rather than an empty string.
+
+#### Turn trimming off when you pass a URL pattern
+
+Trimming exists for callers that can only report the **raw request URL**. With it
+on, `/api/users/123` and `/api/users/456` both key as `/api/*` instead of
+producing one URL stat entry per id.
+
+If your instrumentation already reports a **URL pattern** (a route template such
+as `/api/users/{id}`), that normalisation has happened once and trimming would
+apply it again — `/api/users/{id}` collapses to `/api/*`, discarding the route
+you deliberately passed and merging unrelated endpoints under one key. Set
+`Http.UrlStatEnableTrimPath: false` in that case, which also matches the Java and
+Go agents: both aggregate the recorded URI template verbatim and have no
+equivalent option.
+
+Rule of thumb: **raw URL in → leave it `true`; URL pattern in → set it `false`.**
+
 
 ### Server-side Tracing
 

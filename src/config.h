@@ -320,10 +320,10 @@ namespace pinpoint {
                 // queue_size bounds per-request records buffered between
                 // request end and worker aggregation.
                 size_t queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
-                // Off by default to match Java/Go, which aggregate the URI
-                // template the caller recorded verbatim. Trimming stays
-                // opt-in for callers that can only supply raw URLs.
-                bool enable_trim_path = false;
+                // On by default: a caller recording raw URLs would otherwise
+                // key every path parameter separately. Callers that record a
+                // URI template must turn it off (see doc/config.md).
+                bool enable_trim_path = true;
                 int trim_path_depth = 1;
                 bool method_prefix = false;
             } url_stat;

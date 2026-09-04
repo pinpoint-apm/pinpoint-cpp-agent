@@ -237,9 +237,12 @@ TEST_F(UrlStatTest, SnapshotPreservesExactUntrimmedKey) {
     EXPECT_EQ(found->second.total.total(), 25);
 }
 
-TEST_F(UrlStatTest, SnapshotKeepsUriTemplateByDefault) {
+// Callers that record a URI template must turn trimming off, otherwise the
+// template they already normalized is collapsed a second time.
+TEST_F(UrlStatTest, SnapshotKeepsUriTemplateWhenTrimmingOff) {
     UrlStatSnapshot snapshot;
-    Config config;  // defaults: trimming off, matching the Java agent
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
     TickClock tick_clock(1);
 
     UrlStatEntry stat("/api/users/{id}", "GET", 200);
@@ -253,10 +256,11 @@ TEST_F(UrlStatTest, SnapshotKeepsUriTemplateByDefault) {
         << "the recorded URI template must be aggregated verbatim by default";
 }
 
-TEST_F(UrlStatTest, SnapshotTrimsWhenOptedIn) {
+// The default: a caller recording raw URLs gets its path parameters folded
+// into one key instead of one key per id.
+TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathByDefault) {
     UrlStatSnapshot snapshot;
     Config config;
-    config.http.url_stat.enable_trim_path = true;
     config.http.url_stat.trim_path_depth = 1;
     TickClock tick_clock(1);
 
