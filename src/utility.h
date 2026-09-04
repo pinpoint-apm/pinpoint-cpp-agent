@@ -44,8 +44,30 @@
 
 namespace pinpoint {
 
-    /// @brief Pseudo-random 64-bit span id; collisions are possible.
+    /// @brief The reserved "no span" id, matching Java SpanId.NULL. Never a
+    ///        valid span id, so generation must never produce it.
+    inline constexpr int64_t kNullSpanId = -1;
+
+    /// @brief Pseudo-random 64-bit span id, never kNullSpanId; collisions with
+    ///        other spans are still possible.
     int64_t generate_span_id();
+
+    /**
+     * @brief Span id for a call this span makes, distinct from kNullSpanId and
+     *        from both ids already in this span's context.
+     *
+     * Mirrors Java SpanId.nextSpanID(): the generated id becomes the callee's
+     * span id while @p span_id becomes its parent span id, so an id equal to
+     * either would make the callee its own parent (or its own grandparent) and
+     * break the call tree the collector reconstructs. Redraws until the value
+     * clears all three.
+     *
+     * @p rand_source overrides the thread-local generator; only tests pass it,
+     * to drive the redraw loop deterministically.
+     */
+    int64_t generate_next_span_id(int64_t span_id, int64_t parent_span_id);
+    int64_t generate_next_span_id(int64_t span_id, int64_t parent_span_id,
+                                  const std::function<int64_t()>& rand_source);
     /// @brief Converts a system clock time point to epoch milliseconds.
     int64_t to_milli_seconds(const std::chrono::system_clock::time_point& tm);
 

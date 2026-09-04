@@ -444,17 +444,20 @@ TEST_F(SpanEventTest, GenerateNextSpanIdTest) {
     
     EXPECT_EQ(span_event.getNextSpanId(), 0) << "Initial next span ID should be 0";
     
-    int64_t generated_id = span_event.generateNextSpanId();
-    
+    int64_t generated_id = span_event.generateNextSpanId(100, 200);
+
     EXPECT_NE(generated_id, 0) << "Generated span ID should be non-zero";
+    EXPECT_NE(generated_id, kNullSpanId) << "Generated span ID must never be the NULL sentinel";
+    EXPECT_NE(generated_id, 100) << "Generated span ID must differ from the span's own ID";
+    EXPECT_NE(generated_id, 200) << "Generated span ID must differ from the parent span ID";
     EXPECT_EQ(span_event.getNextSpanId(), generated_id) << "Next span ID should match generated ID";
 }
 
 TEST_F(SpanEventTest, GenerateMultipleSpanIdsTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
 
-    int64_t id1 = span_event.generateNextSpanId();
-    int64_t id2 = span_event.generateNextSpanId();
+    int64_t id1 = span_event.generateNextSpanId(100, 200);
+    int64_t id2 = span_event.generateNextSpanId(100, 200);
 
     EXPECT_NE(id1, id2) << "Generated span IDs should be different";
     EXPECT_EQ(span_event.getNextSpanId(), id2) << "Next span ID should be the last generated ID";
@@ -674,7 +677,7 @@ TEST_F(SpanEventTest, CompleteWorkflowTest) {
     span_event.RecordHeader(HTTP_REQUEST, headers);
     
     // Generate next span ID
-    int64_t next_id = span_event.generateNextSpanId();
+    int64_t next_id = span_event.generateNextSpanId(100, 200);
     
     // Increment async sequence
     span_event.incrAsyncSeq();
@@ -1237,13 +1240,16 @@ TEST_F(SpanEventTest, GenerateNextSpanIdUniquenessTest) {
 
     for (int i = 0; i < count; ++i) {
         auto span_event = make_test_span_event(*test_span_, "test-op");
-        int64_t id = span_event.generateNextSpanId();
+        int64_t id = span_event.generateNextSpanId(100, 200);
         ids.insert(id);
     }
 
     // All generated IDs should be unique
     EXPECT_EQ(ids.size(), count) << "All generated span IDs should be unique";
     EXPECT_EQ(ids.count(0), 0) << "No generated ID should be 0";
+    EXPECT_EQ(ids.count(kNullSpanId), 0) << "No generated ID should be the NULL sentinel";
+    EXPECT_EQ(ids.count(100), 0) << "No generated ID should collide with the span ID";
+    EXPECT_EQ(ids.count(200), 0) << "No generated ID should collide with the parent span ID";
 }
 
 // ========== helper::ScopedSpanEvent null-span safety ==========

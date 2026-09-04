@@ -1791,6 +1791,44 @@ TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
         << "Generated trace ID should use agent start time";
 }
 
+// A span id header that does not parse used to leave the span id at its 0
+// default, which is indistinguishable from a real id on the wire — every such
+// request would be linked under the same span. Treat it as no id at all.
+TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "not-a-number");
+
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    const int64_t span_id = span.getSpanData()->getSpanId();
+    EXPECT_NE(span_id, 0) << "An unparsable span id must not be left at the 0 default";
+    EXPECT_NE(span_id, kNullSpanId) << "A generated span id must never be the NULL sentinel";
+}
+
+// InjectContext writes this span's id as the callee's parent span id, so the
+// generated child id must differ from it (Java SpanId.nextSpanID).
+TEST_F(SpanTest, SpanEventInjectContextChildSpanIdDiffersFromParentTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+
+    auto se = span.NewSpanEvent("test-event");
+    MockTraceContextWriter writer;
+    se->InjectContext(writer);
+
+    ASSERT_TRUE(writer.Get(HEADER_SPAN_ID).has_value());
+    EXPECT_EQ(writer.Get(HEADER_PARENT_SPAN_ID).value(), "555");
+    EXPECT_NE(writer.Get(HEADER_SPAN_ID).value(), "555");
+    EXPECT_NE(writer.Get(HEADER_SPAN_ID).value(), "111");
+    EXPECT_NE(writer.Get(HEADER_SPAN_ID).value(), "-1");
+}
+
 TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;

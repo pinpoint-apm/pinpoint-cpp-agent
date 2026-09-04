@@ -113,6 +113,44 @@ TEST(UtilityTest, GenerateSpanIdThreadSafety) {
     EXPECT_EQ(all_ids.size(), threads_count * ids_per_thread);
 }
 
+// ========== generate_next_span_id Tests ==========
+
+namespace {
+
+// Feeds generate_next_span_id() a scripted sequence of draws so the redraw
+// loop — a 3-in-2^64 event with the real generator — can be exercised.
+std::function<int64_t()> scripted_rand_source(std::vector<int64_t> draws) {
+    return [draws = std::move(draws), i = size_t{0}]() mutable {
+        EXPECT_LT(i, draws.size()) << "generate_next_span_id drew more values than scripted";
+        return i < draws.size() ? draws[i++] : int64_t{0};
+    };
+}
+
+}  // namespace
+
+TEST(UtilityTest, GenerateNextSpanIdRedrawsOnNullSentinel) {
+    EXPECT_EQ(generate_next_span_id(100, 200, scripted_rand_source({kNullSpanId, 7})), 7);
+}
+
+TEST(UtilityTest, GenerateNextSpanIdRedrawsOnSpanIdAndParentSpanIdCollisions) {
+    // -1, then the span's own id, then the parent's: all three rejected.
+    EXPECT_EQ(generate_next_span_id(100, 200,
+                                    scripted_rand_source({kNullSpanId, 100, 200, 7})), 7);
+}
+
+TEST(UtilityTest, GenerateNextSpanIdAcceptsFirstUncollidedDraw) {
+    EXPECT_EQ(generate_next_span_id(100, 200, scripted_rand_source({7})), 7);
+    // 0 is a legal (if unlucky) span id — only -1 is reserved.
+    EXPECT_EQ(generate_next_span_id(100, 200, scripted_rand_source({0})), 0);
+}
+
+TEST(UtilityTest, GenerateSpanIdOnlyExcludesNullSentinel) {
+    // A root span has no context ids, so the same loop must accept a draw that
+    // would have collided for a child.
+    EXPECT_EQ(generate_next_span_id(kNullSpanId, kNullSpanId,
+                                    scripted_rand_source({kNullSpanId, 100})), 100);
+}
+
 // ========== to_milli_seconds Tests ==========
 
 TEST(UtilityTest, ToMilliSecondsEpoch) {

@@ -255,8 +255,8 @@ namespace pinpoint {
         annotations_.releaseStorage();
     }
 
-    int64_t SpanEventImpl::generateNextSpanId() {
-        next_span_id_ = generate_span_id();
+    int64_t SpanEventImpl::generateNextSpanId(const int64_t span_id, const int64_t parent_span_id) {
+        next_span_id_ = generate_next_span_id(span_id, parent_span_id);
         return next_span_id_;
     }
 
@@ -405,7 +405,12 @@ namespace pinpoint {
             injectDeadSpanContext(writer);
             return;
         }
-        span->injectContext(writer, generateNextSpanId(), destination_id_);
+        // The ids come from the SpanData (always alive here) rather than the
+        // span: injectContext writes this span's id as the callee's parent, so
+        // the child id has to clear both of them.
+        span->injectContext(writer,
+                            generateNextSpanId(data_->getSpanId(), data_->getParentSpanId()),
+                            destination_id_);
     } CATCH_AND_LOG("inject context")
 
     void SpanEventImpl::SetNextSpanId(int64_t next_span_id) try {
@@ -440,7 +445,9 @@ namespace pinpoint {
             injectDeadSpanContext(writer);
             return;
         }
-        span->injectContext(writer, generate_span_id(), destination_id_);
+        span->injectContext(writer,
+                            generate_next_span_id(data_->getSpanId(), data_->getParentSpanId()),
+                            destination_id_);
     } CATCH_AND_LOG("inject context")
 
 } // namespace pinpoint

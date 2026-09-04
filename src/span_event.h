@@ -112,8 +112,10 @@ namespace pinpoint {
         void setDepth(int32_t depth) { depth_ = depth; }
         int32_t getDepth() const { return depth_; }
 
-        /// @brief Generates the next span identifier for asynchronous spans.
-        int64_t generateNextSpanId();
+        /// @brief Generates and stores the child span id propagated by
+        /// InjectContext, distinct from @p span_id and @p parent_span_id (see
+        /// generate_next_span_id).
+        int64_t generateNextSpanId(int64_t span_id, int64_t parent_span_id);
         int64_t getNextSpanId() const { return next_span_id_; }
 
         // Owned by value; the list inside only allocates on the first append.

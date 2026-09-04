@@ -551,11 +551,17 @@ namespace pinpoint {
 
         if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
             data_->setSpanId(generate_span_id());
+        } else if (const auto result = stoll_(span_id.value()); result.has_value()) {
+            data_->setSpanId(result.value());
         } else {
-            auto result = stoll_(span_id.value());
-            if (result.has_value()) {
-                data_->setSpanId(result.value());
-            }
+            // A malformed header used to leave the span id at its 0 default,
+            // which the collector cannot tell from a real id — every such
+            // request collapsed onto the same node. Treat it as no id at all.
+            // Throttled: the value is peer-controlled, so an unthrottled line
+            // per request would serialize request threads on the logger.
+            LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
+                               HEADER_SPAN_ID, span_id.value());
+            data_->setSpanId(generate_span_id());
         }
 
         if (const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID); parent_span_id.has_value()) {
