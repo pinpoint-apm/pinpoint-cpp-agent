@@ -27,7 +27,10 @@ namespace pinpoint {
 // refill schedule can be tested without sleeping.
 class FakeClockLimiter final : public RateLimiter {
 public:
-    explicit FakeClockLimiter(const uint64_t tps) : RateLimiter(tps) {}
+    // baseline_at re-does what the base constructor could not: it read the
+    // real clock, because virtual dispatch during construction does not reach
+    // the override below. Zero is this clock's construction time.
+    explicit FakeClockLimiter(const uint64_t tps) : RateLimiter(tps) { baseline_at(now_ns_); }
 
     void advance_ms(const int64_t ms) { now_ns_ += ms * 1000000; }
     int64_t elapsed_ms() const { return now_ns_ / 1000000; }
@@ -41,8 +44,10 @@ private:
 
 class RateLimiterTest : public ::testing::Test {};
 
-// A fresh bucket is empty: the first call goes through and the next one has to
-// wait a full token interval, exactly like a freshly created Guava RateLimiter.
+// Called at once, a fresh bucket is empty: the first call goes through and the
+// next one has to wait a full token interval, exactly like a freshly created
+// Guava RateLimiter (which also lets the first caller borrow against the
+// future). What it accumulates while nobody calls it is the test below.
 TEST_F(RateLimiterTest, FirstCallPassesThenPacesAtTps) {
     FakeClockLimiter limiter(10); // one token per 100ms
 
@@ -55,6 +60,52 @@ TEST_F(RateLimiterTest, FirstCallPassesThenPacesAtTps) {
     limiter.advance_ms(50);
     EXPECT_TRUE(limiter.allow()) << "one interval elapsed, one token due";
     EXPECT_FALSE(limiter.allow());
+}
+
+// Regression: the bucket fills from construction, not from the first call.
+// Guava starts its stopwatch in setRate() and converts everything elapsed
+// since into permits on the first acquire(), so an agent that idles before its
+// first request owes that request a full second of burst. Treating "never
+// used" as "no time has passed" handed out exactly one, which under-sampled
+// the very first traffic a process saw.
+TEST_F(RateLimiterTest, IdleBeforeTheFirstCallStillFillsTheBucket) {
+    FakeClockLimiter limiter(10);  // one token per 100ms
+
+    limiter.advance_ms(1000);  // a second of idle, with no call yet
+
+    int allowed = 0;
+    for (int i = 0; i < 50; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+
+    // tps stored tokens, plus the one Guava lets through when the bucket is
+    // empty but the clock has reached the next token — the same +1 the
+    // long-idle test below documents.
+    EXPECT_EQ(allowed, 11) << "an idle second before the first call is still a second of tokens";
+    EXPECT_FALSE(limiter.allow());
+}
+
+// The same property on the real clock — the path production actually takes,
+// and the only one that exercises the constructor's own clock read (a fake
+// clock has to re-baseline, so it cannot tell where the baseline came from).
+// Bounds are wide: what matters is that idle time was worth many tokens
+// rather than the single one an empty bucket always lets through.
+TEST_F(RateLimiterTest, RealClockIdleBeforeTheFirstCallFillsTheBucket) {
+    RateLimiter limiter(100);  // one token per 10ms
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    int allowed = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+
+    EXPECT_GE(allowed, 10) << "250ms idle before the first call is worth ~25 tokens";
+    EXPECT_LE(allowed, 100) << "and never more than the one-second cap";
 }
 
 // Acceptance criteria: at tps=10, called every 50ms, the first second admits at

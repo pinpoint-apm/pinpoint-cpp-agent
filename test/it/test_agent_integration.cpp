@@ -1687,14 +1687,21 @@ TEST_F(AgentIntegrationTest,
     }, kWaitTimeout));
     const auto baseline = agent_stat_count(collector_.snapshot());
 
-    // The token bucket starts empty and refills at NewThroughput per second,
-    // so a back-to-back burst gets one span through, not NewThroughput of them.
-    const std::array<bool, 4> expected_new{true, false, false, false};
+    // Both buckets fill from agent construction and cap at one second of
+    // tokens, so idling past that cap makes the bursts below deterministic
+    // however long the startup handshake took: each bucket holds exactly its
+    // throughput. A burst then admits those stored tokens plus one more — the
+    // caller that finds the bucket empty but its next token already due
+    // borrows it — which is what Guava's SmoothBursty, and so the Java agent,
+    // does with the same setting.
+    std::this_thread::sleep_for(1200ms);
+
+    const std::array<bool, 5> expected_new{true, true, true, false, false};
     const auto parent_trace_id = DriveSamplingPattern(
         "sampling.throughput.new", "/sampling/throughput/new/", expected_new);
     ASSERT_FALSE(parent_trace_id.empty());
 
-    const std::array<bool, 3> expected_continuation{true, false, false};
+    const std::array<bool, 3> expected_continuation{true, true, false};
     MapCarrier context;
     context.Set(HEADER_TRACE_ID, parent_trace_id);
     DriveSamplingPattern("sampling.throughput.continued",
@@ -1703,20 +1710,20 @@ TEST_F(AgentIntegrationTest,
 
     ASSERT_TRUE(collector_.WaitFor([baseline](const auto& snapshot) {
         const auto totals = transaction_totals_after(snapshot, baseline);
-        return totals.sampled_new >= 1 && totals.skipped_new >= 3 &&
-               totals.sampled_continuation >= 1 &&
-               totals.skipped_continuation >= 2 &&
+        return totals.sampled_new >= 3 && totals.skipped_new >= 2 &&
+               totals.sampled_continuation >= 2 &&
+               totals.skipped_continuation >= 1 &&
                count_spans_by_rpc(
                    snapshot, "/sampling/throughput/continued/0") == 1;
     }, kWaitTimeout));
 
     const auto snapshot = collector_.snapshot();
     const auto totals = transaction_totals_after(snapshot, baseline);
-    EXPECT_EQ(totals.sampled_new, 1);
-    EXPECT_EQ(totals.skipped_new, 3);
+    EXPECT_EQ(totals.sampled_new, 3);
+    EXPECT_EQ(totals.skipped_new, 2);
     EXPECT_EQ(totals.unsampled_new, 0);
-    EXPECT_EQ(totals.sampled_continuation, 1);
-    EXPECT_EQ(totals.skipped_continuation, 2);
+    EXPECT_EQ(totals.sampled_continuation, 2);
+    EXPECT_EQ(totals.skipped_continuation, 1);
     ExpectSamplingPattern(snapshot, "/sampling/throughput/new/", expected_new);
     ExpectSamplingPattern(snapshot, "/sampling/throughput/continued/",
                           expected_continuation);

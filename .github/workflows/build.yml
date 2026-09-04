@@ -5,9 +5,15 @@ name: Build and test
 # compiles agent code rather than gRPC/Protobuf/Abseil. See the CI image
 # section of doc/build.md.
 #
-# The image version is pinned rather than tracking `latest`: republishing the
+# The image is pinned by digest rather than tracking a tag: republishing the
 # image after a dependency bump must not silently change what an existing
-# commit builds against. Bump it here when vcpkg.json changes.
+# commit builds against, and a tag — `latest` or `1.0.0` alike — can be moved
+# onto new contents at any time, which is the whole property the pin is for.
+# Bump the digest here when vcpkg.json changes, keeping the tag comment beside
+# it in step with the release the digest belongs to. To read the digest of a
+# published tag:
+#
+#   docker buildx imagetools inspect pinpointdocker/pinpoint-cpp-build-env:<tag>
 
 on:
   # `push` is limited to main so that a pull request from a branch in this
@@ -31,7 +37,8 @@ jobs:
   vcpkg:
     name: CMake vcpkg preset
     runs-on: ubuntu-latest
-    container: pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    # pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    container: pinpointdocker/pinpoint-cpp-build-env@sha256:a477cd49ce4574c0718481d7ac8269272056ea6beaae74a2830de87dd07d75e8
     steps:
       # The Protobuf/gRPC service definitions are a submodule, and the build
       # needs them; the image's system-wide safe.directory setting is what lets

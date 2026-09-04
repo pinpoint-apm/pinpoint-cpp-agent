@@ -37,6 +37,12 @@ namespace pinpoint {
      * single CAS with no fractional-token state to keep in sync, and a losing
      * CAS retries against the time the winner published instead of refilling
      * twice.
+     *
+     * That clock starts at construction, so the bucket fills while the limiter
+     * is idle and unused: Guava resyncs its stopwatch in `setRate()` and turns
+     * everything elapsed since into permits on the first `acquire()`, so an
+     * agent that sits idle for a second before its first request admits a
+     * whole second of burst rather than a single call.
      */
     class RateLimiter {
     public:
@@ -54,9 +60,20 @@ namespace pinpoint {
         /// @brief Monotonic now in nanoseconds; overridden by tests to inject a fake clock.
         virtual int64_t now_nanos() const;
 
+        /**
+         * @brief Restarts the bucket's clock at @p now_ns.
+         *
+         * For a subclass that injects its own clock: the constructor baselines
+         * the bucket on the real one, because virtual dispatch during
+         * construction cannot reach the override. Call this with the injected
+         * clock's starting value to put the bucket back where the constructor
+         * meant it to be — an empty bucket whose fill began now.
+         */
+        void baseline_at(int64_t now_ns) { next_.store(now_ns, std::memory_order_relaxed); }
+
     private:
         const int64_t interval_;    // nanoseconds per token; 0 disables the limiter
         const int64_t burst_;       // nanoseconds of tokens a full bucket holds (one second)
-        std::atomic<int64_t> next_; // arrival time of the next token, kUnused until first use
+        std::atomic<int64_t> next_; // arrival time of the next token; the construction time until first use
     };
 }

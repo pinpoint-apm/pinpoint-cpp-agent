@@ -379,8 +379,9 @@ TEST_F(SamplingTest, TraceSamplerNewLimiterTest) {
     const int new_tps = 3;
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), new_tps, 0);
     
-    // The token bucket starts empty and refills at new_tps/s, so back-to-back
-    // calls get one token and then wait 1/new_tps of a second for the next.
+    // The bucket is used the instant it is built, so it has had no idle time
+    // to fill (see RateLimiter): back-to-back calls get the one token a due
+    // bucket lends out and then wait 1/new_tps of a second for the next.
     EXPECT_TRUE(trace_sampler.isNewSampled()) << "First new call should be allowed";
 
     for (int i = 0; i < 5; ++i) {

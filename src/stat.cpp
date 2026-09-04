@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
@@ -389,7 +390,16 @@ namespace pinpoint {
 
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-        const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_);
+        // Clamped because this is wall time: an NTP correction or an operator
+        // setting the date backwards between two collections makes the gap
+        // negative, and it goes on the wire as the window this row's counters
+        // cover. system_clock is still the right source — sample_time_ has to
+        // be wall time, so the gap comes off the same reading rather than a
+        // second, monotonic one, which is also what Java's CollectJob does
+        // with System.currentTimeMillis().
+        const auto period = std::max(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_),
+            std::chrono::milliseconds::zero());
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);

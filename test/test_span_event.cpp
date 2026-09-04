@@ -437,7 +437,10 @@ namespace {
     // same seam for the bucket's own tests).
     class SteppedClockLimiter final : public RateLimiter {
     public:
-        explicit SteppedClockLimiter(uint64_t tps) : RateLimiter(tps) {}
+        // baseline_at puts the bucket on this clock: the base constructor can
+        // only read the real one, since virtual dispatch during construction
+        // does not reach the override below.
+        explicit SteppedClockLimiter(uint64_t tps) : RateLimiter(tps) { baseline_at(now_ns_); }
         void advance_ms(int64_t ms) { now_ns_ += ms * 1000000; }
 
     protected:

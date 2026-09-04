@@ -789,9 +789,15 @@ All three are configured under `Sampling.*` — see the
   Go agents: it holds up to `Throughput` tokens and refills at `Throughput`
   tokens per second, so an idle period buys at most one second of burst. It is
   not a fixed wall-clock window, which would let a spike straddling a second
-  boundary through at twice the configured rate. A freshly built limiter starts
-  empty, so the first transaction after startup or a config reload passes and
-  the rest are paced at the refill interval.
+  boundary through at twice the configured rate.
+
+  A freshly built limiter starts empty and **fills from the moment it is
+  built**, not from its first call, which is what Guava's `SmoothBursty` gives
+  the Java agent. So an agent that idles a second before its first request
+  admits a full `Throughput` burst, while one whose traffic starts immediately
+  admits a single transaction and paces the rest at the refill interval. Either
+  way a burst may exceed the stored tokens by one: a caller that finds the
+  bucket empty with its next token already due takes it, as Guava does.
 
 ### Sampling Best Practices
 

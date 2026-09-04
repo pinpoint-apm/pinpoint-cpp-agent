@@ -79,13 +79,23 @@ that on every pull request and every push to `main`:
 jobs:
   vcpkg:
     runs-on: ubuntu-latest
-    container: pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    # pinpointdocker/pinpoint-cpp-build-env:1.0.0
+    container: pinpointdocker/pinpoint-cpp-build-env@sha256:a477cd49ce...
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - run: pinpoint-vcpkg-build
 ```
+
+The workflow pins the image by digest, not by tag. A tag can be moved onto new
+contents at any time, so pinning to one would leave an old commit building
+against whatever the tag points at today — the opposite of what the pin is
+for. Read the digest of a published tag with
+`docker buildx imagetools inspect pinpointdocker/pinpoint-cpp-build-env:<tag>`,
+and update it in the workflow whenever `vcpkg.json` changes and the image is
+republished. The `docker pull` and `docker run` lines above keep the tag: they
+are for a human at a terminal, who wants the current release.
 
 `push` is restricted to `main` there so a branch in this repository is built
 once by `pull_request` rather than twice, and `concurrency` cancels a run that

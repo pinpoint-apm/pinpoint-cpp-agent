@@ -17,17 +17,19 @@
 #include "limiter.h"
 #include <algorithm>
 #include <chrono>
-#include <limits>
 
 namespace pinpoint {
 
     namespace {
         constexpr int64_t kNanosPerSecond = 1000000000;
 
-        // The bucket has not been used yet: the first allow() starts the clock
-        // and hands out a single token, the state a freshly created Guava
-        // RateLimiter is in.
-        constexpr int64_t kUnused = std::numeric_limits<int64_t>::min();
+        // steady_clock, not system_clock: the bucket must not refill (or stall)
+        // because someone stepped the wall clock. Free function so the
+        // constructor can read the clock without a virtual call.
+        int64_t steady_now_nanos() {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
 
         // Above one token per nanosecond the interval would round to zero, so
         // the rate is clamped there; a limiter that fine is unlimited anyway.
@@ -39,14 +41,16 @@ namespace pinpoint {
     RateLimiter::RateLimiter(const uint64_t tps)
         : interval_(tps == 0 ? 0 : kNanosPerSecond / clamped_tps(tps)),
           burst_(interval_ * clamped_tps(tps)),
-          next_(kUnused) {
+          // An empty bucket whose fill starts now, which is where Guava's
+          // setRate() leaves one. Baselining here rather than on the first
+          // allow() is what lets idle time before that first call count: an
+          // agent quiet for a second owes its first caller a second of tokens,
+          // and treating "never used" as "no time has passed" handed out one.
+          next_(steady_now_nanos()) {
     }
 
     int64_t RateLimiter::now_nanos() const {
-        // steady_clock, not system_clock: the bucket must not refill (or stall)
-        // because someone stepped the wall clock.
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return steady_now_nanos();
     }
 
     bool RateLimiter::allow() {
@@ -68,7 +72,7 @@ namespace pinpoint {
             // bucket at exactly tps tokens - the refill cannot be applied
             // twice because the CAS below publishes the consumed state from
             // the same value it was computed on.
-            const auto refilled = next == kUnused ? now : std::max(next, now - burst_);
+            const auto refilled = std::max(next, now - burst_);
             if (refilled > now) {
                 // The next token is not due yet.
                 return false;
