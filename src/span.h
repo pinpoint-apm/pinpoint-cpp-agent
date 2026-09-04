@@ -177,8 +177,8 @@ namespace pinpoint {
         }
         void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
-        void setErr(int err) { err_ = err; }
-        int getErr() const { return err_; }
+        void setErr(int err) { err_.store(err, std::memory_order_relaxed); }
+        int getErr() const { return err_.load(std::memory_order_relaxed); }
 
         void setErrorFuncId(int32_t error_func_id) { error_func_id_ = error_func_id; }
         int32_t getErrorFuncId() const { return error_func_id_; }
@@ -294,7 +294,11 @@ namespace pinpoint {
 
         int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
         int flags_{SPAN_FLAG_NONE};
-        int err_{SPAN_ERR_NONE};
+        // The one field of a trace root that a foreign thread writes: an async
+        // child marks its parent's error flag (SpanImpl::traceRootData), and
+        // that can race a gRPC worker already serializing the root's PSpan.
+        // Relaxed is enough — the flag carries no other state with it.
+        std::atomic<int> err_{SPAN_ERR_NONE};
         int32_t error_func_id_{};
         std::string error_string_;
 
@@ -535,6 +539,15 @@ namespace pinpoint {
             // even when a config reload lands mid-span.
             std::shared_ptr<const Config> config_;
             std::shared_ptr<SpanData> data_;
+            // The SpanData holding this trace's shared error flag. Null on a
+            // trace root, where it is data_ itself; NewAsyncSpan points an
+            // async child at its spawner's root, so a chain of async spans all
+            // resolve to the same one. Held by shared_ptr because a child
+            // routinely outlives the root span object.
+            std::shared_ptr<SpanData> trace_root_data_;
+            SpanData& traceRootData() const {
+                return trace_root_data_ ? *trace_root_data_ : *data_;
+            }
             std::atomic<bool> finished_;
             // Registration in the active-request registry (see active_span.h):
             // linked by extractContext, unlinked by EndSpan; the destructor and
@@ -568,7 +581,16 @@ namespace pinpoint {
             // Single point that flips SpanData::err_: span-level SetError,
             // 5xx status codes, and SpanEventImpl::SetError all route here
             // (Java ORs every recordException into the shared errorCode).
-            void markSpanError() { data_->setErr(1); }
+            //
+            // The flag lands on the TRACE ROOT, not on this span: only the
+            // root's PSpan carries err on the wire (a span chunk has no such
+            // field), so an error recorded on an async child would otherwise
+            // reach neither the collector nor the URL stat. This is Java's
+            // TraceRoot.getShared().maskErrorCode(). A child that ends after
+            // the root already flushed its final chunk marks the flag too late
+            // to be sent — the same limit Java has, since both serialize the
+            // PSpan once, at root end.
+            void markSpanError() { traceRootData().setErr(1); }
             // The overload both SetError paths use, so the Span.IgnoreErrors
             // filter is applied in exactly one place. A status code carries
             // no error name or message, so SetStatusCode keeps the plain
@@ -601,16 +623,16 @@ namespace pinpoint {
             // Sql.ErrorCount SQL statements is marked failed, which is how an
             // N+1 query pattern surfaces in the UI. An already-failed
             // transaction is skipped (Java's shared.getErrorCode() != 0
-            // guard), so the counter stops once anything else failed the span.
-            // Counted per span, where Java counts per trace root: a C++ async
-            // span is an independent SpanImpl with its own SpanData, so its
-            // statements are not charged to the span that spawned it.
+            // guard), so the counter stops once anything else failed it.
+            // The count itself is per span where Java counts per trace root —
+            // an async child has its own sql_count_ — but the failure it
+            // raises lands on the trace root like every other error.
             // markSpanError() without a name deliberately bypasses
             // Span.IgnoreErrors, like SetStatusCode - there is no throwable to
             // match a rule against.
             void countSqlExecution() {
                 const auto limit = config_->sql.error_count;
-                if (limit <= 0 || data_->getErr() != SPAN_ERR_NONE) {
+                if (limit <= 0 || traceRootData().getErr() != SPAN_ERR_NONE) {
                     return;
                 }
                 if (++sql_count_ >= limit) {

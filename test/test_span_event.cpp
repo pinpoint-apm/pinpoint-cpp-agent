@@ -856,7 +856,7 @@ TEST_F(SpanEventTest, SqlCountZeroDisablesMarking) {
         << "0 is Java's profiler.sql.error.enable=false";
 }
 
-TEST_F(SpanEventTest, SqlCountIsNotChargedToTheAsyncParent) {
+TEST_F(SpanEventTest, SqlCountOnAnAsyncSpanFailsTheTraceRoot) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 2;
     applyConfigToFreshSpan(config);
@@ -870,10 +870,14 @@ TEST_F(SpanEventTest, SqlCountIsNotChargedToTheAsyncParent) {
     ASSERT_NE(async_impl, nullptr);
 
     run_sql_statements(*async_impl, 2);
-    EXPECT_EQ(async_impl->getSpanData()->getErr(), 1)
-        << "The async span counts its own statements";
-    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
-        << "and they are not charged to the span that spawned it";
+    // The statements are still counted per span (Java counts them per trace
+    // root), but the failure they raise goes where the wire can carry it: an
+    // async span is serialized as a chunk, which has no err field, so a flag
+    // left on the child's own SpanData never reaches the collector.
+    EXPECT_EQ(test_span_data_->getErr(), 1)
+        << "An async span's SQL overflow must fail the trace root";
+    EXPECT_EQ(async_impl->getSpanData()->getErr(), SPAN_ERR_NONE)
+        << "and the flag lives on the root only, not on the child too";
 }
 
 TEST_F(SpanEventTest, SetSqlQueryBasicTest) {

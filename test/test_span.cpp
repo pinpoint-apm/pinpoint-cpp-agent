@@ -1988,6 +1988,110 @@ TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     EXPECT_EQ(stats.begin()->second.fail.total(), 10) << "failed histogram must count the event-only error";
 }
 
+// The async counterpart of the test above, and a regression guard: an error
+// recorded on an async child must fail the root transaction. An async span is
+// serialized as a span chunk, which has no err field on the wire, so a flag
+// left on the child's own SpanData reached neither PSpan.err nor the URL stat.
+TEST_F(SpanTest, AsyncSpanEventSetErrorMarksRootSpanAndUrlStatFailedTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    auto base_event = span.NewSpanEvent("spawn-async");
+    auto async_span = span.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+
+    auto async_event = async_span->NewSpanEvent("db-query");
+    ASSERT_NE(async_event, nullptr);
+    async_event->SetError("SQLException", "connection refused");
+    async_event->EndEvent();
+    async_span->EndSpan();
+
+    base_event->EndEvent();
+    span.EndSpan();
+
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "an async child's error must fail the root's URL stat";
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    google::protobuf::Arena async_arena;
+    auto* root_pspan = build_grpc_span(
+        std::move(mock_agent_service_->recorded_spans_.back()), &async_arena);
+    ASSERT_NE(root_pspan, nullptr);
+    EXPECT_EQ(root_pspan->err(), 1)
+        << "an async child's error must set the root PSpan.err";
+}
+
+// The real async shape: the child records its error on a worker thread and the
+// root ends on the owning thread. The join orders the two here, which is why
+// the assertion is deterministic; the shared flag is atomic because production
+// callers have no such ordering (see SpanData::err_).
+TEST_F(SpanTest, AsyncSpanErrorOnWorkerThreadFailsTheRootTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+
+    auto base_event = span.NewSpanEvent("spawn-async");
+    auto async_span = span.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+
+    std::thread worker([&]() {
+        auto se = async_span->NewSpanEvent("db-query");
+        ASSERT_NE(se, nullptr);
+        se->SetError("SQLException", "connection refused");
+        se->EndEvent();
+        async_span->EndSpan();
+    });
+    worker.join();
+
+    base_event->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    google::protobuf::Arena worker_arena;
+    auto* root_pspan = build_grpc_span(
+        std::move(mock_agent_service_->recorded_spans_.back()), &worker_arena);
+    ASSERT_NE(root_pspan, nullptr);
+    EXPECT_EQ(root_pspan->err(), 1)
+        << "an error recorded on the worker thread must fail the root";
+}
+
+// The error flag is shared down a whole chain of async spans, not just one
+// level: a grandchild's error must still reach the trace root.
+TEST_F(SpanTest, NestedAsyncSpanErrorReachesTraceRootTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+
+    auto base_event = span.NewSpanEvent("spawn-async");
+    auto child = span.NewAsyncSpan("async-child");
+    ASSERT_NE(child, nullptr);
+    auto child_event = child->NewSpanEvent("spawn-grandchild");
+    ASSERT_NE(child_event, nullptr);
+    auto grandchild = child->NewAsyncSpan("async-grandchild");
+    ASSERT_NE(grandchild, nullptr);
+
+    auto leaf = grandchild->NewSpanEvent("db-query");
+    ASSERT_NE(leaf, nullptr);
+    leaf->SetError("SQLException", "connection refused");
+    leaf->EndEvent();
+    grandchild->EndSpan();
+    child_event->EndEvent();
+    child->EndSpan();
+    base_event->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    google::protobuf::Arena nested_arena;
+    auto* root_pspan = build_grpc_span(
+        std::move(mock_agent_service_->recorded_spans_.back()), &nested_arena);
+    ASSERT_NE(root_pspan, nullptr);
+    EXPECT_EQ(root_pspan->err(), 1)
+        << "a nested async error must reach the trace root";
+}
+
 // ========== Span.IgnoreErrors Tests ==========
 
 namespace {

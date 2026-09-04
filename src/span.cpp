@@ -618,6 +618,9 @@ namespace pinpoint {
 
         async_span->data_->setTraceId(data_->getTraceId());
         async_span->data_->setSpanId(data_->getSpanId());
+        // An error on the child fails the whole transaction, and only the
+        // root's PSpan carries that flag — see markSpanError.
+        async_span->trace_root_data_ = trace_root_data_ ? trace_root_data_ : data_;
 
         if (se->getAsyncId() == NONE_ASYNC_ID) {
             int32_t async_id;
@@ -653,6 +656,8 @@ namespace pinpoint {
         async_span->data_->setSpanId(data_->getSpanId());
         async_span->data_->setAsyncId(async_id);
         async_span->data_->setAsyncSequence(async_sequence);
+        // As in the overload above: the error flag lives on the trace root.
+        async_span->trace_root_data_ = trace_root_data_ ? trace_root_data_ : data_;
 
         auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), "");
         auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
@@ -800,9 +805,12 @@ namespace pinpoint {
         url_stat_->end_time_ = data_->getEndTime();
         url_stat_->elapsed_ = data_->getElapsed();
         // A span-event exception (DB/external call) fails the transaction too,
-        // matching Java's URI stat status = (errorCode == 0).
+        // matching Java's URI stat status = (errorCode == 0). Read through the
+        // trace root — only spans that own a url_stat_ get here, so this is
+        // data_ itself, but the flag's home is the root either way and an
+        // async child that ended first has already marked it.
         url_stat_->failed_ = isStatusFail(url_stat_->status_code_) ||
-                             data_->getErr() != SPAN_ERR_NONE;
+                             traceRootData().getErr() != SPAN_ERR_NONE;
         agent_->recordUrlStat(std::move(*url_stat_), *config_);
         url_stat_.reset();
     }
