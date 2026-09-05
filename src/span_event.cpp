@@ -79,19 +79,23 @@ namespace pinpoint {
             // BindValueUtils.bindValueToString: values are joined with ", "
             // and a dropped tail is reported as "...(<number of bind values>)"
             // — the count, not the byte limit, so the reader can tell how many
-            // values the statement had. This string is display-only (the
-            // SQL_BINDVALUE annotation); the placeholders the web substitutes
-            // come from the normalizer's parameters, which keep their own
-            // separator.
+            // values the statement had. A value abbreviated below carries the
+            // same "...(N)" shape but a different N: there it is that value's
+            // own original length (StringUtils.abbreviate), not a count of
+            // values. This string is display-only (the SQL_BINDVALUE
+            // annotation); the placeholders the web substitutes come from the
+            // normalizer's parameters, which keep their own separator.
             constexpr std::string_view kSeparator = ", ";
             // Room for the "...(<bind arg count>)" marker: 5 punctuation
             // chars plus at most 20 digits of a size_t.
             constexpr std::size_t kTruncationSuffixMax = 25;
 
-            // The output never exceeds max_size plus a separator and the
-            // marker. Reserve that up front, capped so a large configured
-            // limit does not allocate more than a typical bind list needs;
-            // the rest is left to the string's geometric growth.
+            // max_size is a budget, not a hard cap: the value that spends
+            // the last of it is abbreviated rather than dropped, so the
+            // output can reach roughly twice max_size plus the markers.
+            // Reserve only the common single-budget case, capped so a large
+            // configured limit does not allocate more than a typical bind
+            // list needs; the rest is left to geometric growth.
             constexpr std::size_t kMaxInitialReserve = 256;
             joined_bind_args.reserve(std::min(max_size, kMaxInitialReserve) +
                                      kSeparator.size() + kTruncationSuffixMax);
@@ -105,13 +109,22 @@ namespace pinpoint {
                 if (i != 0) {
                     joined_bind_args.append(kSeparator);
                 }
-                if (joined_bind_args.size() >= max_size ||
-                    arg.size() > max_size - joined_bind_args.size()) {
+                if (joined_bind_args.size() >= max_size) {
                     fmt::format_to(std::back_inserter(joined_bind_args),
                                    "...({})", bind_args.size());
                     break;
                 }
-                joined_bind_args.append(arg);
+                if (arg.size() > max_size - joined_bind_args.size()) {
+                    // Java keeps the head of a value that outruns the budget
+                    // (StringUtils.appendAbbreviate) instead of dropping it,
+                    // so a bind larger than the whole budget — a JSON blob, a
+                    // CLOB, base64 — still leaves something to debug with.
+                    // The next round sees the budget spent and closes the
+                    // join with the count marker.
+                    joined_bind_args.append(abbreviateString(arg, max_size));
+                } else {
+                    joined_bind_args.append(arg);
+                }
             }
             return joined_bind_args;
         }

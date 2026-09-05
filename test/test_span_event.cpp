@@ -1083,16 +1083,40 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   at_limit_annotations.front().second.data).stringValue2,
               "1234");
 
-    // The marker names the number of bind values, like Java's
-    // BindValueUtils.appendLength(sb, bindValueArray.length) — not the byte
-    // limit that stopped the join.
+    // A value too big for the budget keeps its head, like Java's
+    // StringUtils.appendAbbreviate — dropping it whole would leave nothing to
+    // debug. This "...(N)" is the value's own length, not a count of values.
     auto over_limit = make_test_span_event(*test_span_, "over-limit");
     over_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"12345"});
     auto& over_limit_annotations = over_limit.getAnnotations()->getAnnotations();
     ASSERT_EQ(over_limit_annotations.size(), 1U);
     EXPECT_EQ(std::get<IntStringStringValue>(
                   over_limit_annotations.front().second.data).stringValue2,
-              "...(1)");
+              "1234...(5)");
+
+    // Java's limit is a budget, not a hard cap: a bind far larger than the
+    // whole budget still contributes its first max_bind_args_size bytes.
+    const std::string oversized(20, 'v');
+    auto oversized_value = make_test_span_event(*test_span_, "oversized");
+    oversized_value.SetSqlQuery("SELECT * FROM users WHERE id = ?",
+                                {oversized});
+    auto& oversized_annotations =
+        oversized_value.getAnnotations()->getAnnotations();
+    ASSERT_EQ(oversized_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  oversized_annotations.front().second.data).stringValue2,
+              "vvvv...(20)");
+
+    // A value that fits, then one that does not: the second is abbreviated in
+    // place and the join ends there, matching Java's bindValueToString.
+    auto mixed = make_test_span_event(*test_span_, "mixed");
+    mixed.SetSqlQuery("SELECT * FROM users WHERE id = ? AND n = ?",
+                      {"1", std::string(11, 'z')});
+    auto& mixed_annotations = mixed.getAnnotations()->getAnnotations();
+    ASSERT_EQ(mixed_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  mixed_annotations.front().second.data).stringValue2,
+              "1, zzzz...(11)");
 
     // Java appends the separator after every value but the last, so a tail
     // dropped after a value that did fit reads "1234, ...(2)".
@@ -1105,6 +1129,40 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
     EXPECT_EQ(std::get<IntStringStringValue>(
                   tail_dropped_annotations.front().second.data).stringValue2,
               "1234, ...(2)");
+}
+
+TEST_F(SpanEventTest, SetSqlQueryAbbreviatesBindValueLikeJava) {
+    // Java's BindValueUtils.bindValueToString abbreviates each value against
+    // the whole limit, so the joined string can exceed it — the limit bounds
+    // the budget, not the output.
+    auto config = std::make_shared<Config>();
+    config->sql.trace_bind_value = true;
+    config->sql.max_bind_args_size = 10;
+    applyConfigToFreshSpan(config);
+
+    auto java_case = make_test_span_event(*test_span_, "java-case");
+    java_case.SetSqlQuery("SELECT * FROM t WHERE a = ? AND b = ?",
+                          {"12345", std::string(11, 'z')});
+    auto& java_annotations = java_case.getAnnotations()->getAnnotations();
+    ASSERT_EQ(java_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  java_annotations.front().second.data).stringValue2,
+              "12345, " + std::string(10, 'z') + "...(11)");
+
+    // The reported case: at the default 1024 budget a 2000-byte JSON or CLOB
+    // bind used to leave "...(1)" and nothing to debug with.
+    config = std::make_shared<Config>();
+    config->sql.trace_bind_value = true;
+    config->sql.max_bind_args_size = 1024;
+    applyConfigToFreshSpan(config);
+
+    auto huge = make_test_span_event(*test_span_, "huge");
+    huge.SetSqlQuery("SELECT * FROM t WHERE doc = ?", {std::string(2000, 'v')});
+    auto& huge_annotations = huge.getAnnotations()->getAnnotations();
+    ASSERT_EQ(huge_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(
+                  huge_annotations.front().second.data).stringValue2,
+              std::string(1024, 'v') + "...(2000)");
 }
 
 TEST_F(SpanEventTest, SetSqlQueryDoesNotTraceBindValueWhenLimitIsZero) {
