@@ -25,7 +25,8 @@ line every 30 seconds while it waits (`still waiting for agent registration
 after ...`). A collector whose **agent port (9991) alone** is unreachable
 therefore produces zero spans even with 9992/9993 open — check that port first
 when the agent looks alive but the UI stays empty. (The Java agent differs here:
-it sends spans while registration retries in the background.)
+it sends spans while registration retries in the background. Why this agent does
+not: [Java Agent Feature Parity Decisions](java_parity.md#tracing-before-agent-registration--declined).)
 
 **A `false` return is a *synchronous* configuration or setup failure** (it never
 throws). Nothing is installed as the global agent, and a later `StartAgent()`

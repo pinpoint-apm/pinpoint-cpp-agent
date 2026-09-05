@@ -1467,8 +1467,10 @@ TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
 TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
 
-    // Config max_event_depth is 64, and max_event_depth is inclusive (Java
-    // DefaultCallStack parity): depth 1..64 are recorded.
+    // Config max_event_depth is 64, and max_event_depth is inclusive: depth
+    // 1..64 are recorded. Java would record 65 (see the note on
+    // is_event_overflow in span.cpp); these expectations pin this agent's
+    // bound, not Java's.
     std::vector<SpanEventPtr> events;
     for (int i = 0; i < 64; i++) {
         auto se = span.NewSpanEvent("event-" + std::to_string(i));
@@ -1492,9 +1494,11 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
-// max_event_depth is an inclusive limit, matching Java DefaultCallStack
-// (isOverflow() compares `maxDepth < index`): MaxEventDepth=3 records events
-// at depth 1, 2 and 3, and only the fourth nesting level is discarded.
+// max_event_depth is an inclusive limit: MaxEventDepth=3 records events at
+// depth 1, 2 and 3, and the fourth nesting level is discarded. Java's
+// DefaultCallStack admits that fourth push (isOverflow() compares
+// `maxDepth < index` against the pre-push count), so this agent is one level
+// shallower; see the note on is_event_overflow in span.cpp.
 TEST_F(SpanTest, SpanImplEventDepthLimitIsInclusiveTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 3;

@@ -334,12 +334,17 @@ namespace pinpoint {
 
     /**
      * @brief Tells whether an event at (depth, sequence) exceeds the per-span
-     * limits, matching Java DefaultCallStack::isOverflow().
+     * limits.
      *
      * `depth` is 1-based (the first event of a span sits at depth 1), so
      * `Span.MaxEventDepth` is inclusive: depth == max is the deepest event
-     * still recorded. Java compares `maxDepth < index` for the same reason;
-     * the sequence side is exclusive there too (`maxSequence <= sequence`).
+     * still recorded. Java's DefaultCallStack::isOverflow() is NOT the same
+     * bound: it compares `maxDepth < index` against the element count taken
+     * *before* the push, so the push at depth max + 1 is still admitted and
+     * recorded. This agent therefore stops one level shallower than Java;
+     * matching it would mean `depth > max + 1` here, which is a behaviour
+     * change and has not been made. The sequence side does match exactly
+     * (`maxSequence <= sequence`: max events either way).
      * Shared by both event entry points so the two cannot drift apart.
      */
     static bool is_event_overflow(const Config& cfg, int32_t depth, int32_t sequence) {

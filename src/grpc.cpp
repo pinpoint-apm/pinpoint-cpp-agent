@@ -1041,12 +1041,13 @@ namespace pinpoint {
             // is a verdict on the request's content (bad id, unsupported field,
             // rejected payload), and the retry would replay the same bytes for
             // the same verdict, so this is dropped like a non-retryable status
-            // rather than retried. Java retries it (GrpcDataSender treats every
-            // non-OK outcome alike) and Go never reads the field at all, so
-            // neither agent is evidence that retrying works. Releasing the
-            // cache entry keeps the recovery path: a later span re-registers
-            // the id and sends a *new* request, which is the only thing that
-            // can produce a different answer.
+            // rather than retried. The Java agent does retry it
+            // (RetryResponseStreamObserver.onNext reschedules the send on a
+            // false PResult.success); diverging from it is deliberate, and the
+            // reasoning lives in doc/java_parity.md. Releasing the cache entry
+            // keeps the recovery path: a later span re-registers the id and
+            // sends a *new* request, which is the only thing that can produce
+            // a different answer.
             if (const auto rejected = meta_reject_reporter_.record()) {
                 LOG_ERROR("drop {} metadata: collector rejected it "
                           "(PResult.success=false), {} ({} rejected in total)",

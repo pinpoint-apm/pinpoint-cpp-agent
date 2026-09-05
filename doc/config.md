@@ -413,11 +413,11 @@ changing them requires an application restart.
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | Per-span limits | `Span.MaxEventDepth`, `Span.MaxEventSequence`, `Span.EventChunkSize` | **Yes** (spans created after the reload) |
 | Ignored errors | `Span.IgnoreErrors` | **Yes** (spans created after the reload) |
-| Callstack capture | `EnableCallstackTrace` | **Yes** |
+| Callstack capture | `EnableCallstackTrace`, `CallstackTraceNewThroughput` | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
-| SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue` | **Yes** |
+| SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Startup-only toggles | `Enable`, `IsContainer` | Accepted into the config, but without effect — both are consumed only at startup (the gRPC workers keep their boot snapshot), so editing them mid-run changes nothing. |
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —
