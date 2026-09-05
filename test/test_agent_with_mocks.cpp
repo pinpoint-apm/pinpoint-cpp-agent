@@ -740,6 +740,61 @@ TEST_F(AgentImplTest, DtorAfterExplicitShutdownDoesNotThrow) {
     });
 }
 
+namespace {
+
+// A GrpcAgent whose registration fails until the test lets it through — the
+// mock stand-in for a collector rejecting AgentInfo (PResult.success=false).
+class RefusingRegisterGrpcAgent : public TestableGrpcAgent {
+public:
+    explicit RefusingRegisterGrpcAgent(std::shared_ptr<const Config> config)
+        : TestableGrpcAgent(std::move(config)) {}
+
+    GrpcRequestStatus registerAgent() override {
+        ++calls_;
+        return accept_ ? SEND_OK : SEND_FAIL;
+    }
+
+    void accept() { accept_ = true; }
+    int calls() const { return calls_; }
+
+private:
+    std::atomic<bool> accept_{false};
+    std::atomic<int> calls_{0};
+};
+
+}  // namespace
+
+// Registration is the precondition for tracing (init_grpc_workers blocks on
+// registerAgentWithRetry): while the collector refuses AgentInfo the agent must
+// stay disabled — spans and stats under an unregistered agent id go nowhere —
+// and must come up on its own once the collector accepts.
+TEST(AgentRegistrationGateTest, StaysDisabledUntilRegistrationSucceeds) {
+    auto cfg = make_test_config();
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+
+    auto refusing_owner = std::make_unique<RefusingRegisterGrpcAgent>(cfg);
+    auto* refusing = refusing_owner.get();
+    refusing->injectMockStubs();
+    auto clients = make_testable_grpc_clients(cfg);
+    auto agent = AgentImpl::createShared(
+        cfg, std::move(refusing_owner), std::move(clients.metadata),
+        std::move(clients.span), std::move(clients.stats));
+    agent->Start();
+
+    // Retried, still refused: no worker start, no enablement.
+    ASSERT_TRUE(wait_for_condition([&] { return refusing->calls() >= 2; }, std::chrono::seconds(3)));
+    EXPECT_FALSE(agent->Enable())
+        << "a refused registration must not enable the agent";
+    EXPECT_FALSE(agent->NewSpan("op", "/rpc")->IsSampled())
+        << "tracing must stay off while registration is refused";
+
+    refusing->accept();
+    EXPECT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)))
+        << "the agent must come up once the collector accepts the registration";
+
+    agent->Shutdown();
+}
+
 TEST_F(AgentImplTest, DoubleShutdownIsNoOp) {
     auto agent = make_test_agent(make_test_config());
     wait_agent_enabled(agent);

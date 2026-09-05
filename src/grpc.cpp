@@ -1805,12 +1805,28 @@ namespace pinpoint {
         set_request_deadline(ctx);
         const grpc::Status status = transport->stub->RequestAgentInfo(&ctx, *agent_info, &reply);
 
-        if (status.ok()) {
-            LOG_INFO("success to register the agent");  
+        if (status.ok() && reply.success()) {
+            last_register_rejected_ = false;
+            LOG_INFO("success to register the agent");
             return SEND_OK;
         }
 
-        LOG_ERROR("failed to register the agent: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+        if (!status.ok()) {
+            last_register_rejected_ = false;
+            LOG_ERROR("failed to register the agent: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+            return SEND_FAIL;
+        }
+
+        // Transport succeeded, the collector answered "no" — the same verdict
+        // GrpcMetadata::process_completed() reads on PResult.success. Unlike a
+        // metadata item, this one is retried rather than dropped: registration
+        // is the precondition for tracing at all (init_grpc_workers blocks on
+        // it), and a rejection can be transient on the collector's side. A
+        // permanent one (wrong appName, unsupported agent id) then retries
+        // forever, which is what the periodic wait line below is for.
+        last_register_rejected_ = true;
+        LOG_WARN("failed to register the agent: collector rejected it (PResult.success=false), {}",
+                 reply.message());
         return SEND_FAIL;
     }
 
@@ -1846,9 +1862,11 @@ namespace pinpoint {
             }
             const auto now = std::chrono::steady_clock::now();
             if (now >= next_log) {
-                LOG_INFO("still waiting for agent registration after {}ms: tracing stays disabled "
+                LOG_INFO("still waiting for agent registration after {}ms ({}): tracing stays disabled "
                          "(NewSpan is a noop and no stats are collected) until the collector accepts AgentInfo",
-                         std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count());
+                         std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count(),
+                         last_register_rejected_ ? "collector rejected the registration, likely permanent"
+                                                 : "collector unreachable or the send failed");
                 next_log = now + tuning_.registration_wait_log_interval;
             }
         }

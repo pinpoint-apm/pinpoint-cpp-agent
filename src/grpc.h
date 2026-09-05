@@ -744,6 +744,13 @@ namespace pinpoint {
         std::thread agent_info_thread_;
         std::mutex agent_info_mutex_;
         std::condition_variable agent_info_cv_;
+        // Which failure the boot retry loop is stuck on, for its periodic wait
+        // line: a rejected registration is an operator's config problem, an
+        // unreachable collector is a network one. Written by registerAgent()
+        // and read by registerAgentWithRetry() on the init thread during boot;
+        // atomic because the scheduler thread also calls registerAgent() once
+        // boot is over.
+        std::atomic<bool> last_register_rejected_{false};
         bool agent_info_running_{false};
         bool agent_info_stop_requested_{false};
         bool server_meta_data_set_{false};

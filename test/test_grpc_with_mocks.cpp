@@ -950,6 +950,24 @@ protected:
 
 // GrpcAgent Tests with Mock Stubs
 
+namespace {
+    // registerAgent() only accepts a registration the collector acknowledged in
+    // the response body, so every "collector accepted it" stub must fill the
+    // out-param — a default-constructed PResult means success=false.
+    v1::PResult accepted_result() {
+        v1::PResult result;
+        result.set_success(true);
+        return result;
+    }
+
+    v1::PResult rejected_result(const std::string& message) {
+        v1::PResult result;
+        result.set_success(false);
+        result.set_message(message);
+        return result;
+    }
+}
+
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSuccessTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
     
@@ -957,7 +975,7 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSuccessTest) {
     
     // Set up expectation for successful agent registration
     EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
-        .WillOnce(Return(grpc::Status::OK));
+        .WillOnce(DoAll(SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
     
     agent.setMockAgentStub(std::move(mock_agent_stub));
     
@@ -972,7 +990,8 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
     v1::PAgentInfo captured_agent_info;
     auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
     EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
-        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info), Return(grpc::Status::OK)));
+        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info),
+                        SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
 
     agent.setMockAgentStub(std::move(mock_agent_stub));
 
@@ -1008,7 +1027,8 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
     v1::PAgentInfo captured_agent_info;
     auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
     EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
-        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info), Return(grpc::Status::OK)));
+        .WillOnce(DoAll(SaveArg<1>(&captured_agent_info),
+                        SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
 
     agent.setMockAgentStub(std::move(mock_agent_stub));
     agent.setServerMetaData("test-server", {"--port=8080", "--worker=4"}, {"libfoo.so", "libbar.so"});
@@ -1061,6 +1081,41 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
     EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
     EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
     EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
+}
+
+// The collector can accept the RPC and still refuse the registration in the
+// response body. That verdict is what GrpcMetadata::process_completed() already
+// reads on every metadata item; registration used to ignore it and report
+// success on transport status alone, which started every worker under an
+// agent id the collector never registered.
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentRejectedByCollectorTest) {
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SetArgPointee<2>(rejected_result("unknown application name")),
+                        Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    EXPECT_EQ(agent.registerAgent(), SEND_FAIL)
+        << "a registration the collector rejected must not count as success";
+}
+
+// A rejection is retried like a transport failure — registration is the
+// precondition for tracing, so the boot loop must keep going and must come up
+// as soon as the collector changes its answer.
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentRecoversAfterRejection) {
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SetArgPointee<2>(rejected_result("collector busy")),
+                        Return(grpc::Status::OK)))
+        .WillOnce(DoAll(SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryRetriesUntilSuccess) {
@@ -1882,9 +1937,9 @@ TEST_F(GrpcMockTest, GrpcAgentMultipleRegisterTest) {
     auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
 
     EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
-        .WillOnce(Return(grpc::Status::OK))
+        .WillOnce(DoAll(SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)))
         .WillOnce(Return(grpc::Status(grpc::StatusCode::ALREADY_EXISTS, "already registered")))
-        .WillOnce(Return(grpc::Status::OK));
+        .WillOnce(DoAll(SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
 
     agent.setMockAgentStub(std::move(mock_agent_stub));
 
@@ -3149,9 +3204,10 @@ TEST_F(GrpcMockTest, GrpcAgentUnaryRequestUsesInjectedDeadline) {
     EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
         .WillOnce(Invoke([&captured_budget](grpc::ClientContext* ctx,
                                             const v1::PAgentInfo&,
-                                            v1::PResult*) {
+                                            v1::PResult* reply) {
             captured_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
                 ctx->deadline() - std::chrono::system_clock::now());
+            reply->set_success(true);
             return grpc::Status::OK;
         }));
     agent.setMockAgentStub(std::move(mock_agent_stub));
@@ -3994,6 +4050,39 @@ TEST_F(GrpcMockTest, GrpcAgentLogsPeriodicallyWhileWaitingForRegistration) {
     }
     // Timing slack: at least half of the ~6 intervals must have been reported.
     EXPECT_GE(LogCapture::count(log, "still waiting for agent registration"), 3u) << log;
+}
+
+// A rejected registration can be permanent (wrong app name, unsupported agent
+// id) and retries forever, so both the per-attempt line and the periodic wait
+// line must say the collector answered rather than that it was unreachable —
+// they point at opposite fixes.
+TEST_F(GrpcMockTest, GrpcAgentRegistrationWaitReportsCollectorRejection) {
+    auto cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.agent_info.send_retry_interval_ms = 10;
+    GrpcClientTuning tuning;
+    tuning.registration_wait_log_interval = std::chrono::milliseconds(50);
+
+    TestableGrpcAgent grpc_agent(mock_agent_service_.get(), tuning);
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    ON_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillByDefault(DoAll(SetArgPointee<2>(rejected_result("unknown application name")),
+                             Return(grpc::Status::OK)));
+    grpc_agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    std::string log;
+    {
+        LogCapture capture;
+        ScopedWorker registrar([this] { mock_agent_service_->setExiting(true); },
+                               [&grpc_agent] { grpc_agent.registerAgentWithRetry(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        mock_agent_service_->setExiting(true);
+        registrar.join();
+        log = capture.text();
+    }
+    EXPECT_NE(log.find("collector rejected it (PResult.success=false)"), std::string::npos) << log;
+    EXPECT_NE(log.find("unknown application name"), std::string::npos) << log;
+    EXPECT_NE(log.find("collector rejected the registration"), std::string::npos) << log;
+    EXPECT_EQ(log.find("collector unreachable"), std::string::npos) << log;
 }
 
 } // namespace pinpoint
