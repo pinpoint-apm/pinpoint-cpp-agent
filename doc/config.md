@@ -241,7 +241,7 @@ The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, 
 | YAML Key | Environment Variable | Type | Default | Range / Notes |
 |---|---|---|---|---|
 | `Span.QueueSize` | `PINPOINT_CPP_SPAN_QUEUE_SIZE` | int | `1024` | Valid range: `1`-`65536`. |
-| `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. |
+| `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. The allowance is **`MaxEventDepth + 1` nesting levels**, not `MaxEventDepth`: the limit is compared against the events already on the stack, so the event landing one level past it is still recorded and the next one overflows. Mirrors the Java agent's `profiler.callstack.max.depth` (`DefaultCallStack.isOverflow()` compares `maxDepth < index`), including the min-2 clamp. |
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
 | `Span.IgnoreErrors` | `PINPOINT_CPP_SPAN_IGNORE_ERRORS` | list of `{ Name, MessageContains }` | empty | Errors matching a rule are still reported (`exceptionInfo`) but do not mark the transaction as failed. See below. |

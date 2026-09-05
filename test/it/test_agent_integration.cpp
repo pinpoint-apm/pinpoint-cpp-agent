@@ -2933,7 +2933,8 @@ TEST_F(AgentIntegrationTest, RecordsUrlStatsForUnsampledSpan) {
 
 TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
     // Uses the smallest limits Config accepts (depth >= 2, sequence >= 4) so
-    // the overflow paths are reachable with a handful of events.
+    // the overflow paths are reachable with a handful of events. MaxEventDepth
+    // allows max + 1 nesting levels, so depth 2 means three real levels.
     cfg_.max_event_depth = 2;
     cfg_.max_event_sequence = 4;
     ASSERT_NO_FATAL_FAILURE(StartStack());
@@ -2950,11 +2951,13 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
     real_event->SetDestination("depth-destination");
     auto* nested_event = span->NewSpanEvent("depth.level2");
     ASSERT_NE(nested_event, nullptr);
+    auto* deepest_event = span->NewSpanEvent("depth.level3");
+    ASSERT_NE(deepest_event, nullptr);
 
-    // MaxEventDepth is an inclusive limit (Java DefaultCallStack parity), so
-    // depth 1 and 2 are recorded and only this third nesting level overflows
+    // MaxEventDepth allows max + 1 levels (Java DefaultCallStack parity), so
+    // depth 1..3 are recorded and only this fourth nesting level overflows
     // into the shared disabled event that records nothing.
-    auto* overflowed = span->NewSpanEvent("depth.level3.discarded");
+    auto* overflowed = span->NewSpanEvent("depth.level4.discarded");
     ASSERT_NE(overflowed, nullptr);
     overflowed->SetDestination("discarded-destination");
     EXPECT_EQ(span->GetSpanEvent(), overflowed);
@@ -2979,6 +2982,7 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
 
     // Ending the overflowed placeholder must not desync the event stack.
     overflowed->EndEvent();
+    deepest_event->EndEvent();
     nested_event->EndEvent();
     real_event->EndEvent();
     span->EndSpan();
@@ -3002,16 +3006,23 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
         return find_span_by_rpc(snapshot, "/overflow-depth").has_value() &&
                find_span_by_rpc(snapshot, "/overflow-continued").has_value() &&
                find_span_by_rpc(snapshot, "/overflow-sequence").has_value() &&
-               events_for_span(snapshot, span_id).size() >= 2 &&
+               events_for_span(snapshot, span_id).size() >= 3 &&
                events_for_span(snapshot, sequence_span_id).size() >= 4;
     }, kWaitTimeout));
 
     const auto snapshot = collector_.snapshot();
     const auto depth_events = events_for_span(snapshot, span_id);
-    ASSERT_EQ(depth_events.size(), 2U)
-        << "depth 1 and 2 are recorded; only the third nesting level is dropped";
-    ASSERT_TRUE(depth_events[0].has_nextevent());
-    EXPECT_EQ(depth_events[0].nextevent().messageevent().destinationid(),
+    ASSERT_EQ(depth_events.size(), 3U)
+        << "depth 1..3 are recorded; only the fourth nesting level is dropped";
+    // Found by content, not by index: with EventChunkSize=2 these three events
+    // arrive split across a SpanChunk and the final PSpan, so their order in
+    // the flattened list is a property of the chunking, not of this test.
+    const auto with_destination = std::find_if(
+        depth_events.begin(), depth_events.end(),
+        [](const auto& event) { return event.has_nextevent(); });
+    ASSERT_NE(with_destination, depth_events.end())
+        << "the recorded event that set a destination is missing";
+    EXPECT_EQ(with_destination->nextevent().messageevent().destinationid(),
               "depth-destination");
 
     EXPECT_EQ(events_for_span(snapshot, sequence_span_id).size(), 4U);

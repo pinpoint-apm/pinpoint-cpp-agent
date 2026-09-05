@@ -334,21 +334,21 @@ namespace pinpoint {
 
     /**
      * @brief Tells whether an event at (depth, sequence) exceeds the per-span
-     * limits.
+     * limits, matching Java DefaultCallStack::isOverflow().
      *
      * `depth` is 1-based (the first event of a span sits at depth 1), so
-     * `Span.MaxEventDepth` is inclusive: depth == max is the deepest event
-     * still recorded. Java's DefaultCallStack::isOverflow() is NOT the same
-     * bound: it compares `maxDepth < index` against the element count taken
-     * *before* the push, so the push at depth max + 1 is still admitted and
-     * recorded. This agent therefore stops one level shallower than Java;
-     * matching it would mean `depth > max + 1` here, which is a behaviour
-     * change and has not been made. The sequence side does match exactly
-     * (`maxSequence <= sequence`: max events either way).
+     * `depth - 1` is how many events were already on the stack — exactly the
+     * `index` Java compares in `maxDepth < index`, which it evaluates before
+     * the push. `Span.MaxEventDepth` is therefore an allowance of `max + 1`
+     * nesting levels on both agents: `MaxEventDepth: 3` records depth 1..4.
+     * Written as `depth - 1 > max` rather than the equivalent `depth > max + 1`
+     * because an unlimited MaxEventDepth (-1) is normalized to INT32_MAX, and
+     * `max + 1` would then overflow. The sequence side is exclusive on both
+     * (`maxSequence <= sequence`: exactly max events).
      * Shared by both event entry points so the two cannot drift apart.
      */
     static bool is_event_overflow(const Config& cfg, int32_t depth, int32_t sequence) {
-        return depth > cfg.span.max_event_depth || sequence >= cfg.span.max_event_sequence;
+        return depth - 1 > cfg.span.max_event_depth || sequence >= cfg.span.max_event_sequence;
     }
 
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {

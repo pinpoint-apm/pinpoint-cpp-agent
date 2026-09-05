@@ -162,7 +162,7 @@ echo "Span limits, SQL metadata, and expected HTTP error"
 http_request GET "$BASE_URL/deep?depth=32&inject=1"
 assert_status "deep span-event limit" 200
 assert_contains "deep response" 'depth=32'
-# Past MaxEventDepth the events are the span's shared overflow event, which is
+# Past the depth allowance the events are the span's shared overflow event, which is
 # never recorded. A call made from that depth must still carry a full context.
 assert_contains "overflowed event injects context" 'overflow_context=true'
 http_request GET "$BASE_URL/wide?width=256"

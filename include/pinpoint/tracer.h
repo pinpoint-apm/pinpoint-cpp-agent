@@ -272,7 +272,13 @@ namespace pinpoint {
         std::string application_name;
         int32_t application_type = APP_TYPE_CPP;
         std::string service_name;
+        /// Resolved Span.MaxEventDepth. A binding layer computing event
+        /// positions itself must remember that the allowance is
+        /// max_event_depth + 1 nesting levels (Java DefaultCallStack parity):
+        /// the limit is compared against the events already on the stack.
         int32_t max_event_depth = 0;
+        /// Resolved Span.MaxEventSequence, and here the count is exact:
+        /// max_event_sequence events are recorded per span.
         int32_t max_event_sequence = 0;
         std::array<std::vector<std::string>, 3> http_server_headers;
         std::array<std::vector<std::string>, 3> http_client_headers;
