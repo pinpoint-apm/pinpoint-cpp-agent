@@ -54,6 +54,8 @@ namespace pinpoint {
     }
 
     bool RateLimiter::allow() {
+        // tps == 0: no tokens are ever issued. See interval_'s declaration for
+        // why this is reject-all rather than the config layer's "0 = unlimited".
         if (interval_ == 0) {
             return false;
         }

@@ -177,11 +177,13 @@ TEST_F(SamplingTest, PercentSamplerOutOfRangeRateClampTest) {
     }
 }
 
-// Regression: 0.29% must round to 29/10000, not truncate to 28.
-// 0.29 * 100 is 28.999999999999996 in double; a plain int cast would give 28.
-// The percent sampler is deterministic and gcd(29, 10000) == 1, so over exactly
-// MAX_PERCENT_RATE calls it samples true exactly rate_ times.
-TEST_F(SamplingTest, PercentSamplerRoundsFractionalRateTest) {
+// Cross-agent parity: 0.29% must truncate to 28/10000, like Java's
+// PercentSamplerFactory (`(long) (samplingRateDouble * MULTIPLIER)`) and Go's
+// `uint64(percent * 100)`, not round to 29 — 0.29 * 100 is 28.999999999999996
+// in double. The percent sampler is deterministic and the counter advances by
+// rate_ per call, so over exactly MAX_PERCENT_RATE calls it wraps a whole
+// number of times and samples true exactly rate_ times.
+TEST_F(SamplingTest, PercentSamplerTruncatesFractionalRateTest) {
     PercentSampler sampler(0.29);
 
     int true_count = 0;
@@ -191,26 +193,30 @@ TEST_F(SamplingTest, PercentSamplerRoundsFractionalRateTest) {
         }
     }
 
-    EXPECT_EQ(true_count, 29)
-        << "0.29% should sample exactly 29 per " << MAX_PERCENT_RATE
-        << " (rounded), not 28 (truncated)";
+    EXPECT_EQ(true_count, 28)
+        << "0.29% should sample exactly 28 per " << MAX_PERCENT_RATE
+        << " (truncated, as Java and Go do), not 29 (rounded)";
 }
 
-// The rounding boundary cuts both ways: a positive, in-range rate small enough to
-// round to zero hundredths-of-a-percent is SILENTLY disabled. lround(0.004*100)=0,
-// so rate_ becomes 0 and the <= 0 guard makes it never sample — a trap that plain
-// [0,100] config validation does not catch. Just above the boundary it re-enables:
-// lround(0.006*100)=1.
-TEST_F(SamplingTest, PercentSamplerTinyRateRoundsToDisabledTest) {
-    PercentSampler rounds_to_zero(0.004);  // 0.4 hundredths -> rounds to 0
-    for (int i = 0; i < 200; ++i) {
-        EXPECT_FALSE(rounds_to_zero.isSampled())
-            << "Call " << i << ": a rate rounding to 0 must never sample";
+// Truncation disables every rate below one hundredth-of-a-percent — including
+// 0.006, which the previous rounding kept alive at 1/MAX_PERCENT_RATE. Nothing
+// the config accepts lands there: make_config() raises a non-negative
+// PercentRate below 0.01 up to 0.01, and 0.01 * 100 is exactly 1.0, so the
+// lowest accepted rate still samples. Only a rate constructed directly, past
+// that validation, can truncate to disabled.
+TEST_F(SamplingTest, PercentSamplerTruncatesSubHundredthRateToDisabledTest) {
+    for (const double rate : {0.004, 0.006, 0.009}) {
+        PercentSampler truncates_to_zero(rate);
+        for (int i = 0; i < 200; ++i) {
+            ASSERT_FALSE(truncates_to_zero.isSampled())
+                << "Rate " << rate << " call " << i
+                << ": a rate truncating to 0 must never sample";
+        }
     }
 
-    // 0.006% rounds up to 1 hundredth-of-a-percent and samples exactly once per
-    // MAX_PERCENT_RATE (the sampler is deterministic, gcd(1, MAX)==1).
-    PercentSampler smallest_enabled(0.006);
+    // 0.01% is the config minimum and stays enabled, sampling exactly once per
+    // MAX_PERCENT_RATE.
+    PercentSampler smallest_enabled(0.01);
     int true_count = 0;
     for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
         if (smallest_enabled.isSampled()) {
@@ -218,18 +224,29 @@ TEST_F(SamplingTest, PercentSamplerTinyRateRoundsToDisabledTest) {
         }
     }
     EXPECT_EQ(true_count, 1)
-        << "0.006% should round up to 1/" << MAX_PERCENT_RATE << " and stay enabled";
+        << "0.01% (the config minimum) should stay enabled at 1/" << MAX_PERCENT_RATE;
 }
 
-// The upper rounding edge turns a sub-100% rate into unconditional sampling:
-// lround(99.999*100)=10000=MAX_PERCENT_RATE, which isSampled() short-circuits to
-// always-sample (Java routes that rate to TrueSampler instead). Distinct from the
-// clamp branch, which only fires for clearly out-of-range inputs (e.g. 250.0).
-TEST_F(SamplingTest, PercentSamplerNearFullRateRoundsUpToAlwaysSampleTest) {
-    PercentSampler sampler(99.999);
+// The upper edge truncates too: 99.999 * 100 is 9999.9, so rate_ is 9999 and the
+// sampler misses exactly one call per MAX_PERCENT_RATE instead of short-circuiting
+// to always-sample. Java agrees — PercentSamplerFactory hands off to TrueSampler
+// only at MAX_PERCENT_RATE, which 99.999 no longer reaches once truncated. An
+// exact 100 still does.
+TEST_F(SamplingTest, PercentSamplerTruncatesNearFullRateTest) {
+    PercentSampler near_full(99.999);
+    int true_count = 0;
     for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
-        EXPECT_TRUE(sampler.isSampled())
-            << "Call " << i << ": 99.999% must round up to deterministic always-sample";
+        if (near_full.isSampled()) {
+            true_count++;
+        }
+    }
+    EXPECT_EQ(true_count, MAX_PERCENT_RATE - 1)
+        << "99.999% truncates to 9999/" << MAX_PERCENT_RATE << ", not always-sample";
+
+    PercentSampler full(100.0);
+    for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
+        ASSERT_TRUE(full.isSampled())
+            << "Call " << i << ": 100% must be deterministic always-sample";
     }
 }
 

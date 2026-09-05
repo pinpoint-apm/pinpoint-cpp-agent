@@ -27,12 +27,16 @@ namespace pinpoint {
             return false;
         }
 
-        // The pre-increment value is what gets tested, so the counter starts
-        // at 0 and the first request after startup (or a config reload) is
-        // sampled, then every rate_-th one after it. Same phase as Java's
-        // CountingSampler (counter.getAndIncrement()); testing the
-        // post-increment value instead would sample requests N, 2N, ... and
-        // hide the first request on low-traffic or test deployments.
+        // The pre-increment value is what gets tested, so the counter starts at
+        // 0 and the first request after startup is sampled, then every rate_-th
+        // one after it. Same phase as Java's CountingSampler
+        // (counter.getAndIncrement()); testing the post-increment value instead
+        // would sample requests N, 2N, ... and hide the first request on
+        // low-traffic or test deployments.
+        //
+        // A config reload restarts this phase only when it actually changes
+        // Sampling.*: build_runtime() carries the sampler over otherwise,
+        // precisely so an unrelated edit does not re-sample the next request.
         //
         // Pure counter with no cross-thread ordering requirement: relaxed
         // avoids the full barrier the default seq_cst RMW costs on every
@@ -64,7 +68,7 @@ namespace pinpoint {
         // The admission window is (0, rate_], matching Java's PercentRateSampler
         // (`remainder > 0 && remainder <= samplingRate`). Testing [0, rate_)
         // instead samples just as often but shifts the phase by one, so the first
-        // transaction after startup (or a config reload) is never sampled:
+        // transaction after startup (or a Sampling.* reload) is never sampled:
         // `PercentRate: 50` would admit the 2nd, 4th, ... request where Java
         // admits the 1st, 3rd, ... Same reasoning as CounterSampler testing the
         // pre-increment value.

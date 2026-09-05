@@ -301,9 +301,11 @@ namespace pinpoint {
         // shutting_down_ under this lock and refuses to revive a torn-down agent.
         std::mutex lifecycle_mutex_;
 
-        /// @brief Builds a new AgentRuntime for cfg. Every config-derived
-        /// component is built fresh; reloads are rare (an actual config-file
-        /// edit), so nothing is carried over from the previous runtime.
+        /// @brief Builds a new AgentRuntime for cfg. Config-derived components
+        /// are built fresh, except the sampler and the exception-chain limiter,
+        /// which are carried over from the published runtime whenever their
+        /// backing config is unchanged so a reload does not reset their
+        /// counters and token buckets.
         std::shared_ptr<const AgentRuntime> build_runtime(std::shared_ptr<const Config> cfg);
         /// @brief Builds and atomically publishes the runtime for cfg.
         void apply_config(std::shared_ptr<const Config> cfg);

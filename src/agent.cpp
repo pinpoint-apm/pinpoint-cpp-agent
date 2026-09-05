@@ -358,11 +358,17 @@ namespace pinpoint {
 
     std::shared_ptr<const AgentRuntime> AgentImpl::build_runtime(
             std::shared_ptr<const Config> cfg) {
-        // Every component is rebuilt unconditionally. A reload only fires when
-        // the config file's mtime actually changed (see ConfigFileWatcher), so
-        // this runs on operator edits, not on a timer: the cost is one pattern
-        // compile per edit, and the only state discarded is the throughput
-        // sampler's counters, which re-warm within an interval.
+        // Stateless components are rebuilt unconditionally. A reload only fires
+        // when the config file's mtime actually changed (see ConfigFileWatcher),
+        // so this runs on operator edits, not on a timer: the cost is one
+        // pattern compile per edit. The sampler and the exception-chain limiter
+        // are the exception — they carry accumulated state, so they are
+        // carried over whenever their backing config is unchanged (see below).
+        //
+        // Null on the constructor's first call, which builds everything fresh.
+        const auto prev = runtime_.load();
+        const Config* prev_cfg = prev ? prev->config.get() : nullptr;
+
         auto rt = std::make_shared<AgentRuntime>();
         rt->config = std::move(cfg);
         // Not config-derived: every generation shares the same stats sinks,
@@ -373,26 +379,56 @@ namespace pinpoint {
         rt->url_stats = url_stats_;
         const Config& c = *rt->config;
 
-        std::unique_ptr<Sampler> sampler;
-        if (absl::EqualsIgnoreCase(c.sampling.type, PERCENT_SAMPLING)) {
-            sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
+        // Carried over when every Sampling.* key is unchanged, matching Go
+        // (newTraceSampler, gated on sameValues). Rebuilding restarts the
+        // sampler's counter at 0, and the counter is tested pre-increment, so
+        // `CounterRate: 100` would sample the very next request after any
+        // unrelated config edit; the throughput buckets would likewise start
+        // empty and hand out a fresh second of burst. Type is compared
+        // case-insensitively, the way it is resolved below; swapping the
+        // COUNTER/COUNTING aliases still rebuilds, which is rare and harmless.
+        const bool same_sampling =
+            prev_cfg != nullptr &&
+            absl::EqualsIgnoreCase(prev_cfg->sampling.type, c.sampling.type) &&
+            prev_cfg->sampling.counter_rate == c.sampling.counter_rate &&
+            prev_cfg->sampling.percent_rate == c.sampling.percent_rate &&
+            prev_cfg->sampling.new_throughput == c.sampling.new_throughput &&
+            prev_cfg->sampling.cont_throughput == c.sampling.cont_throughput;
+
+        if (same_sampling) {
+            rt->sampler = prev->sampler;
         } else {
-            sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
+            std::unique_ptr<Sampler> sampler;
+            if (absl::EqualsIgnoreCase(c.sampling.type, PERCENT_SAMPLING)) {
+                sampler = std::make_unique<PercentSampler>(c.sampling.percent_rate);
+            } else {
+                sampler = std::make_unique<CounterSampler>(c.sampling.counter_rate);
+            }
+            // Non-positive throughput creates no limiter, so the default config
+            // gets the plain pass-through sampler.
+            rt->sampler = std::make_shared<TraceSampler>(this, std::move(sampler),
+                                                         c.sampling.new_throughput,
+                                                         c.sampling.cont_throughput);
         }
-        // Non-positive throughput creates no limiter, so the default config
-        // gets the plain pass-through sampler.
-        rt->sampler = std::make_shared<TraceSampler>(this, std::move(sampler),
-                                                     c.sampling.new_throughput,
-                                                     c.sampling.cont_throughput);
 
         // Java's ExceptionChainSampler: an error storm produces one exception
         // metadata per errored span, so new chains are admitted at most
         // CallstackTraceNewThroughput per second and the rest are recorded as
         // plain errors without a call stack. Non-positive is unlimited, null.
-        rt->exception_chain_limiter = c.callstack_trace_new_throughput > 0
-            ? std::make_shared<RateLimiter>(
-                  static_cast<uint64_t>(c.callstack_trace_new_throughput))
-            : nullptr;
+        //
+        // Carried over on an unchanged throughput for the same reason as the
+        // sampler (Go's newExceptionLimiter): a rebuilt bucket is a full second
+        // of exception chains, so a reload during an error storm would lift the
+        // cap it exists to enforce.
+        if (prev_cfg != nullptr &&
+            prev_cfg->callstack_trace_new_throughput == c.callstack_trace_new_throughput) {
+            rt->exception_chain_limiter = prev->exception_chain_limiter;
+        } else {
+            rt->exception_chain_limiter = c.callstack_trace_new_throughput > 0
+                ? std::make_shared<RateLimiter>(
+                      static_cast<uint64_t>(c.callstack_trace_new_throughput))
+                : nullptr;
+        }
 
         // An empty config list means the filter is off, represented as null.
         rt->http_url_filter = c.http.server.exclude_url.empty()

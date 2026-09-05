@@ -72,7 +72,13 @@ namespace pinpoint {
         void baseline_at(int64_t now_ns) { next_.store(now_ns, std::memory_order_relaxed); }
 
     private:
-        const int64_t interval_;    // nanoseconds per token; 0 disables the limiter
+        // Nanoseconds per token. 0 only for tps == 0, which allow() rejects
+        // outright: zero tokens per second literally admits nothing, and Guava
+        // and Go's rate.Every() will not build such a limiter at all. Note this
+        // is NOT the config-level "0 = unlimited" of Sampling.*Throughput and
+        // CallstackTraceNewThroughput — the call sites spell unlimited as a
+        // null limiter and never construct RateLimiter(0).
+        const int64_t interval_;
         const int64_t burst_;       // nanoseconds of tokens a full bucket holds (one second)
         std::atomic<int64_t> next_; // arrival time of the next token; the construction time until first use
     };

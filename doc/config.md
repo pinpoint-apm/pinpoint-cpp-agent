@@ -212,18 +212,17 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 
 ### Counter sampling phase
 
-The counter is tested **before** it is incremented, so the first transaction after startup — or after a config reload, which rebuilds the sampler — is always sampled, then every Nth one after it: `CounterRate: 10` samples transactions 1, 11, 21, … This matches the Java agent's `CountingSampler` (`counter.getAndIncrement()`). Sampling the Nth transaction first instead would hide the very first request, which is what a low-traffic service or a manual smoke test usually looks at.
+The counter is tested **before** it is incremented, so the first transaction after startup — or after a config reload that changes `Sampling.*`, which rebuilds the sampler — is always sampled, then every Nth one after it: `CounterRate: 10` samples transactions 1, 11, 21, … This matches the Java agent's `CountingSampler` (`counter.getAndIncrement()`). Sampling the Nth transaction first instead would hide the very first request, which is what a low-traffic service or a manual smoke test usually looks at.
 
-### PercentRate rounding differs from Java and Go, deliberately
+### PercentRate truncates, matching Java and Go
 
-`PercentRate` is stored internally as hundredths of a percent, and the C++ agent **rounds to nearest** (`std::lround`) where the Java and Go agents truncate. A configured `0.29` therefore samples 0.29% here and 0.28% in Java.
+`PercentRate` is stored internally as hundredths of a percent, and the conversion **truncates** — the same `(long) (rate * 100)` the Java agent's `PercentSamplerFactory` does, and the same `uint64(percent * 100)` the Go agent does. A configured `0.29` samples 0.28% in all three.
 
-The divergence is intentional. Java's truncation is not a policy but an artifact of `(long) (rate * 100)` on a `double`: `0.29 * 100` is `28.999999999999996` in IEEE-754, so the cast drops a hundredth. Rounding gives the operator the rate they typed. Nothing depends on the two agents agreeing:
+Truncation is an artifact of IEEE-754, not a policy: `0.29 * 100` is `28.999999999999996`, so the cast drops a hundredth. This agent rounded to nearest for a while, on the argument that it hands the operator back the rate they typed. That was reverted — one configuration file deployed across a polyglot fleet should produce one sampling rate, and a hundredth of a percentage point is not worth being the one agent that disagrees.
 
-- The rate is a purely local admission decision. It is never sent to the collector and never appears on the wire, so there is no server or cross-agent compatibility cost — unlike, say, a trace-ID format.
-- The worst-case difference is one hundredth of a percentage point, which is the resolution of the setting itself (`0.01` is the minimum accepted rate).
+The practical effect is nil for an integer rate (`1.0`, `10.0`, `100.0` are exact) and at most one hundredth of a percentage point otherwise — the resolution of the setting itself, since `0.01` is the minimum accepted rate. `0.01 * 100` is exactly `1.0`, so no rate the config accepts truncates to "never sample".
 
-The *phase* does match Java: the sampler admits on a remainder in `(0, rate]`, like Java's `PercentRateSampler`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup or a config reload is always sampled. `PercentRate: 100` is short-circuited to always-sample, which is where Java uses a separate `TrueSampler`.
+The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, like Java's `PercentRateSampler`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup — or after a config reload that changes `Sampling.*` — is always sampled. `PercentRate: 100` is short-circuited to always-sample, which is where Java uses a separate `TrueSampler`.
 
 ---
 
@@ -419,16 +418,31 @@ the file at every load, not only the first (see
 
 ### What Is Rebuilt
 
-Every config-derived component is rebuilt on **every** reload, whether or not
-its backing configuration changed: the sampler (`Sampling.*`), the URL filter
-(`ExcludeUrl`), the method filter (`ExcludeMethod`), the status error codes
-(`StatusCodeErrors`), and the header recorders (any server- or client-side
-header/cookie list). A reload only fires on an actual file edit, so the cost
-is one pattern compile per edit; the one piece of accumulated state discarded
-is the throughput sampler's token buckets, which start empty and refill to
-their `Throughput` cap over the second that follows the reload (see
-[Instrumentation Guide §11](instrument.md#11-sampling-policy) — the refill runs
-from the rebuild, whether or not anything is calling the limiter).
+Stateless config-derived components are rebuilt on **every** reload, whether or
+not their backing configuration changed: the URL filter (`ExcludeUrl`), the
+method filter (`ExcludeMethod`), the status error codes (`StatusCodeErrors`),
+and the header recorders (any server- or client-side header/cookie list). A
+reload only fires on an actual file edit, so the cost is one pattern compile
+per edit.
+
+The two components that carry accumulated state are **kept** across a reload
+that does not change their configuration:
+
+| Component | Rebuilt when | State it would otherwise lose |
+|---|---|---|
+| Sampler (base + throughput limiters) | any `Sampling.*` value changes | the sampling counter and the throughput token buckets |
+| Exception-chain limiter | `CallstackTraceNewThroughput` changes | the new-chain token bucket |
+
+Without this, saving the config file would restart the sampling counter at 0 —
+and the counter is tested before it is incremented, so the very next request
+after any unrelated edit would be sampled regardless of `CounterRate` — and
+would hand the exception-chain limiter a full second of fresh tokens, lifting
+the cap exactly when an error storm makes an operator most likely to be
+editing the file. When one of these *does* change, the replacement starts
+clean: an empty token bucket that refills to its cap over the second that
+follows (see [Instrumentation Guide §11](instrument.md#11-sampling-policy) —
+the refill runs from the rebuild, whether or not anything is calling the
+limiter). This mirrors the Go agent's `newTraceSampler` / `newExceptionLimiter`.
 
 Rebuilt components are published together in a **single atomic swap**, so
 in-flight requests can never observe a half-applied reload. Each span snapshots

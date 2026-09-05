@@ -1096,6 +1096,94 @@ TEST_F(AgentImplTest, ReloadConfigUpdatesSampling) {
     EXPECT_EQ(config->sampling.counter_rate, 100);
 }
 
+// A reload must not reset the sampler's counter. Rebuilding restarts
+// CounterSampler at 0, and the counter is tested pre-increment, so every
+// unrelated config edit would sample the request right after it — at
+// `CounterRate: 100` an operator who saves the file a few times gets far more
+// than 1% sampling. Go carries the previous instance over on an unchanged
+// Sampling.* (newTraceSampler, gated on sameValues).
+TEST(AgentReloadTest, UnchangedSamplingConfigKeepsSamplerCounterAcrossReloads) {
+    auto cfg = make_test_config();
+    cfg->sampling.counter_rate = 100;
+    auto agent = make_test_agent(cfg);
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
+
+    EXPECT_TRUE(agent->NewSpan("op", "/first")->IsSampled())
+        << "the first request is always sampled (pre-increment counter)";
+    EXPECT_FALSE(agent->NewSpan("op", "/second")->IsSampled());
+
+    // Two reloads that leave Sampling.* alone but do change something else.
+    for (int i = 0; i < 2; ++i) {
+        auto same_sampling = make_test_config();
+        same_sampling->sampling.counter_rate = 100;
+        same_sampling->http.server.exclude_url = {"/excluded"};
+        agent->reloadConfig(same_sampling);
+
+        EXPECT_FALSE(agent->NewSpan("op", "/after-reload")->IsSampled())
+            << "reload " << i << " must not restart the sampling counter";
+    }
+
+    // A real Sampling.* change does rebuild, and the fresh counter samples the
+    // next request.
+    auto changed = make_test_config();
+    changed->sampling.counter_rate = 50;
+    agent->reloadConfig(changed);
+    EXPECT_TRUE(agent->NewSpan("op", "/after-change")->IsSampled())
+        << "a changed CounterRate must rebuild the sampler";
+
+    agent->Shutdown();
+}
+
+// Same contract for the exception-chain limiter (Go's newExceptionLimiter): a
+// rebuilt token bucket is a full second of new chains, so a reload landing in
+// an error storm would lift the cap it exists to enforce.
+TEST(AgentReloadTest, UnchangedCallstackThroughputKeepsExceptionLimiterAcrossReloads) {
+    auto cfg = make_test_config();
+    cfg->enable_callstack_trace = true;
+    cfg->callstack_trace_new_throughput = 1;  // one new chain per second
+    auto agent = make_test_agent(cfg);
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
+
+    MockCallStackReader reader;
+    reader.AddFrame("/lib/app.so", "boom", "/src/boom.cpp", 1);
+
+    const auto record_error = [&reader](const SpanPtr& span) {
+        auto* event = span->NewSpanEvent("op");
+        event->SetError("Boom", "boom", reader);
+        return std::dynamic_pointer_cast<SpanImpl>(span)->getExceptions().size();
+    };
+
+    auto first = agent->NewSpan("op", "/err-1");
+    ASSERT_TRUE(first->IsSampled());
+    ASSERT_EQ(record_error(first), 1u) << "the fresh bucket's one token admits this chain";
+
+    // The bucket refills at 1/s, so the assertions below assume the reload and
+    // the second chain land inside that second — they follow immediately.
+    auto same_throughput = make_test_config();
+    same_throughput->enable_callstack_trace = true;
+    same_throughput->callstack_trace_new_throughput = 1;
+    same_throughput->http.server.exclude_url = {"/excluded"};
+    agent->reloadConfig(same_throughput);
+
+    auto second = agent->NewSpan("op", "/err-2");
+    ASSERT_TRUE(second->IsSampled());
+    EXPECT_EQ(record_error(second), 0u)
+        << "a reload must not refill the exception-chain bucket";
+
+    // Changing the throughput does rebuild it, full.
+    auto changed = make_test_config();
+    changed->enable_callstack_trace = true;
+    changed->callstack_trace_new_throughput = 2;
+    agent->reloadConfig(changed);
+
+    auto third = agent->NewSpan("op", "/err-3");
+    ASSERT_TRUE(third->IsSampled());
+    EXPECT_EQ(record_error(third), 1u)
+        << "a changed CallstackTraceNewThroughput must rebuild the limiter";
+
+    agent->Shutdown();
+}
+
 TEST_F(AgentImplTest, ReloadConfigUpdatesUrlFilter) {
     auto new_cfg = make_test_config();
     new_cfg->http.server.exclude_url = {"/excluded"};

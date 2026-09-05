@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -70,14 +69,20 @@ namespace pinpoint {
     class PercentSampler final : public Sampler {
     public:
         explicit PercentSampler(const double rate) {
-            // Round to nearest hundredth-of-a-percent instead of truncating:
-            // 0.29 * 100 is 28.999999999999996 in double, so a plain cast
-            // would yield 28 and silently sample 0.28% instead of 0.29%.
-            // Clamp to [0, MAX_PERCENT_RATE] so the class stays well-defined
-            // (never-sample / always-sample) even for out-of-range rates that
-            // bypass the config validation.
-            rate_ = static_cast<int>(std::clamp<long>(
-                std::lround(rate * 100), 0, MAX_PERCENT_RATE));
+            // Truncate, like Java's PercentSamplerFactory
+            // (`(long) (samplingRateDouble * MULTIPLIER)`) and Go's
+            // `uint64(percent * 100)`. Truncation loses a hundredth of a
+            // percent to double representation error — 0.29 * 100 is
+            // 28.999999999999996, so 0.29 samples 0.28% — but the same config
+            // producing the same rate in all three agents outranks handing the
+            // operator back the digit they typed. The config minimum (0.01)
+            // still maps to 1, so no accepted rate truncates to disabled.
+            //
+            // Clamping the product (not the result) keeps this defined for
+            // out-of-range rates that bypass the config validation, and leaves
+            // the class well-defined at both ends: never-sample / always-sample.
+            rate_ = static_cast<int>(std::clamp(
+                rate * 100, 0.0, static_cast<double>(MAX_PERCENT_RATE)));
         }
 
         /// @brief Returns `true` deterministically based on the sampling counter and percent rate.
