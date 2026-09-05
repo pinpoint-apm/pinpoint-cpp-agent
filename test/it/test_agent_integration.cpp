@@ -461,6 +461,7 @@ protected:
         int sampling_continue_throughput{0};
         bool url_stat_enable_trim_path{false};
         int url_stat_trim_path_depth{1};
+        int url_stat_limit{1024};
         int max_event_depth{16};
         int max_event_sequence{128};
         int span_queue_size{128};
@@ -593,6 +594,7 @@ protected:
             << (cfg_.url_stat_enable_trim_path ? "true" : "false") << "\n"
             << "  UrlStatTrimPathDepth: " << cfg_.url_stat_trim_path_depth << "\n"
             << "  UrlStatMethodPrefix: true\n"
+            << "  UrlStatLimit: " << cfg_.url_stat_limit << "\n"
             << "  Server:\n"
             << "    StatusCodeErrors: [4xx, 5xx]\n"
             << "    ExcludeUrl: " << cfg_.server_exclude_urls << "\n"
@@ -1763,6 +1765,105 @@ TEST_F(AgentIntegrationTest,
     EXPECT_GE(totals.failed_max_elapsed, 350);
     EXPECT_FALSE(has_uri_stat(snapshot, "GET /api/orders/42/items?debug=1"));
     EXPECT_FALSE(has_uri_stat(snapshot, "GET /api/orders/99/items"));
+}
+
+// A five-minute stat-stream outage, end to end over real gRPC. The tick
+// interval is a fixed 30s in production, so the ten ticks are supplied as
+// synthetic span end times through the live agent's UrlStats rather than by
+// waiting five real minutes; everything downstream of that — tick bucketing,
+// the retention queue, the snapshot swap on the send token, the protobuf
+// encoding and the stream itself — is the production path.
+//
+// Before tick-boundary snapshots, one limit-capped map absorbed the whole
+// outage: the collector would have received url_stat_limit entries in total
+// and every tick after the first would have been starved.
+TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) {
+    constexpr int kLimit = 3;
+    constexpr int kUrlsPerTick = 5;   // more than kLimit, so each tick overflows
+    constexpr int kStalledTicks = 10; // 10 x 30s = the five-minute outage
+    constexpr int64_t kTickMillis = 30000;
+    // Tick-aligned so the expected tick values are exact.
+    constexpr int64_t kBaseMillis = 1700000010000;
+    static_assert(kBaseMillis % kTickMillis == 0, "base must sit on a tick boundary");
+
+    cfg_.url_stat_limit = kLimit;
+    cfg_.url_stat_enable_trim_path = false;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // The stat port stops listening: the stream dies and cannot be reopened,
+    // so no send token can consume a snapshot until the port comes back.
+    ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Stat));
+
+    const auto config = impl_->getConfig();
+    auto& url_stats = impl_->getUrlStats();
+    for (int tick = 0; tick < kStalledTicks; ++tick) {
+        const auto end_time = std::chrono::system_clock::time_point(
+            std::chrono::milliseconds(kBaseMillis + tick * kTickMillis));
+        for (int url = 0; url < kUrlsPerTick; ++url) {
+            UrlStatEntry entry("/stall/tick" + std::to_string(tick) + "/url" +
+                                   std::to_string(url),
+                               "GET", 200);
+            entry.elapsed_ = 10;
+            entry.end_time_ = end_time;
+            url_stats.addSnapshot(&entry, *config);
+        }
+    }
+
+    // Wait for the stat stream to actually reopen before asking for a send:
+    // next_write() takes the snapshot when it consumes the token, so a token
+    // driven into a stream that is still down would discard the whole outage.
+    const auto streams_before = collector_.snapshot().stat_streams.size();
+    ASSERT_TRUE(collector_.StartEndpoint(CollectorEndpoint::Stat));
+    ASSERT_TRUE(collector_.WaitFor([streams_before](const auto& snapshot) {
+        return snapshot.stat_streams.size() > streams_before;
+    }, std::chrono::seconds(20))) << "the stat stream never came back";
+
+    const auto stalled_entries = [](const CollectorSnapshot& snapshot) {
+        std::map<int64_t, std::set<std::string>> by_tick;
+        for (const auto& received : snapshot.stats) {
+            if (!received.message.has_agenturistat()) {
+                continue;
+            }
+            for (const auto& stat : received.message.agenturistat().eachuristat()) {
+                // The fixture enables UrlStatMethodPrefix, so keys read
+                // "GET /stall/tick<n>/url<n>".
+                if (stat.uri().rfind("GET /stall/tick", 0) == 0) {
+                    by_tick[stat.timestamp()].insert(stat.uri());
+                }
+            }
+        }
+        return by_tick;
+    };
+    // Stats are only sent on a token; the agent's own 30s timer would outlast
+    // the test, so drive it the way FlushUrlStatsUntil does.
+    bool delivered = false;
+    for (int attempt = 0; attempt < 20 && !delivered; ++attempt) {
+        impl_->recordStats(URL_STATS);
+        delivered = collector_.WaitFor([&stalled_entries](const auto& snapshot) {
+            return stalled_entries(snapshot).size() >= 5;
+        }, 250ms);
+    }
+    ASSERT_TRUE(delivered) << "retained ticks never reached the collector";
+
+    const auto by_tick = stalled_entries(collector_.snapshot());
+
+    // Four completed ticks are retained plus the one still in progress; the
+    // older six were evicted whole rather than starving the newer ones.
+    ASSERT_EQ(by_tick.size(), 5U);
+    int expected_tick = kStalledTicks - 5;
+    for (const auto& [timestamp, uris] : by_tick) {
+        EXPECT_EQ(timestamp, kBaseMillis + expected_tick * kTickMillis)
+            << "ticks must be reported on the unchanged 30s grid";
+        EXPECT_EQ(uris.size(), static_cast<size_t>(kLimit))
+            << "tick " << timestamp << " must get the full limit, not a share of it";
+        for (const auto& uri : uris) {
+            EXPECT_EQ(uri.rfind("GET /stall/tick" + std::to_string(expected_tick) + "/", 0), 0U)
+                << uri << " was reported under the wrong tick";
+        }
+        ++expected_tick;
+    }
+    EXPECT_FALSE(has_uri_stat(collector_.snapshot(), "GET /stall/tick0/url0"))
+        << "the oldest tick is the one evicted when retention overflows";
 }
 
 TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {
