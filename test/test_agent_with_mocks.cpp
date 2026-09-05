@@ -331,6 +331,35 @@ TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderReturnsNoop) {
     EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
 }
 
+// A present-but-blank Pinpoint-TraceID is not a continued trace. It used to
+// take the continued path — spending a continue-sampler slot and then failing
+// to parse — so the request silently became a noop span and never reached
+// Pinpoint. Java and Go both read a blank header as no header.
+TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdHeaderStartsFreshTrace) {
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+
+    auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a blank trace id must start a fresh sampled trace, not a noop span";
+    EXPECT_FALSE(span->GetTraceId().empty()) << "the fresh trace needs a generated trace id";
+    EXPECT_NE(span->GetSpanId(), 555)
+        << "a fresh trace must not adopt the upstream span id either";
+}
+
+TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdInHeaderMapStartsFreshTrace) {
+    // Same funnel through the map-based creator.
+    std::map<std::string, std::string> headers{
+        {std::string(HEADER_TRACE_ID), ""},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a blank trace id must start a fresh sampled trace, not a noop span";
+    EXPECT_FALSE(span->GetTraceId().empty());
+}
+
 TEST_F(AgentImplTest, RecordSpanDoesNotCrash) {
     auto span_data = make_test_span_data_ptr(*agent_, "test-op");
     auto span_chunk = std::make_unique<SpanChunk>(span_data, true);

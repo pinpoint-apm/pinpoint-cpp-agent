@@ -902,7 +902,16 @@ namespace pinpoint {
             return noopSpan();
         }
 
-        const auto tid = reader.Get(HEADER_TRACE_ID);
+        auto tid = reader.Get(HEADER_TRACE_ID);
+        if (tid.has_value() && tid->empty()) {
+            // A present-but-blank header carries no trace id. Left as-is it
+            // took the continued path: it spent a continue-sampler slot and
+            // then failed to parse, so the request became a noop span and
+            // never appeared in Pinpoint at all. Java and Go both read a blank
+            // header as no header and start a new trace; drop it here so the
+            // sampling decision, the parse and the extract all agree.
+            tid.reset();
+        }
         const bool my_sampling = tid.has_value() ? sampler->isContinueSampled()
                                                  : sampler->isNewSampled();
 
