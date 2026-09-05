@@ -27,20 +27,21 @@ namespace pinpoint {
 class SqlTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Default: comments are kept, like the Java agent.
+        // Default: comments are removed, like the Java agent.
         normalizer_ = std::make_unique<SqlNormalizer>();
-        // Opt-in comment removal (Sql.RemoveComments=true).
-        remove_comments_ = std::make_unique<SqlNormalizer>(2048, true);
+        // Opt-out comment retention (Sql.RemoveComments=false), which
+        // diverges from the Java agent.
+        keep_comments_ = std::make_unique<SqlNormalizer>(2048, false);
     }
 
     void TearDown() override {
         normalizer_.reset();
-        remove_comments_.reset();
+        keep_comments_.reset();
     }
 
 protected:
     std::unique_ptr<SqlNormalizer> normalizer_;
-    std::unique_ptr<SqlNormalizer> remove_comments_;
+    std::unique_ptr<SqlNormalizer> keep_comments_;
 };
 
 static std::vector<std::string> ParseOutputParameter(std::string_view output_params) {
@@ -315,29 +316,52 @@ TEST_F(SqlTest, MixedParametersTest) {
 
 // ========== Comment Removal Tests ==========
 
+// The default is comment removal, matching the Java agent: DefaultJdbcOption
+// initializes removeComments to true and its profiler.jdbc.removecomments key
+// is absent from the shipped pinpoint.config, so the @Value placeholder never
+// resolves and the true initializer stands. Hints are therefore stripped on
+// both sides, and Sql.RemoveComments=false is the setting that diverges.
+TEST_F(SqlTest, DefaultRemovesCommentsTest) {
+    auto result = normalizer_->normalize("SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 10");
+    // Nothing is spliced in where the comment was, so the spaces that framed
+    // it stay — two of them. This is byte-for-byte what Java emits.
+    EXPECT_EQ(result.normalized_sql, "SELECT  * FROM t WHERE id = 0#");
+    EXPECT_EQ(result.parameters, "10");
+
+    // A line comment takes its terminating newline with it.
+    result = normalizer_->normalize("SELECT * FROM t -- c\nWHERE id = 1");
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE id = 0#");
+    EXPECT_EQ(result.parameters, "1");
+
+    // Sql.RemoveComments=false keeps them, at the cost of Java parity.
+    result = keep_comments_->normalize("SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 10");
+    EXPECT_EQ(result.normalized_sql, "SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 0#");
+    EXPECT_EQ(result.parameters, "10");
+}
+
 TEST_F(SqlTest, LineCommentRemovalTest) {
-    auto result = remove_comments_->normalize("SELECT * FROM users -- This is a comment");
+    auto result = normalizer_->normalize("SELECT * FROM users -- This is a comment");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
     EXPECT_EQ(result.parameters, "");
     
-    result = remove_comments_->normalize("SELECT * FROM users -- Comment\nWHERE id = 1");
+    result = normalizer_->normalize("SELECT * FROM users -- Comment\nWHERE id = 1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0#");
     EXPECT_EQ(result.parameters, "1");
 }
 
 TEST_F(SqlTest, BlockCommentRemovalTest) {
-    auto result = remove_comments_->normalize("SELECT * /* This is a block comment */ FROM users");
+    auto result = normalizer_->normalize("SELECT * /* This is a block comment */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
     
-    result = remove_comments_->normalize("SELECT * /* Multi\nline\ncomment */ FROM users");
+    result = normalizer_->normalize("SELECT * /* Multi\nline\ncomment */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test // single-line comment removal (matches Java agent behavior)
 TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
-    auto result = remove_comments_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
+    auto result = normalizer_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a=0#");
     EXPECT_EQ(result.parameters, "1");
 }
@@ -350,13 +374,13 @@ TEST_F(SqlTest, DivisionOperatorPreservedTest) {
 }
 
 TEST_F(SqlTest, MixedCommentsTest) {
-    auto result = remove_comments_->normalize("SELECT * /* block */ FROM users -- line comment");
+    auto result = normalizer_->normalize("SELECT * /* block */ FROM users -- line comment");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM users ");
     EXPECT_EQ(result.parameters, "");
 }
 
 TEST_F(SqlTest, CommentsWithParametersTest) {
-    auto result = remove_comments_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
+    auto result = normalizer_->normalize("SELECT * FROM users /* ignore 123 */ WHERE id = 456 -- ignore :param");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users  WHERE id = 0# ");
     EXPECT_EQ(result.parameters, "456");
 }
@@ -365,27 +389,27 @@ TEST_F(SqlTest, CommentsWithParametersTest) {
 // leaves nothing behind — no space is spliced in and the number-token flag is
 // not touched, so the surrounding tokens merge exactly as Java merges them.
 TEST_F(SqlTest, CommentRemovalLeavesNoSeparatorTest) {
-    auto result = remove_comments_->normalize("SELECT/*c*/1 FROM t");
+    auto result = normalizer_->normalize("SELECT/*c*/1 FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT1 FROM t");
     EXPECT_EQ(result.parameters, "");
 
-    result = remove_comments_->normalize("SELECT a FROM t WHERE a=1--c\nAND b=2");
+    result = normalizer_->normalize("SELECT a FROM t WHERE a=1--c\nAND b=2");
     EXPECT_EQ(result.normalized_sql, "SELECT a FROM t WHERE a=0#AND b=1#");
     EXPECT_EQ(result.parameters, "1,2");
 
-    result = remove_comments_->normalize("SELECT col1/*c*/2 FROM t");
+    result = normalizer_->normalize("SELECT col1/*c*/2 FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT col12 FROM t");
     EXPECT_EQ(result.parameters, "");
 
-    result = remove_comments_->normalize("SELECT * /*c*/ FROM t");
+    result = normalizer_->normalize("SELECT * /*c*/ FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT *  FROM t");
     EXPECT_EQ(result.parameters, "");
 
-    result = remove_comments_->normalize("SELECT//c\n1 FROM t");
+    result = normalizer_->normalize("SELECT//c\n1 FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT1 FROM t");
     EXPECT_EQ(result.parameters, "");
 
-    result = remove_comments_->normalize("SELECT//c\n FROM t");
+    result = normalizer_->normalize("SELECT//c\n FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT FROM t");
     EXPECT_EQ(result.parameters, "");
 }
@@ -511,7 +535,7 @@ TEST_F(SqlTest, StopsNormalizingAtHardCap) {
 
 // Test SQL with only comments
 TEST_F(SqlTest, OnlyCommentsTest) {
-    auto result = remove_comments_->normalize("/* This is only a comment */");
+    auto result = normalizer_->normalize("/* This is only a comment */");
     EXPECT_EQ(result.normalized_sql, "");
     EXPECT_EQ(result.parameters, "");
 }
@@ -598,7 +622,7 @@ TEST_F(SqlTest, ParameterIndexingAccuracyTest) {
 }
 
 TEST_F(SqlTest, NestedQuotesAndCommentsTest) {
-    auto result = remove_comments_->normalize("SELECT 'Comment /* not really */' FROM table WHERE id = 123 -- 'not a string'");
+    auto result = normalizer_->normalize("SELECT 'Comment /* not really */' FROM table WHERE id = 123 -- 'not a string'");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM table WHERE id = 1# ");
     EXPECT_EQ(result.parameters, "Comment /* not really */,123");
 }
@@ -631,7 +655,7 @@ TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
 }
 
 TEST_F(SqlTest, UnclosedBlockCommentTest) {
-    auto result = remove_comments_->normalize("SELECT * FROM users /* unclosed comment");
+    auto result = normalizer_->normalize("SELECT * FROM users /* unclosed comment");
     // Everything after /* should be consumed as comment
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users ");
     EXPECT_EQ(result.parameters, "");
@@ -680,14 +704,14 @@ TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
 }
 
 TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
-    auto result = remove_comments_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
+    auto result = normalizer_->normalize("SELECT /* c1 */ * /* c2 */ FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT  *  FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test block comment immediately followed by string literal
 TEST_F(SqlTest, BlockCommentFollowedByStringTest) {
-    auto result = remove_comments_->normalize("SELECT /* comment */'hello' FROM t");
+    auto result = normalizer_->normalize("SELECT /* comment */'hello' FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM t");
     EXPECT_EQ(result.parameters, "hello");
 }
@@ -701,14 +725,14 @@ TEST_F(SqlTest, NumberAtEndOfSqlTest) {
 
 // Test line comment with \r\n line endings
 TEST_F(SqlTest, LineCommentCRLFTest) {
-    auto result = remove_comments_->normalize("SELECT * -- comment\r\nFROM users");
+    auto result = normalizer_->normalize("SELECT * -- comment\r\nFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
 // Test line comment with only \r (carriage return)
 TEST_F(SqlTest, LineCommentCROnlyTest) {
-    auto result = remove_comments_->normalize("SELECT * -- comment\rFROM users");
+    auto result = normalizer_->normalize("SELECT * -- comment\rFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * ");
     EXPECT_EQ(result.parameters, "");
 }
@@ -827,35 +851,36 @@ TEST_F(SqlTest, MultipleDecimalPointsTest) {
 
 // ========== Java parity golden cases ==========
 //
-// Expected values are the Java agent's DefaultSqlNormalizer output
-// (removeComments=false, the default on both sides). The normalized SQL is
+// Expected values are the Java agent's DefaultSqlNormalizer output for the
+// no-arg constructor (removeComments=false) that DefaultSqlNormalizerTest
+// uses — hence keep_comments_, not the agent default. The normalized SQL is
 // the SQL id/UID cache key and PSqlMetaData.sql, so it must match byte for
 // byte.
 
 TEST_F(SqlTest, JavaParityGoldenCases) {
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "select * from t where a = 1.5e3 and b = 'it''s' and c = \"col1\" -- comment",
         "select * from t where a = 0# and b = '1$' and c = \"col1\" -- comment", "1.5e3,it''s");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "a = -1 and b = 1e-3 and c = 0x1F",
         "a = -0# and b = 1#-2# and c = 3#x1F", "1,1e,3,0");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "select t1.col2, t1.5 from t where id = 10 and name = 'a,b' and n2 = 'x''y'",
         "select t1.col2, t1.5 from t where id = 0# and name = '1$' and n2 = '2$'", "10,a,,b,x''y");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "s = 'a\\'b' and n = 3",
         "s = '0$'b'", "a\\, and n = 3");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "select /*+ INDEX(t idx) */ 1, \"2\", '' , 'z' from t /* multi\n line 42 */ where x = ?",
         "select /*+ INDEX(t idx) */ 0#, \"1#\", '' , '2$' from t /* multi\n line 42 */ where x = ?", "1,2,z");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "SELECT/*c*/1 FROM t WHERE 테이블1 = 2 and 名前 = '値'",
         "SELECT/*c*/1 FROM t WHERE 테이블0# = 1# and 名前 = '2$'", "1,2,値");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_,
         "select $1, $2 from t where a=$3 and b = 4",
         "select $1, $2 from t where a=$3 and b = 0#", "4");
-    ExpectNormalize(*normalizer_, "select 'abc", "select '", "abc");
-    ExpectNormalize(*normalizer_,
+    ExpectNormalize(*keep_comments_, "select 'abc", "select '", "abc");
+    ExpectNormalize(*keep_comments_,
         "insert into t values (1,2,3), ('a','b','c') // trailing",
         "insert into t values (0#,1#,2#), ('3$','4$','5$') // trailing", "1,2,3,a,b,c");
 }
@@ -1000,20 +1025,19 @@ TEST_F(SqlTest, JavaDefaultEmptyStringCases) {
 }
 
 TEST_F(SqlTest, JavaRemoveCommentsCases) {
-    SqlNormalizer remove_comments(2048, true);
-    ExpectNormalize(remove_comments, "/** comment ? */ select * from table id = 'foo'",
+    ExpectNormalize(*normalizer_, "/** comment ? */ select * from table id = 'foo'",
         " select * from table id = '0$'", "foo");
-    ExpectNormalize(remove_comments, "//comment\nselect * from table id = ?;",
+    ExpectNormalize(*normalizer_, "//comment\nselect * from table id = ?;",
         "select * from table id = ?;", "");
-    ExpectNormalize(remove_comments, "--comment\nselect * from table id = ?;",
+    ExpectNormalize(*normalizer_, "--comment\nselect * from table id = ?;",
         "select * from table id = ?;", "");
-    ExpectNormalize(remove_comments, "select */*comment*/ \nfrom table id = ?;",
+    ExpectNormalize(*normalizer_, "select */*comment*/ \nfrom table id = ?;",
         "select * \nfrom table id = ?;", "");
-    ExpectNormalize(remove_comments, "select * from table id = ?; /* This ? comment*/",
+    ExpectNormalize(*normalizer_, "select * from table id = ?; /* This ? comment*/",
         "select * from table id = ?; ", "");
-    ExpectNormalize(remove_comments, "select * from table id = ?; // This ? comment",
+    ExpectNormalize(*normalizer_, "select * from table id = ?; // This ? comment",
         "select * from table id = ?; ", "");
-    ExpectNormalize(remove_comments, "select * from table id = ?; -- This ? comment",
+    ExpectNormalize(*normalizer_, "select * from table id = ?; -- This ? comment",
         "select * from table id = ?; ", "");
 }
 

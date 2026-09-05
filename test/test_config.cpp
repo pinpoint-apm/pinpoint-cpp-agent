@@ -1168,7 +1168,7 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
     config.sql.enable_sql_stats = true;
     config.sql.enable_raw_sql_cache = false;
     config.sql.trace_bind_value = false;
-    config.sql.remove_comments = true;
+    config.sql.remove_comments = false;
     config.uid_version_ = "v4";
 
     const auto config_strings = to_non_default_config_strings(config);
@@ -1190,7 +1190,7 @@ TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
     EXPECT_TRUE(contains_config("Sql.EnableSqlStats=true"));
     EXPECT_TRUE(contains_config("Sql.EnableRawSqlCache=false"));
     EXPECT_TRUE(contains_config("Sql.TraceBindValue=false"));
-    EXPECT_TRUE(contains_config("Sql.RemoveComments=true"));
+    EXPECT_TRUE(contains_config("Sql.RemoveComments=false"));
 }
 
 // ========== Integration Tests ==========
@@ -1419,22 +1419,22 @@ Sql:
 
 TEST_F(ConfigTest, SqlRemoveCommentsTest) {
     auto default_config = make_config();
-    EXPECT_FALSE(default_config->sql.remove_comments)
-        << "SQL comments should be kept by default (Java agent parity)";
+    EXPECT_TRUE(default_config->sql.remove_comments)
+        << "SQL comments should be removed by default (Java agent parity)";
 
     set_config_string(R"(
 Sql:
-  RemoveComments: true
+  RemoveComments: false
 )");
     auto yaml_config = make_config();
-    EXPECT_TRUE(yaml_config->sql.remove_comments)
-        << "SQL comment removal should be enabled by YAML";
+    EXPECT_FALSE(yaml_config->sql.remove_comments)
+        << "SQL comment removal should be disabled by YAML";
 
     set_config_string("");
-    setenv(full_env(env::SQL_REMOVE_COMMENTS).c_str(), "true", 1);
+    setenv(full_env(env::SQL_REMOVE_COMMENTS).c_str(), "false", 1);
     auto env_config = make_config();
-    EXPECT_TRUE(env_config->sql.remove_comments)
-        << "SQL comment removal should be enabled by environment variable";
+    EXPECT_FALSE(env_config->sql.remove_comments)
+        << "SQL comment removal should be disabled by environment variable";
 }
 
 TEST_F(ConfigTest, SqlRawSqlCacheTest) {

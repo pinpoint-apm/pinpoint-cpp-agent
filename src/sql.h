@@ -54,10 +54,10 @@ namespace pinpoint {
     */
     class SqlNormalizer {
     public:
-        /// Comments are kept by default, matching the Java agent
-        /// (removeComments=false). When removed, nothing is put in their
+        /// Comments are removed by default, matching the Java agent
+        /// (DefaultJdbcOption.removeComments=true). Nothing is put in their
         /// place — again like Java.
-        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = false);
+        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = true);
         ~SqlNormalizer() = default;
 
         /// Normalizes and extracts both literal kinds in a single pass.

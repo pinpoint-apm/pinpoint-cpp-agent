@@ -364,9 +364,11 @@ namespace pinpoint {
             bool enable_sql_stats = false;
             bool enable_raw_sql_cache = true;
             bool trace_bind_value = true;
-            // Strip SQL comments before normalization. Off by default like the
-            // Java agent; turning it on changes SQL ids/UIDs of commented SQL.
-            bool remove_comments = false;
+            // Strip SQL comments before normalization. On by default like the
+            // Java agent, whose profiler.jdbc.removecomments defaults to true;
+            // turning it off changes SQL ids/UIDs of commented SQL and makes
+            // them diverge from Java's.
+            bool remove_comments = true;
             // Length at or above which a SQL statement bypasses the SQL-UID
             // and raw-SQL caches, keeping their memory bounded by
             // entries x this limit instead of by the largest statement seen.
