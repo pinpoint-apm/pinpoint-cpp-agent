@@ -52,7 +52,7 @@ namespace pinpoint {
 
     void SpanData::finishSpanEvent(SpanEventImpl* expected) {
         if (topSpanEvent() != expected) {
-            LOG_WARN("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
+            LOG_WARN_THROTTLED("finishSpanEvent: span event ended out of order; implicitly finishing intermediate events");
         }
         // `expected` is always on the stack when this is reached: every pop
         // path marks the event finished, and EndEvent's finished_ exchange
@@ -67,7 +67,7 @@ namespace pinpoint {
                 return;
             }
         }
-        LOG_WARN("finishSpanEvent: abnormal span - ended event not on stack");
+        LOG_WARN_THROTTLED("finishSpanEvent: abnormal span - ended event not on stack");
     }
 
     size_t SpanData::finishOpenSpanEvents() {
@@ -121,7 +121,7 @@ namespace pinpoint {
                 return;
             }
         }
-        LOG_WARN("span event is already finished");
+        LOG_WARN_THROTTLED("span event is already finished");
     }
 
     void SpanData::takeFinishedEvents(std::vector<SpanEventImpl*>& out) {
@@ -216,10 +216,14 @@ namespace pinpoint {
     }
 
     // retval unparenthesized so an empty argument yields a plain `return;`.
+    // Throttled, and per expansion rather than per macro: LOG_WARN_THROTTLED
+    // owns a static reporter in each expansion, so every guarded method keeps
+    // its own 60s window and a misinstrumented host still learns which call it
+    // is getting wrong — just once, instead of once per request.
     #define CHECK_FINISHED_WITH_RETURN(retval) \
         do { \
             if (finished_) { \
-                LOG_WARN("span is already finished"); \
+                LOG_WARN_THROTTLED("span is already finished"); \
                 return retval; \
             } \
         } while(0)
@@ -379,7 +383,7 @@ namespace pinpoint {
 
         auto se = data_->topSpanEvent();
         if (!se) {
-            LOG_WARN("GetSpanEvent: abnormal span - has no event");
+            LOG_WARN_THROTTLED("GetSpanEvent: abnormal span - has no event");
             return noopSpanEvent();
         }
         return se;
@@ -444,7 +448,7 @@ namespace pinpoint {
         // would let two concurrent EndSpan calls both pass the guard and run
         // record_chunk / dropActiveSpan / collectResponseTime twice.
         if (finished_.exchange(true)) {
-            LOG_WARN("span is already finished");
+            LOG_WARN_THROTTLED("span is already finished");
             return;
         }
 
@@ -458,13 +462,13 @@ namespace pinpoint {
         const auto open_events = data_->finishOpenSpanEvents();
         const auto expected_open = data_->isAsyncSpan() ? size_t{1} : size_t{0};
         if (open_events > expected_open) {
-            LOG_WARN("EndSpan: {} span event(s) not ended by user code; finished implicitly",
-                     open_events - expected_open);
+            LOG_WARN_THROTTLED("EndSpan: {} span event(s) not ended by user code; finished implicitly",
+                               open_events - expected_open);
         }
 
         if (data_->isAsyncSpan()) {
             if (open_events == 0) {
-                LOG_WARN("EndSpan: abnormal async span - has no event");
+                LOG_WARN_THROTTLED("EndSpan: abnormal async span - has no event");
             }
             // SetError on an async span event routes to that span's own
             // exception list, and the non-async branch below is skipped — so

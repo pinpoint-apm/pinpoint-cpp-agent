@@ -24,8 +24,12 @@
 #include <functional>
 #include <atomic>
 #include <iostream>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include "../src/span.h"
+#include "../src/logging.h"
 #include "../src/config.h"
 #include "../src/agent_service.h"
 #include "../src/url_stat.h"
@@ -2631,6 +2635,41 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanOverflowTest) {
     e1->EndEvent(); // real event
     e0->EndEvent(); // real event
     span.EndSpan();
+}
+
+// The API-misuse warnings are reproducible once per request on a
+// misinstrumented host, so they are throttled per call site: repeating the same
+// misuse must cost a bounded number of lines, not one line per call.
+TEST_F(SpanTest, RepeatedApiMisuseIsThrottledToOneLinePerCallSite) {
+    std::vector<std::string> lines;
+    std::mutex lines_mutex;
+    Logger::getInstance().setLogLevel("warning");
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        std::lock_guard<std::mutex> lock(lines_mutex);
+        lines.emplace_back(message);
+    });
+
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto event = span.NewSpanEvent("event");
+    event->EndEvent();
+    span.EndSpan();
+
+    constexpr int kRepeats = 1000;
+    for (int i = 0; i < kRepeats; ++i) {
+        span.SetAnnotation(ANNOTATION_HTTP_URL, "after the end");   // span finished
+        event->SetAnnotation(ANNOTATION_HTTP_URL, "after the end"); // event finished
+        span.EndSpan();                                             // span finished
+        event->EndEvent();                                          // event finished
+    }
+
+    Logger::getInstance().setSink({});
+    Logger::getInstance().setLogLevel("info");
+
+    // Four distinct call sites, each granting at most one line per 60s window,
+    // and the window may already have been opened by an earlier test in this
+    // binary — so the bound is what matters, not the exact count.
+    EXPECT_LE(lines.size(), 4u)
+        << 4 * kRepeats << " misuse calls must not produce a line each";
 }
 
 } // namespace pinpoint

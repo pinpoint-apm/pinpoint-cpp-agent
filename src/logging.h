@@ -36,6 +36,12 @@ namespace pinpoint {
     constexpr const char* LOG_LEVEL_DEBUG = "debug";
     constexpr const char* LOG_LEVEL_INFO = "info";
     constexpr const char* LOG_LEVEL_WARN = "warning";
+    /// Second accepted spelling of LOG_LEVEL_WARN. Go/logrus parses both
+    /// "warn" and "warning" and Java writes "WARN", so a level copied from
+    /// either agent's configuration works here instead of being rejected as a
+    /// typo and silently leaving the level alone. Input only: write() labels
+    /// lines with LOG_LEVEL_WARN.
+    constexpr const char* LOG_LEVEL_WARN_ALIAS = "warn";
     constexpr const char* LOG_LEVEL_ERROR = "error";
 
     /**
@@ -82,8 +88,23 @@ namespace pinpoint {
          *        file output and switches back to stdout.
          * @param max_size Maximum file size (MB) before rotation; <= 0
          *        disables rotation.
+         * @param max_backups Rotated files kept beside the live one
+         *        (`<path>.1` .. `<path>.max_backups`, newest first). Values
+         *        < 1 are treated as 1, the behaviour from before the setting
+         *        existed.
          */
-        void setFileLogger(const std::string& log_file_path, const int max_size);
+        void setFileLogger(const std::string& log_file_path, const int max_size,
+                           const int max_backups = 1);
+        /**
+         * @brief Installs the host log sink, or clears it when @p sink is
+         *        empty.
+         *
+         * A sink takes the line instead of the file/stdout sinks, so the host
+         * sees no duplicates. See `pinpoint::LogSink` for the contract the
+         * callback owes us; shutdown() clears the sink, because past that
+         * point the host's logger may already be gone.
+         */
+        void setSink(LogSink sink);
         /// @brief Flushes pending log messages and releases file resources,
         /// and bans the std::cout fallback from there on (see `closed_`).
         /// Idempotent: the teardown paths call it more than once, and the
@@ -181,6 +202,7 @@ namespace pinpoint {
 
         std::string file_path_;
         std::uint64_t max_file_size_{0};
+        int max_backups_{1};
         std::uint64_t current_file_size_{0};
         bool file_enabled_{false};
         // Set by shutdown(), cleared by setFileLogger(). It bans the
@@ -201,6 +223,13 @@ namespace pinpoint {
         // Cleared by setFileLogger().
         bool file_broken_{false};
         std::unique_ptr<std::ofstream> file_stream_;
+        // Guarded by mutex_, like the file sink it replaces — and so called
+        // with mutex_ held, which is what makes a sink that logs back into the
+        // agent a self-deadlock (documented at pinpoint::LogSink). Checked
+        // through sink_enabled_ so the no-sink path, which is every host that
+        // does not set one, keeps building its line before taking the lock.
+        LogSink sink_;
+        std::atomic<bool> sink_enabled_{false};
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};
 

@@ -615,6 +615,27 @@ void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type)
     });
 }
 
+void pt_agent_options_set_log_sink(pt_agent_options_t options,
+                                   pt_log_sink_fn sink,
+                                   void* userdata) {
+    pt_api_call(__func__, [&] {
+        auto owned = find_options(options);
+        if (!owned) {
+            return;
+        }
+        if (!sink) {
+            owned->options.log_sink = nullptr;
+            return;
+        }
+        // Captured by value: the options object is read only during
+        // pt_start_agent(), but the std::function it hands the logger outlives
+        // it (the header makes `userdata` the caller's problem to keep alive).
+        owned->options.log_sink = [sink, userdata](const char* level, const char* message) {
+            sink(userdata, level, message);
+        };
+    });
+}
+
 void pt_agent_options_set_server_metadata(pt_agent_options_t options,
                                           const char* server_info,
                                           const char* const* args,

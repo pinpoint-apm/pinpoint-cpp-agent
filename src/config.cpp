@@ -413,6 +413,7 @@ namespace pinpoint {
         {"Log.Level", REF(log.level), RELOAD, env::LOG_LEVEL, "LogLevel"},
         {"Log.FilePath", REF(log.file_path), RELOAD, env::LOG_FILE_PATH},
         {"Log.MaxFileSize", REF(log.max_file_size), RELOAD, env::LOG_MAX_FILE_SIZE},
+        {"Log.MaxBackups", REF(log.max_backups), RELOAD, env::LOG_MAX_BACKUPS},
         {"Collector.Host", REF(collector.host), FIXED, env::COLLECTOR_HOST, "Collector.GrpcHost", env::GRPC_HOST},
         {"Collector.AgentPort", REF(collector.agent_port), FIXED, env::COLLECTOR_AGENT_PORT, "Collector.GrpcAgentPort", env::GRPC_AGENT_PORT},
         {"Collector.SpanPort", REF(collector.span_port), FIXED, env::COLLECTOR_SPAN_PORT, "Collector.GrpcSpanPort", env::GRPC_SPAN_PORT},
@@ -652,9 +653,11 @@ namespace pinpoint {
         // Comparing raw (unexpanded) paths is equivalent: the expansion is
         // constant within one process.
         if (!old || old->log.file_path != cfg.log.file_path ||
-            old->log.max_file_size != cfg.log.max_file_size) {
+            old->log.max_file_size != cfg.log.max_file_size ||
+            old->log.max_backups != cfg.log.max_backups) {
             Logger::getInstance().setFileLogger(
-                expand_log_file_path(cfg.log.file_path), cfg.log.max_file_size);
+                expand_log_file_path(cfg.log.file_path), cfg.log.max_file_size,
+                cfg.log.max_backups);
         }
         if (!old || old->log.level != cfg.log.level) {
             Logger::getInstance().setLogLevel(cfg.log.level);
@@ -815,6 +818,12 @@ namespace pinpoint {
             clamp_min(config->span.max_event_sequence, MIN_SPAN_EVENT_SEQUENCE, "span max event sequence");
         }
         at_least(config->span.event_chunk_size, 1, defaults::SPAN_EVENT_CHUNK_SIZE, "span event chunk size");
+
+        // At least one backup: 0 would read as either "keep none" or "keep
+        // all" depending on which agent the reader knows, and neither is worth
+        // the ambiguity when rotation with no backup is just MaxFileSize with
+        // the history thrown away.
+        at_least(config->log.max_backups, 1, defaults::LOG_MAX_BACKUPS, "log max backups");
 
         at_least(config->collector.span_batch.size, 1, defaults::SPAN_BATCH_SIZE, "span batch size");
         at_least(config->collector.span_batch.flush_interval_ms, 1,

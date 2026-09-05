@@ -117,11 +117,21 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
-| `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning`, `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
+| `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning` (`warn` is accepted as an alias), `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
 | `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. A path that cannot be opened (or reopened after a rotation) falls back to stdout for the rest of the process, so a broken path shows up as agent lines on the host's stdout rather than as silence. After `Shutdown()` a configured file logger writes nothing more, fallback included — the host's stdout stays clean. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
+| `Log.MaxBackups` | `PINPOINT_CPP_LOG_MAX_BACKUPS` | int | `1` | Rotated files kept beside the live one, newest first: `<FilePath>.1` … `<FilePath>.MaxBackups`. Each rotation shifts them down one index and deletes the oldest, so the log costs at most `MaxFileSize x (MaxBackups + 1)` on disk. Values below 1 are clamped to 1. |
 
 `LogLevel` is accepted as a legacy top-level YAML alias for `Log.Level`. Prefer `Log.Level`; when both are present, `Log.Level` wins.
+
+> **Host log pipeline:** to send the agent's own log lines to a logger the host
+> already owns (nginx `error_log`, an application logger) instead of
+> `Log.FilePath`/stdout, set `AgentOptions::log_sink` (C++) or
+> `pt_agent_options_set_log_sink()` (C) before starting the agent. A sink
+> replaces the built-in sinks, so lines are not duplicated, and the settings
+> above then apply to nothing. Read the callback contract in the header first:
+> the sink runs under the agent's logger mutex, must not call back into the
+> agent, and must not block.
 
 > **Multi-process hosts:** the built-in size rotation is not safe when several
 > worker processes share one log file — use the `%pid%` placeholder to give
@@ -398,7 +408,7 @@ changing them requires an application restart.
 | Span queue | `Span.QueueSize` | No |
 | SQL comment removal | `Sql.RemoveComments` | No |
 | Config-file watcher | `EnableConfigFileWatcher` | No |
-| Logging | `Log.Level`, `Log.FilePath`, `Log.MaxFileSize` | **Yes** |
+| Logging | `Log.Level`, `Log.FilePath`, `Log.MaxFileSize`, `Log.MaxBackups` | **Yes** |
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | Per-span limits | `Span.MaxEventDepth`, `Span.MaxEventSequence`, `Span.EventChunkSize` | **Yes** (spans created after the reload) |
 | Ignored errors | `Span.IgnoreErrors` | **Yes** (spans created after the reload) |

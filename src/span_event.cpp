@@ -161,7 +161,7 @@ namespace pinpoint {
         // instead of a use-after-free.
         auto* span = data_->getOwner();
         if (span == nullptr) {
-            LOG_WARN("span event outlived its span");
+            LOG_WARN_THROTTLED("span event outlived its span");
         }
         return span;
     }
@@ -177,7 +177,7 @@ namespace pinpoint {
         // may touch those fields — the guard is load-bearing for memory
         // safety, not just race avoidance.
         if (finished_) {
-            LOG_WARN("span event is already finished");
+            LOG_WARN_THROTTLED("span event is already finished");
             return true;
         }
         return false;
@@ -210,7 +210,7 @@ namespace pinpoint {
         // twice would pop a DIFFERENT (still-active) event from the span's
         // stack and desync the whole call tree.
         if (finished_.exchange(true)) {
-            LOG_WARN("span event is already finished");
+            LOG_WARN_THROTTLED("span event is already finished");
             return;
         }
         // Pass the identity so the span can detect (and unwind) out-of-order

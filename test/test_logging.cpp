@@ -17,11 +17,15 @@
 #include "../src/logging.h"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace pinpoint {
@@ -63,7 +67,18 @@ protected:
     void cleanup() {
         std::error_code ec;
         std::filesystem::remove(log_file_, ec);
-        std::filesystem::remove(rotated_file_, ec);
+        // .1 through .4: enough for the multi-backup rotation tests.
+        for (int i = 1; i <= 4; ++i) {
+            std::filesystem::remove(log_file_.string() + "." + std::to_string(i), ec);
+        }
+    }
+
+    // Writes past the 1 MB rotation threshold once.
+    static void fill_one_rotation(char fill) {
+        const std::string large_msg(1024, fill);
+        for (int i = 0; i < 1100; ++i) {
+            Logger::getInstance().logInfo("test.cpp", 1, "{}", large_msg);
+        }
     }
 
     std::filesystem::path log_file_;
@@ -184,11 +199,42 @@ TEST_F(LoggingTest, SetLogLevelInvalidKeepsCurrent) {
 TEST_F(LoggingTest, SetLogLevelInvalidWarns) {
     Logger::getInstance().setLogLevel("info");
     Logger::getInstance().setFileLogger(log_file_.string(), 10);
-    Logger::getInstance().setLogLevel("warn");  // common typo; valid value is "warning"
+    Logger::getInstance().setLogLevel("warnign");  // typo, not an accepted alias
     Logger::getInstance().shutdown();
 
     auto content = read_file(log_file_.string());
-    EXPECT_TRUE(content.find("unknown log level 'warn'") != std::string::npos);
+    EXPECT_TRUE(content.find("unknown log level 'warnign'") != std::string::npos);
+}
+
+// "warn" is what Go/logrus and Java configurations say; it must select the
+// warning level rather than being rejected as a typo.
+TEST_F(LoggingTest, SetLogLevelAcceptsWarnAlias) {
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setLogLevel("warn");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+
+    Logger::getInstance().logInfo("test.cpp", 1, "info below the level");
+    Logger::getInstance().logWarn("test.cpp", 2, "warn at the level");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_EQ(content.find("info below the level"), std::string::npos);
+    EXPECT_NE(content.find("warn at the level"), std::string::npos);
+    // The alias is input-only: lines stay labelled "warning".
+    EXPECT_NE(content.find("[warning]"), std::string::npos);
+    EXPECT_EQ(content.find("unknown log level"), std::string::npos);
+}
+
+TEST_F(LoggingTest, SetLogLevelAcceptsWarnAliasCaseInsensitively) {
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setLogLevel("WARN");
+    Logger::getInstance().logInfo("test.cpp", 1, "info below the level");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_EQ(content.find("unknown log level"), std::string::npos);
+    EXPECT_EQ(content.find("info below the level"), std::string::npos);
 }
 
 // ========== setFileLogger Tests ==========
@@ -669,6 +715,134 @@ TEST_F(LoggingTest, ThrottledLogAppendsFoldedOccurrenceCount) {
         << "a single occurrence must not carry a folded count";
     EXPECT_TRUE(content.find("repeated occurrence [5 occurrences since last report]")
                 != std::string::npos);
+}
+
+// ========== Host log sink (AgentOptions::log_sink) Tests ==========
+
+TEST_F(LoggingTest, SinkTakesTheLineInsteadOfTheFile) {
+    std::vector<std::pair<std::string, std::string>> captured;
+    std::mutex captured_mutex;
+
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setSink([&](const char* level, const char* message) {
+        std::lock_guard<std::mutex> lock(captured_mutex);
+        captured.emplace_back(level, message);
+    });
+
+    Logger::getInstance().logWarn("some/dir/test.cpp", 42, "to the host {}", "logger");
+    Logger::getInstance().shutdown();
+
+    ASSERT_EQ(captured.size(), 1u);
+    EXPECT_EQ(captured[0].first, "warning");
+    EXPECT_EQ(captured[0].second, "[pinpoint][some/dir/test.cpp:42] to the host logger");
+    // No agent timestamp, no trailing newline: the host's logger stamps its own.
+    EXPECT_EQ(captured[0].second.find('\n'), std::string::npos);
+    // And the configured file must not receive a duplicate.
+    EXPECT_EQ(read_file(log_file_.string()).find("to the host logger"), std::string::npos);
+}
+
+TEST_F(LoggingTest, SinkRespectsTheLogLevel) {
+    std::atomic<int> calls{0};
+    Logger::getInstance().setLogLevel("warning");
+    Logger::getInstance().setSink([&](const char*, const char*) { calls.fetch_add(1); });
+
+    Logger::getInstance().logInfo("test.cpp", 1, "below the level");
+    Logger::getInstance().logWarn("test.cpp", 2, "at the level");
+    Logger::getInstance().shutdown();
+
+    EXPECT_EQ(calls.load(), 1);
+}
+
+TEST_F(LoggingTest, ThrowingSinkDropsOnlyItsLine) {
+    std::atomic<int> calls{0};
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setSink([&](const char*, const char*) {
+        calls.fetch_add(1);
+        throw std::runtime_error("host sink blew up");
+    });
+
+    Logger::getInstance().logWarn("test.cpp", 1, "first line");
+    Logger::getInstance().logWarn("test.cpp", 2, "second line");
+    Logger::getInstance().shutdown();
+
+    EXPECT_EQ(calls.load(), 2) << "a throwing sink must not disable itself";
+    // Not spilled into the file the host asked us to leave alone either.
+    EXPECT_EQ(read_file(log_file_.string()).find("first line"), std::string::npos);
+}
+
+TEST_F(LoggingTest, ShutdownClearsTheSink) {
+    std::atomic<int> calls{0};
+    Logger::getInstance().setSink([&](const char*, const char*) { calls.fetch_add(1); });
+    Logger::getInstance().shutdown();
+
+    // A straggler logging after Shutdown() must not reach a host callback whose
+    // state may already be gone.
+    Logger::getInstance().logWarn("test.cpp", 1, "straggler");
+    EXPECT_EQ(calls.load(), 0);
+}
+
+TEST_F(LoggingTest, ClearingTheSinkRestoresTheFile) {
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setSink([](const char*, const char*) {});
+    Logger::getInstance().logWarn("test.cpp", 1, "to the sink");
+    Logger::getInstance().setSink({});
+    Logger::getInstance().logWarn("test.cpp", 2, "back to the file");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_EQ(content.find("to the sink"), std::string::npos);
+    EXPECT_NE(content.find("back to the file"), std::string::npos);
+}
+
+// ========== Log.MaxBackups Tests ==========
+
+// With N backups each rotation shifts the ring down one index and drops the
+// oldest, so the newest rotated content is in .1 and nothing survives past .N.
+// Tracked with a one-off marker per generation rather than the bulk filler:
+// a fill overshoots the threshold, so its tail spills into the next generation
+// and only the marker identifies a generation unambiguously.
+TEST_F(LoggingTest, KeepsMaxBackupsRotatedFiles) {
+    Logger::getInstance().setLogLevel("debug");
+    Logger::getInstance().setFileLogger(log_file_.string(), 1, 3);
+
+    for (int generation = 1; generation <= 4; ++generation) {
+        Logger::getInstance().logInfo("test.cpp", 1, "GENERATION-{}-MARKER", generation);
+        fill_one_rotation('X');
+    }
+    Logger::getInstance().shutdown();
+
+    const auto backup = [this](int i) { return log_file_.string() + "." + std::to_string(i); };
+    ASSERT_TRUE(std::filesystem::exists(backup(1)));
+    ASSERT_TRUE(std::filesystem::exists(backup(2)));
+    ASSERT_TRUE(std::filesystem::exists(backup(3)));
+    EXPECT_FALSE(std::filesystem::exists(backup(4))) << "the cap must be honoured";
+
+    // Newest first.
+    EXPECT_NE(read_file(backup(1)).find("GENERATION-4-MARKER"), std::string::npos);
+    EXPECT_NE(read_file(backup(2)).find("GENERATION-3-MARKER"), std::string::npos);
+    EXPECT_NE(read_file(backup(3)).find("GENERATION-2-MARKER"), std::string::npos);
+    // The generation pushed past the cap is deleted, not left behind anywhere.
+    for (int i = 1; i <= 3; ++i) {
+        EXPECT_EQ(read_file(backup(i)).find("GENERATION-1-MARKER"), std::string::npos)
+            << "the oldest generation must be deleted, not kept in ." << i;
+    }
+}
+
+// The default, and anything below 1, is the single backup the agent kept
+// before the setting existed.
+TEST_F(LoggingTest, MaxBackupsBelowOneKeepsOneBackup) {
+    Logger::getInstance().setLogLevel("debug");
+    Logger::getInstance().setFileLogger(log_file_.string(), 1, 0);
+
+    Logger::getInstance().logInfo("test.cpp", 1, "GENERATION-1-MARKER");
+    fill_one_rotation('X');
+    Logger::getInstance().logInfo("test.cpp", 1, "GENERATION-2-MARKER");
+    fill_one_rotation('X');
+    Logger::getInstance().shutdown();
+
+    EXPECT_TRUE(std::filesystem::exists(rotated_file_));
+    EXPECT_FALSE(std::filesystem::exists(log_file_.string() + ".2"));
+    EXPECT_NE(read_file(rotated_file_).find("GENERATION-2-MARKER"), std::string::npos);
 }
 
 } // namespace pinpoint

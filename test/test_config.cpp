@@ -112,6 +112,7 @@ Log:
   Level: "debug"
   FilePath: "/tmp/pinpoint.log"
   MaxFileSize: 20
+  MaxBackups: 5
 
 Collector:
   GrpcHost: "test.collector.host"
@@ -242,6 +243,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->log.level, "info") << "Default log level should be info";
     EXPECT_EQ(config->log.file_path, "") << "Default log file path should be empty";
     EXPECT_EQ(config->log.max_file_size, 10) << "Default max file size should be 10MB";
+    EXPECT_EQ(config->log.max_backups, 1) << "Default backup count matches the pre-setting behavior";
     
     // Test collector defaults
     EXPECT_EQ(config->collector.host, "") << "Default collector host should be empty";
@@ -396,6 +398,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->log.level, "debug") << "Log level should match YAML";
     EXPECT_EQ(config->log.file_path, "/tmp/pinpoint.log") << "Log file path should match YAML";
     EXPECT_EQ(config->log.max_file_size, 20) << "Log max file size should match YAML";
+    EXPECT_EQ(config->log.max_backups, 5) << "Log max backups should match YAML";
     
     // Test collector configuration
     EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should match YAML";

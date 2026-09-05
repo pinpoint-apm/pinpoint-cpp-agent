@@ -31,6 +31,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -43,6 +44,7 @@
 #include "../src/agent.h"
 #include "../src/config.h"
 #include "../src/grpc.h"
+#include "../src/logging.h"
 #include "../src/noop.h"
 #include "c_api_test_helpers.h"
 #include "testable_grpc.h"
@@ -271,6 +273,7 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(nullptr, "x"));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(nullptr, 1));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(nullptr, "x", nullptr, 0, nullptr, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_log_sink(nullptr, nullptr, nullptr));
 
     pt_agent_options_t opts = pt_agent_options_new();
     ASSERT_NE(opts, nullptr);
@@ -278,7 +281,48 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_yaml(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, nullptr, nullptr, -1, nullptr, -1));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_log_sink(opts, nullptr, nullptr));
     pt_agent_options_free(opts);
+}
+
+namespace {
+// Counts the lines a C sink receives, and proves userdata comes back untouched.
+struct CLogSinkCapture {
+    std::vector<std::string> lines;
+    std::mutex mutex;
+};
+
+void c_log_sink(void* userdata, const char* level, const char* message) {
+    auto* capture = static_cast<CLogSinkCapture*>(userdata);
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    capture->lines.emplace_back(std::string(level) + "|" + message);
+}
+}  // namespace
+
+// The C sink is a function pointer plus userdata; the agent must hand both back
+// verbatim and route its own lines there instead of to stdout / Log.FilePath.
+TEST(TracerCAgentOptionsTest, LogSinkReceivesAgentLines) {
+    CLogSinkCapture capture;
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_set_log_sink(opts, c_log_sink, &capture);
+    // Nothing else is configured, so the agent will not start; the point is the
+    // refusal/configuration lines it emits on the way, which must land here.
+    pt_agent_options_set_config_yaml(opts, "Enable: false\nLog:\n  Level: debug\n");
+    pt_start_agent(opts);
+    pt_agent_options_free(opts);
+
+    pinpoint::Logger::getInstance().setSink({});
+
+    std::lock_guard<std::mutex> lock(capture.mutex);
+    ASSERT_FALSE(capture.lines.empty()) << "the agent logs its configuration on start";
+    for (const auto& line : capture.lines) {
+        EXPECT_NE(line.find("[pinpoint]["), std::string::npos) << line;
+        // Not stripped of embedded newlines (the resolved-config dump is
+        // multi-line), but never terminated by one: the host's logger adds its
+        // own line ending.
+        EXPECT_NE(line.back(), '\n') << line;
+    }
 }
 
 // Options handles are registry tokens: a double free and any call made with

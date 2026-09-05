@@ -1427,6 +1427,14 @@ namespace pinpoint {
     // application.
     bool StartAgent(const AgentOptions& options) try {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
+
+        // Before anything that can log, so the host's own log pipeline also
+        // gets the refusals and configuration errors below — those are exactly
+        // the lines a host debugging a silent agent needs. An options object
+        // without a sink clears any previous one, which is what a fresh start
+        // means.
+        Logger::getInstance().setSink(options.log_sink);
+
         auto agent = global_agent().load();
 
         if (agent != nullptr) {

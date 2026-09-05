@@ -69,6 +69,9 @@ namespace pinpoint {
         // Mirrors the Java agent's profiler.sql.error.count (100).
         constexpr int SQL_ERROR_COUNT = 100;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
+        // Rotated files kept alongside the live one (agent.log.1 ..
+        // agent.log.N). 1 is what the agent did before the setting existed.
+        constexpr int LOG_MAX_BACKUPS = 1;
         // New exception chains admitted per second. Mirrors the Java agent's
         // profiler.exceptiontrace.new.throughput (1000).
         constexpr int CALLSTACK_TRACE_NEW_THROUGHPUT = 1000;
@@ -96,6 +99,7 @@ namespace pinpoint {
         constexpr const char* LOG_LEVEL = "LOG_LEVEL";
         constexpr const char* LOG_FILE_PATH = "LOG_FILE_PATH";
         constexpr const char* LOG_MAX_FILE_SIZE = "LOG_MAX_FILE_SIZE";
+        constexpr const char* LOG_MAX_BACKUPS = "LOG_MAX_BACKUPS";
         constexpr const char* COLLECTOR_HOST = "COLLECTOR_HOST";
         constexpr const char* COLLECTOR_AGENT_PORT = "COLLECTOR_AGENT_PORT";
         constexpr const char* COLLECTOR_SPAN_PORT = "COLLECTOR_SPAN_PORT";
@@ -249,6 +253,7 @@ namespace pinpoint {
             std::string level = defaults::LOG_LEVEL;
             std::string file_path;
             int max_file_size = defaults::LOG_MAX_FILE_SIZE_MB;
+            int max_backups = defaults::LOG_MAX_BACKUPS;
         } log;
 
         struct GrpcSslOptions {

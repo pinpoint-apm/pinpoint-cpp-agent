@@ -397,6 +397,49 @@ void pt_agent_options_set_env_prefix(pt_agent_options_t options, const char* pre
 void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type);
 
 /**
+ * @brief Destination for the agent's own log lines, set with
+ *        pt_agent_options_set_log_sink().
+ *
+ * @param userdata The pointer handed to pt_agent_options_set_log_sink().
+ * @param level    One of "debug", "info", "warning", "error".
+ * @param message  The formatted line, "[pinpoint][file:line] text", with no
+ *                 trailing newline and no timestamp — the host's logger stamps
+ *                 its own.
+ *
+ * Both strings are owned by the agent and valid only for the duration of the
+ * call; copy anything the sink keeps.
+ *
+ * Contract:
+ * - NOT reentrant: the sink runs while the agent holds its logger mutex, so
+ *   calling any pt_* function from it deadlocks the calling thread.
+ * - Must not block: it runs inline on whichever thread logged, including host
+ *   request threads and the agent's gRPC workers.
+ * - Must be thread-safe: several threads call it concurrently.
+ * - A C++ exception escaping it (for a sink implemented in C++) drops the line
+ *   and nothing else.
+ */
+typedef void (*pt_log_sink_fn)(void* userdata, const char* level, const char* message);
+
+/**
+ * @brief Routes the agent's log lines to the host's own log pipeline
+ *        (nginx error_log, an application logger) instead of the built-in
+ *        sinks.
+ *
+ * When a sink is set, nothing goes to `Log.FilePath` or to stdout, so lines
+ * are not duplicated. The sink is installed by pt_start_agent() before the
+ * configuration is parsed — configuration errors reach it too — and dropped
+ * again by pt_agent_shutdown(), after which the host's logger may be torn
+ * down. A NULL @p sink clears it.
+ *
+ * @param userdata Opaque pointer passed back to every call. Not owned by the
+ *                 agent; it must outlive the agent, or at least the last log
+ *                 line, which is the pt_agent_shutdown() that clears the sink.
+ */
+void pt_agent_options_set_log_sink(pt_agent_options_t options,
+                                   pt_log_sink_fn sink,
+                                   void* userdata);
+
+/**
  * @brief Sets AgentInfo server metadata.
  *
  * @param server_info Server runtime description. NULL keeps the default.

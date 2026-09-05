@@ -504,6 +504,30 @@ namespace pinpoint {
     constexpr std::string_view DEFAULT_SERVER_INFO = "C/C++ Application";
 
     /**
+     * @brief Host-supplied destination for the agent's own log lines
+     *        (see AgentOptions::log_sink).
+     *
+     * @param level   One of "debug", "info", "warning", "error".
+     * @param message The formatted line, `[pinpoint][file:line] text`, with no
+     *                trailing newline and no timestamp — the host's logger
+     *                stamps its own.
+     *
+     * Both pointers are owned by the agent and valid only for the duration of
+     * the call; copy anything the sink keeps.
+     *
+     * @warning Contract, enforced by nothing but this comment:
+     * - **Not reentrant.** The sink runs while the agent holds its logger
+     *   mutex. Calling any pinpoint API from it — anything that can log —
+     *   deadlocks the calling thread on that mutex.
+     * - **Must not block.** It is called inline on whichever thread logged,
+     *   including host request threads and the gRPC workers.
+     * - Exceptions escaping it are swallowed and the line is dropped.
+     * - It is called concurrently from several threads; it must be
+     *   thread-safe.
+     */
+    using LogSink = std::function<void(const char* level, const char* message)>;
+
+    /**
      * @brief Inputs for StartAgent(): configuration sources, server metadata
      *        and per-worker naming.
      *
@@ -534,6 +558,17 @@ namespace pinpoint {
         std::vector<std::string> args;
         /// Loaded service libraries included in AgentInfo.
         std::vector<std::string> libs;
+
+        /// Optional host log sink, for embedders that already own a log
+        /// pipeline (nginx `error_log`, an application logger). When set it
+        /// REPLACES the built-in sinks: nothing goes to `Log.FilePath` or to
+        /// stdout, so the lines are not duplicated. Installed by StartAgent()
+        /// before the configuration is parsed, so config errors reach it too,
+        /// and dropped again by Shutdown() — the host's logger is free to die
+        /// after that. Read AgentOptions::log_sink's contract at @ref LogSink
+        /// before writing one: it is called under the agent's logger mutex and
+        /// must not re-enter the agent.
+        LogSink log_sink;
     };
 
     /**

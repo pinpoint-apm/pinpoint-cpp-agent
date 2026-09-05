@@ -34,19 +34,20 @@ namespace pinpoint {
             current_level_.store(static_cast<int>(LogLevel::kDebug), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_INFO)) {
             current_level_.store(static_cast<int>(LogLevel::kInfo), std::memory_order_relaxed);
-        } else if (!strcasecmp(level, LOG_LEVEL_WARN)) {
+        } else if (!strcasecmp(level, LOG_LEVEL_WARN) || !strcasecmp(level, LOG_LEVEL_WARN_ALIAS)) {
             current_level_.store(static_cast<int>(LogLevel::kWarn), std::memory_order_relaxed);
         } else if (!strcasecmp(level, LOG_LEVEL_ERROR)) {
             current_level_.store(static_cast<int>(LogLevel::kError), std::memory_order_relaxed);
         } else {
             // Keep the current level, but say so: a silently ignored typo
-            // (e.g. "warn" instead of "warning") would otherwise look like a
-            // successful change, especially on a config reload.
+            // (e.g. "warnign") would otherwise look like a successful change,
+            // especially on a config reload.
             LOG_WARN("unknown log level '{}'; keeping the current level", log_level);
         }
     }
 
-    void Logger::setFileLogger(const std::string& log_file_path, const int max_size) {
+    void Logger::setFileLogger(const std::string& log_file_path, const int max_size,
+                               const int max_backups) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         closed_ = false;
@@ -61,6 +62,9 @@ namespace pinpoint {
         max_file_size_ = max_size > 0
             ? static_cast<std::uint64_t>(max_size) * 1024 * 1024
             : 0;
+        // < 1 means the one backup the agent kept before this was settable;
+        // make_config() already clamps, this covers direct callers.
+        max_backups_ = max_backups > 0 ? max_backups : 1;
         current_file_size_ = 0;
         file_enabled_ = false;
         file_stream_.reset();
@@ -96,8 +100,24 @@ namespace pinpoint {
         return true;
     }
 
+    void Logger::setSink(LogSink sink) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sink_ = std::move(sink);
+        // Release: publishes sink_ to the acquire-load in write(), which reads
+        // it before taking mutex_.
+        sink_enabled_.store(static_cast<bool>(sink_), std::memory_order_release);
+    }
+
     void Logger::shutdown() {
         std::lock_guard<std::mutex> lock(mutex_);
+
+        // Drop the host sink first. Unlike the file, it is not ours to keep
+        // using: Shutdown() is where the host stops guaranteeing its logger is
+        // alive, and a straggler calling into a torn-down callback is a
+        // use-after-free in the host, not a lost log line. Stragglers fall
+        // back to the file rules below.
+        sink_enabled_.store(false, std::memory_order_release);
+        sink_ = nullptr;
 
         if (file_stream_ && file_stream_->is_open()) {
             file_stream_->flush();
@@ -117,16 +137,37 @@ namespace pinpoint {
     }
 
     void Logger::write(LogLevel level, std::string_view file, int line, const std::string& message) {
+        const char* level_str = level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
+                                level == LogLevel::kInfo ? LOG_LEVEL_INFO :
+                                level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR;
+
+        // A host sink takes the line outright: no file, no stdout, no
+        // duplicates, and no timestamp of ours — the host's logger stamps its
+        // own. Checked ahead of the timestamp and line assembly below so that
+        // work is skipped entirely for hosts that took the log over.
+        if (sink_enabled_.load(std::memory_order_acquire)) {
+            const auto payload = fmt::format("[pinpoint][{}:{}] {}", file, line, message);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (sink_) {
+                try {
+                    sink_(level_str, payload.c_str());
+                } catch (...) {
+                    // A throwing host sink drops its line and nothing more. It
+                    // must not take the process down, and must not spill the
+                    // agent's diagnostics into a file or stdout the host asked
+                    // us to leave alone.
+                }
+                return;
+            }
+            // Raced with setSink({}) / shutdown(): fall through to the file.
+        }
+
         const auto now = std::chrono::system_clock::now();
         const auto now_time = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
         std::tm tm{};
         localtime_r(&now_time, &tm);
-
-        const char* level_str = level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
-                                level == LogLevel::kInfo ? LOG_LEVEL_INFO :
-                                level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR;
 
         // Build the whole line in one formatting pass. fmt::memory_buffer uses
         // inline storage for typical lines and grows on the heap for longer
@@ -183,10 +224,21 @@ namespace pinpoint {
         file_stream_->flush();
         file_stream_->close();
 
-        std::error_code remove_ec;
+        // Shift the backups down one index, dropping the oldest: .N is
+        // removed, .N-1 becomes .N, ... , .1 becomes .2, and the live file
+        // takes .1 below. The shifts are best effort — a missing .i is the
+        // normal case before the ring has filled, and a failed one costs a
+        // generation of history, nothing more — so only the live file's rename
+        // is checked, exactly as when there was a single backup.
+        std::error_code shift_ec;
+        std::filesystem::remove(file_path_ + "." + std::to_string(max_backups_), shift_ec);
+        for (int i = max_backups_ - 1; i >= 1; --i) {
+            std::filesystem::rename(file_path_ + "." + std::to_string(i),
+                                    file_path_ + "." + std::to_string(i + 1), shift_ec);
+        }
+
         std::error_code rename_ec;
         const auto rotated_path = file_path_ + ".1";
-        std::filesystem::remove(rotated_path, remove_ec);
         std::filesystem::rename(file_path_, rotated_path, rename_ec);
 
         if (!openFileLocked()) {
