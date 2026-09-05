@@ -541,7 +541,7 @@ namespace pinpoint {
         writer.Set(HEADER_HOST, host);
     }
 
-    void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id) {
+    void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id, bool continued) {
         CHECK_FINISHED();
 
         // The trace id is resolved by NewSpan (parsed or generated) before this
@@ -549,54 +549,64 @@ namespace pinpoint {
         // noop span in that case.
         data_->setTraceId(std::move(trace_id));
 
-        if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
+        if (!continued) {
+            // A brand new root trace: nothing upstream belongs to it, so no
+            // inbound header is read. Adopting a peer's span/parent id here
+            // would record a root span pointing at a parent that does not
+            // exist in this trace. Java gates the same block behind
+            // ServerRequestRecorder's `if (!recorder.isRoot())`. The parent
+            // span id keeps its -1 default, i.e. "no parent".
             data_->setSpanId(generate_span_id());
-        } else if (const auto result = stoll_(span_id.value()); result.has_value()) {
-            data_->setSpanId(result.value());
         } else {
-            // A malformed header used to leave the span id at its 0 default,
-            // which the collector cannot tell from a real id — every such
-            // request collapsed onto the same node. Treat it as no id at all.
-            // Throttled: the value is peer-controlled, so an unthrottled line
-            // per request would serialize request threads on the logger.
-            LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
-                               HEADER_SPAN_ID, span_id.value());
-            data_->setSpanId(generate_span_id());
-        }
-
-        if (const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID); parent_span_id.has_value()) {
-            auto result = stoll_(parent_span_id.value());
-            if (result.has_value()) {
-                data_->setParentSpanId(result.value());
+            if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
+                data_->setSpanId(generate_span_id());
+            } else if (const auto result = stoll_(span_id.value()); result.has_value()) {
+                data_->setSpanId(result.value());
+            } else {
+                // A malformed header used to leave the span id at its 0 default,
+                // which the collector cannot tell from a real id — every such
+                // request collapsed onto the same node. Treat it as no id at all.
+                // Throttled: the value is peer-controlled, so an unthrottled line
+                // per request would serialize request threads on the logger.
+                LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
+                                   HEADER_SPAN_ID, span_id.value());
+                data_->setSpanId(generate_span_id());
             }
-        }
 
-        if (const auto parent_app_name = reader.Get(HEADER_PARENT_APP_NAME); parent_app_name.has_value()) {
-            data_->setParentAppName(parent_app_name.value());
-        }
-
-        if (const auto parent_app_type = reader.Get(HEADER_PARENT_APP_TYPE); parent_app_type.has_value()) {
-            auto result = stoi_(parent_app_type.value());
-            if (result.has_value()) {
-                data_->setParentAppType(result.value());
+            if (const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID); parent_span_id.has_value()) {
+                auto result = stoll_(parent_span_id.value());
+                if (result.has_value()) {
+                    data_->setParentSpanId(result.value());
+                }
             }
-        }
 
-        if (const auto parent_service_name = reader.Get(HEADER_PARENT_SERVICE_NAME); parent_service_name.has_value()) {
-            data_->setParentServiceName(parent_service_name.value());
-        }
-
-        if (const auto flag = reader.Get(HEADER_FLAG); flag.has_value()) {
-            auto result = stoi_(flag.value());
-            if (result.has_value()) {
-                data_->setFlags(result.value());
+            if (const auto parent_app_name = reader.Get(HEADER_PARENT_APP_NAME); parent_app_name.has_value()) {
+                data_->setParentAppName(parent_app_name.value());
             }
-        }
 
-        if (const auto host = reader.Get(HEADER_HOST); host.has_value()) {
-            // One copy, not three: the endpoint and remote address default to
-            // the acceptor host in their getters (see SpanData).
-            data_->setAcceptorHost(host.value());
+            if (const auto parent_app_type = reader.Get(HEADER_PARENT_APP_TYPE); parent_app_type.has_value()) {
+                auto result = stoi_(parent_app_type.value());
+                if (result.has_value()) {
+                    data_->setParentAppType(result.value());
+                }
+            }
+
+            if (const auto parent_service_name = reader.Get(HEADER_PARENT_SERVICE_NAME); parent_service_name.has_value()) {
+                data_->setParentServiceName(parent_service_name.value());
+            }
+
+            if (const auto flag = reader.Get(HEADER_FLAG); flag.has_value()) {
+                auto result = stoi_(flag.value());
+                if (result.has_value()) {
+                    data_->setFlags(result.value());
+                }
+            }
+
+            if (const auto host = reader.Get(HEADER_HOST); host.has_value()) {
+                // One copy, not three: the endpoint and remote address default to
+                // the acceptor host in their getters (see SpanData).
+                data_->setAcceptorHost(host.value());
+            }
         }
 
         agent_->getAgentStats().addActiveSpan(active_node_, data_->getSpanId(), data_->getStartTime());

@@ -56,12 +56,14 @@ protected:
     std::unique_ptr<MockAgentService> mock_agent_service_;
 };
 
-// Resolves a span's trace id the way AgentImpl::NewSpan does — parse the inbound
-// HEADER_TRACE_ID when present, otherwise generate a fresh one — so tests can
-// drive SpanImpl::extractContext(), which now takes the already-resolved id.
-static TraceId make_extract_trace_id(AgentService& agent, TraceContextReader& reader) {
+// Drives SpanImpl::extractContext() the way AgentImpl::NewSpan does: parse the
+// inbound HEADER_TRACE_ID when present (a continued trace), otherwise generate a
+// fresh one and mark the trace as new so no upstream header is adopted.
+static void extract_context(SpanImpl& span, AgentService& agent, TraceContextReader& reader) {
     const auto hdr = reader.Get(HEADER_TRACE_ID);
-    return hdr.has_value() ? TraceId::parseTraceId(hdr.value()) : agent.generateTraceId();
+    span.extractContext(reader,
+                        hdr.has_value() ? TraceId::parseTraceId(hdr.value()) : agent.generateTraceId(),
+                        hdr.has_value());
 }
 
 // ========== SpanData Tests ==========
@@ -822,7 +824,7 @@ TEST_F(SpanTest, TraceIdWireConsistentAcrossSurfacesTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "consistent-agent^1700000000^99");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     const std::string expected = "consistent-agent^1700000000^99";
 
@@ -916,7 +918,7 @@ TEST_F(SpanTest, SpanImplExtractContextTest) {
     reader.SetContext(HEADER_PARENT_APP_NAME, expected_parent_app_name);
     reader.SetContext(HEADER_PARENT_APP_TYPE, std::to_string(expected_parent_app_type));
     
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
     
     // Verify context was extracted with correct values
     EXPECT_EQ(span.GetSpanId(), expected_span_id) << "Span ID should match the value from context";
@@ -938,7 +940,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     // Create a span event first for context (required by NewAsyncSpan).
     auto base_event = span.NewSpanEvent("base-event");
@@ -966,7 +968,7 @@ TEST_F(SpanTest, AsyncSpanFlushesExceptionsOnEndTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     auto base_event = span.NewSpanEvent("base-event");
     auto async_span = span.NewAsyncSpan("async-operation");
@@ -1038,7 +1040,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
     MockTraceContextReader parent_reader;
     parent_reader.SetContext(HEADER_TRACE_ID, "test-agent-001^1234567890^1");
     parent_reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent_span.extractContext(parent_reader, make_extract_trace_id(*mock_agent_service_, parent_reader));
+    extract_context(parent_span, *mock_agent_service_, parent_reader);
 
     // Create span event and inject context
     auto parent_se = parent_span.NewSpanEvent("external-call");
@@ -1059,7 +1061,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
         reader.SetContext(HEADER_PARENT_SPAN_ID, parent_span_id.value());
     }
     
-    child_span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(child_span, *mock_agent_service_, reader);
     
     // Both spans should have valid IDs (after context extraction)
     EXPECT_NE(parent_span.GetSpanId(), 0) << "Parent span should have non-zero ID";
@@ -1079,7 +1081,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^7");
     reader.SetContext(HEADER_SPAN_ID, "123456789");
-    parent.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(parent, *mock_agent_service_, reader);
 
     // Created on the owning thread (needs a live span event for context).
     auto prepare_event = parent.NewSpanEvent("prepare-async");
@@ -1486,7 +1488,7 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     auto outer = span.NewSpanEvent("outer-event");           // depth 1 <= max 2
     auto real = span.NewSpanEvent("real-event");             // depth 2 <= max 2
@@ -1535,7 +1537,7 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
 
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     auto* outer = span.NewSpanEvent("outer-event");           // depth 1 <= 2 -> real
     auto* real = span.NewSpanEvent("real-event");             // depth 2 <= 2 -> real, depth -> 3
@@ -1582,7 +1584,7 @@ TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
     reader.SetContext(HEADER_SPAN_ID, "555");
-    span->extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(*span, *mock_agent_service_, reader);
 
     span->NewSpanEvent("outer-event");                          // depth 1 <= max 2
     auto* real = span->NewSpanEvent("real-event");              // depth 2 <= max 2
@@ -1688,7 +1690,7 @@ TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
         // span's embedded ActiveSpanNode, the same node the destructor
         // backstop must unlink.
         MockTraceContextReader reader;
-        span->extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+        extract_context(*span, *mock_agent_service_, reader);
 
         int32_t counts[4] = {0, 0, 0, 0};
         stats.collectActiveRequests(counts, now_ms);
@@ -1716,7 +1718,7 @@ TEST_F(SpanTest, FinishedSpanDestructorDoesNotReenterAgentStatsTest) {
 
     auto span = std::make_shared<SpanImpl>(&service, "op", "rpc");
     MockTraceContextReader reader;
-    span->extractContext(reader, make_extract_trace_id(service, reader));
+    extract_context(*span, service, reader);
     span->EndSpan();
 
     const auto accesses_after_end = service.agent_stats_accesses_;
@@ -1784,7 +1786,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
     MockTraceContextReader reader;
 
     // No HEADER_TRACE_ID set — should generate a new trace ID
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     const TraceId& tid = span.getSpanData()->getTraceId();
     EXPECT_EQ(tid.StartTime, mock_agent_service_->getStartTime())
@@ -1801,7 +1803,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "not-a-number");
 
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     const int64_t span_id = span.getSpanData()->getSpanId();
     EXPECT_NE(span_id, 0) << "An unparsable span id must not be left at the 0 default";
@@ -1816,7 +1818,7 @@ TEST_F(SpanTest, SpanEventInjectContextChildSpanIdDiffersFromParentTest) {
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "555");
     reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     auto se = span.NewSpanEvent("test-event");
     MockTraceContextWriter writer;
@@ -1837,7 +1839,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
 
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     span.EndSpan();
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1859,7 +1861,7 @@ TEST_F(SpanTest, SpanImplExplicitEndpointOverridesAcceptorHostDefaultTest) {
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
 
     span.SetEndPoint("/orders");
     span.SetRemoteAddress("");
@@ -1884,7 +1886,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
     reader.SetContext(HEADER_SPAN_ID, "100");
     reader.SetContext(HEADER_FLAG, "5");
 
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
@@ -1900,13 +1902,86 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
     reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
     reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
 
-    span.extractContext(reader, make_extract_trace_id(*mock_agent_service_, reader));
+    extract_context(span, *mock_agent_service_, reader);
     span.EndSpan();
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
     EXPECT_EQ(data->getParentServiceName(), "parent-service")
         << "Pinpoint-pServiceName header should populate the span's parentServiceName";
+}
+
+// A request with no Pinpoint-TraceID starts a brand new trace, so the rest of
+// the inbound Pinpoint headers belong to some *other* trace and must be ignored
+// — adopting them produced a root span pointing at a parent that does not exist
+// in this trace. Java gates the same block behind ServerRequestRecorder's
+// `if (!recorder.isRoot())`.
+TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdIgnoresUpstreamHeadersTest) {
+    auto& stats = mock_agent_service_->getAgentStats();
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    // No HEADER_TRACE_ID — everything below is a leftover from another trace.
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
+    reader.SetContext(HEADER_PARENT_APP_TYPE, "1010");
+    reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
+    reader.SetContext(HEADER_FLAG, "5");
+    reader.SetContext(HEADER_HOST, "upstream-host:8080");
+
+    extract_context(span, *mock_agent_service_, reader);
+
+    int32_t counts[4] = {0, 0, 0, 0};
+    stats.collectActiveRequests(counts, 1000000);
+    EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1)
+        << "a new root trace must still register as an active span";
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
+    EXPECT_EQ(data->getParentSpanId(), -1)
+        << "a root span has no parent; the upstream pSpanID belongs to another trace";
+    EXPECT_EQ(data->getParentAppName(), "")
+        << "the upstream pAppName must not be recorded as this root span's caller";
+    EXPECT_NE(data->getSpanId(), 555)
+        << "the span id must be generated, not taken from another trace";
+    EXPECT_NE(data->getParentAppType(), 1010);
+    EXPECT_EQ(data->getParentServiceName(), "");
+    EXPECT_EQ(data->getFlags(), 0);
+    EXPECT_EQ(data->getAcceptorHost(), "")
+        << "Pinpoint-Host is the non-root acceptor host; a new root trace has no acceptor";
+}
+
+// The mirror of the test above: a well-formed Pinpoint-TraceID means the trace
+// really is continued, so the upstream headers are adopted as before.
+TEST_F(SpanTest, SpanImplExtractContextWithTraceIdAdoptsUpstreamHeadersTest) {
+    auto& stats = mock_agent_service_->getAgentStats();
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
+    reader.SetContext(HEADER_PARENT_APP_TYPE, "1010");
+    reader.SetContext(HEADER_HOST, "upstream-host:8080");
+
+    extract_context(span, *mock_agent_service_, reader);
+
+    int32_t counts[4] = {0, 0, 0, 0};
+    stats.collectActiveRequests(counts, 1000000);
+    EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1)
+        << "a continued trace must register as an active span too";
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto& data = mock_agent_service_->recorded_spans_.back()->getSpanData();
+    EXPECT_EQ(data->getSpanId(), 555);
+    EXPECT_EQ(data->getParentSpanId(), 111);
+    EXPECT_EQ(data->getParentAppName(), "ParentApp");
+    EXPECT_EQ(data->getParentAppType(), 1010);
+    EXPECT_EQ(data->getAcceptorHost(), "upstream-host:8080");
 }
 
 // ========== SpanEventImpl InjectContext After Span Finished ==========

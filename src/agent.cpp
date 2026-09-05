@@ -921,7 +921,7 @@ namespace pinpoint {
             // lives on the same config generation its admission was decided
             // under, and hand the resolved trace id to the impl-level extract.
             auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, std::move(runtime));
-            span->extractContext(reader, std::move(trace_id));
+            span->extractContext(reader, std::move(trace_id), tid.has_value());
             return span;
         }
         return std::make_shared<UnsampledSpan>(this, std::move(runtime));
