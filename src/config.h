@@ -393,9 +393,10 @@ namespace pinpoint {
             // Hours after which a cached SQL UID is re-published to the
             // collector, refreshing the SqlUidMetaData row before its
             // server-side TTL (180 days) drops the SQL text and leaves the UI
-            // showing an empty statement. 0 or less never expires, which is
-            // only safe for processes shorter-lived than that TTL. Java
-            // parity: profiler.jdbc.sqlcacheexpirehours.
+            // showing an empty statement. 0 never expires, which is only
+            // safe for processes shorter-lived than that TTL; make_config()
+            // resets a negative to the default. Java parity:
+            // profiler.jdbc.sqlcacheexpirehours.
             int cache_expire_hours = defaults::SQL_CACHE_EXPIRE_HOURS;
             // SQL statements one transaction may run before the span is
             // marked failed, which is how an N+1 query pattern surfaces in
@@ -505,8 +506,9 @@ namespace pinpoint {
      * is seeded from @p old so keys absent from the file keep their running
      * values instead of reverting to defaults, the environment is re-applied
      * to the reloadable fields, the non-reloadable fields are retained, and
-     * the logger is reconfigured for the settings that actually changed. Either way the result is final —
-     * reload callers pass it straight to `reloadConfig()`.
+     * the logger is reconfigured for the settings that actually changed.
+     * Either way the result is final — reload callers pass it straight to
+     * `reloadConfig()`.
      *
      * @return Resolved configuration, or nullptr when construction failed.
      */

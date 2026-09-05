@@ -460,7 +460,7 @@ protected:
         int sampling_new_throughput{0};
         int sampling_continue_throughput{0};
         bool url_stat_enable_trim_path{false};
-        int url_stat_trim_path_depth{1};
+        int url_stat_trim_path_depth{3};
         int url_stat_limit{1024};
         int max_event_depth{16};
         int max_event_sequence{128};

@@ -28,8 +28,9 @@ namespace pinpoint {
     // The noop singletons below are intentionally heap-allocated and never
     // destroyed, mirroring the Logger and global-agent singletons.
     // noopSpanEvent() hands out raw pointers, and a host or detached thread
-    // may still trace during process-exit static destruction. A function-local value static would be destroyed by then,
-    // turning those late calls into use-after-destruction.
+    // may still trace during process-exit static destruction. A
+    // function-local value static would be destroyed by then, turning those
+    // late calls into use-after-destruction.
 
     SpanEventPtr noopSpanEvent() {
         static auto* event = new NoopSpanEvent();

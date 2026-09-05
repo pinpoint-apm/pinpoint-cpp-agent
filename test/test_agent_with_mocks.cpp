@@ -1431,6 +1431,27 @@ Sampling:
         << "a repeated StartAgent() must not reload the running config";
 }
 
+// The sink follows the same one-shot rule: a repeated StartAgent() whose
+// options carry no sink must not re-route the running agent's log back to the
+// file/stdout — its logs still belong to the host pipeline the first call set.
+TEST_F(StartAgentTest, StartAgentAgainKeepsTheRunningAgentsLogSink) {
+    auto cfg = make_test_config_for_create_agent();
+    auto original_agent = install_mock_agent(cfg);
+    ASSERT_TRUE(original_agent->Enable());
+
+    std::atomic<int> sink_calls{0};
+    Logger::getInstance().setSink([&](const char*, const char*) { sink_calls.fetch_add(1); });
+
+    set_config_string(kBaseConfigYaml);
+    ASSERT_TRUE(options_.log_sink == nullptr) << "this call deliberately carries no sink";
+    EXPECT_TRUE(StartAgent());
+
+    const int before = sink_calls.load();
+    Logger::getInstance().logWarn("test.cpp", 1, "still routed to the host");
+    EXPECT_EQ(sink_calls.load(), before + 1)
+        << "a repeated StartAgent() must leave the running agent's sink installed";
+}
+
 // reloadConfig() with a make_config(options, old) rebuild applies reloadable
 // fields — the same path the config-file watcher drives.
 TEST_F(StartAgentTest, ReloadConfigAppliesReloadableFields) {
@@ -1854,7 +1875,7 @@ Sampling:
 // Environment variables seed only the initial config. When make_config() is
 // handed the running config (a reload), it must NOT re-read them, so a value
 // set only via env can never override the running config on reload.
-TEST_F(StartAgentTest, MakeConfigSkipsEnvVarsOnReload) {
+TEST_F(StartAgentTest, MakeConfigRetainsNonReloadableFieldsOverEnvOnReload) {
     // First load (no old config): the env var IS applied.
     // env::APPLICATION_NAME is only the suffix; the agent reads "<prefix>_<suffix>".
     const std::string app_name_env = std::string(env::DEFAULT_PREFIX) + "_" + env::APPLICATION_NAME;
@@ -1863,8 +1884,9 @@ TEST_F(StartAgentTest, MakeConfigSkipsEnvVarsOnReload) {
     ASSERT_NE(cfg_initial, nullptr);
     const auto app_name_initial = cfg_initial->app_name_;
 
-    // Rebuild for a reload: the env var must now be ignored, and the identity
-    // is retained from the running config.
+    // Rebuild for a reload: ApplicationName is not reloadable, so the env var
+    // is skipped for it and the identity is retained from the running config
+    // (reloadable fields do keep taking env overrides, see the next test).
     auto running_cfg = make_test_config();
     auto cfg_reload = make_config(running_cfg);
     ASSERT_NE(cfg_reload, nullptr);
@@ -1874,7 +1896,7 @@ TEST_F(StartAgentTest, MakeConfigSkipsEnvVarsOnReload) {
     EXPECT_EQ(app_name_initial, "env-app-name")
         << "env var should seed the initial config";
     EXPECT_EQ(cfg_reload->app_name_, running_cfg->app_name_)
-        << "reload must retain the running app name, not re-read the env var";
+        << "reload must retain the running app name; the env var is non-reloadable";
 }
 
 // Env-sourced values still survive reloads: the reload config is seeded from

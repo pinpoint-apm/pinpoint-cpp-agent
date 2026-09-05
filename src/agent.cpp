@@ -1434,14 +1434,24 @@ namespace pinpoint {
     bool StartAgent(const AgentOptions& options) try {
         std::lock_guard<std::mutex> lock(global_agent_mutex);
 
+        auto agent = global_agent().load();
+
+        // Already running in this process: StartAgent() is one-shot per
+        // process. Config changes flow through the config-file watcher, not
+        // through repeated StartAgent() calls. Decided before the sink swap
+        // below, so a repeated call cannot re-route the running agent's log.
+        if (agent != nullptr && agent->ownedByThisProcess() &&
+            !agent->isExiting() && !agent->initFailed()) {
+            LOG_WARN("StartAgent() called again in this process; keeping the running agent");
+            return true;
+        }
+
         // Before anything that can log, so the host's own log pipeline also
         // gets the refusals and configuration errors below — those are exactly
         // the lines a host debugging a silent agent needs. An options object
         // without a sink clears any previous one, which is what a fresh start
         // means.
         Logger::getInstance().setSink(options.log_sink);
-
-        auto agent = global_agent().load();
 
         if (agent != nullptr) {
             // A global agent inherited across fork() is unusable here (its
@@ -1463,14 +1473,6 @@ namespace pinpoint {
                 global_agent().store(nullptr);
                 agent.reset();
                 return false;
-            }
-
-            // Already running in this process: StartAgent() is one-shot per
-            // process. Config changes flow through the config-file watcher,
-            // not through repeated StartAgent() calls.
-            if (!agent->isExiting() && !agent->initFailed()) {
-                LOG_WARN("StartAgent() called again in this process; keeping the running agent");
-                return true;
             }
 
             // Neither a shut-down agent nor one whose async init failed is
