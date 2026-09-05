@@ -16,6 +16,8 @@
 
 #include <gtest/gtest.h>
 #include <google/protobuf/arena.h>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <thread>
@@ -1191,6 +1193,177 @@ TEST_F(UrlStatTest, TickClockBucketsByInjectedTickInterval) {
     coarse_stats.addSnapshot(&first, *config);
     coarse_stats.addSnapshot(&second, *config);
     EXPECT_EQ(coarse_stats.takeSnapshot()->getEachStats().size(), 1u);
+}
+
+// ========== Tick-boundary snapshots, limit drops, method prefix ==========
+
+// Captures what the URL-stat paths log. The only observable effect of a
+// limit/retention drop is its WARN, so these tests read the log file back.
+class UrlStatLogTest : public UrlStatTest {
+protected:
+    void SetUp() override {
+        UrlStatTest::SetUp();
+        log_file_ = std::filesystem::temp_directory_path() / "test_pinpoint_url_stat_log.txt";
+        std::filesystem::remove(log_file_);
+        Logger::getInstance().setLogLevel("warning");
+        Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    }
+
+    void TearDown() override {
+        Logger::getInstance().shutdown();
+        std::filesystem::remove(log_file_);
+        UrlStatTest::TearDown();
+    }
+
+    // Flushes the logger, then returns everything written so far.
+    std::string logged() {
+        Logger::getInstance().shutdown();
+        std::ifstream file(log_file_);
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+
+    std::filesystem::path log_file_;
+};
+
+// Feeds one entry for `url` in the tick starting at `second`.
+static void add_at(UrlStats& stats, const Config& config, const std::string& url, int64_t second) {
+    UrlStatEntry entry(url, "GET", 200);
+    entry.elapsed_ = 10;
+    entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(second));
+    stats.addSnapshot(&entry, config);
+}
+
+// The regression this whole change exists for: while the stats stream is
+// stalled, `limit` must stay a per-tick capacity. Before tick-boundary
+// snapshots, one map accumulated every stalled tick's keys and `limit`
+// rejected everything past the first `limit` keys of the whole outage — a
+// 5-minute stall cut each tick's capacity to a tenth.
+TEST_F(UrlStatTest, LimitStaysPerTickWhileSendingIsBlocked) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    cfg->http.url_stat.limit = 3;
+    const auto config = mock_agent_service_->getConfig();
+
+    // 1s ticks stand in for the production 30s ones; ten ticks are the
+    // 5-minute stall. No takeSnapshot() in the loop: nothing is sent.
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    constexpr int kTicks = 10;
+    for (int t = 0; t < kTicks; t++) {
+        for (int u = 0; u < 3; u++) {
+            add_at(url_stats, *config, "/api/tick" + std::to_string(t) + "/url" + std::to_string(u),
+                   1000 + t);
+        }
+    }
+
+    const auto snapshot = url_stats.takeSnapshot();
+    std::unordered_map<int64_t, int> per_tick;
+    for (const auto& [key, unused] : snapshot->getEachStats()) {
+        per_tick[key.tick_]++;
+    }
+
+    // Four completed ticks are retained (Java's snapshotQueue capacity) plus
+    // the one still in progress; the older six were dropped whole.
+    EXPECT_EQ(per_tick.size(), 5u) << "retention is bounded at 4 completed ticks + the current one";
+    for (const auto& [tick, count] : per_tick) {
+        EXPECT_EQ(count, 3) << "tick " << tick << " must get the full limit, not a share of it";
+    }
+    EXPECT_EQ(snapshot->getEachStats().size(), 15u)
+        << "a stalled stream must not shrink total capacity to a single limit";
+}
+
+// Stragglers: an entry for an already-cut tick must be kept (under its own
+// tick key) and must not cut the snapshot again.
+TEST_F(UrlStatTest, StragglerForCutTickIsFoldedBackOnSend) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    add_at(url_stats, *config, "/api/straggler", 1000);  // opens tick 1000
+    add_at(url_stats, *config, "/api/next", 1001);       // cuts tick 1000
+    add_at(url_stats, *config, "/api/straggler", 1000);  // late arrival for tick 1000
+
+    const auto snapshot = url_stats.takeSnapshot();
+    const auto& stats = snapshot->getEachStats();
+    ASSERT_EQ(stats.size(), 2u) << "the straggler must not open a third key";
+    const auto found = stats.find(UrlKey{"/api/straggler", 1000000});
+    ASSERT_NE(found, stats.end());
+    EXPECT_EQ(found->second.total.total(), 20)
+        << "both samples of the straggling key must survive the merge";
+}
+
+TEST_F(UrlStatLogTest, LimitOverflowWarnsAndRateLimits) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    cfg->http.url_stat.limit = 1;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    add_at(url_stats, *config, "/api/kept", 1000);
+    for (int i = 0; i < 50; i++) {
+        add_at(url_stats, *config, "/api/dropped" + std::to_string(i), 1000);
+    }
+
+    const auto content = logged();
+    EXPECT_NE(content.find("url stat limit reached"), std::string::npos)
+        << "an over-limit drop must not be silent";
+    EXPECT_NE(content.find("max 1 distinct urls per tick"), std::string::npos)
+        << "the log must name the limit that rejected the url";
+    // The default reporter interval is 60s, so all 50 drops fold into one line.
+    EXPECT_EQ(std::count(content.begin(), content.end(), '\n'), 1)
+        << "50 drops must not produce 50 log lines";
+}
+
+TEST_F(UrlStatLogTest, CompletedSnapshotQueueDropsOldestAndReports) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    // Seven ticks: six of them get cut into a queue with four slots, so the
+    // two oldest are evicted. The seventh is still in progress.
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    for (int t = 0; t < 7; t++) {
+        add_at(url_stats, *config, "/api/tick" + std::to_string(t), 1000 + t);
+    }
+
+    const auto snapshot = url_stats.takeSnapshot();
+    const auto& stats = snapshot->getEachStats();
+    EXPECT_EQ(stats.size(), 5u) << "4 retained ticks + the one in progress";
+    EXPECT_EQ(stats.find(UrlKey{"/api/tick0", 1000000}), stats.end()) << "the oldest tick goes first";
+    EXPECT_EQ(stats.find(UrlKey{"/api/tick1", 1001000}), stats.end()) << "then the next-oldest";
+    EXPECT_NE(stats.find(UrlKey{"/api/tick2", 1002000}), stats.end()) << "newer ticks are kept";
+    EXPECT_NE(stats.find(UrlKey{"/api/tick6", 1006000}), stats.end()) << "including the one in progress";
+
+    const auto content = logged();
+    EXPECT_NE(content.find("url stat snapshot queue overflow"), std::string::npos)
+        << "discarding a whole tick must not be silent";
+}
+
+// A prefix built from an empty method used to produce " /api/users": the same
+// url split into two server-side keys depending on whether the method was
+// known. Java's UriMethodTransformer and Go both skip the prefix instead.
+TEST_F(UrlStatTest, MethodPrefixIsSkippedForEmptyMethod) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = true;
+    TickClock tick_clock(1);
+
+    UrlStatEntry no_method("/api/users", "", 200);
+    no_method.elapsed_ = 10;
+    no_method.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(400));
+    snapshot.add(&no_method, config, tick_clock);
+
+    const auto& stats = snapshot.getEachStats();
+    ASSERT_EQ(stats.size(), 1u);
+    EXPECT_EQ(stats.begin()->first.url_, "/api/users") << "an empty method must not leave a prefix";
+
+    // A known method still gets one, so the fix does not disable the feature.
+    UrlStatEntry with_method("/api/users", "GET", 200);
+    with_method.elapsed_ = 10;
+    with_method.end_time_ = no_method.end_time_;
+    snapshot.add(&with_method, config, tick_clock);
+    EXPECT_NE(stats.find(UrlKey{"GET /api/users", 400000}), stats.end());
 }
 
 } // namespace pinpoint

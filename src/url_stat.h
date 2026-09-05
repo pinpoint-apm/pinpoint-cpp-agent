@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -71,6 +72,8 @@ namespace pinpoint {
 
         /// @brief Adds an elapsed-time sample (milliseconds).
         void add(int32_t elapsed);
+        /// @brief Folds another histogram of the same key into this one.
+        void merge(const UrlStatHistogram& other);
         int64_t total() const { return total_; }
         int64_t max() const { return max_; }
         int32_t histogram(int index) const {
@@ -137,8 +140,17 @@ namespace pinpoint {
         UrlStatSnapshot& operator=(const UrlStatSnapshot&) = delete;
         
         /// @brief Adds a URL statistic using the bucketization rules.
-        void add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
+        /// @return false when url_stat.limit rejected a new key; true otherwise.
+        bool add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock);
+        /// @brief Moves @p other's entries into this snapshot, folding the
+        /// histograms of any key present in both. Deliberately does not
+        /// re-check url_stat.limit: the limit caps each tick as it is
+        /// collected, and merging is what assembles those ticks for one send.
+        void merge(UrlStatSnapshot& other);
         const UrlStatMap& getEachStats() const { return urlMap_; }
+        bool empty() const { return urlMap_.empty(); }
+        /// @brief Newest tick added so far; 0 while empty.
+        int64_t tick() const { return tick_; }
 
         /// @brief Trims a URL path to at most @p depth segments. Production
         /// uses the string_view form internally; this is the checkable seam.
@@ -146,6 +158,7 @@ namespace pinpoint {
 
     private:
         UrlStatMap urlMap_;
+        int64_t tick_{0};
     };
 
     /// @brief Background workers for collecting and sending URL statistics.
@@ -179,11 +192,19 @@ namespace pinpoint {
 
         /// @brief Adds a runtime statistic to the current snapshot buffer.
         void addSnapshot(const UrlStatEntry* us, const Config& config);
-        /// @brief Extracts the latest snapshot for transmission.
+        /// @brief Extracts everything aggregated so far for transmission:
+        /// the ticks already cut into completed_ plus the in-progress one,
+        /// merged into a single snapshot.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot();
 
     private:
         static constexpr size_t kQueueShardCount = 16;
+        // Completed ticks retained while the stats stream is down, matching
+        // Java's AsyncQueueingUriStatStorage snapshotQueue capacity of 4 —
+        // two minutes of 30s ticks. Bounded because a stream that never
+        // recovers would otherwise grow this without limit; the oldest tick
+        // is the one worth losing first.
+        static constexpr size_t kMaxCompletedSnapshots = 4;
 
         // One queue per shard: each request thread sticks to one shard
         // (picked by thread id), so enqueues from different threads mostly
@@ -195,6 +216,9 @@ namespace pinpoint {
 
         QueueShard& queueShard();
         void drainQueueShards(const Config& config);
+        /// @brief Cuts the snapshot at a tick boundary, then aggregates @p us.
+        ///        Caller must hold snapshot_mutex_.
+        void addLocked(const UrlStatEntry& us, const Config& config);
         /// @brief One supervised run of the aggregation loop; the public
         /// worker restarts it after a transient exception.
         void runAddUrlStatsWorker(const Config& config);
@@ -230,12 +254,22 @@ namespace pinpoint {
         // post-shutdown entries instead of buffering them into queues no
         // worker will ever drain.
         std::atomic<bool> accepting_{true};
-        // Rate-limited overflow reporting (see QueueDropReporter).
-        QueueDropReporter drop_reporter_{};
+        // Rate-limited overflow reporting (see QueueDropReporter). One per
+        // drop cause: sharing a reporter would conflate the counts and let
+        // whichever fires first silence the others for a whole window.
+        QueueDropReporter queue_drop_reporter_{};
+        QueueDropReporter limit_drop_reporter_{};
+        QueueDropReporter snapshot_drop_reporter_{};
 
         // Snapshot management
         TickClock tick_clock_;
+        // snapshot_ collects the tick in progress; completed_ holds the ticks
+        // already cut, oldest first, until a send drains them. Both are under
+        // snapshot_mutex_. Keeping each tick separate is what makes
+        // url_stat.limit a per-tick capacity: a stalled stream no longer packs
+        // N ticks' keys into one limit-capped map.
         std::unique_ptr<UrlStatSnapshot> snapshot_;
+        std::deque<std::unique_ptr<UrlStatSnapshot>> completed_{};
         std::mutex snapshot_mutex_{};
 
         // Send worker synchronization

@@ -59,7 +59,13 @@ namespace pinpoint {
 
     static std::string build_url_stat_key(const UrlStatEntry& us,
                                           const TrimmedUrlPath& trimmed,
-                                          bool method_prefix) {
+                                          bool method_prefix_enabled) {
+        // A prefix built from an empty method would leave a leading space
+        // (" /api/users"), splitting the same URL into two server-side keys
+        // depending on whether the method was known. Java's
+        // UriMethodTransformer and Go's url_stat.go both skip the prefix in
+        // that case; match them.
+        const bool method_prefix = method_prefix_enabled && !us.method_.empty();
         const auto method_prefix_size = method_prefix ? us.method_.size() + 1 : 0;
         std::string url;
         url.reserve(method_prefix_size + trimmed.path.size() + (trimmed.wildcard ? 1 : 0));
@@ -83,8 +89,50 @@ namespace pinpoint {
           send_interval_(send_interval) {}
 
     void UrlStats::addSnapshot(const UrlStatEntry* us, const Config& config) {
+        if (us == nullptr) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        snapshot_->add(us, config, tick_clock_);
+        addLocked(*us, config);
+    }
+
+    void UrlStats::addLocked(const UrlStatEntry& us, const Config& config) {
+        // Tick boundary: the first entry of a newer tick closes the one in
+        // progress. Entry arrival drives this rather than a timer thread —
+        // entries carry an end time of about "now", so the cut lands on the
+        // boundary anyway, and a tick with no traffic has nothing to cut.
+        // Whatever is still in progress when a send comes is taken by
+        // takeSnapshot(), so a trailing tick is never stranded here.
+        //
+        // Strictly-newer only: a straggler for an already-cut tick (drained
+        // out of order across shards) must not cut again. It lands in the
+        // current snapshot under its own tick key, which is what the server
+        // aggregates by, and merge() folds it back together on send.
+        const auto tick = tick_clock_.tick(us.end_time_);
+        if (!snapshot_->empty() && tick > snapshot_->tick()) {
+            if (completed_.size() >= kMaxCompletedSnapshots) {
+                completed_.pop_front();
+                if (const auto dropped = snapshot_drop_reporter_.record()) {
+                    LOG_WARN("url stat snapshot queue overflow: {} tick(s) dropped in total "
+                             "(max {} completed snapshots); the stats stream is not draining",
+                             dropped, kMaxCompletedSnapshots);
+                }
+            }
+            completed_.push_back(std::move(snapshot_));
+            snapshot_ = std::make_unique<UrlStatSnapshot>();
+        }
+
+        if (!snapshot_->add(&us, config, tick_clock_)) {
+            // Logged under snapshot_mutex_ on purpose: the reporter grants at
+            // most one line per interval, so this cannot stall takeSnapshot
+            // (the send path) more than momentarily once a minute, and the
+            // alternative is plumbing a count out of a 64-entry batch loop.
+            if (const auto dropped = limit_drop_reporter_.record()) {
+                LOG_WARN("url stat limit reached: {} url(s) dropped in total "
+                         "(max {} distinct urls per tick)",
+                         dropped, config.http.url_stat.limit);
+            }
+        }
     }
 
     std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot() {
@@ -95,6 +143,14 @@ namespace pinpoint {
         auto fresh = std::make_unique<UrlStatSnapshot>();
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.swap(fresh);
+        // Every retained tick goes out in one message: PAgentUriStat carries a
+        // repeated eachUriStat and each entry stamps its own tick, so draining
+        // one snapshot per send token would have taken 4 send intervals to
+        // clear a backlog the stream is finally able to accept.
+        while (!completed_.empty()) {
+            fresh->merge(*completed_.front());
+            completed_.pop_front();
+        }
         return fresh;
     }
 
@@ -128,9 +184,19 @@ namespace pinpoint {
         histogram_[getBucket(elapsed)]++;
     }
 
-    void UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
+    void UrlStatHistogram::merge(const UrlStatHistogram& other) {
+        total_ += other.total_;
+        if (max_ < other.max_) {
+            max_ = other.max_;
+        }
+        for (int i = 0; i < URL_STATS_BUCKET_SIZE; i++) {
+            histogram_[i] += other.histogram_[i];
+        }
+    }
+
+    bool UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
         if (us == nullptr) {
-            return;
+            return true;
         }
 
         const auto tick = tick_clock.tick(us->end_time_);
@@ -150,7 +216,7 @@ namespace pinpoint {
         auto found = urlMap_.find(key);
         if (found == urlMap_.end()) {
             if (urlMap_.size() >= static_cast<size_t>(config.http.url_stat.limit)) {
-                return;
+                return false;
             }
             if (urlMap_.empty() && config.http.url_stat.limit > 0) {
                 constexpr size_t kMaxInitialReserve = 4096;
@@ -159,10 +225,35 @@ namespace pinpoint {
             found = urlMap_.try_emplace(std::move(key)).first;
         }
 
+        // The boundary UrlStats::addLocked cuts on. Only accepted entries
+        // advance it, and by max rather than last, so an out-of-order
+        // straggler cannot move it back and cut the same tick twice.
+        if (tick > tick_) {
+            tick_ = tick;
+        }
+
         auto& stats = found->second;
         stats.total.add(us->elapsed_);
         if (us->failed_) {
             stats.fail.add(us->elapsed_);
+        }
+        return true;
+    }
+
+    void UrlStatSnapshot::merge(UrlStatSnapshot& other) {
+        // Splices every node whose key is not already here — no rehashing of
+        // the moved entries, no string copies.
+        urlMap_.merge(other.urlMap_);
+        // Only key collisions are left behind, i.e. the same url in the same
+        // tick reached both snapshots (a straggler). Fold rather than drop.
+        for (auto& [key, stat] : other.urlMap_) {
+            auto& target = urlMap_[key];
+            target.total.merge(stat.total);
+            target.fail.merge(stat.fail);
+        }
+        other.urlMap_.clear();
+        if (tick_ < other.tick_) {
+            tick_ = other.tick_;
         }
     }
 
@@ -234,7 +325,7 @@ namespace pinpoint {
             // and the WARN below formats and writes. WARN so outage data loss
             // is visible at the default log level, rate-limited so a full
             // queue cannot log once per dropped request.
-            if (const auto dropped = drop_reporter_.record()) {
+            if (const auto dropped = queue_drop_reporter_.record()) {
                 LOG_WARN("url stat queue overflow: {} dropped in total (max queue size {})",
                          dropped, config.http.url_stat.queue_size);
             }
@@ -295,7 +386,7 @@ namespace pinpoint {
                 for (size_t i = 0; i < kEntriesPerSnapshotLock && !batch.empty(); i++) {
                     auto us = std::move(batch.front());
                     batch.pop();
-                    snapshot_->add(&us, config, tick_clock_);
+                    addLocked(us, config);
                 }
             }
         }
