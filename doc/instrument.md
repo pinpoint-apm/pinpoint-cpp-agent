@@ -376,6 +376,25 @@ pinpoint::HEADER_PARENT_SERVICE_NAME  // "Pinpoint-pServiceName"
 pinpoint::HEADER_HOST              // "Pinpoint-Host"
 ```
 
+**The injected header set is conditional — do not assume every header is present.**
+`InjectContext()` omits a header whose value is unset rather than writing an empty
+string, matching the Java agent's `DefaultRequestTraceWriter`. A receiver that gets
+`Pinpoint-pAppNamespace: ""` instead of no header at all breaks the trace when it
+has a cluster namespace configured. Currently omitted:
+
+| Header | Written when |
+|---|---|
+| `Pinpoint-pServiceName` | the agent has a service name (`uid.version=v4`; v1/v3 omit it) |
+| `Pinpoint-Host` | the span event has a destination (`SetDestination()`) |
+| `Pinpoint-pAppNamespace` | **never** — this agent does not support a cluster namespace |
+
+An unsampled or dead-span event writes only `Pinpoint-Sampled: s0`. A
+`TraceContextWriter` implementation must therefore tolerate any subset of these keys.
+
+> **Limitation**: cluster namespaces (Java's `profiler.cluster.namespace`) are not
+> supported in either direction — no config key sets one, and `Pinpoint-pAppNamespace`
+> is neither written nor read on inbound requests.
+
 ### Server Side: Extracting Context
 
 When receiving a request, pass a `TraceContextReader` to `NewSpan()`; it extracts

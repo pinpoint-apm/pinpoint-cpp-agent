@@ -901,6 +901,54 @@ TEST_F(SpanTest, SpanEventInjectContextOmitsParentServiceNameWhenEmptyTest) {
         << "Pinpoint-pServiceName must be omitted when the agent has no service name (v1/v3)";
 }
 
+// A Java receiver with profiler.cluster.namespace set runs DefaultNameSpaceChecker,
+// which accepts only an absent header or an exact match — an empty Pinpoint-pAppNamespace
+// fails the equals() and RequestTraceReader starts newTrace() instead of continuing,
+// severing the trace at the C++ -> Java hop. The agent has no namespace setting, so the
+// header must never be written; every other header keeps going out unchanged.
+TEST_F(SpanTest, SpanEventInjectContextOmitsEmptyNamespaceAndHostTest) {
+    mock_agent_service_->setServiceName("my-service");
+
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto se = span.NewSpanEvent("test-event");
+    se->SetDestination("downstream:8080");
+
+    MockTraceContextWriter writer;
+    se->InjectContext(writer);
+
+    EXPECT_FALSE(writer.Get(HEADER_PARENT_APP_NAMESPACE).has_value())
+        << "Pinpoint-pAppNamespace must be omitted, not sent as an empty string";
+
+    for (const auto header : {HEADER_TRACE_ID, HEADER_SPAN_ID, HEADER_PARENT_SPAN_ID,
+                              HEADER_FLAG, HEADER_PARENT_APP_NAME, HEADER_PARENT_APP_TYPE,
+                              HEADER_PARENT_SERVICE_NAME, HEADER_HOST}) {
+        EXPECT_TRUE(writer.Get(header).has_value())
+            << "header must still be propagated: " << header;
+    }
+    EXPECT_EQ(writer.Get(HEADER_HOST).value(), "downstream:8080");
+
+    se->EndEvent();
+    span.EndSpan();
+}
+
+// Java writes Pinpoint-Host only when the host is non-null; an event with no
+// destination must leave the header out rather than send "".
+TEST_F(SpanTest, SpanEventInjectContextOmitsHostWhenDestinationEmptyTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    auto se = span.NewSpanEvent("test-event"); // no SetDestination()
+
+    MockTraceContextWriter writer;
+    se->InjectContext(writer);
+
+    EXPECT_FALSE(writer.Get(HEADER_HOST).has_value())
+        << "Pinpoint-Host must be omitted when the span event has no destination";
+    EXPECT_TRUE(writer.Get(HEADER_TRACE_ID).has_value())
+        << "the rest of the context still propagates";
+
+    se->EndEvent();
+    span.EndSpan();
+}
+
 TEST_F(SpanTest, SpanImplExtractContextTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextReader reader;

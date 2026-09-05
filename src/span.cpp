@@ -537,8 +537,16 @@ namespace pinpoint {
         if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
             writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
         }
-        writer.Set(HEADER_PARENT_APP_NAMESPACE, "");
-        writer.Set(HEADER_HOST, host);
+        // No header is written for the cluster namespace: this agent has no
+        // namespace setting, and an empty one is not the same as an absent one
+        // downstream. A Java receiver with profiler.cluster.namespace set runs
+        // DefaultNameSpaceChecker, which passes only on null (no header) or an
+        // exact match — "" fails the equals() and RequestTraceReader falls back
+        // to newTrace(), breaking the trace at this hop. Java's writer likewise
+        // normalizes an unset value to null and skips the header.
+        if (!host.empty()) {
+            writer.Set(HEADER_HOST, host);
+        }
     }
 
     void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id, bool continued) {
