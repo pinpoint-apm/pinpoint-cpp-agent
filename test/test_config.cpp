@@ -159,7 +159,7 @@ Http:
   UrlStatLimit: 2048
   UrlStatQueueSize: 4096
   UrlStatEnableTrimPath: false
-  UrlStatTrimPathDepth: 3
+  UrlStatTrimPathDepth: 4
   UrlStatMethodPrefix: true
   
   Server:
@@ -292,7 +292,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "Default URL stat queue size should be 1024";
     EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
-    EXPECT_EQ(config->http.url_stat.trim_path_depth, 1) << "Default path depth should be 1";
+    EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "Default path depth should be 3";
     EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
     
     // Test HTTP server defaults
@@ -446,7 +446,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->http.url_stat.limit, 2048) << "URL stat limit should match YAML";
     EXPECT_EQ(config->http.url_stat.queue_size, 4096) << "URL stat queue size should match YAML";
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match YAML";
-    EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "URL stat path depth should match YAML";
+    EXPECT_EQ(config->http.url_stat.trim_path_depth, 4) << "URL stat path depth should match YAML";
     EXPECT_TRUE(config->http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
     
     // Test HTTP server configuration

@@ -348,7 +348,13 @@ namespace pinpoint {
                 // key every path parameter separately. Callers that record a
                 // URI template must turn it off (see doc/config.md).
                 bool enable_trim_path = true;
-                int trim_path_depth = 1;
+                // 3, not 1: at depth 1 every path under a prefix collapses
+                // into one key ("/api/users/123" -> "/api/*"), so the default
+                // threw away the route that Java and Go keep verbatim. 3
+                // keeps a typical "/api/users/{id}" route intact and still
+                // folds anything deeper. Callers that record URI templates
+                // should set enable_trim_path=false, not tune this.
+                int trim_path_depth = 3;
                 bool method_prefix = false;
             } url_stat;
 

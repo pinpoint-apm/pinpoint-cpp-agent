@@ -258,11 +258,13 @@ TEST_F(UrlStatTest, SnapshotKeepsUriTemplateWhenTrimmingOff) {
         << "the recorded URI template must be aggregated verbatim by default";
 }
 
-// The default: a caller recording raw URLs gets its path parameters folded
-// into one key instead of one key per id.
-TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathByDefault) {
+// Trimming folds a raw URL's path parameters into one key instead of one key
+// per id. Depth 1 is the pre-default-change behaviour, kept reachable by
+// configuration for anyone whose dashboards were built on the collapsed keys.
+TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathAtDepthOne) {
     UrlStatSnapshot snapshot;
     Config config;
+    config.http.url_stat.enable_trim_path = true;
     config.http.url_stat.trim_path_depth = 1;
     TickClock tick_clock(1);
 
@@ -274,6 +276,39 @@ TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathByDefault) {
     const auto& stats = snapshot.getEachStats();
     ASSERT_EQ(stats.size(), 1u);
     EXPECT_EQ(stats.begin()->first.url_, "/api/*");
+}
+
+// The shipped default (trim on, depth 3): a route-shaped path survives whole,
+// so C++ keys equal what Java and Go would have recorded verbatim. Uses a
+// default-constructed Config on purpose — this pins the default itself.
+TEST_F(UrlStatTest, SnapshotKeepsRouteShapedPathAtDefaultDepth) {
+    Config config;
+    ASSERT_TRUE(config.http.url_stat.enable_trim_path);
+    ASSERT_EQ(config.http.url_stat.trim_path_depth, 3);
+    TickClock tick_clock(1);
+
+    for (const auto* url : {"/api/users/123", "/api/users/{id}"}) {
+        UrlStatSnapshot snapshot;
+        UrlStatEntry stat(url, "GET", 200);
+        stat.elapsed_ = 30;
+        stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(200));
+        snapshot.add(&stat, config, tick_clock);
+
+        const auto& stats = snapshot.getEachStats();
+        ASSERT_EQ(stats.size(), 1u);
+        EXPECT_EQ(stats.begin()->first.url_, url)
+            << "the default depth must not collapse a route-shaped path";
+    }
+
+    // Deeper than the default depth still folds, which is the whole point of
+    // leaving trimming on for raw-URL callers.
+    UrlStatSnapshot deep;
+    UrlStatEntry stat("/api/users/123/comments/9", "GET", 200);
+    stat.elapsed_ = 30;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(200));
+    deep.add(&stat, config, tick_clock);
+    ASSERT_EQ(deep.getEachStats().size(), 1u);
+    EXPECT_EQ(deep.getEachStats().begin()->first.url_, "/api/users/123/*");
 }
 
 TEST_F(UrlStatTest, SnapshotBucketsEmptyUrlUnderUnknownConstant) {
@@ -291,6 +326,10 @@ TEST_F(UrlStatTest, SnapshotBucketsEmptyUrlUnderUnknownConstant) {
     trim_config.http.url_stat.enable_trim_path = true;
     trimmed_snapshot.add(&stat, trim_config, tick_clock);
 
+    // The literal, not just the constant: the value is Java's
+    // URITemplate.NULL_URI, so a rename would split the mixed-language
+    // "no URI recorded" bucket in two without any test noticing.
+    EXPECT_EQ(URL_STAT_UNKNOWN, "/NULL");
     ASSERT_EQ(snapshot.getEachStats().size(), 1u);
     EXPECT_EQ(snapshot.getEachStats().begin()->first.url_, URL_STAT_UNKNOWN);
     ASSERT_EQ(trimmed_snapshot.getEachStats().size(), 1u);

@@ -924,7 +924,10 @@ protected:
         cfg->span.queue_size = 1024;
         cfg->http.url_stat.enable = true;
         cfg->http.url_stat.limit = 1024;
-        cfg->http.url_stat.trim_path_depth = 3;
+        // 4, not the default 3: GrpcAgentRegisterAgentUsesDefaultServerMetaData
+        // asserts this key reaches serviceLib, and only non-default values are
+        // reported there (see to_non_default_config_strings).
+        cfg->http.url_stat.trim_path_depth = 4;
         cfg->collector.host = "localhost";
         cfg->collector.agent_port = 9991;
         cfg->collector.span_port = 9993;
@@ -1018,7 +1021,7 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
     EXPECT_TRUE(has_service_lib("Span.MaxEventDepth=32"));
     EXPECT_TRUE(has_service_lib("Span.EventChunkSize=10"));
     EXPECT_TRUE(has_service_lib("Http.CollectUrlStat=true"));
-    EXPECT_TRUE(has_service_lib("Http.UrlStatTrimPathDepth=3"));
+    EXPECT_TRUE(has_service_lib("Http.UrlStatTrimPathDepth=4"));
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {

@@ -300,27 +300,51 @@ bitmask are not implemented.
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
 | `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered while waiting for aggregation; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. |
-| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. **Set this to `false` if the caller passes a URL pattern** — see the note below. |
-| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `1` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is (depth `2`: `/api/users` → `/api/users`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
+| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. **Keep it on only if the caller passes the raw request URL; set it to `false` if the caller passes a URL pattern** — see the note below. |
+| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `3` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is, so the default depth `3` keeps `/api/users/123` and trims only from the fourth segment (`/api/users/123/comments` → `/api/users/123/*`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
 
-A request recorded without a URL is aggregated under the key `UNKNOWN_URL` (matching the Java/Go agents) rather than an empty string.
+A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's `URITemplate.NULL_URI` verbatim, so a mixed Java/C++ application keeps one "no URI recorded" bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
 
 #### Turn trimming off when you pass a URL pattern
 
-Trimming exists for callers that can only report the **raw request URL**. With it
-on, `/api/users/123` and `/api/users/456` both key as `/api/*` instead of
-producing one URL stat entry per id.
+Trimming exists for one case only: instrumentation that can report nothing but
+the **raw request URL**, where every path parameter would otherwise become its
+own URL stat key and exhaust `Http.UrlStatLimit`. Keep it on only then.
 
 If your instrumentation already reports a **URL pattern** (a route template such
 as `/api/users/{id}`), that normalisation has happened once and trimming would
-apply it again — `/api/users/{id}` collapses to `/api/*`, discarding the route
-you deliberately passed and merging unrelated endpoints under one key. Set
+apply it again, discarding the route you deliberately passed. Set
 `Http.UrlStatEnableTrimPath: false` in that case, which also matches the Java and
 Go agents: both aggregate the recorded URI template verbatim and have no
 equivalent option.
 
 Rule of thumb: **raw URL in → leave it `true`; URL pattern in → set it `false`.**
+
+##### Why trimming is on by default, at depth `3`
+
+The agent cannot tell a raw URL from a URI template — both arrive as a string —
+so the default has to guess for one of the two callers. It stays **on**, because
+a raw-URL caller silently blowing through `Http.UrlStatLimit` is the worse
+failure, and turning it off is a one-line opt-out for the caller that knows it
+passes templates.
+
+The **depth** is what carries the cost of that guess, and depth `1` made it too
+expensive: it collapsed every route under a prefix into a single `/api/*` key,
+so a template caller who never read this page lost its routes entirely and a
+raw-URL caller got one useless bucket per prefix. Depth `3` keeps route-shaped
+paths (`/api/users/{id}`, `/api/users/123`) intact and still folds the deep,
+high-cardinality tails. Java and Go do not normalise at all, so depth `3` also
+leaves C++ keys equal to theirs for any path of three segments or fewer.
+
+> **Breaking change — URL stat aggregation keys.** The depth default moved from
+> `1` to `3`, and the stand-in key for a request recorded without a URL moved
+> from `UNKNOWN_URL` to `/NULL` (both in the same release, so the keys break
+> once). Anything pinned to the old keys — a dashboard, an alert or a saved
+> URL stat chart built on the collapsed `/api/*` buckets — will show the new
+> keys as new series and the old ones as flat. To keep the previous behaviour,
+> set `Http.UrlStatEnableTrimPath: true` and `Http.UrlStatTrimPathDepth: 1`
+> explicitly; the `/NULL` rename has no opt-out.
 
 
 ### Server-side Tracing
