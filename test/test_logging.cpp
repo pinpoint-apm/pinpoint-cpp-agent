@@ -32,6 +32,15 @@ namespace {
         std::ifstream ifs(path);
         return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
     }
+
+    size_t count_occurrences(const std::string& haystack, const std::string& needle) {
+        size_t count = 0;
+        for (auto pos = haystack.find(needle); pos != std::string::npos;
+             pos = haystack.find(needle, pos + needle.size())) {
+            ++count;
+        }
+        return count;
+    }
 }
 
 class LoggingTest : public ::testing::Test {
@@ -379,9 +388,12 @@ TEST_F(LoggingTest, ShutdownCanBeCalledMultipleTimes) {
     Logger::getInstance().shutdown();
 }
 
-// A straggler logging after shutdown must not fall back to std::cout: the
-// agent is embedded in hosts whose stdout belongs to the host, not to us.
-TEST_F(LoggingTest, FileLoggerDropsLogsAfterShutdown) {
+// A straggler logging after shutdown must not fall back to std::cout — the
+// agent is embedded in hosts whose stdout belongs to the host, not to us --
+// but it still belongs in the log file. An overrunning teardown reports how
+// it ended after shutdown_logger() has already run, and that report is the
+// whole reason the deadline is observable at all.
+TEST_F(LoggingTest, FileLoggerKeepsWritingToTheFileAfterShutdown) {
     Logger::getInstance().setFileLogger(log_file_.string(), 10);
     Logger::getInstance().logInfo("test.cpp", 1, "before shutdown");
     Logger::getInstance().shutdown();
@@ -393,9 +405,18 @@ TEST_F(LoggingTest, FileLoggerDropsLogsAfterShutdown) {
     const auto captured = testing::internal::GetCapturedStdout();
 
     EXPECT_TRUE(captured.empty()) << "leaked to stdout: " << captured;
+    // The reopened stream flushes per line like any other, so the straggler
+    // is on disk before anything closes the file again.
     auto content = read_file(log_file_.string());
     EXPECT_TRUE(content.find("before shutdown") != std::string::npos);
-    EXPECT_TRUE(content.find("after shutdown straggler") == std::string::npos);
+    EXPECT_TRUE(content.find("after shutdown straggler") != std::string::npos)
+        << "the straggler was dropped instead of reaching the file";
+
+    // The second shutdown_logger() the teardown paths run once the stragglers
+    // are done closes the reopened stream for good.
+    shutdown_logger();
+    EXPECT_TRUE(read_file(log_file_.string()).find("after shutdown straggler")
+                != std::string::npos);
 }
 
 // Regression: a file logger whose file will not open falls back to std::cout
@@ -429,9 +450,10 @@ TEST_F(LoggingTest, UnopenableFileLoggerDropsLogsAfterShutdown) {
     EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
 }
 
-// The suppression is tied to the original sink: a logger that was on stdout
-// all along keeps writing there, which is where its lines already went.
-TEST_F(LoggingTest, StdoutLoggerKeepsWritingAfterShutdown) {
+// The default sink with no Log.FilePath configured is stdout, so a closed
+// logger has nowhere left to put a line — and the host's stdout is not an
+// answer once the agent has said goodbye. Drop it.
+TEST_F(LoggingTest, StdoutLoggerDropsLogsAfterShutdown) {
     Logger::getInstance().setFileLogger("", 0);
     Logger::getInstance().shutdown();
 
@@ -441,7 +463,52 @@ TEST_F(LoggingTest, StdoutLoggerKeepsWritingAfterShutdown) {
     std::cout.flush();
     const auto captured = testing::internal::GetCapturedStdout();
 
-    EXPECT_TRUE(captured.find("after shutdown on stdout") != std::string::npos);
+    EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
+}
+
+// Rotation renames the log away and reopens the path. When that reopen fails
+// the sink is gone for good, and the pre-existing std::cout fallback would
+// then pour every later line into the host's stdout for the rest of the
+// process. Drop them instead, after a single notice on stderr.
+TEST_F(LoggingTest, RotationReopenFailureDropsLogsAndNotifiesOnce) {
+    const auto dir = std::filesystem::temp_directory_path() / "pinpoint_rotation_reopen";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const auto path = (dir / "agent.log").string();
+
+    // Start already over the 1 MB rotation threshold, so the next line
+    // rotates without having to write a megabyte through the logger.
+    {
+        std::ofstream ofs(path);
+        ofs << std::string(2 * 1024 * 1024, 'x');
+    }
+    Logger::getInstance().setFileLogger(path, 1);
+
+    // Pull the directory out from under the open stream: writes to the
+    // unlinked inode still succeed, the rename does not, and neither does the
+    // reopen — which is the path under test.
+    std::filesystem::remove_all(dir, ec);
+    ASSERT_FALSE(std::filesystem::exists(dir));
+
+    std::cout.flush();
+    std::cerr.flush();
+    testing::internal::CaptureStdout();
+    testing::internal::CaptureStderr();
+    Logger::getInstance().logInfo("test.cpp", 1, "the line that rotates");
+    for (int i = 0; i < 5; ++i) {
+        Logger::getInstance().logInfo("test.cpp", 2, "after the broken rotation {}", i);
+    }
+    std::cout.flush();
+    std::cerr.flush();
+    const auto out = testing::internal::GetCapturedStdout();
+    const auto err = testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(out.empty()) << "leaked to the host's stdout: " << out;
+    EXPECT_EQ(count_occurrences(err, "could not be reopened after rotation"), 1u)
+        << "the failure must be reported exactly once; stderr was:\n" << err;
+
+    std::filesystem::remove_all(dir, ec);
 }
 
 // Restart (a second StartAgent) reconfigures the file logger, which must lift
@@ -524,17 +591,6 @@ TEST_F(LoggingTest, LogMacrosWork) {
 }
 
 // ========== Log-site throttle (QueueDropReporter::acquire) / LOG_*_THROTTLED Tests ==========
-
-namespace {
-    size_t count_occurrences(const std::string& haystack, const std::string& needle) {
-        size_t count = 0;
-        for (auto pos = haystack.find(needle); pos != std::string::npos;
-             pos = haystack.find(needle, pos + needle.size())) {
-            ++count;
-        }
-        return count;
-    }
-}
 
 TEST(LogThrottleTest, FirstOccurrenceAlwaysReports) {
     QueueDropReporter throttle;

@@ -84,7 +84,10 @@ namespace pinpoint {
          *        disables rotation.
          */
         void setFileLogger(const std::string& log_file_path, const int max_size);
-        /// @brief Flushes pending log messages and releases file resources.
+        /// @brief Flushes pending log messages and releases file resources,
+        /// and bans the std::cout fallback from there on (see `closed_`).
+        /// Idempotent: the teardown paths call it more than once, and the
+        /// last call is what closes the file a straggler reopened.
         void shutdown();
 
         template <typename... Args>
@@ -173,21 +176,30 @@ namespace pinpoint {
         }
 
         void write(LogLevel level, std::string_view file, int line, const std::string& message);
+        bool openFileLocked();
         void rotateFileIfNeededLocked();
 
         std::string file_path_;
         std::uint64_t max_file_size_{0};
         std::uint64_t current_file_size_{0};
         bool file_enabled_{false};
-        // Set by shutdown() when a log file was configured, cleared by
-        // setFileLogger(). Once closed, write() drops lines instead of falling
-        // back to std::cout: the agent is embedded in hosts (nginx) whose
-        // stdout must not be polluted by stragglers that log after shutdown.
-        // A logger that was in stdout mode all along stays on stdout, since
-        // that is where its lines were already going — but a file logger
-        // currently degraded to stdout (see file_enabled_) is still a file
-        // logger and is silenced like any other.
+        // Set by shutdown(), cleared by setFileLogger(). It bans the
+        // std::cout fallback rather than logging itself: the agent is
+        // embedded in hosts (nginx) whose stdout must not be polluted by
+        // stragglers that log after shutdown. A configured log file stays
+        // available — write() reopens it in append mode, so the lines an
+        // overrunning teardown emits on its way out are still recorded — and
+        // a line is dropped only when there is no file to put it in, which is
+        // the whole of the stdout-only configuration once the agent is gone.
         bool closed_{false};
+        // Latched when the file sink fails in a way that must not degrade to
+        // std::cout: a post-rotation reopen (the old file already renamed
+        // away), or the post-shutdown reopen above. Unlike the open failure in
+        // setFileLogger(), which is configuration time and keeps the fallback
+        // so the host can see what went wrong, these strand a running agent
+        // whose every later line would otherwise land on the host's stdout.
+        // Cleared by setFileLogger().
+        bool file_broken_{false};
         std::unique_ptr<std::ofstream> file_stream_;
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};

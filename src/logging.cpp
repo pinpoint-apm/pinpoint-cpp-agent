@@ -50,6 +50,7 @@ namespace pinpoint {
         std::lock_guard<std::mutex> lock(mutex_);
 
         closed_ = false;
+        file_broken_ = false;
         file_path_ = log_file_path;
         // max_size is the rotation threshold in MB. Guard against non-positive
         // values: a negative size cast to uint64_t and scaled by 1 MiB would
@@ -61,10 +62,9 @@ namespace pinpoint {
             ? static_cast<std::uint64_t>(max_size) * 1024 * 1024
             : 0;
         current_file_size_ = 0;
-        file_enabled_ = !file_path_.empty();
-
+        file_enabled_ = false;
         file_stream_.reset();
-        if (!file_enabled_) {
+        if (file_path_.empty()) {
             return;
         }
 
@@ -74,11 +74,26 @@ namespace pinpoint {
             current_file_size_ = static_cast<std::uint64_t>(size);
         }
 
+        // A failure here deliberately keeps the std::cout fallback rather than
+        // latching file_broken_: this is configuration time, and a host that
+        // just pointed the agent at an unusable path still wants to see why
+        // its log file stays empty.
+        openFileLocked();
+    }
+
+    // Opens file_path_ in append mode and reports whether the sink came up.
+    // On failure the sink is left disabled and the caller decides what that
+    // means — the std::cout fallback at configuration time, a dropped line
+    // once the logger is closed or broken.
+    bool Logger::openFileLocked() {
         file_stream_ = std::make_unique<std::ofstream>(file_path_, std::ios::out | std::ios::app);
         if (!file_stream_->is_open()) {
-            file_enabled_ = false;
             file_stream_.reset();
+            file_enabled_ = false;
+            return false;
         }
+        file_enabled_ = true;
+        return true;
     }
 
     void Logger::shutdown() {
@@ -89,17 +104,15 @@ namespace pinpoint {
             file_stream_->close();
         }
         file_stream_.reset();
-        // Only a file sink is silenced; a stdout logger keeps writing where
-        // it always did. Keyed on the configured path rather than on
-        // file_enabled_, which is cleared whenever the file sink fails: an
-        // open or a post-rotation reopen that failed leaves a file logger
-        // writing to std::cout with file_enabled_ false, and that is exactly
-        // the logger whose stragglers must not keep reaching the host's
-        // stdout. Latched rather than assigned, so the repeated
-        // shutdown_logger() calls on the teardown paths do not un-close it.
-        if (!file_path_.empty()) {
-            closed_ = true;
-        }
+        // Bans the std::cout fallback from here on — it does not silence the
+        // logger. A configured log file stays writable: write() reopens it in
+        // append mode for stragglers, and the shutdown_logger() the teardown
+        // paths run afterwards closes it again. Only a logger with no file to
+        // write to goes quiet, which is what the stdout-only configuration
+        // asks for once the agent is gone. Latched rather than assigned, so
+        // the repeated shutdown_logger() calls on the teardown paths do not
+        // un-close it.
+        closed_ = true;
         file_enabled_ = false;
     }
 
@@ -129,8 +142,14 @@ namespace pinpoint {
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        if (closed_) {
-            return;
+        // A straggler logging after shutdown() closed the file: reopen it
+        // rather than lose the line. What an overrunning teardown records on
+        // its way out — the workers still draining, and the summary of how
+        // long they took — is exactly what the log exists for. One attempt
+        // per close: a failure latches file_broken_ so this does not retry an
+        // ofstream construction per line.
+        if (closed_ && !file_enabled_ && !file_broken_ && !file_path_.empty()) {
+            file_broken_ = !openFileLocked();
         }
 
         if (file_enabled_ && file_stream_) {
@@ -145,9 +164,12 @@ namespace pinpoint {
             file_stream_->flush();
             current_file_size_ += static_cast<std::uint64_t>(buf.size());
             rotateFileIfNeededLocked();
-        } else {
+        } else if (!closed_ && !file_broken_) {
             std::cout.write(buf.data(), static_cast<std::streamsize>(buf.size()));
         }
+        // Otherwise the line is dropped. With no file left to write to, a
+        // closed or broken logger must not start pouring the agent's
+        // diagnostics into the host's stdout, which is not ours to use.
     }
 
     void Logger::rotateFileIfNeededLocked() {
@@ -167,10 +189,18 @@ namespace pinpoint {
         std::filesystem::remove(rotated_path, remove_ec);
         std::filesystem::rename(file_path_, rotated_path, rename_ec);
 
-        file_stream_ = std::make_unique<std::ofstream>(file_path_, std::ios::out | std::ios::app);
-        if (!file_stream_->is_open()) {
-            file_enabled_ = false;
-            file_stream_.reset();
+        if (!openFileLocked()) {
+            // The old file was renamed away and its replacement will not open
+            // (the directory lost write permission, the disk filled). Falling
+            // back to std::cout here would dump the rest of the process's
+            // logs into the host's stdout, so drop them instead and say so
+            // once on stderr — this is the only notice there will be.
+            // file_broken_ is latched and blocks the reopen in write(), so
+            // rotation cannot run again and the notice cannot repeat.
+            file_broken_ = true;
+            std::cerr << "[pinpoint] log file " << file_path_
+                      << " could not be reopened after rotation; further logs are dropped"
+                      << std::endl;
             return;
         }
 
