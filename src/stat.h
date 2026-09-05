@@ -30,6 +30,7 @@
 
 #include "active_span.h"
 #include "agent_service.h"
+#include "utility.h"
 
 namespace pinpoint {
     /// @brief Snapshot of runtime statistics collected from the agent process.
@@ -53,6 +54,12 @@ namespace pinpoint {
         int64_t    num_skip_new_{0};
         int64_t    num_skip_cont_{0};
         int32_t    active_requests_[4]{0, 0, 0, 0};
+        // Open file descriptors, or -1 when the platform reading failed (the
+        // same uncollected sentinel grpc_builders.h uses for nonHeap/gc, and
+        // what Java's FileDescriptorMetric reports on unsupported platforms).
+        // Defaulted to the sentinel so a snapshot slot never travels as a 0
+        // the UI would plot as "no files open".
+        int64_t    open_fd_count_{-1};
     };
 
     /// @brief Worker responsible for periodically sending agent statistics to the collector.
@@ -99,10 +106,12 @@ namespace pinpoint {
          * interval sent slots the next cycle had already overwritten — mixed
          * timestamps, then the same slots again on the next token.) Only a
          * stall longer than a whole cycle loses data: the next completion
-         * replaces an unsent batch, and the pending token sends the newer one.
+         * replaces an unsent batch (reported, see stat_batch_drop_reporter_)
+         * and the pending token sends the newer one.
          */
         std::vector<AgentStatsSnapshot> copySnapshots() {
             std::lock_guard<std::mutex> lock(mutex_);
+            completed_batch_sent_ = true;
             return completed_batch_;
         }
 
@@ -201,9 +210,6 @@ namespace pinpoint {
         
         // Statistics Data
         std::chrono::system_clock::time_point last_collect_time_;
-        // No predecessor to measure against yet, so the first collection after
-        // initAgentStats() reports the configured interval.
-        bool first_collect_{true};
         // Empty until the first successful CPU-time reading: a failed reading
         // must not become a 0 baseline (it would make the next delta span the
         // whole process lifetime and clamp to a bogus 100% load).
@@ -222,8 +228,14 @@ namespace pinpoint {
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
         // Last completed cycle; see copySnapshots().
         std::vector<AgentStatsSnapshot> completed_batch_;
+        // False from the moment a cycle is published until copySnapshots()
+        // hands it to the stats stream. A completion arriving while it is
+        // false overwrites a batch nobody ever sent.
+        bool completed_batch_sent_{true};
+        // Rate-limited overflow reporting (see QueueDropReporter), matching
+        // the span/metadata/url_stat queues.
+        QueueDropReporter stat_batch_drop_reporter_{};
         int batch_{0};
-        int collect_interval_{0};
         
         // Cached system constants
         long sc_clk_tck_{0};

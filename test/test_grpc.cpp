@@ -852,6 +852,25 @@ TEST(GrpcAgentStatBuilderTest, UncollectedJvmFieldsTravelAsMinusOne) {
     EXPECT_EQ(gc.jvmgcoldcount(), UNCOLLECTED_STAT_VALUE);
     EXPECT_EQ(gc.jvmgcoldtime(), UNCOLLECTED_STAT_VALUE);
     EXPECT_EQ(gc.type(), v1::JVM_GC_TYPE_UNKNOWN);
+
+    // Default-constructed snapshot: the fd reading never happened, so the
+    // field must carry the sentinel rather than 0.
+    ASSERT_TRUE(agent_stat.has_filedescriptor());
+    EXPECT_EQ(agent_stat.filedescriptor().openfiledescriptorcount(), UNCOLLECTED_STAT_VALUE);
+}
+
+// The "Open File Descriptor" chart stayed empty because build_agent_stat never
+// populated the submessage at all; a collected count has to reach the wire.
+TEST(GrpcAgentStatBuilderTest, OpenFileDescriptorCountReachesTheWire) {
+    AgentStatsSnapshot stat;
+    stat.open_fd_count_ = 137;
+
+    google::protobuf::Arena arena;
+    const auto* batch = build_agent_stat_batch({stat}, &arena);
+
+    ASSERT_EQ(batch->agentstat_size(), 1);
+    ASSERT_TRUE(batch->agentstat(0).has_filedescriptor());
+    EXPECT_EQ(batch->agentstat(0).filedescriptor().openfiledescriptorcount(), 137);
 }
 
 TEST(GrpcMetadataTest, SocketIdNeverInBaseHeaderSet) {

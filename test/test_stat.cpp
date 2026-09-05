@@ -22,6 +22,7 @@
 #include <cstring>
 #include <string_view>
 #include <vector>
+#include <iostream>
 
 #include "../src/stat.h"
 #include "../src/url_stat.h"
@@ -68,6 +69,12 @@ TEST_F(StatTest, CollectAgentStatTest) {
     EXPECT_TRUE(snapshot.process_cpu_time_ >= 0.0 || std::isnan(snapshot.process_cpu_time_)) 
         << "Process CPU time should be non-negative or NaN";
     EXPECT_GE(snapshot.num_threads_, 0) << "Number of threads should be non-negative";
+    // The test binary itself holds stdin/stdout/stderr at minimum, so a
+    // working reading is > 0; -1 is the uncollected sentinel and 0 would mean
+    // the reader returned a bogus count instead of failing cleanly.
+    EXPECT_GT(snapshot.open_fd_count_, 0)
+        << "open file descriptors must be counted on this platform, got "
+        << snapshot.open_fd_count_;
 }
 
 // The CPU-load rewrite computes a load only when a prior baseline exists and
@@ -133,10 +140,11 @@ TEST(ProcStatusParseTest, MissingFieldsStayZero) {
 // collectInterval must be the gap actually measured between collections, not
 // the configured value: the collect timer fires late under load and the
 // collector divides the row's counters by whatever interval it is handed
-// (Java's CollectJob reports the same measured gap). The first collection has
-// no predecessor, so it reports the setting. Driven through the real worker,
-// which is where the configured interval is known.
-TEST_F(StatTest, CollectIntervalIsMeasuredExceptForTheFirstCollectionTest) {
+// (Java's CollectJob reports the same measured gap). That includes the first
+// collection — initAgentStats() sets the baseline, so it has a predecessor to
+// measure against. Driven through the real worker, which is where the
+// configured interval is known.
+TEST_F(StatTest, CollectIntervalIsAlwaysMeasuredTest) {
     constexpr int configured_ms = 200;
     constexpr size_t batch_count = 3;
     auto& config = mock_agent_service_->mutableConfig();
@@ -163,11 +171,11 @@ TEST_F(StatTest, CollectIntervalIsMeasuredExceptForTheFirstCollectionTest) {
     worker.join();
 
     ASSERT_EQ(batch.size(), batch_count) << "the worker never completed a batch";
-    EXPECT_EQ(batch[0].interval_, configured_ms)
-        << "the first collection has no predecessor to measure against";
-    for (size_t i = 1; i < batch.size(); i++) {
+    for (size_t i = 0; i < batch.size(); i++) {
         // Wide bounds: this pins "measured, not the constant" without making
         // the test depend on the scheduler hitting the interval exactly.
+        EXPECT_GT(batch[i].interval_, 0)
+            << "snapshot " << i << " interval is divided by on the collector";
         EXPECT_GE(batch[i].interval_, configured_ms / 2)
             << "snapshot " << i << " interval must reflect the elapsed period";
         EXPECT_LT(batch[i].interval_, configured_ms * 25)
@@ -330,6 +338,48 @@ TEST_F(StatTest, CopySnapshotsHoldsCompletedBatchWhileNextCycleCollects) {
     EXPECT_LE(first[0].sample_time_, first[1].sample_time_);
     EXPECT_TRUE(consistent)
         << "slot 0 was overwritten by the next cycle while its batch was still pending";
+}
+
+// A stats stream stalled past a whole collect cycle loses the pending batch:
+// the next completion overwrites it. That used to be entirely silent — no
+// counter, no log — so a stall just made rows disappear. It is now reported
+// like the span/metadata/url_stat queue drops, and rate-limited the same way,
+// so a permanently stalled stream cannot flood the log at one line per cycle.
+TEST_F(StatTest, OverwritingAnUnsentBatchWarnsOnceAndIsRateLimited) {
+    auto& cfg = *mock_agent_service_->mutableConfig();
+    cfg.stat.enable = true;
+    cfg.stat.collect_interval = 20;  // ms
+    cfg.stat.batch_count = 1;
+
+    // Nothing calls copySnapshots() here, so every batch after the first is
+    // published over an unsent predecessor — exactly the stalled-stream case.
+    // The default sink is stdout, so no logger state has to be swapped.
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+
+    std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (mock_agent_service_->recorded_stats_calls_.load() < 4 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker_thread.join();
+
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+
+    ASSERT_GE(mock_agent_service_->recorded_stats_calls_.load(), 4)
+        << "the worker never published enough batches to overwrite an unsent one";
+
+    const auto first = logged.find("agent stat batch overwritten");
+    EXPECT_NE(first, std::string::npos)
+        << "overwriting an unsent batch must be reported; got: " << logged;
+    // Three or more overwrites happened inside one report interval, so the
+    // reporter must have granted exactly one line.
+    EXPECT_EQ(logged.find("agent stat batch overwritten", first + 1), std::string::npos)
+        << "the report must be rate-limited to one line per interval; got: " << logged;
 }
 
 // ========== AgentStats Class Tests ==========
@@ -809,6 +859,8 @@ TEST_F(StatTest, SnapshotDefaultInitTest) {
     EXPECT_EQ(snapshot.num_unsample_cont_, 0);
     EXPECT_EQ(snapshot.num_skip_new_, 0);
     EXPECT_EQ(snapshot.num_skip_cont_, 0);
+    EXPECT_EQ(snapshot.open_fd_count_, -1)
+        << "an uncollected fd count must default to the sentinel, not 0";
     for (int i = 0; i < 4; i++) {
         EXPECT_EQ(snapshot.active_requests_[i], 0);
     }

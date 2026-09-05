@@ -276,6 +276,13 @@ namespace pinpoint {
             auto* total_thread = google::protobuf::Arena::Create<v1::PTotalThread>(arena);
             total_thread->set_totalthreadcount(stat.num_threads_);
             agent_stat->unsafe_arena_set_allocated_totalthread(total_thread);
+
+            // Already the uncollected sentinel when the platform reading
+            // failed (see AgentStatsSnapshot::open_fd_count_), so it travels
+            // as-is; Java's AgentStatCollector sends the field the same way.
+            auto* file_descriptor = google::protobuf::Arena::Create<v1::PFileDescriptor>(arena);
+            file_descriptor->set_openfiledescriptorcount(stat.open_fd_count_);
+            agent_stat->unsafe_arena_set_allocated_filedescriptor(file_descriptor);
         }
 
         void build_url_histogram(v1::PUriHistogram* grpc_histogram, const UrlStatHistogram& url_histogram) {

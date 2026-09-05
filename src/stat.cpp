@@ -35,6 +35,9 @@
 #include <mach/mach_init.h>
 #include <mach/task.h>
 #include <mach/task_info.h>
+#include <libproc.h>
+#else
+#include <dirent.h>
 #endif
 
 #include "config.h"
@@ -206,6 +209,55 @@ namespace pinpoint {
         return status;
     }
 
+    // Open file descriptors, or -1 when the reading fails — the uncollected
+    // sentinel (grpc_builders.h), which is also what Java's
+    // FileDescriptorMetric reports where the platform cannot supply a count.
+    // Never a 0 fallback: a live process always holds fds, so 0 would be
+    // plotted as a real measurement.
+    static int64_t get_open_fd_count() {
+#ifdef __APPLE__
+        // A NULL buffer asks only for the size the list would need, so this
+        // never allocates or copies the table.
+        const int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, nullptr, 0);
+        if (bytes <= 0) {
+            return -1;
+        }
+        return bytes / static_cast<int64_t>(sizeof(struct proc_fdinfo));
+#else
+        // The only reading here whose cost scales with process state, and it
+        // scales linearly: measured on a 6.x kernel at ~0.16us per open fd
+        // warm (1.6ms at 10k fds, 11ms at 40k), with the first walk after a
+        // large change to the fd table ~8x that while the kernel populates
+        // the synthetic dentries. Once per collect interval on this worker
+        // thread only — never on a request thread — so even a 40k-fd process
+        // spends well under a percent of one core here. A bigger buffer is
+        // not the lever it looks like: raising it from glibc's default to
+        // 1MiB (readdir replaced by a raw getdents64 loop) moved nothing at
+        // any fd count, because the cost is the kernel's per-entry work.
+        //
+        // ponytail: an fd-exhausted process cannot open this directory, so
+        // the reading it most wants comes back as the sentinel. Left alone —
+        // the ramp up to the ceiling is already on the chart, and the fix
+        // (hold a dirfd for the agent's lifetime and re-walk it) has to
+        // handle fork, since an inherited dirfd still points at the parent's
+        // /proc/<pid>/fd.
+        DIR* dir = opendir("/proc/self/fd");
+        if (dir == nullptr) {
+            return -1;
+        }
+        int64_t count = 0;
+        while (const dirent* entry = readdir(dir)) {
+            if (entry->d_name[0] != '.') {
+                count++;
+            }
+        }
+        closedir(dir);
+        // The walk sees its own descriptor for /proc/self/fd, which is closed
+        // again the moment it returns: a deterministic +1 on every reading.
+        return count > 0 ? count - 1 : 0;
+#endif
+    }
+
     AgentStats::ProcessStatus AgentStats::getProcessStatus() {
         ProcessStatus status{0, 0, 0};
 
@@ -320,7 +372,6 @@ namespace pinpoint {
         resetAgentStats();
 
         last_collect_time_ = std::chrono::system_clock::now();
-        first_collect_ = true;
         batch_ = 0;
     }
 
@@ -390,25 +441,27 @@ namespace pinpoint {
 
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-        // Clamped because this is wall time: an NTP correction or an operator
-        // setting the date backwards between two collections makes the gap
-        // negative, and it goes on the wire as the window this row's counters
-        // cover. system_clock is still the right source — sample_time_ has to
-        // be wall time, so the gap comes off the same reading rather than a
-        // second, monotonic one, which is also what Java's CollectJob does
-        // with System.currentTimeMillis().
+        // Clamped to 1ms because this is wall time: an NTP correction or an
+        // operator setting the date backwards between two collections makes
+        // the gap negative, and it goes on the wire as the window this row's
+        // counters cover — where the collector divides by it
+        // (AvgUsingIntervalPostProcessor's count/(intervalMs/1000)), so 0 is
+        // as unusable as a negative. system_clock is still the right source —
+        // sample_time_ has to be wall time, so the gap comes off the same
+        // reading rather than a second, monotonic one, which is also what
+        // Java's CollectJob does with System.currentTimeMillis().
         const auto period = std::max(
             std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_),
-            std::chrono::milliseconds::zero());
+            std::chrono::milliseconds{1});
         last_collect_time_ = now;
 
         stat.sample_time_ = to_milli_seconds(now);
-        // Measured, not configured: the collect timer fires late under load,
-        // and the collector treats this as the window the row's counters were
-        // accumulated over (Java's CollectJob reports the same measured gap).
-        // The first collection has no predecessor, so it reports the setting.
-        stat.interval_ = first_collect_ ? collect_interval_ : period.count();
-        first_collect_ = false;
+        // Always measured, never the configured value: the collect timer fires
+        // late under load, and the collector treats this as the window the
+        // row's counters were accumulated over. initAgentStats() sets the
+        // baseline, so the first collection has one too — Java's CollectJob
+        // does the same, taking prevCollectionTimestamp in its constructor.
+        stat.interval_ = period.count();
 
         const auto cpu_load = getCpuLoad(period);
         stat.system_cpu_time_ = cpu_load.sys_load;
@@ -418,6 +471,7 @@ namespace pinpoint {
         stat.heap_alloc_size_ = process_status.heap_alloc;
         stat.heap_max_size_ = process_status.heap_max;
         stat.num_threads_ = process_status.num_threads;
+        stat.open_fd_count_ = get_open_fd_count();
 
         // Drain the per-thread shards in one sweep: response-time avg/max
         // plus the sampler-outcome counts.
@@ -455,8 +509,7 @@ namespace pinpoint {
         }
 
         std::unique_lock<std::mutex> lock(mutex_);
-        collect_interval_ = config.stat.collect_interval;
-        const auto timeout = std::chrono::milliseconds(collect_interval_);
+        const auto timeout = std::chrono::milliseconds(config.stat.collect_interval);
 
         while (!agent_->isExiting()) {
             if (!cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
@@ -474,7 +527,19 @@ namespace pinpoint {
                     // Hand the finished cycle to the sender before enqueuing
                     // its token (see copySnapshots): from the next tick on
                     // the working slots are overwritten in place.
+                    if (!completed_batch_sent_ && !completed_batch_.empty()) {
+                        // Logged under mutex_ on purpose: the reporter grants
+                        // at most one line per interval, so this cannot stall
+                        // a collect cycle more than momentarily once a minute.
+                        if (const auto dropped = stat_batch_drop_reporter_.record()) {
+                            LOG_WARN("agent stat batch overwritten before it was sent: "
+                                     "{} batch(es) dropped in total ({} snapshot(s) each); "
+                                     "the stats stream is not draining",
+                                     dropped, completed_batch_.size());
+                        }
+                    }
                     completed_batch_ = agent_stats_snapshots_;
+                    completed_batch_sent_ = false;
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);
