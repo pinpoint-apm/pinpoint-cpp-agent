@@ -161,10 +161,16 @@ namespace pinpoint {
          * there is no pending overflow (duplicate end).
          */
         void endDisabledSpanEvent();
-        /// @brief The span's shared overflow placeholder, created on first
-        /// overflow and owned here so it outlives the SpanImpl exactly as the
-        /// real span events do.
-        DisabledSpanEvent* disabledSpanEvent();
+        /**
+         * @brief The span's shared overflow placeholder, owned here so it
+         * outlives the SpanImpl exactly as the real span events do.
+         *
+         * Always alive, so this stays safe on the one path that can reach it
+         * off the owning thread: GetSpanEvent() warns about the violation but
+         * still has to return something, and NewSpanEvent's overflow branch
+         * runs after the same warning.
+         */
+        DisabledSpanEvent* disabledSpanEvent() { return &disabled_event_; }
 
         int32_t getEventSequence() const { return event_sequence_.load(std::memory_order_relaxed); }
         int32_t getEventDepth() const { return event_depth_.load(std::memory_order_relaxed); }
@@ -350,11 +356,14 @@ namespace pinpoint {
         std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
         // Handed out instead of a real event while the event stack is
         // overflowed (Java agent's DisableSpanEvent parity): records nothing
-        // but still injects trace context. Created lazily on the first
-        // overflow, one shared instance per span. Owned here rather than by
-        // the SpanImpl so a user-held pointer to it stays valid for as long as
-        // a real event's does — see getOwner().
-        std::unique_ptr<DisabledSpanEvent> disabled_event_;
+        // but still injects trace context. One shared instance per span, and
+        // a member by value rather than a lazily-built unique_ptr: the lazy
+        // build was a plain read-modify-write of the pointer, so two threads
+        // racing the contract (see disabledSpanEvent()) could each install
+        // their own and free the one the other had already handed out. Held
+        // here rather than by the SpanImpl so a user-held pointer to it stays
+        // valid for as long as a real event's does — see getOwner().
+        DisabledSpanEvent disabled_event_;
 
         // Owned by value: a span that records no annotation pays no heap.
         PinpointAnnotation annotations_;

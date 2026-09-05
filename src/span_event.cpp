@@ -294,13 +294,17 @@ namespace pinpoint {
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) try {
         if (warnIfFinished()) return;
+        // Before the agent call, not after: agent_ is only pinned for as long
+        // as the span is (see spanIfAlive). Nothing is lost by returning here
+        // — an event whose span is gone reaches no chunk, so a cached error
+        // id it recorded would never be sent.
+        auto* span = spanIfAlive();
+        if (span == nullptr) return;
         error_func_id_ = agent_->cacheError(error_name);
         error_string_ = abbreviateErrorString(error_message);
         // Propagate to the owning span (the async child span for async
         // events) so PSpan.err and the URL stat failure flag see it.
-        if (auto* span = spanIfAlive()) {
-            span->markSpanError(error_name, error_message);
-        }
+        span->markSpanError(error_name, error_message);
     } CATCH_AND_LOG("set error")
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
@@ -433,6 +437,10 @@ namespace pinpoint {
 
     void SpanEventImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         if (warnIfFinished()) return;
+        // Reaches the agent, so it needs the same gate as every span access:
+        // agent_ outlives this event only while the span holds it (see
+        // spanIfAlive).
+        if (spanIfAlive() == nullptr) return;
         agent_->recordClientHeader(which, reader, &annotations_);
     } CATCH_AND_LOG("record header")
 

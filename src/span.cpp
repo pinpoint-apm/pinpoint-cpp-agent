@@ -37,7 +37,8 @@ namespace pinpoint {
         // for bytes nothing looks at.
         operation_{api_id > 0 ? std::string_view{} : operation},
         api_id_{api_id},
-        start_time_{to_milli_seconds(std::chrono::system_clock::now())} {}
+        start_time_{to_milli_seconds(std::chrono::system_clock::now())},
+        disabled_event_{this} {}
 
     SpanEventImpl* SpanData::addSpanEvent(std::unique_ptr<SpanEventImpl> se) {
         const auto [sequence, depth] = nextEventSequenceAndDepth();
@@ -121,13 +122,6 @@ namespace pinpoint {
             }
         }
         LOG_WARN("span event is already finished");
-    }
-
-    DisabledSpanEvent* SpanData::disabledSpanEvent() {
-        if (!disabled_event_) {
-            disabled_event_ = std::make_unique<DisabledSpanEvent>(this);
-        }
-        return disabled_event_.get();
     }
 
     void SpanData::takeFinishedEvents(std::vector<SpanEventImpl*>& out) {
@@ -375,6 +369,9 @@ namespace pinpoint {
 
     SpanEventPtr SpanImpl::GetSpanEvent() try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
+        // Reads the event stack and the overflow counter, so it is as
+        // thread-bound as NewSpanEvent and warns on the same violation.
+        checkOwnerThread();
         // While overflowed, the top of the stack is a discarded event: hand
         // out the disabled event so InjectContext keeps working (see
         // NewSpanEvent).

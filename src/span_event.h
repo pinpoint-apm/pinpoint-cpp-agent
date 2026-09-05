@@ -147,12 +147,20 @@ namespace pinpoint {
          * @brief The parent span while it is alive, else nullptr (after a
          *        warning).
          *
-         * The single gate for every access to SpanImpl state. This event is
-         * owned by the SpanData, which outlives the SpanImpl whenever a chunk
-         * is still in flight — and user code may hold this event as a raw
-         * SpanEventPtr just as long (see doc/api_contracts.md sections 4/5).
-         * Dereferencing the span unguarded from such a late call would be a
-         * use-after-free, so no new method may reach the span any other way.
+         * The single gate for every access to SpanImpl state, and to the
+         * agent. This event is owned by the SpanData, which outlives the
+         * SpanImpl whenever a chunk is still in flight — and user code may
+         * hold this event as a raw SpanEventPtr just as long (see
+         * doc/api_contracts.md sections 4/5). Dereferencing the span
+         * unguarded from such a late call would be a use-after-free, so no
+         * new method may reach the span any other way.
+         *
+         * agent_ goes through the same gate because it has no pin of its
+         * own: SpanImpl::agent_ref_ is what keeps the agent alive, so the
+         * agent is guaranteed only while this returns non-null. Pinning it
+         * per event instead would put a shared_ptr copy on the hot path of
+         * the most numerous object in a trace, for a window the span already
+         * covers.
          */
         SpanImpl* spanIfAlive() const;
 
@@ -169,6 +177,8 @@ namespace pinpoint {
         // parent span is reached through it (see spanIfAlive) rather than
         // being cached here, because the span dies first.
         SpanData* data_;
+        // Valid only while spanIfAlive() returns non-null; see there. The
+        // constructor is the one unguarded user — it runs on a live span.
         AgentService* agent_;
         int32_t service_type_;
         std::string operation_;

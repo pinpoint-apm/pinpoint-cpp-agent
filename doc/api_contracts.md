@@ -18,7 +18,7 @@ agent log.
 
 A `Span` instance — including every `SpanEvent` it hands out — must be used by **one thread only** for its entire lifetime. Nothing inside a span is locked (the event stack, string fields, annotation lists), so concurrent calls on the same span are undefined behavior and can corrupt memory or crash.
 
-- The agent binds a span to the first thread that calls `NewSpanEvent()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`.
+- The agent binds a span to the first thread that calls `NewSpanEvent()` and logs an error (plus an `assert` in debug builds) when another thread touches it afterwards: `span accessed from another thread`. `GetSpanEvent()` and `RecordSpanEvent()` are checked and bind the same way — they read the same event stack.
 - Because binding is lazy, a **complete handoff** is allowed — but only *before* the span records anything: the owning thread is fixed by the **first `NewSpanEvent()`/`RecordSpanEvent()` call**, so create the span on thread A, pass the `SpanPtr` to thread B before any event is created, and never touch it from A again (the thread examples in [instrument.md §10](instrument.md#10-asynchronous-and-background-work) rely on this). Once the first event exists, the span belongs to that thread for good; handing it on afterwards logs `span accessed from another thread`.
 - To trace work that runs **concurrently** with the parent, do not share the span. Call `NewAsyncSpan()` *on the span's owning thread* and hand the returned child span to the worker; the child follows the same single-thread rule on its own thread.
 
@@ -77,7 +77,7 @@ Per span, event nesting depth is capped by `Span.MaxEventDepth` (default 64) and
 - `SetError()` on it is the one exception: nothing about the error is recorded, but it still **fails the transaction** (§9) — the depth limit bounds what is recorded, not whether the transaction failed.
 - `InjectContext()` **still writes the full trace context**, so downstream services continue the distributed trace. Overflow limits profiling detail; it is not a sampling decision.
 - You must still call `EndEvent()` exactly once for each overflowed `NewSpanEvent()` call — the span balances an internal overflow counter with it.
-- The disabled event is a single shared object per span, so `SetDestination()` values from interleaved overflowed calls can bleed into each other's `Pinpoint-Host` header.
+- The disabled event is a single shared object per span, so `SetDestination()` values from interleaved overflowed calls can bleed into each other's `Pinpoint-Host` header. **This differs from the Java agent**, where `SpanEventFactory.disableInstance()` hands back a new `DisableSpanEvent` per call and each one therefore carries its own destination. Concretely: with two nested overflowed events, the inner one's `SetDestination("db:3306")` is what the outer one's later `InjectContext()` writes as `Pinpoint-Host`. It affects only that header on calls made past the depth limit — nothing is recorded at that depth either way — so if it matters, raise `Span.MaxEventDepth` rather than working around it.
 - Its lifetime and its post-span behavior match a real span event's exactly (§4): it is owned by the same span data, not by the span object, and after the span is gone `EndEvent()` is a no-op and `InjectContext()` writes only `Pinpoint-Sampled: s0`.
 - `NewAsyncSpan()` called while the span is overflowed returns a no-op span.
 

@@ -199,8 +199,15 @@ namespace pinpoint {
 
             if (auto api_id = se->getApiId(); api_id > 0) {
                 span_event->set_apiid(api_id);
-            } else {
-                build_string_annotation(span_event->add_annotation(), ANNOTATION_API, se->getOperationName(), arena);
+            } else if (const auto& operation = se->getOperationName(); !operation.empty()) {
+                // Only when there is a name to fall back to: NewSpanEvent("")
+                // leaves both the id and the name empty, and an ANNOTATION_API
+                // carrying an empty string is worse than none — the collector
+                // shows a blank api instead of the caller's service type. Go
+                // skips the fallback on an empty operationName and Java's
+                // AbstractRecorder.recordApi records nothing for a null
+                // descriptor; match them.
+                build_string_annotation(span_event->add_annotation(), ANNOTATION_API, operation, arena);
             }
 
             if (const auto& annotations = se->getAnnotations()->getAnnotations();
@@ -335,10 +342,14 @@ namespace pinpoint {
         auto* accept_event = build_accept_event(span, arena);
         grpc_span->unsafe_arena_set_allocated_acceptevent(accept_event);
 
+        // Same empty-name guard as build_span_event, and it is the common
+        // case here rather than the edge one: an async child span is created
+        // with an empty operation on purpose (see NewAsyncSpan), so every one
+        // of them used to carry a blank ANNOTATION_API.
         if (auto api_id = span->getApiId(); api_id > 0) {
             grpc_span->set_apiid(api_id);
-        } else {
-            build_string_annotation(grpc_span->add_annotation(), ANNOTATION_API, span->getOperationName(), arena);
+        } else if (const auto& operation = span->getOperationName(); !operation.empty()) {
+            build_string_annotation(grpc_span->add_annotation(), ANNOTATION_API, operation, arena);
         }
         grpc_span->set_loggingtransactioninfo(span->getLoggingFlag());
         grpc_span->set_flag(span->getFlags());

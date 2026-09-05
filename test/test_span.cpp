@@ -23,6 +23,7 @@
 #include <thread>
 #include <functional>
 #include <atomic>
+#include <iostream>
 
 #include "../src/span.h"
 #include "../src/config.h"
@@ -1143,6 +1144,10 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     std::thread worker([&]() {
         auto se = async_span->NewSpanEvent("thread-event");
         EXPECT_NE(se, nullptr) << "Async span event should be created on the worker thread";
+        // GetSpanEvent() is owner-checked too, so it must accept the thread
+        // that legally owns the span (a Debug build asserts if it does not).
+        EXPECT_EQ(async_span->GetSpanEvent(), se)
+            << "the owning thread must reach its own innermost event";
         se->EndEvent();
         async_span->EndSpan();
     });
@@ -1158,6 +1163,37 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     prepare_event->EndEvent();
     parent.EndSpan();
 }
+
+#ifdef NDEBUG
+// GetSpanEvent() reads the same event stack NewSpanEvent writes, so it is
+// bound to the owning thread just as tightly; before this check it was the one
+// public entry point that let a foreign thread reach the stack (and, while
+// overflowed, the shared disabled event) with no warning at all.
+//
+// Release-only: the same check asserts in a Debug build, which is the point of
+// the assert — a test cannot deliberately trip it there.
+TEST_F(SpanTest, GetSpanEventFromForeignThreadWarnsTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    // Binds the span to this thread.
+    auto se = span.NewSpanEvent("owned-event");
+
+    // The default sink is stdout, so no logger state has to be swapped in and
+    // back out around this.
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    std::thread foreign([&]() { (void)span.GetSpanEvent(); });
+    foreign.join();
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(logged.find("must be used by a single thread"), std::string::npos)
+        << "GetSpanEvent from a foreign thread must report the violation; got: " << logged;
+
+    se->EndEvent();
+    span.EndSpan();
+}
+#endif  // NDEBUG
 
 // ========== parseTraceId Edge Case Tests ==========
 //
@@ -1657,7 +1693,20 @@ TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     overflowed->EndEvent();  // over-ending stays guarded too
 
     MockTraceContextWriter real_writer;
+    // These two reach the agent, not just the span, and the agent is only
+    // pinned by the span (SpanImpl::agent_ref_) — so they have to be gated on
+    // the span being alive just like every other cross-object access.
+    const auto errors_before = mock_agent_service_->cached_errors_.size();
+    const auto headers_before = mock_agent_service_->recorded_client_headers_;
     real->SetError("late", "after the span is gone");
+    MockHeaderReader header_reader;
+    header_reader.SetHeader("X-Late", "after the span is gone");
+    real->RecordHeader(HTTP_REQUEST, header_reader);
+    EXPECT_EQ(mock_agent_service_->cached_errors_.size(), errors_before)
+        << "SetError must not reach the agent once the span that pinned it is gone";
+    EXPECT_EQ(mock_agent_service_->recorded_client_headers_, headers_before)
+        << "RecordHeader must not reach the agent once the span that pinned it is gone";
+
     real->SetAnnotation(12, 42);
     real->InjectContext(real_writer);
     EXPECT_EQ(real_writer.Get(HEADER_SAMPLED).value(), "s0");
@@ -2223,6 +2272,70 @@ namespace {
         }
         return build_grpc_span(std::move(agent.recorded_spans_.back()), &arena);
     }
+}
+
+// A span event with no operation name has neither an api id nor a name to
+// fall back on, so the API annotation would go out with an empty value — the
+// collector renders that as a blank api instead of the caller's service type.
+// Go skips the fallback for an empty operationName and Java's
+// AbstractRecorder.recordApi records nothing for a null descriptor.
+TEST_F(SpanTest, EmptyOperationNameSendsNoApiAnnotationTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+
+    auto named = span.NewSpanEvent("named-event");
+    named->EndEvent();
+    auto unnamed = span.NewSpanEvent("");
+    unnamed->EndEvent();
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    ASSERT_EQ(pspan->spanevent_size(), 2);
+
+    for (const auto& se : pspan->spanevent()) {
+        for (const auto& annotation : se.annotation()) {
+            if (annotation.key() == ANNOTATION_API) {
+                EXPECT_FALSE(annotation.value().stringvalue().empty())
+                    << "an API annotation with no value is worse than none";
+            }
+        }
+    }
+
+    const auto& unnamed_event = pspan->spanevent(1);
+    EXPECT_EQ(unnamed_event.apiid(), 0) << "an empty operation caches no api id";
+    for (const auto& annotation : unnamed_event.annotation()) {
+        EXPECT_NE(annotation.key(), ANNOTATION_API)
+            << "the nameless event must send no API annotation at all";
+    }
+}
+
+// An async child span is created with an empty operation on purpose, so the
+// span-level fallback hit the same way — on every async span, not just an edge
+// case. Its PSpan must carry no API annotation either.
+TEST_F(SpanTest, AsyncSpanSendsNoEmptyApiAnnotationTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-op", "parent-rpc");
+    seed_test_trace_id(parent, *mock_agent_service_);
+
+    auto prepare = parent.NewSpanEvent("prepare-async");
+    auto async_span = parent.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+    auto se = async_span->NewSpanEvent("thread-event");
+    se->EndEvent();
+    async_span->EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->apiid(), 0) << "an async child span caches no api id";
+    for (const auto& annotation : pspan->annotation()) {
+        EXPECT_NE(annotation.key(), ANNOTATION_API)
+            << "an async span has no operation name, so it has no API to annotate";
+    }
+
+    prepare->EndEvent();
+    parent.EndSpan();
 }
 
 // The third path into the same flag: an event created past MaxEventDepth /
