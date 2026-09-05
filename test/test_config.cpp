@@ -624,6 +624,41 @@ TEST_F(ConfigTest, IsContainerSurvivesReload) {
         << "Reload must preserve env-sourced is_container=false";
 }
 
+// Regression: environment variables outrank the config file at every load, not
+// just the first one. Previously a reload re-applied the file on top of the
+// running config without re-reading the environment, so the moment the file
+// started naming an env-sourced reloadable key the file value won from then on.
+TEST_F(ConfigTest, EnvSourcedValueSurvivesFileReload) {
+    // Resolvable identity, so make_config() logs no resolution error.
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
+    setenv(full_env(env::SAMPLING_COUNTER_RATE).c_str(), "5", 1);
+
+    set_config_string("Sampling:\n  NewThroughput: 100\n");
+    auto first = make_config();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->sampling.counter_rate, 5);
+    ASSERT_EQ(first->sampling.new_throughput, 100);
+
+    // The reloaded file now names the env-sourced key too, next to a file-only one.
+    set_config_string("Sampling:\n  CounterRate: 42\n  NewThroughput: 200\n");
+    auto reloaded = make_config(first);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->sampling.counter_rate, 5)
+        << "the config file must not override an env-sourced value on reload";
+    EXPECT_EQ(reloaded->sampling.new_throughput, 200)
+        << "a file-only key must still be applied by a reload";
+
+    // Dropping the file-only key keeps its running value, and the env-sourced
+    // key stays pinned to the environment.
+    set_config_string("Sampling:\n  CounterRate: 99\n");
+    auto reloaded_again = make_config(reloaded);
+    ASSERT_NE(reloaded_again, nullptr);
+    EXPECT_EQ(reloaded_again->sampling.counter_rate, 5)
+        << "the config file must not override an env-sourced value on reload";
+    EXPECT_EQ(reloaded_again->sampling.new_throughput, 200)
+        << "a key absent from the reloaded file keeps its running value";
+}
+
 // Test the preferred COLLECTOR_* environment variables
 TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
     setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env.host", 1);

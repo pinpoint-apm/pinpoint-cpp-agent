@@ -476,13 +476,14 @@ namespace pinpoint {
      *
      * The YAML source is the file named by `resolve_config_file_path(options)`
      * (re-read on every call), falling back to `options.config_yaml`. On the
-     * first load (@p old is nullptr) environment overrides are applied and the
-     * logger configured immediately. Given @p old — the running agent's config
-     * — this is a reload: the config is seeded from @p old so keys absent from
-     * the file keep their running values (env-sourced included) instead of
-     * reverting to defaults, environment variables are not re-read, the
-     * non-reloadable fields are retained, and the logger is reconfigured for
-     * the settings that actually changed. Either way the result is final —
+     * Environment variables are applied on top of the YAML source on every
+     * load, so they outrank the file whether or not this is a reload. On the
+     * first load (@p old is nullptr) the logger is configured immediately.
+     * Given @p old — the running agent's config — this is a reload: the config
+     * is seeded from @p old so keys absent from the file keep their running
+     * values instead of reverting to defaults, the environment is re-applied
+     * to the reloadable fields, the non-reloadable fields are retained, and
+     * the logger is reconfigured for the settings that actually changed. Either way the result is final —
      * reload callers pass it straight to `reloadConfig()`.
      *
      * @return Resolved configuration, or nullptr when construction failed.

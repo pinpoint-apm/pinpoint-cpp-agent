@@ -550,8 +550,16 @@ namespace pinpoint {
         v = absl::StrSplit(e.value, ',', absl::SkipEmpty());
     }
 
-    static void load_env_config(const std::string& prefix, Config& config, bool& is_container_set) {
+    // `reloadable_only` skips the non-reloadable fields on a reload: they are
+    // overwritten with the running values by retainNonReloadableFrom() anyway,
+    // so re-applying the environment there changes nothing except to mask the
+    // warning that fires when the file tries to change one of them.
+    static void load_env_config(const std::string& prefix, Config& config, bool& is_container_set,
+                                bool reloadable_only) {
         for (const auto& f : kConfigFields) {
+            if (reloadable_only && !f.reloadable) {
+                continue;
+            }
             // Deprecated variable first: the preferred name then overrides it.
             for (const char* suffix : {f.env_alias, f.env}) {
                 if (!suffix) {
@@ -694,14 +702,15 @@ namespace pinpoint {
             // far and continue with defaults plus environment overrides.
             LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
         }
-        // Environment variables are process-level bootstrap inputs that seed
-        // only the first configuration. On a reload (`old` set) they must not
-        // be re-applied, or they would silently override values the user just
-        // changed in the file. Env-sourced values still survive through the
-        // old-config seeding above, unless the file overrides them.
-        if (!old) {
-            load_env_config(prefix, *config, is_container_set);
-        }
+        // Environment variables outrank the config file (doc/config.md) and keep
+        // doing so across a reload, so they are re-applied on top of the file on
+        // every load: seeding from the running config alone would let the file
+        // take an env-sourced key over the moment it starts naming it. Only
+        // variables actually present in the process environment are applied, so
+        // a file-only key still reloads normally. Same rule as the Go agent's
+        // source ranking (default < file < env), which skips a reload for any
+        // key whose value did not come from the file.
+        load_env_config(prefix, *config, is_container_set, /*reloadable_only=*/old != nullptr);
 
         // Configure the logger immediately on the first load so the rest of
         // make_config() (identity resolution, range checks) already logs to

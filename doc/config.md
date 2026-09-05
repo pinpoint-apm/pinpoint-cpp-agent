@@ -14,7 +14,7 @@ The agent merges configuration from three sources. **Later sources override earl
 
 Values are normalised (clamped into range) after the merge.
 
-> **Environment variables are read only while building the initial configuration** (before the agent exists). Once the agent is running, a [hot reload](#configuration-hot-reload) rebuilds the config from the file **without re-reading environment variables** — an env-sourced value survives reloads as long as the watched file does not set that key, but if the file later adds a reloadable key, the file value overrides the env-sourced one from then on.
+> **A [hot reload](#configuration-hot-reload) keeps this precedence.** Environment variables are re-read on every load, so a value set by a `PINPOINT_CPP_*` variable is never taken over by the config file — not even when the file starts naming that key after the agent has started. Only options whose value came from the config file or the built-in default are updated by a reload. This is the same rule the [Go agent](https://github.com/pinpoint-apm/pinpoint-go-agent/blob/main/doc/config.md#dynamic-configuration) applies to its dynamic options.
 
 ### Method 1: YAML Configuration File
 
@@ -412,7 +412,10 @@ changing them requires an application restart.
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —
 the running value is kept — and logged as a warning, while reloadable changes in
-the same file still take effect.
+the same file still take effect.  A reloadable option whose value came
+from an environment variable is kept too, silently: environment variables outrank
+the file at every load, not only the first (see
+[Precedence](#configuration-methods--precedence)).
 
 ### What Is Rebuilt
 
