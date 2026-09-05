@@ -357,14 +357,13 @@ namespace pinpoint {
         /// For wrappers that create, position and time their span events
         /// themselves and flush them in one batch at span end: sequence,
         /// depth and both timestamps (epoch milliseconds) come from the
-        /// caller instead of this span's own counters and clock. The event is
-        /// already complete on arrival, so it is finalized before this
-        /// returns: the returned handle is a finished event — its setters
-        /// (annotations included) are warning no-ops and EndEvent() on it is
-        /// the duplicate-end no-op, so do not call it. `async_id` marks an
-        /// event that spawned async children (NONE_ASYNC_ID otherwise).
-        /// Events beyond the configured max depth/sequence are dropped (a
-        /// shared no-op event is returned).
+        /// caller instead of this span's own counters and clock. The returned
+        /// event is open so the caller can apply annotations and the other
+        /// SpanEvent setters; it MUST be finalized with EndEvent() before the
+        /// next RecordSpanEvent or EndSpan call. `async_id` marks an event
+        /// that spawned async children (NONE_ASYNC_ID otherwise). Events
+        /// beyond the configured max depth/sequence are dropped (a shared
+        /// no-op event is returned).
         virtual SpanEventPtr RecordSpanEvent(std::string_view operation,
                                              int32_t service_type,
                                              int32_t sequence, int32_t depth,

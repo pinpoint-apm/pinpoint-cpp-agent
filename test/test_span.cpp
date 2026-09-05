@@ -516,8 +516,6 @@ TEST_F(SpanTest, RecordSpanEventReplaysPositionAndTimingTest) {
     auto event = span.RecordSpanEvent("replayed-op", 2100, 3, 2,
                                       start_ms, end_ms, 77);
     ASSERT_NE(event, nullptr);
-    // Already finished on return; a wrapper still calling EndEvent() must hit
-    // the duplicate-end no-op instead of double-ending the event.
     event->EndEvent();
     span.EndSpan();
 
@@ -555,41 +553,37 @@ TEST_F(SpanTest, RecordSpanEventEnforcesLimitsTest) {
         << "records past the limits are dropped, the valid one is kept";
 }
 
-// A replayed event is complete on arrival, so RecordSpanEvent finalizes it
-// before returning: the depth reservation must be released by the call itself,
-// never held until an EndEvent a wrapper may never send — a leak there would
-// walk the span into early max_event_depth overflow.
-TEST_F(SpanTest, RecordSpanEventReleasesDepthImmediatelyTest) {
+// The returned handle must be OPEN: a batch-replaying wrapper carries the
+// event's destination, endpoint, child span id and every annotation (SQL and
+// errors included) on the handle, because RecordSpanEvent's arguments cover
+// only position and timing. Finalizing the event inside the call would turn
+// all of that into warning no-ops and silently strip every replayed event
+// down to its operation name.
+TEST_F(SpanTest, RecordSpanEventReturnsOpenEventTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
-    auto& data = *span.getSpanData();
-    // Baseline of an idle span: depth 1, nothing open.
-    const auto baseline = data.getEventDepth();
-    ASSERT_EQ(baseline, 1);
 
     const int64_t now_ms = 1700000000000;
-    constexpr int32_t kEvents = 5;  // below event_chunk_size (10): one chunk
-    for (int32_t i = 0; i < kEvents; ++i) {
-        auto event = span.RecordSpanEvent("replayed", 2100, i, 1,
-                                          now_ms, now_ms + 1, NONE_ASYNC_ID);
-        ASSERT_NE(event, nullptr);
-        // No EndEvent() anywhere in this loop.
-        EXPECT_EQ(data.getEventDepth(), baseline)
-            << "depth reserved by record #" << i << " was not returned";
-        EXPECT_EQ(data.topSpanEvent(), nullptr)
-            << "record #" << i << " was left open on the event stack";
-    }
+    auto* event = span.RecordSpanEvent("replayed-op", 2100, 0, 1,
+                                       now_ms, now_ms + 5, NONE_ASYNC_ID);
+    ASSERT_NE(event, nullptr);
+    EXPECT_EQ(span.getSpanData()->topSpanEvent(), event)
+        << "the record must stay on the stack until the wrapper ends it";
 
+    event->SetDestination("MySQL");
+    event->SetEndPoint("db-host:3306");
+    event->SetNextSpanId(4242);
+    event->SetAnnotation(12, "recorded-after-record");
+    event->EndEvent();
     span.EndSpan();
-    EXPECT_EQ(data.getEventDepth(), baseline) << "depth counter must not drift";
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
-    EXPECT_EQ(events.size(), static_cast<size_t>(kEvents))
-        << "every record still reaches the chunk without an EndEvent";
-    for (const auto* event : events) {
-        EXPECT_EQ(event->getEndElapsed(), 1)
-            << "each record keeps its own caller-supplied end time";
-    }
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0]->getDestinationId(), "MySQL");
+    EXPECT_EQ(events[0]->getEndPoint(), "db-host:3306");
+    EXPECT_EQ(events[0]->getNextSpanId(), 4242);
+    EXPECT_FALSE(events[0]->getAnnotations()->getAnnotations().empty())
+        << "annotations applied after RecordSpanEvent must survive";
 }
 
 // The caller-id NewAsyncSpan overload must not require a native top event:

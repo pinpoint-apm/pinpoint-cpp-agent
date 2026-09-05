@@ -29,7 +29,7 @@ A `Span` instance — including every `SpanEvent` it hands out — must be used 
 - A duplicate `EndSpan()`/`EndEvent()` logs `span (event) is already finished` and does nothing.
 - After the end call, **every recording method** on that object becomes a warning no-op: property setters, `SetError`, `RecordHeader`, `SetSqlQuery`, `InjectContext`, and `SetAnnotation()`. The data may already be in flight on the agent's gRPC worker thread, so nothing can be added afterwards. Record status codes, errors, and annotations **before** calling `EndSpan()`/`EndEvent()`.
 - A span released without `EndSpan()` is **never sent** — its data is lost. The destructor only cleans up internal bookkeeping; it does not submit the span.
-- `RecordSpanEvent()` (batch replay, for wrappers that time their events themselves) is the one exception: the event it returns is **already finished**, because the call supplies both timestamps. Record everything through its arguments — setters on the returned handle are warning no-ops — and do not call `EndEvent()` on it, which would log `span event is already finished`.
+- `RecordSpanEvent()` (batch replay, for wrappers that time their events themselves) returns an **open** event even though the call already supplies both timestamps: annotations, SQL, errors, `SetDestination()`, `SetEndPoint()` and `SetNextSpanId()` are applied to the returned handle, so it must be closed with `EndEvent()` before the next `RecordSpanEvent()` or `EndSpan()`. Skipping that end holds one depth slot until `EndSpan()` auto-closes it (§3), which walks a long-lived span toward `MaxEventDepth` overflow.
 
 This is why RAII guards are the recommended pattern:
 `helper::ScopedSpanEvent` for events (see
