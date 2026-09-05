@@ -425,10 +425,10 @@ TEST_F(AgentImplTest, PrepareSqlCachesCompleteRawResult) {
 
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
-    ASSERT_NE(*first, nullptr);
-    EXPECT_EQ(*first, *second);
-    EXPECT_EQ((*first)->parameters, "42,READY");
-    EXPECT_GT(std::get<int32_t>((*first)->identity), 0);
+    ASSERT_NE(first->sql, nullptr);
+    EXPECT_EQ(first->sql, second->sql);
+    EXPECT_EQ(first->sql->parameters, "42,READY");
+    EXPECT_GT(std::get<int32_t>(first->identity), 0);
 }
 
 TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
@@ -443,12 +443,12 @@ TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
 
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
-    ASSERT_NE(*first, nullptr);
-    ASSERT_NE(*second, nullptr);
-    EXPECT_NE(*first, *second);
-    EXPECT_EQ((*first)->parameters, (*second)->parameters);
-    EXPECT_EQ(std::get<int32_t>((*first)->identity),
-              std::get<int32_t>((*second)->identity));
+    ASSERT_NE(first->sql, nullptr);
+    ASSERT_NE(second->sql, nullptr);
+    EXPECT_NE(first->sql, second->sql);
+    EXPECT_EQ(first->sql->parameters, second->sql->parameters);
+    EXPECT_EQ(std::get<int32_t>(first->identity),
+              std::get<int32_t>(second->identity));
 }
 
 TEST_F(AgentImplTest, PrepareSqlRawVariantsShareCanonicalIdentity) {
@@ -459,29 +459,71 @@ TEST_F(AgentImplTest, PrepareSqlRawVariantsShareCanonicalIdentity) {
 
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
-    EXPECT_NE(*first, *second);
-    EXPECT_EQ(std::get<int32_t>((*first)->identity),
-              std::get<int32_t>((*second)->identity));
-    EXPECT_EQ((*first)->parameters, "41");
-    EXPECT_EQ((*second)->parameters, "42");
+    EXPECT_NE(first->sql, second->sql);
+    EXPECT_EQ(std::get<int32_t>(first->identity),
+              std::get<int32_t>(second->identity));
+    EXPECT_EQ(first->sql->parameters, "41");
+    EXPECT_EQ(second->sql->parameters, "42");
 }
 
-TEST_F(AgentImplTest, PrepareSqlMetadataFailureEpochInvalidatesRawEntry) {
+// A failed metadata send must re-register the id on the next use. The raw
+// entry itself holds no id, so it survives: only the normalization is cached
+// there, and re-normalizing is exactly the work the cache exists to avoid.
+TEST_F(AgentImplTest, PrepareSqlMetadataFailureRefreshesIdAndKeepsRawEntry) {
     constexpr std::string_view raw_sql = "SELECT * FROM users WHERE id = 42";
     auto first = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
     ASSERT_TRUE(first.has_value());
-    ASSERT_NE(*first, nullptr);
-    const auto first_id = std::get<int32_t>((*first)->identity);
+    ASSERT_NE(first->sql, nullptr);
+    const auto first_id = std::get<int32_t>(first->identity);
 
     agent_->removeCacheSql(StringMeta{
         first_id, "SELECT * FROM users WHERE id = 0#", STRING_META_SQL});
     auto reloaded = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
 
     ASSERT_TRUE(reloaded.has_value());
-    ASSERT_NE(*reloaded, nullptr);
-    EXPECT_NE(*first, *reloaded);
-    EXPECT_NE(first_id, std::get<int32_t>((*reloaded)->identity));
-    EXPECT_EQ((*first)->parameters, (*reloaded)->parameters);
+    ASSERT_NE(reloaded->sql, nullptr);
+    EXPECT_EQ(first->sql, reloaded->sql) << "the cached normalization must survive";
+    EXPECT_NE(first_id, std::get<int32_t>(reloaded->identity));
+}
+
+// The regression the epoch mechanism used to cause: one failed send made every
+// raw entry unreachable, so unrelated hot statements paid a full re-normalize.
+TEST_F(AgentImplTest, PrepareSqlMetadataFailureLeavesUnrelatedRawEntriesIntact) {
+    auto failing = agent_->prepareSql(
+        "SELECT * FROM users WHERE id = 42", SqlMetaMode::Id);
+    auto other = agent_->prepareSql(
+        "SELECT * FROM orders WHERE id = 7", SqlMetaMode::Id);
+    ASSERT_TRUE(failing.has_value());
+    ASSERT_TRUE(other.has_value());
+    const auto other_id = std::get<int32_t>(other->identity);
+
+    agent_->removeCacheSql(StringMeta{std::get<int32_t>(failing->identity),
+                                      "SELECT * FROM users WHERE id = 0#",
+                                      STRING_META_SQL});
+
+    auto other_again = agent_->prepareSql(
+        "SELECT * FROM orders WHERE id = 7", SqlMetaMode::Id);
+    ASSERT_TRUE(other_again.has_value());
+    EXPECT_EQ(other->sql, other_again->sql);
+    EXPECT_EQ(other_id, std::get<int32_t>(other_again->identity));
+}
+
+// A release lands after retries, a retry delay, or a queue drop — by then the
+// entry may have been evicted and re-registered under a healthy id. Releasing
+// that one would burn a fresh id and re-publish for nothing.
+TEST_F(AgentImplTest, RemoveCacheIgnoresReleaseCarryingAStaleId) {
+    const auto sql_id = agent_->cacheSql("SELECT 1");
+    const auto error_id = agent_->cacheError("BoomError");
+    const auto api_id = agent_->cacheApi("GET /users", 1000);
+    ASSERT_GT(sql_id, 0);
+
+    agent_->removeCacheSql(StringMeta{sql_id + 1000, "SELECT 1", STRING_META_SQL});
+    agent_->removeCacheError(StringMeta{error_id + 1000, "BoomError", STRING_META_ERROR});
+    agent_->removeCacheApi(ApiMeta{api_id + 1000, 1000, "GET /users"});
+
+    EXPECT_EQ(sql_id, agent_->cacheSql("SELECT 1"));
+    EXPECT_EQ(error_id, agent_->cacheError("BoomError"));
+    EXPECT_EQ(api_id, agent_->cacheApi("GET /users", 1000));
 }
 
 TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
@@ -491,20 +533,21 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
 
     ASSERT_TRUE(id_entry.has_value());
     ASSERT_TRUE(uid_entry.has_value());
-    EXPECT_NE(*id_entry, *uid_entry);
-    EXPECT_TRUE(std::holds_alternative<int32_t>((*id_entry)->identity));
-    EXPECT_TRUE(std::holds_alternative<SqlUid>((*uid_entry)->identity));
+    EXPECT_NE(id_entry->sql, uid_entry->sql);
+    EXPECT_TRUE(std::holds_alternative<int32_t>(id_entry->identity));
+    EXPECT_TRUE(std::holds_alternative<SqlUid>(uid_entry->identity));
 
-    const auto uid = std::get<SqlUid>((*uid_entry)->identity);
+    const auto uid = std::get<SqlUid>(uid_entry->identity);
     agent_->removeCacheSqlUid(SqlUidMeta{uid, "SELECT * FROM users WHERE id = 0#"});
     auto reloaded_uid = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
 
     ASSERT_TRUE(reloaded_uid.has_value());
-    EXPECT_NE(*uid_entry, *reloaded_uid);
-    EXPECT_EQ(uid, std::get<SqlUid>((*reloaded_uid)->identity));
+    EXPECT_EQ(uid_entry->sql, reloaded_uid->sql);
+    EXPECT_EQ(uid, std::get<SqlUid>(reloaded_uid->identity))
+        << "a UID is a content hash, so re-registration reuses it";
     auto id_hit = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
     ASSERT_TRUE(id_hit.has_value());
-    EXPECT_EQ(*id_entry, *id_hit);
+    EXPECT_EQ(id_entry->sql, id_hit->sql);
 }
 
 // Sql.CacheLengthLimit must reach the SQL caches the ctor builds: a statement
@@ -521,10 +564,10 @@ TEST_F(AgentImplTest, PrepareSqlLongStatementBypassesRawCache) {
 
         ASSERT_TRUE(first.has_value());
         ASSERT_TRUE(second.has_value());
-        ASSERT_NE(*first, nullptr);
-        ASSERT_NE(*second, nullptr);
-        EXPECT_NE(*first, *second) << "the raw entry must not have been cached";
-        EXPECT_EQ((*first)->identity, (*second)->identity);
+        ASSERT_NE(first->sql, nullptr);
+        ASSERT_NE(second->sql, nullptr);
+        EXPECT_NE(first->sql, second->sql) << "the raw entry must not have been cached";
+        EXPECT_EQ(first->identity, second->identity);
     }
 }
 
@@ -542,7 +585,7 @@ TEST_F(AgentImplTest, PrepareSqlHonoursConfiguredCacheLengthLimit) {
 
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
-    EXPECT_NE(*first, *second);
+    EXPECT_NE(first->sql, second->sql);
     agent->Shutdown();
 }
 
@@ -562,10 +605,10 @@ TEST_F(AgentImplTest, PrepareSqlUidCoversNormalizedSqlPastMetadataCap) {
     auto prepared = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
 
     ASSERT_TRUE(prepared.has_value());
-    ASSERT_NE(*prepared, nullptr);
-    EXPECT_EQ(std::get<SqlUid>((*prepared)->identity),
+    ASSERT_NE(prepared->sql, nullptr);
+    EXPECT_EQ(std::get<SqlUid>(prepared->identity),
               generate_sql_uid(normalized));
-    EXPECT_EQ((*prepared)->parameters, "7");
+    EXPECT_EQ(prepared->sql->parameters, "7");
 }
 
 TEST_F(AgentImplTest, PrepareSqlReturnsNulloptWhenAgentDisabled) {

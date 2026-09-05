@@ -596,7 +596,7 @@ TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
 
 TEST_F(AnnotationTest, CachedSqlParameterAliasKeepsPreparedEntryAlive) {
     auto prepared = std::make_shared<const PreparedSql>(PreparedSql{
-        "42", SqlIdentity{7}});
+        "42", "SELECT * FROM users WHERE id = 0#"});
     std::weak_ptr<const PreparedSql> weak = prepared;
 
     {

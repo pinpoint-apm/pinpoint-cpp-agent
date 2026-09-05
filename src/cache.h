@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <list>
@@ -43,18 +44,31 @@ namespace pinpoint {
     using SqlIdentity = std::variant<int32_t, SqlUid>;
 
     /**
-     * Immutable result of preparing one raw SQL statement. RawSqlCache returns
-     * shared ownership so annotations can refer to the extracted parameters
-     * without copying them, even after the cache entry itself is evicted.
-     * The normalized SQL text itself is not retained: the id/uid is resolved
-     * before this struct is built, and annotations only need the parameters.
+     * Immutable result of normalizing one raw SQL statement. RawSqlCache
+     * returns shared ownership so annotations can refer to the extracted
+     * parameters without copying them, even after the cache entry itself is
+     * evicted.
+     *
+     * The normalized text is retained, and deliberately NOT the id/uid: an
+     * entry that cached the identity would have to be invalidated whenever a
+     * metadata send failed, and no reverse index maps a normalized statement
+     * back to the raw variants that produced it — so invalidation could only
+     * be done wholesale. Resolving the identity per use instead costs one
+     * shared-lock lookup in the id/uid cache and keeps one failed send from
+     * touching any other entry. Matches the Go agent's raw cache.
      */
     struct PreparedSql {
         std::string parameters;
-        SqlIdentity identity;
+        std::string normalized_sql;
     };
 
     using PreparedSqlRef = std::shared_ptr<const PreparedSql>;
+
+    /// @brief A prepared statement plus the identity resolved for this use.
+    struct PreparedSqlResult {
+        PreparedSqlRef sql;
+        SqlIdentity identity;
+    };
 
     /**
      * @brief Generic LRU cache result.
@@ -70,6 +84,24 @@ namespace pinpoint {
     /// @brief Result returned from `IdCache::get`.
     using CacheResult = LruCacheResult<int32_t>;
 
+    /**
+     * @brief Optional write-time expiry for a cache.
+     *
+     * A `ttl` of zero (the default) disables expiry, which is what every cache
+     * but the SQL UID one wants: their entries only need to outlive the
+     * collector-side records they publish. `clock` is injectable so tests can
+     * cross a multi-day ttl without sleeping. steady_clock, not system_clock:
+     * an NTP step backwards must not resurrect an entry that already expired.
+     */
+    struct CacheExpiry {
+        using Clock = std::chrono::steady_clock;
+
+        Clock::duration ttl{Clock::duration::zero()};
+        // Read once per lookup while ttl is enabled. The indirect call is paid
+        // only by the cache that opts into expiry.
+        std::function<Clock::time_point()> clock{&Clock::now};
+    };
+
     struct ApiCacheKey {
         std::string_view api_str;
         int32_t api_type;
@@ -84,11 +116,10 @@ namespace pinpoint {
     };
 
     /**
-     * Hash-carrying twins of the string/api cache keys, mirroring
-     * RawSqlCacheKey/RawSqlCacheStoredKey below: the sharded caches hash a key
-     * once per lookup — to pick the shard — and hand that same hash to the
-     * shard's unordered_map through these keys (pass-through hasher), so the
-     * key bytes are never scanned a second time.
+     * Hash-carrying twins of the string/api cache keys: the sharded caches
+     * hash a key once per lookup — to pick the shard — and hand that same hash
+     * to the shard's unordered_map through these keys (pass-through hasher),
+     * so the key bytes are never scanned a second time.
      */
     struct HashedStringCacheKey {
         std::string_view str;
@@ -232,9 +263,16 @@ namespace pinpoint {
             // lock but read under shared locks, hence atomic (relaxed suffices —
             // a stale read only mis-estimates the age; see get()).
             std::atomic<uint64_t> last_promoted;
+            // Expiry deadline stamped at insert, and re-stamped when an
+            // expired entry is refreshed. Written under the exclusive lock
+            // only, like `value` beside it, so a plain member suffices — the
+            // shared lock readers below cannot overlap that write.
+            CacheExpiry::Clock::time_point expires_at;
 
-            Node(typename KeyTraits::StoredKey&& k, ValueType&& v, uint64_t seq)
-                : key(std::move(k)), value(std::move(v)), last_promoted(seq) {}
+            Node(typename KeyTraits::StoredKey&& k, ValueType&& v, uint64_t seq,
+                 CacheExpiry::Clock::time_point deadline)
+                : key(std::move(k)), value(std::move(v)), last_promoted(seq),
+                  expires_at(deadline) {}
         };
 
     public:
@@ -243,9 +281,10 @@ namespace pinpoint {
         // max_size is clamped to >= 1: with a capacity of 0 the eviction in
         // insert_or_promote() would erase the just-inserted front node and
         // then return a reference into the freed list node — use-after-free.
-        explicit LruCacheImpl(size_t max_size)
+        explicit LruCacheImpl(size_t max_size, CacheExpiry expiry = {})
             : max_size_(max_size > 0 ? max_size : 1),
-              promote_age_threshold_(max_size_ / 2 > 0 ? max_size_ / 2 : 1) {
+              promote_age_threshold_(max_size_ / 2 > 0 ? max_size_ / 2 : 1),
+              expiry_(std::move(expiry)) {
             // Reserve buckets up front so the map never rehashes while warming
             // up to capacity. +1 covers the transient over-capacity entry that
             // exists between insertion and eviction inside insert_or_promote().
@@ -277,7 +316,11 @@ namespace pinpoint {
                 // Fast path: a shared lock lets concurrent hits proceed in parallel.
                 std::shared_lock<std::shared_mutex> lock(mutex_);
                 const auto it = cache_map_.find(key);
-                if (it != cache_map_.end()) {
+                // An expired entry is skipped, not erased: erasing needs the
+                // exclusive lock and would serialize the hot path. It is
+                // refreshed on the write path below (see insert_or_promote),
+                // or evicted in LRU order like any other cold entry.
+                if (it != cache_map_.end() && !expired(*it->second)) {
                     if (cache_map_.size() < max_size_) {
                         // Below capacity: nothing can be evicted, so LRU order does
                         // not matter — skip the splice and keep this a pure read.
@@ -305,7 +348,7 @@ namespace pinpoint {
                 // gone, fall through to regenerate it below.
                 std::unique_lock<std::shared_mutex> lock(mutex_);
                 const auto it = cache_map_.find(key);
-                if (it != cache_map_.end()) {
+                if (it != cache_map_.end() && !expired(*it->second)) {
                     cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
                     it->second->last_promoted.store(next_op_seq(), std::memory_order_relaxed);
                     return LruCacheResult<ValueType>{it->second->value, true};
@@ -328,18 +371,27 @@ namespace pinpoint {
             // victim are spliced back onto it, so they also die after unlock.
             std::list<Node> staged;
             staged.emplace_front(KeyTraits::store(key), std::move(new_value),
-                                 next_op_seq());
+                                 next_op_seq(), next_deadline());
 
             std::unique_lock<std::shared_mutex> lock(mutex_);
             return insert_or_promote(staged);
         }
 
         /**
-         * @brief Removes an entry from the cache.
+         * @brief Removes an entry, but only while it still holds @p expected.
+         *
+         * Removal is a release of a value whose metadata never reached the
+         * collector, and it can land arbitrarily late — after retries, a retry
+         * delay, or a queue drop. By then the entry may have been evicted and
+         * a fresh one inserted under the same key, whose metadata is perfectly
+         * healthy; erasing that one would burn a new id and re-publish for
+         * nothing. Comparing the value first confines the release to the entry
+         * that actually failed.
          *
          * @param key The key to remove.
+         * @param expected Value the entry must still hold to be removed.
          */
-        void remove(LookupKey key) {
+        void remove(LookupKey key, const ValueType& expected) {
             // Declared before the lock so the removed node (key storage and
             // value) is destroyed after the exclusive section, not while
             // shared-lock readers wait behind the free.
@@ -347,7 +399,7 @@ namespace pinpoint {
             std::unique_lock<std::shared_mutex> lock(mutex_);
 
             const auto it = cache_map_.find(key);
-            if (it != cache_map_.end()) {
+            if (it != cache_map_.end() && it->second->value == expected) {
                 removed.splice(removed.begin(), cache_list_, it->second);
                 cache_map_.erase(it);
             }
@@ -379,15 +431,26 @@ namespace pinpoint {
                 cache_map_.try_emplace(KeyTraits::map_key(list_it->key), list_it);
 
             if (!inserted.second) {
-                // Lost the race: an identical key was inserted concurrently.
-                // Leave our node in staged and promote the existing entry to
-                // most-recently-used, reusing the op sequence the candidate
-                // was stamped with.
-                cache_list_.splice(cache_list_.begin(), cache_list_, inserted.first->second);
-                inserted.first->second->last_promoted.store(
+                // The key is already present: either an identical key was
+                // inserted concurrently (we lost the race), or get() routed an
+                // expired entry here. Leave our node in staged and promote the
+                // existing entry to most-recently-used, reusing the op sequence
+                // the candidate was stamped with.
+                const auto existing = inserted.first->second;
+                cache_list_.splice(cache_list_.begin(), cache_list_, existing);
+                existing->last_promoted.store(
                     list_it->last_promoted.load(std::memory_order_relaxed),
                     std::memory_order_relaxed);
-                return LruCacheResult<ValueType>{inserted.first->second->value, true};
+                if (expired(*existing)) {
+                    // The one place an expired entry is actually retired: take
+                    // the freshly generated value and restart its ttl. Reported
+                    // as a miss, which is what makes the caller re-publish the
+                    // metadata the collector may since have aged out.
+                    existing->value = std::move(list_it->value);
+                    existing->expires_at = list_it->expires_at;
+                    return LruCacheResult<ValueType>{existing->value, false};
+                }
+                return LruCacheResult<ValueType>{existing->value, true};
             }
 
             // Adopt the staged node at the MRU end: an O(1) pointer relink.
@@ -409,6 +472,19 @@ namespace pinpoint {
             return op_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
         }
 
+        bool has_ttl() const noexcept {
+            return expiry_.ttl > CacheExpiry::Clock::duration::zero();
+        }
+
+        bool expired(const Node& node) const {
+            return has_ttl() && expiry_.clock() >= node.expires_at;
+        }
+
+        CacheExpiry::Clock::time_point next_deadline() const {
+            return has_ttl() ? expiry_.clock() + expiry_.ttl
+                             : CacheExpiry::Clock::time_point::max();
+        }
+
         using MapType = std::unordered_map<LookupKey,
                                           typename std::list<Node>::iterator,
                                           typename KeyTraits::Hash,
@@ -422,6 +498,7 @@ namespace pinpoint {
         const uint64_t promote_age_threshold_{};
         // Counts inserts and promotions; entry age is measured against it.
         std::atomic<uint64_t> op_seq_{0};
+        const CacheExpiry expiry_{};
         mutable std::shared_mutex mutex_{};
     };
 
@@ -470,7 +547,8 @@ namespace pinpoint {
         // slice — the accepted trade-off for removing the shared lock line.
         // The shard count is clamped to the entry count so no shard ends up
         // with capacity 0.
-        explicit ShardedLruCache(size_t max_size, size_t shard_count) {
+        explicit ShardedLruCache(size_t max_size, size_t shard_count,
+                                 CacheExpiry expiry = {}) {
             const size_t entry_count = max_size > 0 ? max_size : 1;
             const size_t requested_shards = shard_count > 0 ? shard_count : 1;
             const size_t actual_shards = std::min(requested_shards, entry_count);
@@ -480,7 +558,7 @@ namespace pinpoint {
             shards_.reserve(actual_shards);
             for (size_t i = 0; i < actual_shards; ++i) {
                 const size_t capacity = base_size + (i < remainder ? 1 : 0);
-                shards_.emplace_back(std::make_unique<Shard>(capacity));
+                shards_.emplace_back(std::make_unique<Shard>(capacity, expiry));
             }
         }
         ~ShardedLruCache() = default;
@@ -506,16 +584,17 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Removes an entry from the cache.
+         * @brief Removes an entry that still holds @p expected (see
+         *        LruCacheImpl::remove for why the value is compared).
          *
          * Derives the shard from the same hash as get(): removal must hit the
          * shard that owns the entry, or a stale one keeps serving its old value
          * after an invalidation — for the id caches, breaking metadata
          * re-registration with the collector.
          */
-        void remove(LookupKey key) {
+        void remove(LookupKey key, const ValueType& expected) {
             const size_t hash = ShardTraits::hash(key);
-            shard_for(hash).remove(ShardTraits::with_hash(key, hash));
+            shard_for(hash).remove(ShardTraits::with_hash(key, hash), expected);
         }
 
         size_t shardCount() const noexcept {
@@ -528,7 +607,8 @@ namespace pinpoint {
         // Shards live behind unique_ptr: LruCacheImpl is immovable (it owns a
         // shared_mutex), so the vector could not hold it by value.
         struct Shard {
-            explicit Shard(size_t capacity) : cache(capacity) {}
+            Shard(size_t capacity, const CacheExpiry& expiry)
+                : cache(capacity, expiry) {}
             ShardCache cache;
         };
 
@@ -548,75 +628,16 @@ namespace pinpoint {
         std::vector<std::unique_ptr<Shard>> shards_;
     };
 
-    struct RawSqlCacheKey {
-        std::string_view raw_sql;
-        uint64_t metadata_epoch;
-        size_t hash;
-    };
-
-    struct RawSqlCacheStoredKey {
-        std::string raw_sql;
-        uint64_t metadata_epoch;
-        size_t hash;
-    };
-
-    struct RawSqlCacheKeyHash {
-        size_t operator()(const RawSqlCacheKey& key) const noexcept {
-            return key.hash;
-        }
-    };
-
-    struct RawSqlCacheKeyEqual {
-        bool operator()(const RawSqlCacheKey& lhs, const RawSqlCacheKey& rhs) const noexcept {
-            return lhs.metadata_epoch == rhs.metadata_epoch && lhs.raw_sql == rhs.raw_sql;
-        }
-    };
-
-    struct RawSqlCacheKeyTraits {
-        using LookupKey = RawSqlCacheKey;
-        using StoredKey = RawSqlCacheStoredKey;
-        using Hash = RawSqlCacheKeyHash;
-        using Equal = RawSqlCacheKeyEqual;
-
-        static StoredKey store(LookupKey key) {
-            return RawSqlCacheStoredKey{
-                std::string(key.raw_sql), key.metadata_epoch, key.hash};
-        }
-
-        static LookupKey map_key(const StoredKey& key) noexcept {
-            return RawSqlCacheKey{
-                key.raw_sql, key.metadata_epoch, key.hash};
-        }
-    };
-
-    struct RawSqlCacheShardTraits {
-        // Raw SQL lookups key on (text, metadata epoch): advancing the epoch
-        // makes every entry cached under the old one unreachable (see
-        // RawSqlCacheKeyEqual and removeCacheSql in agent.cpp).
-        struct LookupKey {
-            std::string_view raw_sql;
-            uint64_t metadata_epoch;
-        };
-        using InnerTraits = RawSqlCacheKeyTraits;
-
-        static size_t hash(LookupKey key) noexcept {
-            size_t hash = std::hash<std::string_view>{}(key.raw_sql);
-            hash ^= std::hash<uint64_t>{}(key.metadata_epoch) + 0x9e3779b9 +
-                    (hash << 6) + (hash >> 2);
-            return hash;
-        }
-
-        static RawSqlCacheKey with_hash(LookupKey key, size_t hash) noexcept {
-            return RawSqlCacheKey{key.raw_sql, key.metadata_epoch, hash};
-        }
-    };
-
     using RawSqlCacheResult = LruCacheResult<PreparedSqlRef>;
 
     /**
-     * Front cache keyed by raw SQL. The cache is sharded so unrelated hot SQL
-     * statements do not contend on one shared_mutex; the shard selection,
-     * capacity split, and hash-once contract live in ShardedLruCache.
+     * Front cache keyed by raw SQL, holding the normalization result only (see
+     * PreparedSql). The cache is sharded so unrelated hot SQL statements do not
+     * contend on one shared_mutex; the shard selection, capacity split, and
+     * hash-once contract live in ShardedLruCache.
+     *
+     * It has no remove(): entries carry no collector state, so nothing here
+     * ever needs invalidating.
      */
     class RawSqlCache {
     public:
@@ -632,23 +653,19 @@ namespace pinpoint {
         RawSqlCache& operator=(RawSqlCache&&) = delete;
 
         template<typename Generator>
-        RawSqlCacheResult get(std::string_view raw_sql,
-                              uint64_t metadata_epoch,
-                              Generator&& generator) {
+        RawSqlCacheResult get(std::string_view raw_sql, Generator&& generator) {
             // Long statements remain correct but bypass the cache so one
             // pathological key cannot pin an excessive amount of memory. Only
-            // normalization is repaid here: the generator resolves the id/uid
-            // through the inner cache, which keeps its own entry.
+            // normalization is repaid here; the caller resolves the id/uid
+            // through the inner cache either way, which keeps its own entry.
             if (raw_sql.size() >= cache_length_limit_) {
                 return RawSqlCacheResult{generator(), false};
             }
-            return cache_.get(
-                RawSqlCacheShardTraits::LookupKey{raw_sql, metadata_epoch},
-                std::forward<Generator>(generator));
+            return cache_.get(raw_sql, std::forward<Generator>(generator));
         }
 
     private:
-        ShardedLruCache<PreparedSqlRef, RawSqlCacheShardTraits> cache_;
+        ShardedLruCache<PreparedSqlRef, StringCacheShardTraits> cache_;
         const size_t cache_length_limit_;
     };
 
@@ -693,14 +710,16 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Evicts a cached key.
+         * @brief Evicts a cached key that still maps to @p expected_id.
          *
          * Routes to the shard get() uses, so the next get() is a guaranteed
          * miss that mints a fresh id — the miss path is what re-enqueues the
-         * metadata to the collector after a connection reset.
+         * metadata to the collector after a connection reset. The id is
+         * compared first so a late release cannot evict a re-inserted entry
+         * that was never the one that failed (see LruCacheImpl::remove).
          */
-        void remove(LookupKey key) {
-            cache_.remove(key);
+        void remove(LookupKey key, int32_t expected_id) {
+            cache_.remove(key, expected_id);
         }
 
         size_t shardCount() const noexcept {
@@ -718,16 +737,26 @@ namespace pinpoint {
     /**
      * @brief LRU cache that assigns binary UIDs to normalized SQL statements.
      *
-     * Sharded like IdCacheImpl: when the raw front cache is disabled this is
-     * hit once per SQL statement. UIDs are content hashes of the key, so no
-     * cross-shard state is needed for them to stay consistent.
+     * Sharded like IdCacheImpl: it is hit once per SQL statement. UIDs are
+     * content hashes of the key, so no cross-shard state is needed for them to
+     * stay consistent.
+     *
+     * Unlike the id caches this one expires (see CacheExpiry and
+     * Config::sql.cache_expire_hours). A cache hit suppresses re-publication of
+     * the UID metadata, so an entry that never expires means the collector's
+     * SqlUidMetaData row is written exactly once — and that row has a TTL of
+     * its own (180 days). A process outliving it would keep emitting UIDs whose
+     * SQL text the collector no longer has, and the UI would show empty SQL
+     * until a restart. Expiring on write, as Java does at 168 hours
+     * (profiler.jdbc.sqlcacheexpirehours), re-publishes in time to refresh it.
      */
     class SqlUidCache {
     public:
         explicit SqlUidCache(size_t max_size,
                              size_t shard_count = kDefaultCacheShardCount,
-                             size_t cache_length_limit = kDefaultCacheLengthLimit)
-            : cache_(max_size, shard_count),
+                             size_t cache_length_limit = kDefaultCacheLengthLimit,
+                             CacheExpiry expiry = {})
+            : cache_(max_size, shard_count, std::move(expiry)),
               cache_length_limit_(cache_length_limit) {}
         ~SqlUidCache() = default;
 
@@ -759,12 +788,14 @@ namespace pinpoint {
         }
 
         /**
-         * @brief Removes a cached SQL UID entry.
+         * @brief Removes a cached SQL UID entry still holding @p expected_uid
+         *        (see LruCacheImpl::remove for why the value is compared).
          *
          * @param key Normalized SQL string.
+         * @param expected_uid UID the entry must still hold.
          */
-        void remove(std::string_view key) {
-            cache_.remove(key);
+        void remove(std::string_view key, const SqlUid& expected_uid) {
+            cache_.remove(key, expected_uid);
         }
 
         size_t shardCount() const noexcept {

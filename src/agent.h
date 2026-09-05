@@ -162,7 +162,7 @@ namespace pinpoint {
         int32_t cacheError(std::string_view error_name) const override;
         void removeCacheError(const StringMeta& error_meta) const override;
         int32_t cacheSql(std::string_view sql_query) const override;
-        std::optional<PreparedSqlRef> prepareSql(std::string_view raw_sql, SqlMetaMode mode) const override;
+        std::optional<PreparedSqlResult> prepareSql(std::string_view raw_sql, SqlMetaMode mode) const override;
         void removeCacheSql(const StringMeta& sql_meta) const override;
         std::optional<SqlUid> cacheSqlUid(std::string_view sql) const override;
         void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override;
@@ -214,8 +214,6 @@ namespace pinpoint {
         // Immutable after the ctor (Sql.RemoveComments is startup-only) and
         // normalize() keeps all state local, so it is shared by every thread.
         std::unique_ptr<const SqlNormalizer> sql_normalizer_{};
-        mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
-        mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
         // Mirror of config->sql.enable_raw_sql_cache, refreshed by
         // apply_config(). prepareSql() runs once per SQL statement and only
         // needs this one flag, so a relaxed load here avoids a runtime cache

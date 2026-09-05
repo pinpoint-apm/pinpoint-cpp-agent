@@ -23,6 +23,9 @@
 #include <string>
 #include <string_view>
 #include "pinpoint/tracer.h"
+// prepareSql returns PreparedSqlResult by value, so the cache types must be
+// complete here.
+#include "cache.h"
 
  namespace pinpoint {
  
@@ -30,8 +33,6 @@
    struct ApiMeta;
    struct StringMeta;
    struct SqlUidMeta;
-   struct PreparedSql;
-   enum class SqlMetaMode : uint8_t;
    class Exception;
    class PinpointAnnotation;
    class SpanChunk;
@@ -181,8 +182,10 @@
        *
        * Implementations may cache by the raw statement; the returned shared
        * ownership keeps cached strings alive for asynchronous serialization.
+       * The identity is resolved per call and is not part of what is cached,
+       * so it stays correct after a metadata send fails (see PreparedSql).
        */
-      virtual std::optional<std::shared_ptr<const PreparedSql>> prepareSql(
+      virtual std::optional<PreparedSqlResult> prepareSql(
           std::string_view raw_sql, SqlMetaMode mode) const = 0;
       virtual void removeCacheSql(const StringMeta& sql_meta) const = 0;
       /// @brief Caches the normalized SQL UID. Returns the 16-byte UID, or

@@ -28,9 +28,10 @@ namespace pinpoint {
 class CacheTest : public ::testing::Test {};
 
 namespace {
-    PreparedSqlRef prepared_sql(std::string parameters, int32_t id) {
+    PreparedSqlRef prepared_sql(std::string parameters,
+                                std::string normalized_sql = "SELECT 0#") {
         return std::make_shared<const PreparedSql>(PreparedSql{
-            std::move(parameters), SqlIdentity{id}});
+            std::move(parameters), std::move(normalized_sql)});
     }
 }
 
@@ -39,11 +40,11 @@ TEST_F(CacheTest, RawSqlCacheHitSkipsGeneratorAndReturnsSameImmutableEntry) {
     int generator_calls = 0;
     auto generator = [&] {
         ++generator_calls;
-        return prepared_sql("42", 7);
+        return prepared_sql("42", "SELECT * FROM users WHERE id = 0#");
     };
 
-    auto first = cache.get("SELECT * FROM users WHERE id = 42", 0, generator);
-    auto second = cache.get("SELECT * FROM users WHERE id = 42", 0, generator);
+    auto first = cache.get("SELECT * FROM users WHERE id = 42", generator);
+    auto second = cache.get("SELECT * FROM users WHERE id = 42", generator);
 
     ASSERT_NE(first.value, nullptr);
     EXPECT_FALSE(first.found);
@@ -51,40 +52,18 @@ TEST_F(CacheTest, RawSqlCacheHitSkipsGeneratorAndReturnsSameImmutableEntry) {
     EXPECT_EQ(generator_calls, 1);
     EXPECT_EQ(first.value, second.value);
     EXPECT_EQ(second.value->parameters, "42");
-    EXPECT_EQ(std::get<int32_t>(second.value->identity), 7);
-}
-
-TEST_F(CacheTest, RawSqlCacheMetadataEpochInvalidatesStaleIdentity) {
-    RawSqlCache cache(16, 4);
-    int generator_calls = 0;
-    auto generator = [&] {
-        ++generator_calls;
-        return prepared_sql("1", 100 + generator_calls);
-    };
-
-    auto epoch_zero = cache.get("SELECT 1", 0, generator);
-    auto epoch_one = cache.get("SELECT 1", 1, generator);
-    auto epoch_one_hit = cache.get("SELECT 1", 1, generator);
-
-    ASSERT_NE(epoch_zero.value, nullptr);
-    ASSERT_NE(epoch_one.value, nullptr);
-    EXPECT_FALSE(epoch_zero.found);
-    EXPECT_FALSE(epoch_one.found);
-    EXPECT_TRUE(epoch_one_hit.found);
-    EXPECT_EQ(generator_calls, 2);
-    EXPECT_NE(epoch_zero.value, epoch_one.value);
-    EXPECT_EQ(epoch_one.value, epoch_one_hit.value);
+    EXPECT_EQ(second.value->normalized_sql, "SELECT * FROM users WHERE id = 0#");
 }
 
 TEST_F(CacheTest, RawSqlCacheReferenceSurvivesEviction) {
     RawSqlCache cache(1, 1);
-    auto retained = cache.get("SELECT 1", 0, [] {
-        return prepared_sql("1", 1);
+    auto retained = cache.get("SELECT 1", [] {
+        return prepared_sql("1");
     }).value;
     std::weak_ptr<const PreparedSql> weak = retained;
 
-    cache.get("SELECT 2", 0, [] {
-        return prepared_sql("2", 1);
+    cache.get("SELECT 2", [] {
+        return prepared_sql("2");
     });
 
     ASSERT_NE(retained, nullptr);
@@ -99,11 +78,11 @@ TEST_F(CacheTest, RawSqlCacheOversizedStatementBypassesStorage) {
     int generator_calls = 0;
     auto generator = [&] {
         ++generator_calls;
-        return prepared_sql("123456789", 1);
+        return prepared_sql("123456789");
     };
 
-    auto first = cache.get("SELECT 123456789", 0, generator);
-    auto second = cache.get("SELECT 123456789", 0, generator);
+    auto first = cache.get("SELECT 123456789", generator);
+    auto second = cache.get("SELECT 123456789", generator);
 
     EXPECT_FALSE(first.found);
     EXPECT_FALSE(second.found);
@@ -115,27 +94,27 @@ TEST_F(CacheTest, RawSqlCacheOversizedStatementBypassesStorage) {
 // two cannot drift apart.
 TEST_F(CacheTest, RawSqlCacheLengthLimitIsInclusive) {
     RawSqlCache cache(16, 4, 10);
-    auto generator = [] { return prepared_sql("1", 1); };
+    auto generator = [] { return prepared_sql("1"); };
 
     const std::string at_limit(10, 'a');
-    EXPECT_FALSE(cache.get(at_limit, 0, generator).found);
-    EXPECT_FALSE(cache.get(at_limit, 0, generator).found)
+    EXPECT_FALSE(cache.get(at_limit, generator).found);
+    EXPECT_FALSE(cache.get(at_limit, generator).found)
         << "a statement at the limit must never be stored";
 
     const std::string under_limit(9, 'a');
-    EXPECT_FALSE(cache.get(under_limit, 0, generator).found);
-    EXPECT_TRUE(cache.get(under_limit, 0, generator).found)
+    EXPECT_FALSE(cache.get(under_limit, generator).found);
+    EXPECT_TRUE(cache.get(under_limit, generator).found)
         << "a statement under the limit must still be cached";
 }
 
 // kNoCacheLengthLimit restores the pre-limit behaviour (Sql.CacheLengthLimit: -1).
 TEST_F(CacheTest, RawSqlCacheNoLengthLimitCachesLongStatements) {
     RawSqlCache cache(16, 4, kNoCacheLengthLimit);
-    auto generator = [] { return prepared_sql("1", 1); };
+    auto generator = [] { return prepared_sql("1"); };
 
     const std::string long_sql(3000, 'a');
-    EXPECT_FALSE(cache.get(long_sql, 0, generator).found);
-    EXPECT_TRUE(cache.get(long_sql, 0, generator).found);
+    EXPECT_FALSE(cache.get(long_sql, generator).found);
+    EXPECT_TRUE(cache.get(long_sql, generator).found);
 }
 
 TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
@@ -145,10 +124,10 @@ TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
 
     for (int i = 0; i < 16; ++i) {
         futures.push_back(std::async(std::launch::async, [&] {
-            return cache.get("SELECT * FROM concurrent WHERE id = 7", 0, [&] {
+            return cache.get("SELECT * FROM concurrent WHERE id = 7", [&] {
                 generator_calls.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::yield();
-                return prepared_sql("7", 9);
+                return prepared_sql("7");
             }).value;
         }));
     }
@@ -413,7 +392,7 @@ TEST_F(CacheTest, BasicRemoveTest) {
     EXPECT_TRUE(result2.found);
     
     // Remove the item
-    cache.remove("key1");
+    cache.remove("key1", result2.value);
     
     // Verify it's no longer in cache
     auto result3 = cache.get("key1");
@@ -426,7 +405,7 @@ TEST_F(CacheTest, RemoveNonExistentKeyTest) {
     IdCache cache(5);
     
     // Remove key that doesn't exist - should not crash
-    EXPECT_NO_THROW(cache.remove("nonexistent"));
+    EXPECT_NO_THROW(cache.remove("nonexistent", 1));
     
     // Cache should still work normally
     auto result = cache.get("key1");
@@ -444,7 +423,7 @@ TEST_F(CacheTest, RemoveFromMiddleTest) {
     cache.get("key3"); // ID: 3
     
     // Remove middle item
-    cache.remove("key2");
+    cache.remove("key2", 2);
     
     // Verify key1 and key3 are still accessible
     auto result1 = cache.get("key1");
@@ -567,7 +546,11 @@ TEST_F(CacheTest, ConcurrentGetRemoveTest) {
     std::future<void> remover = std::async(std::launch::async, [&cache, &stop_flag]() {
         int counter = 0;
         while (!stop_flag.load()) {
-            cache.remove("key" + std::to_string(counter % 20));
+            // Read the live id back so the guarded remove actually fires;
+            // when the adder thread slips in between, it no-ops instead —
+            // which is the guard doing its job.
+            const auto key = "key" + std::to_string(counter % 20);
+            cache.remove(key, cache.get(key).value);
             counter++;
             std::this_thread::sleep_for(std::chrono::microseconds(1));
         }
@@ -698,9 +681,9 @@ TEST_F(CacheTest, RemoveAllAndReuseTest) {
     cache.get("key3"); // ID: 3
 
     // Remove all
-    cache.remove("key1");
-    cache.remove("key2");
-    cache.remove("key3");
+    cache.remove("key1", 1);
+    cache.remove("key2", 2);
+    cache.remove("key3", 3);
 
     // Cache should be empty but functional
     auto result1 = cache.get("key1");
@@ -764,7 +747,7 @@ TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
     cache.get("key3"); // ID: 3
 
     // Remove key1 and re-add it (now it's MRU)
-    cache.remove("key1");
+    cache.remove("key1", 1);
     cache.get("key1"); // ID: 4, now MRU
 
     // Add key4 -> should evict key2 (oldest remaining)
@@ -829,7 +812,7 @@ TEST_F(CacheTest, ApiIdCacheRemoveOnlyMatchingTypeTest) {
     auto result1 = cache.get(ApiCacheKey{"operation", 100});
     auto result2 = cache.get(ApiCacheKey{"operation", 200});
 
-    cache.remove(ApiCacheKey{"operation", 100});
+    cache.remove(ApiCacheKey{"operation", 100}, result1.value);
 
     auto removed = cache.get(ApiCacheKey{"operation", 100});
     EXPECT_FALSE(removed.found);
@@ -946,7 +929,7 @@ TEST_F(CacheTest, ShardedIdCacheRemoveMintsFreshIdTest) {
         ids.push_back(cache.get("api/key" + std::to_string(i)).value);
     }
 
-    cache.remove("api/key7");
+    cache.remove("api/key7", ids[7]);
 
     // The metadata re-registration contract: after remove(), the next get()
     // must be a miss that mints a fresh id — that miss is what re-enqueues
@@ -979,7 +962,7 @@ TEST_F(CacheTest, ShardedApiIdCacheRemoveRoutesToOwningShardTest) {
         default_ids.push_back(cache.get(ApiCacheKey{names.back(), 200}).value);
     }
 
-    cache.remove(ApiCacheKey{names[3], 100});
+    cache.remove(ApiCacheKey{names[3], 100}, web_ids[3]);
 
     const auto readded = cache.get(ApiCacheKey{names[3], 100});
     EXPECT_FALSE(readded.found);
@@ -1156,11 +1139,111 @@ TEST_F(SqlUidCacheTest, ShardedSqlUidCacheRemoveEvictsEntryTest) {
     EXPECT_FALSE(original.found);
     EXPECT_TRUE(cache.get(sql).found);
 
-    cache.remove(sql);
+    cache.remove(sql, original.value);
 
     const auto readded = cache.get(sql);
     EXPECT_FALSE(readded.found) << "remove() must evict from the owning shard";
     EXPECT_EQ(readded.value, original.value);
+}
+
+// A release carrying an id the entry no longer holds must not evict it: by the
+// time metadata retries are exhausted the entry may have been evicted and
+// re-registered, and dropping that one costs a fresh id and a re-send.
+TEST_F(CacheTest, RemoveIgnoresStaleValue) {
+    IdCache cache(5);
+    const auto original = cache.get("key1");
+
+    cache.remove("key1", original.value + 100);
+
+    const auto after = cache.get("key1");
+    EXPECT_TRUE(after.found) << "a mismatched value must leave the entry in place";
+    EXPECT_EQ(after.value, original.value);
+}
+
+// The race the guard exists for, played out concretely: evict, re-insert under
+// a fresh id, then let the old release land.
+TEST_F(CacheTest, RemoveKeepsEntryReinsertedAfterEviction) {
+    IdCache cache(1, 1);
+    const auto evicted = cache.get("key1");
+    cache.get("key2");  // capacity is 1, so this evicts key1
+    const auto reinserted = cache.get("key1");
+    ASSERT_NE(evicted.value, reinserted.value);
+
+    cache.remove("key1", evicted.value);
+
+    const auto after = cache.get("key1");
+    EXPECT_TRUE(after.found);
+    EXPECT_EQ(after.value, reinserted.value);
+}
+
+namespace {
+    // Hands the cache a clock the test can wind forward, so a 168-hour ttl is
+    // crossed without sleeping. Shared state, not a copy: CacheExpiry is copied
+    // into every shard.
+    struct TestClock {
+        std::shared_ptr<CacheExpiry::Clock::time_point> now =
+            std::make_shared<CacheExpiry::Clock::time_point>(
+                CacheExpiry::Clock::now());
+
+        CacheExpiry operator()(CacheExpiry::Clock::duration ttl) const {
+            auto handle = now;
+            return CacheExpiry{ttl, [handle] { return *handle; }};
+        }
+        void advance(CacheExpiry::Clock::duration by) const { *now += by; }
+    };
+}
+
+// The SQL UID metadata row has a server-side TTL (180 days), and a cache hit
+// suppresses re-publication — so an entry that never expires eventually points
+// at SQL text the collector has dropped. Expiring on write re-sends in time.
+TEST_F(SqlUidCacheTest, SqlUidCacheExpiresEntryAfterTtlSoMetadataIsResent) {
+    const TestClock clock;
+    SqlUidCache cache(1024, 4, kNoCacheLengthLimit,
+                      clock(std::chrono::hours(168)));
+
+    const std::string sql = "SELECT * FROM users WHERE id = 0#";
+    const auto first = cache.get(sql);
+    EXPECT_FALSE(first.found);
+    EXPECT_TRUE(cache.get(sql).found);
+
+    clock.advance(std::chrono::hours(167));
+    EXPECT_TRUE(cache.get(sql).found) << "must not expire before the ttl";
+
+    clock.advance(std::chrono::hours(1));
+    const auto expired = cache.get(sql);
+    EXPECT_FALSE(expired.found) << "an expired entry must re-publish its metadata";
+    EXPECT_EQ(expired.value, first.value)
+        << "the UID is a content hash, so it is unchanged by expiry";
+    EXPECT_TRUE(cache.get(sql).found) << "the refreshed entry restarts its ttl";
+
+    clock.advance(std::chrono::hours(168));
+    EXPECT_FALSE(cache.get(sql).found) << "and expires again one ttl later";
+}
+
+// Expiry has to work once the cache is full too: that is where get() takes the
+// promotion path instead of the plain shared-lock read.
+TEST_F(SqlUidCacheTest, SqlUidCacheExpiresEntriesWhileFull) {
+    const TestClock clock;
+    SqlUidCache cache(4, 1, kNoCacheLengthLimit, clock(std::chrono::hours(168)));
+
+    for (int i = 0; i < 4; ++i) {
+        cache.get("SELECT " + std::to_string(i));
+    }
+    EXPECT_TRUE(cache.get("SELECT 3").found);
+
+    clock.advance(std::chrono::hours(169));
+    EXPECT_FALSE(cache.get("SELECT 3").found);
+    EXPECT_TRUE(cache.get("SELECT 3").found);
+}
+
+// Expiry is opt-in: the default leaves entries in place forever, which is what
+// the api/error/sql id caches rely on (Java gives them no TTL either).
+TEST_F(SqlUidCacheTest, SqlUidCacheWithoutTtlNeverExpires) {
+    SqlUidCache cache(1024, 4);
+
+    const std::string sql = "SELECT 1";
+    EXPECT_FALSE(cache.get(sql).found);
+    EXPECT_TRUE(cache.get(sql).found);
 }
 
 } // namespace pinpoint

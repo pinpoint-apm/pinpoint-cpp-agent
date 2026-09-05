@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <chrono>
 #include <csignal>
 #include <string>
 #include <exception>
@@ -137,11 +138,22 @@ namespace pinpoint {
             cfg->sql.cache_length_limit < 0
                 ? kNoCacheLengthLimit
                 : static_cast<size_t>(cfg->sql.cache_length_limit);
+        // Only the UID cache expires: a hit there suppresses re-publication of
+        // metadata whose collector-side row has a TTL of its own, so an entry
+        // that outlives that row leaves the UI with no SQL text (see
+        // SqlUidCache). The id caches have no equivalent problem — Java gives
+        // them no TTL either — so they are left alone.
+        const CacheExpiry sql_uid_expiry{
+            cfg->sql.cache_expire_hours > 0
+                ? std::chrono::duration_cast<CacheExpiry::Clock::duration>(
+                      std::chrono::hours(cfg->sql.cache_expire_hours))
+                : CacheExpiry::Clock::duration::zero()};
         api_cache_ = std::make_unique<ApiIdCache>(cache_size);
         error_cache_ = std::make_unique<IdCache>(cache_size);
         sql_cache_ = std::make_unique<IdCache>(cache_size);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(
-            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
+            cache_size, kDefaultCacheShardCount, sql_cache_length_limit,
+            sql_uid_expiry);
         raw_sql_id_cache_ = std::make_unique<RawSqlCache>(
             cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
         raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(
@@ -1221,7 +1233,8 @@ namespace pinpoint {
     // restart for what is only a best-effort cache eviction.
     void AgentImpl::removeCacheApi(const ApiMeta& api_meta) const try {
         if (enabled_) {
-            api_cache_->remove(ApiCacheKey{api_meta.api_str_, api_meta.type_});
+            api_cache_->remove(ApiCacheKey{api_meta.api_str_, api_meta.type_},
+                               api_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached api meta:")
 
@@ -1243,7 +1256,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheError(const StringMeta& error_meta) const try {
         if (enabled_) {
-            error_cache_->remove(error_meta.str_val_);
+            error_cache_->remove(error_meta.str_val_, error_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached error meta:")
 
@@ -1263,66 +1276,60 @@ namespace pinpoint {
         return id;
     } CATCH_AND_LOG_RETURN("failed to cache sql meta:", 0)
 
-    std::optional<PreparedSqlRef> AgentImpl::prepareSql(
+    std::optional<PreparedSqlResult> AgentImpl::prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const try {
         if (!enabled_) {
             return std::nullopt;
         }
+        if (mode != SqlMetaMode::Id && mode != SqlMetaMode::Uid) {
+            return std::nullopt;
+        }
 
         const SqlNormalizer& normalizer = *sql_normalizer_;
+        // The raw cache holds the normalization result only. Resolving the
+        // id/uid below instead of caching it here is what keeps one failed
+        // metadata send from invalidating unrelated entries (see PreparedSql);
+        // the cost is one shared-lock lookup in the id/uid cache per use.
+        auto prepare = [&]() -> PreparedSqlRef {
+            auto normalized = normalizer.normalize(raw_sql);
+            return std::make_shared<const PreparedSql>(PreparedSql{
+                std::move(normalized.parameters),
+                std::move(normalized.normalized_sql)});
+        };
+
+        auto& cache = (mode == SqlMetaMode::Id) ? *raw_sql_id_cache_
+                                                : *raw_sql_uid_cache_;
         // One relaxed load instead of a runtime snapshot lookup plus owning
         // Config copy: this runs once per SQL statement and only needs this flag.
-        const bool enable_raw_sql_cache =
-            raw_sql_cache_enabled_.load(std::memory_order_relaxed);
+        auto sql = raw_sql_cache_enabled_.load(std::memory_order_relaxed)
+                       ? cache.get(raw_sql, prepare).value
+                       : prepare();
 
         if (mode == SqlMetaMode::Id) {
-            auto prepare = [&]() -> PreparedSqlRef {
-                auto normalized = normalizer.normalize(raw_sql);
-                const auto id = cacheSql(normalized.normalized_sql);
-                if (id <= 0) {
-                    // Throwing prevents LruCacheImpl from inserting an invalid
-                    // value; cacheSql() already logged the underlying failure.
-                    throw std::runtime_error("SQL ID unavailable");
-                }
-                return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.parameters),
-                    SqlIdentity{id}});
-            };
-            if (enable_raw_sql_cache) {
-                const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
-                return raw_sql_id_cache_->get(raw_sql, epoch, prepare).value;
+            const auto id = cacheSql(sql->normalized_sql);
+            if (id <= 0) {
+                // cacheSql() already logged the underlying failure. Drop the
+                // annotation rather than record an id the collector has no
+                // metadata for; the cached normalization stays valid and the
+                // next use retries the registration.
+                return std::nullopt;
             }
-            return prepare();
+            return PreparedSqlResult{std::move(sql), SqlIdentity{id}};
         }
 
-        if (mode == SqlMetaMode::Uid) {
-            auto prepare = [&]() -> PreparedSqlRef {
-                auto normalized = normalizer.normalize(raw_sql);
-                auto uid = cacheSqlUid(normalized.normalized_sql);
-                if (!uid) {
-                    throw std::runtime_error("SQL UID unavailable");
-                }
-                return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.parameters),
-                    SqlIdentity{*uid}});
-            };
-            if (enable_raw_sql_cache) {
-                const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
-                return raw_sql_uid_cache_->get(raw_sql, epoch, prepare).value;
-            }
-            return prepare();
+        const auto uid = cacheSqlUid(sql->normalized_sql);
+        if (!uid) {
+            return std::nullopt;
         }
-
-        return std::nullopt;
+        return PreparedSqlResult{std::move(sql), SqlIdentity{*uid}};
     } CATCH_AND_LOG_RETURN("failed to prepare raw sql:", std::nullopt)
 
     void AgentImpl::removeCacheSql(const StringMeta& sql_meta) const try {
         if (enabled_) {
-            sql_cache_->remove(sql_meta.str_val_);
-            // Raw entries cache the assigned ID. Advancing the epoch makes all
-            // of them unreachable after metadata retry exhaustion, without a
-            // reverse index from normalized SQL to every raw variant.
-            sql_id_metadata_epoch_.fetch_add(1, std::memory_order_release);
+            // The raw cache needs no invalidation: it holds no ids, so the
+            // next use of any raw variant re-resolves through this cache and
+            // picks up the fresh id on its own.
+            sql_cache_->remove(sql_meta.str_val_, sql_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached sql meta:")
 
@@ -1345,8 +1352,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
         if (enabled_) {
-            sql_uid_cache_->remove(sql_uid_meta.sql_);
-            sql_uid_metadata_epoch_.fetch_add(1, std::memory_order_release);
+            sql_uid_cache_->remove(sql_uid_meta.sql_, sql_uid_meta.uid_);
         }
     } CATCH_AND_LOG("failed to remove cached sql uid meta:")
 

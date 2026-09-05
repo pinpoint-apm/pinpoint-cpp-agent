@@ -398,7 +398,7 @@ namespace pinpoint {
             ? SqlMetaMode::Uid
             : SqlMetaMode::Id;
         auto prepared = agent_->prepareSql(sql_query, mode);
-        if (!prepared || !*prepared) {
+        if (!prepared || !prepared->sql) {
             return;
         }
         // One recorded SQL execution for this transaction. Charged where Java
@@ -412,15 +412,14 @@ namespace pinpoint {
                 bind_args, config->sql.max_bind_args_size);
         }
 
-        const auto& value = **prepared;
         // Aliasing shares PreparedSql's existing control block; no allocation
         // or parameter-string copy occurs on a raw-cache hit. It also protects
         // the bytes until asynchronous span serialization completes.
         auto parameters = std::shared_ptr<const std::string>(
-            *prepared, &value.parameters);
+            prepared->sql, &prepared->sql->parameters);
 
         if (mode == SqlMetaMode::Uid) {
-            if (const auto* uid = std::get_if<SqlUid>(&value.identity)) {
+            if (const auto* uid = std::get_if<SqlUid>(&prepared->identity)) {
                 annotations_.AppendData(
                     ANNOTATION_SQL_UID,
                     AnnotationData(*uid, std::move(parameters), std::move(joined_bind_args)));
@@ -428,7 +427,7 @@ namespace pinpoint {
             return;
         }
 
-        if (const auto* sql_id = std::get_if<int32_t>(&value.identity)) {
+        if (const auto* sql_id = std::get_if<int32_t>(&prepared->identity)) {
             annotations_.AppendData(
                 ANNOTATION_SQL_ID,
                 AnnotationData(*sql_id, std::move(parameters), std::move(joined_bind_args)));

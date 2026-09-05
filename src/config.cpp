@@ -470,6 +470,7 @@ namespace pinpoint {
         {"Sql.TraceBindValue", REF(sql.trace_bind_value), RELOAD, env::SQL_TRACE_BIND_VALUE},
         {"Sql.RemoveComments", REF(sql.remove_comments), FIXED, env::SQL_REMOVE_COMMENTS},
         {"Sql.CacheLengthLimit", REF(sql.cache_length_limit), FIXED, env::SQL_CACHE_LENGTH_LIMIT},
+        {"Sql.CacheExpireHours", REF(sql.cache_expire_hours), FIXED, env::SQL_CACHE_EXPIRE_HOURS},
         {"Sql.ErrorCount", REF(sql.error_count), RELOAD, env::SQL_ERROR_COUNT},
         {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
         {"CallstackTraceNewThroughput", REF(callstack_trace_new_throughput), RELOAD, env::CALLSTACK_TRACE_NEW_THROUGHPUT},
@@ -849,6 +850,11 @@ namespace pinpoint {
         // silently disable the bypass.
         at_least(config->sql.cache_length_limit, UNLIMITED_SIZE,
                  defaults::SQL_CACHE_LENGTH_LIMIT, "sql cache length limit");
+        // 0 already spells "never expire" (see AgentImpl's ctor), so a
+        // negative carries no extra meaning and is a typo — reset it rather
+        // than silently disabling the re-publication it was meant to tune.
+        at_least(config->sql.cache_expire_hours, 0,
+                 defaults::SQL_CACHE_EXPIRE_HOURS, "sql cache expire hours");
 
         // A negative limit would cast to a huge size_t at the use site
         // (UrlStatSnapshot::add), disabling the cap and letting the URL map grow

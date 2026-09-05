@@ -173,22 +173,24 @@ int main(int argc, char** argv) {
 
     RawSqlCache raw_cache(1024, 16);
     std::atomic<uint64_t> factory_calls{0};
+    // Mirrors AgentImpl::prepareSql: the factory only normalizes, and the id
+    // lookup happens on every use — hit or miss — outside it.
     auto factory = [&]() -> PreparedSqlRef {
         factory_calls.fetch_add(1, std::memory_order_relaxed);
         auto normalized = normalizer.normalize(kRawSql);
-        const auto id = canonical_cache.get(normalized.normalized_sql).value;
         return std::make_shared<const PreparedSql>(PreparedSql{
             std::move(normalized.parameters),
-            SqlIdentity{id}});
+            std::move(normalized.normalized_sql)});
     };
-    raw_cache.get(kRawSql, 0, factory);
+    auto cached_lookup = [&] {
+        const auto& entry = raw_cache.get(kRawSql, factory).value;
+        const auto id = canonical_cache.get(entry->normalized_sql).value;
+        return static_cast<uint64_t>(id) + entry->parameters.size();
+    };
+    raw_cache.get(kRawSql, factory);
     factory_calls.store(0, std::memory_order_relaxed);
 
-    auto cached = run(iterations, [&] {
-        auto result = raw_cache.get(kRawSql, 0, factory);
-        return static_cast<uint64_t>(std::get<int32_t>(result.value->identity)) +
-               result.value->parameters.size();
-    });
+    auto cached = run(iterations, cached_lookup);
 
     constexpr size_t parallel_threads = 8;
     const size_t operations_per_thread =
@@ -200,11 +202,7 @@ int main(int argc, char** argv) {
             return static_cast<uint64_t>(id) + normalized.parameters.size();
         });
     auto cached_parallel = run_parallel(
-        parallel_threads, operations_per_thread, [&] {
-            auto result = raw_cache.get(kRawSql, 0, factory);
-            return static_cast<uint64_t>(std::get<int32_t>(result.value->identity)) +
-                   result.value->parameters.size();
-        });
+        parallel_threads, operations_per_thread, cached_lookup);
 
     // Miss-heavy scenario: a pool of distinct raw statements larger than the
     // cache, so every raw lookup misses and pays the hash + insert + eviction
@@ -233,15 +231,14 @@ int main(int argc, char** argv) {
     miss_index = 0;
     auto cached_miss = run(iterations, [&] {
         const auto& raw = miss_pool[miss_index++ % miss_pool.size()];
-        auto result = raw_cache.get(raw, 0, [&]() -> PreparedSqlRef {
+        const auto& entry = raw_cache.get(raw, [&]() -> PreparedSqlRef {
             auto normalized = normalizer.normalize(raw);
-            const auto id = canonical_cache.get(normalized.normalized_sql).value;
             return std::make_shared<const PreparedSql>(PreparedSql{
                 std::move(normalized.parameters),
-                SqlIdentity{id}});
-        });
-        return static_cast<uint64_t>(std::get<int32_t>(result.value->identity)) +
-               result.value->parameters.size();
+                std::move(normalized.normalized_sql)});
+        }).value;
+        const auto id = canonical_cache.get(entry->normalized_sql).value;
+        return static_cast<uint64_t>(id) + entry->parameters.size();
     });
     const auto miss_overhead = cached_miss.nanoseconds_per_operation /
                                baseline_miss.nanoseconds_per_operation;

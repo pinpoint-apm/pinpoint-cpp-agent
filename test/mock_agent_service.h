@@ -148,7 +148,7 @@ public:
         return cached_sqls_[key];
     }
 
-    std::optional<PreparedSqlRef> prepareSql(
+    std::optional<PreparedSqlResult> prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const override try {
         static const SqlNormalizer normalizer(kMaxNormalizedSqlLength);
         // One locked snapshot for the whole call: reading the config_ member
@@ -156,43 +156,33 @@ public:
         // thread (and could even drop the last reference mid-read).
         const auto config = getConfig();
 
-        if (mode == SqlMetaMode::Id) {
-            auto prepare = [&]() -> PreparedSqlRef {
-                sql_normalize_count_.fetch_add(1, std::memory_order_relaxed);
-                auto normalized = normalizer.normalize(raw_sql);
-                const auto id = cacheSql(normalized.normalized_sql);
-                if (id <= 0) {
-                    // Mirror AgentImpl::prepareSql: throwing keeps the invalid
-                    // id out of the cache instead of poisoning later hits.
-                    throw std::runtime_error("mock SQL ID unavailable");
-                }
-                return std::make_shared<const PreparedSql>(PreparedSql{
-                    std::move(normalized.parameters),
-                    SqlIdentity{id}});
-            };
-            if (config->sql.enable_raw_sql_cache) {
-                const auto epoch = sql_id_metadata_epoch_.load(std::memory_order_acquire);
-                return raw_sql_id_cache_.get(raw_sql, epoch, prepare).value;
-            }
-            return prepare();
-        }
-
+        // Mirrors AgentImpl::prepareSql: the raw cache holds the normalization
+        // only, and the identity is resolved per call.
         auto prepare = [&]() -> PreparedSqlRef {
             sql_normalize_count_.fetch_add(1, std::memory_order_relaxed);
             auto normalized = normalizer.normalize(raw_sql);
-            auto uid = cacheSqlUid(normalized.normalized_sql);
-            if (!uid) {
-                throw std::runtime_error("mock SQL UID unavailable");
-            }
             return std::make_shared<const PreparedSql>(PreparedSql{
                 std::move(normalized.parameters),
-                SqlIdentity{*uid}});
+                std::move(normalized.normalized_sql)});
         };
-        if (config->sql.enable_raw_sql_cache) {
-            const auto epoch = sql_uid_metadata_epoch_.load(std::memory_order_acquire);
-            return raw_sql_uid_cache_.get(raw_sql, epoch, prepare).value;
+        auto& cache = (mode == SqlMetaMode::Id) ? raw_sql_id_cache_
+                                                : raw_sql_uid_cache_;
+        auto sql = config->sql.enable_raw_sql_cache ? cache.get(raw_sql, prepare).value
+                                                    : prepare();
+
+        if (mode == SqlMetaMode::Id) {
+            const auto id = cacheSql(sql->normalized_sql);
+            if (id <= 0) {
+                return std::nullopt;
+            }
+            return PreparedSqlResult{std::move(sql), SqlIdentity{id}};
         }
-        return prepare();
+
+        auto uid = cacheSqlUid(sql->normalized_sql);
+        if (!uid) {
+            return std::nullopt;
+        }
+        return PreparedSqlResult{std::move(sql), SqlIdentity{*uid}};
     } catch (const std::exception&) {
         // AgentImpl::prepareSql swallows preparation failures and returns
         // nullopt; the mock honors the same contract so callers observe
@@ -202,7 +192,6 @@ public:
 
     void removeCacheSql(const StringMeta& sql_meta) const override {
         removed_sql_count_++;
-        sql_id_metadata_epoch_.fetch_add(1, std::memory_order_release);
     }
 
     std::optional<SqlUid> cacheSqlUid(std::string_view sql) const override {
@@ -211,7 +200,6 @@ public:
 
     void removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const override {
         removed_sql_uid_count_++;
-        sql_uid_metadata_epoch_.fetch_add(1, std::memory_order_release);
     }
 
     bool isStatusFail(int status) const override {
@@ -331,8 +319,6 @@ public:
     mutable std::atomic<int> removed_sql_uid_count_{0};
     mutable RawSqlCache raw_sql_id_cache_{128, 4};
     mutable RawSqlCache raw_sql_uid_cache_{128, 4};
-    mutable std::atomic<uint64_t> sql_id_metadata_epoch_{0};
-    mutable std::atomic<uint64_t> sql_uid_metadata_epoch_{0};
     mutable std::atomic<uint64_t> sql_normalize_count_{0};
     mutable std::atomic<bool> force_sql_id_failure_{false};
 

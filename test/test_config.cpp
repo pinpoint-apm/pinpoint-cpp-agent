@@ -1532,6 +1532,41 @@ Sql:
         << "Out-of-range negative limit should fall back to the default";
 }
 
+TEST_F(ConfigTest, SqlCacheExpireHoursTest) {
+    auto default_config = make_config();
+    EXPECT_EQ(default_config->sql.cache_expire_hours, 168)
+        << "SQL cache expiry should default to the Java agent's 168 hours";
+
+    set_config_string(R"(
+Sql:
+  CacheExpireHours: 24
+)");
+    EXPECT_EQ(make_config()->sql.cache_expire_hours, 24)
+        << "SQL cache expiry should be read from YAML";
+
+    set_config_string("");
+    setenv(full_env(env::SQL_CACHE_EXPIRE_HOURS).c_str(), "72", 1);
+    EXPECT_EQ(make_config()->sql.cache_expire_hours, 72)
+        << "SQL cache expiry should be read from the environment";
+    unsetenv(full_env(env::SQL_CACHE_EXPIRE_HOURS).c_str());
+
+    // 0 already spells "never expire", so a negative is a typo, not a second
+    // way to say the same thing.
+    set_config_string(R"(
+Sql:
+  CacheExpireHours: 0
+)");
+    EXPECT_EQ(make_config()->sql.cache_expire_hours, 0)
+        << "0 must survive as the 'never expire' sentinel";
+
+    set_config_string(R"(
+Sql:
+  CacheExpireHours: -1
+)");
+    EXPECT_EQ(make_config()->sql.cache_expire_hours, 168)
+        << "A negative expiry should fall back to the default";
+}
+
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
     // Test negative bind args size
     set_config_string(R"(

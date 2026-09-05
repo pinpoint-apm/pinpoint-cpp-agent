@@ -65,6 +65,9 @@ namespace pinpoint {
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
         constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
+        // Hours a cached SQL UID survives before its metadata is re-published.
+        // Mirrors the Java agent's profiler.jdbc.sqlcacheexpirehours (168).
+        constexpr int SQL_CACHE_EXPIRE_HOURS = 168;
         // SQL statements one transaction may run before it is marked failed.
         // Mirrors the Java agent's profiler.sql.error.count (100).
         constexpr int SQL_ERROR_COUNT = 100;
@@ -160,6 +163,7 @@ namespace pinpoint {
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
         constexpr const char* SQL_CACHE_LENGTH_LIMIT = "SQL_CACHE_LENGTH_LIMIT";
+        constexpr const char* SQL_CACHE_EXPIRE_HOURS = "SQL_CACHE_EXPIRE_HOURS";
         constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
         constexpr const char* SQL_ENABLE_RAW_SQL_CACHE = "SQL_ENABLE_RAW_SQL_CACHE";
         constexpr const char* SQL_TRACE_BIND_VALUE = "SQL_TRACE_BIND_VALUE";
@@ -380,6 +384,13 @@ namespace pinpoint {
             // -1 disables the bypass (cache everything), 0 bypasses
             // everything. Java parity: profiler.jdbc.sqlcachelengthlimit.
             int cache_length_limit = defaults::SQL_CACHE_LENGTH_LIMIT;
+            // Hours after which a cached SQL UID is re-published to the
+            // collector, refreshing the SqlUidMetaData row before its
+            // server-side TTL (180 days) drops the SQL text and leaves the UI
+            // showing an empty statement. 0 or less never expires, which is
+            // only safe for processes shorter-lived than that TTL. Java
+            // parity: profiler.jdbc.sqlcacheexpirehours.
+            int cache_expire_hours = defaults::SQL_CACHE_EXPIRE_HOURS;
             // SQL statements one transaction may run before the span is
             // marked failed, which is how an N+1 query pattern surfaces in
             // the UI. 0 = never mark. Java parity: profiler.sql.error.count,
