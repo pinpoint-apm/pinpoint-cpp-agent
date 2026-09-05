@@ -27,9 +27,8 @@ namespace pinpoint {
 
     // The noop singletons below are intentionally heap-allocated and never
     // destroyed, mirroring the Logger and global-agent singletons.
-    // noopSpanEvent()/unsampledSpanEvent() hand out raw pointers, and a host
-    // or detached thread may still trace during process-exit static
-    // destruction. A function-local value static would be destroyed by then,
+    // noopSpanEvent() hands out raw pointers, and a host or detached thread
+    // may still trace during process-exit static destruction. A function-local value static would be destroyed by then,
     // turning those late calls into use-after-destruction.
 
     SpanEventPtr noopSpanEvent() {
@@ -67,11 +66,6 @@ namespace pinpoint {
         }
     }
 
-    SpanEventPtr unsampledSpanEvent() {
-        static auto* event = new UnsampledSpanEvent();
-        return event;
-    }
-
     AgentPtr noopAgent() {
         static auto* agent = new AgentPtr(std::make_shared<NoopAgent>());
         return *agent;
@@ -102,6 +96,25 @@ namespace pinpoint {
             stats->addActiveSpan(active_node_, span_id_, start_time_);
         }
     }
+
+    void UnsampledSpanEvent::SetError(std::string_view error_name, std::string_view error_message) {
+        // Mirrors SpanEventImpl::SetError routing to SpanImpl::markSpanError:
+        // an exception on a step fails the transaction. Nothing else of the
+        // error is kept — an unsampled span has nowhere to keep it.
+        owner_->markError(error_name, error_message);
+    }
+
+    void UnsampledSpan::markError(std::string_view error_name, std::string_view error_message) try {
+        // Span.IgnoreErrors must apply here too: an error the operator has
+        // excluded would otherwise fail the URL stat of unsampled requests
+        // while sparing sampled ones. Without a runtime snapshot (tests) there
+        // is no config to filter against, so the error stands.
+        if (runtime_ &&
+            is_ignored_error(runtime_->config->span.ignore_errors, error_name, error_message)) {
+            return;
+        }
+        err_.store(true, std::memory_order_relaxed);
+    } CATCH_AND_LOG("set error")
 
     AgentStats* UnsampledSpan::statsSink() const {
         if (runtime_ && runtime_->stats) {
@@ -169,10 +182,14 @@ namespace pinpoint {
             // the URL-stat failure rate toward zero. With a runtime snapshot
             // both the status check and the record skip the atomic runtime
             // loads agent_->isStatusFail()/getConfig() would pay.
+            //
+            // A recorded error fails the entry as well, for the same reason
+            // and the same way SpanImpl::sendUrlStat ORs in PSpan.err.
+            const bool err = err_.load(std::memory_order_relaxed);
             if (runtime_) {
                 const auto& status_errors = runtime_->http_status_errors;
-                url_stat_->failed_ =
-                    status_errors && status_errors->isErrorCode(url_stat_->status_code_);
+                url_stat_->failed_ = err ||
+                    (status_errors && status_errors->isErrorCode(url_stat_->status_code_));
                 if (runtime_->url_stats) {
                     // Straight into the runtime-owned sink, no agent deref:
                     // this span may hold no agent keep-alive (see the ctor).
@@ -187,7 +204,7 @@ namespace pinpoint {
                     agent_->recordUrlStat(std::move(*url_stat_), *runtime_->config);
                 }
             } else if (agent_ != nullptr) {
-                url_stat_->failed_ = agent_->isStatusFail(url_stat_->status_code_);
+                url_stat_->failed_ = err || agent_->isStatusFail(url_stat_->status_code_);
                 agent_->recordUrlStat(std::move(*url_stat_));
             }
             url_stat_.reset();

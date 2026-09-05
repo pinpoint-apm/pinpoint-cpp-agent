@@ -528,6 +528,7 @@ namespace pinpoint {
 
     private:
         friend class SpanEventImpl;
+        friend class DisabledSpanEvent;
 
             // Keeps the agent alive while user code still holds this span (as
             // UnsampledSpan::agent_ref_ does): a span may legally outlive

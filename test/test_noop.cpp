@@ -193,19 +193,77 @@ TEST_F(NoopTest, UnsampledSpanEventInjectContextTest) {
     EXPECT_EQ(sampled_value.value(), "s0") << "Sampled header should be 's0' for unsampled span";
 }
 
-TEST_F(NoopTest, UnsampledSpanEventGlobalSingletonTest) {
+TEST_F(NoopTest, UnsampledSpanEventIsPerSpanTest) {
     UnsampledSpan span1(mock_agent_service_.get());
     UnsampledSpan span2(mock_agent_service_.get());
 
-    // Every unsampled span hands out the single global UnsampledSpanEvent.
-    EXPECT_EQ(span1.NewSpanEvent("op"), unsampledSpanEvent());
-    EXPECT_EQ(span1.NewSpanEvent("op", 1000), unsampledSpanEvent());
-    EXPECT_EQ(span1.GetSpanEvent(), unsampledSpanEvent());
-    EXPECT_EQ(span2.NewSpanEvent("op"), unsampledSpanEvent());
-    EXPECT_EQ(unsampledSpanEvent(), unsampledSpanEvent())
-        << "unsampledSpanEvent should always return the same instance";
-    EXPECT_NE(unsampledSpanEvent(), noopSpanEvent())
+    // One event per span (SetError has to know which span to fail), and the
+    // same one for every call on that span.
+    auto* event1 = span1.NewSpanEvent("op");
+    EXPECT_EQ(span1.NewSpanEvent("op", 1000), event1);
+    EXPECT_EQ(span1.GetSpanEvent(), event1);
+    EXPECT_NE(span2.NewSpanEvent("op"), event1)
+        << "two unsampled spans must not share one event";
+    EXPECT_NE(event1, noopSpanEvent())
         << "Unsampled span event is distinct from the plain noop span event";
+}
+
+// An unsampled span is never sent, but it still produces a URL stat entry —
+// and unsampled requests are the majority when sampling is on, so an error
+// that did not fail that entry would bias the failure rate toward zero. Java's
+// DisableSpanRecorder.recordException marks the same way.
+TEST_F(NoopTest, UnsampledSpanEventSetErrorFailsUrlStatTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    span.NewSpanEvent("db-query")->SetError("SQLException", "connection refused");
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "an event exception must fail the unsampled request's URL stat";
+    EXPECT_TRUE(mock_agent_service_->recorded_spans_.empty())
+        << "the span itself is still never sent";
+}
+
+TEST_F(NoopTest, UnsampledSpanSetErrorFailsUrlStatTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    span.SetError("boom");
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_);
+}
+
+// Span.IgnoreErrors has to reach this path too, or an excluded error would
+// fail unsampled requests while sparing sampled ones. The filter needs the
+// runtime snapshot every production span is built with.
+TEST_F(NoopTest, UnsampledSpanIgnoredErrorKeepsUrlStatSuccessfulTest) {
+    auto config = std::make_shared<Config>();
+    config->http.url_stat.enable = true;
+    config->span.ignore_errors = {{"NotFound", ""}};
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = config;
+
+    UnsampledSpan ignored(mock_agent_service_.get(), runtime);
+    ignored.SetUrlStat("/api/users", "GET", 200);
+    ignored.NewSpanEvent("db-query")->SetError("NotFound", "no such row");
+    ignored.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_)
+        << "an ignored error must not fail the entry";
+
+    UnsampledSpan failed(mock_agent_service_.get(), runtime);
+    failed.SetUrlStat("/api/users", "GET", 200);
+    failed.NewSpanEvent("db-query")->SetError("SQLException", "connection refused");
+    failed.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 2);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "a name outside the ignore list still fails the entry";
 }
 
 TEST_F(NoopTest, UnsampledSpanSetUrlStatTest) {

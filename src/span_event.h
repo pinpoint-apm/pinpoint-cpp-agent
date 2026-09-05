@@ -236,11 +236,21 @@ namespace pinpoint {
         // it needs the exception boundary in span_event.cpp.
         void SetDestination(std::string_view dest) override;
         void SetEndPoint(std::string_view end_point) override {}
-        void SetError(std::string_view error_message) override {}
-        void SetError(std::string_view error_name, std::string_view error_message) override {}
-        void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
+        // Nothing is recorded on the overflowed event itself — no error
+        // string, no annotation, no buffered call stack — but the failure
+        // still reaches the trace root, so a transaction whose only exception
+        // happened past the depth/sequence limit is not reported healthy.
+        // Java does the same: traceBlockBegin past the call-stack limit hands
+        // back a DisableSpanEventRecorder whose recordException still calls
+        // recordError on the shared trace root.
+        void SetError(std::string_view error_message) override { SetError("Error", error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message) override;
+        // The call-stack overloads drop the frames (buffering them is the
+        // recording this event exists to skip) and mark like the plain one.
         void SetError(std::string_view error_name, std::string_view error_message,
-                      const std::vector<CallStackFrame>& frames) override {}
+                      CallStackReader& reader) override { SetError(error_name, error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames) override { SetError(error_name, error_message); }
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}

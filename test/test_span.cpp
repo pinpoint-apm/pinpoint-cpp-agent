@@ -2167,8 +2167,6 @@ TEST_F(SpanTest, NestedAsyncSpanErrorReachesTraceRootTest) {
         << "a nested async error must reach the trace root";
 }
 
-// ========== Span.IgnoreErrors Tests ==========
-
 namespace {
     // Builds the PSpan the collector would see from the last recorded chunk.
     v1::PSpan* last_recorded_pspan(MockAgentService& agent, google::protobuf::Arena& arena) {
@@ -2178,6 +2176,47 @@ namespace {
         return build_grpc_span(std::move(agent.recorded_spans_.back()), &arena);
     }
 }
+
+// The third path into the same flag: an event created past MaxEventDepth /
+// MaxEventSequence is handed the shared disabled event, which records nothing.
+// Nothing recorded must not mean nothing failed — overflow caps profiling
+// detail, not the verdict (Java's traceBlockBegin past the limit still hands
+// back a recorder that reaches the trace root).
+TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 1;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    auto outer = span.NewSpanEvent("outer");
+    auto overflowed = span.NewSpanEvent("db-query");
+    ASSERT_EQ(overflowed, span.GetSpanEvent()) << "depth 2 must hand out the disabled event";
+
+    overflowed->SetError("SQLException", "connection refused");
+    overflowed->EndEvent();
+    outer->EndEvent();
+    span.EndSpan();
+
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+        << "an error on an overflowed event must fail the URL stat";
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 1);
+    ASSERT_EQ(pspan->spanevent_size(), 1) << "the overflowed event itself is still discarded";
+    EXPECT_FALSE(pspan->spanevent(0).has_exceptioninfo())
+        << "only the outer event is recorded, and it recorded no error";
+}
+
+// ========== Span.IgnoreErrors Tests ==========
 
 // The C++ counterpart of Java's profiler.ignore-error-handler: a matched error
 // is still recorded as exceptionInfo, it just does not fail the transaction.

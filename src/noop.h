@@ -45,8 +45,6 @@ namespace pinpoint {
      * path — unchanged from before the per-thread owner existed.
      */
     SpanPtr noopSpan();
-    /// @brief Returns the global singleton span event handed out by unsampled spans.
-    SpanEventPtr unsampledSpanEvent();
     /// @brief Returns a shared noop agent instance.
     AgentPtr noopAgent();
 
@@ -78,17 +76,38 @@ namespace pinpoint {
         void EndEvent() override {}
     };
 
+    class UnsampledSpan;
+
     /**
      * @brief Span event handed out by UnsampledSpan: records nothing but still
      *        propagates the unsampled decision (`Pinpoint-Sampled: s0`) to
-     *        downstream services on InjectContext.
+     *        downstream services on InjectContext, and still fails its span.
      *
-     * Stateless, so a single global instance (see unsampledSpanEvent()) is
-     * shared by every unsampled span.
+     * One instance per span, held by value inside the UnsampledSpan (it used
+     * to be a stateless process-wide singleton). SetError has to reach the
+     * span that handed the event out — an unsampled request's only visible
+     * output is its URL stat entry, and a DB/external-call exception is
+     * recorded on the event, not on the span. Its lifetime is the span's, the
+     * same contract a real SpanEventPtr carries (api_contracts.md section 4).
      */
     class UnsampledSpanEvent final : public NoopSpanEvent {
     public:
+        explicit UnsampledSpanEvent(UnsampledSpan* owner) : owner_(owner) {}
+
         void InjectContext(TraceContextWriter& writer) override;
+        void SetError(std::string_view error_message) override { SetError("Error", error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message) override;
+        // Frames are dropped (an unsampled span buffers no exceptions); only
+        // the failure verdict survives, as in the plain overload.
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      CallStackReader& reader) override { SetError(error_name, error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames) override { SetError(error_name, error_message); }
+
+    private:
+        // Non-owning: this event lives inside that span, so it cannot outlive
+        // it. Never null.
+        UnsampledSpan* owner_;
     };
 
     /// @brief Span implementation used when tracing is disabled.
@@ -144,12 +163,22 @@ namespace pinpoint {
                                std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~UnsampledSpan() override;
 
-        // Hand out the unsampled span event so that InjectContext on the event
-        // still propagates the `s0` sampling decision downstream.
-        SpanEventPtr NewSpanEvent(std::string_view operation) override { return unsampledSpanEvent(); }
-        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return unsampledSpanEvent(); }
-        SpanEventPtr GetSpanEvent() override { return unsampledSpanEvent(); }
+        // Hand out this span's own unsampled event so that InjectContext on
+        // the event still propagates the `s0` sampling decision downstream,
+        // and SetError on it still fails this span.
+        SpanEventPtr NewSpanEvent(std::string_view operation) override { return &event_; }
+        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return &event_; }
+        SpanEventPtr GetSpanEvent() override { return &event_; }
 
+        // An unsampled span records nothing and is never sent, but it still
+        // produces a URL stat entry — so an error has to fail that entry, or
+        // the failure rate is structurally biased toward zero on the path that
+        // carries most of the traffic when sampling is on. Java's
+        // DisableSpanRecorder.recordException does the same.
+        void SetError(std::string_view error_message) override { markError("Error", error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message) override {
+            markError(error_name, error_message);
+        }
         void EndSpan() override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 
@@ -158,6 +187,11 @@ namespace pinpoint {
         }
 
     private:
+        friend class UnsampledSpanEvent;
+
+        // Single point that flips err_, so the Span.IgnoreErrors filter is
+        // applied in exactly one place, as SpanImpl::markSpanError does.
+        void markError(std::string_view error_name, std::string_view error_message);
         // Shared by EndSpan's catch handlers; see the definition.
         void releaseActiveSpanOnError() noexcept;
         // The stats sink this span records into: the runtime snapshot's
@@ -168,6 +202,14 @@ namespace pinpoint {
         int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};
+        // The whole of this span's error state: no span is ever sent, so the
+        // flag exists only to fail the URL stat entry. Atomic like finished_,
+        // since EndSpan reads it and the span's single-thread contract is
+        // exactly what a misbehaving caller bends.
+        std::atomic<bool> err_{false};
+        // Handed out by NewSpanEvent/GetSpanEvent; by value, so an unsampled
+        // request pays no allocation for it.
+        UnsampledSpanEvent event_{this};
         // Registration in the active-request registry (see active_span.h):
         // linked by the constructor, unlinked by EndSpan; the destructor and
         // releaseActiveSpanOnError unlink as idempotent backstops.

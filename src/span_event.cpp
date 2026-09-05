@@ -460,6 +460,16 @@ namespace pinpoint {
         data_->endDisabledSpanEvent();
     }
 
+    void DisabledSpanEvent::SetError(std::string_view error_name, std::string_view error_message) try {
+        // Same reach as SpanEventImpl::SetError, minus the recording: overflow
+        // is a profiling depth limit, not a verdict on the transaction. The
+        // owner check is InjectContext's (this event has no spanIfAlive of its
+        // own) — a span already gone has no error flag left to mark.
+        if (auto* span = data_->getOwner()) {
+            span->markSpanError(error_name, error_message);
+        }
+    } CATCH_AND_LOG("set error")
+
     void DisabledSpanEvent::SetDestination(std::string_view dest) try {
         destination_id_ = dest;
     } CATCH_AND_LOG("set destination")
