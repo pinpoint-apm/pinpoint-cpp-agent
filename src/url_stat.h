@@ -211,6 +211,13 @@ namespace pinpoint {
 
         /// @brief Adds a runtime statistic to the current snapshot buffer.
         void addSnapshot(const UrlStatEntry* us, const Config& config);
+        /// @brief Closes the tick in progress when its window has elapsed,
+        /// so a tick is reported once it is over rather than only once a
+        /// newer entry arrives to cut it. Driven by the send worker, the way
+        /// Java drives checkAndFlushOldData
+        /// (AsyncQueueingUriStatStorage.java:162-165); a tick with no
+        /// successor traffic would otherwise sit here indefinitely.
+        void closeElapsedTick();
         /// @brief Extracts the ticks already cut into completed_, merged
         /// into a single snapshot. Empty when nothing was cut since the last
         /// call — the caller must then send no message at all, the way Java's
@@ -244,6 +251,10 @@ namespace pinpoint {
         /// @brief Cuts the snapshot at a tick boundary, then aggregates @p us.
         ///        Caller must hold snapshot_mutex_.
         void addLocked(const UrlStatEntry& us, const Config& config);
+        /// @brief Moves the snapshot in progress onto completed_, evicting the
+        ///        oldest tick if the queue is full, and starts a fresh one.
+        ///        Caller must hold snapshot_mutex_.
+        void cutInProgressLocked();
         /// @brief One supervised run of the aggregation loop; the public
         /// worker restarts it after a transient exception.
         void runAddUrlStatsWorker(const Config& config);

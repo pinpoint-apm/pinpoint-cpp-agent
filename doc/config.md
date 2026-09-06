@@ -308,9 +308,11 @@ bitmask are not implemented.
 
 URL statistics are bucketed into fixed 30-second **ticks** and reported per
 `(url, tick)`. **Only completed ticks are sent**: the tick still being collected
-stays in the agent until the first request of a newer tick closes it, so one
-tick is never split across two messages — a split would report a separate
-maximum and average for each half. **A send with no completed tick sends no
+stays in the agent until it is closed, so one tick is never split across two
+messages — a split would report a separate maximum and average for each half.
+A tick is closed either by the first request of a newer tick or, if none
+arrives, by the send timer once the tick's 30-second window has elapsed, so an
+agent whose traffic stops still reports its last tick. **A send with no completed tick sends no
 message at all**, so an idle agent puts nothing on the stats stream. This
 matches Java, whose `UriStatCollectingJob` drains only the completed queue and
 stops as soon as it polls empty. The one exception is agent shutdown, which

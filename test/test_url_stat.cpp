@@ -1602,4 +1602,51 @@ TEST_F(UrlStatTest, ShutdownFlushTakesTheTickStillInProgress) {
     EXPECT_TRUE(url_stats.takeSnapshot(true)->empty()) << "the flush must leave nothing behind";
 }
 
+
+// A tick with no successor traffic is still over once its window elapses.
+// Cutting only on the arrival of a newer entry (addLocked) covers an agent
+// under load; an agent that goes quiet would hold its last tick until traffic
+// resumed. Java closes it on the clock instead
+// (AsyncQueueingUriStatStorage.checkAndFlushOldData).
+TEST_F(UrlStatTest, ElapsedTickIsClosedWithoutNewerTraffic) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    // Real wall-clock end time: closeElapsedTick asks the clock, not the
+    // entries, so this is the one test that cannot use synthetic ticks.
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    UrlStatEntry entry("/api/quiet", "GET", 200);
+    entry.elapsed_ = 10;
+    entry.end_time_ = std::chrono::system_clock::now();
+    url_stats.addSnapshot(&entry, *config);
+
+    url_stats.closeElapsedTick();
+    EXPECT_TRUE(url_stats.takeSnapshot()->empty())
+        << "the tick is still open, so nothing may be sent yet";
+
+    // 1.1x the tick width, so the boundary is crossed wherever inside the
+    // tick the entry landed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    url_stats.closeElapsedTick();
+
+    const auto snapshot = url_stats.takeSnapshot();
+    ASSERT_EQ(snapshot->getEachStats().size(), 1u)
+        << "an elapsed tick must be sent even though no newer entry ever arrived";
+    EXPECT_EQ(snapshot->getEachStats().begin()->second.total.total(), 10);
+
+    // Idempotent: nothing left to close, and no empty tick invented.
+    url_stats.closeElapsedTick();
+    EXPECT_TRUE(url_stats.takeSnapshot()->empty());
+}
+
+// The clock close must not manufacture ticks out of an idle agent.
+TEST_F(UrlStatTest, CloseElapsedTickOnAnIdleAgentProducesNothing) {
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    for (int i = 0; i < 3; i++) {
+        url_stats.closeElapsedTick();
+        EXPECT_TRUE(url_stats.takeSnapshot()->empty()) << "cycle " << i;
+    }
+}
+
 } // namespace pinpoint

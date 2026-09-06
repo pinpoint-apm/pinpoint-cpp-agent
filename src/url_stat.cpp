@@ -112,16 +112,7 @@ namespace pinpoint {
         // aggregates by, and merge() folds it back together on send.
         const auto tick = tick_clock_.tick(us.end_time_);
         if (!snapshot_->empty() && tick > snapshot_->tick()) {
-            if (completed_.size() >= kMaxCompletedSnapshots) {
-                completed_.pop_front();
-                if (const auto dropped = snapshot_drop_reporter_.record()) {
-                    LOG_WARN("url stat snapshot queue overflow: {} tick(s) dropped in total "
-                             "(max {} completed snapshots); the stats stream is not draining",
-                             dropped, kMaxCompletedSnapshots);
-                }
-            }
-            completed_.push_back(std::move(snapshot_));
-            snapshot_ = std::make_unique<UrlStatSnapshot>();
+            cutInProgressLocked();
         }
 
         if (!snapshot_->add(&us, config, tick_clock_)) {
@@ -134,6 +125,43 @@ namespace pinpoint {
                          "(max {} distinct urls per tick)",
                          dropped, config.http.url_stat.limit);
             }
+        }
+    }
+
+    void UrlStats::cutInProgressLocked() {
+        // Allocated before snapshot_ is moved out: a throw after the move
+        // would leave the member null, and the next addSnapshot() or
+        // takeSnapshot() would dereference it.
+        auto fresh = std::make_unique<UrlStatSnapshot>();
+        if (completed_.size() >= kMaxCompletedSnapshots) {
+            completed_.pop_front();
+            if (const auto dropped = snapshot_drop_reporter_.record()) {
+                LOG_WARN("url stat snapshot queue overflow: {} tick(s) dropped in total "
+                         "(max {} completed snapshots); the stats stream is not draining",
+                         dropped, kMaxCompletedSnapshots);
+            }
+        }
+        completed_.push_back(std::move(snapshot_));
+        snapshot_ = std::move(fresh);
+    }
+
+    void UrlStats::closeElapsedTick() {
+        // Java's AsyncQueueingUriStatStorage.checkAndFlushOldData
+        // (AsyncQueueingUriStatStorage.java:162-165): a tick whose window has
+        // elapsed is complete whether or not a newer entry ever arrives to cut
+        // it. addLocked closes ticks on arrival, which covers an agent under
+        // load; an agent whose traffic stops would otherwise hold its last
+        // tick until traffic resumed, because nothing would ever cut it.
+        //
+        // Wall clock rather than the entries' own end times on purpose: the
+        // question here is whether the window is over, and with no entry to
+        // read there is nothing else to ask. A straggler for the tick just
+        // closed is handled the way addLocked's are — it opens the key again
+        // in the new snapshot and merge() folds the two halves back together.
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        if (!snapshot_->empty() &&
+            tick_clock_.tick(std::chrono::system_clock::now()) > snapshot_->tick()) {
+            cutInProgressLocked();
         }
     }
 
@@ -491,6 +519,10 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(send_mutex_);
         while (!agent_->isExiting()) {
             if (!send_cond_var_.wait_for(lock, send_interval_, [this]{ return agent_->isExiting(); })) {
+                // Before the token, not after: next_write() drains whatever
+                // completed_ holds when it consumes the token, so a tick
+                // closed here goes out on this send rather than the next.
+                closeElapsedTick();
                 agent_->recordStats(URL_STATS);
             }
         }
