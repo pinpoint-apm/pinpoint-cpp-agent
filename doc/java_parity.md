@@ -30,6 +30,7 @@ by side.
 | Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined** — see [below](#retrying-a-rejected-metadata-send--declined) |
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
+| Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
 
 ---
 
@@ -218,3 +219,43 @@ stats type with no payload, so a duplicate token is simply not enqueued and the
 producers keep their data until the stream drains it (`src/grpc.cpp:2941-2954`).
 
 **Decision: no divergence.** Head-drop is the Java default sender's policy.
+
+---
+
+## Exception chain on an overflowed span event — declined
+
+**Java.** `AbstractRecorder.recordException` (`AbstractRecorder.java:62-64`)
+calls `recordDetailedException` before anything else;
+`WrappedSpanEventRecorder.recordDetailedException`
+(`WrappedSpanEventRecorder.java:169-171`) forwards the throwable to
+`DefaultExceptionRecorder.recordException`
+(`DefaultExceptionRecorder.java:73-83`), which pushes it onto the recorder's
+`ExceptionContext` and flushes the finished chain as its own exception
+metadata. That path runs unchanged while the call stack is overflowed:
+`DefaultCallStack.newInstance` hands out the shared dummy `SpanEvent` once
+`isOverflow()` holds, and `DefaultTrace.traceBlockEnd` drops that dummy instead
+of appending it — so what overflow discards is only what was written *onto the
+event*, the `EXCEPTION_CHAIN_ID` annotation and the `exceptionInfo` class id
+and message. The chain itself leaves through the `ExceptionContext`, which
+belongs to the recorder and not to the event, and the failure reaches the trace
+root separately through `recordError(ErrorCategory.EXCEPTION)`.
+
+**Both ports.** Neither keeps anything but the failure flag.
+`DisabledSpanEvent::SetError` (`src/span_event.cpp:483-491`) routes to the
+owning span's `markSpanError`; the Go agent's `overflowSpanEvent.SetError`
+(`span.go:69-81`) sets `span.root().err`. No exception info, no annotation, no
+chain link. `Span.IgnoreErrors` (`Error.IgnoreErrors` in Go) filters this path
+exactly as it filters a recorded event's, so an ignored error fails the
+transaction on neither.
+
+**Decision: intentional simplification.** Overflow is a profiling *depth*
+limit, not a verdict on the transaction, so the two halves are treated
+differently on purpose: the failure flag is what the transaction is judged by
+and it survives, while a detailed record of a call made past the depth limit is
+precisely what the limit exists to drop. It is also the expensive half — every
+chain link carries a full string callstack, and overflow is by definition the
+state in which events arrive faster than the configured depth allows.
+
+**Revisit if** this is reported to have blocked a real investigation — an
+exception that occurred only past the depth limit, leaving nothing but a failed
+transaction to go on.
