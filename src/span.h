@@ -606,7 +606,18 @@ namespace pinpoint {
             // TraceRoot.getShared().maskErrorCode(). A child that ends after
             // the root already flushed its final chunk marks the flag too late
             // to be sent — the same limit Java has, since both serialize the
-            // PSpan once, at root end.
+            // PSpan once, at root end: DefaultTrace.close() calls logSpan(),
+            // which stores the PSpan right there (DefaultTrace.java:181-199),
+            // and that is the trace every ordinary entry point builds
+            // (DefaultBaseTraceFactory.java:191, newDefaultTrace).
+            // The one exception is AsyncDefaultTrace, which awaits its last
+            // async child and leaves the store to SpanAsyncStateListener
+            // (AsyncDefaultTrace.java:24-31, SpanAsyncStateListener.java:59);
+            // its entry points are the vert.x-only ones marked
+            // @InterfaceAudience.LimitedPrivate("vert.x")
+            // (DefaultBaseTraceFactory.java:148,161). So this matches Java on
+            // the normal path — deferring the store would go beyond Java, not
+            // close a gap against it.
             void markSpanError() { traceRootData().setErr(1); }
             // The overload both SetError paths use, so the Span.IgnoreErrors
             // filter is applied in exactly one place. A status code carries
