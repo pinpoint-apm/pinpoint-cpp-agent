@@ -342,18 +342,35 @@ TEST_F(ConfigTest, CallstackTraceNewThroughputValidationTest) {
 }
 
 // 0 is the documented "never mark" value (Java's profiler.sql.error.enable
-// =false) and must survive validation; a negative value is meaningless and
-// falls back to the default.
+// =false) and must survive validation; a negative value warns and lands on the
+// same 0, because "off" is the only reading it can consistently carry once 0
+// holds that meaning.
 TEST_F(ConfigTest, SqlErrorCountValidationTest) {
     set_config_string("Sql:\n  ErrorCount: 0\n");
     auto config = make_config();
     ASSERT_NE(config, nullptr);
     EXPECT_EQ(config->sql.error_count, 0) << "0 disables SQL-count error marking";
 
-    set_config_string("Sql:\n  ErrorCount: -1\n");
-    config = make_config();
-    ASSERT_NE(config, nullptr);
-    EXPECT_EQ(config->sql.error_count, 100) << "Negative sql error count falls back to the default";
+    // Not the default: 0 already means "off" for this key, so the only
+    // consistent reading of a negative threshold is the same "off". Restoring
+    // 100 turned counting back on for an operator who asked to turn it off.
+    for (const char* negative : {"-1", "-100"}) {
+        set_config_string(std::string("Sql:\n  ErrorCount: ") + negative + "\n");
+        config = make_config();
+        ASSERT_NE(config, nullptr);
+        EXPECT_EQ(config->sql.error_count, 0)
+            << "Negative sql error count " << negative << " must disable marking, not restore 100";
+    }
+
+    // The normal path still clears validation untouched.
+    for (const auto& [text, want] : {std::pair<const char*, int>{"1", 1},
+                                     {"3", 3},
+                                     {"100", 100}}) {
+        set_config_string(std::string("Sql:\n  ErrorCount: ") + text + "\n");
+        config = make_config();
+        ASSERT_NE(config, nullptr);
+        EXPECT_EQ(config->sql.error_count, want) << "A positive threshold passes through unchanged";
+    }
 }
 
 TEST_F(ConfigTest, RevisionStampsEachGeneration) {

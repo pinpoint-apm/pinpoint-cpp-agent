@@ -915,6 +915,25 @@ TEST_F(SpanEventTest, SqlCountZeroDisablesMarking) {
         << "0 is Java's profiler.sql.error.enable=false";
 }
 
+// End to end, through the real validator: a configured -1 must be published as
+// 0 and must never mark. Going through make_config() rather than assigning
+// sql.error_count directly is the point of this test - the runtime guard
+// (limit <= 0) was always correct, and the bug was purely that a negative
+// value never reached it. Before the clamp was fixed, -1 was restored to the
+// default 100 and the 100th statement marked the span failed.
+TEST_F(SpanEventTest, SqlCountNegativeIsPublishedAsZeroAndDisablesMarking) {
+    AgentOptions options;
+    options.config_yaml = "Sql:\n  ErrorCount: -1\n";
+    auto config = pinpoint::make_config(options, nullptr);
+    ASSERT_NE(config, nullptr);
+    ASSERT_EQ(config->sql.error_count, 0) << "A configured -1 must be published as 0";
+
+    applyConfigToFreshSpan(config);
+    run_sql_statements(*test_span_, 100);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "A negative Sql.ErrorCount must never mark, like 0";
+}
+
 TEST_F(SpanEventTest, SqlCountOnAnAsyncSpanFailsTheTraceRoot) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 2;

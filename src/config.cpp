@@ -863,7 +863,16 @@ namespace pinpoint {
                  defaults::CALLSTACK_TRACE_NEW_THROUGHPUT, "callstack trace new throughput");
 
         at_least(config->sql.max_bind_args_size, 0, 0, "sql max bind args size");
-        at_least(config->sql.error_count, 0, defaults::SQL_ERROR_COUNT, "sql error count");
+        // A negative count means "off", not "use the default". The merged key
+        // gave 0 the meaning of Java's profiler.sql.error.enable=false
+        // (SqlCountServiceProvider.java:21-27), so "off" is the only reading a
+        // negative threshold can consistently carry; restoring 100 here turned
+        // counting back on for an operator who asked to turn it off. Java's
+        // literal arithmetic - enable=true with count <= 0 marks the very first
+        // statement failed, since DefaultSqlCountService validates nothing and
+        // compares with >= - is not reachable through one key, and is a gap in
+        // Java's validation rather than a feature to port.
+        at_least(config->sql.error_count, 0, 0, "sql error count");
         // UNLIMITED_SIZE (-1) is the only valid negative: anything below it
         // would cast to a huge size_t at the use site (AgentImpl's ctor) and
         // silently disable the bypass.

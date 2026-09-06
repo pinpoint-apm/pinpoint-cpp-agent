@@ -4,6 +4,37 @@
 
 ### Breaking
 
+- **A negative `Sql.ErrorCount` now turns SQL-count error marking off.**
+
+  Up to and including v2.0.0, `make_config()` replaced any negative
+  `Sql.ErrorCount` with the default `100`, so a deployment that configured
+  `-1` to switch the feature off kept counting and kept marking transactions
+  failed at 100 statements — the exact opposite of what it asked for. A
+  negative value now warns and is published as `0`
+  ([src/config.cpp:866-875](src/config.cpp#L866-L875)), and the runtime's
+  existing `limit <= 0` guard ([src/span.h:661-664](src/span.h#L661-L664))
+  disables marking.
+
+  `Sql.ErrorCount` merges the Java agent's two keys, where `0` means
+  `profiler.sql.error.enable=false` (`SqlCountServiceProvider.java:21-27`).
+  Once `0` carries "off", "off" is the only reading a negative threshold can
+  consistently carry. Java's literal arithmetic — `enable=true` with a count
+  of `0` or less marks the first statement failed, because
+  `DefaultSqlCountService` validates nothing and compares with `>=` — is not
+  expressible through one key, and is a gap in Java's validation rather than a
+  feature to port.
+
+  **Symptom if you do not migrate:** a deployment with a negative
+  `Sql.ErrorCount` stops marking transactions failed on SQL count, so N+1
+  query patterns no longer surface in the UI through this signal. Nothing else
+  changes: `0` still disables, positive thresholds are untouched, and the
+  default is still `100`.
+
+  **Migration.** A deployment that relied on a negative value meaning "count
+  at 100" must say so: set `Sql.ErrorCount: 100` (YAML) or
+  `PINPOINT_CPP_SQL_ERROR_COUNT=100`. Deployments that meant it as "off" need
+  no change — they now get what they asked for.
+
 - **`Sampling.PercentRate: 0` now samples nothing.**
 
   Up to and including v2.0.0, `make_config()` raised any non-negative
