@@ -499,7 +499,7 @@ tolerate any subset of these keys.
 
 ### Server side — extracting incoming context
 
-Pass a `pt_context_reader_t` to `pt_agent_new_span_with_reader()`. If the inbound headers contain a trace ID, the span continues that trace; otherwise a new trace is started.
+Pass a `pt_context_reader_t` to `pt_agent_new_span_with_reader()`. The span continues the inbound trace only when all three of `Pinpoint-TraceID` (parseable), `Pinpoint-SpanID` and `Pinpoint-pSpanID` are there; anything less starts a new trace ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers)).
 
 ```c
 pt_context_reader_t reader = { &req->headers, my_hdr_get };

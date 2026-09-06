@@ -555,6 +555,35 @@ namespace pinpoint {
         }
     }
 
+    InboundTrace readInboundTrace(const TraceContextReader& reader) {
+        const auto txid = reader.Get(HEADER_TRACE_ID);
+        if (!txid.has_value() || txid->empty()) {
+            // No trace id, or a present-but-blank one: nothing upstream to
+            // attach to, so this is a new trace. A blank value is peer input
+            // this agent chooses to read as "no header" rather than feed to
+            // the parser; see doc/java_parity.md for what Java does with it.
+            return {};
+        }
+        // Parsed here, while the view is still valid (Get() only guarantees it
+        // until the next Get() on the same reader) and before the sampling
+        // decision is taken: a parse deferred past the sampler would spend a
+        // continue slot on a trace that is then recorded as new. A malformed
+        // value is logged by parseTraceId(), throttled.
+        auto trace_id = TraceId::parseTraceId(txid.value());
+        if (trace_id.empty()) {
+            return {};
+        }
+        // Presence only, exactly like Java's null checks: a value that does not
+        // parse is a broken id on a hop that does exist, which is not the same
+        // as a hop that was never described (see extractContext below and
+        // doc/java_parity.md).
+        if (!reader.Get(HEADER_SPAN_ID).has_value() ||
+            !reader.Get(HEADER_PARENT_SPAN_ID).has_value()) {
+            return {};
+        }
+        return {std::move(trace_id), true};
+    }
+
     void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id, bool continued) {
         CHECK_FINISHED();
 

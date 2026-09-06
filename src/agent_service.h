@@ -84,8 +84,9 @@
       }
 
       /// @brief True when this is an empty/invalid trace id (no agent id set).
-      ///        parseTraceId() returns such a value on failure, and NewSpan
-      ///        turns it into a noop span instead of recording it.
+      ///        parseTraceId() returns such a value on failure, which
+      ///        readInboundTrace() reads as "not a continued trace" — NewSpan
+      ///        then starts a new one rather than recording an unattached span.
       bool empty() const noexcept { return AgentId == nullptr; }
 
       /// @brief Serializes to the wire format (`agentId^startTime^sequence`).

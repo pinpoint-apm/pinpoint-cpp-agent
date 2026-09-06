@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <memory>
 #include <string>
@@ -278,6 +279,8 @@ TEST_F(AgentImplTest, NewSpanWithValidTraceIdHeaderIsSampled) {
     // parses, so the continued trace is recorded as a real (sampled) span.
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "upstream-agent^1700000000^7");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
     ASSERT_NE(span, nullptr);
     EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
@@ -287,6 +290,8 @@ TEST_F(AgentImplTest, NewSpanWithHeaderMapExtractsContext) {
     // The map-based creator runs the same extraction funnel as a reader.
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "upstream-agent^1700000000^7"},
+        {std::string(HEADER_SPAN_ID), "555"},
+        {std::string(HEADER_PARENT_SPAN_ID), "111"},
     };
     auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
     ASSERT_NE(span, nullptr);
@@ -304,6 +309,8 @@ TEST_F(AgentImplTest, NewSpanWithHeaderMapAndMethodExtractsContext) {
     // An unfiltered method must not change what the header map yields.
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "upstream-agent^1700000000^7"},
+        {std::string(HEADER_SPAN_ID), "555"},
+        {std::string(HEADER_PARENT_SPAN_ID), "111"},
     };
     auto span = agent_->NewSpan("test-op", "/test/rpc", "GET", headers);
     ASSERT_NE(span, nullptr);
@@ -311,30 +318,38 @@ TEST_F(AgentImplTest, NewSpanWithHeaderMapAndMethodExtractsContext) {
     EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
 }
 
-TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapReturnsNoop) {
+// A trace id that does not parse describes no hop this agent can attach to, so
+// the request starts its own transaction — it is not dropped. It used to become
+// a noop span: the trace id was parsed after the sampling decision, so a
+// malformed value spent a continue-sampler slot and then vanished from
+// Pinpoint entirely.
+TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapStartsFreshTrace) {
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "this-is-not-a-valid-trace-id"},
+        {std::string(HEADER_SPAN_ID), "555"},
+        {std::string(HEADER_PARENT_SPAN_ID), "111"},
     };
     auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
     ASSERT_NE(span, nullptr);
-    EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
+    EXPECT_TRUE(span->IsSampled()) << "a malformed inbound trace id starts a fresh sampled trace";
+    EXPECT_FALSE(span->GetTraceId().empty());
+    EXPECT_NE(span->GetTraceId(), "this-is-not-a-valid-trace-id");
 }
 
-TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderReturnsNoop) {
-    // Same sampling decision, but the malformed inbound trace id fails to parse.
-    // NewSpan must fall back to a non-sampled noop span instead of recording a
-    // trace with no agent id.
+TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderStartsFreshTrace) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "this-is-not-a-valid-trace-id");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
     ASSERT_NE(span, nullptr);
-    EXPECT_FALSE(span->IsSampled()) << "a malformed inbound trace id should yield a noop span";
+    EXPECT_TRUE(span->IsSampled()) << "a malformed inbound trace id starts a fresh sampled trace";
+    EXPECT_NE(span->GetSpanId(), 555) << "a fresh trace must not adopt the upstream span id";
 }
 
-// A present-but-blank Pinpoint-TraceID is not a continued trace. It used to
-// take the continued path — spending a continue-sampler slot and then failing
-// to parse — so the request silently became a noop span and never reached
-// Pinpoint. Java and Go both read a blank header as no header.
+// A present-but-blank Pinpoint-TraceID is not a continued trace: this agent
+// reads it as no header at all and starts a fresh trace. (Java disagrees and
+// throws instead — see doc/java_parity.md.)
 TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdHeaderStartsFreshTrace) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "");
@@ -358,6 +373,183 @@ TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdInHeaderMapStartsFreshTrace) {
     ASSERT_NE(span, nullptr);
     EXPECT_TRUE(span->IsSampled()) << "a blank trace id must start a fresh sampled trace, not a noop span";
     EXPECT_FALSE(span->GetTraceId().empty());
+}
+
+// ========== Inbound trace-header combinations ==========
+
+// The rule under test: a request continues an inbound trace only when the
+// trace id parses AND both id headers are present. The sampler choice and the
+// context extraction run off that one decision (readInboundTrace), so the
+// table asserts both per row and then asserts they agree.
+//
+// The same eight rows, in the same order, are the Go agent's
+// TestContinueHeaderCombinations table. Keep them identical.
+namespace {
+    constexpr std::string_view kInboundTxid = "upstream-agent^1700000000^7";
+
+    struct HeaderCombination {
+        std::string_view name;
+        std::optional<std::string_view> trace_id;       // nullopt = header absent
+        std::optional<std::string_view> span_id;
+        std::optional<std::string_view> parent_span_id;
+        bool continued;
+    };
+
+    const HeaderCombination kHeaderCombinations[] = {
+        {"all three present",   kInboundTxid, "555", "111", true},
+        {"span id absent",      kInboundTxid, std::nullopt, "111", false},
+        {"parent span id absent", kInboundTxid, "555", std::nullopt, false},
+        {"both id headers absent", kInboundTxid, std::nullopt, std::nullopt, false},
+        {"trace id absent",     std::nullopt, "555", "111", false},
+        {"trace id blank",      std::string_view{""}, "555", "111", false},
+        {"trace id malformed",  std::string_view{"not-a-trace-id"}, "555", "111", false},
+        {"span id malformed",   kInboundTxid, "not-a-number", "111", true},
+    };
+}  // namespace
+
+// Own fixture: the table drains the agent stats to see which sampler ran, so
+// the periodic stats collector must not be running to drain them first.
+class TraceHeaderCombinationTest : public AgentImplTest {
+protected:
+    void SetUp() override {
+        cfg_ = make_test_config();
+        cfg_->stat.enable = false;
+        agent_ = make_test_agent(cfg_);
+        wait_until_enabled();
+        ASSERT_TRUE(agent_->Enable());
+    }
+
+    // Which sampler ran, read off the counters it increments. counter_rate=1
+    // and no throughput limits, so both samplers admit every request and the
+    // sampled_* counter is the one that moves.
+    bool sampledAsContinue() {
+        AgentStatsSnapshot snapshot;
+        agent_->getAgentStats().collectAgentStat(snapshot);
+        EXPECT_EQ(snapshot.num_sample_new_ + snapshot.num_sample_cont_, 1)
+            << "exactly one sampler decision per request";
+        EXPECT_EQ(snapshot.num_unsample_new_ + snapshot.num_unsample_cont_, 0);
+        return snapshot.num_sample_cont_ == 1;
+    }
+
+    void drainStats() {
+        AgentStatsSnapshot snapshot;
+        agent_->getAgentStats().collectAgentStat(snapshot);
+    }
+};
+
+TEST_F(TraceHeaderCombinationTest, ContinueRequiresAllThreeTraceHeaders) {
+    for (const auto& row : kHeaderCombinations) {
+        SCOPED_TRACE(std::string(row.name));
+        drainStats();
+
+        MockTraceContextReader reader;
+        if (row.trace_id) reader.SetContext(HEADER_TRACE_ID, *row.trace_id);
+        if (row.span_id) reader.SetContext(HEADER_SPAN_ID, *row.span_id);
+        if (row.parent_span_id) reader.SetContext(HEADER_PARENT_SPAN_ID, *row.parent_span_id);
+
+        auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+        ASSERT_NE(span, nullptr);
+        ASSERT_TRUE(span->IsSampled())
+            << "every row is admitted by both samplers here, and none may be dropped";
+        auto* impl = dynamic_cast<SpanImpl*>(span.get());
+        ASSERT_NE(impl, nullptr);
+        const auto& data = impl->getSpanData();
+
+        // (a) which sampler ran
+        EXPECT_EQ(sampledAsContinue(), row.continued);
+
+        // (b) parent span id: a real value only on a continued trace
+        // (c) transaction id: inherited only on a continued trace
+        if (row.continued) {
+            EXPECT_EQ(data->getParentSpanId(), 111);
+            EXPECT_EQ(span->GetTraceId(), kInboundTxid);
+        } else {
+            EXPECT_EQ(data->getParentSpanId(), -1)
+                << "a new transaction must not point at an upstream parent";
+            EXPECT_FALSE(span->GetTraceId().empty());
+            EXPECT_NE(span->GetTraceId(), kInboundTxid);
+            EXPECT_EQ(span->GetTraceId().rfind(agent_->getAgentId(), 0), 0u)
+                << "a new transaction id is minted by this agent";
+            EXPECT_NE(span->GetSpanId(), 555)
+                << "a new transaction must not adopt the upstream span id either";
+        }
+        // An id header that is present but does not parse is still a hop this
+        // span attaches to: the span id is generated rather than left at 0.
+        if (row.span_id == "555" && row.continued) {
+            EXPECT_EQ(span->GetSpanId(), 555);
+        } else if (row.continued) {
+            EXPECT_NE(span->GetSpanId(), 0);
+            EXPECT_NE(span->GetSpanId(), -1);
+        }
+        span->EndSpan();
+    }
+}
+
+// The invariant this change exists to protect: the sampler that ran and the
+// context that was extracted come off one decision, so no header combination
+// can make them disagree. Asserted from the observed outcomes only — no
+// expected value from the table is used.
+TEST_F(TraceHeaderCombinationTest, SamplerChoiceAndExtractedContextNeverDisagree) {
+    for (const auto& row : kHeaderCombinations) {
+        SCOPED_TRACE(std::string(row.name));
+        drainStats();
+
+        MockTraceContextReader reader;
+        if (row.trace_id) reader.SetContext(HEADER_TRACE_ID, *row.trace_id);
+        if (row.span_id) reader.SetContext(HEADER_SPAN_ID, *row.span_id);
+        if (row.parent_span_id) reader.SetContext(HEADER_PARENT_SPAN_ID, *row.parent_span_id);
+
+        auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+        ASSERT_TRUE(span->IsSampled());
+        auto* impl = dynamic_cast<SpanImpl*>(span.get());
+        ASSERT_NE(impl, nullptr);
+
+        const bool sampled_as_continue = sampledAsContinue();
+        const bool extracted_as_continue = span->GetTraceId() == kInboundTxid;
+        EXPECT_EQ(sampled_as_continue, extracted_as_continue)
+            << "the continue sampler was " << (sampled_as_continue ? "" : "not ")
+            << "used, but the extracted context says otherwise";
+        // The parent link follows the same decision, and only ever exists on a
+        // continued trace.
+        EXPECT_EQ(impl->getSpanData()->getParentSpanId() != -1, sampled_as_continue);
+        span->EndSpan();
+    }
+}
+
+// Round trip: what this agent injects on an outbound call is accepted as a
+// continued trace by its own inbound decision — evidence that InjectContext
+// really writes all three headers the rule now requires.
+TEST_F(TraceHeaderCombinationTest, InjectedContextRoundTripsAsContinued) {
+    class MapWriter final : public TraceContextWriter {
+    public:
+        void Set(std::string_view key, std::string_view value) override {
+            headers[std::string(key)] = std::string(value);
+        }
+        std::map<std::string, std::string> headers;
+    } writer;
+
+    auto caller = agent_->NewSpan("caller-op", "/caller");
+    ASSERT_TRUE(caller->IsSampled());
+    auto event = caller->NewSpanEvent("outbound-call");
+    ASSERT_NE(event, nullptr);
+    event->InjectContext(writer);
+    const auto caller_trace_id = caller->GetTraceId();
+    const auto caller_span_id = caller->GetSpanId();
+    caller->EndSpan();
+
+    EXPECT_TRUE(writer.headers.count(std::string(HEADER_TRACE_ID)));
+    EXPECT_TRUE(writer.headers.count(std::string(HEADER_SPAN_ID)));
+    EXPECT_TRUE(writer.headers.count(std::string(HEADER_PARENT_SPAN_ID)));
+
+    drainStats();
+    auto callee = agent_->NewSpan("callee-op", "/callee", "", writer.headers);
+    ASSERT_TRUE(callee->IsSampled());
+    EXPECT_TRUE(sampledAsContinue()) << "the injected header set must continue the trace";
+    EXPECT_EQ(callee->GetTraceId(), caller_trace_id);
+    auto* impl = dynamic_cast<SpanImpl*>(callee.get());
+    ASSERT_NE(impl, nullptr);
+    EXPECT_EQ(impl->getSpanData()->getParentSpanId(), caller_span_id);
+    callee->EndSpan();
 }
 
 TEST_F(AgentImplTest, RecordSpanDoesNotCrash) {

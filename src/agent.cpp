@@ -951,26 +951,23 @@ namespace pinpoint {
             return noopSpan();
         }
 
-        auto tid = reader.Get(HEADER_TRACE_ID);
-        if (tid.has_value() && tid->empty()) {
-            // A present-but-blank header carries no trace id. Left as-is it
-            // took the continued path: it spent a continue-sampler slot and
-            // then failed to parse, so the request became a noop span and
-            // never appeared in Pinpoint at all. Java and Go both read a blank
-            // header as no header and start a new trace; drop it here so the
-            // sampling decision, the parse and the extract all agree.
-            tid.reset();
-        }
-        const bool my_sampling = tid.has_value() ? sampler->isContinueSampled()
-                                                 : sampler->isNewSampled();
+        // One decision for the whole request: which sampler is asked, whether
+        // the inbound trace id is adopted, and whether extractContext() reads
+        // the upstream headers all come off this single result. Re-deriving
+        // "is this continued?" at any of those three points is how the sampler
+        // and the extract drift apart.
+        auto inbound = readInboundTrace(reader);
+        const bool my_sampling = inbound.continued ? sampler->isContinueSampled()
+                                                   : sampler->isNewSampled();
 
         if (my_sampling) {
-            // Resolve the trace id up front: parse the inbound header (continued
-            // trace) or mint a fresh one. Parsing can fail (malformed header /
-            // bad_alloc) and return an empty trace id — in that case drop to a
-            // noop span rather than record a trace with no agent id.
-            TraceId trace_id = tid.has_value() ? TraceId::parseTraceId(tid.value())
-                                               : generateTraceId();
+            // Adopt the parsed inbound id (continued trace) or mint a fresh
+            // one. An empty id here means generateTraceId() failed (bad_alloc)
+            // — drop to a noop span rather than record a trace with no agent
+            // id. A failed *parse* never reaches this point: it is not a
+            // continued trace, so the request starts a new one.
+            TraceId trace_id = inbound.continued ? std::move(inbound.trace_id)
+                                                 : generateTraceId();
             if (trace_id.empty()) {
                 return noopSpan();
             }
@@ -979,7 +976,7 @@ namespace pinpoint {
             // lives on the same config generation its admission was decided
             // under, and hand the resolved trace id to the impl-level extract.
             auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, std::move(runtime));
-            span->extractContext(reader, std::move(trace_id), tid.has_value());
+            span->extractContext(reader, std::move(trace_id), inbound.continued);
             return span;
         }
         return std::make_shared<UnsampledSpan>(this, std::move(runtime));
@@ -1144,7 +1141,8 @@ namespace pinpoint {
         const std::string_view sv = txid;
 
         // Validate the structure before building anything: any malformation
-        // yields an empty TraceId so the caller drops to a noop span.
+        // yields an empty TraceId, which readInboundTrace() treats as "no
+        // continued trace" so the request starts a new one.
         // AgentId (first field before '^')
         const auto pos1 = sv.find('^');
         if (pos1 == std::string_view::npos) {

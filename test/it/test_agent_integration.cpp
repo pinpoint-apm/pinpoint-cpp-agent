@@ -1687,6 +1687,10 @@ TEST_F(AgentIntegrationTest,
 
     MapCarrier continued_context;
     continued_context.Set(HEADER_TRACE_ID, sampled_trace_id);
+    // All three headers, or this is not a continued trace at all and the
+    // new-trace sampler decides it (see doc/api_contracts.md).
+    continued_context.Set(HEADER_SPAN_ID, "77777");
+    continued_context.Set(HEADER_PARENT_SPAN_ID, "88888");
     auto continued = agent_->NewSpan("sampling.continued",
                                      "/sampling/continued",
                                      continued_context);
@@ -1750,6 +1754,8 @@ TEST_F(AgentIntegrationTest,
     const std::array<bool, 3> expected_continuation{true, true, false};
     MapCarrier context;
     context.Set(HEADER_TRACE_ID, parent_trace_id);
+    context.Set(HEADER_SPAN_ID, "77777");
+    context.Set(HEADER_PARENT_SPAN_ID, "88888");
     DriveSamplingPattern("sampling.throughput.continued",
                          "/sampling/throughput/continued/",
                          expected_continuation, &context);
@@ -3072,26 +3078,47 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
     EXPECT_EQ(events_for_span(snapshot, sequence_span_id).size(), 4U);
 }
 
-TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeignContext) {
+TEST_F(AgentIntegrationTest, StartsNewTraceOnUnusableInboundContextAndAcceptsForeignContext) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
-    const std::array<std::string_view, 5> malformed{
+    // Inbound contexts this agent cannot attach to. Each one starts its own
+    // transaction end to end: recorded, with a locally generated trace id and
+    // no parent — never dropped, and never a non-root span in a trace whose
+    // parent is missing.
+    const std::array<std::string_view, 6> unusable{
         "missing-separators",
         "agent-only^123",
         "agent<script>^123^7",
         "agent^ 123 ^7",
         "agent^123^123456789012345678901",
+        "",
     };
-    for (size_t i = 0; i < malformed.size(); ++i) {
+    for (size_t i = 0; i < unusable.size(); ++i) {
         MapCarrier carrier;
-        carrier.Set(HEADER_TRACE_ID, malformed[i]);
-        auto span = agent_->NewSpan("malformed.context",
-                                    "/malformed/" + std::to_string(i), carrier);
-        EXPECT_FALSE(span->IsSampled()) << malformed[i];
-        EXPECT_TRUE(span->GetTraceId().empty()) << malformed[i];
-        EXPECT_EQ(span->GetSpanId(), 0) << malformed[i];
+        // Both id headers present: what makes these unusable is the trace id
+        // itself, not a missing header (that case is below).
+        carrier.Set(HEADER_TRACE_ID, unusable[i]);
+        carrier.Set(HEADER_SPAN_ID, "77777");
+        carrier.Set(HEADER_PARENT_SPAN_ID, "88888");
+        auto span = agent_->NewSpan("unusable.context",
+                                    "/unusable/" + std::to_string(i), carrier);
+        EXPECT_TRUE(span->IsSampled()) << unusable[i];
+        EXPECT_FALSE(span->GetTraceId().empty()) << unusable[i];
+        EXPECT_NE(span->GetTraceId(), unusable[i]) << unusable[i];
+        EXPECT_NE(span->GetSpanId(), 77777) << unusable[i];
         span->EndSpan();
     }
+
+    // A valid trace id with neither id header is the header-stripping proxy
+    // case: also a new transaction, since there is no hop to attach to.
+    MapCarrier partial;
+    partial.Set(HEADER_TRACE_ID, "java-agent-7^1700000000000^7");
+    auto partial_span = agent_->NewSpan("partial.context", "/partial-context",
+                                        partial);
+    ASSERT_TRUE(partial_span->IsSampled());
+    EXPECT_NE(partial_span->GetTraceId(), "java-agent-7^1700000000000^7")
+        << "a trace id alone must not be adopted";
+    partial_span->EndSpan();
 
     // A well-formed context from a foreign agent is adopted verbatim, and
     // every parent-describing header must reach the wire.
@@ -3111,15 +3138,33 @@ TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeig
     EXPECT_EQ(continued->GetSpanId(), 77777);
     continued->EndSpan();
 
-    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
-        return find_span_by_rpc(snapshot, "/foreign-continued").has_value();
+    // Every span above is its own transaction now, so wait for all of them —
+    // the send queue is sharded and does not guarantee that the last one to
+    // arrive is the last one enqueued.
+    ASSERT_TRUE(collector_.WaitFor([&](const auto& snapshot) {
+        for (size_t i = 0; i < unusable.size(); ++i) {
+            if (!find_span_by_rpc(snapshot, "/unusable/" + std::to_string(i))) {
+                return false;
+            }
+        }
+        return find_span_by_rpc(snapshot, "/partial-context").has_value() &&
+               find_span_by_rpc(snapshot, "/foreign-continued").has_value();
     }, kWaitTimeout));
 
     const auto snapshot = collector_.snapshot();
-    for (size_t i = 0; i < malformed.size(); ++i) {
-        EXPECT_EQ(count_spans_by_rpc(snapshot, "/malformed/" + std::to_string(i)),
-                  0U) << malformed[i];
+    for (size_t i = 0; i < unusable.size(); ++i) {
+        const auto rpc = "/unusable/" + std::to_string(i);
+        EXPECT_EQ(count_spans_by_rpc(snapshot, rpc), 1U) << unusable[i];
+        const auto recorded = find_span_by_rpc(snapshot, rpc);
+        ASSERT_TRUE(recorded.has_value()) << unusable[i];
+        EXPECT_EQ(recorded->transactionid().agentid(), impl_->getAgentId()) << unusable[i];
+        EXPECT_EQ(recorded->parentspanid(), -1)
+            << "a new transaction has no parent: " << unusable[i];
     }
+    const auto partial_wire = find_span_by_rpc(snapshot, "/partial-context");
+    ASSERT_TRUE(partial_wire.has_value());
+    EXPECT_EQ(partial_wire->transactionid().agentid(), impl_->getAgentId());
+    EXPECT_EQ(partial_wire->parentspanid(), -1);
     const auto wire = find_span_by_rpc(snapshot, "/foreign-continued");
     ASSERT_TRUE(wire.has_value());
     EXPECT_EQ(wire->transactionid().agentid(), "java-agent-7");
@@ -3853,6 +3898,8 @@ TEST_F(AgentIntegrationTest,
     // that never samples locally must not cut a distributed trace.
     MapCarrier context;
     context.Set(HEADER_TRACE_ID, "java-agent-7^1700000000000^99");
+    context.Set(HEADER_SPAN_ID, "77777");
+    context.Set(HEADER_PARENT_SPAN_ID, "88888");
     auto continued = agent_->NewSpan("sampling.zero.continued",
                                      "/sampling/zero/continued", context);
     EXPECT_TRUE(continued->IsSampled());

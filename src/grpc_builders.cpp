@@ -315,8 +315,9 @@ namespace pinpoint {
     v1::PTransactionId* build_grpc_transaction_id(const TraceId& tid, google::protobuf::Arena* arena) {
         auto* ptid = google::protobuf::Arena::Create<v1::PTransactionId>(arena);
 
-        // Empty/invalid trace ids never reach serialization: NewSpan turns a
-        // failed parseTraceId()/generateTraceId() into a noop span that is never
+        // Empty/invalid trace ids never reach serialization: a trace id that
+        // fails to parse is not a continued trace and NewSpan mints a fresh one,
+        // and a failed generateTraceId() becomes a noop span that is never
         // recorded, so any tid arriving here has a valid (non-null) agent id.
         // The runtime guard backs the assert up in release builds (NDEBUG
         // strips it), where a violated invariant must degrade to an empty

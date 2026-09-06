@@ -4,6 +4,49 @@
 
 ### Breaking
 
+- **Continuing an inbound trace now requires all three trace headers.**
+
+  Up to and including v2.0.0, a request carrying `Pinpoint-TraceID` continued
+  the inbound trace whether or not `Pinpoint-SpanID` and `Pinpoint-pSpanID`
+  came with it. `NewSpan()` now continues a trace only when the trace id
+  parses **and** both id headers are present
+  ([src/span.cpp](src/span.cpp), `readInboundTrace`); anything else starts a
+  new transaction. This is the Java agent's decision, which runs the same
+  checks in order and starts a new trace as soon as one fails
+  (`DefaultTraceHeaderReader.java:54-70`).
+
+  A trace id without the two id headers describes a hop the agent cannot
+  place. Adopting it recorded a non-root span whose parent was in no trace —
+  or left the parent span id at its `-1` default under a trace id that claimed
+  a caller — and spent a continue-sampler slot (and `ContinueThroughput`
+  budget) doing it.
+
+  **Symptom if you do not migrate:** calls from a peer that sends only
+  `Pinpoint-TraceID` — a proxy or gateway that forwards a subset of headers, a
+  hand-written client — appear as **two traces instead of one**. No data is
+  lost; the link between the two halves is. Continue-sampler slots are no
+  longer consumed by such requests, so `ContinueThroughput` counters change
+  accordingly.
+
+  **Migration.** Make the peer send `Pinpoint-SpanID` and `Pinpoint-pSpanID`
+  as well. Both ports' `InjectContext()` (Go: `InjectContext`) already write
+  all three, so a call chain made only of Pinpoint agents needs no change; the
+  header set is documented in
+  [API Contracts §12](doc/api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers).
+
+  **Two related changes come with it.** An inbound trace id that does not
+  parse — including a present-but-blank one — no longer produces a silent noop
+  span: since it is not a continued trace, the request starts its own
+  transaction and is recorded (with the malformed value logged, throttled).
+  Previously the parse ran *after* the sampling decision, so such a request
+  spent a continue-sampler slot and then vanished from Pinpoint entirely. The
+  decision is now taken once, before the sampler, so the sampler chosen and
+  the context extracted can no longer disagree. `Pinpoint-Sampled: s0` still
+  short-circuits ahead of all of it, a present-but-unparseable
+  `Pinpoint-SpanID` still continues the trace with a generated span id, and an
+  absent `Pinpoint-Flags` still means `0` — see
+  [doc/java_parity.md](doc/java_parity.md).
+
 - **A negative `Sql.ErrorCount` now turns SQL-count error marking off.**
 
   Up to and including v2.0.0, `make_config()` replaced any negative

@@ -31,6 +31,9 @@ by side.
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
+| Unusable inbound trace context | `DefaultTraceHeaderReader.read`, `DefaultTraceContext.createTraceId` | **Exceeds Java** — see [below](#unusable-inbound-trace-context--exceeds-java) |
+| Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
+| `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
 
 ---
 
@@ -259,3 +262,79 @@ state in which events arrive faster than the configured depth allows.
 **Revisit if** this is reported to have blocked a real investigation — an
 exception that occurred only past the depth limit, leaving nothing but a failed
 transaction to go on.
+
+---
+
+## Unusable inbound trace context — exceeds Java
+
+Both ports require all three headers before continuing a trace — a trace id
+that parses **plus** the presence of `Pinpoint-SpanID` and `Pinpoint-pSpanID`
+— which is Java's rule (`DefaultTraceHeaderReader.java:54-70`). What the two
+ports do with a trace id that is *present but unusable* is not.
+
+**Java.** `read()` tests `transactionId == null`
+(`DefaultTraceHeaderReader.java:55`) and nothing else, so a **blank** value is
+a continued trace: it reaches `DefaultTraceContext.createTraceId`
+(`DefaultTraceContext.java:227-231`) →
+`TransactionIdUtils.parseTransactionId("")`, where `nextIndex("", 0)` returns
+`-1` and the method **throws** `IllegalArgumentException("agentIndex not
+found:")` (`TransactionIdUtils.java:84-90`). Any other malformed value that
+gets past the reader ends the same way.
+
+**Both ports.** A blank `Pinpoint-TraceID` is read as no header at all, and a
+value that fails to parse is not a continued trace either. Either way the
+request starts its own transaction: a locally generated trace id, a generated
+span id, no parent span id, and the *new*-trace sampler deciding it. The
+malformed value is logged once per throttle window, since it is peer-controlled
+input that can recur on every request (C++ `TraceId::parseTraceId`,
+`src/agent.cpp`; Go `splitTransactionId`, `span.go`).
+
+**Decision: intentional, stronger than Java.** An exception is the host
+application's problem, not the agent's, and the request is a real request
+whatever its headers say — recording it as the root of its own trace loses the
+link to the caller and nothing else. Both ports also make this decision
+*before* the sampler is chosen, so an unusable context cannot spend a
+continue-sampler slot on a transaction that is then recorded as new.
+
+**Revisit if** Java starts validating the header rather than throwing, at which
+point the blank case is parity.
+
+---
+
+## Unparseable `Pinpoint-SpanID` — exceeds Java
+
+**Java.** The reader checks presence only, so a present-but-unparseable id is
+still a continued trace; `NumberUtils.parseLong(spanIdStr, SpanId.NULL)` then
+yields `SpanId.NULL` (`-1`, `SpanId.java:27`) and the span is recorded with it.
+
+**Both ports.** The trace is continued exactly as in Java — a broken value on
+a hop that exists is not the same as a hop that was never described — but the
+span id is **generated** rather than left at the sentinel (C++
+`SpanImpl::extractContext`, `src/span.cpp`; Go `Span.Extract`, `span.go`), with
+a throttled warning.
+
+**Decision: intentional, stronger than Java.** A sentinel id the collector
+cannot tell from a real one collapses every such request onto a single node in
+the call tree. A generated id keeps each request distinct; the one thing lost
+is the (already broken) link to the caller's span.
+
+**Revisit if** the collector gains a way to render `SpanId.NULL` as "unknown
+parent" that is more useful than a distinct node.
+
+---
+
+## `Pinpoint-Sampled: s0` is checked first — same as Java
+
+Recorded because the ordering looks arbitrary and is not.
+
+**Java.** `read()` calls `samplingEnable(request)` before it reads any other
+header and returns `DisableTraceHeader.INSTANCE` immediately when the value is
+`"s0"` (`DefaultTraceHeaderReader.java:47-51`), so no sampler is consulted.
+
+**Both ports.** Same order: `s0` short-circuits ahead of the three-header
+check and the sampler (C++ `AgentImpl::NewSpan`, `src/agent.cpp`; Go
+`Agent.NewSpanTracerWithReader`, `agent.go`), yielding an unsampled span.
+
+**Decision: no divergence.** An upstream that has already decided not to trace
+the request decides for the whole call chain; asking a local sampler first
+would let a partly-traced request through and waste a sampler slot on it.

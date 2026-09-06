@@ -149,7 +149,7 @@ Create a span at the **entry point** of each transaction: HTTP/gRPC server handl
 There are three overloads:
 
 - `Agent::NewSpan(operation, rpc_point)` — starts a **new** transaction.
-- `Agent::NewSpan(operation, rpc_point, TraceContextReader& reader)` — continues a transaction when upstream trace headers are present. Falls back to a new transaction if headers are missing.
+- `Agent::NewSpan(operation, rpc_point, TraceContextReader& reader)` — continues a transaction when the upstream trace headers are present. Continuing needs all three of `Pinpoint-TraceID` (parseable), `Pinpoint-SpanID` and `Pinpoint-pSpanID`; anything less starts a new transaction ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers)).
 - `Agent::NewSpan(operation, rpc_point, method, TraceContextReader& reader)` — same, plus the HTTP method, so the `Http.Server.ExcludeMethod` filter can apply. Prefer this one in HTTP servers.
 
 A `HeaderReader` is also a `TraceContextReader`, so one object serves both the
@@ -768,8 +768,10 @@ The agent uses **head-based sampling**: the decision is made when the **root
 span** is created and propagated to all downstream services in the trace context
 headers, so a distributed trace is collected or discarded as a whole — never
 partially. A **new transaction** has no parent context; a **continue
-transaction** arrives with a `Pinpoint-TraceID` header and follows the parent's
-decision.
+transaction** arrives with the full inbound header set — a parseable
+`Pinpoint-TraceID` plus `Pinpoint-SpanID` and `Pinpoint-pSpanID` — and follows
+the parent's decision. A partial header set is a new transaction, not a
+continued one ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers)).
 
 ### Sampling Decision Flow
 
@@ -781,8 +783,8 @@ decision.
 | URL excluded | — | NoopSpan (no tracing) |
 | Method excluded | — | NoopSpan (no tracing) |
 | Parent says `Pinpoint-Sampled: s0` | Continue | UnsampledSpan — the child's own configuration is ignored |
-| No trace ID in headers | New | Apply the configured sampler |
-| Trace ID in headers | Continue | Sampled by default, subject to `ContinueThroughput` |
+| No trace ID, an unparseable one, or either id header missing | New | Apply the configured sampler |
+| Parseable trace ID **and** `Pinpoint-SpanID` **and** `Pinpoint-pSpanID` | Continue | Sampled by default, subject to `ContinueThroughput` |
 
 ### Sampler Types
 

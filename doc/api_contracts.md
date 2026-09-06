@@ -139,3 +139,36 @@ The C API's `start_time_ms` arguments take **milliseconds** since the Unix epoch
 - An unsampled span is never sent, but it still feeds the response-time and **URL statistics**. `SetError()` on it, or on its span event, marks that URL stat entry as failed — otherwise the failure rate would be biased toward zero, since unsampled requests are the majority once sampling is on. Nothing else about the error is kept.
 - **The injected header set is conditional.** `InjectContext()` writes a header only when it has a value, mirroring the Java agent's `DefaultRequestTraceWriter`; a `TraceContextWriter` must tolerate any subset. `Pinpoint-pServiceName` appears only for `uid.version=v4`, `Pinpoint-Host` only when the event has a destination, `Pinpoint-pAppNamespace` never (cluster namespaces are unsupported — sending an empty one makes a Java receiver with `profiler.cluster.namespace` set restart the trace instead of continuing it), and a dead-span or unsampled event writes only `Pinpoint-Sampled: s0`.
 - Use `IsSampled()` to skip *expensive data collection only* — do **not** skip creating span events and calling `InjectContext()` on outbound calls. An unsampled span's event still writes `Pinpoint-Sampled: s0`, which tells downstream services not to trace the request. Skipping the injection makes downstream agents treat the call as a brand-new transaction and sample it, producing broken partial traces.
+
+## 12. Continuing an Inbound Trace Requires Three Headers
+
+`NewSpan()` continues an inbound distributed trace **only when all three of
+these are true**:
+
+1. `Pinpoint-TraceID` is present and parses as `agentId^startTime^sequence`.
+2. `Pinpoint-SpanID` is present.
+3. `Pinpoint-pSpanID` is present.
+
+Anything else — a missing or blank trace id, a trace id that does not parse,
+or either id header absent — starts a **new transaction**: a locally generated
+trace id, a generated span id, no parent span id, and the *new*-trace sampler
+(plus `Sampling.NewThroughput`) deciding it. Nothing is dropped and nothing is
+guessed; the request simply becomes the root of its own trace. This matches the
+Java agent's four ordered checks in `DefaultTraceHeaderReader.java:54-70`.
+
+Only the **presence** of the two id headers is checked, not their contents: a
+present-but-unparseable `Pinpoint-SpanID` still describes a hop, so the trace
+is continued and only that one id is regenerated (a warning is logged,
+throttled). A *missing* header is a different thing — a hop that was never
+described at all.
+
+Two consequences for a `TraceContextReader` implementation:
+
+- **A carrier that forwards only `Pinpoint-TraceID` breaks the trace.** Some
+  proxies, gateways and hand-written clients strip the rest. Such a request is
+  recorded as its own transaction, so the call appears as two traces in the UI
+  rather than one — nothing is lost, but the link is. `InjectContext()` always
+  writes all three, so an all-Pinpoint call chain is unaffected.
+- `Pinpoint-Sampled: s0` is checked **before** any of this and short-circuits
+  everything (unsampled span, no sampler consulted). `Pinpoint-Flags` takes
+  part in no decision and defaults to `0` when absent.

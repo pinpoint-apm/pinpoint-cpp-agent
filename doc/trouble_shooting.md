@@ -282,7 +282,10 @@ Logs show connection or gRPC errors.
 
 2. **Check the headers** are present on the inbound request
    (`req.get_header_value("Pinpoint-TraceID")`), and that no gateway or proxy
-   strips or rewrites them.
+   strips or rewrites them. All three of `Pinpoint-TraceID`, `Pinpoint-SpanID`
+   and `Pinpoint-pSpanID` must arrive — a proxy that forwards only the trace id
+   makes the request a new transaction, so the call shows up as two traces
+   instead of one ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers)).
 3. **Check your reader's header lookup is case-insensitive** — the agent asks
    your `TraceContextReader` for the canonical spellings (`Pinpoint-TraceID`,
    `Pinpoint-Sampled`, ...), but proxies and HTTP/2 clients routinely re-case

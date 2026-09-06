@@ -61,14 +61,16 @@ protected:
     std::unique_ptr<MockAgentService> mock_agent_service_;
 };
 
-// Drives SpanImpl::extractContext() the way AgentImpl::NewSpan does: parse the
-// inbound HEADER_TRACE_ID when present (a continued trace), otherwise generate a
-// fresh one and mark the trace as new so no upstream header is adopted.
+// Drives SpanImpl::extractContext() the way AgentImpl::NewSpan does, through
+// the same readInboundTrace() decision: adopt the parsed inbound trace id when
+// the headers describe a hop to attach to, otherwise generate a fresh one and
+// mark the trace as new so no upstream header is adopted. Copying the condition
+// here instead would let this suite pass on a decision production never makes.
 static void extract_context(SpanImpl& span, AgentService& agent, TraceContextReader& reader) {
-    const auto hdr = reader.Get(HEADER_TRACE_ID);
+    auto inbound = readInboundTrace(reader);
     span.extractContext(reader,
-                        hdr.has_value() ? TraceId::parseTraceId(hdr.value()) : agent.generateTraceId(),
-                        hdr.has_value());
+                        inbound.continued ? std::move(inbound.trace_id) : agent.generateTraceId(),
+                        inbound.continued);
 }
 
 // ========== SpanData Tests ==========
@@ -823,6 +825,8 @@ TEST_F(SpanTest, TraceIdWireConsistentAcrossSurfacesTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "consistent-agent^1700000000^99");
+    reader.SetContext(HEADER_SPAN_ID, "99");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "98");
     extract_context(span, *mock_agent_service_, reader);
 
     const std::string expected = "consistent-agent^1700000000^99";
@@ -987,6 +991,7 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(span, *mock_agent_service_, reader);
 
     // Create a span event first for context (required by NewAsyncSpan).
@@ -1015,6 +1020,7 @@ TEST_F(SpanTest, AsyncSpanFlushesExceptionsOnEndTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^11");
     reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(span, *mock_agent_service_, reader);
 
     auto base_event = span.NewSpanEvent("base-event");
@@ -1087,6 +1093,7 @@ TEST_F(SpanTest, ContextPropagationTest) {
     MockTraceContextReader parent_reader;
     parent_reader.SetContext(HEADER_TRACE_ID, "test-agent-001^1234567890^1");
     parent_reader.SetContext(HEADER_SPAN_ID, "123456789");
+    parent_reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(parent_span, *mock_agent_service_, parent_reader);
 
     // Create span event and inject context
@@ -1128,6 +1135,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^7");
     reader.SetContext(HEADER_SPAN_ID, "123456789");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(parent, *mock_agent_service_, reader);
 
     // Created on the owning thread (needs a live span event for context).
@@ -1581,6 +1589,7 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
     reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(span, *mock_agent_service_, reader);
 
     // max 2 allows three nesting levels (max + 1, Java DefaultCallStack parity).
@@ -1682,6 +1691,7 @@ TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "test-agent^1700000000^42");
     reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(*span, *mock_agent_service_, reader);
 
     span->NewSpanEvent("outer-event");                          // depth 1
@@ -1914,6 +1924,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "not-a-number");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
 
     extract_context(span, *mock_agent_service_, reader);
 
@@ -1949,6 +1960,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
 
     extract_context(span, *mock_agent_service_, reader);
@@ -1972,6 +1984,8 @@ TEST_F(SpanTest, SpanImplExplicitEndpointOverridesAcceptorHostDefaultTest) {
     MockTraceContextReader reader;
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     reader.SetContext(HEADER_HOST, "upstream-host:8080");
     extract_context(span, *mock_agent_service_, reader);
 
@@ -1996,6 +2010,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithFlagTest) {
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     reader.SetContext(HEADER_FLAG, "5");
 
     extract_context(span, *mock_agent_service_, reader);
@@ -2011,6 +2026,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
 
     reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
     reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
     reader.SetContext(HEADER_PARENT_SERVICE_NAME, "parent-service");
 
