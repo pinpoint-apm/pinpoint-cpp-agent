@@ -63,9 +63,17 @@ if(NOT "${_merge_result}" STREQUAL "0")
     "llvm-profdata merge failed (${_merge_result}):\n${_merge_error}")
 endif()
 
-set(_llvm_cov_arguments
-    "${COVERAGE_BINARY}"
-    "-instr-profile=${_profile_data}")
+set(_llvm_cov_arguments "${COVERAGE_BINARY}")
+# Header-only code lands in whichever binary instantiates it, so a report built
+# from the library alone scores a header by the library's instantiations and
+# ignores the test binaries that exercise it. The test sources themselves stay
+# out of the report via COVERAGE_IGNORE_REGEX.
+foreach(_coverage_object IN LISTS COVERAGE_OBJECTS)
+  if(NOT "${_coverage_object}" STREQUAL "")
+    list(APPEND _llvm_cov_arguments "-object" "${_coverage_object}")
+  endif()
+endforeach()
+list(APPEND _llvm_cov_arguments "-instr-profile=${_profile_data}")
 if(DEFINED COVERAGE_IGNORE_REGEX AND
    NOT "${COVERAGE_IGNORE_REGEX}" STREQUAL "")
   list(APPEND _llvm_cov_arguments

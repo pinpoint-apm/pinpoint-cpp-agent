@@ -383,6 +383,16 @@ if(PINPOINT_LLVM_COVERAGE_ENABLED)
   # suite); opt-in live test applications stay excluded.
   get_property(_pinpoint_test_targets GLOBAL PROPERTY PINPOINT_TEST_TARGETS)
 
+  # Header-only code (templates, inline members) is emitted into whichever
+  # binary instantiates it. A report built from the library alone therefore
+  # scores a header by the library's own instantiations and silently ignores
+  # the tests that actually exercise it — ShardedBoundedQueue read as 72% that
+  # way while its own suite covers 96%. Pass every test executable too.
+  set(_coverage_objects "")
+  foreach(_test_target IN LISTS _pinpoint_test_targets)
+    list(APPEND _coverage_objects "$<TARGET_FILE:${_test_target}>")
+  endforeach()
+
   add_custom_target(coverage
     COMMAND "${CMAKE_COMMAND}"
       "-DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}"
@@ -393,6 +403,7 @@ if(PINPOINT_LLVM_COVERAGE_ENABLED)
       "-DOUTPUT_DIR=${LLVM_COVERAGE_OUTPUT_DIR}"
       "-DCOVERAGE_CONFIG=$<CONFIG>"
       "-DCOVERAGE_IGNORE_REGEX=(^|/)(test|3rd_party|build|_deps)(/|$)"
+      "-DCOVERAGE_OBJECTS=$<JOIN:${_coverage_objects},$<SEMICOLON>>"
       -P "${PROJECT_SOURCE_DIR}/cmake/RunLlvmCoverage.cmake"
     USES_TERMINAL
     VERBATIM)
