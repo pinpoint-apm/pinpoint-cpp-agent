@@ -109,6 +109,7 @@ public:
         if (api_caching_disabled_) {
             return 0;
         }
+        std::lock_guard<std::mutex> lock(cache_mutex_);
         auto key = std::string(api_str);
         if (cached_apis_.find(key) == cached_apis_.end()) {
             cached_apis_[key] = api_id_counter_++;
@@ -124,6 +125,7 @@ public:
     }
 
     int32_t cacheError(std::string_view error_name) const override {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
         auto key = std::string(error_name);
         if (cached_errors_.find(key) == cached_errors_.end()) {
             cached_errors_[key] = error_id_counter_++;
@@ -141,6 +143,7 @@ public:
         if (force_sql_id_failure_.load(std::memory_order_relaxed)) {
             return 0;
         }
+        std::lock_guard<std::mutex> lock(cache_mutex_);
         auto key = std::string(sql_query);
         if (cached_sqls_.find(key) == cached_sqls_.end()) {
             cached_sqls_[key] = sql_id_counter_++;
@@ -305,6 +308,11 @@ public:
     mutable std::string last_url_stat_method_;
     mutable int last_url_stat_status_code_ = 0;
     mutable bool last_url_stat_failed_ = false;
+    // The real agent's meta caches are thread-safe; these maps are shared by
+    // any test that records from several threads (see
+    // SqlCountFromConcurrentAsyncSpansIsRaceFree), so they need a lock or
+    // ThreadSanitizer reports the mock's own race.
+    mutable std::mutex cache_mutex_;
     mutable std::map<std::string, int32_t> cached_apis_;
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;

@@ -34,6 +34,7 @@ by side.
 | Unusable inbound trace context | `DefaultTraceHeaderReader.read`, `DefaultTraceContext.createTraceId` | **Exceeds Java** — see [below](#unusable-inbound-trace-context--exceeds-java) |
 | Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
 | `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
+| SQL statement count scope | `DefaultSqlCountService`, `DefaultShared.incrementAndGetSqlCount` | **Same as Java** — see [below](#sqlerrorcount-is-a-per-transaction-budget--same-as-java) |
 
 ---
 
@@ -338,3 +339,38 @@ check and the sampler (C++ `AgentImpl::NewSpan`, `src/agent.cpp`; Go
 **Decision: no divergence.** An upstream that has already decided not to trace
 the request decides for the whole call chain; asking a local sampler first
 would let a partly-traced request through and waste a sampler slot on it.
+
+---
+
+## `Sql.ErrorCount` is a per-transaction budget — same as Java
+
+Recorded because it was a real divergence until it was fixed, and the fix is a
+behaviour change operators can see.
+
+**Java.** `DefaultSqlCountService.recordSqlCount` takes the trace root's
+`Shared` and increments the counter living there
+(`DefaultSqlCountService.java:15-25`); `DefaultShared` holds it in an
+`AtomicIntegerFieldUpdater`-driven field (`DefaultShared.java:185-187`), so
+async work on other threads adds to the one counter. The threshold compares
+the post-increment value with `>=`, and an already-failed transaction
+(`shared.getErrorCode() != 0`) is skipped before the increment.
+
+**Both ports.** The count lives on the trace root's shared data and is atomic
+for the same reason — C++ `SpanData::sql_count_` reached through
+`SpanImpl::traceRootData()` (`src/span.h`), Go `span.sqlCount` reached through
+`root()` (`span.go`). A trace made of N async spans therefore gets one budget,
+not N.
+
+**Decision: no divergence.** Counting per span made the effective limit scale
+with a trace's async fan-out, which is exactly the shape `Sql.ErrorCount` is
+meant to catch: an N+1 pattern spread over async work would never reach the
+threshold.
+
+### Upgrade note
+
+C++ counted per span up to and including v2.0.0. A service that uses async
+spans and runs `Sql.ErrorCount` or more statements across a whole transaction
+now has those transactions **marked failed** where they previously passed —
+visible as failed points in the scatter chart, in the failed histogram of the
+URL statistics, and as `PSpan.err`. Raise the threshold, or set
+`Sql.ErrorCount: 0` to turn counting off.

@@ -19,6 +19,7 @@
 #include <chrono>
 #include <map>
 #include <thread>
+#include <vector>
 #include <functional>
 #include <set>
 
@@ -948,14 +949,123 @@ TEST_F(SpanEventTest, SqlCountOnAnAsyncSpanFailsTheTraceRoot) {
     ASSERT_NE(async_impl, nullptr);
 
     run_sql_statements(*async_impl, 2);
-    // The statements are still counted per span (Java counts them per trace
-    // root), but the failure they raise goes where the wire can carry it: an
-    // async span is serialized as a chunk, which has no err field, so a flag
-    // left on the child's own SpanData never reaches the collector.
+    // Both the count and the failure live on the trace root. The failure has
+    // to: an async span is serialized as a chunk, which has no err field, so
+    // a flag left on the child's own SpanData never reaches the collector.
     EXPECT_EQ(test_span_data_->getErr(), 1)
         << "An async span's SQL overflow must fail the trace root";
     EXPECT_EQ(async_impl->getSpanData()->getErr(), SPAN_ERR_NONE)
         << "and the flag lives on the root only, not on the child too";
+}
+
+// Spawns an async child of @p parent. NewAsyncSpan needs a live event on the
+// parent's stack, which only NewSpanEvent pushes.
+static std::shared_ptr<Span> spawn_async(SpanImpl& parent) {
+    parent.NewSpanEvent("caller");
+    return parent.NewAsyncSpan("async");
+}
+
+static SpanImpl* as_impl(const std::shared_ptr<Span>& span) {
+    return dynamic_cast<SpanImpl*>(span.get());
+}
+
+// The core regression: Sql.ErrorCount is a budget for the whole transaction,
+// not one per span. No single span here reaches the limit, so before the
+// counter moved to the trace root nothing was ever marked and a trace with
+// three async spans effectively got 3x the configured budget.
+TEST_F(SpanEventTest, SqlCountIsSharedAcrossTheWholeTransaction) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 10;
+    applyConfigToFreshSpan(config);
+
+    auto child1 = spawn_async(*test_span_);
+    auto child2 = spawn_async(*test_span_);
+    ASSERT_NE(as_impl(child1), nullptr);
+    ASSERT_NE(as_impl(child2), nullptr);
+
+    run_sql_statements(*test_span_, 4);
+    run_sql_statements(*as_impl(child1), 4);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "8 statements is still under the transaction's budget of 10";
+
+    run_sql_statements(*as_impl(child2), 2);
+    EXPECT_EQ(test_span_data_->getErr(), 1)
+        << "The 10th statement of the transaction marks it failed, wherever "
+           "in the trace it ran";
+}
+
+// trace_root_data_ resolves to the spawner's root, so a chain of async spans
+// all land on the first root rather than each async span becoming a new one.
+TEST_F(SpanEventTest, SqlCountOnNestedAsyncSpansReachesTheOriginalRoot) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 6;
+    applyConfigToFreshSpan(config);
+
+    auto child = spawn_async(*test_span_);
+    ASSERT_NE(as_impl(child), nullptr);
+    auto grandchild = spawn_async(*as_impl(child));
+    ASSERT_NE(as_impl(grandchild), nullptr);
+
+    run_sql_statements(*test_span_, 2);
+    run_sql_statements(*as_impl(child), 2);
+    run_sql_statements(*as_impl(grandchild), 1);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "5 of 6 statements: still clean";
+
+    run_sql_statements(*as_impl(grandchild), 1);
+    EXPECT_EQ(test_span_data_->getErr(), 1)
+        << "A nested async span's statements count on the original root";
+    EXPECT_EQ(as_impl(child)->getSpanData()->getErr(), SPAN_ERR_NONE);
+    EXPECT_EQ(as_impl(grandchild)->getSpanData()->getErr(), SPAN_ERR_NONE);
+}
+
+// Java's shared.getErrorCode() != 0 guard: once anything else failed the
+// transaction the counter stops turning entirely.
+TEST_F(SpanEventTest, SqlCountStopsOnAnAlreadyFailedTransaction) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 3;
+    applyConfigToFreshSpan(config);
+
+    test_span_->SetError("boom");
+    ASSERT_NE(test_span_data_->getErr(), SPAN_ERR_NONE);
+
+    run_sql_statements(*test_span_, 50);
+    EXPECT_EQ(test_span_data_->incrementAndGetSqlCount(), 1)
+        << "Not one statement may be counted after the transaction failed";
+}
+
+// Every async child of one root now increments the SAME counter from its own
+// thread, which is why it is a std::atomic. Run under ThreadSanitizer: this is
+// the only test that would report the race if it were a plain int again.
+TEST_F(SpanEventTest, SqlCountFromConcurrentAsyncSpansIsRaceFree) {
+    constexpr int kThreads = 8;
+    constexpr int kPerThread = 5;
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = kThreads * kPerThread;
+    applyConfigToFreshSpan(config);
+
+    // Async children are created on the owner thread and consumed elsewhere;
+    // each binds its owning-thread guard to the thread that records on it.
+    std::vector<std::shared_ptr<Span>> children;
+    children.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        children.push_back(spawn_async(*test_span_));
+        ASSERT_NE(as_impl(children.back()), nullptr);
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (auto& child : children) {
+        threads.emplace_back([&child] { run_sql_statements(*as_impl(child), kPerThread); });
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    EXPECT_EQ(test_span_data_->getErr(), 1)
+        << kThreads * kPerThread << " concurrent statements must reach the "
+           "transaction's budget exactly - a lost increment would leave the "
+           "trace unmarked";
 }
 
 TEST_F(SpanEventTest, SetSqlQueryBasicTest) {

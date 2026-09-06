@@ -220,6 +220,12 @@ namespace pinpoint {
         void setErr(int err) { err_.store(err, std::memory_order_relaxed); }
         int getErr() const { return err_.load(std::memory_order_relaxed); }
 
+        /// @brief Java's Shared.incrementAndGetSqlCount
+        /// (DefaultShared.java:185-187): returns the POST-increment value,
+        /// which is what SpanImpl::countSqlExecution compares against
+        /// Sql.ErrorCount.
+        int incrementAndGetSqlCount() { return sql_count_.fetch_add(1, std::memory_order_relaxed) + 1; }
+
         void setErrorFuncId(int32_t error_func_id) { error_func_id_ = error_func_id; }
         int32_t getErrorFuncId() const { return error_func_id_; }
 
@@ -339,6 +345,13 @@ namespace pinpoint {
         // that can race a gRPC worker already serializing the root's PSpan.
         // Relaxed is enough — the flag carries no other state with it.
         std::atomic<int> err_{SPAN_ERR_NONE};
+        // The other field a foreign thread writes, and for the same reason:
+        // SQL statements are counted per transaction, so every async child of
+        // this root increments THIS counter from its own thread (see
+        // SpanImpl::countSqlExecution). Relaxed is enough — fetch_add is
+        // atomic whatever the ordering, and the count carries no other state
+        // with it.
+        std::atomic<int> sql_count_{0};
         int32_t error_func_id_{};
         std::string error_string_;
 
@@ -687,9 +700,14 @@ namespace pinpoint {
             // N+1 query pattern surfaces in the UI. An already-failed
             // transaction is skipped (Java's shared.getErrorCode() != 0
             // guard), so the counter stops once anything else failed it.
-            // The count itself is per span where Java counts per trace root —
-            // an async child has its own sql_count_ — but the failure it
-            // raises lands on the trace root like every other error.
+            // The count is kept on the TRACE ROOT, so it is one budget per
+            // transaction rather than a fresh one per async span: Java's
+            // DefaultSqlCountService increments the trace root's Shared
+            // (DefaultSqlCountService.java:15-25,
+            // DefaultShared.java:185-187), and the failure it raises lands on
+            // that same SpanData like every other error. traceRootData() is
+            // held by shared_ptr, so a child may count — and fail the root —
+            // after the root SpanImpl itself is gone.
             // markSpanError() without a name deliberately bypasses
             // Span.IgnoreErrors, like SetStatusCode - there is no throwable to
             // match a rule against.
@@ -698,13 +716,10 @@ namespace pinpoint {
                 if (limit <= 0 || traceRootData().getErr() != SPAN_ERR_NONE) {
                     return;
                 }
-                if (++sql_count_ >= limit) {
+                if (traceRootData().incrementAndGetSqlCount() >= limit) {
                     markSpanError();
                 }
             }
-            // Owner-thread-only, like exceptions_ (see the class warning), so
-            // a plain int is enough.
-            int sql_count_{0};
             // Exceptions only drain at EndSpan (unlike span events, which
             // chunk-flush mid-span), so a retry loop on a long-lived span
             // would grow this without bound — each entry carries a full

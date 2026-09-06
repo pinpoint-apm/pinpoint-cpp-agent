@@ -47,6 +47,33 @@
   absent `Pinpoint-Flags` still means `0` — see
   [doc/java_parity.md](doc/java_parity.md).
 
+- **`Sql.ErrorCount` now applies per transaction, not per span.**
+
+  Up to and including v2.0.0, each span carried its own SQL statement counter,
+  so a transaction built from async spans got a fresh `Sql.ErrorCount` budget
+  for every one of them — three async spans effectively allowed three times the
+  configured number of statements. The counter now lives on the trace root's
+  shared data ([src/span.h](src/span.h), `SpanData::sql_count_`, reached
+  through `SpanImpl::traceRootData()`), so one transaction has one budget. This
+  is the Java agent's behaviour: `DefaultSqlCountService.recordSqlCount`
+  increments the trace root's `Shared` (`DefaultSqlCountService.java:15-25`,
+  `DefaultShared.java:185-187`), and the Go agent does the same.
+
+  **Who is affected:** services that use async spans *and* run
+  `Sql.ErrorCount` or more SQL statements across a whole transaction. Those
+  transactions are now **marked failed** where they previously passed. This is
+  the point of the setting — an N+1 query pattern spread across async work
+  never reached the old per-span threshold — but it is a visible change.
+
+  **Where you will see it:** failed points in the scatter chart, the failed
+  histogram in URL statistics, and `PSpan.err`.
+
+  **Migration.** Nothing to change if the new marking is what you want. To keep
+  the old volume of failures, raise `Sql.ErrorCount`; to stop SQL-count marking
+  altogether, set `Sql.ErrorCount: 0`. Traces without async spans are
+  unaffected — a single span was already the whole transaction. See
+  [doc/java_parity.md](doc/java_parity.md#sqlerrorcount-is-a-per-transaction-budget--same-as-java).
+
 - **A negative `Sql.ErrorCount` now turns SQL-count error marking off.**
 
   Up to and including v2.0.0, `make_config()` replaced any negative
