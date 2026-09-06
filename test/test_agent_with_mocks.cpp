@@ -628,6 +628,7 @@ TEST_F(AgentImplTest, RemoveCacheSqlUidHandlesBypassedAndCachedStatements) {
     const SqlUidMeta bypassed(*long_uid, long_sql, /*cached=*/false);
     EXPECT_LE(bypassed.sql_.size(), kMaxSqlMetaLength + 16);
     EXPECT_TRUE(bypassed.cache_key_.empty());
+    EXPECT_FALSE(bypassed.cached_);
     agent_->removeCacheSqlUid(bypassed);
     EXPECT_EQ(*long_uid, *agent_->cacheSqlUid(long_sql));
     EXPECT_EQ(*short_uid, *agent_->cacheSqlUid(short_sql));
@@ -635,6 +636,7 @@ TEST_F(AgentImplTest, RemoveCacheSqlUidHandlesBypassedAndCachedStatements) {
     // The cached statement's meta keeps its key, and its release evicts.
     const SqlUidMeta cached(*short_uid, short_sql);
     EXPECT_EQ(cached.cache_key_, short_sql);
+    EXPECT_TRUE(cached.cached_);
     agent_->removeCacheSqlUid(cached);
     EXPECT_EQ(*short_uid, *agent_->cacheSqlUid(short_sql))
         << "re-registration reuses the content-hash UID";

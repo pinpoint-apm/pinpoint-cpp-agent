@@ -35,6 +35,7 @@
 #include "pinpoint/tracer_c.h"
 #include "src/agent.h"
 #include "src/noop.h"
+#include "src/sql.h"
 #include "test/c_api_test_helpers.h"
 #include "test/it/mock_collector.h"
 
@@ -1448,6 +1449,49 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
     ASSERT_NE(client_response_header, nullptr);
     EXPECT_EQ(client_response_header->value().stringstringvalue()
                   .stringvalue2().value(), "client-response-5");
+}
+
+// The uid cache stores whatever the normalizer produced, and the normalizer
+// produces an empty string for all-comment SQL (src/sql.cpp:69-71 returns the
+// empty result, src/span_event.cpp:400-403 does not filter it). An empty key
+// is below Sql.CacheLengthLimit, so src/cache.h:792 bypasses() says false and
+// the entry really is cached under "". Eviction on send failure must therefore
+// key off the meta's `cached_` flag, not the key's shape: keying off emptiness
+// both skipped this entry and, symmetrically, would have let a bypassed
+// statement's release evict it.
+TEST_F(AgentIntegrationTest, SqlUidEvictionFollowsCacheMembershipNotKeyShape) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // The reachable input: Sql.RemoveComments defaults to true.
+    ASSERT_TRUE(SqlNormalizer().normalize("/* hint */").normalized_sql.empty());
+
+    constexpr std::string_view empty_key = "";
+    const std::string long_sql = "SELECT " + std::string(70000, 'a') + " FROM t";
+
+    const auto empty_uid = impl_->cacheSqlUid(empty_key);   // miss: row 1
+    ASSERT_TRUE(empty_uid.has_value());
+    EXPECT_EQ(*empty_uid, *impl_->cacheSqlUid(empty_key));  // hit: no row
+
+    // Releasing a bypassed statement must leave the "" entry alone.
+    const auto long_uid = impl_->cacheSqlUid(long_sql);
+    ASSERT_TRUE(long_uid.has_value());
+    impl_->removeCacheSqlUid(SqlUidMeta(*long_uid, long_sql, /*cached=*/false));
+    EXPECT_EQ(*empty_uid, *impl_->cacheSqlUid(empty_key));  // still a hit
+
+    // Releasing the "" meta does evict, so the next use re-registers: row 2.
+    impl_->removeCacheSqlUid(SqlUidMeta(*empty_uid, empty_key));
+    EXPECT_EQ(*empty_uid, *impl_->cacheSqlUid(empty_key));
+
+    const auto count_empty = [](const auto& snapshot) {
+        return std::count_if(snapshot.sql_uid_metadata.begin(),
+                             snapshot.sql_uid_metadata.end(),
+            [](const auto& received) { return received.message.sql().empty(); });
+    };
+    ASSERT_TRUE(collector_.WaitFor([&](const auto& snapshot) {
+        return count_empty(snapshot) >= 2;
+    }, kWaitTimeout));
+    EXPECT_EQ(count_empty(collector_.snapshot()), 2)
+        << "a third row means the bypassed release evicted the \"\" entry";
 }
 
 TEST_F(AgentIntegrationTest, CachesDeduplicateAndInvalidateCollectorMetadata) {

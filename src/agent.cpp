@@ -1386,8 +1386,9 @@ namespace pinpoint {
     } CATCH_AND_LOG_RETURN("failed to cache sql uid meta:", std::nullopt)
 
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
-        // An empty key means the uid cache bypassed the statement: nothing to evict.
-        if (enabled_ && !sql_uid_meta.cache_key_.empty()) {
+        // Only a bypassed statement has nothing to evict; an empty key is a
+        // real cache entry (the normalizer empties all-comment SQL).
+        if (enabled_ && sql_uid_meta.cached_) {
             sql_uid_cache_->remove(sql_uid_meta.cache_key_, sql_uid_meta.uid_);
         }
     } CATCH_AND_LOG("failed to remove cached sql uid meta:")

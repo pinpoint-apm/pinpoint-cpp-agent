@@ -508,15 +508,21 @@ namespace pinpoint {
     /// the statement (Sql.CacheLengthLimit), since there is no entry to evict
     /// then. Either way a queued item holds at most
     /// max(kMaxSqlMetaLength, Sql.CacheLengthLimit) bytes of SQL instead of
-    /// the normalizer's 1 MiB worth.
+    /// the normalizer's 1 MiB worth. `cached_` — not the key's emptiness —
+    /// says whether there is an entry to evict: the normalizer yields an
+    /// empty string for input that is all comments (sql.cpp normalize()),
+    /// and an empty key is below the bypass limit, so such a statement really
+    /// is cached under "".
     struct SqlUidMeta {
         SqlUid uid_;
         std::string sql_;
         std::string cache_key_;
+        bool cached_;
 
         SqlUidMeta(SqlUid uid, std::string_view sql, bool cached = true)
             : uid_(uid), sql_(abbreviateString(sql, kMaxSqlMetaLength)),
-              cache_key_(cached ? std::string(sql) : std::string()) {}
+              cache_key_(cached ? std::string(sql) : std::string()),
+              cached_(cached) {}
     };
 
     /// @brief Metadata bundle carrying exception call stacks for a span.
