@@ -601,9 +601,12 @@ namespace pinpoint {
             // span id keeps its -1 default, i.e. "no parent".
             data_->setSpanId(generate_span_id());
         } else {
-            if (const auto span_id = reader.Get(HEADER_SPAN_ID); !span_id.has_value()) {
-                data_->setSpanId(generate_span_id());
-            } else if (const auto result = stoll_(span_id.value()); result.has_value()) {
+            // continued is readInboundTrace()'s verdict, and it only reports a
+            // continued trace when HEADER_SPAN_ID is present — so value_or here
+            // is not an absent-header case but a total default that keeps an
+            // impossible miss on the malformed path below.
+            const auto span_id = reader.Get(HEADER_SPAN_ID).value_or("");
+            if (const auto result = stoll_(span_id); result.has_value()) {
                 data_->setSpanId(result.value());
             } else {
                 // A malformed header used to leave the span id at its 0 default,
@@ -612,7 +615,7 @@ namespace pinpoint {
                 // Throttled: the value is peer-controlled, so an unthrottled line
                 // per request would serialize request threads on the logger.
                 LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
-                                   HEADER_SPAN_ID, span_id.value());
+                                   HEADER_SPAN_ID, span_id);
                 data_->setSpanId(generate_span_id());
             }
 
