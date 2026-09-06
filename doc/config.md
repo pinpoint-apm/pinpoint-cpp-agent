@@ -118,7 +118,7 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Log.Level` | `PINPOINT_CPP_LOG_LEVEL` | string | `"info"` | `debug`, `info`, `warning` (`warn` is accepted as an alias), `error` (case-insensitive). An unrecognized value keeps the current level and logs a warning. |
-| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. A path that cannot be opened (or reopened after a rotation) falls back to stdout for the rest of the process, so a broken path shows up as agent lines on the host's stdout rather than as silence. After `Shutdown()` a configured file logger writes nothing more, fallback included — the host's stdout stays clean. |
+| `Log.FilePath` | `PINPOINT_CPP_LOG_FILE_PATH` | string | `""` | Empty = stdout (all levels, including errors). Non-empty enables file logging with rotation. Supports the per-worker placeholder `%pid%`, which expands to the process id. A path that cannot be opened at startup falls back to stdout. A path that cannot be **reopened after a rotation** does not: the remaining lines are **dropped** and a single notice is written to `stderr` — the only one there will be — so that a broken log directory never pours the agent's diagnostics into the host's stdout. After `Shutdown()` a configured file logger keeps writing: a line logged by a straggler reopens the file in append mode, so what an overrunning teardown records on its way out is still in the file. Only the stdout-only configuration goes silent after `Shutdown()`. |
 | `Log.MaxFileSize` | `PINPOINT_CPP_LOG_MAX_FILE_SIZE` | int | `10` | Max log file size in MB before rotation. |
 | `Log.MaxBackups` | `PINPOINT_CPP_LOG_MAX_BACKUPS` | int | `1` | Rotated files kept beside the live one, newest first: `<FilePath>.1` … `<FilePath>.MaxBackups`. Each rotation shifts them down one index and deletes the oldest, so the log costs at most `MaxFileSize x (MaxBackups + 1)` on disk. Values below 1 are clamped to 1. |
 
@@ -202,7 +202,7 @@ What the collector receives in each `PAgentStat` row, since the C++ agent has no
 
 - **Memory** is the process's **resident** memory, not a JVM heap: `jvmMemoryHeapUsed` is the current resident set (`VmRSS` on Linux, Mach `resident_size` on macOS) and `jvmMemoryHeapMax` is the resident **high-water mark** (`VmHWM` / `resident_size_max`). Both are process-wide totals — code, stacks and mapped files included — so the Inspector's "Heap Usage" chart reads as process memory growth, and `Max` is the largest resident set the process has ever held rather than a configured limit. Neither value counts address space that was only reserved.
 - **Non-heap and GC** (`jvmMemoryNonHeapUsed`, `jvmMemoryNonHeapMax`, `jvmGcOldCount`, `jvmGcOldTime`) are **not collected** and travel as **`-1`**, the same uncollected sentinel the Java agent sends (`MemoryMetric.UNCOLLECTED_VALUE`). `gcType` is always `JVM_GC_TYPE_UNKNOWN`. They cannot simply be omitted: they are proto3 implicit-presence scalars, so an unset field arrives at the collector as `0` and would be stored and plotted as a real measurement.
-- **`collectInterval`** is the interval **actually measured** since the previous collection, not `Stat.BatchInterval` — a collect tick delayed by load reports the longer period it really covered, matching the Java agent's `CollectJob`. The very first row of a collector run has no predecessor and reports the configured value. CPU load in the same row is computed over that same measured period.
+- **`collectInterval`** is the interval **actually measured** since the previous collection, not `Stat.BatchInterval` — a collect tick delayed by load reports the longer period it really covered, matching the Java agent's `CollectJob`. CPU load in the same row is computed over that same measured period.
 
 ---
 
@@ -410,7 +410,9 @@ With `EnableConfigFileWatcher: true` (or `PINPOINT_CPP_ENABLE_CONFIG_FILE_WATCHE
 default `false`) the agent hot-reloads a subset of options from the YAML config
 file **without restarting the application**. A background thread compares the
 file's last-write timestamp once per second; on a change the file is re-read,
-validated and applied. Environment variables are **not** re-read.
+validated and applied. Environment variables are re-read on every load and
+re-applied on top of the file, so they keep outranking it (see
+[Precedence](#configuration-methods--precedence)).
 
 Requirements: the watcher toggle must be on (it is evaluated once at agent start
 and cannot itself be reloaded), and a config file path must be set — via

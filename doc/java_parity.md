@@ -28,6 +28,8 @@ by side.
 | Tracing before agent registration | `AgentInfoSender`, `DefaultApplicationContext.start()` | **Declined** — see [below](#tracing-before-agent-registration--declined) |
 | Per-URL sampler | `UrlTraceSampler`, `UrlSamplerConfig`, `TraceSamplerProvider` | **Declined** — see [below](#per-url-sampler--declined) |
 | Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined** — see [below](#retrying-a-rejected-metadata-send--declined) |
+| Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
+| Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 
 ---
 
@@ -172,3 +174,43 @@ for tracing and a rejection there can be transient on the collector's side.
 
 **Revisit if** the collector ever distinguishes a transient rejection from a
 permanent one in `PResult`, which would make the retry meaningful.
+
+---
+
+## Error on an unsampled span event — exceeds Java
+
+**Java.** An unsampled trace is a `DisableTrace`. Its span recorder,
+`DisableSpanRecorder.recordException`, masks the shared error code so the URL
+stat entry counts as failed. Its span *event* recorder does not:
+both `DisableSpanEventRecorder.recordException` overloads are empty.
+
+**This agent.** `UnsampledSpanEvent::SetError` (`src/noop.cpp`) routes to the
+owning span's `markError`, so a step error on an unsampled request fails the URL
+stat entry exactly as a span-level error does. Nothing else about the error is
+kept — an unsampled span has nowhere to keep it.
+
+**Decision: intentional, stronger than Java.** With sampling on, unsampled
+requests are the majority. A host that reports failures only on the step that
+failed — the common case for an outbound call — would have those failures
+counted on sampled requests and ignored on unsampled ones, biasing the URL stat
+failure rate toward zero. `Span.IgnoreErrors` still applies on this path.
+
+**Revisit if** Java's `DisableSpanEventRecorder` starts masking the error code,
+at which point this is parity rather than a divergence.
+
+---
+
+## Full send queue drops the oldest item — same as Java
+
+Recorded because it has been flagged as a divergence in review. It is not one.
+
+**Java.** The default span sender is BATCH
+(`profiler.transport.grpc.span.sender.type=BATCH` in `pinpoint-root.config`),
+and `SpanBatchGrpcDataSender` makes room for a new item on a full queue with
+`queue.poll()` — the oldest item is discarded. Rejecting the *new* item is the
+STREAM sender's policy only.
+
+**This agent.** The span and stat send queues drop the oldest item when full.
+Both agents therefore leave the same gap in a sequence under back-pressure.
+
+**Decision: no divergence.** Head-drop is the Java default sender's policy.
