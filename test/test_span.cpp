@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <memory>
 #include <chrono>
 #include <cstdint>
@@ -32,6 +33,7 @@
 #include "../src/logging.h"
 #include "../src/config.h"
 #include "../src/agent_service.h"
+#include "../src/agent_runtime.h"
 #include "../src/url_stat.h"
 #include "../src/grpc_builders.h"
 #include "../src/stat.h"
@@ -2704,6 +2706,94 @@ TEST_F(SpanTest, RepeatedApiMisuseIsThrottledToOneLinePerCallSite) {
     // binary — so the bound is what matters, not the exact count.
     EXPECT_LE(lines.size(), 4u)
         << 4 * kRepeats << " misuse calls must not produce a line each";
+}
+
+// ========== Uncovered EndSpan / NewAsyncSpan / url-stat branches ==========
+
+// An async span always opens with its own async event. A host that ends that
+// event itself leaves EndSpan nothing to close — the async bookkeeping still
+// has to run (exceptions flushed, no root-span accounting), and the misuse is
+// reported once.
+TEST_F(SpanTest, AsyncSpanEndSpanWithoutOpenEventWarnsTest) {
+    std::vector<std::string> lines;
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    auto event = span.NewSpanEvent("event");
+    auto async = span.NewAsyncSpan("async-op");
+    ASSERT_NE(std::dynamic_pointer_cast<SpanImpl>(async), nullptr);
+
+    // The host ends the async span's own event before ending the span.
+    async->GetSpanEvent()->EndEvent();
+
+    Logger::getInstance().setLogLevel("warning");
+    Logger::getInstance().setSink([&](const char*, const char* message) { lines.emplace_back(message); });
+    async->EndSpan();
+    Logger::getInstance().setSink({});
+    Logger::getInstance().setLogLevel("info");
+
+    EXPECT_NE(std::find_if(lines.begin(), lines.end(),
+                           [](const std::string& line) {
+                               return line.find("abnormal async span") != std::string::npos;
+                           }),
+              lines.end())
+        << "an async span ending with no event must report the misuse";
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "an async span is not a transaction root and records no url stat";
+
+    event->EndEvent();
+    span.EndSpan();
+}
+
+// NewAsyncSpan hangs the child off the caller's current event. With no event
+// on the stack there is nothing to attach to, so it must hand back a noop
+// rather than an orphan span that records into the trace.
+TEST_F(SpanTest, NewAsyncSpanWithoutSpanEventReturnsNoopTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    auto async = span.NewAsyncSpan("async-op");
+
+    ASSERT_NE(async, nullptr);
+    EXPECT_EQ(std::dynamic_pointer_cast<SpanImpl>(async), nullptr)
+        << "a span with no event must not produce a real async span";
+}
+
+// Malformed numeric headers keep their defaults instead of poisoning the span
+// with a parsed-from-garbage value.
+TEST_F(SpanTest, ExtractContextIgnoresMalformedParentHeadersTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "not-a-number");
+    reader.SetContext(HEADER_PARENT_APP_TYPE, "not-a-number");
+    reader.SetContext(HEADER_FLAG, "not-a-number");
+
+    extract_context(span, *mock_agent_service_, reader);
+
+    const auto& data = span.getSpanData();
+    EXPECT_EQ(data->getSpanId(), 555) << "the well-formed headers still apply";
+    EXPECT_EQ(data->getParentSpanId(), -1) << "an unparsable parent span id keeps the default";
+    EXPECT_EQ(data->getParentAppType(), 1) << "an unparsable parent app type keeps the default";
+    EXPECT_EQ(data->getFlags(), SPAN_FLAG_NONE) << "an unparsable flag keeps the default";
+}
+
+// With url stats off, SetUrlStat still records the entry when callstack
+// tracing is on — recordException reads the url template off it. EndSpan then
+// has to drop that entry instead of enqueueing a stat nobody asked for.
+TEST_F(SpanTest, UrlStatKeptForCallstackTemplateThenDroppedOnEndSpanTest) {
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = mock_agent_service_->getConfig();
+    ASSERT_FALSE(runtime->config->http.url_stat.enable);
+    ASSERT_TRUE(runtime->config->enable_callstack_trace);
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test", runtime);
+
+    span.SetUrlStat("/api/v1/users/{id}", "GET", 200);
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users/{id}")
+        << "the entry is kept so an exception can be tagged with its url template";
+
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0)
+        << "url stats are disabled: the entry must be dropped, not enqueued";
 }
 
 } // namespace pinpoint
