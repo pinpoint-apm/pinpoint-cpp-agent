@@ -1545,6 +1545,10 @@ protected:
     }
 
     void TearDown() override {
+        // Drop the sink before anything below can log: a test's sink lambda
+        // captures its own stack frame, which is already gone by TearDown.
+        Logger::getInstance().setSink({});
+
         // Shutdown any global agent and clean up
         auto agent = GlobalAgent();
         auto agent_impl = std::dynamic_pointer_cast<AgentImpl>(agent);
