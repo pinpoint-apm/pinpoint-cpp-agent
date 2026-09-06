@@ -1910,6 +1910,44 @@ EnableConfigFileWatcher: true
         << "Reload must retain the running watcher toggle (false)";
 }
 
+// Enable is consumed once, by make_agent() at construction time, so a reload
+// cannot start or stop tracing. It is tagged FIXED for that reason: the
+// running value must survive the reload, and the attempt must be reported
+// rather than silently accepted into a config nothing re-reads.
+TEST_F(ConfigTest, EnableIsNonReloadableAndWarns) {
+    set_config_string(R"(
+ApplicationName: "EnableApp"
+Enable: true
+)");
+    auto running = make_config();
+    ASSERT_NE(running, nullptr);
+    ASSERT_TRUE(running->enable);
+
+    set_config_string(R"(
+ApplicationName: "EnableApp"
+Enable: false
+)");
+    // The agent logs to stdout when no file sink is configured.
+    testing::internal::CaptureStdout();
+    auto reloaded = make_config(running);
+    const std::string log_output = testing::internal::GetCapturedStdout();
+
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_TRUE(reloaded->enable)
+        << "a reload must retain the running Enable value";
+    EXPECT_NE(log_output.find("non-reloadable config fields changed"), std::string::npos)
+        << "an attempt to change Enable must be warned about; log:\n"
+        << log_output;
+
+    // make_config() has already retained the running value above, so the
+    // returned config compares equal. Check the tag itself on a pair that
+    // differs in nothing but enable.
+    Config incoming = *running;
+    incoming.enable = false;
+    EXPECT_FALSE(incoming.isReloadable(running))
+        << "Enable must count as a non-reloadable field";
+}
+
 // ========== Config::check() Validation Tests ==========
 
 TEST_F(ConfigTest, CheckPassesWithValidConfigTest) {

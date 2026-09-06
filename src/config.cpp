@@ -408,7 +408,14 @@ namespace pinpoint {
         {"UidVersion", REF(uid_version_), FIXED, env::UID_VERSION},
         {"ServiceName", REF(service_name_), FIXED, env::SERVICE_NAME},
         {"ApiKey", REF(api_key_), FIXED, env::API_KEY},
-        {"Enable", REF(enable), RELOAD, env::ENABLE},
+        // FIXED, not RELOAD: make_agent() is the only consumer and it reads
+        // this once, when the agent is constructed (src/agent.cpp:1446), so a
+        // reload could never start or stop tracing. Tagged RELOAD the value
+        // silently changed under a running agent that ignored it; tagged FIXED
+        // the running value is retained and the existing non-reloadable
+        // warning names the attempt. IsContainer below is genuinely reloadable
+        // — build_agent_info() re-reads it for each periodic re-registration.
+        {"Enable", REF(enable), FIXED, env::ENABLE},
         {"IsContainer", REF(is_container), RELOAD, env::IS_CONTAINER},
         {"Log.Level", REF(log.level), RELOAD, env::LOG_LEVEL, "LogLevel"},
         {"Log.FilePath", REF(log.file_path), RELOAD, env::LOG_FILE_PATH},
@@ -1079,9 +1086,9 @@ namespace pinpoint {
         // warn and fall through to overwrite them with the running values.
         if (!isReloadable(old)) {
             LOG_WARN("non-reloadable config fields changed at runtime "
-                     "(identity, collector, stat, http url_stat, span queue "
-                     "size or config-file watcher); retaining the existing "
-                     "values and reloading the rest");
+                     "(enable, identity, collector, stat, http url_stat, span "
+                     "queue size or config-file watcher); retaining the "
+                     "existing values and reloading the rest");
         }
 
         for (const auto& f : kConfigFields) {

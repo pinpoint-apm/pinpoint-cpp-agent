@@ -88,7 +88,7 @@ pinpoint::StartAgent(options);
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars); a missing value aborts agent startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
-| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](trouble_shooting.md#disabling-the-agent). |
+| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](trouble_shooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
 > **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
 
@@ -423,13 +423,14 @@ startup. Inline YAML strings are not watched.
 
 ### Reloadable vs. Non-Reloadable Options
 
-Options that define the agent's identity, its collector transport (connection
-targets plus agent-info and span-batch tuning), the stat pipeline, URL
-statistics, the span queue size, or the watcher itself are **non-reloadable** —
-changing them requires an application restart.
+Options that define the agent's identity, whether the agent runs at all, its
+collector transport (connection targets plus agent-info and span-batch tuning),
+the stat pipeline, URL statistics, the span queue size, or the watcher itself
+are **non-reloadable** — changing them requires an application restart.
 
 | Category | Options | Reloadable? |
 |---|---|---|
+| Agent toggle | `Enable` | No — it is read once, when the agent is constructed (`src/agent.cpp:1446`), so a reload could neither start nor stop tracing. The running value is retained and the attempt is warned about, like any other non-reloadable field. |
 | Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector / gRPC transport | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*`, `Collector.AgentInfo.*`, `Collector.SpanBatch.*` | No |
 | Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
@@ -447,7 +448,6 @@ changing them requires an application restart.
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |
-| Startup-only toggles | `Enable` | Accepted into the config, but without effect — it is read once, when the agent is constructed (`src/agent.cpp:1449`), so editing it mid-run neither starts nor stops tracing. |
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —
 the running value is kept — and logged as a warning, while reloadable changes in
