@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <string>
@@ -1100,8 +1101,44 @@ namespace pinpoint {
         return destroy_deferred;
     }
 
+    namespace {
+        // Java's IdValidateUtils.checkId charset ([a-zA-Z0-9._-]+). The agent id
+        // is echoed to every downstream call and displayed as HTML by the web UI
+        // (TransactionIdUtils.java: "should not use html syntax"), so anything
+        // else — '<', '>', CR/LF, control bytes — is rejected here.
+        bool isIdChars(std::string_view s) noexcept {
+            for (const unsigned char c : s) {
+                const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+                if (!ok) return false;
+            }
+            return true;
+        }
+
+        // Strict Long.parseLong: optional leading '+'/'-', then ASCII digits only,
+        // no whitespace, range-checked. stoll_ (absl::SimpleAtoi) is not used
+        // here because it tolerates surrounding whitespace, which Java rejects.
+        std::optional<int64_t> parseLongStrict(std::string_view s) noexcept {
+            const char* first = s.data();
+            const char* const last = first + s.size();
+            if (first != last && (*first == '+' || *first == '-')) ++first;
+            if (first == last) return std::nullopt;
+            for (const char* p = first; p != last; ++p) {
+                if (*p < '0' || *p > '9') return std::nullopt;
+            }
+            int64_t v = 0;
+            const char* const begin = (s.front() == '+') ? first : s.data(); // from_chars rejects '+'
+            if (std::from_chars(begin, last, v).ec != std::errc{}) return std::nullopt;
+            return v;
+        }
+    }
+
+    // Mirrors Java TransactionIdUtils.parseTransactionId: agentId^startTime^sequence,
+    // agent id checked for charset only (the 24-char limit applies to self
+    // registration, not to inbound ids), a fourth field ignored. Warnings are
+    // throttled per reason: a malformed header is peer-controlled input that can
+    // recur once per request.
     TraceId TraceId::parseTraceId(std::string_view txid) noexcept try {
-        constexpr size_t kMaxAgentIdLength = 24;
         constexpr size_t kMaxInt64StringLength = 20; // max digits of int64_t
 
         const std::string_view sv = txid;
@@ -1111,52 +1148,46 @@ namespace pinpoint {
         // AgentId (first field before '^')
         const auto pos1 = sv.find('^');
         if (pos1 == std::string_view::npos) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
             return {};
         }
         if (pos1 == 0) {
-            LOG_WARN("parsing Txid: empty AgentId = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: empty AgentId = {}", sv);
             return {};
         }
-        if (pos1 > kMaxAgentIdLength) {
-            LOG_WARN("parsing Txid: AgentId too long (length={}, max={})", pos1, kMaxAgentIdLength);
+        if (!isIdChars(sv.substr(0, pos1))) {
+            LOG_WARN_THROTTLED("parsing Txid: AgentId contains characters outside [a-zA-Z0-9._-] (length={})", pos1);
             return {};
         }
         // StartTime (second field)
         const auto pos2 = sv.find('^', pos1 + 1);
         if (pos2 == std::string_view::npos) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
             return {};
         }
         const auto start_time_len = pos2 - pos1 - 1;
         if (start_time_len > kMaxInt64StringLength) {
-            LOG_WARN("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
+            LOG_WARN_THROTTLED("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
             return {};
         }
-        // Sequence (third and final field). The wire form is exactly
-        // agentId^startTime^sequence, so any further '^' means extra fields or a
-        // trailing separator. Reject it structurally: otherwise the surplus is
-        // absorbed into the Sequence field, fails to parse, and silently
-        // degrades to sequence 0 via value_or(0) below — recording a bogus live
-        // trace on which every distinct malformed header collides at
-        // (agentId, startTime, 0).
-        const auto sequence_str = sv.substr(pos2 + 1);
-        if (sequence_str.find('^') != std::string_view::npos) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
-            return {};
-        }
+        // Sequence (third field), cut at the next '^' like Java: anything after
+        // it is ignored rather than rejected. (Java: "next index may not exist
+        // since default value does not have a delimiter after
+        // transactionSequence. may need fixing when id spec changes".)
+        const auto pos3 = sv.find('^', pos2 + 1);
+        const auto sequence_str = sv.substr(pos2 + 1, pos3 == std::string_view::npos ? std::string_view::npos : pos3 - pos2 - 1);
         if (sequence_str.length() > kMaxInt64StringLength) {
-            LOG_WARN("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
+            LOG_WARN_THROTTLED("parsing Txid: Sequence too long (length={}, max={})", sequence_str.length(), kMaxInt64StringLength);
             return {};
         }
 
         // Non-numeric fields are rejected structurally like the malformations
         // above: absorbing them as 0 via value_or would record a live trace on
         // which every distinct malformed header collides at (agentId, 0, 0).
-        const auto start_time = stoll_(sv.substr(pos1 + 1, start_time_len));
-        const auto sequence = stoll_(sequence_str);
+        const auto start_time = parseLongStrict(sv.substr(pos1 + 1, start_time_len));
+        const auto sequence = parseLongStrict(sequence_str);
         if (!start_time || !sequence) {
-            LOG_WARN("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
             return {};
         }
 

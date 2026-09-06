@@ -3034,8 +3034,8 @@ TEST_F(AgentIntegrationTest, RejectsMalformedInboundTraceContextAndAcceptsForeig
     const std::array<std::string_view, 5> malformed{
         "missing-separators",
         "agent-only^123",
-        "agent^123^7^extra",
-        "agent-id-way-too-long-over-24-chars^123^7",
+        "agent<script>^123^7",
+        "agent^ 123 ^7",
         "agent^123^123456789012345678901",
     };
     for (size_t i = 0; i < malformed.size(); ++i) {

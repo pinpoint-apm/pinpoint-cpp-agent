@@ -1210,12 +1210,6 @@ TEST_F(SpanTest, ParseTraceIdOnlyOneSeparatorTest) {
     EXPECT_TRUE(tid.empty()) << "a trace id missing the sequence field should parse to empty";
 }
 
-TEST_F(SpanTest, ParseTraceIdAgentIdTooLongTest) {
-    // AgentId exceeds kMaxAgentIdLength (24) — parse fails.
-    const TraceId tid = TraceId::parseTraceId("this-agent-id-is-way-too-long^1234567890^1");
-    EXPECT_TRUE(tid.empty()) << "a trace id with an over-long agent id should parse to empty";
-}
-
 TEST_F(SpanTest, ParseTraceIdEmptyFieldsTest) {
     // "^^" has all separators but every field empty. Accepting it would
     // record a live trace at ("", 0, 0) on which every such malformed header
@@ -1238,32 +1232,46 @@ TEST_F(SpanTest, ParseTraceIdSequenceTooLongTest) {
     EXPECT_TRUE(tid.empty()) << "an over-long Sequence field should parse to empty";
 }
 
-TEST_F(SpanTest, ParseTraceIdExtraFieldsRejectedTest) {
-    // The wire form is exactly agentId^startTime^sequence (two separators). A
-    // header with a further '^' — extra fields or a trailing separator — is
-    // rejected structurally, mirroring the missing-separator guard. Without this
-    // the surplus is absorbed into the Sequence field, fails to parse, and
-    // degrades to sequence 0, recording a bogus trace on which every distinct
-    // malformed header collides at (agentId, startTime, 0).
-    const TraceId extra = TraceId::parseTraceId("a^1^2^3");
-    EXPECT_TRUE(extra.empty()) << "a trace id with more than two separators should parse to empty";
-
-    const TraceId trailing = TraceId::parseTraceId("a^1^2^");
-    EXPECT_TRUE(trailing.empty()) << "a trace id with a trailing separator should parse to empty";
-}
-
-TEST_F(SpanTest, ParseTraceIdAgentIdLengthBoundaryTest) {
-    // kMaxAgentIdLength is 24 and the guard is a strict `pos1 > 24`, so an agent
-    // id of exactly 24 chars is accepted while 25 is rejected. Pins the exact
-    // off-by-one contract that the existing (29-char) too-long test cannot.
-    const std::string id24(24, 'a');
-    const TraceId at_limit = TraceId::parseTraceId(id24 + "^100^1");
-    EXPECT_FALSE(at_limit.empty()) << "a 24-char agent id is at the limit and valid";
-    EXPECT_EQ(at_limit.agentId(), id24);
-
+TEST_F(SpanTest, ParseTraceIdJavaCompatibilityTableTest) {
+    // Accept/reject table mirroring Java TransactionIdUtils.parseTransactionId:
+    // agent id charset [a-zA-Z0-9._-] with no length cap, a fourth field ignored,
+    // numeric fields as Long.parseLong (optional sign, digits only, no whitespace).
+    struct Case { std::string input; bool accept; std::string agent; int64_t start; int64_t seq; };
     const std::string id25(25, 'a');
-    const TraceId over_limit = TraceId::parseTraceId(id25 + "^100^1");
-    EXPECT_TRUE(over_limit.empty()) << "a 25-char agent id exceeds the limit and is rejected";
+    const std::string id64(64, 'b');
+    const std::vector<Case> cases = {
+        {"agent^1^2", true, "agent", 1, 2},
+        {"a.b-c_D9^1^2", true, "a.b-c_D9", 1, 2},
+        {"a^1^2^3", true, "a", 1, 2},
+        {"a^1^2^", true, "a", 1, 2},
+        {"ag!ent^1^2", false, "", 0, 0},
+        {"a<b>^1^2", false, "", 0, 0},
+        {"a\r\nX-Inject: 1^1^2", false, "", 0, 0},
+        {"ag ent^1^2", false, "", 0, 0},
+        {"agent^ 1 ^2", false, "", 0, 0},
+        {"agent^1 ^2", false, "", 0, 0},
+        {"agent^-1^2", true, "agent", -1, 2},
+        {"agent^+1^2", true, "agent", 1, 2},
+        {"agent^0001^2", true, "agent", 1, 2},
+        {id25 + "^1^2", true, id25, 1, 2},
+        {id64 + "^1^2", true, id64, 1, 2},
+        {"agent^9223372036854775807^2", true, "agent", INT64_MAX, 2},
+        {"agent^9223372036854775808^2", false, "", 0, 0},
+        {"agent^1^0x10", false, "", 0, 0},
+        {"^1^2", false, "", 0, 0},
+        {"agent^1", false, "", 0, 0},
+        {"agent^^2", false, "", 0, 0},
+        {"agent^1^", false, "", 0, 0},
+    };
+    for (const auto& c : cases) {
+        const TraceId tid = TraceId::parseTraceId(c.input);
+        EXPECT_EQ(tid.empty(), !c.accept) << "input: " << c.input;
+        if (c.accept && !tid.empty()) {
+            EXPECT_EQ(tid.agentId(), c.agent) << "input: " << c.input;
+            EXPECT_EQ(tid.StartTime, c.start) << "input: " << c.input;
+            EXPECT_EQ(tid.Sequence, c.seq) << "input: " << c.input;
+        }
+    }
 }
 
 TEST_F(SpanTest, ParseTraceIdNumericOverflowRejectedTest) {
