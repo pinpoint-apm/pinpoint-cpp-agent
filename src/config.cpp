@@ -243,6 +243,16 @@ namespace pinpoint {
             std::error_code seed_ec;
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
+            // A missing file is a state, not an error: a ConfigMap update
+            // replaces the file rather than rewriting it, so the path is
+            // briefly absent on every rollout. Go never even sees it — viper's
+            // WatchConfig watches the directory and drops the fsnotify Remove
+            // event on the floor (viper.go:486). We poll a path instead, so we
+            // report it, but at most once per reporter window rather than once
+            // per tick, and we keep polling so the replacement is picked up.
+            QueueDropReporter missing_reporter{};
+            bool missing = false;
+
             // wait() covers a stop pending before the tick and one arriving
             // mid-tick, so shutdown need not wait out the polling interval.
             // The check below avoids starting reload work after an observed
@@ -251,14 +261,36 @@ namespace pinpoint {
             // anything down, so an in-flight reload always sees a live agent.
             while (!stop->wait(tick)) {
                 try {
-                    auto current = std::filesystem::last_write_time(path);
-                    if (current != last_write_time) {
-                        last_write_time = current;
-                        if (!stop->stop_requested()) {
-                            reload();
+                    // Non-throwing overload: the throwing one turned every
+                    // tick of an absent file into an exception, and the
+                    // handler below into an unthrottled per-tick WARN.
+                    std::error_code ec;
+                    auto current = std::filesystem::last_write_time(path, ec);
+                    if (ec) {
+                        if (const auto suppressed = missing_reporter.acquire()) {
+                            LOG_WARN("config file is missing: {} ({}); "
+                                     "still watching, occurrences: {}",
+                                     path, ec.message(), suppressed);
                         }
+                        missing = true;
+                        continue;
+                    }
+                    if (missing) {
+                        // Reload on the transition rather than on the mtime
+                        // comparison: a replacement file can carry any
+                        // timestamp, including the one we last saw.
+                        missing = false;
+                        LOG_INFO("config file is back: {}; reloading", path);
+                    } else if (current == last_write_time) {
+                        continue;
+                    }
+                    last_write_time = current;
+                    if (!stop->stop_requested()) {
+                        reload();
                     }
                 } catch (const std::exception& e) {
+                    // reload() is host-supplied and may still throw; an
+                    // exception leaving a std::thread calls std::terminate().
                     LOG_WARN("failed to watch config file: {}", e.what());
                 } catch (...) {
                     LOG_WARN("failed to watch config file: unknown exception");

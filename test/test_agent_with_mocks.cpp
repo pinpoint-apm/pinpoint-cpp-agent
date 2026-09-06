@@ -22,6 +22,7 @@
 #include <csignal>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -1861,6 +1862,59 @@ TEST_F(StartAgentTest, ConfigFileWatcherStopWakesLongPollTick) {
     const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
     EXPECT_LT(stop_elapsed, std::chrono::milliseconds(900))
         << "stop must wake the poll-tick wait instead of sitting it out";
+}
+
+// Deleting the watched file used to throw once per poll tick and log an
+// unthrottled WARN for each one — a ConfigMap rollout, which replaces the file
+// rather than rewriting it, would fill the log for as long as the gap lasted.
+// The gap must be reported once, and the replacement must still be picked up.
+TEST_F(StartAgentTest, ConfigFileWatcherReportsAMissingFileOnceAndRecovers) {
+    write_watcher_config(1, "test-app", false);
+
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(10));
+
+    std::atomic<int> reloads{0};
+    start_log_capture();
+    ConfigFileWatcher watcher(watcher_config_file_.string(), [&] { ++reloads; });
+    watcher.start();
+    // Several ticks over the untouched file: nothing to report either way.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_EQ(reloads.load(), 0);
+
+    cleanup_watcher_config_file();
+    // ~30 ticks with the file absent. Pre-fix this was ~30 WARN lines.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(reloads.load(), 0) << "a missing file must not trigger a reload";
+
+    write_watcher_config(50, "test-app", false);
+    EXPECT_TRUE(wait_for_condition([&] { return reloads.load() >= 1; },
+                                   std::chrono::seconds(3)))
+        << "a re-created config file must be reloaded";
+
+    // Stop before reading: read_captured_log() shuts the logger down.
+    watcher.stop();
+    const auto log = read_captured_log();
+
+    // Count every warning about the config file, not just the current
+    // wording: pre-fix the loop emitted one "failed to watch config file"
+    // per tick, which is exactly what must not come back.
+    size_t warnings = 0;
+    std::istringstream lines(log);
+    for (std::string line; std::getline(lines, line);) {
+        if (line.find("[warning]") != std::string::npos &&
+            line.find("config file") != std::string::npos) {
+            ++warnings;
+        }
+    }
+    EXPECT_EQ(warnings, 1u)
+        << "the missing file must be reported once, not once per tick; log:\n" << log;
+    EXPECT_NE(log.find("config file is missing"), std::string::npos)
+        << "the gap must be reported at least once; log:\n" << log;
+    EXPECT_NE(log.find("config file is back"), std::string::npos)
+        << "the recovery must be reported once; log:\n" << log;
 }
 
 // make_config(options, old) + reloadConfig() retains non-reloadable fields
