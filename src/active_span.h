@@ -155,7 +155,7 @@ namespace pinpoint {
         }
 
         /// @brief Buckets every linked span's age at @p sample_time_ms into
-        /// the Pinpoint active-request histogram (<1s, <3s, <5s, >=5s).
+        /// the Pinpoint active-request histogram (<=1s, <=3s, <=5s, >5s).
         void collect(int32_t buckets[4], int64_t sample_time_ms) {
             buckets[0] = 0;
             buckets[1] = 0;

@@ -210,7 +210,11 @@ and `SpanBatchGrpcDataSender` makes room for a new item on a full queue with
 `queue.poll()` — the oldest item is discarded. Rejecting the *new* item is the
 STREAM sender's policy only.
 
-**This agent.** The span and stat send queues drop the oldest item when full.
+**This agent.** The *span* send queue drops the oldest item when full.
 Both agents therefore leave the same gap in a sequence under back-pressure.
+
+The stat send queue is not comparable and drops nothing: it holds one token per
+stats type with no payload, so a duplicate token is simply not enqueued and the
+producers keep their data until the stream drains it (`src/grpc.cpp:2941-2954`).
 
 **Decision: no divergence.** Head-drop is the Java default sender's policy.

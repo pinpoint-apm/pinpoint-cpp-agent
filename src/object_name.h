@@ -47,9 +47,6 @@ namespace pinpoint {
         constexpr size_t APPLICATION_NAME_MAX_LEN_V3 = SERVICE_NAME_MAX_LEN; // 254
         constexpr size_t AGENT_NAME_MAX_LEN_V4 = SERVICE_NAME_MAX_LEN;       // 254
 
-        // Default ServiceName used by v4 when none is configured
-        // (Java ServiceUid.DEFAULT_SERVICE_UID_NAME).
-
         // ObjectName versions (Java ObjectName.VERSION_V1 / VERSION_V4).
         constexpr int VERSION_V1 = 1;
         constexpr int VERSION_V4 = 4;
