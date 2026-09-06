@@ -42,6 +42,7 @@
 #include "../src/span.h"
 #include "../src/stat.h"
 #include "../src/url_stat.h"
+#include "../src/utility.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 #include "mock_agent_service.h"
@@ -1132,6 +1133,63 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
     };
     EXPECT_TRUE(has_config_service_lib("Span.MaxEventDepth=32"));
     EXPECT_TRUE(has_config_service_lib("Http.CollectUrlStat=true"));
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSanitizesInvalidUtf8) {
+    // ServerMetaData is caller-supplied (vm_args is usually raw argv). Invalid
+    // UTF-8 in any of it makes the collector's readStringRequireUtf8 drop the
+    // whole PAgentInfo, so the agent never registers and traces nothing --
+    // permanently, since every retry resends the same bytes.
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    v1::PAgentInfo captured;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SaveArg<1>(&captured),
+                        SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+    agent.setServerMetaData("caf\xe9-server", {"--name=\x80", "--ok=1"}, {"lib\xff.so"});
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    // toValidUtf8(x) == x is exactly "x is valid UTF-8" (see test_utility.cpp).
+    std::string serialized;
+    ASSERT_TRUE(captured.SerializeToString(&serialized));
+    const auto& md = captured.servermetadata();
+    const std::string fffd = "\xef\xbf\xbd";
+    EXPECT_EQ(md.serverinfo(), "caf" + fffd + "-server");
+    ASSERT_EQ(md.vmarg_size(), 2);
+    EXPECT_EQ(md.vmarg(0), "--name=" + fffd);
+    EXPECT_EQ(md.vmarg(1), "--ok=1");
+    ASSERT_EQ(md.serviceinfo(0).servicelib_size(), 1);
+    EXPECT_EQ(md.serviceinfo(0).servicelib(0), "lib" + fffd + ".so");
+    EXPECT_EQ(toValidUtf8(captured.hostname()), captured.hostname());
+    EXPECT_EQ(toValidUtf8(captured.ip()), captured.ip());
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentKeepsValidNonAsciiIntact) {
+    // Guards the other direction: sanitizing must not mangle legitimate
+    // multi-byte text (Korean, CJK, emoji).
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    v1::PAgentInfo captured;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SaveArg<1>(&captured),
+                        SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+    agent.setServerMetaData("서버-\xe6\x9d\xb1\xe4\xba\xac", {"--emoji=\xf0\x9f\x9a\x80", "--한글=값"},
+                            {"라이브러리.so"});
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    const auto& md = captured.servermetadata();
+    EXPECT_EQ(md.serverinfo(), "서버-\xe6\x9d\xb1\xe4\xba\xac");
+    ASSERT_EQ(md.vmarg_size(), 2);
+    EXPECT_EQ(md.vmarg(0), "--emoji=\xf0\x9f\x9a\x80");
+    EXPECT_EQ(md.vmarg(1), "--한글=값");
+    ASSERT_EQ(md.serviceinfo(0).servicelib_size(), 1);
+    EXPECT_EQ(md.serviceinfo(0).servicelib(0), "라이브러리.so");
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {

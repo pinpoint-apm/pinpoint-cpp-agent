@@ -1757,8 +1757,8 @@ namespace pinpoint {
         // report what the agent is running with now.
         const auto config = agent_->getConfig();
 
-        agent_info->set_hostname(get_host_name());
-        agent_info->set_ip(get_host_ip_addr());
+        agent_info->set_hostname(toValidUtf8(get_host_name()));
+        agent_info->set_ip(toValidUtf8(get_host_ip_addr()));
         agent_info->set_servicetype(agent_->getAppType());
         agent_info->set_pid(getpid());
         agent_info->set_agentversion(VERSION_STRING);
@@ -1766,15 +1766,20 @@ namespace pinpoint {
 
         const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
         if (server_meta_data_set_) {
-            meta_data->set_serverinfo(server_meta_data_.server_info);
+            // All of these are caller-supplied (AgentOptions server_info/args/libs);
+            // vm_args is typically raw argv. An invalid UTF-8 byte anywhere in
+            // here makes the collector's readStringRequireUtf8 reject the whole
+            // PAgentInfo, so registration -- and thus all tracing for this
+            // agent -- fails permanently, since every retry resends the same bytes.
+            meta_data->set_serverinfo(toValidUtf8(server_meta_data_.server_info));
             for (const auto& arg : server_meta_data_.vm_args) {
-                meta_data->add_vmarg(arg);
+                meta_data->add_vmarg(toValidUtf8(arg));
             }
             if (!server_meta_data_.service_libs.empty()) {
                 auto* service_info = meta_data->add_serviceinfo();
                 service_info->set_servicename("Libraries");
                 for (const auto& lib : server_meta_data_.service_libs) {
-                    service_info->add_servicelib(lib);
+                    service_info->add_servicelib(toValidUtf8(lib));
                 }
             }
         } else {

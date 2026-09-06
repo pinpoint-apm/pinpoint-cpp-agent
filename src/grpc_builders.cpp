@@ -323,7 +323,9 @@ namespace pinpoint {
         // agent id on one span rather than a null deref inside the host.
         assert(!tid.empty() && "build_grpc_transaction_id requires a valid trace id");
         if (tid.AgentId) {
-            ptid->set_agentid(*tid.AgentId);
+            // Redundant while parseTraceId() enforces the id charset, but kept
+            // so a relaxed check can never leak invalid UTF-8 into a span.
+            ptid->set_agentid(toValidUtf8(*tid.AgentId));
         }
         ptid->set_agentstarttime(tid.StartTime);
         ptid->set_sequence(tid.Sequence);
