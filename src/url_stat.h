@@ -84,6 +84,23 @@ namespace pinpoint {
             }
             return histogram_[index]; 
         }
+        /// @brief True when no sample has been recorded, so the histogram can
+        /// travel as an empty message (see build_url_histogram).
+        ///
+        /// Every bucket zero, which is Go's urlStatHistogram.isEmpty()
+        /// (url_stat.go:153-160) verbatim. Java asks getCount() == 0
+        /// (UriStatMapper.java:63-69); there is no count member here, and
+        /// total_ cannot stand in for one because it sums elapsed times and
+        /// stays 0 for a histogram of nothing but 0ms samples. add() bumps
+        /// exactly one bucket per sample, so the bucket sum is the count.
+        bool empty() const {
+            for (const auto count : histogram_) {
+                if (count != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
 
     private:
         int64_t total_{0};

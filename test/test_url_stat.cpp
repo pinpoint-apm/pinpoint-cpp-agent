@@ -402,6 +402,82 @@ TEST_F(UrlStatTest, SnapshotTrimPrefixAndWireFormatStayExact) {
     EXPECT_EQ(each.failedhistogram().histogram(2), 1);
 }
 
+// An empty histogram travels as an empty message, not as eight zero buckets.
+// The failed histogram is empty for every URI that never failed, so those
+// eight zeroes would otherwise ride along with every URI on every tick.
+// Matches Java's UriStatMapper.checkEmptyThenMap and Go's makePUriHistogram.
+TEST_F(UrlStatTest, EmptyFailedHistogramIsSerializedAsAnEmptyMessage) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = false;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/ok", "GET", 200);
+    stat.elapsed_ = 10;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1234));
+    snapshot.add(&stat, config, tick_clock);
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_url_stat(&snapshot, &arena);
+    ASSERT_NE(wire, nullptr);
+    ASSERT_EQ(wire->eachuristat_size(), 1);
+
+    const auto& each = wire->eachuristat(0);
+    // The message must still be present: Java substitutes
+    // PUriHistogram.getDefaultInstance(), it does not clear the field.
+    ASSERT_TRUE(each.has_failedhistogram());
+    EXPECT_EQ(each.failedhistogram().histogram_size(), 0);
+    EXPECT_EQ(each.failedhistogram().total(), 0);
+    EXPECT_EQ(each.failedhistogram().max(), 0);
+    EXPECT_EQ(each.failedhistogram().ByteSizeLong(), 0u)
+        << "an empty histogram must not put anything on the wire";
+
+    // The non-empty total histogram is what is left, so the whole record must
+    // not carry a second packed run of eight buckets.
+    EXPECT_EQ(each.totalhistogram().histogram_size(), URL_STATS_BUCKET_SIZE);
+}
+
+// The other half of the rule: a histogram with samples still sends all eight
+// buckets, including the zero ones between the populated ones.
+TEST_F(UrlStatTest, NonEmptyHistogramStillSendsEveryBucket) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = false;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/slow", "GET", 500);
+    stat.elapsed_ = 9000;  // last bucket
+    stat.failed_ = true;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1234));
+    snapshot.add(&stat, config, tick_clock);
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_url_stat(&snapshot, &arena);
+    ASSERT_NE(wire, nullptr);
+    ASSERT_EQ(wire->eachuristat_size(), 1);
+
+    const auto& failed = wire->eachuristat(0).failedhistogram();
+    ASSERT_EQ(failed.histogram_size(), URL_STATS_BUCKET_SIZE);
+    EXPECT_EQ(failed.histogram(URL_STATS_BUCKET_SIZE - 1), 1);
+    EXPECT_EQ(failed.histogram(0), 0);
+    EXPECT_EQ(failed.total(), 9000);
+    EXPECT_EQ(failed.max(), 9000);
+}
+
+// A histogram of nothing but 0ms samples has total() == 0 and max() == 0, so
+// only the bucket counts can tell it apart from a histogram of no samples.
+TEST_F(UrlStatTest, ZeroElapsedSampleIsNotAnEmptyHistogram) {
+    UrlStatHistogram histogram;
+    EXPECT_TRUE(histogram.empty());
+
+    histogram.add(0);
+    EXPECT_FALSE(histogram.empty()) << "a 0ms sample is still a sample";
+    EXPECT_EQ(histogram.total(), 0);
+    EXPECT_EQ(histogram.max(), 0);
+}
+
 TEST_F(UrlStatTest, SnapshotSeparatesIdenticalUrlsByTick) {
     UrlStatSnapshot snapshot;
     Config config;

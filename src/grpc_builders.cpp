@@ -286,6 +286,17 @@ namespace pinpoint {
         }
 
         void build_url_histogram(v1::PUriHistogram* grpc_histogram, const UrlStatHistogram& url_histogram) {
+            // A histogram with no samples goes out as an empty message rather
+            // than eight zero buckets. build_each_url_stat calls this for the
+            // failed histogram of every URI, and most URIs never fail, so the
+            // zeroes would be the bulk of a PAgentUriStat. Java maps an empty
+            // one to PUriHistogram.getDefaultInstance() (UriStatMapper.java:63-69)
+            // and Go returns &pb.PUriHistogram{} (grpc.go:1729-1731). The
+            // message itself is still set by the caller — an absent field is
+            // not what the collector expects.
+            if (url_histogram.empty()) {
+                return;
+            }
             grpc_histogram->set_total(url_histogram.total());
             grpc_histogram->set_max(url_histogram.max());
             grpc_histogram->mutable_histogram()->Reserve(URL_STATS_BUCKET_SIZE);
