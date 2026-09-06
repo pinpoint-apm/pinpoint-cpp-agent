@@ -2914,13 +2914,30 @@ namespace pinpoint {
 
         // The payload is read now, not when the token was enqueued: AgentStats
         // publishes its finished cycle before enqueuing (copySnapshots), and
-        // the URL snapshot swap takes everything aggregated so far.
+        // the URL snapshot drain takes every tick completed so far.
+        //
+        // Taken before msg_ is created so an empty drain can bail out without
+        // leaving an unwritten message in the arena (OnWriteDone is what
+        // resets it). include_in_progress on the way out: shutdown is the one
+        // point where the tick still being collected has no successor to cut
+        // it, so it ships partial rather than not at all.
+        std::unique_ptr<UrlStatSnapshot> url_snapshot;
+        if (stats != AGENT_STATS) {
+            url_snapshot = agent_->getUrlStats().takeSnapshot(agent_->isExiting());
+            if (url_snapshot->empty()) {
+                // No tick completed since the last send. Send nothing at all
+                // rather than an empty PAgentUriStat, matching Java's
+                // UriStatCollectingJob (UriStatCollectingJob.java:52-55).
+                LOG_DEBUG("stats - no completed url stat tick");
+                return STREAM_CONTINUE;
+            }
+        }
+
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
             msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().copySnapshots(), &arena_));
         } else {
-            auto snapshot = agent_->getUrlStats().takeSnapshot();
-            msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
+            msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(url_snapshot.get(), &arena_));
         }
 
         return STREAM_WRITE;

@@ -912,6 +912,14 @@ namespace pinpoint {
         std::mutex stats_queue_mutex_{};
         std::condition_variable stats_queue_cv_{};
 
+        /// @brief Consumes one queued token and builds its message into msg_.
+        /// @return STREAM_WRITE when msg_ is ready to be written, or
+        ///         STREAM_CONTINUE when there is nothing to send — an empty
+        ///         queue, or a URL-stat token with no completed tick behind
+        ///         it. Protected so tests can assert the no-message case
+        ///         without a live stream.
+        GrpcStreamStatus next_write();
+
     private:
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
@@ -934,7 +942,6 @@ namespace pinpoint {
         void close_stats_stream_locked();
         void drain_stats_stream_on_error() noexcept;
 
-        GrpcStreamStatus next_write();
         // Worker loop body; sendStatsWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
         // start failed, so the supervisor retries with a fresh stream.

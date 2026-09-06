@@ -306,6 +306,16 @@ bitmask are not implemented.
 | `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `3` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is, so the default depth `3` keeps `/api/users/123` and trims only from the fourth segment (`/api/users/123/comments` → `/api/users/123/*`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
 
+URL statistics are bucketed into fixed 30-second **ticks** and reported per
+`(url, tick)`. **Only completed ticks are sent**: the tick still being collected
+stays in the agent until the first request of a newer tick closes it, so one
+tick is never split across two messages — a split would report a separate
+maximum and average for each half. **A send with no completed tick sends no
+message at all**, so an idle agent puts nothing on the stats stream. This
+matches Java, whose `UriStatCollectingJob` drains only the completed queue and
+stops as soon as it polls empty. The one exception is agent shutdown, which
+flushes the tick in progress rather than dropping it.
+
 A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's `URITemplate.NULL_URI` verbatim, so a mixed Java/C++ application keeps one "no URI recorded" bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
 
 #### Turn trimming off when you pass a URL pattern

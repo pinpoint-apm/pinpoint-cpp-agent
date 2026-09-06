@@ -615,10 +615,27 @@ protected:
         return yaml.str();
     }
 
+    // Closes the URL-stat tick in progress. A send carries completed ticks
+    // only, and in production what completes a tick is the first request of
+    // the next one; a test records a couple of spans well inside one 30s tick
+    // and would otherwise wait out the whole tick to see them. Feeding an
+    // entry from a strictly newer tick is exactly what closes it
+    // (UrlStats::addLocked), so that is what this does. The stand-in uri is
+    // never asserted on, and the injected tick advances every call so a
+    // repeated flush keeps closing whatever the add worker drained since.
+    void CloseUrlStatTick() {
+        UrlStatEntry cutter{"/it/tick-cutter", "GET", 200};
+        cutter.elapsed_ = 0;
+        cutter.end_time_ = std::chrono::system_clock::now() +
+                           URL_STAT_TICK_INTERVAL * ++url_stat_tick_cuts_;
+        impl_->getUrlStats().addSnapshot(&cutter, *impl_->getConfig());
+    }
+
     bool FlushUrlStatsUntil(std::string_view uri, int64_t expected_count) {
         const std::string expected_uri(uri);
         for (int attempt = 0; attempt < 20; ++attempt) {
             std::this_thread::sleep_for(25ms);
+            CloseUrlStatTick();
             impl_->recordStats(URL_STATS);
             if (collector_.WaitFor([&expected_uri, expected_count](const auto& snapshot) {
                     return uri_stat_totals(snapshot, expected_uri).total_count >=
@@ -629,6 +646,10 @@ protected:
         }
         return false;
     }
+
+    // Monotonic so each CloseUrlStatTick() lands in a tick strictly newer
+    // than the last one it injected.
+    int url_stat_tick_cuts_{0};
 
     template <size_t N>
     std::string DriveSamplingPattern(std::string_view operation,
@@ -1154,6 +1175,7 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
     bool saw_url_stat = false;
     for (int attempt = 0; attempt < 20 && !saw_url_stat; ++attempt) {
         std::this_thread::sleep_for(25ms);
+        CloseUrlStatTick();
         impl_->recordStats(URL_STATS);
         saw_url_stat = collector_.WaitFor([](const auto& snapshot) {
             return has_uri_stat(snapshot, "GET /orders/{id}");
@@ -1890,16 +1912,17 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
     for (int attempt = 0; attempt < 20 && !delivered; ++attempt) {
         impl_->recordStats(URL_STATS);
         delivered = collector_.WaitFor([&stalled_entries](const auto& snapshot) {
-            return stalled_entries(snapshot).size() >= 5;
+            return stalled_entries(snapshot).size() >= 4;
         }, 250ms);
     }
     ASSERT_TRUE(delivered) << "retained ticks never reached the collector";
 
     const auto by_tick = stalled_entries(collector_.snapshot());
 
-    // Four completed ticks are retained plus the one still in progress; the
-    // older six were evicted whole rather than starving the newer ones.
-    ASSERT_EQ(by_tick.size(), 5U);
+    // Four completed ticks are retained; the older five were evicted whole
+    // rather than starving the newer ones. The tenth is still in progress and
+    // a send never takes that one.
+    ASSERT_EQ(by_tick.size(), 4U);
     int expected_tick = kStalledTicks - 5;
     for (const auto& [timestamp, uris] : by_tick) {
         EXPECT_EQ(timestamp, kBaseMillis + expected_tick * kTickMillis)
@@ -1914,6 +1937,9 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
     }
     EXPECT_FALSE(has_uri_stat(collector_.snapshot(), "GET /stall/tick0/url0"))
         << "the oldest tick is the one evicted when retention overflows";
+    EXPECT_FALSE(has_uri_stat(collector_.snapshot(),
+                              "GET /stall/tick" + std::to_string(kStalledTicks - 1) + "/url0"))
+        << "the tick still in progress must not be split out of the agent";
 }
 
 TEST_F(AgentIntegrationTest, HandlesProfilerCommandsOverRealGrpcStreams) {

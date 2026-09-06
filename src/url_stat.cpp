@@ -101,8 +101,10 @@ namespace pinpoint {
         // progress. Entry arrival drives this rather than a timer thread —
         // entries carry an end time of about "now", so the cut lands on the
         // boundary anyway, and a tick with no traffic has nothing to cut.
-        // Whatever is still in progress when a send comes is taken by
-        // takeSnapshot(), so a trailing tick is never stranded here.
+        // A send no longer takes the tick in progress (see takeSnapshot),
+        // so this is the only thing that closes one under load. A trailing
+        // tick that never gets a successor waits here until the shutdown
+        // flush, takeSnapshot(include_in_progress = true).
         //
         // Strictly-newer only: a straggler for an already-cut tick (drained
         // out of order across shards) must not cut again. It lands in the
@@ -135,23 +137,44 @@ namespace pinpoint {
         }
     }
 
-    std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot() {
-        // Allocate the replacement before touching snapshot_: if this throws
-        // under memory pressure the member must stay intact — moving it out
-        // first would leave it null after the caller's catch, and the next
+    std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot(const bool include_in_progress) {
+        // Completed ticks only. The send timer and the tick boundary are not
+        // aligned (30s each, but free-running), so taking the tick in progress
+        // would cut it wherever the timer happened to land and ship the two
+        // halves in consecutive messages. The server aggregates by (uri, tick)
+        // and would still add them up, but every derived value that is not a
+        // sum — the per-tick max, and the average implied by total/count — is
+        // computed per message, so a split tick reports a max and an average
+        // for each half instead of for the tick. Java never splits one either:
+        // UriStatCollectingJob drains only the completed queue
+        // (AsyncQueueingUriStatStorage.java:188-189).
+        //
+        // Allocated before touching snapshot_: if this throws under memory
+        // pressure the member must stay intact — moving it out first would
+        // leave it null after the caller's catch, and the next
         // addSnapshot()/drainQueueShards() would dereference a null pointer.
-        auto fresh = std::make_unique<UrlStatSnapshot>();
+        auto taken = std::make_unique<UrlStatSnapshot>();
+        auto fresh = include_in_progress ? std::make_unique<UrlStatSnapshot>() : nullptr;
+
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        snapshot_.swap(fresh);
         // Every retained tick goes out in one message: PAgentUriStat carries a
         // repeated eachUriStat and each entry stamps its own tick, so draining
         // one snapshot per send token would have taken 4 send intervals to
         // clear a backlog the stream is finally able to accept.
         while (!completed_.empty()) {
-            fresh->merge(*completed_.front());
+            taken->merge(*completed_.front());
             completed_.pop_front();
         }
-        return fresh;
+        if (include_in_progress) {
+            // Shutdown flush: no later entry will ever arrive to cut this
+            // tick, so losing it outright is worse than shipping it partial.
+            // Swapped in a fresh snapshot rather than merging in place — a
+            // drained one keeps its tick_, and a stale high watermark would
+            // suppress the next cut in addLocked.
+            taken->merge(*snapshot_);
+            snapshot_ = std::move(fresh);
+        }
+        return taken;
     }
 
     int64_t TickClock::tick(const std::chrono::system_clock::time_point end_time) const {

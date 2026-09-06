@@ -211,10 +211,16 @@ namespace pinpoint {
 
         /// @brief Adds a runtime statistic to the current snapshot buffer.
         void addSnapshot(const UrlStatEntry* us, const Config& config);
-        /// @brief Extracts everything aggregated so far for transmission:
-        /// the ticks already cut into completed_ plus the in-progress one,
-        /// merged into a single snapshot.
-        std::unique_ptr<UrlStatSnapshot> takeSnapshot();
+        /// @brief Extracts the ticks already cut into completed_, merged
+        /// into a single snapshot. Empty when nothing was cut since the last
+        /// call — the caller must then send no message at all, the way Java's
+        /// UriStatCollectingJob stops on a null poll
+        /// (UriStatCollectingJob.java:52-55).
+        /// @param include_in_progress also takes the tick still being
+        /// collected, splitting it across two messages. Only the shutdown
+        /// flush passes true: nothing will arrive later to cut that tick, so
+        /// there it is split-or-lose rather than split-or-wait.
+        std::unique_ptr<UrlStatSnapshot> takeSnapshot(bool include_in_progress = false);
 
     private:
         static constexpr size_t kQueueShardCount = 16;

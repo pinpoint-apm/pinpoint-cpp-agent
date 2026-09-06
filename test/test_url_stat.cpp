@@ -658,8 +658,9 @@ TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {
     // Add to snapshot
     mock_agent_service_->getUrlStats().addSnapshot(&stat, config);
     
-    // Take snapshot
-    auto snapshot = mock_agent_service_->getUrlStats().takeSnapshot();
+    // Take snapshot. The entry's tick is still in progress and nothing has
+    // been cut, so only the shutdown flush form returns it.
+    auto snapshot = mock_agent_service_->getUrlStats().takeSnapshot(true);
     EXPECT_NE(snapshot.get(), nullptr) << "Snapshot should not be null";
     
     auto& stats = snapshot->getEachStats();
@@ -695,8 +696,9 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     url_stats.stopAddUrlStatsWorker();
     add_worker.join();
     
-    // Take snapshot and verify
-    auto snapshot = url_stats.takeSnapshot();
+    // Take snapshot and verify. All three entries share the tick in
+    // progress, so the flush form is what returns them.
+    auto snapshot = url_stats.takeSnapshot(true);
     auto& stats = snapshot->getEachStats();
 
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain processed stats";
@@ -1212,11 +1214,11 @@ TEST_F(UrlStatTest, TakeSnapshotReplacesWithFreshTest) {
     url_stats.addSnapshot(&stat, config);
 
     // First take should have entries
-    auto snapshot1 = url_stats.takeSnapshot();
+    auto snapshot1 = url_stats.takeSnapshot(true);
     EXPECT_FALSE(snapshot1->getEachStats().empty());
 
     // Second take (without adding new stats) should be empty
-    auto snapshot2 = url_stats.takeSnapshot();
+    auto snapshot2 = url_stats.takeSnapshot(true);
     EXPECT_TRUE(snapshot2->getEachStats().empty()) << "Fresh snapshot after take should be empty";
 }
 
@@ -1322,13 +1324,13 @@ TEST_F(UrlStatTest, TickClockBucketsByInjectedTickInterval) {
     UrlStats fine_stats(mock_agent_service_.get(), std::chrono::seconds(1));
     fine_stats.addSnapshot(&first, *config);
     fine_stats.addSnapshot(&second, *config);
-    EXPECT_EQ(fine_stats.takeSnapshot()->getEachStats().size(), 2u);
+    EXPECT_EQ(fine_stats.takeSnapshot(true)->getEachStats().size(), 2u);
 
     // Production 30s ticks: the same samples aggregate into one bucket.
     UrlStats coarse_stats(mock_agent_service_.get());
     coarse_stats.addSnapshot(&first, *config);
     coarse_stats.addSnapshot(&second, *config);
-    EXPECT_EQ(coarse_stats.takeSnapshot()->getEachStats().size(), 1u);
+    EXPECT_EQ(coarse_stats.takeSnapshot(true)->getEachStats().size(), 1u);
 }
 
 // ========== Tick-boundary snapshots, limit drops, method prefix ==========
@@ -1391,7 +1393,7 @@ TEST_F(UrlStatTest, LimitStaysPerTickWhileSendingIsBlocked) {
         }
     }
 
-    const auto snapshot = url_stats.takeSnapshot();
+    const auto snapshot = url_stats.takeSnapshot(true);
     std::unordered_map<int64_t, int> per_tick;
     for (const auto& [key, unused] : snapshot->getEachStats()) {
         per_tick[key.tick_]++;
@@ -1419,7 +1421,7 @@ TEST_F(UrlStatTest, StragglerForCutTickIsFoldedBackOnSend) {
     add_at(url_stats, *config, "/api/next", 1001);       // cuts tick 1000
     add_at(url_stats, *config, "/api/straggler", 1000);  // late arrival for tick 1000
 
-    const auto snapshot = url_stats.takeSnapshot();
+    const auto snapshot = url_stats.takeSnapshot(true);
     const auto& stats = snapshot->getEachStats();
     ASSERT_EQ(stats.size(), 2u) << "the straggler must not open a third key";
     const auto found = stats.find(UrlKey{"/api/straggler", 1000000});
@@ -1462,7 +1464,7 @@ TEST_F(UrlStatLogTest, CompletedSnapshotQueueDropsOldestAndReports) {
         add_at(url_stats, *config, "/api/tick" + std::to_string(t), 1000 + t);
     }
 
-    const auto snapshot = url_stats.takeSnapshot();
+    const auto snapshot = url_stats.takeSnapshot(true);
     const auto& stats = snapshot->getEachStats();
     EXPECT_EQ(stats.size(), 5u) << "4 retained ticks + the one in progress";
     EXPECT_EQ(stats.find(UrlKey{"/api/tick0", 1000000}), stats.end()) << "the oldest tick goes first";
@@ -1500,6 +1502,104 @@ TEST_F(UrlStatTest, MethodPrefixIsSkippedForEmptyMethod) {
     with_method.end_time_ = no_method.end_time_;
     snapshot.add(&with_method, config, tick_clock);
     EXPECT_NE(stats.find(UrlKey{"GET /api/users", 400000}), stats.end());
+}
+
+
+// ========== Completed-tick-only sends ==========
+
+// The split-send regression. tick and send intervals are both 30s but free
+// running, so a send lands mid-tick roughly always. Taking the tick in
+// progress put half of it in one message and half in the next: the server
+// sums the counts back up, but the per-tick max and the total/count average
+// are computed per message, so one tick reported two maxima and two averages.
+TEST_F(UrlStatTest, SendsInsideOneTickDoNotSplitIt) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(30));
+    const UrlKey split_key{"/api/split", 0};
+
+    // Two samples inside tick 0, with a send between them.
+    add_at(url_stats, *config, "/api/split", 1);
+    const auto first = url_stats.takeSnapshot();
+    add_at(url_stats, *config, "/api/split", 20);
+    // The first entry of tick 30000 closes tick 0.
+    add_at(url_stats, *config, "/api/other", 40);
+    const auto second = url_stats.takeSnapshot();
+
+    int messages_carrying_the_key = 0;
+    for (const auto* snapshot : {first.get(), second.get()}) {
+        if (snapshot->getEachStats().count(split_key) != 0) {
+            messages_carrying_the_key++;
+        }
+    }
+    EXPECT_EQ(messages_carrying_the_key, 1)
+        << "one (uri, tick) key must never be spread across two messages";
+
+    EXPECT_TRUE(first->empty()) << "a send before the tick closed has nothing completed to carry";
+    const auto found = second->getEachStats().find(split_key);
+    ASSERT_NE(found, second->getEachStats().end());
+    EXPECT_EQ(found->second.total.total(), 20) << "both samples must arrive in the same message";
+    EXPECT_EQ(found->second.total.histogram(0), 2);
+}
+
+// An idle agent used to send an empty PAgentUriStat once per send interval.
+TEST_F(UrlStatTest, NoTrafficLeavesNothingToSend) {
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+
+    for (int send = 0; send < 3; send++) {
+        EXPECT_TRUE(url_stats.takeSnapshot()->empty())
+            << "send " << send << " has no completed tick, so there is no message to build";
+    }
+}
+
+// The boundary case: once a tick is cut, the very next send carries all of it
+// and nothing of the tick that replaced it.
+TEST_F(UrlStatTest, CutTickGoesOutWholeInTheNextMessage) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    add_at(url_stats, *config, "/api/a", 1000);
+    add_at(url_stats, *config, "/api/b", 1000);
+    add_at(url_stats, *config, "/api/a", 1000);
+    add_at(url_stats, *config, "/api/a", 1001);  // cuts tick 1000
+
+    const auto snapshot = url_stats.takeSnapshot();
+    const auto& stats = snapshot->getEachStats();
+    ASSERT_EQ(stats.size(), 2u) << "only tick 1000's two keys";
+    for (const auto& [key, unused] : stats) {
+        EXPECT_EQ(key.tick_, 1000000) << "the tick still in progress must stay behind";
+    }
+    const auto found = stats.find(UrlKey{"/api/a", 1000000});
+    ASSERT_NE(found, stats.end());
+    EXPECT_EQ(found->second.total.total(), 20) << "every sample of the cut tick, and only those";
+}
+
+// Nothing arrives after shutdown to cut the tick in progress, so there it is
+// split-or-lose: the flush form takes it, once, on the way out.
+TEST_F(UrlStatTest, ShutdownFlushTakesTheTickStillInProgress) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
+    add_at(url_stats, *config, "/api/done", 1000);
+    add_at(url_stats, *config, "/api/live", 1001);  // cuts tick 1000, opens 1001
+
+    const auto regular = url_stats.takeSnapshot();
+    ASSERT_EQ(regular->getEachStats().size(), 1u);
+    EXPECT_NE(regular->getEachStats().find(UrlKey{"/api/done", 1000000}),
+              regular->getEachStats().end());
+
+    const auto flushed = url_stats.takeSnapshot(true);
+    ASSERT_EQ(flushed->getEachStats().size(), 1u) << "the trailing tick must go out last, not be stranded";
+    EXPECT_NE(flushed->getEachStats().find(UrlKey{"/api/live", 1001000}),
+              flushed->getEachStats().end());
+
+    EXPECT_TRUE(url_stats.takeSnapshot(true)->empty()) << "the flush must leave nothing behind";
 }
 
 } // namespace pinpoint

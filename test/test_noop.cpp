@@ -423,7 +423,9 @@ TEST_F(NoopTest, UnsampledSpanRuntimeUrlStatSinkBypassesAgentTest) {
     add_worker.join();
     mock_agent_service_->setExiting(false);
 
-    auto snapshot = runtime->url_stats->takeSnapshot();
+    // The flush form: the entry's tick is still in progress, and only a
+    // newer tick's first entry (or shutdown) cuts it.
+    auto snapshot = runtime->url_stats->takeSnapshot(true);
     ASSERT_NE(snapshot.get(), nullptr);
     EXPECT_FALSE(snapshot->getEachStats().empty())
         << "the entry must actually reach the runtime's sink";

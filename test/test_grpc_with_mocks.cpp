@@ -724,6 +724,7 @@ public:
         std::lock_guard<std::mutex> lock(stats_queue_mutex_);
         return stats_queue_;
     }
+    GrpcStreamStatus nextWriteForTest() { return next_write(); }
 
 private:
     // Toggled by the test body while the worker thread polls readyChannel();
@@ -1364,8 +1365,36 @@ TEST_F(GrpcMockTest, GrpcStatsStallCoalescesTokensAndKeepsProducerData) {
     mock_agent_service_->getAgentStats().collectAgentStat(agent_snapshot);
     EXPECT_EQ(agent_snapshot.num_sample_new_, 1)
         << "a stalled stream must not reset the AgentStats counters";
-    EXPECT_EQ(mock_agent_service_->getUrlStats().takeSnapshot()->getEachStats().size(), 1U)
+    EXPECT_EQ(mock_agent_service_->getUrlStats().takeSnapshot(true)->getEachStats().size(), 1U)
         << "a stalled stream must not discard the URL snapshot";
+}
+
+// No traffic must produce no message at all, not an empty PAgentUriStat every
+// send interval. Java stops as soon as its completed queue polls null
+// (UriStatCollectingJob.java:52-55); an idle agent sent nothing there and
+// sends nothing here.
+TEST_F(GrpcMockTest, GrpcStatsSendsNoMessageWhenNoUrlStatTickCompleted) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+
+    stats_client.enqueueStats(URL_STATS);
+    EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_CONTINUE)
+        << "an idle agent must not put an empty uri stat message on the stream";
+    EXPECT_TRUE(stats_client.queuedStatsForTest().empty()) << "the token is still consumed";
+
+    // A completed tick, on the other hand, is written. Two entries a tick
+    // apart: the second cuts the first one's tick into the completed queue.
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+    for (const int64_t second : {1000, 1030}) {
+        UrlStatEntry entry{"/api/live", "GET", 200};
+        entry.elapsed_ = 10;
+        entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(second));
+        url_stats.addSnapshot(&entry, *config);
+    }
+
+    stats_client.enqueueStats(URL_STATS);
+    EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_WRITE)
+        << "a completed tick must still be written";
 }
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {
