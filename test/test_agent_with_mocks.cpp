@@ -611,6 +611,35 @@ TEST_F(AgentImplTest, PrepareSqlUidCoversNormalizedSqlPastMetadataCap) {
     EXPECT_EQ(prepared->sql->parameters, "7");
 }
 
+// A statement past Sql.CacheLengthLimit misses the uid cache on every use, so
+// the meta it enqueues each time must not carry the whole text; and releasing
+// such a meta (retry exhaustion) has nothing to evict, so it must leave the
+// cached entries alone. A cached statement's release still evicts its entry.
+TEST_F(AgentImplTest, RemoveCacheSqlUidHandlesBypassedAndCachedStatements) {
+    const std::string long_sql = "SELECT " + std::string(70000, 'a') + " FROM t";
+    constexpr std::string_view short_sql = "SELECT 1 FROM t";
+
+    const auto long_uid = agent_->cacheSqlUid(long_sql);
+    const auto short_uid = agent_->cacheSqlUid(short_sql);
+    ASSERT_TRUE(long_uid.has_value());
+    ASSERT_TRUE(short_uid.has_value());
+
+    // What cacheSqlUid enqueued for the bypassed statement.
+    const SqlUidMeta bypassed(*long_uid, long_sql, /*cached=*/false);
+    EXPECT_LE(bypassed.sql_.size(), kMaxSqlMetaLength + 16);
+    EXPECT_TRUE(bypassed.cache_key_.empty());
+    agent_->removeCacheSqlUid(bypassed);
+    EXPECT_EQ(*long_uid, *agent_->cacheSqlUid(long_sql));
+    EXPECT_EQ(*short_uid, *agent_->cacheSqlUid(short_sql));
+
+    // The cached statement's meta keeps its key, and its release evicts.
+    const SqlUidMeta cached(*short_uid, short_sql);
+    EXPECT_EQ(cached.cache_key_, short_sql);
+    agent_->removeCacheSqlUid(cached);
+    EXPECT_EQ(*short_uid, *agent_->cacheSqlUid(short_sql))
+        << "re-registration reuses the content-hash UID";
+}
+
 TEST_F(AgentImplTest, PrepareSqlReturnsNulloptWhenAgentDisabled) {
     // Shutdown() clears enabled_; prepareSql must then short-circuit to nullopt
     // for both namespaces instead of normalizing or touching the caches.

@@ -1106,6 +1106,8 @@ TEST_F(SqlUidCacheTest, LengthLimitBypassesStorageAndReportsEveryUseAsNew) {
     const auto first = cache.get(long_sql);
     const auto second = cache.get(long_sql);
 
+    EXPECT_TRUE(cache.bypasses(long_sql));
+    EXPECT_FALSE(cache.bypasses(std::string(2047, 'a')));
     EXPECT_FALSE(first.found);
     EXPECT_FALSE(second.found) << "the entry must not have been cached";
     EXPECT_EQ(first.value, second.value)

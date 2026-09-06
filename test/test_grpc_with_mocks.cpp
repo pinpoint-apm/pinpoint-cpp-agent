@@ -1767,10 +1767,12 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 4u);
 }
 
-// The queued metadata keeps the whole normalized SQL — it is the id/uid cache
+// The queued StringMeta keeps the whole normalized SQL — it is the id cache
 // key the eviction paths above look up — and only the transmitted copy is
 // abbreviated, where Java's SqlCacheService abbreviates it: first
-// kMaxSqlMetaLength bytes plus a "...(<original length>)" suffix.
+// kMaxSqlMetaLength bytes plus a "...(<original length>)" suffix. SqlUidMeta
+// abbreviates on construction and keeps the cache key apart; the wire copy
+// comes out the same.
 TEST_F(GrpcMockTest, GrpcMetadataAbbreviatesSqlOverMetadataCapOnTheWire) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 

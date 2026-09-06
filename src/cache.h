@@ -779,12 +779,17 @@ namespace pinpoint {
          * @return Cache result containing UID bytes and whether the entry existed.
          */
         SqlUidCacheResult get(std::string_view key) {
-            if (key.size() >= cache_length_limit_) {
+            if (bypasses(key)) {
                 return SqlUidCacheResult{generate_sql_uid(key), false};
             }
             return cache_.get(key, [&key]() {
                 return generate_sql_uid(key);
             });
+        }
+
+        /// @brief Whether get() refuses to store @p key (Sql.CacheLengthLimit).
+        bool bypasses(std::string_view key) const noexcept {
+            return key.size() >= cache_length_limit_;
         }
 
         /**

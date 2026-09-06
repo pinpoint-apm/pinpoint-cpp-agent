@@ -499,13 +499,24 @@ namespace pinpoint {
             : id_(id), str_val_(str_val), type_(type) {}
     };
 
-    /// @brief Metadata describing a cached SQL UID.
+    /// @brief Metadata describing a SQL UID.
+    ///
+    /// `sql_` is the transmitted copy, abbreviated to kMaxSqlMetaLength up
+    /// front (where Java's SqlCacheService abbreviates it). `cache_key_` is
+    /// the whole normalized SQL the uid cache stored under, which is what
+    /// removeCacheSqlUid() evicts by; it is left empty when the cache bypassed
+    /// the statement (Sql.CacheLengthLimit), since there is no entry to evict
+    /// then. Either way a queued item holds at most
+    /// max(kMaxSqlMetaLength, Sql.CacheLengthLimit) bytes of SQL instead of
+    /// the normalizer's 1 MiB worth.
     struct SqlUidMeta {
         SqlUid uid_;
         std::string sql_;
+        std::string cache_key_;
 
-        SqlUidMeta(SqlUid uid, std::string_view sql)
-            : uid_(uid), sql_(sql) {}
+        SqlUidMeta(SqlUid uid, std::string_view sql, bool cached = true)
+            : uid_(uid), sql_(abbreviateString(sql, kMaxSqlMetaLength)),
+              cache_key_(cached ? std::string(sql) : std::string()) {}
     };
 
     /// @brief Metadata bundle carrying exception call stacks for a span.

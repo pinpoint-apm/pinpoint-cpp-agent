@@ -758,10 +758,12 @@ namespace pinpoint {
                     call->operation_name = "sql uid";
                     auto* request = google::protobuf::Arena::Create<v1::PSqlUidMetaData>(&call->arena);
                     request->set_sqluid(std::string(value.uid_.begin(), value.uid_.end()));
-                    // As above: the UID was generated from the whole
-                    // normalized SQL, which SqlUidMeta still carries as the
-                    // uid cache key, and only this copy is abbreviated.
-                    request->set_sql(toValidUtf8(abbreviateString(value.sql_, kMaxSqlMetaLength)));
+                    // SqlUidMeta abbreviated sql_ on construction (the uid
+                    // cache key it evicts by lives in cache_key_). Do not
+                    // abbreviate again: the "...(<length>)" suffix puts an
+                    // abbreviated copy past the cap, and a second cut would
+                    // eat the real length.
+                    request->set_sql(toValidUtf8(value.sql_));
                     async_stub->RequestSqlUidMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
                     call->operation_name = "exception";

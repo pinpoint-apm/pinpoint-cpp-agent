@@ -1374,16 +1374,21 @@ namespace pinpoint {
             return uid;
         }
 
-        // Cold path (first time this SQL is seen): enqueue the UID for the collector.
-        auto meta = std::make_unique<MetaData>(SqlUidMeta(uid, sql));
+        // Cold path (first time this SQL is seen): enqueue the UID for the
+        // collector. A statement the cache bypassed has no entry to evict on
+        // send failure, so the meta carries no cache key for it — otherwise
+        // every use of a huge statement would park up to 1 MiB in the queue.
+        auto meta = std::make_unique<MetaData>(
+            SqlUidMeta(uid, sql, /*cached=*/!sql_uid_cache_->bypasses(sql)));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
         return uid;
     } CATCH_AND_LOG_RETURN("failed to cache sql uid meta:", std::nullopt)
 
     void AgentImpl::removeCacheSqlUid(const SqlUidMeta& sql_uid_meta) const try {
-        if (enabled_) {
-            sql_uid_cache_->remove(sql_uid_meta.sql_, sql_uid_meta.uid_);
+        // An empty key means the uid cache bypassed the statement: nothing to evict.
+        if (enabled_ && !sql_uid_meta.cache_key_.empty()) {
+            sql_uid_cache_->remove(sql_uid_meta.cache_key_, sql_uid_meta.uid_);
         }
     } CATCH_AND_LOG("failed to remove cached sql uid meta:")
 

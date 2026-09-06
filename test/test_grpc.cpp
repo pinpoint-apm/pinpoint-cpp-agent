@@ -344,6 +344,27 @@ TEST_F(GrpcTest, MetaDataSqlUidTest) {
     const auto& sql_uid_meta = std::get<SqlUidMeta>(meta_data);
     EXPECT_EQ(sql_uid_meta.uid_, uid);
     EXPECT_EQ(sql_uid_meta.sql_, "SELECT * FROM users");
+    EXPECT_EQ(sql_uid_meta.cache_key_, "SELECT * FROM users")
+        << "a cached statement keeps its whole key for removeCacheSqlUid()";
+}
+
+// A queued SqlUidMeta never holds the normalizer's 1 MiB worth of SQL: the
+// transmitted copy is abbreviated on construction (Java's SqlCacheService
+// abbreviates before SqlUidMetaDataService sends, 64 KiB per item), and a
+// statement the uid cache bypassed carries no cache key because there is no
+// entry to evict for it.
+TEST_F(GrpcTest, SqlUidMetaBoundsQueuedSqlOnCacheBypass) {
+    const SqlUid uid = {1, 2, 3, 4, 5};
+    const std::string long_sql(70000, 'a');
+
+    const SqlUidMeta bypassed(uid, long_sql, /*cached=*/false);
+    EXPECT_EQ(bypassed.sql_, abbreviateString(long_sql, kMaxSqlMetaLength));
+    EXPECT_LE(bypassed.sql_.size(), kMaxSqlMetaLength + 16);
+    EXPECT_TRUE(bypassed.cache_key_.empty());
+
+    const SqlUidMeta cached(uid, long_sql);
+    EXPECT_EQ(cached.sql_, bypassed.sql_);
+    EXPECT_EQ(cached.cache_key_, long_sql);
 }
 
 TEST_F(GrpcTest, MetaDataExceptionTest) {
