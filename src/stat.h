@@ -30,6 +30,7 @@
 
 #include "active_span.h"
 #include "agent_service.h"
+#include "grpc_builders.h"  // UNCOLLECTED_STAT_VALUE
 #include "utility.h"
 
 namespace pinpoint {
@@ -42,9 +43,15 @@ namespace pinpoint {
         int64_t    interval_{0};
         double     system_cpu_time_{0};
         double     process_cpu_time_{0};
-        int64_t    num_threads_{0};
-        int64_t    heap_alloc_size_{0};
-        int64_t    heap_max_size_{0};
+        // Thread count and resident memory, or -1 when the platform reading
+        // failed (Java's MemoryMetric UNCOLLECTED_VALUE; TotalThreadMetric
+        // omits the message instead, Go sends -1 like we do). Defaulted to
+        // the sentinel so a /proc that is unmounted or hidepid-restricted
+        // never plots as a measured 0 in Inspector's Heap Usage and Thread
+        // Count charts.
+        int64_t    num_threads_{UNCOLLECTED_STAT_VALUE};
+        int64_t    heap_alloc_size_{UNCOLLECTED_STAT_VALUE};
+        int64_t    heap_max_size_{UNCOLLECTED_STAT_VALUE};
         int64_t    response_time_avg_{0};
         int64_t    response_time_max_{0};
         int64_t    num_sample_new_{0};
@@ -59,7 +66,7 @@ namespace pinpoint {
         // what Java's FileDescriptorMetric reports on unsupported platforms).
         // Defaulted to the sentinel so a snapshot slot never travels as a 0
         // the UI would plot as "no files open".
-        int64_t    open_fd_count_{-1};
+        int64_t    open_fd_count_{UNCOLLECTED_STAT_VALUE};
     };
 
     /// @brief Worker responsible for periodically sending agent statistics to the collector.
@@ -120,10 +127,14 @@ namespace pinpoint {
         void collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms);
         void resetAgentStats();
 
+        // Each field starts as the uncollected sentinel and is overwritten
+        // only by a successful reading, so a partial failure (macOS
+        // task_info vs task_threads, a /proc/self/status missing a line)
+        // reports -1 for exactly the fields it could not collect.
         struct ProcessStatus {
-            int64_t heap_alloc;
-            int64_t heap_max;
-            int64_t num_threads;
+            int64_t heap_alloc{UNCOLLECTED_STAT_VALUE};
+            int64_t heap_max{UNCOLLECTED_STAT_VALUE};
+            int64_t num_threads{UNCOLLECTED_STAT_VALUE};
         };
 
         /**

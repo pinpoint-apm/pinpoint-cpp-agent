@@ -68,7 +68,11 @@ TEST_F(StatTest, CollectAgentStatTest) {
         << "System CPU time should be non-negative or NaN";
     EXPECT_TRUE(snapshot.process_cpu_time_ >= 0.0 || std::isnan(snapshot.process_cpu_time_)) 
         << "Process CPU time should be non-negative or NaN";
-    EXPECT_GE(snapshot.num_threads_, 0) << "Number of threads should be non-negative";
+    // A live process has at least this thread and some resident memory, so a
+    // working reading is > 0; -1 is the uncollected sentinel.
+    EXPECT_GT(snapshot.num_threads_, 0) << "thread count must be collected on this platform";
+    EXPECT_GT(snapshot.heap_alloc_size_, 0) << "resident memory must be collected on this platform";
+    EXPECT_GT(snapshot.heap_max_size_, 0) << "peak resident memory must be collected on this platform";
     // The test binary itself holds stdin/stdout/stderr at minimum, so a
     // working reading is > 0; -1 is the uncollected sentinel and 0 would mean
     // the reader returned a bogus count instead of failing cleanly.
@@ -126,15 +130,22 @@ TEST(ProcStatusParseTest, HeapMaxComesFromVmHWMNotVmPeak) {
     EXPECT_EQ(status.num_threads, 7);
 }
 
-// Missing fields stay 0 rather than picking up a neighbouring line's value,
-// and the last line needs no trailing newline to be parsed.
-TEST(ProcStatusParseTest, MissingFieldsStayZero) {
+// Missing fields stay at the uncollected sentinel (-1, as Java's
+// MemoryMetric reports) rather than 0 or a neighbouring line's value, and
+// the last line needs no trailing newline to be parsed.
+TEST(ProcStatusParseTest, MissingFieldsStayUncollected) {
     const auto status = AgentStats::parseProcStatus("Name:\tpinpoint\nVmRSS:\t   1024 kB");
 
     EXPECT_EQ(status.heap_alloc, 1024LL * 1024);
-    EXPECT_EQ(status.heap_max, 0) << "no VmHWM line means no peak reading";
-    EXPECT_EQ(status.num_threads, 0);
-    EXPECT_EQ(AgentStats::parseProcStatus("").heap_max, 0);
+    EXPECT_EQ(status.heap_max, UNCOLLECTED_STAT_VALUE) << "no VmHWM line means no peak reading";
+    EXPECT_EQ(status.num_threads, UNCOLLECTED_STAT_VALUE);
+
+    // An unreadable /proc/self/status (unmounted, hidepid) yields no text at
+    // all: every field must travel as -1, never as a measured 0.
+    const auto empty = AgentStats::parseProcStatus("");
+    EXPECT_EQ(empty.heap_alloc, UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(empty.heap_max, UNCOLLECTED_STAT_VALUE);
+    EXPECT_EQ(empty.num_threads, UNCOLLECTED_STAT_VALUE);
 }
 
 // collectInterval must be the gap actually measured between collections, not
@@ -838,9 +849,6 @@ TEST_F(StatTest, SnapshotDefaultInitTest) {
     EXPECT_EQ(snapshot.sample_time_, 0);
     EXPECT_DOUBLE_EQ(snapshot.system_cpu_time_, 0.0);
     EXPECT_DOUBLE_EQ(snapshot.process_cpu_time_, 0.0);
-    EXPECT_EQ(snapshot.num_threads_, 0);
-    EXPECT_EQ(snapshot.heap_alloc_size_, 0);
-    EXPECT_EQ(snapshot.heap_max_size_, 0);
     EXPECT_EQ(snapshot.response_time_avg_, 0);
     EXPECT_EQ(snapshot.response_time_max_, 0);
     EXPECT_EQ(snapshot.num_sample_new_, 0);
@@ -849,8 +857,11 @@ TEST_F(StatTest, SnapshotDefaultInitTest) {
     EXPECT_EQ(snapshot.num_unsample_cont_, 0);
     EXPECT_EQ(snapshot.num_skip_new_, 0);
     EXPECT_EQ(snapshot.num_skip_cont_, 0);
-    EXPECT_EQ(snapshot.open_fd_count_, -1)
-        << "an uncollected fd count must default to the sentinel, not 0";
+    // Uncollected sentinels, not 0: a 0 would plot as a real measurement.
+    EXPECT_EQ(snapshot.open_fd_count_, -1);
+    EXPECT_EQ(snapshot.num_threads_, -1);
+    EXPECT_EQ(snapshot.heap_alloc_size_, -1);
+    EXPECT_EQ(snapshot.heap_max_size_, -1);
     for (int i = 0; i < 4; i++) {
         EXPECT_EQ(snapshot.active_requests_[i], 0);
     }

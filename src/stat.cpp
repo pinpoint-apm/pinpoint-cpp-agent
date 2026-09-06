@@ -186,7 +186,7 @@ namespace pinpoint {
     // used almost no memory. macOS reads resident_size/resident_size_max for
     // the same reason.
     AgentStats::ProcessStatus AgentStats::parseProcStatus(std::string_view status_text) {
-        ProcessStatus status{0, 0, 0};
+        ProcessStatus status{};
 
         while (!status_text.empty()) {
             const auto eol = status_text.find('\n');
@@ -259,7 +259,7 @@ namespace pinpoint {
     }
 
     AgentStats::ProcessStatus AgentStats::getProcessStatus() {
-        ProcessStatus status{0, 0, 0};
+        ProcessStatus status{};
 
 #ifdef __APPLE__
         // Resident set size (current and peak) via Mach task_info.
