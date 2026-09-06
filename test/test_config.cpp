@@ -1902,7 +1902,7 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
         "Collector:\n"
         "  GrpcHost: localhost\n";
 
-    // Missing apiKey -> unresolved (serviceName alone defaults, see below).
+    // Missing apiKey and serviceName -> unresolved.
     set_config_string(base);
     auto missing = make_config();
     ASSERT_NE(missing, nullptr);
@@ -1910,13 +1910,12 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
     EXPECT_FALSE(missing->identity_resolved_);
     EXPECT_FALSE(missing->check());
 
-    // Missing serviceName -> resolved with the "DEFAULT" fallback.
+    // Missing serviceName -> unresolved (required for v4, no "DEFAULT" fallback).
     set_config_string(base + "ApiKey: secret\n");
-    auto defaulted = make_config();
-    ASSERT_NE(defaulted, nullptr);
-    EXPECT_TRUE(defaulted->identity_resolved_);
-    EXPECT_EQ(defaulted->service_name_, "DEFAULT");
-    EXPECT_TRUE(defaulted->check());
+    auto no_service = make_config();
+    ASSERT_NE(no_service, nullptr);
+    EXPECT_FALSE(no_service->identity_resolved_);
+    EXPECT_FALSE(no_service->check());
 
     // Full v4 identity -> resolved, agent id is a 22-char base64 UUID.
     set_config_string(base + "ServiceName: my-service\nApiKey: secret\n");

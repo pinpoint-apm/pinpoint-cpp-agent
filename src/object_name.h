@@ -49,7 +49,6 @@ namespace pinpoint {
 
         // Default ServiceName used by v4 when none is configured
         // (Java ServiceUid.DEFAULT_SERVICE_UID_NAME).
-        constexpr const char* DEFAULT_SERVICE_NAME = "DEFAULT";
 
         // ObjectName versions (Java ObjectName.VERSION_V1 / VERSION_V4).
         constexpr int VERSION_V1 = 1;

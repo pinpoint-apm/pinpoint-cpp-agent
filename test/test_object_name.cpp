@@ -293,14 +293,14 @@ TEST(ResolveV4, AgentNameDefaultsToBase64AgentId) {
     EXPECT_EQ(obj->agent_name, obj->agent_id);
 }
 
-TEST(ResolveV4, ServiceNameDefaultsWhenUnset) {
+TEST(ResolveV4, MissingServiceNameFails) {
+    // Required like Java's ObjectNameResolverV4 and the Go agent: no "DEFAULT"
+    // fallback, since that would register the agent under the wrong service.
     ObjectNameInput in;
     in.application_name = "test-app";
     in.api_key = "secret-key";
 
-    const auto obj = resolve_object_name(NameVersion::kV4, in);
-    ASSERT_TRUE(obj.has_value());
-    EXPECT_EQ(obj->service_name, object_name::DEFAULT_SERVICE_NAME);
+    EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value());
 }
 
 TEST(ResolveV4, InvalidServiceNameFails) {
