@@ -199,11 +199,12 @@ TEST_F(SamplingTest, PercentSamplerTruncatesFractionalRateTest) {
 }
 
 // Truncation disables every rate below one hundredth-of-a-percent — including
-// 0.006, which the previous rounding kept alive at 1/MAX_PERCENT_RATE. Nothing
-// the config accepts lands there: make_config() raises a non-negative
-// PercentRate below 0.01 up to 0.01, and 0.01 * 100 is exactly 1.0, so the
-// lowest accepted rate still samples. Only a rate constructed directly, past
-// that validation, can truncate to disabled.
+// 0.006, which the previous rounding kept alive at 1/MAX_PERCENT_RATE. The
+// config passes such a rate straight through (it warns, it does not raise it),
+// so this is a reachable configuration and it means never-sample, exactly as
+// Java's parseSamplingRate + createSampler resolve it
+// (PercentSamplerFactory.java:40-48,56-58). 0.01 * 100 is exactly 1.0, so the
+// smallest rate that survives truncation still samples.
 TEST_F(SamplingTest, PercentSamplerTruncatesSubHundredthRateToDisabledTest) {
     for (const double rate : {0.004, 0.006, 0.009}) {
         PercentSampler truncates_to_zero(rate);
@@ -214,8 +215,9 @@ TEST_F(SamplingTest, PercentSamplerTruncatesSubHundredthRateToDisabledTest) {
         }
     }
 
-    // 0.01% is the config minimum and stays enabled, sampling exactly once per
-    // MAX_PERCENT_RATE.
+    // 0.01% is the smallest rate that survives truncation and stays enabled,
+    // sampling exactly once per MAX_PERCENT_RATE. Removing the config floor must
+    // not break it.
     PercentSampler smallest_enabled(0.01);
     int true_count = 0;
     for (int i = 0; i < MAX_PERCENT_RATE; ++i) {

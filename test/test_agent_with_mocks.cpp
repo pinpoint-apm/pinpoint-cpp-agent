@@ -1208,6 +1208,40 @@ TEST(AgentReloadTest, UnchangedSamplingConfigKeepsSamplerCounterAcrossReloads) {
     agent->Shutdown();
 }
 
+// Reloading PercentRate to 0 must actually stop collecting, and reloading back
+// must resume. `0` used to be raised to 0.01 by make_config(), so an operator
+// turning sampling off mid-incident kept getting traces at 0.01%.
+TEST(AgentReloadTest, PercentRateZeroReloadStopsAndResumesSampling) {
+    auto percent_cfg = [](const double rate) {
+        auto cfg = make_test_config();
+        cfg->sampling.type = std::string(PERCENT_SAMPLING);
+        cfg->sampling.percent_rate = rate;
+        return cfg;
+    };
+
+    auto agent = make_test_agent(percent_cfg(50.0));
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
+
+    // 50% admits on a remainder in (0, rate], so requests 1, 3, 5, ...
+    EXPECT_TRUE(agent->NewSpan("op", "/1")->IsSampled());
+    EXPECT_FALSE(agent->NewSpan("op", "/2")->IsSampled());
+
+    agent->reloadConfig(percent_cfg(0.0));
+    for (int i = 0; i < 100; ++i) {
+        ASSERT_FALSE(agent->NewSpan("op", "/off")->IsSampled())
+            << "request " << i << ": PercentRate 0 must sample nothing";
+    }
+
+    // Back to 50%: the rate change rebuilds the sampler, so the counter starts
+    // over and the next request is sampled again.
+    agent->reloadConfig(percent_cfg(50.0));
+    EXPECT_TRUE(agent->NewSpan("op", "/back-1")->IsSampled());
+    EXPECT_FALSE(agent->NewSpan("op", "/back-2")->IsSampled());
+    EXPECT_TRUE(agent->NewSpan("op", "/back-3")->IsSampled());
+
+    agent->Shutdown();
+}
+
 // Same contract for the exception-chain limiter (Go's newExceptionLimiter): a
 // rebuilt token bucket is a full second of new chains, so a reload landing in
 // an error storm would lift the cap it exists to enforce.

@@ -592,6 +592,8 @@ namespace pinpoint {
 
     constexpr int MIN_PORT = 1;
     constexpr int MAX_PORT = 65535;
+    // Not a floor the config clamps to — the smallest rate that survives
+    // PercentSampler's truncation. Below it, percent sampling is off.
     constexpr double MIN_SAMPLING_PERCENT_RATE = 0.01;
     constexpr double MAX_SAMPLING_PERCENT_RATE = 100.0;
     constexpr int MIN_SPAN_QUEUE_SIZE = 1;
@@ -790,14 +792,31 @@ namespace pinpoint {
         }
 
         at_least(config->sampling.counter_rate, 0, 0, "sampling counter rate");
+        // Three outcomes, matching Java's PercentSamplerFactory.createSampler()
+        // (PercentSamplerFactory.java:40-48): <= 0 never samples (FalseSampler),
+        // >= 100 always samples (TrueSampler), and everything between runs the
+        // percent sampler on the truncated rate (parseSamplingRate,
+        // PercentSamplerFactory.java:56-58). Nothing is raised to a minimum
+        // here: PercentSampler's truncation is the first branch, and
+        // isSampled()'s `rate_ <= 0` / `rate_ >= MAX_PERCENT_RATE` guards are
+        // the other two.
+        //
+        // Log level differs by intent. A rate of 0 or below is a deliberate
+        // "off" switch, so it is INFO, not a warning about a mistake. A
+        // positive rate below 0.01 is different: the operator asked for
+        // sampling and truncation silently gives them none, so that one keeps
+        // the warning. Java truncates the same way without saying anything;
+        // telling the operator costs one line and saves a support ticket.
         if (config->sampling.percent_rate < 0.0) {
-            LOG_WARN("sampling percent rate {} is invalid, using default: {}",
-                     config->sampling.percent_rate, 0.0);
+            LOG_INFO("sampling percent rate {} is not positive, disabling percent sampling",
+                     config->sampling.percent_rate);
             config->sampling.percent_rate = 0.0;
+        } else if (config->sampling.percent_rate == 0.0) {
+            LOG_INFO("sampling percent rate is 0, percent sampling is disabled");
         } else if (config->sampling.percent_rate < MIN_SAMPLING_PERCENT_RATE) {
-            LOG_WARN("sampling percent rate {} is below minimum, clamping to: {}",
+            LOG_WARN("sampling percent rate {} is below {} and truncates to 0, "
+                     "so no new transaction will be sampled",
                      config->sampling.percent_rate, MIN_SAMPLING_PERCENT_RATE);
-            config->sampling.percent_rate = MIN_SAMPLING_PERCENT_RATE;
         } else if (config->sampling.percent_rate > MAX_SAMPLING_PERCENT_RATE) {
             LOG_WARN("sampling percent rate {} exceeds maximum, clamping to: {}",
                      config->sampling.percent_rate, MAX_SAMPLING_PERCENT_RATE);

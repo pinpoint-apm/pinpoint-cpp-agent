@@ -212,7 +212,7 @@ What the collector receives in each `PAgentStat` row, since the C++ agent has no
 |---|---|---|---|---|
 | `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). `"COUNTING"` — the Java agent's name for the same mode — is accepted as an alias for `"COUNTER"`. An unrecognised value logs a warning and falls back to `"COUNTER"`. |
 | `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions, starting with the first one. `0` = disable. |
-| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | Negative values become `0` (never sample); non-negative values below `0.01` — including exactly `0` — become `0.01`; values above `100` become `100`. To disable percent sampling, use a negative value, not `0`. |
+| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | `0` or below = never sample (percent sampling off); values above `100` become `100` = always sample. A positive rate below `0.01` truncates to `0`, so it never samples either — the agent logs a warning for it. Matches the Java agent's `PercentSamplerFactory.createSampler` (`PercentSamplerFactory.java:40-48,56-58`). |
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
@@ -230,7 +230,9 @@ The counter is tested **before** it is incremented, so the first transaction aft
 
 Truncation is an artifact of IEEE-754, not a policy: `0.29 * 100` is `28.999999999999996`, so the cast drops a hundredth. This agent rounded to nearest for a while, on the argument that it hands the operator back the rate they typed. That was reverted — one configuration file deployed across a polyglot fleet should produce one sampling rate, and a hundredth of a percentage point is not worth being the one agent that disagrees.
 
-The practical effect is nil for an integer rate (`1.0`, `10.0`, `100.0` are exact) and at most one hundredth of a percentage point otherwise — the resolution of the setting itself, since `0.01` is the minimum accepted rate. `0.01 * 100` is exactly `1.0`, so no rate the config accepts truncates to "never sample".
+The practical effect is nil for an integer rate (`1.0`, `10.0`, `100.0` are exact) and at most one hundredth of a percentage point otherwise — the resolution of the setting itself. `0.01 * 100` is exactly `1.0`, so `0.01` is the smallest rate that still samples; anything positive below it truncates to `0` and samples nothing, which is what Java does as well (`parseSamplingRate` truncates, then `createSampler` sends a non-positive rate to `FalseSampler`). The agent logs a warning in that case, since an operator who typed a rate meant to get some sampling.
+
+`PercentRate: 0` — or any negative value — means **never sample**, not "sample a little": it produces the same outcome as Java's `FalseSampler` (`PercentSamplerFactory.java:40-42`). Releases up to and including v2.0.0 raised `0` to `0.01`; see the [changelog](../CHANGELOG.md).
 
 The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, like Java's `PercentRateSampler`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup — or after a config reload that changes `Sampling.*` — is always sampled. `PercentRate: 100` is short-circuited to always-sample, which is where Java uses a separate `TrueSampler`.
 

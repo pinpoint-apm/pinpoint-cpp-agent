@@ -17,6 +17,7 @@
 #include "../src/config.h"
 #include "../src/logging.h"
 #include "../src/object_name.h"
+#include "../src/sampling.h"
 #include <gtest/gtest.h>
 #include <string>
 #include <filesystem>
@@ -882,15 +883,18 @@ TEST_F(ConfigTest, ValueValidationTest) {
 
 // Test edge case percent rates
 TEST_F(ConfigTest, PercentRateEdgeCasesTest) {
-    // Test very small percent rate
+    // A positive rate below 0.01 is left as configured — it is not raised to a
+    // minimum. PercentSampler truncates it to 0, which is never-sample, the
+    // same thing Java's parseSamplingRate + createSampler do
+    // (PercentSamplerFactory.java:40-48,56-58).
     std::string small_percent_yaml = R"(
 Sampling:
   PercentRate: 0.005
 )";
     set_config_string(small_percent_yaml);
     auto config = make_config();
-    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.01) << "Very small percent rate should be corrected to minimum (0.01)";
-    
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.005) << "A sub-0.01 percent rate should be left as configured";
+
     // Test negative percent rate
     std::string negative_percent_yaml = R"(
 Sampling:
@@ -899,6 +903,81 @@ Sampling:
     set_config_string(negative_percent_yaml);
     config = make_config();
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
+
+    // Exactly 0 stays 0 and disables percent sampling. It used to be raised to
+    // 0.01 here, which kept collecting at 0.01% for a deployment that had asked
+    // for nothing.
+    std::string zero_percent_yaml = R"(
+Sampling:
+  PercentRate: 0
+)";
+    set_config_string(zero_percent_yaml);
+    config = make_config();
+    EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "A percent rate of 0 should stay 0, not be raised to a minimum";
+}
+
+// The Java agent's whole PercentRate mapping, config validation and sampler
+// together, as one table. Java truncates the configured rate to hundredths of a
+// percent (`(long) (rate * 100)`, PercentSamplerFactory.java:56-58) and then
+// picks one of three samplers on the truncated value
+// (PercentSamplerFactory.java:40-48): <= 0 is FalseSampler, >= 10000 is
+// TrueSampler, anything between is PercentRateSampler. This agent reaches the
+// same three outcomes without three classes — make_config() clamps the ends,
+// PercentSampler's constructor truncates, and isSampled()'s `rate_ <= 0` and
+// `rate_ >= MAX_PERCENT_RATE` guards stand in for FalseSampler and TrueSampler.
+//
+// Keep this table identical to the Go agent's, so one config file means one
+// sampling rate across the fleet.
+TEST_F(ConfigTest, PercentRateJavaParityTableTest) {
+    struct Case {
+        const char* configured;      // as written in YAML
+        double validated;            // what make_config() stores
+        int truncated;               // rate_, i.e. Java's parseSamplingRate
+        int sampled_per_1000;        // isSampled() hits over 1000 calls
+    };
+
+    // 100 and 150 both reach always-sample; 150 gets there via the > 100 clamp,
+    // 100 via the `rate_ >= MAX_PERCENT_RATE` short-circuit (Java: TrueSampler).
+    const Case cases[] = {
+        {"-1",    0.0,     0,     0},     // Java: (long)(-100) <= 0 -> FalseSampler
+        {"0",     0.0,     0,     0},     // Java: 0 <= 0 -> FalseSampler
+        {"0.005", 0.005,   0,     0},     // Java: (long)(0.5) == 0 -> FalseSampler
+        {"0.01",  0.01,    1,     1},     // Java: 1 -> PercentRateSampler
+        {"50",    50.0,    5000,  500},   // Java: 5000 -> PercentRateSampler
+        {"100",   100.0,   10000, 1000},  // Java: >= MAX -> TrueSampler
+        {"150",   100.0,   10000, 1000},  // Java: 15000 >= MAX -> TrueSampler
+    };
+
+    for (const auto& c : cases) {
+        set_config_string(std::string("Sampling:\n  Type: PERCENT\n  PercentRate: ") + c.configured + "\n");
+        auto config = make_config();
+        ASSERT_DOUBLE_EQ(config->sampling.percent_rate, c.validated)
+            << "PercentRate " << c.configured << " validated to the wrong value";
+
+        // PercentSampler is final and rate_ is protected, so read the truncated
+        // rate the way it is observable: the counter advances by rate_ per call,
+        // so over exactly MAX_PERCENT_RATE calls it wraps once and samples true
+        // exactly rate_ times.
+        PercentSampler full_cycle(config->sampling.percent_rate);
+        int truncated = 0;
+        for (int i = 0; i < MAX_PERCENT_RATE; ++i) {
+            if (full_cycle.isSampled()) {
+                truncated++;
+            }
+        }
+        EXPECT_EQ(truncated, c.truncated)
+            << "PercentRate " << c.configured << " truncated to the wrong internal rate";
+
+        PercentSampler sampler(config->sampling.percent_rate);
+        int sampled = 0;
+        for (int i = 0; i < 1000; ++i) {
+            if (sampler.isSampled()) {
+                sampled++;
+            }
+        }
+        EXPECT_EQ(sampled, c.sampled_per_1000)
+            << "PercentRate " << c.configured << " sampled " << sampled << " of 1000";
+    }
 }
 
 // Java spells the counter mode COUNTING (SamplerType), so a Java config must

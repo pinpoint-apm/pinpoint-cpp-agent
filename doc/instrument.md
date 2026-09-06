@@ -796,7 +796,8 @@ All three are configured under `Sampling.*` — see the
 - **PercentSampler** (`Type: PERCENT`) — samples a configured percentage,
   deterministic for a given call sequence and also starting with the first
   transaction: `PercentRate: 50` admits transactions 1, 3, 5, … `PercentRate`
-  is clamped to `[0.01, 100]`, and `100` always samples.
+  is clamped to `[0, 100]`, `100` always samples, and `0` (or anything that
+  truncates to it, i.e. below `0.01`) samples nothing.
 - **Throughput limiting** — wraps whichever base sampler is configured with
   per-second caps, enabled automatically when `NewThroughput` or
   `ContinueThroughput` is greater than `0` (`0` = unlimited). New transactions

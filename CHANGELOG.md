@@ -4,6 +4,33 @@
 
 ### Breaking
 
+- **`Sampling.PercentRate: 0` now samples nothing.**
+
+  Up to and including v2.0.0, `make_config()` raised any non-negative
+  `PercentRate` below `0.01` — exactly `0` included — to `0.01`, so a
+  deployment that configured `0` kept collecting traces at 0.01%. That floor is
+  gone ([src/config.cpp:795-824](src/config.cpp#L795-L824)): `0` and below now
+  disable percent sampling outright, and a positive rate below `0.01` (e.g.
+  `0.005`) truncates to `0` and disables it too, with a warning.
+
+  This matches the Java agent, where `parseSamplingRate` truncates the
+  configured rate and `createSampler` hands a non-positive result to
+  `FalseSampler` (`PercentSamplerFactory.java:40-48,56-58`). The other two
+  outcomes were already in place: `>= 100` is always-sample (Java's
+  `TrueSampler`) and everything between runs the percent sampler.
+
+  **Symptom if you do not migrate:** with `Sampling.Type: PERCENT` and
+  `PercentRate` at `0` (or below `0.01`), the agent stops sampling new
+  transactions — no new traces appear in the UI. Continued traces and
+  throughput limiting are unaffected, as is `Sampling.Type: COUNTER`.
+
+  **Migration.** A deployment that relied on `0` meaning 0.01% must say so:
+  set `PercentRate: 0.01` (YAML) or `PINPOINT_CPP_SAMPLING_PERCENT_RATE=0.01`.
+  Deployments that meant `0` as "off" need no change — they now get what they
+  asked for.
+
+  See [Sampling Configuration](doc/config.md#sampling-configuration).
+
 - **`ServiceName` is now required for `UidVersion: v4`.**
 
   Up to and including v2.0.0, a v4 agent started with no `ServiceName`

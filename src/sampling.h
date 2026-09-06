@@ -75,8 +75,11 @@ namespace pinpoint {
             // percent to double representation error — 0.29 * 100 is
             // 28.999999999999996, so 0.29 samples 0.28% — but the same config
             // producing the same rate in all three agents outranks handing the
-            // operator back the digit they typed. The config minimum (0.01)
-            // still maps to 1, so no accepted rate truncates to disabled.
+            // operator back the digit they typed. A positive rate below 0.01
+            // truncates to 0 and never samples, which is what Java does too —
+            // parseSamplingRate truncates first, then createSampler sends a
+            // non-positive rate to FalseSampler
+            // (PercentSamplerFactory.java:40-48,56-58).
             //
             // Clamping the product (not the result) keeps this defined for
             // out-of-range rates that bypass the config validation, and leaves
