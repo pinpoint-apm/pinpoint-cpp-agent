@@ -166,11 +166,14 @@ namespace pinpoint {
                 std::lock_guard<std::mutex> lock(shard.mutex_);
                 for (const auto* node = shard.head_; node != nullptr; node = node->next_) {
                     auto active_time = sample_time_ms - node->start_time_;
-                    if (active_time < 1000) {
+                    // Inclusive upper bounds, as in Java's BaseHistogramSchema
+                    // (elapsedTime <= slotTime): a span at exactly 1000ms is
+                    // still "fast".
+                    if (active_time <= 1000) {
                         buckets[0]++;
-                    } else if (active_time < 3000) {
+                    } else if (active_time <= 3000) {
                         buckets[1]++;
-                    } else if (active_time < 5000) {
+                    } else if (active_time <= 5000) {
                         buckets[2]++;
                     } else {
                         buckets[3]++;

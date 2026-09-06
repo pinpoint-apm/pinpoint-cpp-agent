@@ -607,40 +607,6 @@ TEST_F(StatTest, DuplicateSpanIdTest) {
     agent_stats_->dropActiveSpan(node);
 }
 
-// Test active request bucket boundary values
-TEST_F(StatTest, ActiveRequestBucketBoundariesTest) {
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-
-    ActiveSpanNode nodes[4];
-    // Bucket 0: < 1000ms
-    agent_stats_->addActiveSpan(nodes[0], 1001, now_ms - 999);
-    // Bucket 1: >= 1000ms and < 3000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(nodes[1], 1002, now_ms - 1000);
-    // Bucket 2: >= 3000ms and < 5000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(nodes[2], 1003, now_ms - 3000);
-    // Bucket 3: >= 5000ms (exactly at boundary)
-    agent_stats_->addActiveSpan(nodes[3], 1004, now_ms - 5000);
-
-    AgentStatsSnapshot snapshot;
-    agent_stats_->collectAgentStat(snapshot);
-
-    // Due to time passing between addActiveSpan and collectAgentStat,
-    // boundary spans might shift up a bucket. We verify total count is correct.
-    int total = snapshot.active_requests_[0] + snapshot.active_requests_[1] +
-                snapshot.active_requests_[2] + snapshot.active_requests_[3];
-    EXPECT_EQ(total, 4) << "All 4 spans should be accounted for";
-
-    // The 999ms span should be in bucket 0 or 1 (timing variance)
-    // The 5000ms span should be in bucket 3
-    EXPECT_GE(snapshot.active_requests_[3], 1) << "5s+ span should be in last bucket";
-
-    agent_stats_->dropActiveSpan(nodes[0]);
-    agent_stats_->dropActiveSpan(nodes[1]);
-    agent_stats_->dropActiveSpan(nodes[2]);
-    agent_stats_->dropActiveSpan(nodes[3]);
-}
-
 // Test all active spans in a single bucket
 TEST_F(StatTest, AllSpansInOneBucketTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -687,6 +653,30 @@ TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
     agent_stats_->dropActiveSpan(nodes[1]);
     agent_stats_->dropActiveSpan(nodes[2]);
     agent_stats_->dropActiveSpan(nodes[3]);
+}
+
+// Bucket bounds are inclusive like Java's BaseHistogramSchema
+// (elapsedTime <= 1000/3000/5000): 999 and 1000 are fast, 1001 is normal.
+TEST_F(StatTest, ActiveRequestBucketBoundsAreInclusiveTest) {
+    const int64_t now_ms = 1'000'000;
+    const int64_t ages[] = {999, 1000, 1001, 3000, 5000, 5001};
+    const int32_t expected[] = {2, 2, 1, 1};
+
+    ActiveSpanNode nodes[6];
+    for (int i = 0; i < 6; i++) {
+        agent_stats_->addActiveSpan(nodes[i], 4001 + i, now_ms - ages[i]);
+    }
+
+    int32_t active_requests[4]{};
+    agent_stats_->collectActiveRequests(active_requests, now_ms);
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(active_requests[i], expected[i]) << "bucket " << i;
+    }
+
+    for (auto& node : nodes) {
+        agent_stats_->dropActiveSpan(node);
+    }
 }
 
 TEST_F(StatTest, EmptyActiveSpanMapTest) {
