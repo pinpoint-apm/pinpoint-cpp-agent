@@ -537,4 +537,53 @@ TEST(UtilityTest, ToValidUtf8ReplacesEachInvalidSequenceWithReplacementChar) {
     }
 }
 
+
+// ========== utf8SafeCutLength / isValidUtf8 boundary cases ==========
+
+// The pull-back scans at most three continuation bytes. A cut that lands
+// inside a run of them with nothing but continuation bytes ahead of it has no
+// lead byte to retreat to, so the byte cut stands rather than running off the
+// front of the string.
+TEST(UtilityTest, Utf8SafeCutLengthKeepsByteCutWhenNoLeadBytePrecedesIt) {
+    EXPECT_EQ(utf8SafeCutLength("\x80\x80\x80\x80", 2), 2u)
+        << "all-continuation input has no boundary to pull back to";
+    EXPECT_EQ(utf8SafeCutLength("\x80\x80\x80\x80", 1), 1u);
+}
+
+// A cut landing inside a 2- or 4-byte sequence drops that whole sequence, the
+// same way the covered 3-byte (Korean) case does.
+TEST(UtilityTest, Utf8SafeCutLengthDropsPartialTwoAndFourByteSequences) {
+    // "é" is 2 bytes: cutting at 1 splits it, so nothing survives.
+    EXPECT_EQ(utf8SafeCutLength("\xc3\xa9zz", 1), 0u) << "2-byte lead";
+    // "😀" is 4 bytes: cutting at 1..3 splits it.
+    EXPECT_EQ(utf8SafeCutLength("\xf0\x9f\x98\x80zz", 1), 0u) << "4-byte lead";
+    EXPECT_EQ(utf8SafeCutLength("\xf0\x9f\x98\x80zz", 2), 0u);
+    EXPECT_EQ(utf8SafeCutLength("\xf0\x9f\x98\x80zz", 3), 0u);
+    EXPECT_EQ(utf8SafeCutLength("\xf0\x9f\x98\x80zz", 4), 4u) << "a whole sequence is kept";
+}
+
+// The 0xE0 and 0xF0 leads have a narrowed second byte that rejects the
+// overlong spellings of characters a shorter sequence already encodes; 0xF1-F3
+// are the plain 4-byte leads with no such narrowing.
+TEST(UtilityTest, IsValidUtf8RejectsOverlongAndAcceptsPlainFourByteLeads) {
+    EXPECT_FALSE(isValidUtf8("\xe0\x80\xaf")) << "overlong 3-byte '/'";
+    EXPECT_FALSE(isValidUtf8("\xe0\x9f\xbf")) << "overlong 3-byte, just under U+0800";
+    EXPECT_TRUE(isValidUtf8("\xe0\xa0\x80")) << "U+0800, the shortest legal 3-byte";
+
+    EXPECT_FALSE(isValidUtf8("\xf0\x8f\xbf\xbf")) << "overlong 4-byte, just under U+10000";
+    EXPECT_TRUE(isValidUtf8("\xf0\x90\x80\x80")) << "U+10000, the shortest legal 4-byte";
+
+    EXPECT_TRUE(isValidUtf8("\xf1\x80\x80\x80")) << "U+40000";
+    EXPECT_TRUE(isValidUtf8("\xf2\x80\x80\x80")) << "U+80000";
+    EXPECT_TRUE(isValidUtf8("\xf3\xbf\xbf\xbf")) << "U+FFFFF";
+}
+
+// The second byte is range-checked, every later byte only for the
+// continuation bits — a sequence broken past byte 2 must still be rejected.
+TEST(UtilityTest, IsValidUtf8RejectsSequenceBrokenAfterItsSecondByte) {
+    EXPECT_FALSE(isValidUtf8("\xe0\xa0\x41")) << "3-byte sequence broken at byte 3";
+    EXPECT_FALSE(isValidUtf8("\xf0\x9f\x41\x80")) << "4-byte sequence broken at byte 3";
+    EXPECT_FALSE(isValidUtf8("\xf0\x9f\x98\x41")) << "4-byte sequence broken at byte 4";
+}
+
 } // namespace pinpoint

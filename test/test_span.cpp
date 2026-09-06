@@ -2796,4 +2796,62 @@ TEST_F(SpanTest, UrlStatKeptForCallstackTemplateThenDroppedOnEndSpanTest) {
         << "url stats are disabled: the entry must be dropped, not enqueued";
 }
 
+// The overflowed event's contract in two halves: every *recording* call is a
+// no-op (the depth limit is exactly the recording it skips), but every
+// SetError overload still reaches the trace root, so a transaction whose only
+// exception happened past the limit is not reported healthy.
+TEST_F(SpanTest, DisabledSpanEventRecordsNothingButEveryErrorOverloadFailsTheSpanTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 1;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+
+    auto outer = span.NewSpanEvent("outer");
+    auto inner = span.NewSpanEvent("inner");
+    auto overflowed = span.NewSpanEvent("overflowed");
+    ASSERT_EQ(overflowed, span.GetSpanEvent()) << "depth 3 must hand out the disabled event";
+
+    // Every recording setter, including the ones a real event stores.
+    MockHeaderReader headers;
+    headers.SetHeader("x-req", "v");
+    overflowed->SetServiceType(1000);
+    overflowed->SetOperationName("ignored");
+    overflowed->SetStartTime(std::chrono::system_clock::now());
+    overflowed->SetEndPoint("endpoint:9000");
+    overflowed->SetSqlQuery("SELECT 1", {});
+    overflowed->RecordHeader(HTTP_REQUEST, headers);
+    overflowed->SetNextSpanId(4242);
+    overflowed->SetAnnotation(10, 1);
+    overflowed->SetAnnotation(11, static_cast<int64_t>(2));
+    overflowed->SetAnnotation(12, "three");
+    overflowed->SetAnnotation(13, "four", "five");
+    EXPECT_TRUE(span.getExceptions().empty()) << "no recording call may buffer an exception";
+
+    // Each SetError overload in turn: none of them buffers frames, all of them
+    // fail the span.
+    MockCallStackReader stack;
+    stack.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);
+    overflowed->SetError("one-arg");
+    overflowed->SetError("Name", "two-arg");
+    overflowed->SetError("Name", "with-reader", stack);
+    overflowed->SetError("Name", "with-frames", std::vector<CallStackFrame>{});
+    EXPECT_TRUE(span.getExceptions().empty())
+        << "an overflowed event buffers no exception, only the verdict travels";
+
+    overflowed->EndEvent();
+    inner->EndEvent();
+    outer->EndEvent();
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 1) << "every SetError overload must fail the transaction";
+    EXPECT_EQ(pspan->spanevent_size(), 2) << "the overflowed event itself records nothing";
+}
+
 } // namespace pinpoint

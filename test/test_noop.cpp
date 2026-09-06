@@ -833,4 +833,83 @@ TEST_F(NoopTest, NoopTraceContextReaderTest) {
     EXPECT_FALSE(reader.Get(HEADER_HOST).has_value());
 }
 
+// ========== Noop surface ==========
+
+// The noop span is the whole-API fallback (tracing off, or a failed NewSpan):
+// every call has to be safe and hand back another noop, never a real span or a
+// null pointer the host would dereference.
+TEST_F(NoopTest, NoopSpanIgnoresEveryCallAndHandsBackNoopsTest) {
+    auto span = noopSpan();
+    ASSERT_NE(span, nullptr);
+
+    EXPECT_NE(span->NewSpanEvent("op"), nullptr);
+    EXPECT_NE(span->NewSpanEvent("op", 1000), nullptr);
+    EXPECT_NE(span->GetSpanEvent(), nullptr);
+    EXPECT_NE(span->NewAsyncSpan("async"), nullptr);
+    EXPECT_NE(span->NewAsyncSpan("async", 7, 1), nullptr) << "the async-id overload";
+    EXPECT_NE(span->RecordSpanEvent("op", 1000, 0, 1, 1, 2, 7), nullptr)
+        << "the pre-recorded-event overload";
+
+    MockHeaderReader headers;
+    span->SetAcceptorHost("acceptor:8080");
+    span->RecordHeader(HTTP_REQUEST, headers);
+    span->SetAnnotation(1, 2);
+    span->SetAnnotation(1, static_cast<int64_t>(2));
+    span->SetAnnotation(1, "two");
+    span->SetAnnotation(1, "two", "three");
+    span->SetAnnotation(1, static_cast<int64_t>(2), 3, 4, 5, 6, "seven");
+    span->EndSpan();
+
+    EXPECT_TRUE(span->GetTraceId().empty());
+    EXPECT_EQ(span->GetSpanId(), 0);
+    EXPECT_FALSE(span->IsSampled());
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0);
+}
+
+TEST_F(NoopTest, NoopSpanEventIgnoresEveryCallTest) {
+    auto event = noopSpanEvent();
+    ASSERT_NE(event, nullptr);
+
+    MockCallStackReader stack;
+    stack.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);
+    event->SetError("one-arg");
+    event->SetError("Name", "two-arg");
+    event->SetError("Name", "with-reader", stack);
+    event->SetError("Name", "with-frames", std::vector<CallStackFrame>{});
+    event->SetNextSpanId(4242);
+    event->EndEvent();
+
+    SUCCEED() << "every noop event call is a no-op that must not crash";
+}
+
+// An unsampled request's only visible output is its URL stat entry, so all
+// four SetError overloads have to reach the span — a DB exception recorded
+// through the frames overload must not be the one that silently passes.
+TEST_F(NoopTest, UnsampledSpanEventEveryErrorOverloadFailsTheUrlStatTest) {
+    MockCallStackReader stack;
+    stack.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);
+
+    const std::vector<std::function<void(SpanEvent&)>> overloads = {
+        [](SpanEvent& e) { e.SetError("one-arg"); },
+        [](SpanEvent& e) { e.SetError("Name", "two-arg"); },
+        [&](SpanEvent& e) { e.SetError("Name", "with-reader", stack); },
+        [](SpanEvent& e) { e.SetError("Name", "with-frames", std::vector<CallStackFrame>{}); },
+    };
+
+    for (size_t i = 0; i < overloads.size(); ++i) {
+        mock_agent_service_->recorded_url_stats_ = 0;
+        mock_agent_service_->last_url_stat_failed_ = false;
+
+        UnsampledSpan span(mock_agent_service_.get());
+        span.SetUrlStat("/api/users", "GET", 200);
+        auto event = span.NewSpanEvent("db-query");
+        overloads[i](*event);
+        span.EndSpan();
+
+        ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "overload " << i;
+        EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
+            << "SetError overload " << i << " must fail the url stat";
+    }
+}
+
 } // namespace pinpoint
