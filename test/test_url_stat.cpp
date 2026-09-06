@@ -28,6 +28,7 @@
 #include "../src/config.h"
 #include "../src/agent_service.h"
 #include "../src/grpc_builders.h"
+#include "../src/utility.h"
 #include "../src/logging.h"
 #include "../src/stat.h"
 #include "v1/Stat.pb.h"
@@ -215,6 +216,26 @@ TEST_F(UrlStatTest, UrlStatSnapshotAddTest) {
     
     auto& stats = snapshot.getEachStats();
     EXPECT_FALSE(stats.empty()) << "Snapshot should contain entries after add";
+}
+
+TEST_F(UrlStatTest, BuilderReplacesInvalidUtf8InUri) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.enable_trim_path = false;
+    config.http.url_stat.method_prefix = false;
+    TickClock tick_clock(1);
+
+    UrlStatEntry stat("/caf\xe9/\xff", "GET", 200);
+    stat.elapsed_ = 10;
+    stat.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1234));
+    snapshot.add(&stat, config, tick_clock);
+
+    google::protobuf::Arena arena;
+    const auto* wire = build_url_stat(&snapshot, &arena);
+    ASSERT_NE(wire, nullptr);
+    ASSERT_EQ(wire->eachuristat_size(), 1);
+    EXPECT_EQ(wire->eachuristat(0).uri(), "/caf\xef\xbf\xbd/\xef\xbf\xbd");
+    EXPECT_TRUE(isValidUtf8(wire->eachuristat(0).uri()));
 }
 
 TEST_F(UrlStatTest, SnapshotPreservesExactUntrimmedKey) {

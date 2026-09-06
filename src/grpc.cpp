@@ -730,7 +730,7 @@ namespace pinpoint {
                     call->operation_name = "api";
                     auto* request = google::protobuf::Arena::Create<v1::PApiMetaData>(&call->arena);
                     request->set_apiid(value.id_);
-                    request->set_apiinfo(value.api_str_);
+                    request->set_apiinfo(toValidUtf8(value.api_str_));
                     request->set_type(value.type_);
                     async_stub->RequestApiMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, StringMeta>) {
@@ -738,7 +738,7 @@ namespace pinpoint {
                         call->operation_name = "error";
                         auto* request = google::protobuf::Arena::Create<v1::PStringMetaData>(&call->arena);
                         request->set_stringid(value.id_);
-                        request->set_stringvalue(value.str_val_);
+                        request->set_stringvalue(toValidUtf8(value.str_val_));
                         async_stub->RequestStringMetaData(&call->ctx, request, &call->reply, on_done);
                     } else {
                         call->operation_name = "sql";
@@ -749,7 +749,9 @@ namespace pinpoint {
                         // queued StringMeta keeps the whole normalized SQL:
                         // that is the id cache key removeCacheSql() evicts
                         // after retry exhaustion.
-                        request->set_sql(abbreviateString(value.str_val_, kMaxSqlMetaLength));
+                        // Abbreviate first, then replace: U+FFFD is 3 bytes, so replacing
+                        // before the cut could push the text back over the cap.
+                        request->set_sql(toValidUtf8(abbreviateString(value.str_val_, kMaxSqlMetaLength)));
                         async_stub->RequestSqlMetaData(&call->ctx, request, &call->reply, on_done);
                     }
                 } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
@@ -759,7 +761,7 @@ namespace pinpoint {
                     // As above: the UID was generated from the whole
                     // normalized SQL, which SqlUidMeta still carries as the
                     // uid cache key, and only this copy is abbreviated.
-                    request->set_sql(abbreviateString(value.sql_, kMaxSqlMetaLength));
+                    request->set_sql(toValidUtf8(abbreviateString(value.sql_, kMaxSqlMetaLength)));
                     async_stub->RequestSqlUidMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
                     call->operation_name = "exception";

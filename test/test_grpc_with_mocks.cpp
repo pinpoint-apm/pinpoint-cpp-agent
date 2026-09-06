@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "../src/grpc.h"
+#include "../src/grpc_builders.h"
 #include "../src/logging.h"
 #include "../src/agent_service.h"
 #include "../src/config.h"
@@ -2435,6 +2436,83 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     EXPECT_EQ(static_cast<unsigned char>(bytes_value.bytesvalue()[3]), uid[3]);
     EXPECT_EQ(bytes_value.stringvalue1().value(), "sql");
     EXPECT_EQ(bytes_value.stringvalue2().value(), "args");
+}
+
+// Caller-origin bytes (percent-decoded URLs, binary keys, driver error
+// strings) may not be UTF-8; protobuf-java rejects the whole message if any
+// string field is invalid, so every outbound string is sanitized at the
+// builder boundary.
+TEST_F(GrpcMockTest, GrpcSpanBuilderReplacesInvalidUtf8InStringFields) {
+    const std::string bad = "\xff\xfe";
+    const std::string fffd = "\xef\xbf\xbd";
+    auto span_parent = std::make_shared<SpanImpl>(mock_agent_service_.get(), "utf8-op", "/rpc/" + bad);
+    auto span_data = span_parent->getSpanData();
+    span_data->setTraceId(mock_agent_service_->generateTraceId());
+    span_data->setEndPoint("host" + bad);
+    span_data->setRemoteAddr("caf\xe9");
+    span_data->getAnnotations()->AppendData(103, AnnotationData("ann" + bad));
+    span_data->getAnnotations()->AppendStringString(104, "l" + bad, "r" + bad);
+    auto span_event = make_test_span_event_unique(*span_parent, "child-op");
+    span_event->SetDestination("redis" + bad);
+    span_event->SetEndPoint("ep" + bad);
+    span_event->SetError("Err" + bad, "msg" + bad);
+    span_event->SetAnnotation(201, "ev" + bad);
+    span_data->addSpanEvent(std::move(span_event));
+    span_data->finishSpanEvent(span_data->topSpanEvent());
+
+    google::protobuf::Arena arena;
+    const auto* span = build_grpc_span(std::make_unique<SpanChunk>(span_data, true), &arena);
+    ASSERT_NE(span, nullptr);
+
+    const auto valid = [&](const std::string& field) { return toValidUtf8(field) == field; };
+    EXPECT_EQ(span->acceptevent().rpc(), "/rpc/" + fffd);
+    EXPECT_EQ(span->acceptevent().endpoint(), "host" + fffd);
+    EXPECT_EQ(span->acceptevent().remoteaddr(), "caf" + fffd);
+    ASSERT_EQ(span->annotation_size(), 2);
+    EXPECT_EQ(span->annotation(0).value().stringvalue(), "ann" + fffd);
+    EXPECT_TRUE(valid(span->annotation(1).value().stringstringvalue().stringvalue1().value()));
+    EXPECT_TRUE(valid(span->annotation(1).value().stringstringvalue().stringvalue2().value()));
+    ASSERT_EQ(span->spanevent_size(), 1);
+    const auto& event = span->spanevent(0);
+    EXPECT_EQ(event.nextevent().messageevent().destinationid(), "redis" + fffd);
+    EXPECT_EQ(event.nextevent().messageevent().endpoint(), "ep" + fffd);
+    EXPECT_TRUE(valid(event.exceptioninfo().stringvalue().value()));
+    ASSERT_EQ(event.annotation_size(), 1);
+    EXPECT_EQ(event.annotation(0).value().stringvalue(), "ev" + fffd);
+}
+
+TEST_F(GrpcMockTest, GrpcMetadataReplacesInvalidUtf8OnTheWire) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    const std::string bad = "\xff";
+    const std::string fffd = "\xef\xbf\xbd";
+    // Longer than the cap so the truncate-then-replace order is exercised:
+    // the sanitized text must stay within the abbreviated shape.
+    const std::string long_sql = std::string(kMaxSqlMetaLength - 1, 'a') + bad + std::string(10, 'b');
+    const SqlUid uid{1, 2, 3};
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api" + bad)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(StringMeta(2, "err" + bad, STRING_META_ERROR)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(StringMeta(3, long_sql, STRING_META_SQL)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(SqlUidMeta(uid, "SELECT " + bad)));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::STRING, 1, std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL, 1, std::chrono::seconds(5)));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::SQL_UID, 1, std::chrono::seconds(5)));
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(fake->apiRequest(0).apiinfo(), "api" + fffd);
+    EXPECT_EQ(fake->stringRequest(0).stringvalue(), "err" + fffd);
+    EXPECT_EQ(fake->sqlRequest(0).sql(),
+              std::string(kMaxSqlMetaLength - 1, 'a') + fffd + "...(" + std::to_string(long_sql.size()) + ")");
+    EXPECT_EQ(fake->sqlUidRequest(0).sql(), "SELECT " + fffd);
 }
 
 TEST_F(GrpcMockTest, GrpcSpanBatchSerializesSpanEventAnnotationsTest) {

@@ -240,6 +240,86 @@ namespace pinpoint {
         return max_len;
     }
 
+    namespace {
+        // Length of the well-formed UTF-8 sequence starting at s[i], or 0 if
+        // the bytes there are not one (overlong, surrogate, > U+10FFFF,
+        // truncated, or a stray continuation byte).
+        size_t utf8SequenceLength(std::string_view s, size_t i) {
+            const auto b0 = static_cast<unsigned char>(s[i]);
+            if (b0 < 0x80) {
+                return 1;
+            }
+            size_t len;
+            unsigned char lo = 0x80, hi = 0xBF;  // allowed range of the 2nd byte
+            if (b0 >= 0xC2 && b0 <= 0xDF) {
+                len = 2;
+            } else if (b0 == 0xE0) {
+                len = 3; lo = 0xA0;              // reject overlong
+            } else if (b0 == 0xED) {
+                len = 3; hi = 0x9F;              // reject surrogates
+            } else if ((b0 & 0xF0) == 0xE0) {
+                len = 3;
+            } else if (b0 == 0xF0) {
+                len = 4; lo = 0x90;              // reject overlong
+            } else if (b0 == 0xF4) {
+                len = 4; hi = 0x8F;              // reject > U+10FFFF
+            } else if (b0 == 0xF1 || b0 == 0xF2 || b0 == 0xF3) {
+                len = 4;
+            } else {
+                return 0;                        // 0x80..0xC1, 0xF5..0xFF
+            }
+            if (s.size() - i < len) {
+                return 0;
+            }
+            const auto b1 = static_cast<unsigned char>(s[i + 1]);
+            if (b1 < lo || b1 > hi) {
+                return 0;
+            }
+            for (size_t k = 2; k < len; ++k) {
+                if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) {
+                    return 0;
+                }
+            }
+            return len;
+        }
+    }
+
+    bool isValidUtf8(std::string_view s) {
+        for (size_t i = 0; i < s.size();) {
+            const size_t len = utf8SequenceLength(s, i);
+            if (len == 0) {
+                return false;
+            }
+            i += len;
+        }
+        return true;
+    }
+
+    std::string toValidUtf8(std::string_view s) {
+        if (isValidUtf8(s)) {
+            return std::string{s};
+        }
+        constexpr std::string_view kReplacement = "\xEF\xBF\xBD";  // U+FFFD
+        std::string out;
+        out.reserve(s.size());
+        bool in_invalid = false;
+        for (size_t i = 0; i < s.size();) {
+            const size_t len = utf8SequenceLength(s, i);
+            if (len == 0) {
+                if (!in_invalid) {
+                    out.append(kReplacement);
+                    in_invalid = true;
+                }
+                ++i;
+                continue;
+            }
+            in_invalid = false;
+            out.append(s.substr(i, len));
+            i += len;
+        }
+        return out;
+    }
+
     std::string abbreviateString(std::string_view s, size_t max_len) {
         if (s.length() <= max_len) {
             return std::string{s};

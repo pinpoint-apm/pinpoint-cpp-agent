@@ -43,7 +43,7 @@ namespace pinpoint {
             except_info->set_intvalue(func_id);
 
             auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-            s->set_value(err_str);
+            s->set_value(toValidUtf8(err_str));
             except_info->unsafe_arena_set_allocated_stringvalue(s);
             dst->unsafe_arena_set_allocated_exceptioninfo(except_info);
         }
@@ -69,19 +69,19 @@ namespace pinpoint {
             auto* accept_event = google::protobuf::Arena::Create<v1::PAcceptEvent>(arena);
 
             const auto end_point = or_unknown(span->getEndPoint());
-            accept_event->set_endpoint(end_point.data(), end_point.size());
-            accept_event->set_rpc(span->getRpcName());
+            accept_event->set_endpoint(toValidUtf8(end_point));
+            accept_event->set_rpc(toValidUtf8(span->getRpcName()));
 
             const auto remote_addr = or_unknown(span->getRemoteAddr());
-            accept_event->set_remoteaddr(remote_addr.data(), remote_addr.size());
+            accept_event->set_remoteaddr(toValidUtf8(remote_addr));
 
             if (!span->getParentAppName().empty()) {
                 auto* parent_info = google::protobuf::Arena::Create<v1::PParentInfo>(arena);
 
-                parent_info->set_parentapplicationname(span->getParentAppName());
+                parent_info->set_parentapplicationname(toValidUtf8(span->getParentAppName()));
                 parent_info->set_parentapplicationtype(span->getParentAppType());
-                parent_info->set_acceptorhost(span->getAcceptorHost());
-                parent_info->set_parentservicename(span->getParentServiceName());
+                parent_info->set_acceptorhost(toValidUtf8(span->getAcceptorHost()));
+                parent_info->set_parentservicename(toValidUtf8(span->getParentServiceName()));
                 accept_event->unsafe_arena_set_allocated_parentinfo(parent_info);
             }
 
@@ -103,16 +103,16 @@ namespace pinpoint {
                     annotation_value->set_longvalue(v);
                 },
                 [&](const std::string& v) {
-                    annotation_value->set_stringvalue(v);
+                    annotation_value->set_stringvalue(toValidUtf8(v));
                 },
                 [&](const std::pair<std::string, std::string>& v) {
                     auto* ssv = google::protobuf::Arena::Create<v1::PStringStringValue>(arena);
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s1->set_value(v.first);
+                    s1->set_value(toValidUtf8(v.first));
                     ssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s2->set_value(v.second);
+                    s2->set_value(toValidUtf8(v.second));
                     ssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
                     annotation_value->unsafe_arena_set_allocated_stringstringvalue(ssv);
@@ -123,11 +123,11 @@ namespace pinpoint {
 
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
                     const auto string_value1 = v.stringValue1View();
-                    s1->set_value(string_value1.data(), string_value1.size());
+                    s1->set_value(toValidUtf8(string_value1));
                     issv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s2->set_value(v.stringValue2);
+                    s2->set_value(toValidUtf8(v.stringValue2));
                     issv->unsafe_arena_set_allocated_stringvalue2(s2);
 
                     annotation_value->unsafe_arena_set_allocated_intstringstringvalue(issv);
@@ -141,7 +141,7 @@ namespace pinpoint {
                     liibbsv->set_bytevalue2(v.byteValue2);
 
                     auto* s = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s->set_value(v.stringValue);
+                    s->set_value(toValidUtf8(v.stringValue));
                     liibbsv->unsafe_arena_set_allocated_stringvalue(s);
 
                     annotation_value->unsafe_arena_set_allocated_longintintbytebytestringvalue(liibbsv);
@@ -153,11 +153,11 @@ namespace pinpoint {
 
                     auto* s1 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
                     const auto string_value1 = v.stringValue1View();
-                    s1->set_value(string_value1.data(), string_value1.size());
+                    s1->set_value(toValidUtf8(string_value1));
                     bssv->unsafe_arena_set_allocated_stringvalue1(s1);
 
                     auto* s2 = google::protobuf::Arena::Create<google::protobuf::StringValue>(arena);
-                    s2->set_value(v.stringValue2);
+                    s2->set_value(toValidUtf8(v.stringValue2));
                     bssv->unsafe_arena_set_allocated_stringvalue2(s2);
 
                     annotation_value->unsafe_arena_set_allocated_bytesstringstringvalue(bssv);
@@ -172,7 +172,7 @@ namespace pinpoint {
                                      google::protobuf::Arena* arena) {
             annotation->set_key(key);
             const auto annotation_value = google::protobuf::Arena::Create<v1::PAnnotationValue>(arena);
-            annotation_value->set_stringvalue(val.data(), val.size());
+            annotation_value->set_stringvalue(toValidUtf8(val));
             annotation->unsafe_arena_set_allocated_value(annotation_value);
         }
 
@@ -191,8 +191,8 @@ namespace pinpoint {
                 auto* message_event = google::protobuf::Arena::Create<v1::PMessageEvent>(arena);
 
                 message_event->set_nextspanid(se->getNextSpanId());
-                message_event->set_endpoint(se->getEndPoint());
-                message_event->set_destinationid(se->getDestinationId());
+                message_event->set_endpoint(toValidUtf8(se->getEndPoint()));
+                message_event->set_destinationid(toValidUtf8(se->getDestinationId()));
                 next_event->unsafe_arena_set_allocated_messageevent(message_event);
                 span_event->unsafe_arena_set_allocated_nextevent(next_event);
             }
@@ -298,7 +298,7 @@ namespace pinpoint {
                                  const UrlKey& key,
                                  const EachUrlStat& each_stats,
                                  google::protobuf::Arena* arena) {
-            url_stat->set_uri(key.url_);
+            url_stat->set_uri(toValidUtf8(key.url_));
 
             auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
             build_url_histogram(total, each_stats.total);
@@ -398,7 +398,7 @@ namespace pinpoint {
         // The chunk's snapshot, not span->getEndPoint(): the span is still
         // live here and its endpoint_ may be mutated concurrently by the
         // owning thread (see SpanChunk::endpoint_).
-        grpc_span->set_endpoint(chunk->getEndPoint());
+        grpc_span->set_endpoint(toValidUtf8(chunk->getEndPoint()));
         grpc_span->set_applicationservicetype(span->getAppType());
 
         if (span->isAsyncSpan()) {
@@ -453,7 +453,7 @@ namespace pinpoint {
 
         grpc_exception_meta->unsafe_arena_set_allocated_transactionid(build_grpc_transaction_id(txid, arena));
         grpc_exception_meta->set_spanid(span_id);
-        grpc_exception_meta->set_uritemplate(url_template.data(), url_template.size());
+        grpc_exception_meta->set_uritemplate(toValidUtf8(url_template));
 
         // Reserve both levels for the same reason as build_grpc_span's span
         // events: a growing RepeatedPtrField doubles its pointer array and
@@ -473,8 +473,8 @@ namespace pinpoint {
             const auto& error_name = callstack.getErrorName();
 
             grpc_exception->set_exceptionid(exception->getId());
-            grpc_exception->set_exceptionclassname(error_name.empty() ? callstack.getModuleName() : error_name);
-            grpc_exception->set_exceptionmessage(callstack.getErrorMessage());
+            grpc_exception->set_exceptionclassname(toValidUtf8(error_name.empty() ? callstack.getModuleName() : error_name));
+            grpc_exception->set_exceptionmessage(toValidUtf8(callstack.getErrorMessage()));
             grpc_exception->set_starttime(callstack.getErrorTime());
             grpc_exception->set_exceptiondepth(chain_depths[exception->getId()]++);
 
@@ -483,10 +483,10 @@ namespace pinpoint {
             for (const auto& frame : frames) {
                 auto* grpc_callstack = grpc_exception->add_stacktraceelement();
 
-                grpc_callstack->set_classname(frame.module);
-                grpc_callstack->set_filename(frame.file);
+                grpc_callstack->set_classname(toValidUtf8(frame.module));
+                grpc_callstack->set_filename(toValidUtf8(frame.file));
                 grpc_callstack->set_linenumber(frame.line);
-                grpc_callstack->set_methodname(frame.function);
+                grpc_callstack->set_methodname(toValidUtf8(frame.function));
             }
         }
 

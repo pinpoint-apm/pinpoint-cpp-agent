@@ -135,6 +135,26 @@ namespace pinpoint {
      */
     size_t utf8SafeCutLength(std::string_view s, size_t max_len);
 
+    /// @brief True when @p s is well-formed UTF-8: no overlong forms, no
+    ///        surrogates (U+D800..U+DFFF), nothing above U+10FFFF, no
+    ///        truncated sequences.
+    bool isValidUtf8(std::string_view s);
+
+    /**
+     * @brief Replaces every invalid UTF-8 sequence in @p s with U+FFFD, one
+     * replacement per maximal invalid run (the policy of Go's
+     * strings.ToValidUTF8, which the Go agent applies for the same reason).
+     *
+     * Callers feed network- and user-origin bytes into protobuf string fields
+     * (percent-decoded URL paths, binary row keys, driver error strings). The
+     * C++ runtime only logs on marshalling invalid UTF-8, but the collector's
+     * protobuf-java readStringRequireUtf8 throws, rejecting the whole span,
+     * stat or metadata message — and a failed span stream Send cancels the
+     * stream. Applied at the protobuf conversion boundary, off the
+     * instrumentation hot path. Valid input is copied once, untouched.
+     */
+    std::string toValidUtf8(std::string_view s);
+
     /// @brief Cap on the error string carried by a span or span event,
     ///        matching the 256 Java passes to StringUtils.abbreviate().
     inline constexpr size_t kMaxErrorStringLength = 256;

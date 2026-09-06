@@ -508,4 +508,33 @@ TEST(UtilityTest, AbbreviateStringAppendsOriginalLengthOverCap) {
     EXPECT_EQ(abbreviated.size(), kMaxSqlMetaLength + 10);
 }
 
+TEST(UtilityTest, ToValidUtf8KeepsValidInputUnchanged) {
+    const std::string ascii = "SELECT * FROM users WHERE id = 1";
+    const std::string korean = "\xed\x95\x9c\xea\xb8\x80";              // 한글
+    const std::string emoji = "\xf0\x9f\x98\x80 ok";                       // 😀 ok
+    const std::string max_cp = "\xf4\x8f\xbf\xbf";                         // U+10FFFF
+    for (const auto& s : {std::string{}, ascii, korean, emoji, max_cp}) {
+        EXPECT_TRUE(isValidUtf8(s));
+        EXPECT_EQ(toValidUtf8(s), s);
+    }
+}
+
+TEST(UtilityTest, ToValidUtf8ReplacesEachInvalidSequenceWithReplacementChar) {
+    const std::string fffd = "\xef\xbf\xbd";
+    EXPECT_EQ(toValidUtf8("\xff"), fffd);
+    EXPECT_EQ(toValidUtf8("caf\xe9"), "caf" + fffd) << "latin-1 e-acute";
+    EXPECT_EQ(toValidUtf8("\xed\x85"), fffd) << "truncated 3-byte sequence";
+    EXPECT_EQ(toValidUtf8("\xc0\x80"), fffd) << "overlong NUL";
+    EXPECT_EQ(toValidUtf8("\xed\xa0\x80"), fffd) << "surrogate U+D800";
+    EXPECT_EQ(toValidUtf8("\xf4\x90\x80\x80"), fffd) << "above U+10FFFF";
+    EXPECT_EQ(toValidUtf8("\x80"), fffd) << "stray continuation byte";
+    // Valid neighbours survive, and a run of bad bytes collapses to one U+FFFD.
+    EXPECT_EQ(toValidUtf8("a\xff\xfe" "b\xc3\xa9"), "a" + fffd + "b\xc3\xa9");
+    EXPECT_EQ(toValidUtf8("\xed\x95\x9c\xff"), "\xed\x95\x9c" + fffd);
+    for (const auto* s : {"\xff", "caf\xe9", "\xed\x85", "\xc0\x80", "\xed\xa0\x80"}) {
+        EXPECT_FALSE(isValidUtf8(s));
+        EXPECT_TRUE(isValidUtf8(toValidUtf8(s)));
+    }
+}
+
 } // namespace pinpoint
