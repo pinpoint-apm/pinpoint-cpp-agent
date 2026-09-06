@@ -1749,12 +1749,18 @@ namespace pinpoint {
     }
 
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
+        // The published (possibly reloaded) config, not the pinned boot
+        // snapshot in config_: like Java's AgentInfoFactory, which fetches the
+        // ServerMetaData live on every send, the periodic re-registration must
+        // report what the agent is running with now.
+        const auto config = agent_->getConfig();
+
         agent_info->set_hostname(get_host_name());
         agent_info->set_ip(get_host_ip_addr());
         agent_info->set_servicetype(agent_->getAppType());
         agent_info->set_pid(getpid());
         agent_info->set_agentversion(VERSION_STRING);
-        agent_info->set_container(config_->is_container);
+        agent_info->set_container(config->is_container);
 
         const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
         if (server_meta_data_set_) {
@@ -1775,7 +1781,7 @@ namespace pinpoint {
 
         auto* config_service_info = meta_data->add_serviceinfo();
         config_service_info->set_servicename("Pinpoint Agent");
-        for (const auto& config_string : to_non_default_config_strings(*config_)) {
+        for (const auto& config_string : to_non_default_config_strings(*config)) {
             config_service_info->add_servicelib(config_string);
         }
 

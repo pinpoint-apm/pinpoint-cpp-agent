@@ -1025,6 +1025,73 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
     EXPECT_TRUE(has_service_lib("Http.UrlStatTrimPathDepth=4"));
 }
 
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentReportsReloadedConfig) {
+    // AgentInfo is re-sent periodically; after a hot reload it must carry the
+    // current config (Java's AgentInfoFactory reads ServerMetaData live on
+    // every send), not the snapshot GrpcAgent was constructed with.
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    std::vector<v1::PAgentInfo> captured;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .Times(2)
+        .WillRepeatedly(DoAll(
+            Invoke([&captured](grpc::ClientContext*, const v1::PAgentInfo& info, v1::PResult*) {
+                captured.push_back(info);
+            }),
+            SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+
+    mock_agent_service_->publishConfig([](Config& c) {
+        c.sampling.percent_rate = 12.5;
+        c.is_container = true;
+    });
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+    ASSERT_EQ(captured.size(), 2U);
+
+    auto has_service_lib = [](const v1::PAgentInfo& info, const std::string& expected) {
+        for (const auto& service_info : info.servermetadata().serviceinfo()) {
+            for (const auto& lib : service_info.servicelib()) {
+                if (lib == expected) return true;
+            }
+        }
+        return false;
+    };
+    EXPECT_FALSE(captured[0].container());
+    EXPECT_FALSE(has_service_lib(captured[0], "Sampling.PercentRate=12.5"));
+    EXPECT_TRUE(captured[1].container());
+    EXPECT_TRUE(has_service_lib(captured[1], "Sampling.PercentRate=12.5"));
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentRacesConfigReload) {
+    // Sanitizer target: registerAgent() on one thread while reloads publish
+    // new config snapshots on another. Each build_agent_info() must read one
+    // consistent snapshot without touching the swapped pointer unsynchronized.
+    TestableGrpcAgent agent(mock_agent_service_.get());
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    ON_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillByDefault(DoAll(SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+
+    std::atomic<bool> stop{false};
+    std::thread reloader([&] {
+        for (int i = 0; !stop.load(); ++i) {
+            mock_agent_service_->publishConfig([i](Config& c) {
+                c.sampling.percent_rate = static_cast<double>(i % 100);
+                c.is_container = (i % 2) == 0;
+            });
+        }
+    });
+    for (int i = 0; i < 50; ++i) {
+        EXPECT_EQ(agent.registerAgent(), SEND_OK);
+    }
+    stop.store(true);
+    reloader.join();
+}
+
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
