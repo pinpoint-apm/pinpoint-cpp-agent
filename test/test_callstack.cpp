@@ -407,20 +407,24 @@ TEST_F(CallStackTest, CompleteWorkflowTest) {
 
 // ========== String Length Cap Tests ==========
 
-// Oversized error messages are truncated to a fixed cap
-TEST_F(CallStackTest, ErrorMessageTruncationTest) {
+// Oversized error messages are abbreviated like Java's
+// StringUtils.abbreviate(message, 2048): the first 2048 bytes plus a
+// "...(original length)" suffix, never a silent cut.
+TEST_F(CallStackTest, ErrorMessageAbbreviationTest) {
     const std::string long_message(100 * 1024, 'x');
     CallStack callstack(long_message);
 
-    EXPECT_EQ(callstack.getErrorMessage().size(), 4096u)
-        << "Error message should be truncated to the cap";
-    EXPECT_EQ(callstack.getErrorMessage(), long_message.substr(0, 4096))
-        << "Truncated error message should be a prefix of the original";
+    EXPECT_EQ(callstack.getErrorMessage(), long_message.substr(0, 2048) + "...(102400)");
+
+    // The class name keeps the plain 1024-byte truncation: a suffix there
+    // would corrupt exceptionClassName.
+    const std::string long_name(2000, 'N');
+    EXPECT_EQ(CallStack("m", long_name).getErrorName(), long_name.substr(0, 1024));
 }
 
 // Error messages within the cap are stored unchanged
-TEST_F(CallStackTest, ErrorMessageWithinCapNotTruncatedTest) {
-    const std::string message(4096, 'y');
+TEST_F(CallStackTest, ErrorMessageWithinCapNotAbbreviatedTest) {
+    const std::string message(2048, 'y');
     CallStack callstack(message);
 
     EXPECT_EQ(callstack.getErrorMessage(), message)
@@ -442,29 +446,26 @@ TEST_F(CallStackTest, FrameStringTruncationTest) {
         << "Truncated string should be a prefix of the original";
 }
 
-// Truncation must not split a multi-byte UTF-8 character
-TEST_F(CallStackTest, TruncationKeepsValidUtf8Test) {
-    // 4095 ASCII bytes followed by a 3-byte character ("가", 0xEA 0xB0 0x80):
-    // a byte-wise cut at 4096 would keep only the lead byte.
-    std::string message(4095, 'a');
+// Abbreviation must not split a multi-byte UTF-8 character
+TEST_F(CallStackTest, AbbreviationKeepsValidUtf8Test) {
+    // 2047 ASCII bytes followed by a 3-byte character ("가", 0xEA 0xB0 0x80):
+    // a byte-wise cut at 2048 would keep only the lead byte.
+    std::string message(2047, 'a');
     message += "\xEA\xB0\x80";
     CallStack callstack(message);
 
-    EXPECT_EQ(callstack.getErrorMessage().size(), 4095u)
+    EXPECT_EQ(callstack.getErrorMessage(), std::string(2047, 'a') + "...(2050)")
         << "The split multi-byte character should be dropped entirely";
-    EXPECT_EQ(callstack.getErrorMessage().back(), 'a')
-        << "No partial UTF-8 sequence should remain at the end";
 
     // A multi-byte character that fits exactly at the boundary is kept whole.
-    std::string exact(4093, 'b');
-    exact += "\xEA\xB0\x80";  // ends exactly at byte 4096
+    std::string exact(2045, 'b');
+    exact += "\xEA\xB0\x80";  // ends exactly at byte 2048
     exact += "tail beyond the cap";
     CallStack exact_callstack(exact);
 
-    EXPECT_EQ(exact_callstack.getErrorMessage().size(), 4096u)
+    EXPECT_EQ(exact_callstack.getErrorMessage(),
+              exact.substr(0, 2048) + "...(" + std::to_string(exact.size()) + ")")
         << "A complete character ending at the cap should be kept";
-    EXPECT_EQ(exact_callstack.getErrorMessage().substr(4093), "\xEA\xB0\x80")
-        << "The complete trailing character should be intact";
 }
 
 } // namespace pinpoint

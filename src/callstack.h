@@ -49,7 +49,7 @@ namespace pinpoint {
          *        startTime. 0 stamps the wall clock instead.
          */
         CallStack(std::string_view error_message, std::string_view error_name = {}, int64_t error_time = 0)
-            : error_message_(truncated(error_message, kMaxErrorMessageLength)),
+            : error_message_(abbreviateString(error_message, kMaxErrorMessageLength)),
               error_name_(truncated(error_name, kMaxFrameStringLength)),
               error_time_{error_time > 0 ? error_time : to_milli_seconds(std::chrono::system_clock::now())},
               stack_{} {}
@@ -111,7 +111,12 @@ namespace pinpoint {
         // paying for kMaxFrames when stacks are shallow.
         static constexpr size_t kInitialFrameCapacity = 16;
         static constexpr size_t kMaxFrameStringLength = 1024;
-        static constexpr size_t kMaxErrorMessageLength = 4096;
+        // PException.exceptionMessage cap, matching Java's
+        // profiler.exceptiontrace.errormessage.max default (2048) passed to
+        // StringUtils.abbreviate(): over the cap the message ends in
+        // "...(original length)" rather than being cut silently. Not applied
+        // to error_name_, where a suffix would corrupt exceptionClassName.
+        static constexpr size_t kMaxErrorMessageLength = 2048;
 
         // The strings end up in protobuf string fields, which require valid
         // UTF-8: never cut mid-character.
