@@ -42,6 +42,11 @@ namespace pinpoint {
     * full, and only the copy that travels in PSqlMetaData.sql is abbreviated
     * (kMaxSqlMetaLength). This cap exists purely so a pathological
     * multi-megabyte statement cannot make one span allocate without bound.
+    *
+    * A statement over the cap is dropped whole (no annotation, no SQL count),
+    * never cut: a cut landing inside a literal changes the normalized text,
+    * and with it the SQL id/UID, away from what another agent computes for
+    * the same statement. See doc/java_parity.md.
     */
     inline constexpr size_t kMaxNormalizedSqlLength = 1024 * 1024;
 
@@ -54,13 +59,16 @@ namespace pinpoint {
     */
     class SqlNormalizer {
     public:
-        /// Comments are removed by default, matching the Java agent
-        /// (DefaultJdbcOption.removeComments=true). Nothing is put in their
-        /// place — again like Java.
-        explicit SqlNormalizer(size_t max_sql_length = 2048, bool remove_comments = true);
+        /// @p max_sql_length has no default on purpose: the agent passes
+        /// kMaxNormalizedSqlLength, and a silently smaller limit would drop
+        /// statements the agent would have kept. Comments are removed by
+        /// default, matching the Java agent (DefaultJdbcOption.removeComments
+        /// =true). Nothing is put in their place — again like Java.
+        explicit SqlNormalizer(size_t max_sql_length, bool remove_comments = true);
         ~SqlNormalizer() = default;
 
-        /// Normalizes and extracts both literal kinds in a single pass.
+        /// Normalizes and extracts both literal kinds in a single pass. A
+        /// statement longer than max_sql_length yields an empty result.
         SqlNormalizeResult normalize(std::string_view sql) const;
 
     private:

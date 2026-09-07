@@ -978,6 +978,37 @@ static void run_sql_statements(SpanImpl& span, int count) {
     }
 }
 
+// A statement over kMaxNormalizedSqlLength is dropped whole at SetSqlQuery:
+// it is never normalized, records no annotation and does not count toward
+// Sql.ErrorCount. Cutting it instead would give it an id/UID no other agent
+// computes for the same statement.
+TEST_F(SpanEventTest, OversizeSqlIsDroppedWithoutAnnotationOrCount) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 1;
+    applyConfigToFreshSpan(config);
+
+    const std::string over = "SELECT '" + std::string(kMaxNormalizedSqlLength, 'a') + "'";
+    const auto normalized_before = mock_agent_service_->getSqlNormalizeCount();
+
+    auto event = make_test_span_event(*test_span_, "query");
+    event.SetSqlQuery(over, {});
+
+    EXPECT_EQ(mock_agent_service_->getSqlNormalizeCount(), normalized_before)
+        << "an oversize statement must not reach the normalizer";
+    EXPECT_TRUE(event.getAnnotations()->getAnnotations().empty())
+        << "no SQL annotation for a dropped statement";
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "a dropped statement must not count toward Sql.ErrorCount";
+
+    // Exactly at the cap still records.
+    const std::string at_cap = "SELECT '" + std::string(kMaxNormalizedSqlLength - 9, 'a') + "'";
+    ASSERT_EQ(at_cap.size(), kMaxNormalizedSqlLength);
+    auto kept = make_test_span_event(*test_span_, "query");
+    kept.SetSqlQuery(at_cap, {});
+    EXPECT_EQ(mock_agent_service_->getSqlNormalizeCount(), normalized_before + 1);
+    EXPECT_FALSE(kept.getAnnotations()->getAnnotations().empty());
+}
+
 TEST_F(SpanEventTest, SqlCountBelowLimitLeavesSpanClean) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 3;

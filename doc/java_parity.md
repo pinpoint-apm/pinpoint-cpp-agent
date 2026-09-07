@@ -30,6 +30,7 @@ by side.
 | Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined** — see [below](#retrying-a-rejected-metadata-send--declined) |
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
+| Oversize SQL statement | `DefaultSqlNormalizer` (no cap) | **Exceeds Java, shared with Go** — see [below](#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
 | Exception chain scope and depth | `ExceptionContext`, `ExceptionRecordingState.isChaining`, `ExceptionWrapperFactory` | **Scope as Go, depth flat** — see [below](#exception-chain-scope-and-depth--scope-as-go-depth-flat) |
@@ -265,6 +266,39 @@ regression tests `GrpcStatsShutdownFlushSendsTickStillInProgress`,
 parity rather than a divergence.
 
 ---
+
+## Oversize SQL is dropped, not cut — exceeds Java, shared with Go
+
+**Java.** `DefaultSqlNormalizer` has no length limit: the whole statement is
+normalized, however long, and the result is hashed for the SQL UID. Only the
+copy in `PSqlMetaData.sql` is abbreviated afterwards (`SqlCacheService`).
+
+**Go.** Before gap C1 there was no limit either, so one pathological statement
+could make a span allocate without bound. C1 introduces the same cap as here.
+
+**This agent.** `kMaxNormalizedSqlLength` (1 MiB, `src/sql.h`) bounds the text
+the normalizer processes. It used to *cut* the statement at the cap and
+normalize the prefix (gap N1). A cut landing inside a string literal left an
+unterminated literal, which the state machine — like Java's — emits with no
+placeholder, so the normalized text, the SQL id and the SQL UID of a statement
+over 1 MiB all differed from what Java computes for the same statement. The cap
+now **drops** the statement whole: `SpanEventImpl::SetSqlQuery` returns before
+normalization, records no annotation and does not count it toward
+`Sql.ErrorCount`, and `SqlNormalizer::normalize` returns an empty result for
+any text over its limit so a direct caller cannot get a cut key either.
+
+**Decision, shared with Go.** Both ports had two choices: (A) drop the
+statement over the cap, or (B) cut it and normalize the prefix. (B) keeps some
+data but yields a key no other agent has, so a mixed Java/C++/Go service splits
+one statement across UIDs the moment it crosses the cap. (A) loses the
+statement from the trace but every agent that records it agrees on its
+identity, and the memory bound — the cap's only purpose — holds. Both agents
+take **(A) with the same 1 MiB value**; the Go change is its gap C1 and points
+back here, so the two caps move together. A statement of exactly 1 MiB is kept
+in both.
+
+**Upgrade note.** A statement over 1 MiB used to appear with a truncated key;
+it now does not appear at all, and a throttled warning names its size.
 
 ## Full send queue drops the oldest item — same as Java
 

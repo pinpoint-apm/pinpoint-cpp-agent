@@ -472,7 +472,7 @@ Not configurable, but wire-visible, and matching the Java agent:
 
 - A statement is normalized **whole**, and the **complete** normalized SQL is the SQL id cache key and the input to the SQL UID hash (MurmurHash3-128, little-endian — `UidGenerator.Murmur` in Java). Two agents therefore report the same id/UID for the same statement however long it is.
 - Only the copy transmitted in `PSqlMetaData.sql` / `PSqlUidMetaData.sql` is abbreviated, at **65536 bytes** (Java's `profiler.jdbc.maxsqllength`, applied by `SqlCacheService`): the first 65536 bytes — cut back to a whole UTF-8 character — plus a `...(<original length>)` suffix.
-- A hard cap of **1 MiB** on the text the normalizer processes protects against a pathological statement; past it the SQL is cut before normalization, and the id/UID then covers only the retained prefix.
+- A hard cap of **1 MiB** on the text the normalizer processes protects against a pathological statement. A statement over it is **dropped whole** — no SQL annotation, and it does not count toward `Sql.ErrorCount` — never cut: a cut landing inside a literal would give the statement an id/UID no other agent computes for it. A warning is logged (throttled). See [Java parity](java_parity.md#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go).
 
 ---
 

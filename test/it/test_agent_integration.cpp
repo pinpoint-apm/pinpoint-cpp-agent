@@ -1527,7 +1527,7 @@ TEST_F(AgentIntegrationTest, SqlUidEvictionFollowsCacheMembershipNotKeyShape) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
     // The reachable input: Sql.RemoveComments defaults to true.
-    ASSERT_TRUE(SqlNormalizer().normalize("/* hint */").normalized_sql.empty());
+    ASSERT_TRUE(SqlNormalizer(kMaxNormalizedSqlLength).normalize("/* hint */").normalized_sql.empty());
 
     constexpr std::string_view empty_key = "";
     const std::string long_sql = "SELECT " + std::string(70000, 'a') + " FROM t";

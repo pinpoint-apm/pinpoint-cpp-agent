@@ -28,10 +28,10 @@ class SqlTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Default: comments are removed, like the Java agent.
-        normalizer_ = std::make_unique<SqlNormalizer>();
+        normalizer_ = std::make_unique<SqlNormalizer>(kMaxNormalizedSqlLength);
         // Opt-out comment retention (Sql.RemoveComments=false), which
         // diverges from the Java agent.
-        keep_comments_ = std::make_unique<SqlNormalizer>(2048, false);
+        keep_comments_ = std::make_unique<SqlNormalizer>(kMaxNormalizedSqlLength, false);
     }
 
     void TearDown() override {
@@ -214,13 +214,13 @@ static std::string combineOutputParams(std::string_view sql, const std::vector<s
 
 static void ExpectJavaDefaultNormalize(std::string_view sql, std::string_view expected_normalized,
     std::string_view expected_params = "") {
-    SqlNormalizer java_default(2048, false);
+    SqlNormalizer java_default(kMaxNormalizedSqlLength, false);
     ExpectNormalize(java_default, sql, expected_normalized, expected_params);
 }
 
 static void ExpectJavaCombine(std::string_view original_sql, std::string_view normalized_sql,
     std::string_view output_params) {
-    SqlNormalizer java_default(2048, false);
+    SqlNormalizer java_default(kMaxNormalizedSqlLength, false);
     ExpectNormalize(java_default, original_sql, normalized_sql, output_params);
     EXPECT_EQ(combineOutputParams(normalized_sql, ParseOutputParameter(output_params)), original_sql);
 }
@@ -498,13 +498,24 @@ TEST_F(SqlTest, ComplexInsertQueryTest) {
 
 // ========== Edge Cases Tests ==========
 
-// Test very long SQL (should be truncated)
-TEST_F(SqlTest, VeryLongSqlTest) {
-    std::string long_sql(5000, 'A'); // 5KB of 'A' characters
-    long_sql = "SELECT * FROM users WHERE name = '" + long_sql + "'";
-    
-    auto result = normalizer_->normalize(long_sql);
-    EXPECT_TRUE(result.normalized_sql.length() <= 2048); // Should be truncated to max_sql_length
+// A statement over the hard cap is dropped whole — empty result, no
+// parameters — never cut to a prefix. One under it is normalized whole.
+TEST_F(SqlTest, OversizeSqlIsDroppedNotCut) {
+    const std::string filler(kMaxNormalizedSqlLength, 'A');
+    const std::string over = "SELECT * FROM users WHERE name = '" + filler + "'";
+    ASSERT_GT(over.size(), kMaxNormalizedSqlLength);
+
+    auto result = normalizer_->normalize(over);
+    EXPECT_TRUE(result.normalized_sql.empty());
+    EXPECT_TRUE(result.parameters.empty());
+    EXPECT_EQ(result.param_index, 0);
+
+    // Exactly at the cap is still whole.
+    const std::string at_cap = "SELECT '" + std::string(kMaxNormalizedSqlLength - 9, 'A') + "'";
+    ASSERT_EQ(at_cap.size(), kMaxNormalizedSqlLength);
+    result = normalizer_->normalize(at_cap);
+    EXPECT_EQ(result.normalized_sql, "SELECT '0$'");
+    EXPECT_EQ(result.parameters.size(), kMaxNormalizedSqlLength - 9);
 }
 
 // The agent's normalizer only enforces a hard memory cap, so a statement over
@@ -524,13 +535,13 @@ TEST_F(SqlTest, NormalizesPastMetadataCapUpToHardCap) {
     EXPECT_EQ(result.parameters, "x," + filler);
 }
 
-TEST_F(SqlTest, StopsNormalizingAtHardCap) {
+TEST_F(SqlTest, DropsAtHardCap) {
     SqlNormalizer agent_normalizer(kMaxNormalizedSqlLength);
     const std::string over_cap(kMaxNormalizedSqlLength + 1000, 'a');
 
     auto result = agent_normalizer.normalize("SELECT " + over_cap);
 
-    EXPECT_EQ(result.normalized_sql.length(), kMaxNormalizedSqlLength);
+    EXPECT_TRUE(result.normalized_sql.empty());
 }
 
 // Test SQL with only comments
@@ -548,44 +559,35 @@ TEST_F(SqlTest, MalformedQuotesTest) {
     EXPECT_TRUE(result.normalized_sql.find("SELECT * FROM users") != std::string::npos);
 }
 
-// The max_sql_length cut must never split a multibyte UTF-8 character: the
-// normalized SQL and parameters flow into protobuf string fields that require
-// valid UTF-8, and a partial character would make the collector reject or
-// mangle the SQL metadata.
-TEST_F(SqlTest, Utf8SafeTruncationTest) {
-    // "SELECT '" is 8 bytes; each "가" (U+AC00) is 3 bytes (EA B0 80), so
-    // the first spans bytes 8-10 and the second bytes 11-13. A limit of 12
-    // lands after the first byte of the second "가" — the whole partial
-    // character must be dropped, keeping 11 bytes.
-    SqlNormalizer cut_mid_char(12);
-    auto result = cut_mid_char.normalize("SELECT '\xEA\xB0\x80\xEA\xB0\x80'");
-    EXPECT_EQ(result.parameters, "\xEA\xB0\x80");
-    EXPECT_EQ(result.normalized_sql, "SELECT '");
+// The cap is measured in bytes and is all-or-nothing: a multibyte statement
+// one byte over it is dropped whole, so no partial character can ever reach
+// the protobuf string fields, and one at the cap is kept whole.
+TEST_F(SqlTest, MultibyteSqlAtCapIsAllOrNothing) {
+    // "SELECT '" is 8 bytes; each "가" (U+AC00) is 3 bytes, plus the closing
+    // quote: 15 bytes in total.
+    const std::string sql = "SELECT '\xEA\xB0\x80\xEA\xB0\x80'";
+    ASSERT_EQ(sql.size(), 15u);
 
-    // A limit landing exactly on a character boundary keeps every byte.
-    SqlNormalizer cut_on_boundary(14);
-    result = cut_on_boundary.normalize("SELECT '\xEA\xB0\x80\xEA\xB0\x80'");
+    SqlNormalizer one_under(14);
+    auto result = one_under.normalize(sql);
+    EXPECT_TRUE(result.normalized_sql.empty());
+    EXPECT_TRUE(result.parameters.empty());
+
+    SqlNormalizer at_cap(15);
+    result = at_cap.normalize(sql);
+    EXPECT_EQ(result.normalized_sql, "SELECT '0$'");
     EXPECT_EQ(result.parameters, "\xEA\xB0\x80\xEA\xB0\x80");
-
-    // Pure ASCII truncation is unaffected.
-    SqlNormalizer ascii_cut(8);
-    result = ascii_cut.normalize("SELECT 123456");
-    EXPECT_EQ(result.normalized_sql, "SELECT 0#");
-    EXPECT_EQ(result.parameters, "1");
 }
 
-// An unterminated string literal (e.g. SQL truncated at max_sql_length in the
-// middle of a string) keeps only its opening quote and emits no placeholder;
-// its content is still recorded in the parameters (Java/Go parity).
+// An unterminated string literal in the input keeps only its opening quote
+// and emits no placeholder; its content is still recorded in the parameters
+// (Java/Go parity). This is exactly why an oversize statement is dropped
+// rather than cut: a cut inside a literal would produce this shape for a
+// statement that is well-formed.
 TEST_F(SqlTest, UnterminatedStringLiteralNoPlaceholderTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE a = 'x' AND b = 'unclosed");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a = '0$' AND b = '");
     EXPECT_EQ(result.parameters, "x,unclosed");
-
-    SqlNormalizer short_normalizer(20);
-    result = short_normalizer.normalize("SELECT 'long literal cut off by the length limit'");
-    EXPECT_EQ(result.normalized_sql, "SELECT '");
-    EXPECT_EQ(result.parameters, "long literal");
 }
 
 // ========== One-Pass Integration Tests ==========
@@ -629,12 +631,18 @@ TEST_F(SqlTest, NestedQuotesAndCommentsTest) {
 
 // ========== Additional Edge Case Tests ==========
 
-// Test custom max_sql_length constructor
+// A custom max_sql_length drops over it and normalizes whole at or under it.
 TEST_F(SqlTest, CustomMaxSqlLengthTest) {
-    SqlNormalizer short_normalizer(30);
-    // SQL is longer than 30 chars, should be truncated during processing
-    auto result = short_normalizer.normalize("SELECT * FROM users WHERE id = 123 AND name = 'John'");
-    EXPECT_TRUE(result.normalized_sql.length() <= 30);
+    const std::string sql = "SELECT * FROM users WHERE id = 123 AND name = 'John'";
+    SqlNormalizer too_short(sql.size() - 1);
+    auto result = too_short.normalize(sql);
+    EXPECT_TRUE(result.normalized_sql.empty());
+    EXPECT_TRUE(result.parameters.empty());
+
+    SqlNormalizer exact(sql.size());
+    result = exact.normalize(sql);
+    EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0# AND name = '1$'");
+    EXPECT_EQ(result.parameters, "123,John");
 }
 
 TEST_F(SqlTest, EmptyStringLiteralTest) {
@@ -759,30 +767,36 @@ TEST_F(SqlTest, IdentifierEndingInDigitTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test truncation cutting through a string literal
-TEST_F(SqlTest, TruncationMidStringLiteralTest) {
-    SqlNormalizer tiny_normalizer(20);
-    // "SELECT name = 'very long string value'" is > 20 chars
-    // Truncation at 20 chars will cut inside the string literal
-    auto result = tiny_normalizer.normalize("SELECT name = 'very long string value'");
-    // Should not crash; malformed string handling should kick in
-    EXPECT_FALSE(result.normalized_sql.empty());
-}
+// The cap never alters the key. Whatever token a cut would have landed in — a
+// string literal, a number, a block comment — a statement under the cap
+// normalizes exactly as it does without one, and a statement over it yields
+// nothing. Cutting used to turn "'very long string value'" into an
+// unterminated literal with no placeholder, changing the SQL id/UID.
+TEST_F(SqlTest, CapNeverAltersTheKey) {
+    struct Case { const char* sql; size_t cut_would_land_in_token; };
+    const Case cases[] = {
+        {"SELECT name = 'very long string value'", 20},   // inside the literal
+        {"SELECT * FROM t WHERE x = 123456789", 30},     // inside the number
+        {"SELECT * /* very long block comment */ FROM t", 20}, // inside the comment
+    };
+    const SqlNormalizer uncapped(kMaxNormalizedSqlLength);
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.sql);
+        const std::string_view sql = c.sql;
+        ASSERT_LT(c.cut_would_land_in_token, sql.size());
 
-// Test truncation cutting through a number
-TEST_F(SqlTest, TruncationMidNumberTest) {
-    SqlNormalizer tiny_normalizer(25);
-    auto result = tiny_normalizer.normalize("SELECT * FROM t WHERE x = 123456789");
-    // Should not crash; number may be partially captured
-    EXPECT_FALSE(result.normalized_sql.empty());
-}
+        const SqlNormalizer capped_below(c.cut_would_land_in_token);
+        auto dropped = capped_below.normalize(sql);
+        EXPECT_TRUE(dropped.normalized_sql.empty());
+        EXPECT_TRUE(dropped.parameters.empty());
 
-// Test truncation cutting through a block comment
-TEST_F(SqlTest, TruncationMidBlockCommentTest) {
-    SqlNormalizer tiny_normalizer(20);
-    auto result = tiny_normalizer.normalize("SELECT * /* very long block comment */ FROM t");
-    // Should not crash
-    EXPECT_FALSE(result.normalized_sql.empty());
+        const SqlNormalizer capped_at(sql.size());
+        auto whole = capped_at.normalize(sql);
+        auto reference = uncapped.normalize(sql);
+        EXPECT_EQ(whole.normalized_sql, reference.normalized_sql);
+        EXPECT_EQ(whole.parameters, reference.parameters);
+        EXPECT_FALSE(whole.normalized_sql.empty());
+    }
 }
 
 // Test SQL with many parameters (verify indexing stays correct)

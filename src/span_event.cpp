@@ -28,6 +28,7 @@
 #include "noop.h"
 #include "span.h"
 #include "span_event.h"
+#include "sql.h"
 #include "utility.h"
 
 namespace pinpoint {
@@ -400,6 +401,14 @@ namespace pinpoint {
         if (warnIfFinished()) return;
         auto* span = spanIfAlive();
         if (span == nullptr) return;
+        // Over the memory cap the statement is dropped whole: no annotation
+        // and no SQL count. Cutting it instead would normalize a prefix whose
+        // id/UID no other agent computes for the same statement (see sql.h).
+        if (sql_query.size() > kMaxNormalizedSqlLength) {
+            LOG_WARN_THROTTLED("dropping sql of {} bytes: over the {} byte limit",
+                               sql_query.size(), kMaxNormalizedSqlLength);
+            return;
+        }
         const auto& config = span->config_;
         const auto mode = config->sql.enable_sql_stats
             ? SqlMetaMode::Uid
