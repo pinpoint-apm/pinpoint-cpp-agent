@@ -44,6 +44,12 @@ The remaining modes are `debug`, `coverage`, `profiling`,
 `bazel-asan`, `bazel-tsan`, `bazel-ubsan`, and `bazel-profiling`. The source tree
 is copied into the image; rebuild the image after changing source files.
 
+> The `tsan` and `bazel-tsan` modes need one host-side prerequisite. ASLR entropy
+> is a host kernel setting that containers inherit and cannot override, so on an
+> affected host these two modes fail inside the container exactly as they do
+> outside it — see
+> [Sanitizers: ThreadSanitizer aborts with "unexpected memory mapping"](#sanitizers-threadsanitizer-aborts-with-unexpected-memory-mapping).
+
 ### CI image with prebuilt vcpkg dependencies
 
 `ci/Dockerfile.vcpkg` builds an Ubuntu 24.04 image carrying the build tools, a
@@ -487,6 +493,24 @@ are mutually exclusive).
 UBSan halts on the first error (`-fno-sanitize-recover`), so CI fails loudly and
 points at the exact `file:line` of the violation.
 
+> **On Linux, TSan may need a `setarch` wrapper.** On a host configured with
+> `vm.mmap_rnd_bits = 32`, *every* `-fsanitize=thread` binary aborts with
+> `FATAL: ThreadSanitizer: unexpected memory mapping` — a hello-world reproduces
+> it in one line. A sanitized build also runs what it just built — the
+> instrumented `protoc` generates the agent's sources — so this shows up as a
+> failed **build** step, not a failed test. Disabling ASLR for the command fixes
+> it and needs no privileges; the personality is inherited by child processes, so
+> wrapping the top-level command covers the `protoc` runs and the test binaries:
+>
+> ```bash
+> setarch $(uname -m) -R cmake --build --preset tsan --parallel "$(nproc)"
+> setarch $(uname -m) -R ctest --preset tsan
+> ```
+>
+> ASan and UBSan are unaffected. For the root-privileged alternative, the Bazel
+> equivalent, and the full explanation, see
+> [Sanitizers: ThreadSanitizer aborts with "unexpected memory mapping"](#sanitizers-threadsanitizer-aborts-with-unexpected-memory-mapping).
+
 ### Sanitizers with CMake
 
 ```bash
@@ -513,6 +537,10 @@ build with examples off. Notable details:
   the sanitizer runtimes need one — see
   [Sanitizers: a sanitized link cannot find `_Unwind_GetIP`](#sanitizers-a-sanitized-link-cannot-find-_unwind_getip).
 - The instrumented integration test uses a fifteen-minute timeout.
+- The `tsan` preset's build *and* `ctest` commands both need the `setarch`
+  wrapper described above on an affected Linux host. Wrapping only one of the two
+  still fails: the build runs the instrumented `protoc`, and the tests are
+  instrumented binaries themselves.
 
 The equivalent manual configuration uses the `SANITIZE` cache variable, which
 accepts `address`, `thread`, or `undefined` and cannot be combined with
@@ -540,7 +568,10 @@ bazel test --config=ubsan //test:all
 > Bazel ASan uses static linking to avoid duplicate generated UPB globals; Bazel
 > UBSan selects Clang and compiler-rt for the same constraints as the CMake
 > preset. Sanitizer tests use a fifteen-minute timeout; the TSan suppression file
-> is included in the test runfiles.
+> is included in the test runfiles. On a host that needs the `setarch` wrapper
+> above, run `bazel shutdown` first and wrap the whole `bazel test` command: the
+> test actions are spawned by the Bazel server, so a server already running with
+> ASLR on keeps failing until it is restarted under `setarch`.
 
 ### Suppressing third-party false positives
 
