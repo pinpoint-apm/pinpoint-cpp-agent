@@ -146,9 +146,22 @@ namespace pinpoint {
         ///        and X-Real-Ip before falling back to @p remote_addr.
         static std::string getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
 
-        /// @brief Parses the Pinpoint proxy headers (Apache, Nginx or App) and
-        ///        records their timing and load information as annotations.
-        static void setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation);
+        /**
+         * @brief Parses the Pinpoint proxy headers and records the timing and
+         *        load information each one carries as an annotation.
+         *
+         * Every known header is inspected and each valid one appends its own
+         * annotation, so a request that passed through two proxies records
+         * two. A header whose `t=` is missing or non-positive is discarded
+         * whole (see doc/java_parity.md).
+         *
+         * @param user_header_names Header names holding a user-defined proxy
+         *        header (`Http.Server.ProxyUserHeaderNames`). Defaulted so the
+         *        feature stays opt-in for callers that have no configuration
+         *        to hand, e.g. unit tests exercising the fixed headers.
+         */
+        static void setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation,
+                                   const std::vector<std::string>& user_header_names = {});
     };
 
 }

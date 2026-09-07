@@ -1980,6 +1980,53 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     EXPECT_EQ(data->getRemoteAddr(), "upstream-host:8080");
 }
 
+// Java ServerRequestRecorder.recordParentInfo falls back to
+// requestAdaptor.getAcceptorHost() when the peer sent no Pinpoint-Host, so the
+// parent info still names the host that accepted the request. Without the
+// fallback the acceptor host went out blank, and the endpoint and remote
+// address that default through it went blank with it.
+TEST_F(SpanTest, SpanImplAcceptorHostFallsBackToEndpointWithoutHostHeaderTest) {
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
+    // No HEADER_HOST: the upstream hop is described, the host it reached is not.
+    extract_context(*span, *mock_agent_service_, reader);
+    ASSERT_TRUE(span->getSpanData()->getAcceptorHost().empty())
+        << "nothing to record until the request itself arrives";
+
+    MockHeaderReader header_reader;
+    helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
+
+    EXPECT_EQ(span->getSpanData()->getAcceptorHost(), "api.example.com:8080")
+        << "the endpoint the host integration supplies is this agent's acceptor host";
+}
+
+// The header still wins when the peer sent one: it names the host as the
+// *caller* addressed it, which is what the server map draws.
+TEST_F(SpanTest, SpanImplHostHeaderWinsOverAcceptorHostFallbackTest) {
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    reader.SetContext(HEADER_PARENT_APP_NAME, "ParentApp");
+    reader.SetContext(HEADER_HOST, "upstream-host:8080");
+    extract_context(*span, *mock_agent_service_, reader);
+
+    MockHeaderReader header_reader;
+    helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
+
+    EXPECT_EQ(span->getSpanData()->getAcceptorHost(), "upstream-host:8080")
+        << "the fallback must not overwrite the header";
+    EXPECT_EQ(span->getSpanData()->getEndPoint(), "api.example.com:8080");
+    EXPECT_EQ(span->getSpanData()->getRemoteAddr(), "10.0.0.1");
+}
+
 // The acceptor-host default holds only until instrumentation supplies real
 // values, and an explicitly empty value must stay empty rather than fall back
 // to the host — the reason SpanData tracks "was it set" instead of testing

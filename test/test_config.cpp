@@ -170,6 +170,7 @@ Http:
     RecordRequestHeader: ["Authorization", "Accept"]
     RecordRequestCookie: ["session"]
     RecordResponseHeader: ["Content-Type"]
+    ProxyUserHeaderNames: ["Pinpoint-ProxyUser", "X-My-Proxy"]
   
   Client:
     RecordRequestHeader: ["User-Agent"]
@@ -304,6 +305,8 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_TRUE(config->http.server.rec_request_header.empty()) << "Request header list should be empty by default";
     EXPECT_TRUE(config->http.server.rec_request_cookie.empty()) << "Request cookie list should be empty by default";
     EXPECT_TRUE(config->http.server.rec_response_header.empty()) << "Response header list should be empty by default";
+    EXPECT_TRUE(config->http.server.proxy_user_header_names.empty())
+        << "no user proxy header is read until one is named, as in Java";
     
     // Test HTTP client defaults
     EXPECT_TRUE(config->http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
@@ -490,6 +493,10 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     
     EXPECT_EQ(config->http.server.rec_response_header.size(), 1) << "Should have 1 response header";
     EXPECT_EQ(config->http.server.rec_response_header[0], "Content-Type") << "Response header should be Content-Type";
+
+    ASSERT_EQ(config->http.server.proxy_user_header_names.size(), 2) << "Should have 2 user proxy headers";
+    EXPECT_EQ(config->http.server.proxy_user_header_names[0], "Pinpoint-ProxyUser");
+    EXPECT_EQ(config->http.server.proxy_user_header_names[1], "X-My-Proxy");
     
     // Test HTTP client configuration
     EXPECT_EQ(config->http.client.rec_request_header.size(), 1) << "Should have 1 client request header";

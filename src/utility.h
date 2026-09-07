@@ -187,6 +187,20 @@ namespace pinpoint {
     std::string repairUtf8(std::string_view s);
 
     /**
+     * @brief True when every byte of @p s is in Java's id charset
+     * ([a-zA-Z0-9._-], `IdValidateUtils.ID_PATTERN_VALUE`). An empty string
+     * passes; callers that need a non-empty id check that themselves.
+     *
+     * Shared by the callers that validate an id taken from an untrusted
+     * carrier: the inbound transaction id (`TraceId::parseTraceId`) and the
+     * proxy header's `app=` value (`HttpTracerUtil::setProxyHeader`). Both
+     * values are echoed to downstream calls and displayed as HTML by the web
+     * UI (`TransactionIdUtils.java`: "should not use html syntax"), so
+     * anything else — '<', '>', CR/LF, control bytes — is rejected.
+     */
+    bool isIdChars(std::string_view s) noexcept;
+
+    /**
      * @brief Replaces every invalid UTF-8 sequence in @p s with U+FFFD, one
      * replacement per maximal invalid run (the policy of Go's
      * strings.ToValidUTF8, which the Go agent applies for the same reason).

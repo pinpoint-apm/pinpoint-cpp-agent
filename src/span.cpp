@@ -653,6 +653,14 @@ namespace pinpoint {
                 // the acceptor host in their getters (see SpanData).
                 data_->setAcceptorHost(host.value());
             }
+            // No else: a peer that sent no Pinpoint-Host leaves the acceptor
+            // host for the host integration to supply, which it does with the
+            // request itself — helper::traceServerRequest passes the endpoint
+            // to setAcceptorHostIfAbsent(). Filling it in here is not possible:
+            // this runs while the span is created, before any request detail is
+            // known. Java's fallback is the same value from the other side
+            // (ServerRequestRecorder.recordParentInfo reads
+            // requestAdaptor.getAcceptorHost()); see doc/java_parity.md.
         }
 
         agent_->getAgentStats().addActiveSpan(active_node_, data_->getSpanId(), data_->getStartTime());

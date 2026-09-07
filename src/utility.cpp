@@ -299,6 +299,15 @@ namespace pinpoint {
         return true;
     }
 
+    bool isIdChars(std::string_view s) noexcept {
+        for (const unsigned char c : s) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     std::string repairUtf8(std::string_view s) {
         constexpr std::string_view kReplacement = "\xEF\xBF\xBD";  // U+FFFD
         std::string out;

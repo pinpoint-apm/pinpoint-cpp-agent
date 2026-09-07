@@ -160,6 +160,7 @@ namespace pinpoint {
         constexpr const char* HTTP_SERVER_RECORD_REQUEST_HEADER = "HTTP_SERVER_RECORD_REQUEST_HEADER";
         constexpr const char* HTTP_SERVER_RECORD_REQUEST_COOKIE = "HTTP_SERVER_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "HTTP_SERVER_RECORD_RESPONSE_HEADER";
+        constexpr const char* HTTP_SERVER_PROXY_USER_HEADER_NAMES = "HTTP_SERVER_PROXY_USER_HEADER_NAMES";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "HTTP_CLIENT_RECORD_REQUEST_HEADER";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
@@ -418,6 +419,11 @@ namespace pinpoint {
                 std::vector<std::string> rec_request_header;
                 std::vector<std::string> rec_request_cookie;
                 std::vector<std::string> rec_response_header;
+                // Header names carrying a user-defined proxy header, Java's
+                // `profiler.proxy.http.headers` (UserRequestParser.init).
+                // Empty by default, which is Java's default too: the user
+                // proxy type records nothing until a name is configured.
+                std::vector<std::string> proxy_user_header_names;
             } server;
 
             struct {

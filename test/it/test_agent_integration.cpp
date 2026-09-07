@@ -1409,7 +1409,7 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
 
     MapCarrier server_request;
     server_request.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1");
-    server_request.Set("Pinpoint-ProxyNginx", "t=1710000000.125 D=37");
+    server_request.Set("Pinpoint-ProxyNginx", "t=1710000000.125 D=0.037");
     server_request.Set("x-request-id", "server-request-1");
     MapCarrier server_cookie;
     server_cookie.Set("session_id", "server-session-2");
@@ -1457,7 +1457,8 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
     const auto& proxy_value = proxy->value().longintintbytebytestringvalue();
     EXPECT_EQ(proxy_value.longvalue(), INT64_C(1710000000125));
     EXPECT_EQ(proxy_value.intvalue1(), 2);
-    EXPECT_EQ(proxy_value.intvalue2(), 37);
+    // $request_time is seconds with three decimals: 0.037s is 37000us.
+    EXPECT_EQ(proxy_value.intvalue2(), 37000);
 
     const auto* server_request_header = find_annotation(
         wire->annotation(), ANNOTATION_HTTP_REQUEST_HEADER);
@@ -3793,7 +3794,7 @@ TEST_F(AgentIntegrationTest, FlushesExceptionMetadataForAsyncSpans) {
               "run_job");
 }
 
-TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) {
+TEST_F(AgentIntegrationTest, RecordsEveryProxyHeaderAndDiscardsInvalidOnes) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
     auto app_span = agent_->NewSpan("http.proxy.app", "/proxy-app");
@@ -3804,8 +3805,10 @@ TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) 
                                    "app.example.test:80", app_request);
     app_span->EndSpan();
 
-    // 1e300 * 1000 does not fit into int64: the untrusted timestamp must be
-    // rejected before the cast, while the annotation itself is still recorded.
+    // A timestamp that is not nginx's "seconds.milliseconds" — here the value
+    // that used to reach an undefined double->int64 cast — discards the header
+    // whole, as Java's setValid(false) does. An annotation carrying a received
+    // time of 0 is charted as a proxy-to-agent gap of five decades.
     auto nginx_span = agent_->NewSpan("http.proxy.nginx.range",
                                       "/proxy-nginx-range");
     ASSERT_TRUE(nginx_span->IsSampled());
@@ -3815,21 +3818,23 @@ TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) 
                                    "nginx.example.test:80", nginx_request);
     nginx_span->EndSpan();
 
-    // When several proxy headers are present, Apache wins over Nginx and App.
-    auto priority_span = agent_->NewSpan("http.proxy.priority", "/proxy-priority");
-    ASSERT_TRUE(priority_span->IsSampled());
-    MapCarrier priority_request;
-    priority_request.Set("Pinpoint-ProxyApache", "t=1710000002000000 D=9");
-    priority_request.Set("Pinpoint-ProxyNginx", "t=1710000003.5");
-    priority_request.Set("Pinpoint-ProxyApp", "t=1710000004000 app=ignored");
-    helper::TraceHttpServerRequest(priority_span, "192.0.2.32:9000",
-                                   "priority.example.test:80", priority_request);
-    priority_span->EndSpan();
+    // Every header present is recorded, one annotation each: a request that
+    // crossed two proxies describes both hops. The nginx header here is
+    // malformed, so only the apache and app hops survive.
+    auto chain_span = agent_->NewSpan("http.proxy.chain", "/proxy-chain");
+    ASSERT_TRUE(chain_span->IsSampled());
+    MapCarrier chain_request;
+    chain_request.Set("Pinpoint-ProxyApache", "t=1710000002000000 D=9");
+    chain_request.Set("Pinpoint-ProxyNginx", "t=1710000003.5");
+    chain_request.Set("Pinpoint-ProxyApp", "t=1710000004000 app=chain-app");
+    helper::TraceHttpServerRequest(chain_span, "192.0.2.32:9000",
+                                   "chain.example.test:80", chain_request);
+    chain_span->EndSpan();
 
     ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
         return find_span_by_rpc(snapshot, "/proxy-app").has_value() &&
                find_span_by_rpc(snapshot, "/proxy-nginx-range").has_value() &&
-               find_span_by_rpc(snapshot, "/proxy-priority").has_value();
+               find_span_by_rpc(snapshot, "/proxy-chain").has_value();
     }, kWaitTimeout));
 
     const auto snapshot = collector_.snapshot();
@@ -3845,24 +3850,28 @@ TEST_F(AgentIntegrationTest, RecordsAppProxyHeaderAndGuardsNginxTimestampRange) 
 
     const auto nginx_wire = find_span_by_rpc(snapshot, "/proxy-nginx-range");
     ASSERT_TRUE(nginx_wire.has_value());
-    const auto* nginx_proxy = find_annotation(nginx_wire->annotation(),
-                                              ANNOTATION_HTTP_PROXY_HEADER);
-    ASSERT_NE(nginx_proxy, nullptr);
-    const auto& nginx_value = nginx_proxy->value().longintintbytebytestringvalue();
-    EXPECT_EQ(nginx_value.longvalue(), 0);
-    EXPECT_EQ(nginx_value.intvalue1(), 2);
-    EXPECT_EQ(nginx_value.intvalue2(), 25);
+    EXPECT_EQ(find_annotation(nginx_wire->annotation(), ANNOTATION_HTTP_PROXY_HEADER),
+              nullptr)
+        << "a header with no usable received time must record nothing at all";
 
-    const auto priority_wire = find_span_by_rpc(snapshot, "/proxy-priority");
-    ASSERT_TRUE(priority_wire.has_value());
-    const auto* priority_proxy = find_annotation(priority_wire->annotation(),
-                                                 ANNOTATION_HTTP_PROXY_HEADER);
-    ASSERT_NE(priority_proxy, nullptr);
-    const auto& priority_value =
-        priority_proxy->value().longintintbytebytestringvalue();
-    EXPECT_EQ(priority_value.longvalue(), INT64_C(1710000002000));
-    EXPECT_EQ(priority_value.intvalue1(), 3);
-    EXPECT_EQ(priority_value.intvalue2(), 9);
+    const auto chain_wire = find_span_by_rpc(snapshot, "/proxy-chain");
+    ASSERT_TRUE(chain_wire.has_value());
+    std::map<int32_t, v1::PLongIntIntByteByteStringValue> chain_by_code;
+    for (const auto& annotation : chain_wire->annotation()) {
+        if (annotation.key() == ANNOTATION_HTTP_PROXY_HEADER) {
+            chain_by_code.emplace(annotation.value().longintintbytebytestringvalue().intvalue1(),
+                                  annotation.value().longintintbytebytestringvalue());
+        }
+    }
+    ASSERT_EQ(chain_by_code.size(), 2u) << "apache and app record, the malformed nginx does not";
+
+    ASSERT_TRUE(chain_by_code.count(3));
+    EXPECT_EQ(chain_by_code.at(3).longvalue(), INT64_C(1710000002000));
+    EXPECT_EQ(chain_by_code.at(3).intvalue2(), 9) << "apache D is already microseconds";
+
+    ASSERT_TRUE(chain_by_code.count(1));
+    EXPECT_EQ(chain_by_code.at(1).longvalue(), INT64_C(1710000004000));
+    EXPECT_EQ(chain_by_code.at(1).stringvalue().value(), "chain-app");
 }
 
 TEST_F(AgentIntegrationTest, ReRegistersMetadataAfterRetryExhaustion) {

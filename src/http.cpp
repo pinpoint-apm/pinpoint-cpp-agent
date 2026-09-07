@@ -18,6 +18,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -362,13 +363,30 @@ namespace pinpoint {
     }
 
     namespace {
-        // Java ProxyRequestAnnotationFactory.APP_MAX_LENGTH. The app name comes
-        // straight out of an untrusted proxy header, so an uncapped value would
-        // inflate every span it touches. Deliberately a plain cut: Java's
+        // Java ProxyRequestAnnotationFactory.APP_MAX_LENGTH: the cap the
+        // annotation's app field is abbreviated to. The App parser validates
+        // its own value against the stricter kProxyAppMaxIdLength below, so
+        // this only ever bites the user parser, whose app field is the matched
+        // header name. Deliberately a plain cut: Java's
         // StringUtils.abbreviate(app, 32) also appends "...(<original
-        // length>)", which utility.h's abbreviateErrorString reproduces if that
-        // parity is ever wanted here.
+        // length>)", which utility.h's abbreviateErrorString reproduces if
+        // that parity is ever wanted here.
         constexpr size_t kProxyAppMaxLength = 32;
+
+        // Java AppRequestParser: IdValidateUtils.validateId(app, 30). A value
+        // failing either half of that check discards the whole header.
+        constexpr size_t kProxyAppMaxIdLength = 30;
+
+        constexpr std::string_view kProxyHeaderApache = "Pinpoint-ProxyApache";
+        constexpr std::string_view kProxyHeaderNginx = "Pinpoint-ProxyNginx";
+        constexpr std::string_view kProxyHeaderApp = "Pinpoint-ProxyApp";
+
+        // Java ProxyRequestType.getCode() per request type; the collector and
+        // web UI key the annotation's display name off these.
+        constexpr int32_t kProxyCodeApp = 1;
+        constexpr int32_t kProxyCodeNginx = 2;
+        constexpr int32_t kProxyCodeApache = 3;
+        constexpr int32_t kProxyCodeUser = 4;
 
         struct ProxyHeaderValues {
             std::string_view t_val;
@@ -420,91 +438,248 @@ namespace pinpoint {
             }
             return result;
         }
+
+        /// @brief Digits only, no sign and no whitespace, overflow-checked.
+        ///
+        /// Java's NumberUtils.parse* return their default on anything
+        /// Long/Integer.parseLong rejects, and every proxy timing field that
+        /// survives its own > 0 gate below is unsigned — so refusing a sign
+        /// here reaches the same outcome. absl::SimpleAtoi is not used because
+        /// it tolerates surrounding whitespace, which Java does not.
+        std::optional<int64_t> parseProxyDigits(std::string_view value) {
+            if (value.empty()) {
+                return std::nullopt;
+            }
+            int64_t result = 0;
+            for (const char c : value) {
+                if (c < '0' || c > '9') {
+                    return std::nullopt;
+                }
+                const int digit = c - '0';
+                if (result > (std::numeric_limits<int64_t>::max() - digit) / 10) {
+                    return std::nullopt;
+                }
+                result = result * 10 + digit;
+            }
+            return result;
+        }
+
+        /// @brief Parses nginx's "<seconds>.<mmm>" and returns it scaled by
+        ///        1000, i.e. "1504230492.763" -> 1504230492763.
+        ///
+        /// Java (NginxRequestParser.toReceivedTimeMillis /
+        /// toDurationTimeMicros) enforces exactly three digits after the last
+        /// '.' and converts by deleting that '.', so anything else — an
+        /// integer, one or two decimals, more than three — is rejected rather
+        /// than approximated. Done as integer arithmetic like Java, not by
+        /// parsing a double and scaling: 0.123 has no exact binary
+        /// representation, so double(0.123) * 1e6 truncates to 122999.
+        std::optional<int64_t> parseProxySecondsWithMillis(std::string_view value) {
+            const auto dot = value.rfind('.');
+            if (dot == std::string_view::npos || value.size() - dot != 4) {
+                return std::nullopt;  // absent, or not the "sec.mmm" format
+            }
+            int64_t seconds = 0;
+            if (dot > 0) {
+                // Java's substring(0, 0) leaves the whole part empty and
+                // parses just the milliseconds, so ".763" is 763 there too.
+                const auto parsed = parseProxyDigits(value.substr(0, dot));
+                if (!parsed.has_value()) {
+                    return std::nullopt;
+                }
+                seconds = *parsed;
+            }
+            const auto millis = parseProxyDigits(value.substr(dot + 1));
+            if (!millis.has_value()) {
+                return std::nullopt;
+            }
+            if (seconds > (std::numeric_limits<int64_t>::max() - *millis) / 1000) {
+                return std::nullopt;
+            }
+            return seconds * 1000 + *millis;
+        }
+
+        /// @brief Microseconds from an apache/app `D=`, which is already a
+        ///        plain microsecond count. 0 when absent or unparseable.
+        int32_t parseProxyMicros(std::string_view value) {
+            const auto micros = parseProxyDigits(value);
+            if (!micros.has_value() || *micros > std::numeric_limits<int32_t>::max()) {
+                return 0;
+            }
+            return static_cast<int32_t>(*micros);
+        }
+
+        /// @brief Microseconds from an nginx `D=` ($request_time, seconds with
+        ///        three decimals). 0 when absent or not in that format.
+        int32_t parseProxyNginxDurationMicros(std::string_view value) {
+            const auto millis = parseProxySecondsWithMillis(value);
+            // Java multiplies by 1000 into an int, which silently wraps. The
+            // wire field is an int32, so an out-of-range product is reported
+            // as "no duration" instead of as a wrapped one.
+            if (!millis.has_value() || *millis > std::numeric_limits<int32_t>::max() / 1000) {
+                return 0;
+            }
+            return static_cast<int32_t>(*millis * 1000);
+        }
+
+        /// @brief Milliseconds from a user proxy header's `t=`.
+        ///
+        /// Java UserRequestParser.toReceivedTimeMillis: a configured header
+        /// may be written by any of the three proxies, so the format is
+        /// inferred from the value's own shape rather than from its name.
+        int64_t parseProxyUserReceivedTimeMillis(std::string_view value) {
+            const size_t length = value.size();
+            if (length < 13) {
+                return 0;  // shorter than a millisecond epoch timestamp
+            }
+            if (length >= 16) {
+                // apache: microseconds. Dropping the last three digits like
+                // Java's substring(0, length - 3), rather than parsing the
+                // whole value and dividing, keeps a 20-digit value out of an
+                // int64 overflow that Java never hits.
+                return parseProxyDigits(value.substr(0, length - 3)).value_or(0);
+            }
+            if (const auto dot = value.rfind('.'); dot != std::string_view::npos) {
+                // nginx: seconds.milliseconds, e.g. 1504230492.763. The
+                // seconds part must itself be a full epoch value.
+                if (dot < 10) {
+                    return 0;
+                }
+                return parseProxySecondsWithMillis(value).value_or(0);
+            }
+            // app: milliseconds.
+            return parseProxyDigits(value).value_or(0);
+        }
+
+        /// @brief Microseconds from a user proxy header's `D=`, nginx's
+        ///        fractional seconds when it carries a '.' (Java
+        ///        UserRequestParser.toDurationTimeMicros).
+        int32_t parseProxyUserDurationMicros(std::string_view value) {
+            if (value.find('.') != std::string_view::npos) {
+                return parseProxyNginxDurationMicros(value);
+            }
+            return parseProxyMicros(value);
+        }
+
+        /// @brief Java's String.trim() over the ASCII blanks a space-split
+        ///        token can still hold (tab, CR), as AppRequestParser applies
+        ///        to `app=` before validating it.
+        std::string_view trimProxyValue(std::string_view value) {
+            const auto start = value.find_first_not_of(" \t\r\n");
+            if (start == std::string_view::npos) {
+                return {};
+            }
+            return value.substr(start, value.find_last_not_of(" \t\r\n") - start + 1);
+        }
     }
 
-    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation) {
+    void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation,
+                                        const std::vector<std::string>& user_header_names) {
         if (annotation == nullptr) {
             return;
         }
 
-        int64_t received_time = 0;
-        int duration_time = 0;
-        int idle_percent = 0;
-        int busy_percent = 0;
-        int32_t code = 0;
-        std::string app;
+        // Java DefaultProxyRequestRecorder.record runs every parser and
+        // records one annotation per *valid* header, so a request that came
+        // through both an Apache and an Nginx proxy records two. Hence
+        // independent ifs below rather than a first-match if/else chain.
+        //
+        // Each block also reproduces its parser's `t=` gate: with no `t=`, or
+        // one that is not positive, the parser calls setValid(false) and the
+        // recorder records nothing. An annotation whose received time is 0 is
+        // worse than no annotation — the web UI charts the proxy-to-agent gap
+        // from that field, and 0 renders as a gap of five decades.
+        //
+        // Every block finishes (append included) before the next Get(): a
+        // HeaderReader only guarantees a returned view until the next Get() on
+        // the same reader, and the values parsed out of a header point into it.
+        const auto append = [annotation](const int32_t code, const int64_t received_time,
+                                         const int32_t duration_time, const int32_t idle_percent,
+                                         const int32_t busy_percent, const std::string_view app) {
+            annotation->AppendLongIntIntByteByteString(
+                ANNOTATION_HTTP_PROXY_HEADER,
+                received_time,
+                code,
+                duration_time,
+                idle_percent,
+                busy_percent,
+                // utf8SafeCutLength keeps the cut off a multibyte boundary, so
+                // the capped name stays valid UTF-8 for the protobuf string
+                // field (same reason SQL and callstack truncation use it).
+                app.substr(0, utf8SafeCutLength(app, kProxyAppMaxLength))
+            );
+        };
 
-        // Check Pinpoint-ProxyApache header
-        if (auto apache = reader.Get("Pinpoint-ProxyApache"); apache.has_value()) {
-            auto values = parseProxyHeaderInline(apache.value());
-            if (!values.t_val.empty()) {
-                int64_t t = 0;
-                if (absl::SimpleAtoi(values.t_val, &t)) received_time = t / 1000;
-            }
-            if (!values.D_val.empty() && !absl::SimpleAtoi(values.D_val, &duration_time)) {
-                duration_time = 0;
-            }
+        // Apache: `t` is microseconds, `D` a plain microsecond count.
+        if (const auto apache = reader.Get(kProxyHeaderApache);
+                apache.has_value() && !apache->empty()) {
+            const auto values = parseProxyHeaderInline(*apache);
+            // Java ApacheRequestParser.toReceivedTimeMillis drops the last
+            // three digits rather than dividing, and yields nothing for a
+            // value of three digits or fewer.
+            const int64_t received_time = values.t_val.size() > 3
+                ? parseProxyDigits(values.t_val.substr(0, values.t_val.size() - 3)).value_or(0)
+                : 0;
+            int idle_percent = 0;
+            int busy_percent = 0;
             if (!values.i_val.empty() && !absl::SimpleAtoi(values.i_val, &idle_percent)) {
                 idle_percent = 0;
             }
             if (!values.b_val.empty() && !absl::SimpleAtoi(values.b_val, &busy_percent)) {
                 busy_percent = 0;
             }
-            code = 3;
-        }
-        // Check Pinpoint-ProxyNginx header
-        else if (auto nginx = reader.Get("Pinpoint-ProxyNginx"); nginx.has_value()) {
-            auto values = parseProxyHeaderInline(nginx.value());
-            if (!values.t_val.empty()) {
-                double t = 0.0;
-                if (absl::SimpleAtod(values.t_val, &t)) {
-                    // Reject non-finite or out-of-range products before the
-                    // cast: converting such a double to int64_t is undefined
-                    // behavior, and t comes from an untrusted proxy header.
-                    // NaN fails both comparisons; ±inf fails one. The upper
-                    // bound uses '<' because static_cast<double>(INT64_MAX)
-                    // rounds up to 2^63, which is not representable as int64_t.
-                    const double ms = t * 1000.0;
-                    if (ms >= static_cast<double>(std::numeric_limits<int64_t>::min()) &&
-                            ms < static_cast<double>(std::numeric_limits<int64_t>::max())) {
-                        received_time = static_cast<int64_t>(ms);
-                    }
-                }
+            if (received_time > 0) {
+                append(kProxyCodeApache, received_time, parseProxyMicros(values.D_val),
+                       static_cast<int32_t>(idle_percent), static_cast<int32_t>(busy_percent), {});
             }
-            if (!values.D_val.empty() && !absl::SimpleAtoi(values.D_val, &duration_time)) {
-                duration_time = 0;
-            }
-            code = 2;
-        }
-        // Check Pinpoint-ProxyApp header
-        else if (auto proxy_app = reader.Get("Pinpoint-ProxyApp"); proxy_app.has_value()) {
-            auto values = parseProxyHeaderInline(proxy_app.value());
-            if (!values.t_val.empty()) {
-                if (!absl::SimpleAtoi(values.t_val, &received_time)) {
-                    received_time = 0;
-                }
-            }
-            if (!values.app_val.empty()) {
-                // utf8SafeCutLength keeps the cut off a multibyte boundary, so
-                // the capped name stays valid UTF-8 for the protobuf string
-                // field (same reason SQL and callstack truncation use it).
-                app = std::string(values.app_val.substr(
-                    0, utf8SafeCutLength(values.app_val, kProxyAppMaxLength)));
-            }
-            code = 1;
         }
 
-        // If any proxy header was found, add annotation
-        if (code > 0) {
-            annotation->AppendLongIntIntByteByteString(
-                ANNOTATION_HTTP_PROXY_HEADER,
-                received_time,
-                code,
-                static_cast<int32_t>(duration_time),
-                static_cast<int32_t>(idle_percent),
-                static_cast<int32_t>(busy_percent),
-                app
-            );
+        // Nginx: `t` is $msec and `D` is $request_time — both seconds with
+        // three decimals, not the integers Apache sends.
+        if (const auto nginx = reader.Get(kProxyHeaderNginx);
+                nginx.has_value() && !nginx->empty()) {
+            const auto values = parseProxyHeaderInline(*nginx);
+            const int64_t received_time = parseProxySecondsWithMillis(values.t_val).value_or(0);
+            if (received_time > 0) {
+                append(kProxyCodeNginx, received_time,
+                       parseProxyNginxDurationMicros(values.D_val), 0, 0, {});
+            }
+        }
+
+        // App: `t` is already milliseconds, and `app` is validated rather than
+        // truncated — Java AppRequestParser discards the header when
+        // IdValidateUtils.validateId(app, 30) fails, because the app name
+        // names a node in the server map and a mangled one invents a node.
+        if (const auto proxy_app = reader.Get(kProxyHeaderApp);
+                proxy_app.has_value() && !proxy_app->empty()) {
+            const auto values = parseProxyHeaderInline(*proxy_app);
+            const int64_t received_time = parseProxyDigits(values.t_val).value_or(0);
+            const std::string_view app = trimProxyValue(values.app_val);
+            const bool app_valid =
+                app.empty() || (app.size() <= kProxyAppMaxIdLength && isIdChars(app));
+            if (received_time > 0 && app_valid) {
+                append(kProxyCodeApp, received_time, 0, 0, 0, app);
+            }
+        }
+
+        // User: the header names are configuration
+        // (Http.Server.ProxyUserHeaderNames, Java's
+        // profiler.proxy.http.headers), and the annotation's app field carries
+        // the matched header name so the web UI can label the hop.
+        for (const auto& name : user_header_names) {
+            if (name.empty()) {
+                continue;
+            }
+            const auto user = reader.Get(name);
+            if (!user.has_value() || user->empty()) {
+                continue;
+            }
+            const auto values = parseProxyHeaderInline(*user);
+            const int64_t received_time = parseProxyUserReceivedTimeMillis(values.t_val);
+            if (received_time > 0) {
+                append(kProxyCodeUser, received_time,
+                       parseProxyUserDurationMicros(values.D_val), 0, 0, name);
+            }
         }
     }
 
@@ -525,8 +700,16 @@ namespace pinpoint {
                 // span's annotation container; noop/unsampled spans have
                 // none and record nothing, as before.
                 if (auto* impl = dynamic_cast<SpanImpl*>(span.get())) {
-                    HttpTracerUtil::setProxyHeader(request_reader,
-                                                   impl->getSpanData()->getAnnotations());
+                    // Java ServerRequestRecorder.recordParentInfo records
+                    // Pinpoint-Host as the acceptor host and falls back to
+                    // requestAdaptor.getAcceptorHost() when the peer sent
+                    // none; this endpoint is that value here. extractContext()
+                    // has already stored the header if there was one, so this
+                    // only fills the gap (see doc/java_parity.md).
+                    impl->getSpanData()->setAcceptorHostIfAbsent(endpoint);
+                    HttpTracerUtil::setProxyHeader(
+                        request_reader, impl->getSpanData()->getAnnotations(),
+                        impl->getConfig()->http.server.proxy_user_header_names);
                 }
                 span->RecordHeader(HTTP_REQUEST, request_reader);
             }

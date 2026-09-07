@@ -418,6 +418,28 @@ leaves C++ keys equal to theirs for any path of three segments or fewer.
 | `Http.Server.RecordRequestHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER` | list&lt;string&gt; | `[]` |
 | `Http.Server.RecordRequestCookie` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
 | `Http.Server.RecordResponseHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
+| `Http.Server.ProxyUserHeaderNames` | `PINPOINT_CPP_HTTP_SERVER_PROXY_USER_HEADER_NAMES` | list&lt;string&gt; | `[]` |
+
+`ProxyUserHeaderNames` names the request headers that carry a *user-defined*
+proxy header — a proxy that writes the Pinpoint proxy format under a header
+name of its own instead of `Pinpoint-ProxyApache` / `-ProxyNginx` /
+`-ProxyApp`. It is Java's `profiler.proxy.http.headers`
+(`UserRequestParser`), and like Java it is empty by default: nothing is read
+until a name is listed. Each configured name that is present on a request
+records its own proxy annotation under type code 4, labelled with the header
+name it was read from.
+
+```yaml
+Http:
+  Server:
+    ProxyUserHeaderNames: ["Pinpoint-ProxyUser", "X-Edge-Proxy"]
+```
+
+The value's own shape decides how its `t=` is read — microseconds, plain
+milliseconds, or nginx's `seconds.milliseconds` — because the header may have
+been written by any of the three proxies. The three fixed header names
+(`Pinpoint-ProxyApache`, `Pinpoint-ProxyNginx`, `Pinpoint-ProxyApp`) are always
+read and need no configuration.
 
 ### Client-side Tracing
 
@@ -506,6 +528,7 @@ are **non-reloadable** — changing them requires an application restart.
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
+| Proxy header names | `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |
 

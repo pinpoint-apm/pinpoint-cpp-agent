@@ -157,6 +157,16 @@ namespace pinpoint {
         const std::string& getRemoteAddr() const { return remote_addr_set_ ? remote_addr_ : acceptor_host_; }
 
         void setAcceptorHost(std::string_view acceptor_host) { acceptor_host_ = acceptor_host; }
+        // Java ServerRequestRecorder.recordParentInfo prefers the Pinpoint-Host
+        // header and falls back to requestAdaptor.getAcceptorHost(). Those two
+        // arrive at different times here — the header while the inbound context
+        // is read, the host integration's own value with the request itself — so
+        // the fallback is applied on arrival and must not overwrite the header.
+        void setAcceptorHostIfAbsent(std::string_view acceptor_host) {
+            if (acceptor_host_.empty()) {
+                acceptor_host_ = acceptor_host;
+            }
+        }
         const std::string& getAcceptorHost() const { return acceptor_host_; }
 
         void setLoggingFlag() { logging_flag_ = SPAN_LOGGING_FLAG_ON; }
@@ -565,6 +575,10 @@ namespace pinpoint {
                            int32_t byte_value1, int32_t byte_value2,
                            std::string_view string_value) override;
         const std::shared_ptr<SpanData>& getSpanData() const { return data_; }
+        // The config generation this span captured (never null, see the ctor).
+        // Impl-level only: the HTTP request helpers read the settings that
+        // govern recording off it, so a config reload cannot land mid-request.
+        const std::shared_ptr<const Config>& getConfig() const { return config_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
         std::string getUrlTemplate() const {

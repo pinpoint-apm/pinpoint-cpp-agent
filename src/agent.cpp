@@ -1099,19 +1099,6 @@ namespace pinpoint {
     }
 
     namespace {
-        // Java's IdValidateUtils.checkId charset ([a-zA-Z0-9._-]+). The agent id
-        // is echoed to every downstream call and displayed as HTML by the web UI
-        // (TransactionIdUtils.java: "should not use html syntax"), so anything
-        // else — '<', '>', CR/LF, control bytes — is rejected here.
-        bool isIdChars(std::string_view s) noexcept {
-            for (const unsigned char c : s) {
-                const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                                (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-                if (!ok) return false;
-            }
-            return true;
-        }
-
         // Strict Long.parseLong: optional leading '+'/'-', then ASCII digits only,
         // no whitespace, range-checked. stoll_ (absl::SimpleAtoi) is not used
         // here because it tolerates surrounding whitespace, which Java rejects.

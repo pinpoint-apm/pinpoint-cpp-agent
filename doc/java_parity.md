@@ -37,6 +37,8 @@ by side.
 | `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
 | SQL statement count scope | `DefaultSqlCountService`, `DefaultShared.incrementAndGetSqlCount` | **Same as Java** — see [below](#sqlerrorcount-is-a-per-transaction-budget--same-as-java) |
 | `PSpan.err` error cause mask | `ConfigurableErrorRecorder`, `ErrorCategory`, `DefaultShared.maskErrorCode` | **Same as Java, Go still diverges** — see [below](#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges) |
+| Proxy request headers | `DefaultProxyRequestRecorder`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser` | **Same as Java, Go still diverges** — see [below](#proxy-request-headers--same-as-java-go-still-diverges) |
+| Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, Go still diverges** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -491,6 +493,101 @@ cause: `2` for an exception, `4` for a status code in
 `Http.Server.StatusCodeErrors`, `8` for a `Sql.ErrorCount` overflow, OR-ed
 together when more than one applies. Anything that compared `err` against `1`
 must test `err != 0` instead.
+
+---
+
+## Proxy request headers — same as Java, Go still diverges
+
+Recorded because four separate divergences were fixed at once, because each fix
+changes what operators see on the proxy-header annotation, and because the Go
+port has not landed the same changes yet.
+
+**Java.** `DefaultProxyRequestRecorder.record` walks **every** configured
+parser and calls `parseHeaderAndRecord` on each
+(`DefaultProxyRequestRecorder.java:52-53`), so one request records one
+annotation per header it carries. A parser marks its result valid only from
+the `t=` branch: with no `t=`, or one that is not positive, it calls
+`setValid(false)` and `parseHeaderAndRecord` records nothing at all
+(`NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`,
+`UserRequestParser`, all in `agent-module/agent-plugins/proxy-*`). The four
+types and their codes are `APP=1`, `NGINX=2`, `APACHE=3`, `USER=4`
+(`*RequestType.getCode()`); the user type reads header names from
+`profiler.proxy.http.headers` (`UserRequestConstants`) and puts the matched
+header *name* in the annotation's app field. Numeric formats differ per type:
+apache's `t`/`D` are microseconds, app's `t` is milliseconds, and nginx's
+`t` (`$msec`) and `D` (`$request_time`) are `seconds.milliseconds` —
+`NginxRequestParser.toReceivedTimeMillis` / `toDurationTimeMicros` require
+exactly three digits after the last `.` and convert by *deleting* the `.`,
+returning 0 for any other shape. `AppRequestParser` runs its `app=` value
+through `IdValidateUtils.validateId(app, 30)` and discards the whole header
+when the charset (`[a-zA-Z0-9._-]+`) or the 30-character limit fails.
+
+**This agent.** `HttpTracerUtil::setProxyHeader` (`src/http.cpp`) is four
+independent blocks, one per type, each appending its own annotation, each
+gating on `received_time > 0`. The nginx conversions are integer arithmetic on
+the dot-stripped digits, like Java's, not a `double` scaled by 1e6: `0.123`
+has no exact binary representation, so the floating-point route truncates
+123000 µs to 122999. `app=` is validated with the shared `isIdChars`
+(`src/utility.h`, the same check the inbound transaction id uses) plus the
+30-byte limit, and a failure discards the header. The user type's header names
+are `Http.Server.ProxyUserHeaderNames`, empty by default as in Java.
+
+**Two deliberate small deviations.** Java's `validateId` counts UTF-16 code
+units where this agent counts bytes, so a non-ASCII name at the boundary can
+be judged differently — moot in practice, since the charset check rejects every
+non-ASCII byte first. And when a configured user header name is present but
+empty, Java's `parseHeaderAndRecord` `return`s, skipping the *remaining* names
+for that parser; this agent continues to the next name, which is what the loop
+plainly means.
+
+**The Go agent still has all four.** `setProxyHeader`
+(`plugin/http/server.go:134`) is an if/else-if chain over the three fixed
+headers with no user type, has no `t=` gate, and parses the nginx `D=` with
+`strconv.Atoi`, which fails on every real `$request_time` and leaves the
+recorded proxy duration at 0. Until the matching change lands, a C++ service
+and a Go service behind the same nginx report different proxy annotations to
+the same collector.
+
+**Decision: no divergence from Java.** The `t=` gate is the load-bearing one:
+an annotation whose received time is 0 is not a harmless empty field. The web
+UI charts the proxy-to-agent gap from it, so a 0 renders as a gap of five
+decades — worse than recording nothing.
+
+### Upgrade note
+
+Up to and including v2.0.0 this agent recorded the first matching header only,
+never recorded a user proxy header, always reported an nginx proxy duration of
+0, and recorded an annotation even with no usable `t=`. After this change:
+requests behind two proxies gain a second proxy annotation; nginx duration
+values become real; annotations that carried a received time of 0 disappear;
+and an `app=` value over 30 characters or outside `[a-zA-Z0-9._-]` now drops
+its header instead of being truncated to 32 characters.
+
+---
+
+## Acceptor host without `Pinpoint-Host` — same as Java, Go still diverges
+
+**Java.** `ServerRequestRecorder.recordParentInfo` reads
+`Header.HTTP_HOST` and, when the peer sent none, falls back to
+`requestAdaptor.getAcceptorHost(request)` before recording it
+(`ServerRequestRecorder.java:81-88`). The whole block is gated on a present
+`Pinpoint-pAppName`, which is also the condition under which the field reaches
+the wire.
+
+**This agent.** `SpanImpl::extractContext` (`src/span.cpp`) records the header
+when there is one. It cannot apply the fallback itself — it runs while the span
+is created, before any request detail is known — so `helper::traceServerRequest`
+(`src/http.cpp`) passes the endpoint it already receives to
+`SpanData::setAcceptorHostIfAbsent`, which never overwrites a recorded header.
+That endpoint is this agent's equivalent of `getAcceptorHost()`: the host
+integration supplies it per request.
+
+**The Go agent still leaves it blank.** `Extract` (`span.go`) sets
+`acceptorHost` only when the header is present, and nothing fills it in later.
+
+**Decision: no divergence from Java.** A blank acceptor host is not only a
+blank field: `SpanData::getEndPoint` and `getRemoteAddr` default through it, so
+a caller that recorded neither used to send `UNKNOWN` for both.
 
 ---
 

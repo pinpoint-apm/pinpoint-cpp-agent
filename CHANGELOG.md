@@ -4,6 +4,65 @@
 
 ### Breaking
 
+- **Proxy request headers: every header is recorded, and one without a usable
+  `t=` is discarded.**
+
+  Four changes to `setProxyHeader` ([src/http.cpp](src/http.cpp)), all bringing
+  the agent to what the Java agent already does:
+
+  1. **nginx `D=` is parsed as `seconds.milliseconds`.** nginx writes
+     `$request_time` (and `$msec`) as `sec.mmm`, so the integer parse the agent
+     used always failed and **every** nginx proxy annotation reported a
+     duration of `0`. Only that exact shape is accepted, as in
+     `NginxRequestParser.toDurationTimeMicros`; anything else records no
+     duration. apache's `D=` is unaffected — it really is plain microseconds.
+  2. **A header with no positive `t=` records nothing.** Java's parsers call
+     `setValid(false)` and `DefaultProxyRequestRecorder` skips the header
+     entirely. The agent used to record the annotation anyway, with a received
+     time of `0` — which the web UI charts as a proxy-to-agent gap of five
+     decades.
+  3. **All headers are recorded, not just the first match.** A request that
+     crossed two proxies now records one annotation per hop, like
+     `DefaultProxyRequestRecorder.record`, instead of only the hop closest to
+     the agent.
+  4. **`app=` is validated, not truncated.** `AppRequestParser` runs it through
+     `IdValidateUtils.validateId(app, 30)` and discards the header on failure;
+     the agent used to cut the value at 32 bytes, inventing a server-map node
+     for any oversized or html-bearing name.
+
+  **New: the user proxy type (code 4).** `Pinpoint-ProxyUser` — or any header
+  name listed in the new `Http.Server.ProxyUserHeaderNames`, Java's
+  `profiler.proxy.http.headers` — is now read, one annotation per configured
+  name that is present, labelled with the header name. Empty by default, as in
+  Java. See [doc/config.md](doc/config.md#server-side-tracing).
+
+  **Symptom if you do not migrate:** nothing to migrate, but the annotations
+  change. Requests behind nginx gain a real proxy duration where they reported
+  `0`; requests behind two proxies gain a second annotation; annotations whose
+  received time was `0` disappear; and an `app=` outside `[a-zA-Z0-9._-]` or
+  over 30 characters drops its header instead of being truncated.
+
+  **The Go agent still has all four.** `setProxyHeader`
+  (`plugin/http/server.go`) is unchanged there, so until the matching change
+  lands a C++ service and a Go service behind the same nginx report different
+  proxy annotations to the same collector. See
+  [doc/java_parity.md](doc/java_parity.md#proxy-request-headers--same-as-java-go-still-diverges).
+
+- **The acceptor host falls back to the request endpoint without
+  `Pinpoint-Host`.**
+
+  Java's `ServerRequestRecorder.recordParentInfo` reads `Pinpoint-Host` and
+  falls back to `requestAdaptor.getAcceptorHost(request)` when the peer sent
+  none. The agent recorded the header or nothing, so a continued trace from a
+  peer that omits it sent a **blank** acceptor host — and, because
+  `getEndPoint()` and `getRemoteAddr()` default through that field, a caller
+  who recorded neither sent `UNKNOWN` for both. The endpoint passed to
+  `helper::TraceHttpServerRequest` now fills the gap
+  ([src/http.cpp](src/http.cpp), [src/span.cpp](src/span.cpp)); a header that
+  is present still wins. The Go agent's `Extract` (`span.go`) still leaves it
+  blank. See
+  [doc/java_parity.md](doc/java_parity.md#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges).
+
 - **`PSpan.err` now carries the error cause, not a flat `1`.**
 
   Up to and including v2.0.0 every failure set `err = 1`. It is now a bitmask

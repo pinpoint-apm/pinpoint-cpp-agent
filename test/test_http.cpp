@@ -81,6 +81,28 @@ size_t string_string_count_of(const PinpointAnnotation& annotation) {
     return total;
 }
 
+// Every proxy-header annotation that was recorded, in the order recorded.
+std::vector<LongIntIntByteByteStringValue>
+proxy_annotations_of(const PinpointAnnotation& annotation) {
+    std::vector<LongIntIntByteByteStringValue> result;
+    for (const auto& [key, data] : annotation.getAnnotations()) {
+        if (key == ANNOTATION_HTTP_PROXY_HEADER) {
+            result.push_back(std::get<LongIntIntByteByteStringValue>(data.data));
+        }
+    }
+    return result;
+}
+
+// Runs setProxyHeader over one set of headers and hands back what it recorded.
+std::vector<LongIntIntByteByteStringValue> record_proxy_headers(
+        const std::map<std::string, std::string>& headers,
+        const std::vector<std::string>& user_header_names = {}) {
+    MockHeaderReader reader(headers);
+    auto annotation = std::make_shared<PinpointAnnotation>();
+    HttpTracerUtil::setProxyHeader(reader, annotation.get(), user_header_names);
+    return proxy_annotations_of(*annotation);
+}
+
 // Returns the number of annotations recorded under the given key.
 size_t annotation_count_of(const PinpointAnnotation& annotation, int32_t key) {
     size_t total = 0;
@@ -812,32 +834,88 @@ TEST_F(HttpTest, SetProxyHeaderNginxTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// Regression: a Nginx proxy `t` value whose *1000 product overflows int64_t or
-// is non-finite must be rejected instead of triggering undefined behavior on
-// the double->int64_t cast (t is attacker-controlled). Valid values still record.
-TEST_F(HttpTest, SetProxyHeaderNginxRejectsOutOfRangeTime) {
-    auto received_time_of = [](const std::string& t_val) -> int64_t {
-        std::map<std::string, std::string> headers = {
-            {"Pinpoint-ProxyNginx", "t=" + t_val + " D=2000"}
-        };
-        MockHeaderReader reader(headers);
-        auto annotation = std::make_shared<PinpointAnnotation>();
-        HttpTracerUtil::setProxyHeader(reader, annotation.get());
-        for (const auto& [key, data] : annotation->getAnnotations()) {
-            if (key == ANNOTATION_HTTP_PROXY_HEADER) {
-                return std::get<LongIntIntByteByteStringValue>(data.data).longValue;
-            }
-        }
-        return -1;  // proxy annotation missing
+// nginx writes $msec and $request_time, both "seconds.milliseconds", so an
+// integer parse of either always failed and the recorded proxy duration was
+// always 0. Java (NginxRequestParser) accepts only that exact shape — three
+// digits after the last '.' — and converts by deleting the '.'.
+TEST_F(HttpTest, SetProxyHeaderNginxParsesSecondsWithMillis) {
+    const auto recorded = record_proxy_headers(
+        {{"Pinpoint-ProxyNginx", "t=1504230492.763 D=0.123"}});
+
+    ASSERT_EQ(recorded.size(), 1u);
+    EXPECT_EQ(recorded[0].intValue1, 2) << "nginx records under code 2";
+    EXPECT_EQ(recorded[0].longValue, 1504230492763)
+        << "$msec is seconds.milliseconds, recorded as milliseconds";
+    EXPECT_EQ(recorded[0].intValue2, 123000)
+        << "$request_time 0.123s is 123000us, not 0";
+}
+
+// The conversion is integer arithmetic like Java's, not a double scaled by
+// 1e6: 0.123 has no exact binary representation, so the double route
+// truncates to 122999 and every recorded duration is off by a microsecond.
+TEST_F(HttpTest, SetProxyHeaderNginxDurationIsExact) {
+    struct Case {
+        const char* d_val;
+        int32_t expected_micros;
+    };
+    const Case cases[] = {
+        {"0.123", 123000},
+        {"0.001", 1000},
+        {"0.000", 0},
+        {"1.999", 1999000},
+        {"12.345", 12345000},
     };
 
-    // Normal value: seconds * 1000 -> milliseconds (exactly representable).
-    EXPECT_EQ(received_time_of("1.5"), 1500);
+    for (const auto& c : cases) {
+        const auto recorded = record_proxy_headers(
+            {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + c.d_val}});
+        ASSERT_EQ(recorded.size(), 1u) << c.d_val;
+        EXPECT_EQ(recorded[0].intValue2, c.expected_micros) << c.d_val;
+    }
+}
 
-    // Out-of-range / non-finite products are rejected; received_time stays 0.
-    EXPECT_EQ(received_time_of("99999999999999999"), 0);  // ~1e17, *1000 > INT64_MAX
-    EXPECT_EQ(received_time_of("1e400"), 0);               // parses to +inf
-    EXPECT_EQ(received_time_of("nan"), 0);                 // NaN
+// Anything that is not "<seconds>.<mmm>" records no duration rather than a
+// guess — including the plain microsecond integer Apache sends, which would
+// otherwise be read as seconds and inflate the duration a millionfold.
+TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedDuration) {
+    const char* rejected[] = {
+        "0.1",      // one decimal
+        "0.12",     // two decimals
+        "0.1234",   // four decimals
+        "123",      // no decimal point at all (apache's format)
+        "",         // D= present but empty
+        "abc",
+        "0.12a",
+        "-0.123",   // negative: Java's > 0 gate drops it too
+        "1e-3",
+        "99999999999999999.999",  // overflows the int32 wire field
+    };
+
+    for (const char* d_val : rejected) {
+        const auto recorded = record_proxy_headers(
+            {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + d_val}});
+        ASSERT_EQ(recorded.size(), 1u) << d_val << " must not discard the header";
+        EXPECT_EQ(recorded[0].intValue2, 0) << "D=" << d_val << " must record no duration";
+    }
+}
+
+// `t` is held to the same format, which also rejects the values that used to
+// reach an undefined double->int64_t cast (the header is attacker-controlled).
+TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedReceivedTime) {
+    const char* rejected[] = {
+        "1.5",                  // one decimal, not $msec's three
+        "1504230492",           // no decimal point
+        "99999999999999999",    // used to overflow the *1000 product
+        "1e400",                // used to parse to +inf
+        "nan",
+        "-1504230492.763",
+    };
+
+    for (const char* t_val : rejected) {
+        const auto recorded = record_proxy_headers(
+            {{"Pinpoint-ProxyNginx", std::string("t=") + t_val + " D=0.123"}});
+        EXPECT_TRUE(recorded.empty()) << "t=" << t_val << " must discard the header";
+    }
 }
 
 // Test setProxyHeader with Pinpoint-ProxyApp
@@ -852,41 +930,40 @@ TEST_F(HttpTest, SetProxyHeaderAppTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// The app name is attacker-controlled, so it is capped like Java's
-// ProxyRequestAnnotationFactory.APP_MAX_LENGTH (32). The cut is by byte and
-// never splits a multibyte character.
-TEST_F(HttpTest, SetProxyHeaderAppIsCappedAt32Bytes) {
+// The app name identifies a node in the server map, so Java (AppRequestParser,
+// IdValidateUtils.validateId(app, 30)) discards the whole header when the value
+// fails the charset or length check rather than recording a mangled node name.
+// Truncating instead used to invent a node for any oversized value.
+TEST_F(HttpTest, SetProxyHeaderAppIsValidatedNotTruncated) {
     auto app_of = [](const std::string& app_val) -> std::string {
-        std::map<std::string, std::string> headers = {
-            {"Pinpoint-ProxyApp", "t=1234567890 app=" + app_val}
-        };
-        MockHeaderReader reader(headers);
-        auto annotation = std::make_shared<PinpointAnnotation>();
-        HttpTracerUtil::setProxyHeader(reader, annotation.get());
-        for (const auto& [key, data] : annotation->getAnnotations()) {
-            if (key == ANNOTATION_HTTP_PROXY_HEADER) {
-                return std::get<LongIntIntByteByteStringValue>(data.data).stringValue;
-            }
-        }
-        return "<missing>";  // proxy annotation missing
+        const auto recorded = record_proxy_headers(
+            {{"Pinpoint-ProxyApp", "t=1234567890 app=" + app_val}});
+        return recorded.empty() ? "<discarded>" : recorded[0].stringValue;
     };
 
-    const std::string forty(40, 'a');
-    EXPECT_EQ(app_of(forty), std::string(32, 'a')) << "40-char app must be cut to 32";
-
-    // At and below the cap the value is untouched.
+    // Within the charset and at or below 30 bytes the value is recorded as is.
     EXPECT_EQ(app_of("MyApp"), "MyApp");
-    EXPECT_EQ(app_of(std::string(32, 'b')), std::string(32, 'b'));
+    EXPECT_EQ(app_of("my-app_1.0"), "my-app_1.0");
+    EXPECT_EQ(app_of(std::string(30, 'b')), std::string(30, 'b'));
 
-    // 11 three-byte characters = 33 bytes: the cut lands one byte inside the
-    // 11th, so the whole partial character is dropped rather than split.
+    // One byte over the limit discards the header.
+    EXPECT_EQ(app_of(std::string(31, 'a')), "<discarded>") << "31 bytes exceeds maxLength 30";
+    EXPECT_EQ(app_of(std::string(40, 'a')), "<discarded>");
+
+    // Charset violations discard it too: the name is echoed to downstream
+    // calls and rendered as HTML by the web UI.
+    EXPECT_EQ(app_of("<script>"), "<discarded>");
+    EXPECT_EQ(app_of("my/app"), "<discarded>");
+    EXPECT_EQ(app_of("app:8080"), "<discarded>");
+
+    // 11 three-byte characters = 33 bytes: over the limit and outside the
+    // charset either way.
     std::string multibyte;
     for (int i = 0; i < 11; i++) {
         multibyte += "\xEC\x95\x88";  // U+C548
     }
     ASSERT_EQ(multibyte.size(), 33u);
-    EXPECT_EQ(app_of(multibyte), multibyte.substr(0, 30))
-        << "a byte cut must not split a UTF-8 sequence";
+    EXPECT_EQ(app_of(multibyte), "<discarded>");
 }
 
 // Test setProxyHeader with a malformed token: a token without '=' must be
@@ -1047,36 +1124,161 @@ TEST_F(HttpTest, GetRemoteAddrEmptyBothProxyHeadersTest) {
     EXPECT_EQ(addr, "10.1.2.3") << "Empty proxy headers should fall back to remote_addr";
 }
 
-// Test setProxyHeader priority: Apache takes precedence over Nginx and App
-TEST_F(HttpTest, SetProxyHeaderApachePriorityTest) {
-    std::map<std::string, std::string> headers = {
-        {"Pinpoint-ProxyApache", "t=1000000000 D=100 i=5 b=95"},
-        {"Pinpoint-ProxyNginx", "t=2000000.000 D=200"},
-        {"Pinpoint-ProxyApp", "t=3000000000 app=OtherApp"}
+// Java DefaultProxyRequestRecorder.record runs every parser and records one
+// annotation per valid header, so a request that came through two proxies
+// describes both hops. A first-match if/else chain reported only the one
+// closest to the agent and silently dropped the rest of the chain.
+TEST_F(HttpTest, SetProxyHeaderRecordsEveryHeaderNotJustTheFirst) {
+    const auto recorded = record_proxy_headers({
+        {"Pinpoint-ProxyApache", "t=1000000000000 D=100 i=5 b=95"},
+        {"Pinpoint-ProxyNginx", "t=2000000.000 D=0.200"},
+    });
+
+    ASSERT_EQ(recorded.size(), 2u) << "both proxy hops must be recorded";
+
+    const auto with_code = [&recorded](const int32_t code) -> const LongIntIntByteByteStringValue* {
+        for (const auto& value : recorded) {
+            if (value.intValue1 == code) {
+                return &value;
+            }
+        }
+        return nullptr;
     };
-    MockHeaderReader reader(headers);
-    auto annotation = std::make_shared<PinpointAnnotation>();
 
-    HttpTracerUtil::setProxyHeader(reader, annotation.get());
+    const auto* apache = with_code(3);
+    ASSERT_NE(apache, nullptr) << "apache records under code 3";
+    EXPECT_EQ(apache->longValue, 1000000000) << "apache t is microseconds";
+    EXPECT_EQ(apache->intValue2, 100) << "apache D is already microseconds";
+    EXPECT_EQ(apache->byteValue1, 5);
+    EXPECT_EQ(apache->byteValue2, 95);
 
-    // Only Apache header should produce annotation (code=3)
-    EXPECT_EQ(annotation_count_of(*annotation, ANNOTATION_HTTP_PROXY_HEADER), 1)
-        << "Only one proxy header should be recorded";
+    const auto* nginx = with_code(2);
+    ASSERT_NE(nginx, nullptr) << "nginx records under code 2";
+    EXPECT_EQ(nginx->longValue, 2000000000) << "nginx t is seconds.milliseconds";
+    EXPECT_EQ(nginx->intValue2, 200000) << "nginx D 0.200s is 200000us";
 }
 
-// Test setProxyHeader: Nginx takes precedence when Apache is absent
-TEST_F(HttpTest, SetProxyHeaderNginxPriorityTest) {
-    std::map<std::string, std::string> headers = {
-        {"Pinpoint-ProxyNginx", "t=1234567.890 D=500"},
-        {"Pinpoint-ProxyApp", "t=9876543210 app=SomeApp"}
+// All four types at once, each with its own annotation.
+TEST_F(HttpTest, SetProxyHeaderRecordsAllFourTypes) {
+    const auto recorded = record_proxy_headers({
+        {"Pinpoint-ProxyApache", "t=1000000000000 D=100"},
+        {"Pinpoint-ProxyNginx", "t=2000000.000 D=0.200"},
+        {"Pinpoint-ProxyApp", "t=3000000000000 app=OtherApp"},
+        {"Pinpoint-ProxyUser", "t=4000000000000 D=300"},
+    }, {"Pinpoint-ProxyUser"});
+
+    std::vector<int32_t> codes;
+    for (const auto& value : recorded) {
+        codes.push_back(value.intValue1);
+    }
+    std::sort(codes.begin(), codes.end());
+    EXPECT_EQ(codes, (std::vector<int32_t>{1, 2, 3, 4}));
+}
+
+// Java's parsers call setValid(false) when `t=` is absent or not positive, and
+// DefaultProxyRequestRecorder records only valid headers. Recording anyway left
+// annotations whose received time was 0, which the web UI charts as a
+// proxy-to-agent gap of five decades.
+TEST_F(HttpTest, SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) {
+    struct Case {
+        const char* header;
+        const char* value;
     };
-    MockHeaderReader reader(headers);
-    auto annotation = std::make_shared<PinpointAnnotation>();
+    const Case cases[] = {
+        // No t= at all.
+        {"Pinpoint-ProxyApache", "D=1500 i=10 b=90"},
+        {"Pinpoint-ProxyNginx", "D=0.123"},
+        {"Pinpoint-ProxyApp", "app=MyApp"},
+        {"Pinpoint-ProxyUser", "D=1500"},
+        // t= present but not positive.
+        {"Pinpoint-ProxyApache", "t=0 D=1500"},
+        {"Pinpoint-ProxyNginx", "t=0.000 D=0.123"},
+        {"Pinpoint-ProxyApp", "t=0 app=MyApp"},
+        {"Pinpoint-ProxyUser", "t=0000000000000 D=1500"},
+        {"Pinpoint-ProxyApache", "t=-1 D=1500"},
+        {"Pinpoint-ProxyNginx", "t=-1.000 D=0.123"},
+        {"Pinpoint-ProxyApp", "t=-1 app=MyApp"},
+        {"Pinpoint-ProxyUser", "t=-1000000000000 D=1500"},
+        // t= present but unparseable.
+        {"Pinpoint-ProxyApache", "t=abc D=1500"},
+        {"Pinpoint-ProxyNginx", "t=abc D=0.123"},
+        {"Pinpoint-ProxyApp", "t=abc app=MyApp"},
+        {"Pinpoint-ProxyUser", "t=abcdefghijklm D=1500"},
+        // t= with no value.
+        {"Pinpoint-ProxyApache", "t= D=1500"},
+        // Apache's t is microseconds, so three digits or fewer is under a
+        // millisecond and Java's `length > 3` guard yields nothing.
+        {"Pinpoint-ProxyApache", "t=999 D=1500"},
+    };
 
-    HttpTracerUtil::setProxyHeader(reader, annotation.get());
+    for (const auto& c : cases) {
+        const auto recorded = record_proxy_headers({{c.header, c.value}}, {"Pinpoint-ProxyUser"});
+        EXPECT_TRUE(recorded.empty())
+            << c.header << ": '" << c.value << "' must record no annotation";
+    }
+}
 
-    EXPECT_EQ(annotation_count_of(*annotation, ANNOTATION_HTTP_PROXY_HEADER), 1)
-        << "Only one proxy header should be recorded";
+// Java UserRequestParser: the header names are configuration
+// (profiler.proxy.http.headers, Http.Server.ProxyUserHeaderNames here), the
+// code is 4, and the annotation's app field carries the matched header name.
+TEST_F(HttpTest, SetProxyHeaderUserRecordsUnderCodeFour) {
+    const auto recorded = record_proxy_headers(
+        {{"Pinpoint-ProxyUser", "t=1504230492763 D=1500"}}, {"Pinpoint-ProxyUser"});
+
+    ASSERT_EQ(recorded.size(), 1u);
+    EXPECT_EQ(recorded[0].intValue1, 4);
+    EXPECT_EQ(recorded[0].longValue, 1504230492763) << "13 digits is milliseconds";
+    EXPECT_EQ(recorded[0].intValue2, 1500) << "no '.' means plain microseconds";
+    EXPECT_EQ(recorded[0].stringValue, "Pinpoint-ProxyUser")
+        << "the matched header name labels the hop";
+}
+
+// A user header is only read when its name is configured, and any configured
+// name works — the type exists so a site can name its own header.
+TEST_F(HttpTest, SetProxyHeaderUserNeedsAConfiguredName) {
+    const std::map<std::string, std::string> headers = {
+        {"Pinpoint-ProxyUser", "t=1504230492763 D=1500"},
+        {"X-My-Proxy", "t=1504230492763 D=1500"},
+    };
+
+    EXPECT_TRUE(record_proxy_headers(headers).empty())
+        << "with no configured name nothing is read, which is Java's default";
+
+    const auto custom = record_proxy_headers(headers, {"X-My-Proxy"});
+    ASSERT_EQ(custom.size(), 1u);
+    EXPECT_EQ(custom[0].stringValue, "X-My-Proxy");
+
+    EXPECT_EQ(record_proxy_headers(headers, {"X-My-Proxy", "Pinpoint-ProxyUser"}).size(), 2u)
+        << "every configured name that is present records its own annotation";
+}
+
+// The user type has to accept any of the three proxies' formats, since the
+// header it reads is named by configuration (Java
+// UserRequestParser.toReceivedTimeMillis infers the format from the value).
+TEST_F(HttpTest, SetProxyHeaderUserInfersTheTimeFormat) {
+    struct Case {
+        const char* t_val;
+        int64_t expected_millis;
+    };
+    const Case cases[] = {
+        {"1504230492763", 1504230492763},     // app: milliseconds (13 digits)
+        {"1504230492763000", 1504230492763},  // apache: microseconds (>= 16 digits)
+        {"1504230492.763", 1504230492763},    // nginx: seconds.milliseconds
+        {"150423049", 0},                     // fewer than 13 digits: rejected
+        {"1504230.763", 0},                   // seconds part too short for an epoch
+        {"1504230492.76", 0},                 // not three decimals
+    };
+
+    for (const auto& c : cases) {
+        const auto recorded = record_proxy_headers(
+            {{"Pinpoint-ProxyUser", std::string("t=") + c.t_val}}, {"Pinpoint-ProxyUser"});
+        if (c.expected_millis == 0) {
+            EXPECT_TRUE(recorded.empty()) << "t=" << c.t_val << " must discard the header";
+        } else {
+            ASSERT_EQ(recorded.size(), 1u) << c.t_val;
+            EXPECT_EQ(recorded[0].longValue, c.expected_millis) << c.t_val;
+        }
+    }
 }
 
 // Test HttpHeaderRecorder with case-insensitive headers-all variant
