@@ -639,6 +639,24 @@ namespace pinpoint {
             ActiveSpanNode active_node_;
             std::optional<UrlStatEntry> url_stat_;
             std::vector<std::unique_ptr<Exception>> exceptions_;
+            // The exception chain currently open on this span, shared by
+            // every span event of the span (SpanEventImpl::recordException
+            // reads and writes it). Java keeps this state in the trace's
+            // ExceptionContext and the Go agent per span (span.errorChains);
+            // per span is the widest scope that makes sense here, because the
+            // chain is sent inside this span's PExceptionMetaData and an
+            // async child span has its own buffer (exceptions_) and span id.
+            // A span-wide chain is what lets one exception recorded on a
+            // nested event and again on the event that catches it stay one
+            // chain, charged to the rate limiter once.
+            //
+            // Id of the span's chain; 0 until the first link is buffered.
+            int64_t exception_chain_id_{0};
+            // Java's DISABLED sampling state for the chain: set once it is
+            // refused by the rate limiter or a link cannot be buffered, and
+            // never cleared, so the rest of the chain is neither recorded nor
+            // charged a second time.
+            bool exception_chain_disabled_{false};
 
             // Owning-thread guard enforcing the Span single-thread contract
             // (see pinpoint/tracer.h). Bound lazily on the first NewSpanEvent

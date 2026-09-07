@@ -307,7 +307,9 @@ namespace pinpoint {
         span->markSpanError(ErrorCategory::kException, error_name, error_message);
     } CATCH_AND_LOG("set error")
 
-    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
+    template <typename FillFrames>
+    void SpanEventImpl::setErrorWithCallStack(std::string_view error_name, std::string_view error_message,
+                                              FillFrames&& fill) {
         if (warnIfFinished()) return;
         SetError(error_name, error_message);
 
@@ -318,72 +320,77 @@ namespace pinpoint {
 
         try {
             auto callstack = std::make_unique<CallStack>(error_message, error_name, start_time_);
-            reader.ForEach([&](std::string_view module, std::string_view function, std::string_view file, int line) {
-                callstack->push(module, function, file, line);
-                return;
-            });
+            fill(*callstack);
             recordException(*span, std::move(callstack));
         } catch (const std::exception& e) {
             LOG_ERROR("call stack trace exception = {}", e.what());
         }
+    }
+
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
+        setErrorWithCallStack(error_name, error_message, [&](CallStack& callstack) {
+            reader.ForEach([&](std::string_view module, std::string_view function, std::string_view file, int line) {
+                callstack.push(module, function, file, line);
+            });
+        });
     }
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message,
                                  const std::vector<CallStackFrame>& frames) {
-        if (warnIfFinished()) return;
-        SetError(error_name, error_message);
-
-        auto* span = spanIfAlive();
-        if (span == nullptr || !span->config_->enable_callstack_trace) {
-            return;
-        }
-
-        try {
-            auto callstack = std::make_unique<CallStack>(error_message, error_name, start_time_);
+        setErrorWithCallStack(error_name, error_message, [&](CallStack& callstack) {
             for (const auto& frame : frames) {
-                callstack->push(frame.module, frame.function, frame.file, frame.line);
+                callstack.push(frame.module, frame.function, frame.file, frame.line);
             }
-            recordException(*span, std::move(callstack));
-        } catch (const std::exception& e) {
-            LOG_ERROR("call stack trace exception = {}", e.what());
-        }
+        });
     }
 
     void SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack) {
-        // Repeated call-stack SetError calls on one event are the cause chain
-        // of a single exception (Java records them under one exceptionId with
-        // an increasing depth), so they reuse the id of the first link and are
-        // annotated only once — and only the first link is rate limited.
+        // Every call-stack SetError on one SPAN is a link of one chain: the
+        // links share the id of the first one and only that first link is
+        // rate limited. The chain state lives on the span rather than on this
+        // event so that an exception recorded on a nested event and again on
+        // the event that catches it - the same exception, seen twice on its
+        // way up - stays one chain and is charged once, as Java's CONTINUED
+        // state (ExceptionRecordingState.isChaining) and the Go agent's
+        // span.errorChains lookup keep it. Both of those tell a cause from an
+        // unrelated exception by throwable identity; this agent has none, so
+        // it neither separates chains nor nests them: the chain is flat
+        // (Exception::getDepth is 0 for every link).
+        //
         // A rejected chain keeps the plain error (SetError already ran and
         // marked the span); only the call stack is dropped, which is what
-        // Java's DISABLED sampling state does.
-        //
-        // That verdict is latched for the rest of the chain, because Java's
-        // DISABLED state lives in the trace context and every later link
-        // reads it back. Asking per link instead would charge one logical
-        // chain several times over, and once a token refilled mid-chain it
-        // would record a cause link as a brand new chain with its head
-        // missing - the half-recorded chain the reuse above exists to avoid.
-        if (exception_chain_disabled_) {
+        // Java's DISABLED sampling state does. That verdict is latched for the
+        // rest of the span, because Java's DISABLED state lives in the trace
+        // context and every later link reads it back. Asking per link instead
+        // would charge one logical chain several times over, and once a token
+        // refilled mid-chain it would record a later link as a brand new chain
+        // with its head missing - the half-recorded chain the reuse above
+        // exists to avoid.
+        if (span.exception_chain_disabled_) {
             return;
         }
-        if (exception_id_ == 0 && !span.allowNewExceptionChain()) {
-            exception_chain_disabled_ = true;
+        if (span.exception_chain_id_ == 0 && !span.allowNewExceptionChain()) {
+            span.exception_chain_disabled_ = true;
             return;
         }
-        auto exception = std::make_unique<Exception>(std::move(callstack), exception_id_);
+        auto exception = std::make_unique<Exception>(std::move(callstack), span.exception_chain_id_);
         const auto exception_id = exception->getId();
         if (!span.addException(std::move(exception))) {
             // Buffer full. It does not shrink before EndSpan, so every later
             // link would be dropped too — and latching here is what keeps a
             // dropped first link from letting the next one charge the limiter
             // for a chain that cannot be stored either.
-            exception_chain_disabled_ = true;
+            span.exception_chain_disabled_ = true;
             return;
         }
-        if (exception_id_ == 0) {
+        span.exception_chain_id_ = exception_id;
+        // Java stamps EXCEPTION_CHAIN_ID on every event that records a link
+        // (WrappedSpanEventRecorder.recordDetailedException), which is how the
+        // UI reaches the chain from each step; one stamp per event is enough
+        // for that.
+        if (annotated_exception_id_ != exception_id) {
             annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
-            exception_id_ = exception_id;
+            annotated_exception_id_ = exception_id;
         }
     }
 

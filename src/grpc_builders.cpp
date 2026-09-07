@@ -19,7 +19,6 @@
 #include <cassert>
 #include <memory>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -475,10 +474,6 @@ namespace pinpoint {
         // (SpanImpl::kMaxBufferedExceptions exceptions, CallStack::kMaxFrames
         // frames each), so one allocation per field suffices.
         grpc_exception_meta->mutable_exceptions()->Reserve(static_cast<int>(exceptions.size()));
-        // Call stacks sharing an exception id are the links of one cause chain
-        // and are numbered 0..n in record order, like Java's
-        // ExceptionWrapperFactory; a lone exception is depth 0.
-        std::unordered_map<int64_t, int32_t> chain_depths;
         for (const auto& exception : exceptions) {
             auto* grpc_exception = grpc_exception_meta->add_exceptions();
             const auto& callstack = exception->getCallStack();
@@ -490,7 +485,9 @@ namespace pinpoint {
             grpc_exception->set_exceptionclassname(toValidUtf8(error_name.empty() ? callstack.getModuleName() : error_name));
             grpc_exception->set_exceptionmessage(toValidUtf8(callstack.getErrorMessage()));
             grpc_exception->set_starttime(callstack.getErrorTime());
-            grpc_exception->set_exceptiondepth(chain_depths[exception->getId()]++);
+            // Links sharing an id are one chain; the depth is flat (see
+            // Exception::getDepth), not a position in record order.
+            grpc_exception->set_exceptiondepth(exception->getDepth());
 
             const auto& frames = callstack.getStack();
             grpc_exception->mutable_stacktraceelement()->Reserve(static_cast<int>(frames.size()));

@@ -250,6 +250,7 @@ namespace pinpoint {
         ///        Guarded against duplicate calls: ending an already-ended
         ///        event is a warning no-op, like Span::EndSpan.
         virtual void EndEvent() = 0;
+
     };
 
     /// @brief Non-owning span-event pointer.

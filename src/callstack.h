@@ -146,6 +146,15 @@ namespace pinpoint {
 
         /// @brief Returns the generated exception identifier.
         int64_t getId() const { return id_; }
+        /// @brief Returns the depth sent as PException.exceptionDepth.
+        ///
+        /// Java's ExceptionWrapperFactory and the Go agent's cause walk number
+        /// a chain 0 (the exception), 1 (its cause), 2 ... This agent has no
+        /// way to tell which recorded call stack caused which - every link is
+        /// one explicit SetError call - so the chain is flat: every link is
+        /// depth 0. Kept as a method so the wire builder does not encode that
+        /// decision itself.
+        int32_t getDepth() const { return 0; }
         /// @brief Returns a reference to the captured call stack.
         const CallStack& getCallStack() const { return *callstack_; }
 

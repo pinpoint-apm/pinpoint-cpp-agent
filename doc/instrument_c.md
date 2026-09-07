@@ -697,6 +697,12 @@ pt_span_event_set_error_with_callstack(se, "OperationFailed",
                                        error_message, &reader);
 ```
 
+Call-stack errors recorded on one span — from this event or any other event of
+the span — share one exception id and are sent as one flat chain
+([§9](api_contracts.md#9-error-recording-and-exception-buffering)); recording
+the same exception again on the event that catches it does not start a new
+chain or spend the new-chain budget again.
+
 ### SQL error pattern
 
 ```c

@@ -277,9 +277,10 @@ TEST_F(GrpcTest, ExceptionMetaMultipleExceptionsTest) {
     EXPECT_EQ(meta.exceptions_.size(), 3u);
 }
 
-// Call stacks recorded under one chain id are the links of a single
-// exception: depth counts up from 0 in record order and the caller's error
-// name — not the top frame's module — is the class name.
+// Call stacks recorded under one chain id are the links of a single, flat
+// chain: every link is depth 0 (the agent cannot tell which one caused
+// which), and the caller's error name — not the top frame's module — is the
+// class name.
 TEST_F(GrpcTest, ExceptionMetadataChainDepthTest) {
     TraceId txid{"agent", 100, 7};
     std::vector<std::unique_ptr<Exception>> exceptions;
@@ -306,7 +307,7 @@ TEST_F(GrpcTest, ExceptionMetadataChainDepthTest) {
     EXPECT_EQ(wire->exceptions(0).starttime(), 1700000000000);
 
     EXPECT_EQ(wire->exceptions(1).exceptionid(), chain_id);
-    EXPECT_EQ(wire->exceptions(1).exceptiondepth(), 1);
+    EXPECT_EQ(wire->exceptions(1).exceptiondepth(), 0) << "flat chain, not a position in record order";
     EXPECT_EQ(wire->exceptions(1).exceptionclassname(), "SQLException");
 }
 

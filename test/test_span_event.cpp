@@ -367,12 +367,13 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     
     // Both exceptions should be added to parent span
     const auto& exceptions = test_span_->getExceptions();
-    EXPECT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
+    ASSERT_EQ(exceptions.size(), 2) << "Two exceptions should be added";
     
-    // Verify different exception IDs
-    int64_t id1 = exceptions[0]->getId();
-    int64_t id2 = exceptions[1]->getId();
-    EXPECT_NE(id1, id2) << "Exception IDs should be different";
+    // The chain is span-wide and flat: every call stack recorded on the span
+    // shares its one id, at depth 0.
+    EXPECT_EQ(exceptions[0]->getId(), exceptions[1]->getId()) << "One chain per span";
+    EXPECT_EQ(exceptions[0]->getDepth(), 0);
+    EXPECT_EQ(exceptions[1]->getDepth(), 0);
 }
 
 // ========== Exception chain rate limit (Java ExceptionChainSampler) ==========
@@ -381,17 +382,31 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
 // per second. Production spans always carry a snapshot (NewSpan builds one);
 // the fixture span deliberately carries none, which is the unlimited path the
 // tests above exercise.
-static std::shared_ptr<SpanImpl> make_chain_limited_span(MockAgentService& agent, uint64_t tps) {
+static std::shared_ptr<const AgentRuntime> make_chain_limited_runtime(MockAgentService& agent,
+                                                                     std::shared_ptr<RateLimiter> limiter) {
     auto runtime = std::make_shared<AgentRuntime>();
     runtime->config = agent.getConfig();
-    runtime->exception_chain_limiter = std::make_shared<RateLimiter>(tps);
+    runtime->exception_chain_limiter = std::move(limiter);
+    return runtime;
+}
+
+static std::shared_ptr<SpanImpl> make_chain_limited_span(MockAgentService& agent,
+                                                         std::shared_ptr<const AgentRuntime> runtime) {
     return std::make_shared<SpanImpl>(&agent, "test-operation", "test-rpc", std::move(runtime));
 }
 
+static std::shared_ptr<SpanImpl> make_chain_limited_span(MockAgentService& agent, uint64_t tps) {
+    return make_chain_limited_span(agent, make_chain_limited_runtime(agent, std::make_shared<RateLimiter>(tps)));
+}
+
+// A chain is per span, so a second chain competing for the budget means a
+// second span (in production, another request on the same agent).
 TEST_F(SpanEventTest, ExceptionChainRateLimitDropsCallStackOnly) {
-    auto span = make_chain_limited_span(*mock_agent_service_, 1);
-    auto event1 = make_test_span_event(*span, "op1");
-    auto event2 = make_test_span_event(*span, "op2");
+    auto runtime = make_chain_limited_runtime(*mock_agent_service_, std::make_shared<RateLimiter>(1));
+    auto span1 = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto span2 = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto event1 = make_test_span_event(*span1, "op1");
+    auto event2 = make_test_span_event(*span2, "op2");
 
     MockCallStackReader reader1;
     reader1.AddFrame("/lib/app.so", "function1", "/src/file1.cpp", 10);
@@ -402,14 +417,15 @@ TEST_F(SpanEventTest, ExceptionChainRateLimitDropsCallStackOnly) {
     event2.SetError("Error2", "Second error", reader2);
 
     // One chain per second: the first is admitted, the second is refused.
-    EXPECT_EQ(span->getExceptions().size(), 1u)
+    EXPECT_EQ(span1->getExceptions().size(), 1u);
+    EXPECT_EQ(span2->getExceptions().size(), 0u)
         << "The second new exception chain should be rate limited away";
 
     // The refused chain is still a plain error - only the call stack is lost,
     // which is what Java's DISABLED sampling state produces.
     EXPECT_EQ(event2.getErrorString(), "Second error");
     EXPECT_GT(event2.getErrorFuncId(), 0);
-    EXPECT_EQ(span->getSpanData()->getErr(), 2) << "The span is still marked failed";
+    EXPECT_EQ(span2->getSpanData()->getErr(), 2) << "The span is still marked failed";
 }
 
 TEST_F(SpanEventTest, ExceptionChainRateLimitSkipsChainContinuations) {
@@ -458,37 +474,113 @@ namespace {
 // cause as a fresh chain whose head was never sent.
 TEST_F(SpanEventTest, ExceptionChainRateLimitLatchesTheRefusal) {
     auto limiter = std::make_shared<SteppedClockLimiter>(10);  // one token per 100ms
-    auto runtime = std::make_shared<AgentRuntime>();
-    runtime->config = mock_agent_service_->getConfig();
-    runtime->exception_chain_limiter = limiter;
-    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "op", "rpc", runtime);
+    auto runtime = make_chain_limited_runtime(*mock_agent_service_, limiter);
 
     MockCallStackReader head;
     head.AddFrame("/lib/app.so", "head", "/src/head.cpp", 1);
     MockCallStackReader cause;
     cause.AddFrame("/lib/app.so", "cause", "/src/cause.cpp", 2);
 
-    // The fresh bucket's one token goes to the first event's chain.
-    auto admitted = make_test_span_event(*span, "op1");
+    // The fresh bucket's one token goes to the first span's chain.
+    auto admitted_span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto admitted = make_test_span_event(*admitted_span, "op1");
     admitted.SetError("First", "first", head);
-    ASSERT_EQ(span->getExceptions().size(), 1u);
+    ASSERT_EQ(admitted_span->getExceptions().size(), 1u);
 
-    // The next event's chain finds the bucket empty.
-    auto refused = make_test_span_event(*span, "op2");
+    // The next span's chain finds the bucket empty.
+    auto refused_span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto refused = make_test_span_event(*refused_span, "op2");
     refused.SetError("Head", "head", head);
-    ASSERT_EQ(span->getExceptions().size(), 1u) << "an empty bucket refuses a new chain";
+    ASSERT_EQ(refused_span->getExceptions().size(), 0u) << "an empty bucket refuses a new chain";
 
-    // A token refills before the refused chain's cause link arrives.
+    // A token refills before the refused chain's next link arrives - from
+    // the same event or from another one on that span.
     limiter->advance_ms(100);
     refused.SetError("Cause", "cause", cause);
-    EXPECT_EQ(span->getExceptions().size(), 1u)
-        << "a refused chain must not resume at its cause link";
+    auto refused_outer = make_test_span_event(*refused_span, "op2-outer");
+    refused_outer.SetError("Cause", "cause", cause);
+    EXPECT_EQ(refused_span->getExceptions().size(), 0u)
+        << "a refused chain must not resume at a later link";
 
-    // And that token went unspent, so the next chain still gets it.
-    auto next = make_test_span_event(*span, "op3");
+    // And that token went unspent, so the next span's chain still gets it.
+    auto next_span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto next = make_test_span_event(*next_span, "op3");
     next.SetError("Next", "next", head);
-    EXPECT_EQ(span->getExceptions().size(), 2u)
+    EXPECT_EQ(next_span->getExceptions().size(), 1u)
         << "the refused chain must not have charged the refilled token";
+}
+
+// The chain state is per SPAN, not per span event (Go's span.errorChains;
+// Java keeps it per trace): the exception a nested event recorded is recorded
+// again by the event that catches it, and that is one chain with one id,
+// admitted by the limiter once - not two chains, the second of which would
+// have been refused here.
+TEST_F(SpanEventTest, ExceptionChainContinuesAcrossEventsOfOneSpan) {
+    auto runtime = make_chain_limited_runtime(*mock_agent_service_, std::make_shared<RateLimiter>(1));
+    auto span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto outer = make_test_span_event(*span, "handler");
+    auto inner = make_test_span_event(*span, "query");
+
+    MockCallStackReader reader;
+    reader.AddFrame("/lib/app.so", "query", "/src/db.cpp", 11);
+
+    inner.SetError("IOException", "connection reset", reader);
+    outer.SetError("IOException", "connection reset", reader);
+
+    const auto& exceptions = span->getExceptions();
+    ASSERT_EQ(exceptions.size(), 2u) << "the second record must not be refused as a new chain";
+    EXPECT_EQ(exceptions[0]->getId(), exceptions[1]->getId()) << "one chain id across both events";
+    EXPECT_EQ(exceptions[0]->getDepth(), 0);
+    EXPECT_EQ(exceptions[1]->getDepth(), 0) << "the chain is flat: no link is a cause of another";
+
+    // Each event that records a link carries the chain id, like Java's
+    // EXCEPTION_CHAIN_ID stamped by every recordException.
+    const auto count_ids = [](SpanEventImpl& event) {
+        int n = 0;
+        for (const auto& [key, value] : event.getAnnotations()->getAnnotations()) {
+            if (key == ANNOTATION_EXCEPTION_ID) n++;
+        }
+        return n;
+    };
+    EXPECT_EQ(count_ids(inner), 1);
+    EXPECT_EQ(count_ids(outer), 1);
+
+    // The one token went to that chain; the next span's chain is refused.
+    auto other_span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto other = make_test_span_event(*other_span, "other");
+    other.SetError("Other", "unrelated", reader);
+    EXPECT_EQ(other_span->getExceptions().size(), 0u) << "the chain was charged exactly once";
+}
+
+// A refused chain stays refused for every later link on its span, whichever
+// event records it.
+TEST_F(SpanEventTest, ExceptionChainRefusalLatchIsSpanWide) {
+    auto runtime = make_chain_limited_runtime(*mock_agent_service_, std::make_shared<RateLimiter>(1));
+    MockCallStackReader reader;
+    reader.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);
+
+    auto admitted_span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto first = make_test_span_event(*admitted_span, "first");
+    first.SetError("Admitted", "admitted", reader);
+    ASSERT_EQ(admitted_span->getExceptions().size(), 1u);
+
+    auto span = make_chain_limited_span(*mock_agent_service_, runtime);
+    auto second = make_test_span_event(*span, "second");
+    second.SetError("Refused", "refused", reader);
+    ASSERT_EQ(span->getExceptions().size(), 0u) << "the bucket is empty";
+
+    // The same exception recorded again from the events above it is the
+    // refused chain's link, not a new chain.
+    auto third = make_test_span_event(*span, "third");
+    third.SetError("Refused", "refused", reader);
+    third.SetError("Refused", "refused", reader);
+    EXPECT_EQ(span->getExceptions().size(), 0u) << "a refused chain must not resume on another event";
+
+    int annotated = 0;
+    for (const auto& [key, value] : third.getAnnotations()->getAnnotations()) {
+        if (key == ANNOTATION_EXCEPTION_ID) annotated++;
+    }
+    EXPECT_EQ(annotated, 0) << "no id annotation for a chain that was never buffered";
 }
 
 TEST_F(SpanEventTest, ExceptionChainRateLimitUnlimitedWhenNoLimiter) {

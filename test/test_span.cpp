@@ -758,14 +758,19 @@ TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
     EXPECT_EQ(count_exception_ids(se), 1u)
         << "One chain on one event annotates its exception id once";
 
-    // A different event starts its own chain, but the buffer is full, so the
-    // exception is dropped and must leave no id behind.
+    // A different event continues the span's chain, but the buffer is full,
+    // so the link is dropped and must leave no id behind on that event. The
+    // full-buffer verdict is latched span-wide: every later link is dropped.
     span.NewSpanEvent("dropped-event");
     auto* dropped = span.getSpanData()->topSpanEvent();
     ASSERT_NE(dropped, nullptr);
     dropped->SetError("Error", "one-too-many", reader);
     EXPECT_EQ(count_exception_ids(dropped), 0u)
         << "A dropped exception must not add an exception-id annotation";
+    dropped->SetError("Error", "still-too-many", reader);
+    EXPECT_EQ(span.getExceptions().size(), kMaxBufferedExceptions)
+        << "Nothing past the cap is buffered";
+    EXPECT_EQ(count_exception_ids(dropped), 0u);
 
     dropped->EndEvent();
     se->EndEvent();

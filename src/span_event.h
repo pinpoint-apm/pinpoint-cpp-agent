@@ -138,10 +138,16 @@ namespace pinpoint {
 
     private:
         /// @brief Shared tail of the callstack SetError overloads: wrap the
-        /// built call stack in an Exception on the parent span and stamp the
-        /// exception-id annotation. `span` comes from the caller's
-        /// spanIfAlive() check, so it is never the dead-span case.
+        /// built call stack in an Exception on the parent span, under the
+        /// span's open exception chain, and stamp the exception-id
+        /// annotation. `span` comes from the caller's spanIfAlive() check, so
+        /// it is never the dead-span case.
         void recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack);
+        /// @brief Builds the CallStack for a call-stack SetError and records
+        /// it; the shared body of the two call-stack overloads.
+        template <typename FillFrames>
+        void setErrorWithCallStack(std::string_view error_name, std::string_view error_message,
+                                   FillFrames&& fill);
 
         /**
          * @brief The parent span while it is alive, else nullptr (after a
@@ -195,14 +201,10 @@ namespace pinpoint {
         std::string destination_id_;
         int32_t error_func_id_{0};
         std::string error_string_;
-        // Id shared by every call stack recorded on this event (one exception
-        // chain); 0 until the first one is buffered.
-        int64_t exception_id_{0};
-        // Java's DISABLED sampling state for this event's chain: set once the
-        // chain is refused by the rate limiter or a link cannot be buffered,
-        // and never cleared, so the rest of the chain is neither recorded nor
-        // charged a second time (see recordException).
-        bool exception_chain_disabled_{false};
+        // The exception chain id this event last annotated (0 = none). The
+        // chain itself lives on the owning span (SpanImpl::exception_chain_id_);
+        // this only keeps ANNOTATION_EXCEPTION_ID to one per chain per event.
+        int64_t annotated_exception_id_{0};
         int32_t async_id_{NONE_ASYNC_ID};
         int32_t async_seq_gen_{0};
         int32_t api_id_{0};

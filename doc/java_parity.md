@@ -32,6 +32,8 @@ by side.
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
+| Exception chain scope and depth | `ExceptionContext`, `ExceptionRecordingState.isChaining`, `ExceptionWrapperFactory` | **Scope as Go, depth flat** — see [below](#exception-chain-scope-and-depth--scope-as-go-depth-flat) |
+| Per-span exception buffer cap | `ExceptionWrapperFactory.maxDepth`, `profiler.exceptiontrace.io.buffering.buffersize` | **Declined** — see [below](#per-span-exception-buffer-cap--declined) |
 | Unusable inbound trace context | `DefaultTraceHeaderReader.read`, `DefaultTraceContext.createTraceId` | **Exceeds Java** — see [below](#unusable-inbound-trace-context--exceeds-java) |
 | Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
 | `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
@@ -304,7 +306,7 @@ belongs to the recorder and not to the event, and the failure reaches the trace
 root separately through `recordError(ErrorCategory.EXCEPTION)`.
 
 **Both ports.** Neither keeps anything but the failure verdict.
-`DisabledSpanEvent::SetError` (`src/span_event.cpp:483-491`) routes to the
+`DisabledSpanEvent::SetError` (`src/span_event.cpp:531-539`) routes to the
 owning span's `markSpanError` with `ErrorCategory::kException`; the Go agent's
 `overflowSpanEvent.SetError` (`span.go:69-81`) sets `span.root().err`. No
 exception info, no annotation, no chain link. `Span.IgnoreErrors`
@@ -322,6 +324,91 @@ state in which events arrive faster than the configured depth allows.
 **Revisit if** this is reported to have blocked a real investigation — an
 exception that occurred only past the depth limit, leaving nothing but a failed
 transaction to go on.
+
+---
+
+## Exception chain scope and depth — scope as Go, depth flat
+
+**Java.** The chain state is the `ExceptionContext` attached to the trace's
+recorder, so it spans every span event of a trace. `ExceptionRecordingState`
+(`stateOf(previous, current)`) compares the throwable being recorded with the
+one recorded before it: if the previous one is in the new one's cause chain the
+state is `CONTINUED` and the same `exceptionId` is kept, otherwise `NEW` flushes
+the finished chain and asks `ExceptionChainSampler` for a new id (or `DISABLED`).
+At flush, `ExceptionWrapperFactory` walks the outermost throwable's causes and
+numbers them `exceptionDepth` 0, 1, 2 … — a **cause depth**, independent of the
+order the events recorded them in.
+
+**Go.** `span.errorChains` keeps the chain state **per span** (`errors.go`
+`getExceptionChainId` / `findError`); an error that is already recorded, or that
+wraps a recorded chain head, reuses that chain's id, and the causes are walked
+with `depth` 1..n (`addCauserCallStack`). Identity is the error value.
+
+**This agent.** The chain state (`SpanImpl::exception_chain_id_`,
+`exception_chain_disabled_`) is **per span**, as in Go, and
+`SpanEventImpl::recordException` reads and writes the owning span's copy: every
+call-stack `SetError` on any event of a span is a link of that span's one
+chain. `PException.exceptionDepth` is **0 for every link**
+(`Exception::getDepth`); `build_exception_metadata` no longer numbers links by
+their position in the buffer, which was record order and not a cause depth.
+Contract in [api_contracts.md §9](api_contracts.md#9-error-recording-and-exception-buffering).
+
+**Decision: span scope, not trace scope.** Per span is the widest scope the
+data model supports: a chain is sent inside its span's `PExceptionMetaData`
+(keyed by `spanId`), and an async child span has its own exception buffer and
+span id, so a chain cannot cross into it without being split on the wire
+anyway. Going to Java's trace scope would only add shared mutable state between
+spans that may end on different threads, for a chain that would still be
+serialized per span. Before this change the state was per span *event*, which
+is what no reference agent does: the same exception recorded on a nested event
+and again on its catcher was two chains, the second charged to (and under load
+refused by) the new-chain limiter.
+
+**Decision: flat depth, no cause API.** Java and Go derive both the chain
+boundary and the depth from throwable identity (`getCause()`, `Unwrap()`). A
+C++ exception carries no such link the agent could follow, and every link here
+is one explicit `SetError` call, so the agent cannot tell a cause from an
+unrelated exception nor which link caused which. Rather than invent a depth
+(record order, which is what the old builder sent, is not a cause depth) or ask
+callers to number causes they usually cannot identify either, the chain is
+flat. The consequences are accepted: unrelated exceptions recorded on one span
+share its id where Java and Go would open a new chain, and the collector sees
+no cause ordering within a chain.
+
+---
+
+## Per-span exception buffer cap — declined
+
+**Java.** No per-span cap. `ExceptionWrapperFactory.maxDepth`
+(`profiler.exceptiontrace.max.depth`, default `5`) caps how many cause links one
+chain keeps; `profiler.exceptiontrace.io.buffering.buffersize` (default `20`)
+is only the flush threshold of the metadata sender.
+
+**Go.** `Error.MaxChainDepth` (`config.go`, default `maxCauserDepth` = 64 in the
+current tree) caps the cause walk of one error, and `canAddErrorChain`
+(`span.go`) caps the entries a span keeps at `max(minErrorChainEntry = 10,
+Error.MaxChainDepth)` — so 64 by default, 10 only when the depth knob is
+lowered below it.
+
+**This agent.** `SpanImpl::kMaxBufferedExceptions` = 100 per span, no per-chain
+depth cap, and no `Error.MaxChainDepth` counterpart (gaps S6 and E4 of the
+cross-agent review).
+
+**Decision: keep 100, no depth key, for now.** The cap exists to bound the
+memory of a long-lived span that keeps failing (every link carries a full
+string call stack), and 100 sits between Java's unbounded span and Go's 64
+default. A per-chain depth cap is a *walk* limit in both reference agents —
+how far the agent follows `getCause()` / `Unwrap()` on its own. This agent does
+not walk anything and its chain is flat (see above): every link is one explicit
+`SetError` call, so a depth cap here would only discard links the caller
+deliberately recorded. Changing the number or adding the key is a config
+surface change with its own compatibility note, kept out of the chain-scope
+change above.
+
+**Revisit if** a binding gains a cause walk of its own (e.g. over
+`std::nested_exception`), at which point `Error.MaxChainDepth` becomes the
+natural bound for it, or if 100 links per span is shown to be too much memory
+under a real error storm.
 
 ---
 
