@@ -821,6 +821,120 @@ TEST_F(ConfigTest, SpanIgnoreErrorsEnvTest) {
     EXPECT_EQ(config->span.ignore_errors[2], (IgnoreErrorRule{"HttpError", "404"}));
 }
 
+// Java's ConfigurableErrorRecorderFactory.getEnabledTypes: an unset
+// profiler.error.mark enables every category, so the default mask must too.
+TEST_F(ConfigTest, SpanErrorMarkDefaultsToEveryCategoryTest) {
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "MyApp", 1);
+
+    auto config = make_config();
+
+    EXPECT_TRUE(config->span.error_mark.empty());
+    EXPECT_TRUE(config->span.error_mark_exclude.empty());
+    EXPECT_EQ(config->span.error_mark_mask, ALL_ERROR_CATEGORIES);
+    EXPECT_EQ(config->span.error_mark_mask, 15) << "kUnknown|kException|kHttpStatus|kSql";
+}
+
+TEST_F(ConfigTest, SpanErrorMarkYamlTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  ErrorMark:
+    - exception
+    - sql
+)");
+
+    auto config = make_config();
+
+    // kUnknown is added back whatever the lists say, so the mask is
+    // 1 | 2 | 8 - http-status is the only cause left out.
+    EXPECT_EQ(config->span.error_mark_mask,
+              ALL_ERROR_CATEGORIES & ~static_cast<int>(ErrorCategory::kHttpStatus));
+}
+
+TEST_F(ConfigTest, SpanErrorMarkExcludeYamlTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  ErrorMarkExclude: [Http-Status]
+)");
+
+    auto config = make_config();
+
+    ASSERT_EQ(config->span.error_mark_exclude.size(), 1u);
+    EXPECT_EQ(config->span.error_mark_mask,
+              ALL_ERROR_CATEGORIES & ~static_cast<int>(ErrorCategory::kHttpStatus))
+        << "category names are matched case-insensitively like every other value";
+}
+
+// Exclusion wins over inclusion, as Java's mark.removeAll(exclude) does.
+TEST_F(ConfigTest, SpanErrorMarkExcludeOverridesMarkTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  ErrorMark: [exception, http-status, sql]
+  ErrorMarkExclude: [sql]
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->span.error_mark_mask,
+              ALL_ERROR_CATEGORIES & ~static_cast<int>(ErrorCategory::kSql));
+}
+
+// kUnknown has no spelling and survives every exclusion: excluding it would
+// mean "never fail a transaction", which is not what the key is for.
+TEST_F(ConfigTest, SpanErrorMarkAlwaysKeepsUnknownTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  ErrorMark: [exception]
+  ErrorMarkExclude: [exception, unknown]
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->span.error_mark_mask, static_cast<int>(ErrorCategory::kUnknown))
+        << "everything nameable was excluded, and kUnknown alone remains";
+}
+
+// The env spelling is Java's verbatim: one comma-separated string.
+TEST_F(ConfigTest, SpanErrorMarkEnvTest) {
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "MyApp", 1);
+    setenv(full_env(env::SPAN_ERROR_MARK).c_str(), "exception, sql", 1);
+    setenv(full_env(env::SPAN_ERROR_MARK_EXCLUDE).c_str(), "sql", 1);
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->span.error_mark_mask,
+              static_cast<int>(ErrorCategory::kUnknown) |
+                  static_cast<int>(ErrorCategory::kException));
+}
+
+// An unrecognised name is warned about and ignored - it must not silently
+// widen the mask back to "everything", which is what treating the whole list
+// as unparseable would do.
+TEST_F(ConfigTest, SpanErrorMarkIgnoresUnknownCategoryNamesTest) {
+    set_config_string(R"(
+ApplicationName: "MyApp"
+Span:
+  ErrorMark: [exception, typo-here]
+)");
+
+    auto config = make_config();
+
+    EXPECT_EQ(config->span.error_mark_mask,
+              static_cast<int>(ErrorCategory::kUnknown) |
+                  static_cast<int>(ErrorCategory::kException));
+}
+
+// The bit values are a wire contract with the Java and Go agents.
+TEST_F(ConfigTest, ErrorCategoryBitValuesMatchJavaTest) {
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kUnknown), 1) << "Java ErrorCategory.UNKNOWN";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kException), 2) << "Java ErrorCategory.EXCEPTION";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kHttpStatus), 4) << "Java ErrorCategory.HTTP_STATUS";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kSql), 8) << "Java ErrorCategory.SQL";
+}
+
 TEST_F(ConfigTest, EnvironmentVariableOverrideYamlTest) {
     // Set YAML config
     set_config_string(partial_config_yaml_);

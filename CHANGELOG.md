@@ -4,6 +4,38 @@
 
 ### Breaking
 
+- **`PSpan.err` now carries the error cause, not a flat `1`.**
+
+  Up to and including v2.0.0 every failure set `err = 1`. It is now a bitmask
+  of error causes, matching the Java agent's `ErrorCategory`
+  (`commons/.../trace/ErrorCategory.java`): `2` for an exception, `4` for a
+  status code matching `Http.Server.StatusCodeErrors`, `8` for a
+  `Sql.ErrorCount` overflow. Causes accumulate, so a request that threw *and*
+  returned 503 reports `err = 6` ([src/span.h](src/span.h),
+  `markSpanError`). The same transactions are marked failed as before — only
+  the value naming the cause is new.
+
+  This is Java's **default** behaviour: `profiler.error.enable` defaults to
+  `true`, which loads `ConfigurableErrorRecorder` and ORs
+  `errorCategory.getBitMask()` into the shared error code. The flat `1` the
+  agent used to send is Java's `SimpleErrorRecorder`, reached only with
+  `profiler.error.enable=false`.
+
+  **Symptom if you do not migrate:** anything that compares `err` against `1`
+  — a dashboard query, a log filter, a test — stops matching failures whose
+  cause is not `UNKNOWN`. Test `err != 0` instead.
+
+  **New configuration.** `Span.ErrorMark` and `Span.ErrorMarkExclude` (Java's
+  `profiler.error.mark` / `.mark.exclude`) select which causes may fail a
+  transaction, so a policy like "a 5xx is not by itself a failed transaction"
+  is now expressible: `Span.ErrorMarkExclude: [http-status]`. See
+  [doc/config.md](doc/config.md#error-causes-spanerrormark-spanerrormarkexclude).
+
+  **The Go agent still sends `1`.** Until the matching change lands there, a
+  C++ service and a Go service that failed the same way report different `err`
+  values to the same collector. See
+  [doc/java_parity.md](doc/java_parity.md#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges).
+
 - **Continuing an inbound trace now requires all three trace headers.**
 
   Up to and including v2.0.0, a request carrying `Pinpoint-TraceID` continued

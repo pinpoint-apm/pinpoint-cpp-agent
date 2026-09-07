@@ -1065,7 +1065,9 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     EXPECT_EQ(root_wire->transactionid().agentid(), impl_->getAgentId());
     EXPECT_EQ(root_wire->acceptevent().remoteaddr(), "192.0.2.10");
     EXPECT_EQ(root_wire->acceptevent().endpoint(), "orders.internal:8443");
-    EXPECT_EQ(root_wire->err(), 1);
+    // SetStatusCode(503) | SetError | the span event's error: kHttpStatus
+    // (4) OR kException (2).
+    EXPECT_EQ(root_wire->err(), 6);
     EXPECT_NE(root_wire->loggingtransactioninfo(), 0);
     ASSERT_TRUE(root_wire->has_exceptioninfo());
     EXPECT_EQ(root_wire->exceptioninfo().stringvalue().value(), "upstream unavailable");
@@ -1446,7 +1448,8 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
     ASSERT_TRUE(wire.has_value());
     EXPECT_EQ(wire->acceptevent().remoteaddr(), "203.0.113.7");
     EXPECT_EQ(wire->acceptevent().endpoint(), "frontend.example.test:443");
-    EXPECT_EQ(wire->err(), 1);
+    // The 503 server response is the only failure here, so kHttpStatus alone.
+    EXPECT_EQ(wire->err(), 4);
 
     const auto* proxy = find_annotation(wire->annotation(),
                                         ANNOTATION_HTTP_PROXY_HEADER);

@@ -127,6 +127,8 @@ namespace pinpoint {
         constexpr const char* SPAN_MAX_EVENT_SEQUENCE = "SPAN_MAX_EVENT_SEQUENCE";
         constexpr const char* SPAN_EVENT_CHUNK_SIZE = "SPAN_EVENT_CHUNK_SIZE";
         constexpr const char* SPAN_IGNORE_ERRORS = "SPAN_IGNORE_ERRORS";
+        constexpr const char* SPAN_ERROR_MARK = "SPAN_ERROR_MARK";
+        constexpr const char* SPAN_ERROR_MARK_EXCLUDE = "SPAN_ERROR_MARK_EXCLUDE";
         constexpr const char* SPAN_BATCH_SIZE = "SPAN_BATCH_SIZE";
         constexpr const char* SPAN_BATCH_FLUSH_INTERVAL_MS = "SPAN_BATCH_FLUSH_INTERVAL_MS";
         constexpr const char* SPAN_BATCH_COLLECT_DEADLINE_MS = "SPAN_BATCH_COLLECT_DEADLINE_MS";
@@ -197,6 +199,45 @@ namespace pinpoint {
     /// @brief Whether @p rules suppress the error-mark for this error.
     bool is_ignored_error(const std::vector<IgnoreErrorRule>& rules,
                           std::string_view error_name, std::string_view error_message);
+
+    /**
+     * @brief The cause categories OR-ed into the trace root's error mask and
+     *        sent as `PSpan.err`.
+     *
+     * The bit values are a wire contract, not an internal detail: the
+     * collector reads them to tell an exception apart from a failing HTTP
+     * status, so they must keep matching Java's `common/trace/ErrorCategory`
+     * and must never be renumbered. `kUnknown` is the category of a failure
+     * with no cause attached; it is what an agent that does not classify at
+     * all reports (Java's `SimpleErrorRecorder`, used when
+     * `profiler.error.enable=false`).
+     */
+    enum class ErrorCategory : int {
+        kUnknown = 1 << 0,
+        kException = 1 << 1,
+        kHttpStatus = 1 << 2,
+        kSql = 1 << 3,
+    };
+
+    /// @brief Every category, which is what an unset `Span.ErrorMark` enables.
+    constexpr int ALL_ERROR_CATEGORIES =
+        static_cast<int>(ErrorCategory::kUnknown) |
+        static_cast<int>(ErrorCategory::kException) |
+        static_cast<int>(ErrorCategory::kHttpStatus) |
+        static_cast<int>(ErrorCategory::kSql);
+
+    /**
+     * @brief Resolves `Span.ErrorMark` / `Span.ErrorMarkExclude` into the mask
+     *        of categories allowed to fail a transaction.
+     *
+     * An empty @p mark enables every category, the way Java's unset
+     * `profiler.error.mark` does. Entries are trimmed and matched
+     * case-insensitively against `exception`, `http-status` and `sql`; an
+     * unknown one is warned about and ignored. `kUnknown` is always enabled,
+     * whatever the two lists say.
+     */
+    int error_mark_mask(const std::vector<std::string>& mark,
+                        const std::vector<std::string>& exclude);
 
     /**
      * @brief Aggregated runtime configuration used by the Pinpoint agent.
@@ -334,6 +375,18 @@ namespace pinpoint {
             // Errors matched here are recorded but never mark the span as
             // failed (see is_ignored_error / SpanImpl::markSpanError).
             std::vector<IgnoreErrorRule> ignore_errors;
+            // Java's profiler.error.mark / profiler.error.mark.exclude: which
+            // error causes are allowed to fail a transaction. An empty
+            // error_mark means "every category", as Java's unset (null) string
+            // does; error_mark_exclude then removes from that.
+            std::vector<std::string> error_mark;
+            std::vector<std::string> error_mark_exclude;
+            // Derived from the two lists above by make_config(), not a
+            // configuration input of its own - so it is deliberately absent
+            // from kConfigFields and from the serialized config. A Config
+            // built directly (tests) keeps every category enabled, which is
+            // Java's default.
+            int error_mark_mask = ALL_ERROR_CATEGORIES;
         } span;
 
         struct {

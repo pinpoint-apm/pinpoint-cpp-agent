@@ -247,6 +247,8 @@ The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, 
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
 | `Span.IgnoreErrors` | `PINPOINT_CPP_SPAN_IGNORE_ERRORS` | list of `{ Name, MessageContains }` | empty | Errors matching a rule are still reported (`exceptionInfo`) but do not mark the transaction as failed. See below. |
+| `Span.ErrorMark` | `PINPOINT_CPP_SPAN_ERROR_MARK` | list&lt;string&gt; | empty (= all) | Which error causes may fail a transaction: `exception`, `http-status`, `sql`. Empty means every cause, as in Java. See below. |
+| `Span.ErrorMarkExclude` | `PINPOINT_CPP_SPAN_ERROR_MARK_EXCLUDE` | list&lt;string&gt; | empty | Causes removed from `Span.ErrorMark`. Exclusion wins. See below. |
 
 > Negative or invalid values are coerced to safe defaults during `make_config()`.
 
@@ -288,8 +290,53 @@ Both `Span.SetError()` and `SpanEvent.SetError()` honour the list, so an
 ignored error recorded on a span event neither sets `PSpan.err` nor flags the
 URL statistics entry as failed. `Span.SetStatusCode()` is unaffected — it
 carries no error name or message, and Java's ignore handler is likewise
-throwable-only. Java's `nested` / `parent` matchers and the `ErrorCategory`
-bitmask are not implemented.
+throwable-only. Java's `nested` / `parent` matchers are not implemented.
+
+### Error Causes (`Span.ErrorMark`, `Span.ErrorMarkExclude`)
+
+`PSpan.err` is a **bitmask of error causes**, not a boolean, so the server can
+tell *why* a transaction failed. The bit values are shared with the Java and Go
+agents (Java's `common/trace/ErrorCategory`):
+
+| Cause | Configuration name | Bit | Set by |
+|---|---|---|---|
+| `UNKNOWN` | *(not selectable)* | `1` | nothing in this agent — reserved for a failure with no cause attached |
+| `EXCEPTION` | `exception` | `2` | `Span.SetError()`, `SpanEvent.SetError()` |
+| `HTTP_STATUS` | `http-status` | `4` | `Span.SetStatusCode()` with a code matching `Http.Server.StatusCodeErrors` |
+| `SQL` | `sql` | `8` | more than `Sql.ErrorCount` SQL statements in one transaction |
+
+Causes accumulate: a request that threw *and* returned 503 reports `err = 6`.
+
+These two keys select which causes are allowed to fail a transaction, matching
+Java's `profiler.error.mark` / `profiler.error.mark.exclude`. `Span.ErrorMark`
+is the allow-list — **empty means every cause**, as an unset key does in Java —
+and `Span.ErrorMarkExclude` is then subtracted from it, so exclusion wins when
+a cause appears in both. A cause that is not enabled records **nothing**: the
+error is still reported as `exceptionInfo` and the status code is still
+annotated, only the transaction is not marked failed (and its URL statistics
+entry is not flagged). `UNKNOWN` is always enabled whatever the two lists say,
+which is why it has no configuration name.
+
+Names are trimmed and matched case-insensitively; an unrecognised name is
+warned about and ignored, leaving the rest of the list in force.
+
+```yaml
+Span:
+  ErrorMarkExclude: [http-status]   # a 5xx is not by itself a failed transaction
+```
+
+The environment variables take the same list comma-separated, which is Java's
+own spelling:
+
+```
+PINPOINT_CPP_SPAN_ERROR_MARK_EXCLUDE="http-status,sql"
+```
+
+Leaving both keys unset reproduces the Java agent's default
+(`profiler.error.enable=true` with no mark string, i.e. every cause enabled).
+There is no counterpart to `profiler.error.enable=false` — Java's
+`SimpleErrorRecorder`, which reports a flat `1` for every cause — because
+excluding causes individually covers the same ground.
 
 ---
 
@@ -454,6 +501,7 @@ are **non-reloadable** — changing them requires an application restart.
 | Sampling | `Sampling.*` (Type, CounterRate, PercentRate, NewThroughput, ContinueThroughput) | **Yes** |
 | Per-span limits | `Span.MaxEventDepth`, `Span.MaxEventSequence`, `Span.EventChunkSize` | **Yes** (spans created after the reload) |
 | Ignored errors | `Span.IgnoreErrors` | **Yes** (spans created after the reload) |
+| Error causes | `Span.ErrorMark`, `Span.ErrorMarkExclude` | **Yes** (spans created after the reload) |
 | Callstack capture | `EnableCallstackTrace`, `CallstackTraceNewThroughput` | **Yes** |
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |

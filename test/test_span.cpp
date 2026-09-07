@@ -150,8 +150,11 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     span_data.setFlags(0x12345);
     EXPECT_EQ(span_data.getFlags(), 0x12345);
     
-    span_data.setErr(404);
-    EXPECT_EQ(span_data.getErr(), 404);
+    span_data.maskErr(static_cast<int>(ErrorCategory::kException));
+    EXPECT_EQ(span_data.getErr(), 2);
+    // maskErr ORs, so a second cause accumulates instead of replacing.
+    span_data.maskErr(static_cast<int>(ErrorCategory::kHttpStatus));
+    EXPECT_EQ(span_data.getErr(), 6);
     
     // Test error info
     span_data.setErrorFuncId(777);
@@ -1899,8 +1902,8 @@ TEST_F(SpanTest, SpanImplSetStatusCodeFailureTest) {
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& chunk = mock_agent_service_->recorded_spans_.back();
-    EXPECT_EQ(chunk->getSpanData()->getErr(), 1)
-        << "Failure status (>=400) should set error";
+    EXPECT_EQ(chunk->getSpanData()->getErr(), 4)
+        << "Failure status (>=400) should set the kHttpStatus bit";
 }
 
 // ========== SpanImpl extractContext ==========
@@ -2149,15 +2152,15 @@ TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
 
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     auto& last = mock_agent_service_->recorded_spans_.back();
-    EXPECT_EQ(last->getSpanData()->getErr(), 1);
+    EXPECT_EQ(last->getSpanData()->getErr(), 2) << "a span error is kException";
     EXPECT_EQ(last->getSpanData()->getErrorString(), "something went wrong");
     // The error name "Error" should have been cached
     EXPECT_GE(mock_agent_service_->getCachedErrorId("Error"), 0);
 }
 
 // An exception recorded only on a span event (DB/external call) must fail the
-// whole transaction like Java: PSpan.err == 1 and the URL stat entry counts in
-// the failed histogram, even with a 200 status.
+// whole transaction like Java: PSpan.err carries kException and the URL stat
+// entry counts in the failed histogram, even with a 200 status.
 TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2177,7 +2180,7 @@ TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     google::protobuf::Arena arena;
     auto* pspan = build_grpc_span(std::move(chunk), &arena);
     ASSERT_NE(pspan, nullptr);
-    EXPECT_EQ(pspan->err(), 1);
+    EXPECT_EQ(pspan->err(), 2);
 
     // Same flag drives the failed histogram of the URL stat snapshot.
     UrlStatEntry entry("/api/users", "GET", 200);
@@ -2225,7 +2228,7 @@ TEST_F(SpanTest, AsyncSpanEventSetErrorMarksRootSpanAndUrlStatFailedTest) {
     auto* root_pspan = build_grpc_span(
         std::move(mock_agent_service_->recorded_spans_.back()), &async_arena);
     ASSERT_NE(root_pspan, nullptr);
-    EXPECT_EQ(root_pspan->err(), 1)
+    EXPECT_EQ(root_pspan->err(), 2)
         << "an async child's error must set the root PSpan.err";
 }
 
@@ -2259,7 +2262,7 @@ TEST_F(SpanTest, AsyncSpanErrorOnWorkerThreadFailsTheRootTest) {
     auto* root_pspan = build_grpc_span(
         std::move(mock_agent_service_->recorded_spans_.back()), &worker_arena);
     ASSERT_NE(root_pspan, nullptr);
-    EXPECT_EQ(root_pspan->err(), 1)
+    EXPECT_EQ(root_pspan->err(), 2)
         << "an error recorded on the worker thread must fail the root";
 }
 
@@ -2293,7 +2296,7 @@ TEST_F(SpanTest, NestedAsyncSpanErrorReachesTraceRootTest) {
     auto* root_pspan = build_grpc_span(
         std::move(mock_agent_service_->recorded_spans_.back()), &nested_arena);
     ASSERT_NE(root_pspan, nullptr);
-    EXPECT_EQ(root_pspan->err(), 1)
+    EXPECT_EQ(root_pspan->err(), 2)
         << "a nested async error must reach the trace root";
 }
 
@@ -2407,7 +2410,7 @@ TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     google::protobuf::Arena arena;
     auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
     ASSERT_NE(pspan, nullptr);
-    EXPECT_EQ(pspan->err(), 1);
+    EXPECT_EQ(pspan->err(), 2);
     ASSERT_EQ(pspan->spanevent_size(), 2) << "the overflowed event itself is still discarded";
     EXPECT_FALSE(pspan->spanevent(0).has_exceptioninfo())
         << "only the two real events are recorded, and neither recorded an error";
@@ -2447,7 +2450,7 @@ TEST_F(SpanTest, SpanIgnoreErrorsUnregisteredNameStillMarksErrTest) {
     google::protobuf::Arena arena;
     auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
     ASSERT_NE(pspan, nullptr);
-    EXPECT_EQ(pspan->err(), 1) << "a name outside the ignore list must still fail the span";
+    EXPECT_EQ(pspan->err(), 2) << "a name outside the ignore list must still fail the span";
     EXPECT_TRUE(pspan->has_exceptioninfo());
 }
 
@@ -2493,6 +2496,169 @@ TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
     ASSERT_EQ(pspan->spanevent_size(), 1);
     EXPECT_TRUE(pspan->spanevent(0).has_exceptioninfo())
         << "the event still carries the exception, only the span is unmarked";
+}
+
+// ========== Error Category (PSpan.err) Tests ==========
+
+// PSpan.err is a bitmask of ErrorCategory, not a boolean: the collector reads
+// it to tell what failed the transaction. Java's default recorder is the
+// ConfigurableErrorRecorder (profiler.error.enable defaults to true), which
+// ORs errorCategory.getBitMask() into the shared error code; the flat 1 comes
+// only from SimpleErrorRecorder, i.e. profiler.error.enable=false.
+TEST_F(SpanTest, ErrorCategoryExceptionOnlyMarksTheExceptionBitTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+    span.SetError("SQLException", "connection refused");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), static_cast<int>(ErrorCategory::kException)) << "kException == 2";
+}
+
+TEST_F(SpanTest, ErrorCategoryHttpStatusOnlyMarksTheHttpStatusBitTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(503);
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), static_cast<int>(ErrorCategory::kHttpStatus)) << "kHttpStatus == 4";
+}
+
+// The point of a mask over a flag: a request that threw AND returned 5xx
+// reports both causes, in either recording order.
+TEST_F(SpanTest, ErrorCategoriesAccumulateAsAnOrMaskTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetError("SQLException", "connection refused");
+    span.SetStatusCode(503);
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 6) << "kException (2) | kHttpStatus (4)";
+}
+
+// Re-marking the same category must not double-count or clear anything: err
+// is an idempotent OR, as Java's maskErrorCode is.
+TEST_F(SpanTest, ErrorCategoryRepeatedMarksAreIdempotentTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(500);
+    span.SetStatusCode(503);
+    span.SetError("First", "boom");
+    span.SetError("Second", "boom again");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 6);
+}
+
+// ========== Span.ErrorMark / Span.ErrorMarkExclude Tests ==========
+
+// Java's ConfigurableErrorRecorder.recordError: a category outside the enabled
+// set masks nothing at all, so "5xx is not a transaction failure" becomes
+// expressible without giving up exception marking. The status annotation is
+// still recorded - only the verdict is dropped.
+TEST_F(SpanTest, ErrorMarkExcludeHttpStatusLeavesA5xxUnmarkedTest) {
+    mock_agent_service_->mutableConfig()->span.error_mark_mask =
+        error_mark_mask({}, {"http-status"});
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(503);
+    span.SetUrlStat("/api/users", "GET", 503);
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0) << "an excluded category must not fail the transaction";
+    bool status_recorded = false;
+    for (const auto& a : pspan->annotation()) {
+        status_recorded = status_recorded || a.key() == ANNOTATION_HTTP_STATUS_CODE;
+    }
+    EXPECT_TRUE(status_recorded) << "the status code itself is still recorded";
+}
+
+// Excluding one category must not disarm the others.
+TEST_F(SpanTest, ErrorMarkExcludeHttpStatusStillMarksExceptionsTest) {
+    mock_agent_service_->mutableConfig()->span.error_mark_mask =
+        error_mark_mask({}, {"http-status"});
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(503);
+    span.SetError("SQLException", "connection refused");
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), static_cast<int>(ErrorCategory::kException))
+        << "only the excluded cause is dropped";
+}
+
+// End to end through the real loader, which is where the operator-visible
+// behaviour actually lives: the YAML key has to reach span.error_mark_mask.
+TEST_F(SpanTest, ErrorMarkExcludeFromYamlLeavesA5xxUnmarkedTest) {
+    AgentOptions options;
+    options.config_yaml =
+        "ApplicationName: MarkExcludeApp\n"
+        "Span:\n"
+        "  ErrorMarkExclude: [http-status]\n";
+    auto config = make_config(options, nullptr);
+    ASSERT_NE(config, nullptr);
+    ASSERT_EQ(config->span.error_mark_mask,
+              ALL_ERROR_CATEGORIES & ~static_cast<int>(ErrorCategory::kHttpStatus));
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(503);
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0);
+}
+
+// The URL statistics failure flag is driven by the same mask, so an excluded
+// category must not fail the URL stat entry either - otherwise the scatter
+// chart and the URL failure histogram would disagree about the same request.
+TEST_F(SpanTest, ErrorMarkExcludeExceptionLeavesUrlStatSuccessfulTest) {
+    mock_agent_service_->mutableConfig()->span.error_mark_mask =
+        error_mark_mask({}, {"exception"});
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    span.SetStatusCode(200);
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    auto se = span.NewSpanEvent("db-query");
+    se->SetError("SQLException", "connection refused");
+    se->EndEvent();
+    span.EndSpan();
+
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_);
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), 0);
+    ASSERT_EQ(pspan->spanevent_size(), 1);
+    EXPECT_TRUE(pspan->spanevent(0).has_exceptioninfo())
+        << "the event still carries the exception, only the verdict is dropped";
 }
 
 // ========== PAcceptEvent UNKNOWN Defaults ==========
@@ -2850,7 +3016,7 @@ TEST_F(SpanTest, DisabledSpanEventRecordsNothingButEveryErrorOverloadFailsTheSpa
     google::protobuf::Arena arena;
     auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
     ASSERT_NE(pspan, nullptr);
-    EXPECT_EQ(pspan->err(), 1) << "every SetError overload must fail the transaction";
+    EXPECT_EQ(pspan->err(), 2) << "every SetError overload must fail the transaction";
     EXPECT_EQ(pspan->spanevent_size(), 2) << "the overflowed event itself records nothing";
 }
 

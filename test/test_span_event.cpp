@@ -409,7 +409,7 @@ TEST_F(SpanEventTest, ExceptionChainRateLimitDropsCallStackOnly) {
     // which is what Java's DISABLED sampling state produces.
     EXPECT_EQ(event2.getErrorString(), "Second error");
     EXPECT_GT(event2.getErrorFuncId(), 0);
-    EXPECT_EQ(span->getSpanData()->getErr(), 1) << "The span is still marked failed";
+    EXPECT_EQ(span->getSpanData()->getErr(), 2) << "The span is still marked failed";
 }
 
 TEST_F(SpanEventTest, ExceptionChainRateLimitSkipsChainContinuations) {
@@ -902,8 +902,44 @@ TEST_F(SpanEventTest, SqlCountAtLimitMarksSpanFailed) {
     applyConfigToFreshSpan(config);
 
     run_sql_statements(*test_span_, 3);
-    EXPECT_EQ(test_span_data_->getErr(), 1)
-        << "The Nth statement marks the transaction failed, as in Java";
+    EXPECT_EQ(test_span_data_->getErr(), 8)
+        << "The Nth statement marks the transaction failed with kSql, as in Java";
+}
+
+// The SQL overflow has its own ErrorCategory, so an operator can see that a
+// transaction failed on statement count rather than on an exception or a 5xx.
+TEST_F(SpanEventTest, SqlCountMarksTheSqlCategoryOnly) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 2;
+    applyConfigToFreshSpan(config);
+
+    run_sql_statements(*test_span_, 2);
+    EXPECT_EQ(test_span_data_->getErr(), static_cast<int>(ErrorCategory::kSql))
+        << "kSql == 8, with no other cause bit set";
+}
+
+// Span.ErrorMarkExclude drops the verdict, not the counting: Java applies the
+// enabled-category filter inside the recorder, downstream of
+// DefaultSqlCountService.
+TEST_F(SpanEventTest, SqlCountExcludedCategoryLeavesTheTransactionClean) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 2;
+    config->span.error_mark_mask = error_mark_mask({}, {"sql"});
+    applyConfigToFreshSpan(config);
+
+    run_sql_statements(*test_span_, 20);
+    EXPECT_EQ(test_span_data_->getErr(), SPAN_ERR_NONE)
+        << "an excluded kSql must not fail the transaction";
+}
+
+// A span event error is kException wherever it is recorded, including on the
+// overflow placeholder and on an async child.
+TEST_F(SpanEventTest, SpanEventErrorMarksTheExceptionCategory) {
+    auto event = make_test_span_event(*test_span_, "db-query");
+    event.SetError("SQLException", "connection refused");
+
+    EXPECT_EQ(test_span_data_->getErr(), static_cast<int>(ErrorCategory::kException))
+        << "kException == 2";
 }
 
 TEST_F(SpanEventTest, SqlCountZeroDisablesMarking) {
@@ -952,7 +988,7 @@ TEST_F(SpanEventTest, SqlCountOnAnAsyncSpanFailsTheTraceRoot) {
     // Both the count and the failure live on the trace root. The failure has
     // to: an async span is serialized as a chunk, which has no err field, so
     // a flag left on the child's own SpanData never reaches the collector.
-    EXPECT_EQ(test_span_data_->getErr(), 1)
+    EXPECT_EQ(test_span_data_->getErr(), 8)
         << "An async span's SQL overflow must fail the trace root";
     EXPECT_EQ(async_impl->getSpanData()->getErr(), SPAN_ERR_NONE)
         << "and the flag lives on the root only, not on the child too";
@@ -989,7 +1025,7 @@ TEST_F(SpanEventTest, SqlCountIsSharedAcrossTheWholeTransaction) {
         << "8 statements is still under the transaction's budget of 10";
 
     run_sql_statements(*as_impl(child2), 2);
-    EXPECT_EQ(test_span_data_->getErr(), 1)
+    EXPECT_EQ(test_span_data_->getErr(), 8)
         << "The 10th statement of the transaction marks it failed, wherever "
            "in the trace it ran";
 }
@@ -1013,7 +1049,7 @@ TEST_F(SpanEventTest, SqlCountOnNestedAsyncSpansReachesTheOriginalRoot) {
         << "5 of 6 statements: still clean";
 
     run_sql_statements(*as_impl(grandchild), 1);
-    EXPECT_EQ(test_span_data_->getErr(), 1)
+    EXPECT_EQ(test_span_data_->getErr(), 8)
         << "A nested async span's statements count on the original root";
     EXPECT_EQ(as_impl(child)->getSpanData()->getErr(), SPAN_ERR_NONE);
     EXPECT_EQ(as_impl(grandchild)->getSpanData()->getErr(), SPAN_ERR_NONE);
@@ -1062,7 +1098,7 @@ TEST_F(SpanEventTest, SqlCountFromConcurrentAsyncSpansIsRaceFree) {
         t.join();
     }
 
-    EXPECT_EQ(test_span_data_->getErr(), 1)
+    EXPECT_EQ(test_span_data_->getErr(), 8)
         << kThreads * kPerThread << " concurrent statements must reach the "
            "transaction's budget exactly - a lost increment would leave the "
            "trace unmarked";

@@ -304,7 +304,7 @@ namespace pinpoint {
         error_string_ = abbreviateErrorString(error_message);
         // Propagate to the owning span (the async child span for async
         // events) so PSpan.err and the URL stat failure flag see it.
-        span->markSpanError(error_name, error_message);
+        span->markSpanError(ErrorCategory::kException, error_name, error_message);
     } CATCH_AND_LOG("set error")
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) {
@@ -486,7 +486,7 @@ namespace pinpoint {
         // owner check is InjectContext's (this event has no spanIfAlive of its
         // own) — a span already gone has no error flag left to mark.
         if (auto* span = data_->getOwner()) {
-            span->markSpanError(error_name, error_message);
+            span->markSpanError(ErrorCategory::kException, error_name, error_message);
         }
     } CATCH_AND_LOG("set error")
 

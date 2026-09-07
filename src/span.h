@@ -217,7 +217,10 @@ namespace pinpoint {
         }
         void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
-        void setErr(int err) { err_.store(err, std::memory_order_relaxed); }
+        /// @brief Java's Shared.maskErrorCode (DefaultShared.java:69-72): ORs
+        /// one ErrorCategory bit into the accumulated mask, so a transaction
+        /// that failed for several reasons reports all of them.
+        void maskErr(int err) { err_.fetch_or(err, std::memory_order_relaxed); }
         int getErr() const { return err_.load(std::memory_order_relaxed); }
 
         /// @brief Java's Shared.incrementAndGetSqlCount
@@ -341,9 +344,10 @@ namespace pinpoint {
         int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
         int flags_{SPAN_FLAG_NONE};
         // The one field of a trace root that a foreign thread writes: an async
-        // child marks its parent's error flag (SpanImpl::traceRootData), and
+        // child marks its parent's error mask (SpanImpl::traceRootData), and
         // that can race a gRPC worker already serializing the root's PSpan.
-        // Relaxed is enough — the flag carries no other state with it.
+        // Relaxed is enough — fetch_or is atomic whatever the ordering, and
+        // the mask carries no other state with it.
         std::atomic<int> err_{SPAN_ERR_NONE};
         // The other field a foreign thread writes, and for the same reason:
         // SQL statements are counted per transaction, so every async child of
@@ -643,16 +647,17 @@ namespace pinpoint {
             // atomic runtime load. Falls back to the agent call for spans
             // constructed without a snapshot (tests).
             bool isStatusFail(int status) const;
-            // Single point that flips SpanData::err_: span-level SetError,
-            // 5xx status codes, and SpanEventImpl::SetError all route here
-            // (Java ORs every recordException into the shared errorCode).
+            // Single point that writes SpanData::err_: span-level SetError,
+            // 5xx status codes, SQL count overflow and SpanEventImpl::SetError
+            // all route here (Java ORs every recorded error into the shared
+            // errorCode).
             //
-            // The flag lands on the TRACE ROOT, not on this span: only the
+            // The mask lands on the TRACE ROOT, not on this span: only the
             // root's PSpan carries err on the wire (a span chunk has no such
             // field), so an error recorded on an async child would otherwise
             // reach neither the collector nor the URL stat. This is Java's
             // TraceRoot.getShared().maskErrorCode(). A child that ends after
-            // the root already flushed its final chunk marks the flag too late
+            // the root already flushed its final chunk marks the mask too late
             // to be sent — the same limit Java has, since both serialize the
             // PSpan once, at root end: DefaultTrace.close() calls logSpan(),
             // which stores the PSpan right there (DefaultTrace.java:181-199),
@@ -666,14 +671,29 @@ namespace pinpoint {
             // (DefaultBaseTraceFactory.java:148,161). So this matches Java on
             // the normal path — deferring the store would go beyond Java, not
             // close a gap against it.
-            void markSpanError() { traceRootData().setErr(1); }
+            //
+            // What lands there is the CATEGORY bit, OR-ed into whatever is
+            // already set, so one transaction that hit an exception and
+            // returned 5xx reports both causes. A category the operator
+            // removed with Span.ErrorMark / Span.ErrorMarkExclude records
+            // nothing at all — not even kUnknown — which is Java's
+            // ConfigurableErrorRecorder.recordError: the mask is applied only
+            // when the category is in the enabled set.
+            void markSpanError(ErrorCategory category) {
+                const auto bit = static_cast<int>(category);
+                if ((config_->span.error_mark_mask & bit) == 0) {
+                    return;
+                }
+                traceRootData().maskErr(bit);
+            }
             // The overload both SetError paths use, so the Span.IgnoreErrors
             // filter is applied in exactly one place. A status code carries
             // no error name or message, so SetStatusCode keeps the plain
             // overload — Java's ignore handler is throwable-only too.
-            void markSpanError(std::string_view error_name, std::string_view error_message) {
+            void markSpanError(ErrorCategory category,
+                               std::string_view error_name, std::string_view error_message) {
                 if (shouldMarkError(error_name, error_message)) {
-                    markSpanError();
+                    markSpanError(category);
                 }
             }
             // False when the error matches a Span.IgnoreErrors rule: it is
@@ -708,16 +728,18 @@ namespace pinpoint {
             // that same SpanData like every other error. traceRootData() is
             // held by shared_ptr, so a child may count — and fail the root —
             // after the root SpanImpl itself is gone.
-            // markSpanError() without a name deliberately bypasses
+            // The name-less markSpanError overload deliberately bypasses
             // Span.IgnoreErrors, like SetStatusCode - there is no throwable to
-            // match a rule against.
+            // match a rule against. The category is kSql, so an operator who
+            // does not want an N+1 pattern to fail the transaction can drop
+            // just that cause with Span.ErrorMarkExclude and keep the count.
             void countSqlExecution() {
                 const auto limit = config_->sql.error_count;
                 if (limit <= 0 || traceRootData().getErr() != SPAN_ERR_NONE) {
                     return;
                 }
                 if (traceRootData().incrementAndGetSqlCount() >= limit) {
-                    markSpanError();
+                    markSpanError(ErrorCategory::kSql);
                 }
             }
             // Exceptions only drain at EndSpan (unlike span events, which

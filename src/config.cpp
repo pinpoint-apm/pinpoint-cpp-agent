@@ -32,6 +32,7 @@
 #include <variant>
 #include <unistd.h>
 
+#include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
@@ -91,6 +92,61 @@ namespace pinpoint {
             return (rule.name.empty() || rule.name == error_name) &&
                    (rule.message_contains.empty() || absl::StrContains(error_message, rule.message_contains));
         });
+    }
+
+    // One `Span.ErrorMark` / `Span.ErrorMarkExclude` token to its bit, 0 for
+    // an unrecognised one. The spellings are Java's
+    // (ConfigurableErrorRecorderFactory.toCategorySet), matched
+    // case-insensitively like every other config value here. kUnknown has no
+    // spelling on purpose: it is never selectable, because it is always on.
+    static int error_category_bit(const std::string_view token) {
+        if (absl::EqualsIgnoreCase(token, "exception")) {
+            return static_cast<int>(ErrorCategory::kException);
+        }
+        if (absl::EqualsIgnoreCase(token, "http-status")) {
+            return static_cast<int>(ErrorCategory::kHttpStatus);
+        }
+        if (absl::EqualsIgnoreCase(token, "sql")) {
+            return static_cast<int>(ErrorCategory::kSql);
+        }
+        return 0;
+    }
+
+    // Folds a category list into a mask. Each entry is split on commas as
+    // well, so Java's single comma-separated string works verbatim in the
+    // YAML list too. An empty entry is skipped silently (Java's `case ""`);
+    // anything else unrecognised is a typo worth naming, since it silently
+    // widens or narrows which errors fail a transaction.
+    static int to_category_mask(const std::vector<std::string>& categories,
+                                const std::string_view key) {
+        int mask = 0;
+        for (const auto& entry : categories) {
+            for (const std::string_view token : absl::StrSplit(entry, ',')) {
+                const auto trimmed = absl::StripAsciiWhitespace(token);
+                if (trimmed.empty()) {
+                    continue;
+                }
+                if (const int bit = error_category_bit(trimmed); bit != 0) {
+                    mask |= bit;
+                } else {
+                    LOG_WARN("invalid {} error category: '{}'", key, trimmed);
+                }
+            }
+        }
+        return mask;
+    }
+
+    int error_mark_mask(const std::vector<std::string>& mark,
+                        const std::vector<std::string>& exclude) {
+        const int marked = mark.empty() ? ALL_ERROR_CATEGORIES
+                                        : to_category_mask(mark, "Span.ErrorMark");
+        const int excluded = to_category_mask(exclude, "Span.ErrorMarkExclude");
+        // kUnknown survives every exclusion, exactly as Java re-adds it after
+        // removing the excluded ones (getEnabledTypes). It is the category of
+        // a failure whose cause was not classified, so excluding it would
+        // amount to "never fail a transaction" - which is not what either
+        // key is for.
+        return (marked & ~excluded) | static_cast<int>(ErrorCategory::kUnknown);
     }
 
     // Drops rules that match everything (both fields empty): silencing every
@@ -488,6 +544,8 @@ namespace pinpoint {
         {"Span.MaxEventSequence", REF(span.max_event_sequence), RELOAD, env::SPAN_MAX_EVENT_SEQUENCE},
         {"Span.EventChunkSize", REF(span.event_chunk_size), RELOAD, env::SPAN_EVENT_CHUNK_SIZE},
         {"Span.IgnoreErrors", REF(span.ignore_errors), RELOAD, env::SPAN_IGNORE_ERRORS},
+        {"Span.ErrorMark", REF(span.error_mark), RELOAD, env::SPAN_ERROR_MARK},
+        {"Span.ErrorMarkExclude", REF(span.error_mark_exclude), RELOAD, env::SPAN_ERROR_MARK_EXCLUDE},
         {"Http.CollectUrlStat", REF(http.url_stat.enable), FIXED, env::HTTP_COLLECT_URL_STAT},
         {"Http.UrlStatLimit", REF(http.url_stat.limit), FIXED, env::HTTP_URL_STAT_LIMIT},
         {"Http.UrlStatQueueSize", REF(http.url_stat.queue_size), FIXED, env::HTTP_URL_STAT_QUEUE_SIZE},
@@ -877,6 +935,11 @@ namespace pinpoint {
             clamp_min(config->span.max_event_sequence, MIN_SPAN_EVENT_SEQUENCE, "span max event sequence");
         }
         at_least(config->span.event_chunk_size, 1, defaults::SPAN_EVENT_CHUNK_SIZE, "span event chunk size");
+        // Resolve the two category lists into the mask SpanImpl::markSpanError
+        // consults. Safe to do here rather than after retainNonReloadableFrom()
+        // below: both source keys are RELOAD, so that pass never rewrites them.
+        config->span.error_mark_mask = error_mark_mask(config->span.error_mark,
+                                                       config->span.error_mark_exclude);
 
         // At least one backup: 0 would read as either "keep none" or "keep
         // all" depending on which agent the reader knows, and neither is worth

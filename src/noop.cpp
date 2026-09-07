@@ -108,11 +108,17 @@ namespace pinpoint {
     void UnsampledSpan::markError(std::string_view error_name, std::string_view error_message) try {
         // Span.IgnoreErrors must apply here too: an error the operator has
         // excluded would otherwise fail the URL stat of unsampled requests
-        // while sparing sampled ones. Without a runtime snapshot (tests) there
-        // is no config to filter against, so the error stands.
-        if (runtime_ &&
-            is_ignored_error(runtime_->config->span.ignore_errors, error_name, error_message)) {
-            return;
+        // while sparing sampled ones. The same goes for Span.ErrorMark /
+        // Span.ErrorMarkExclude — the only category reachable here is
+        // kException, since an unsampled span records neither a status code
+        // nor SQL. Without a runtime snapshot (tests) there is no config to
+        // filter against, so the error stands.
+        if (runtime_) {
+            const auto& span_config = runtime_->config->span;
+            if (is_ignored_error(span_config.ignore_errors, error_name, error_message) ||
+                (span_config.error_mark_mask & static_cast<int>(ErrorCategory::kException)) == 0) {
+                return;
+            }
         }
         err_.store(true, std::memory_order_relaxed);
     } CATCH_AND_LOG("set error")

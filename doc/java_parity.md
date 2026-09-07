@@ -36,6 +36,7 @@ by side.
 | Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
 | `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
 | SQL statement count scope | `DefaultSqlCountService`, `DefaultShared.incrementAndGetSqlCount` | **Same as Java** — see [below](#sqlerrorcount-is-a-per-transaction-budget--same-as-java) |
+| `PSpan.err` error cause mask | `ConfigurableErrorRecorder`, `ErrorCategory`, `DefaultShared.maskErrorCode` | **Same as Java, Go still diverges** — see [below](#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -200,7 +201,10 @@ kept — an unsampled span has nowhere to keep it.
 requests are the majority. A host that reports failures only on the step that
 failed — the common case for an outbound call — would have those failures
 counted on sampled requests and ignored on unsampled ones, biasing the URL stat
-failure rate toward zero. `Span.IgnoreErrors` still applies on this path.
+failure rate toward zero. `Span.IgnoreErrors` and `Span.ErrorMark` /
+`Span.ErrorMarkExclude` still apply on this path — the only cause reachable
+here is `kException`, since an unsampled span records neither a status code
+nor SQL.
 
 **Revisit if** Java's `DisableSpanEventRecorder` starts masking the error code,
 at which point this is parity rather than a divergence.
@@ -297,18 +301,18 @@ and message. The chain itself leaves through the `ExceptionContext`, which
 belongs to the recorder and not to the event, and the failure reaches the trace
 root separately through `recordError(ErrorCategory.EXCEPTION)`.
 
-**Both ports.** Neither keeps anything but the failure flag.
+**Both ports.** Neither keeps anything but the failure verdict.
 `DisabledSpanEvent::SetError` (`src/span_event.cpp:483-491`) routes to the
-owning span's `markSpanError`; the Go agent's `overflowSpanEvent.SetError`
-(`span.go:69-81`) sets `span.root().err`. No exception info, no annotation, no
-chain link. `Span.IgnoreErrors` (`Error.IgnoreErrors` in Go) filters this path
-exactly as it filters a recorded event's, so an ignored error fails the
-transaction on neither.
+owning span's `markSpanError` with `ErrorCategory::kException`; the Go agent's
+`overflowSpanEvent.SetError` (`span.go:69-81`) sets `span.root().err`. No
+exception info, no annotation, no chain link. `Span.IgnoreErrors`
+(`Error.IgnoreErrors` in Go) filters this path exactly as it filters a recorded
+event's, so an ignored error fails the transaction on neither.
 
 **Decision: intentional simplification.** Overflow is a profiling *depth*
 limit, not a verdict on the transaction, so the two halves are treated
-differently on purpose: the failure flag is what the transaction is judged by
-and it survives, while a detailed record of a call made past the depth limit is
+differently on purpose: the failure verdict is what the transaction is judged
+by and it survives, while a detailed record of a call made past the depth limit is
 precisely what the limit exists to drop. It is also the expensive half — every
 chain link carries a full string callstack, and overflow is by definition the
 state in which events arrive faster than the configured depth allows.
@@ -425,8 +429,68 @@ C++ counted per span up to and including v2.0.0. A service that uses async
 spans and runs `Sql.ErrorCount` or more statements across a whole transaction
 now has those transactions **marked failed** where they previously passed —
 visible as failed points in the scatter chart, in the failed histogram of the
-URL statistics, and as `PSpan.err`. Raise the threshold, or set
-`Sql.ErrorCount: 0` to turn counting off.
+URL statistics, and as `PSpan.err` (the `SQL` cause, bit `8`). Raise the
+threshold, set `Sql.ErrorCount: 0` to turn counting off, or keep the count
+and drop just the verdict with `Span.ErrorMarkExclude: [sql]`.
+
+---
+
+## `PSpan.err` carries the error cause mask — same as Java, Go still diverges
+
+Recorded because it was a real divergence until it was fixed, because the fix
+is a behaviour change operators can see, and because the Go port has not landed
+the same change yet.
+
+**Java.** `profiler.error.enable` defaults to `true`
+(`ErrorRecorderConfig.java`), so `ApplicationContextModuleFactory.newErrorRecorderModule`
+loads `ConfigurableErrorRecorderModule`. Its recorder ORs the *category's* bit
+into the shared error code — `traceRoot.getShared().maskErrorCode(errorCategory.getBitMask())`
+(`ConfigurableErrorRecorder.java:20-24`), and `DefaultShared.maskErrorCode`
+is a `getAndUpdate(x -> x | mask)` (`DefaultShared.java:69-72`). The categories
+are `UNKNOWN=1<<0`, `EXCEPTION=1<<1`, `HTTP_STATUS=1<<2`, `SQL=1<<3`
+(`commons/.../trace/ErrorCategory.java`), recorded respectively by
+`AbstractRecorder.recordException`, `HttpStatusCodeRecorder` and
+`DefaultSqlCountService`. `ConfigurableErrorRecorderFactory.getEnabledTypes`
+turns `profiler.error.mark` / `.mark.exclude` into the enabled set: an unset
+mark string means `EnumSet.allOf(ErrorCategory.class)`, the exclusions are
+removed, and `UNKNOWN` is added back unconditionally. A category outside that
+set masks nothing at all. The flat `1` comes only from `SimpleErrorRecorder`,
+which is loaded when `profiler.error.enable=false`.
+
+**This agent.** `SpanImpl::markSpanError(ErrorCategory)` (`src/span.h`) checks
+`Config::span::error_mark_mask` and, when the category is enabled, ORs its bit
+into the trace root through `SpanData::maskErr` (a relaxed `fetch_or`, which is
+what Java's `getAndUpdate` amounts to). `kException` comes from the two
+`SetError` paths and from `DisabledSpanEvent::SetError`, `kHttpStatus` from
+`SetStatusCode` via `isStatusFail`, `kSql` from `countSqlExecution`.
+`Span.ErrorMark` / `Span.ErrorMarkExclude` are the two config keys, parsed by
+`error_mark_mask()` (`src/config.cpp`) with Java's rules — comma separated,
+`exception` / `http-status` / `sql`, unknown names warned about and ignored,
+`kUnknown` always enabled. `kUnknown` is never *recorded* here: every failure
+this agent knows about has a cause, so nothing needs the catch-all bit.
+
+**The Go agent still sends a flat `1`.** Every cause stores `1` into
+`span.root().err` there, so until the matching change lands a C++ service and
+a Go service that failed the same way report different `err` values to the same
+collector. The Go sites are the counterparts of the C++ ones: `span.SetError`
+(`span.go:884`) and `spanEvent.SetError` (`span_event.go:144`) for an
+exception, `span.SetFailure` (`span.go:888-895`), which the 5xx verdict in
+`plugin/http/config.go:248` calls, for a status code, and the SQL count
+overflow in `span_event.go:200`.
+
+**Decision: no divergence from Java.** The agent previously implemented only
+Java's *non-default* path (`SimpleErrorRecorder`, i.e. `profiler.error.enable=false`),
+which threw away the cause and made `profiler.error.mark`-style policy —
+"a 5xx is not by itself a failed transaction" — inexpressible.
+
+### Upgrade note
+
+C++ sent `err = 1` for every failure up to and including v2.0.0. The same
+transactions are still marked failed, but the value on the wire now names the
+cause: `2` for an exception, `4` for a status code in
+`Http.Server.StatusCodeErrors`, `8` for a `Sql.ErrorCount` overflow, OR-ed
+together when more than one applies. Anything that compared `err` against `1`
+must test `err != 0` instead.
 
 ---
 
