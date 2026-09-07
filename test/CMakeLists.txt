@@ -35,6 +35,7 @@ foreach(name IN ITEMS
     test_annotation
     test_callstack
     test_config
+    test_java_parity_lock
     test_sql
     test_stat
     test_url_stat

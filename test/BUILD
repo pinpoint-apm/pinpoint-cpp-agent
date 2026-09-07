@@ -41,6 +41,7 @@ _TESTS = [
     "test_grpc",
     "test_grpc_with_mocks",
     "test_http",
+    "test_java_parity_lock",
     "test_limiter",
     "test_logging",
     "test_noop",
