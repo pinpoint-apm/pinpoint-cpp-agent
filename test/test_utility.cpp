@@ -538,6 +538,54 @@ TEST(UtilityTest, ToValidUtf8ReplacesEachInvalidSequenceWithReplacementChar) {
 }
 
 
+// isValidUtf8 scans eight bytes at a time looking for a high bit, so a
+// non-ASCII byte's position relative to that word stride is the interesting
+// axis: inside the first word, on either side of the 8-byte seam, and in the
+// sub-word tail the word loop cannot reach. Sweeping the offset covers every
+// one of those without naming them individually.
+TEST(UtilityTest, IsValidUtf8FindsMultibyteAtEveryWordOffset) {
+    const std::string korean = "\xed\x95\x9c";  // 한, a 3-byte sequence
+    for (size_t pad = 0; pad <= 24; ++pad) {
+        const std::string prefix(pad, 'a');
+        const std::string valid = prefix + korean + "tail";
+        EXPECT_TRUE(isValidUtf8(valid)) << "pad=" << pad;
+        EXPECT_EQ(toValidUtf8(valid), valid) << "pad=" << pad;
+
+        // Same offsets, but the sequence is truncated to two of its three
+        // bytes, so the word scan must hand a *broken* character to the
+        // out-of-line validator rather than skipping past it.
+        const std::string broken = prefix + korean.substr(0, 2) + "tail";
+        EXPECT_FALSE(isValidUtf8(broken)) << "pad=" << pad;
+        EXPECT_EQ(toValidUtf8(broken), prefix + "\xef\xbf\xbd" "tail") << "pad=" << pad;
+    }
+}
+
+// A long ASCII run after a multibyte character is bulk-skipped rather than
+// stepped byte by byte; the skip must not overshoot a later bad byte.
+TEST(UtilityTest, IsValidUtf8ResumesWordScanAfterMultibyteCharacter) {
+    const std::string korean = "\xed\x95\x9c";
+    EXPECT_TRUE(isValidUtf8(korean + std::string(40, 'z')));
+    EXPECT_TRUE(isValidUtf8(korean + std::string(40, 'z') + korean));
+
+    for (size_t run = 0; run <= 20; ++run) {
+        const std::string s = korean + std::string(run, 'z') + "\xff";
+        EXPECT_FALSE(isValidUtf8(s)) << "run=" << run;
+        EXPECT_EQ(toValidUtf8(s), korean + std::string(run, 'z') + "\xef\xbf\xbd")
+            << "run=" << run;
+    }
+}
+
+// NUL is a valid single-byte sequence, and it is the one ASCII byte a
+// high-bit word test could plausibly be written to treat as a terminator.
+TEST(UtilityTest, IsValidUtf8TreatsEmbeddedNulAsValidAscii) {
+    const std::string with_nul("ab\0cdefghij", 11);
+    ASSERT_EQ(with_nul.size(), 11u);
+    EXPECT_TRUE(isValidUtf8(with_nul));
+    EXPECT_EQ(toValidUtf8(with_nul), with_nul);
+    EXPECT_TRUE(isValidUtf8(std::string(9, '\0')));
+}
+
+
 // ========== utf8SafeCutLength / isValidUtf8 boundary cases ==========
 
 // The pull-back scans at most three continuation bytes. A cut that lands

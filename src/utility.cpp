@@ -284,21 +284,22 @@ namespace pinpoint {
         }
     }
 
-    bool isValidUtf8(std::string_view s) {
-        for (size_t i = 0; i < s.size();) {
+    bool detail::isValidUtf8FromNonAscii(std::string_view s, size_t from) {
+        for (size_t i = from; i < s.size();) {
             const size_t len = utf8SequenceLength(s, i);
             if (len == 0) {
                 return false;
             }
             i += len;
+            // Bulk-skip the ASCII run following a multibyte character, so
+            // mixed text does not drop back to stepping a byte at a time for
+            // the rest of the string.
+            i += detail::asciiPrefixLength(s.substr(i));
         }
         return true;
     }
 
-    std::string toValidUtf8(std::string_view s) {
-        if (isValidUtf8(s)) {
-            return std::string{s};
-        }
+    std::string repairUtf8(std::string_view s) {
         constexpr std::string_view kReplacement = "\xEF\xBF\xBD";  // U+FFFD
         std::string out;
         out.reserve(s.size());

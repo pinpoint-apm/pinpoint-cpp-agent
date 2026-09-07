@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -135,10 +136,55 @@ namespace pinpoint {
      */
     size_t utf8SafeCutLength(std::string_view s, size_t max_len);
 
+    namespace detail {
+        /// @brief Index of the first byte of @p s that is not 7-bit ASCII, or
+        ///        `s.size()` when every byte is.
+        ///
+        /// Word-at-a-time, and inline on purpose. Every outbound string field
+        /// is validated on the span export path, and in practice they are
+        /// almost all pure ASCII (URLs, RPC names, SQL text, agent ids), so
+        /// the common case costs one test per eight bytes and no call at all
+        /// -- rather than a cross-library call per *byte*, which measured 225
+        /// Ir per validation against ~14-byte inputs.
+        inline size_t asciiPrefixLength(std::string_view s) noexcept {
+            constexpr uint64_t kHighBits = 0x8080808080808080ULL;
+            const char* const p = s.data();
+            const size_t n = s.size();
+            size_t i = 0;
+            for (; i + sizeof(uint64_t) <= n; i += sizeof(uint64_t)) {
+                uint64_t word;
+                // memcpy is the portable unaligned load; it compiles to one mov.
+                std::memcpy(&word, p + i, sizeof(word));
+                if ((word & kHighBits) != 0) {
+                    break;
+                }
+            }
+            for (; i < n; ++i) {
+                if ((static_cast<unsigned char>(p[i]) & 0x80) != 0) {
+                    break;
+                }
+            }
+            return i;
+        }
+
+        /// @brief `isValidUtf8` over @p s from @p from onwards, where
+        ///        `s[from]` is known not to be ASCII. Out of line because
+        ///        multibyte input is the rare case.
+        bool isValidUtf8FromNonAscii(std::string_view s, size_t from);
+    }
+
     /// @brief True when @p s is well-formed UTF-8: no overlong forms, no
     ///        surrogates (U+D800..U+DFFF), nothing above U+10FFFF, no
     ///        truncated sequences.
-    bool isValidUtf8(std::string_view s);
+    inline bool isValidUtf8(std::string_view s) {
+        const size_t ascii = detail::asciiPrefixLength(s);
+        return ascii == s.size() || detail::isValidUtf8FromNonAscii(s, ascii);
+    }
+
+    /// @brief Rewrites @p s with every invalid UTF-8 sequence replaced, for
+    ///        `toValidUtf8` below. Total, but only worth calling once
+    ///        `isValidUtf8` has already said no.
+    std::string repairUtf8(std::string_view s);
 
     /**
      * @brief Replaces every invalid UTF-8 sequence in @p s with U+FFFD, one
@@ -152,8 +198,18 @@ namespace pinpoint {
      * stat or metadata message — and a failed span stream Send cancels the
      * stream. Applied at the protobuf conversion boundary, off the
      * instrumentation hot path. Valid input is copied once, untouched.
+     *
+     * Inline so that the valid case -- which is effectively all of them --
+     * is a word-wise scan plus that one copy, with no call out of the
+     * caller's translation unit. The returned string is an rvalue and
+     * protobuf's generated setters forward it to
+     * `ArenaStringPtr::Set(std::string&&)`, so the copy is adopted rather
+     * than copied again; returning a view to avoid it would trade the copy
+     * for a different one, not remove it.
      */
-    std::string toValidUtf8(std::string_view s);
+    inline std::string toValidUtf8(std::string_view s) {
+        return isValidUtf8(s) ? std::string{s} : repairUtf8(s);
+    }
 
     /// @brief Cap on the error string carried by a span or span event,
     ///        matching the 256 Java passes to StringUtils.abbreviate().
