@@ -494,9 +494,11 @@ UBSan halts on the first error (`-fno-sanitize-recover`), so CI fails loudly and
 points at the exact `file:line` of the violation.
 
 > **On Linux, TSan may need a `setarch` wrapper.** On a host configured with
-> `vm.mmap_rnd_bits = 32`, *every* `-fsanitize=thread` binary aborts with
+> `vm.mmap_rnd_bits = 32`, a `-fsanitize=thread` binary usually aborts with
 > `FATAL: ThreadSanitizer: unexpected memory mapping` — a hello-world reproduces
-> it in one line. A sanitized build also runs what it just built — the
+> it in one line. *Usually*, not always: a run that happens to get an acceptable
+> layout passes, so one green run without the wrapper does not mean the host
+> does not need it. A sanitized build also runs what it just built — the
 > instrumented `protoc` generates the agent's sources — so this shows up as a
 > failed **build** step, not a failed test. Disabling ASLR for the command fixes
 > it and needs no privileges; the personality is inherited by child processes, so
@@ -666,8 +668,8 @@ FAILED: [code=66] v1/Annotation.pb.h v1/Annotation.pb.cc
 FATAL: ThreadSanitizer: unexpected memory mapping 0x6530eab0b000-0x6530eab0f000
 ```
 
-Where the dependencies are already built, the same message aborts every `tsan`
-test binary instead, before `main()` runs.
+Where the dependencies are already built, the same message aborts the `tsan` test
+binaries instead, before `main()` runs.
 
 The cause is the host's ASLR entropy, not the code or the toolchain. Kernels
 configured with `vm.mmap_rnd_bits = 32` place mappings outside the address ranges
@@ -675,6 +677,13 @@ the ThreadSanitizer runtime expects, and it refuses to start; a hello-world buil
 with `-fsanitize=thread` reproduces it in one line. Containers inherit the setting
 from the host kernel, so `docker run ... tsan` fails the same way. ASan and UBSan
 are unaffected.
+
+The abort is probabilistic, not deterministic. The layout is redrawn for every
+process, so a run occasionally lands inside the range the runtime accepts and
+passes: one Bazel test measured 1 pass in 12 without the wrapper, and 12 in 12
+with it. That makes this worse than a hard failure — a single green run without
+`setarch` is luck rather than evidence, and a one-shot check can talk you out of
+a workaround the host does need.
 
 Either lower the entropy globally, which needs root —
 
