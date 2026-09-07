@@ -573,8 +573,35 @@ namespace pinpoint {
         {"EnableCallstackTrace", REF(enable_callstack_trace), RELOAD, env::ENABLE_CALLSTACK_TRACE},
         {"CallstackTraceNewThroughput", REF(callstack_trace_new_throughput), RELOAD, env::CALLSTACK_TRACE_NEW_THROUGHPUT},
         {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
+        // RELOAD: a reload re-reads the file's ActiveProfile and applies that
+        // profile, as the Go agent's reloadConfig() does.
+        {"ActiveProfile", REF(active_profile), RELOAD, env::ACTIVE_PROFILE},
     };
 #undef REF
+
+    // The `Profile.<name>` subtree selected by ActiveProfile, or an undefined
+    // node when no profile applies. The name comes from the environment first
+    // (it outranks the file everywhere else too), then the file's own
+    // ActiveProfile key, then the running/default value. A name that the file
+    // has no subtree for is warned about and ignored, as in the Go agent.
+    // find_path() makes both "Profile" and the name case-insensitive and lets a
+    // dotted name select a nested subtree, matching viper's `profile.<name>`.
+    static YAML::Node select_profile(const YAML::Node& yaml, const std::string& prefix,
+                                     std::string& active_profile) {
+        get_into(yaml, "ActiveProfile", active_profile);
+        if (auto e = get_env(prefix, env::ACTIVE_PROFILE)) {
+            active_profile = e.value;
+        }
+        if (active_profile.empty()) {
+            return YAML::Node(YAML::NodeType::Undefined);
+        }
+        auto profile = find_path(yaml, "Profile." + active_profile);
+        if (!profile || !profile.IsMap()) {
+            LOG_WARN("config file doesn't have the profile: {}", active_profile);
+            return YAML::Node(YAML::NodeType::Undefined);
+        }
+        return profile;
+    }
 
     static void load_yaml_config(const YAML::Node& yaml, Config& config, bool& is_container_set) {
         if (yaml.size() < 1) {
@@ -799,7 +826,14 @@ namespace pinpoint {
         }
 
         try {
+            // Precedence: defaults < file top level < file profile < env.
+            // The profile is selected before the file is loaded so its own
+            // keys can be read with the same table-driven loader.
+            const auto profile = select_profile(yaml, prefix, config->active_profile);
             load_yaml_config(yaml, *config, is_container_set);
+            if (profile) {
+                load_yaml_config(profile, *config, is_container_set);
+            }
         } catch (const std::exception& e) {
             // E.g. a section node of the wrong shape (BadSubscript) that the
             // per-key getters cannot intercept. Keep whatever was parsed so

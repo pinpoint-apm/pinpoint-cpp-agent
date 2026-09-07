@@ -687,6 +687,119 @@ TEST_F(ConfigTest, EnvSourcedValueSurvivesFileReload) {
         << "a key absent from the reloaded file keeps its running value";
 }
 
+// ========== Profiles (ActiveProfile / Profile.<name>) ==========
+
+// Same layout and semantics as the Go agent's `profile.<name>`: the selected
+// subtree overrides the file's top-level keys and is itself overridden by the
+// environment. Defaults < file < profile < env.
+TEST_F(ConfigTest, ActiveProfileOverridesBaseAndEnvOverridesProfile) {
+    set_config_string(R"(
+ApplicationName: ProfileApp
+ActiveProfile: release
+Sampling:
+  CounterRate: 1
+  NewThroughput: 100
+Log:
+  Level: debug
+Profile:
+  release:
+    Sampling:
+      CounterRate: 20
+    Log:
+      Level: warn
+  local:
+    Sampling:
+      CounterRate: 5
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->active_profile, "release");
+    EXPECT_EQ(config->sampling.counter_rate, 20) << "the profile overrides the base value";
+    EXPECT_EQ(config->log.level, "warn");
+    EXPECT_EQ(config->sampling.new_throughput, 100) << "a key absent from the profile keeps the base value";
+
+    setenv(full_env(env::SAMPLING_COUNTER_RATE).c_str(), "7", 1);
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sampling.counter_rate, 7) << "the environment overrides the profile";
+    EXPECT_EQ(config->log.level, "warn");
+    unsetenv(full_env(env::SAMPLING_COUNTER_RATE).c_str());
+
+    // The environment also selects the profile, over the file's ActiveProfile.
+    setenv(full_env(env::ACTIVE_PROFILE).c_str(), "local", 1);
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->active_profile, "local");
+    EXPECT_EQ(config->sampling.counter_rate, 5);
+    EXPECT_EQ(config->log.level, "debug") << "the other profile's keys must not apply";
+    unsetenv(full_env(env::ACTIVE_PROFILE).c_str());
+}
+
+// Keys are matched case-insensitively like every other YAML key, and an
+// unknown profile is warned about and ignored (Go: "config file doesn't have
+// the profile"), leaving the base values in place.
+TEST_F(ConfigTest, ActiveProfileIsCaseInsensitiveAndUnknownIsIgnored) {
+    set_config_string(R"(
+ApplicationName: ProfileApp
+activeprofile: RELEASE
+Sampling:
+  CounterRate: 1
+profile:
+  Release:
+    Sampling:
+      CounterRate: 20
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sampling.counter_rate, 20);
+
+    set_config_string("ApplicationName: ProfileApp\nActiveProfile: staging\nSampling:\n  CounterRate: 1\n"
+                      "Profile:\n  release:\n    Sampling:\n      CounterRate: 20\n");
+    testing::internal::CaptureStdout();
+    config = make_config();
+    const std::string log_output = testing::internal::GetCapturedStdout();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sampling.counter_rate, 1) << "an unknown profile must change nothing";
+    EXPECT_NE(log_output.find("doesn't have the profile: staging"), std::string::npos) << log_output;
+
+    // No ActiveProfile at all: the Profile subtree is inert.
+    set_config_string("ApplicationName: ProfileApp\nSampling:\n  CounterRate: 1\n"
+                      "Profile:\n  release:\n    Sampling:\n      CounterRate: 20\n");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_TRUE(config->active_profile.empty());
+    EXPECT_EQ(config->sampling.counter_rate, 1);
+}
+
+// The reload path (ConfigFileWatcher -> make_config(options, old)) re-selects
+// the profile from the file: a changed profile value and a changed
+// ActiveProfile both take effect, and env still outranks the profile.
+TEST_F(ConfigTest, ActiveProfileAppliesOnReload) {
+    const std::string base = "ApplicationName: ProfileApp\nSampling:\n  CounterRate: 1\n";
+    set_config_string(base + "ActiveProfile: release\nProfile:\n  release:\n    Sampling:\n      CounterRate: 20\n");
+    auto first = make_config();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->sampling.counter_rate, 20);
+
+    set_config_string(base + "ActiveProfile: release\nProfile:\n  release:\n    Sampling:\n      CounterRate: 30\n");
+    auto reloaded = make_config(first);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->sampling.counter_rate, 30) << "a changed profile value must reload";
+
+    set_config_string(base + "ActiveProfile: local\nProfile:\n  release:\n    Sampling:\n      CounterRate: 30\n"
+                      "  local:\n    Sampling:\n      CounterRate: 40\n");
+    reloaded = make_config(reloaded);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->active_profile, "local");
+    EXPECT_EQ(reloaded->sampling.counter_rate, 40) << "a changed ActiveProfile must switch profiles";
+
+    setenv(full_env(env::SAMPLING_COUNTER_RATE).c_str(), "7", 1);
+    reloaded = make_config(reloaded);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->sampling.counter_rate, 7) << "the environment outranks the profile on reload too";
+    unsetenv(full_env(env::SAMPLING_COUNTER_RATE).c_str());
+}
+
 // Test the preferred COLLECTOR_* environment variables
 TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
     setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env.host", 1);

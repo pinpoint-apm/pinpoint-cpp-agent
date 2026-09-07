@@ -31,6 +31,7 @@ by side.
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Oversize SQL statement | `DefaultSqlNormalizer` (no cap) | **Exceeds Java, shared with Go** — see [below](#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go) |
+| Per-environment configuration profiles | `ProfileConfigLoader`, `pinpoint.profiler.profiles.active`, `profiles/{release,local}/pinpoint.config` | **Same idea, Go's layout** — see [below](#configuration-profiles--same-idea-gos-layout) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
 | Exception chain scope and depth | `ExceptionContext`, `ExceptionRecordingState.isChaining`, `ExceptionWrapperFactory` | **Scope as Go, depth flat** — see [below](#exception-chain-scope-and-depth--scope-as-go-depth-flat) |
@@ -299,6 +300,27 @@ in both.
 
 **Upgrade note.** A statement over 1 MiB used to appear with a truncated key;
 it now does not appear at all, and a throttled warning names its size.
+
+## Configuration profiles — same idea, Go's layout
+
+**Java.** `pinpoint.profiler.profiles.active` (default `release`) selects a
+directory, `profiles/<name>/pinpoint.config`, whose properties are layered
+over `pinpoint-root.config`; the shipped agent carries `release` and `local`.
+
+**Go.** One file: an `ActiveProfile` key (also `--pinpoint-activeprofile` and
+`PINPOINT_GO_ACTIVEPROFILE`) selects the `profile.<name>` subtree of the config
+file, which `loadConfig` ranks between the file's top level and the
+environment (`cfgSrcFile < cfgSrcProfile < cfgSrcEnv`). An unknown name logs
+`config file doesn't have the profile` and applies nothing; `reloadConfig`
+re-reads the profile from the file.
+
+**This agent.** Follows Go, key for key: `ActiveProfile` /
+`PINPOINT_CPP_ACTIVE_PROFILE` selects `Profile.<name>`, applied after the top
+level and before the environment, with the same warning for a missing profile
+and the same re-selection on reload. A profile directory in Java's shape has
+no place here because this agent has no `profiler` install tree; one file with
+subtrees is what an embedding application ships. See
+[Configuration](config.md#profiles).
 
 ## Full send queue drops the oldest item — same as Java
 

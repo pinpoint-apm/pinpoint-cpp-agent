@@ -6,15 +6,48 @@ This document is a consolidated reference for all configuration options availabl
 
 ## Configuration Methods & Precedence
 
-The agent merges configuration from three sources. **Later sources override earlier ones:**
+The agent merges configuration from four sources. **Later sources override earlier ones:**
 
 1. **Default Values** (lowest priority) — built-in defaults.
-2. **YAML Configuration File** — a config file path or an inline YAML string.
-3. **Environment Variables** (highest priority) — `PINPOINT_CPP_*` variables applied last.
+2. **YAML Configuration File** — a config file path or an inline YAML string (its top-level keys).
+3. **Active Profile** — the file's `Profile.<name>` subtree selected by `ActiveProfile`; see [Profiles](#profiles).
+4. **Environment Variables** (highest priority) — `PINPOINT_CPP_*` variables applied last.
 
 Values are normalised (clamped into range) after the merge.
 
 > **A [hot reload](#configuration-hot-reload) keeps this precedence.** Environment variables are re-read on every load, so a value set by a `PINPOINT_CPP_*` variable is never taken over by the config file — not even when the file starts naming that key after the agent has started. Only options whose value came from the config file or the built-in default are updated by a reload. This is the same rule the [Go agent](https://github.com/pinpoint-apm/pinpoint-go-agent/blob/main/doc/config.md#dynamic-configuration) applies to its dynamic options.
+
+### Profiles
+
+One config file can carry per-environment overrides, laid out exactly like the
+[Go agent's](https://github.com/pinpoint-apm/pinpoint-go-agent/blob/main/doc/config.md)
+`profile.<name>`: a `Profile` map whose entries are named subtrees holding the
+same keys as the top level. `ActiveProfile` (`PINPOINT_CPP_ACTIVE_PROFILE`)
+names the subtree to apply on top of the top-level keys; it is read from the
+environment first, then from the file, before the file is loaded.
+
+```yaml
+ApplicationName: "MyApplication"
+ActiveProfile: release          # or PINPOINT_CPP_ACTIVE_PROFILE=release
+Sampling:
+  CounterRate: 1                # base value
+Profile:
+  release:
+    Sampling:
+      CounterRate: 20           # wins over the base value when ActiveProfile is release
+  local:
+    Log:
+      Level: debug
+```
+
+Keys are matched case-insensitively, as everywhere else. A name the file has
+no subtree for is logged as a warning and ignored (the Go agent's `config file
+doesn't have the profile`). A profile is inert without `ActiveProfile`. A
+[hot reload](#configuration-hot-reload) re-reads `ActiveProfile` from the file,
+so both a changed profile value and a switch to another profile take effect;
+environment variables keep outranking the profile on every load. The Java
+agent's equivalent is the `profiles/{release,local}/pinpoint.config` directory
+selected by `pinpoint.profiler.profiles.active`.
 
 ### Method 1: YAML Configuration File
 
@@ -88,6 +121,7 @@ pinpoint::StartAgent(options);
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars); a missing value aborts agent startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
+| `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](trouble_shooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
 > **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
@@ -530,6 +564,7 @@ are **non-reloadable** — changing them requires an application restart.
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | Proxy header names | `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
+| Active profile | `ActiveProfile` | **Yes** — the profile it names is re-applied on every reload |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —

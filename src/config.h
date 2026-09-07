@@ -176,6 +176,7 @@ namespace pinpoint {
         constexpr const char* ENABLE_CALLSTACK_TRACE = "ENABLE_CALLSTACK_TRACE";
         constexpr const char* CALLSTACK_TRACE_NEW_THROUGHPUT = "CALLSTACK_TRACE_NEW_THROUGHPUT";
         constexpr const char* ENABLE_CONFIG_FILE_WATCHER = "ENABLE_CONFIG_FILE_WATCHER";
+        constexpr const char* ACTIVE_PROFILE = "ACTIVE_PROFILE";
     }
 
     /**
@@ -294,6 +295,11 @@ namespace pinpoint {
         // and a running watcher cannot stop itself from its own reload
         // callback.
         bool enable_config_file_watcher = false;
+        // Name of the `Profile.<name>` subtree of the config file that is
+        // applied on top of the file's top-level keys (same key and layout
+        // as the Go agent's `profile.<name>`). Empty: no profile. Read from
+        // the environment first, then the file, before the file is loaded.
+        std::string active_profile;
 
         struct {
             std::string level = defaults::LOG_LEVEL;
