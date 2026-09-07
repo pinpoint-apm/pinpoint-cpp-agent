@@ -106,6 +106,14 @@ namespace pinpoint {
         /// write + server pong) before cancellation is requested and the
         /// worker begins stream cleanup.
         std::chrono::milliseconds stream_write_timeout{5000};
+        /// Bounded wait for the one shutdown URL-stat flush write (see
+        /// GrpcStats::flush_url_stats_on_shutdown). Deliberately far below
+        /// stream_write_timeout: the flush and the finish_stats_stream() that
+        /// follows it share one kDefaultShutdownDeadline (3s), so the flush
+        /// takes a small slice and, on expiry, closes and cancels instead of
+        /// waiting longer — leaving the only OnDone wait on the path to the
+        /// close, where it was already budgeted.
+        std::chrono::milliseconds stats_shutdown_flush_timeout{500};
         /// Pause before a worker loop is restarted after an unexpected
         /// exception, so a persistent failure cannot become a hot spin.
         std::chrono::milliseconds worker_restart_delay{1000};
@@ -920,9 +928,48 @@ namespace pinpoint {
         ///         without a live stream.
         GrpcStreamStatus next_write();
 
+        /// @brief Builds the shutdown URL-stat message into msg_: every tick
+        /// still held in completed_ plus the tick that was being collected,
+        /// via takeSnapshot(include_in_progress = true).
+        ///
+        /// Separate from next_write() because it is not token-driven — the
+        /// worker has already left its queue wait by the time it runs — and
+        /// because only here is include_in_progress correct: the agent is
+        /// exiting, so no later entry will arrive to cut that tick.
+        /// @return STREAM_WRITE when msg_ is ready, or STREAM_CONTINUE when
+        ///         there was nothing left to flush or the channel was not
+        ///         READY (the entries are then counted as dropped). Protected,
+        ///         with the readiness probe as its own virtual, so tests can
+        ///         drive both branches without a live collector.
+        GrpcStreamStatus build_shutdown_url_stat_write();
+        /// @brief Whether the stats channel can carry a write right now,
+        /// asked without waiting: readyChannel() refuses to wait once the
+        /// agent is exiting, so the shutdown flush probes the channel state
+        /// directly, the way GrpcSpan::flush_remaining does.
+        virtual bool stats_channel_ready() const;
+        /// @brief URL-stat entries the shutdown flush had to drop because
+        /// there was no READY channel (or no live stream) to send them on.
+        uint64_t shutdown_dropped_url_stats() const {
+            return shutdown_dropped_url_stats_.load(std::memory_order_relaxed);
+        }
+        /// @brief The message build_shutdown_url_stat_write()/next_write()
+        ///        last built; owned by arena_, so only valid until the write
+        ///        completes. Protected for the flush assertions.
+        const v1::PStatMessage* pending_message() const { return msg_; }
+
+        /// @brief Sends the ticks the collectors still hold, once, over the
+        /// live stats stream on the way out. See the definition for why this
+        /// exceeds Java and matches the Go agent.
+        void flush_url_stats_on_shutdown();
+
     private:
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
+        std::atomic<uint64_t> shutdown_dropped_url_stats_{0};
+        // True only while flush_url_stats_on_shutdown()'s own write is
+        // pending. Guarded by stream_mutex_, which every reader and writer
+        // holds, so it needs no atomicity of its own.
+        bool shutdown_flush_writing_{false};
         google::protobuf::Empty reply_{};
         // Set once per stats stream session when the stream starts shutting
         // down, so StartWritesDone()/RemoveHold() run exactly once no matter

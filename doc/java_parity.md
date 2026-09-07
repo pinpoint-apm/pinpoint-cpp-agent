@@ -29,6 +29,7 @@ by side.
 | Per-URL sampler | `UrlTraceSampler`, `UrlSamplerConfig`, `TraceSamplerProvider` | **Declined** — see [below](#per-url-sampler--declined) |
 | Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined** — see [below](#retrying-a-rejected-metadata-send--declined) |
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
+| URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
 | Unusable inbound trace context | `DefaultTraceHeaderReader.read`, `DefaultTraceContext.createTraceId` | **Exceeds Java** — see [below](#unusable-inbound-trace-context--exceeds-java) |
@@ -203,6 +204,57 @@ failure rate toward zero. `Span.IgnoreErrors` still applies on this path.
 
 **Revisit if** Java's `DisableSpanEventRecorder` starts masking the error code,
 at which point this is parity rather than a divergence.
+
+---
+
+## URL statistics tick in progress at shutdown — exceeds Java
+
+**Java.** `AsyncQueueingUriStatStorage` keeps an input queue and a queue of at
+most four *completed* 30s snapshots. Shutdown runs `AsyncQueueingExecutor.stop`,
+which drains the input queue into the current snapshot and stops; the snapshot
+itself is only ever published by `UriStatCollectingJob`, which polls the
+completed queue on the stat scheduler and is already closed by then. So Java
+loses the tick that was being collected, and any completed snapshot the poller
+had not yet taken.
+
+**Go.** `shutdownAgent` calls `flushUrlStat(true)` — the `true` is exactly this
+agent's `include_in_progress` — and sends the open tick along with whatever the
+completed queue still holds.
+
+**This agent.** Follows Go. `GrpcStats::flush_url_stats_on_shutdown`
+(`src/grpc.cpp`) is the stats worker's last act before it closes its stream: it
+calls `UrlStats::takeSnapshot(true)`, which drains `completed_` *and* takes the
+tick in progress, and writes the result as one `PAgentUriStat`. It is the only
+caller that passes `true`; the periodic send never splits an open tick.
+
+The flush sends nothing when the channel is not `GRPC_CHANNEL_READY`, or when no
+stats stream is live — the same probe and the same policy as
+`GrpcSpan::flush_remaining`, because a write on a dead channel cannot complete
+inside `kDefaultShutdownDeadline` (3s). Those entries are counted
+(`shutdown_dropped_url_stats`) and logged rather than attempted. The write's own
+wait is bounded by `stats_shutdown_flush_timeout` (500 ms), after which it
+closes and cancels so the only remaining wait is `finish_stats_stream()`'s.
+
+**Decision: intentional, stronger than Java.** A 30s tick is a large unit to
+lose on every clean shutdown, and a rolling deploy makes that loss periodic
+rather than rare. The cost is a tick that may cover less than its full window,
+which the server aggregates by `(uri, tick)` anyway; the alternative is not
+"a whole tick later" but "no tick at all".
+
+**Why it is recorded here.** This behaviour was described by the code comments
+long before it worked. The flush used to be attempted inside
+`GrpcStats::next_write` as `takeSnapshot(agent_->isExiting())`, but
+`isExiting()` turns true the moment `do_shutdown()` runs and `stopping()` is
+`stop_requested_ || isExiting()`, so both the worker loop and `next_write`
+returned before that line: the argument could only ever be `false`. Comments
+asserting a divergence that the code cannot reach survive review; the
+regression tests `GrpcStatsShutdownFlushSendsTickStillInProgress`,
+`GrpcStatsShutdownFlushAlsoSendsRetainedCompletedTicks` and
+`GrpcStatsShutdownFlushDropsAndCountsWhenChannelNotReady`
+(`test/test_grpc_with_mocks.cpp`) are what makes this one checkable.
+
+**Revisit if** Java starts flushing the open tick, at which point this is
+parity rather than a divergence.
 
 ---
 

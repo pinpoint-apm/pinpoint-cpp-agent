@@ -1228,6 +1228,44 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
     EXPECT_TRUE(checked_url_stat);
 }
 
+// The tick still being collected leaves on the way down. The unit tests cover
+// what the flush builds and when it declines to send; only here is the write
+// itself real, over the live stats stream, inside the shutdown deadline.
+//
+// This agent follows the Go agent here and exceeds Java, which drops the open
+// tick — see doc/java_parity.md. The flush used to be attempted from
+// GrpcStats::next_write as takeSnapshot(agent_->isExiting()), which stopping()
+// made unreachable, so every clean shutdown lost up to a full tick.
+TEST_F(AgentIntegrationTest, FlushesUrlStatTickInProgressOnShutdown) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // Fed straight into the aggregator rather than through a span: the entry
+    // has to be in the snapshot, and in an *open* tick, at the moment
+    // Shutdown() runs, and the add worker's queue handoff is not synchronous.
+    // CloseUrlStatTick() is deliberately not called — nothing cuts this tick,
+    // so only the shutdown flush can carry it.
+    UrlStatEntry entry{"/it/shutdown-flush", "GET", 200};
+    entry.elapsed_ = 15;
+    entry.end_time_ = std::chrono::system_clock::now();
+    impl_->getUrlStats().addSnapshot(&entry, *impl_->getConfig());
+
+    // The fixture enables UrlStatMethodPrefix, so the key carries the method.
+    constexpr std::string_view kUri = "GET /it/shutdown-flush";
+    ASSERT_FALSE(has_uri_stat(collector_.snapshot(), kUri))
+        << "an open tick must not have been sent by a periodic send";
+
+    agent_->Shutdown();
+
+    EXPECT_TRUE(collector_.WaitFor([kUri](const auto& snapshot) {
+        return has_uri_stat(snapshot, kUri);
+    }, kWaitTimeout)) << "the tick in progress must reach the collector on shutdown";
+    EXPECT_EQ(uri_stat_totals(collector_.snapshot(), std::string(kUri)).total_count, 1);
+
+    // Shutdown() already ran; leave nothing for TearDown to tear down twice.
+    impl_.reset();
+    agent_.reset();
+}
+
 TEST_F(AgentIntegrationTest, FinalizesScopedAndOpenSpanEventsExactlyOnce) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 

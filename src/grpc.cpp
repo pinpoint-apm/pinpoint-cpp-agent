@@ -2918,12 +2918,17 @@ namespace pinpoint {
         //
         // Taken before msg_ is created so an empty drain can bail out without
         // leaving an unwritten message in the arena (OnWriteDone is what
-        // resets it). include_in_progress on the way out: shutdown is the one
-        // point where the tick still being collected has no successor to cut
-        // it, so it ships partial rather than not at all.
+        // resets it). Completed ticks only, unconditionally: this is the
+        // steady-state path, reached only while the worker is still serving
+        // tokens, and a send that took the tick in progress would split it
+        // across two messages (see UrlStats::takeSnapshot). The tick in
+        // progress goes out exactly once, from
+        // flush_url_stats_on_shutdown(), which the worker runs on its way
+        // out — passing agent_->isExiting() here instead could never be
+        // true, because stopping() above already returned on it.
         std::unique_ptr<UrlStatSnapshot> url_snapshot;
         if (stats != AGENT_STATS) {
-            url_snapshot = agent_->getUrlStats().takeSnapshot(agent_->isExiting());
+            url_snapshot = agent_->getUrlStats().takeSnapshot();
             if (url_snapshot->empty()) {
                 // No tick completed since the last send. Send nothing at all
                 // rather than an empty PAgentUriStat, matching Java's
@@ -2950,6 +2955,122 @@ namespace pinpoint {
         arena_.Reset();
         // Treated like an empty queue: the worker waits for the next payload.
         return STREAM_CONTINUE;
+    }
+
+    bool GrpcStats::stats_channel_ready() const {
+        // Mirrors GrpcSpan::flush_remaining's probe. The transport (or its
+        // channel) is null when the agent was never brought online via
+        // Start(), or when a test injected a bare stub, in which case there
+        // is nothing to flush to.
+        const auto transport = current_transport<StatStub>();
+        const auto channel = transport ? transport->channel : nullptr;
+        return channel != nullptr && channel->GetState(false) == GRPC_CHANNEL_READY;
+    }
+
+    GrpcStreamStatus GrpcStats::build_shutdown_url_stat_write() try {
+        LOG_DEBUG("stats - build_shutdown_url_stat_write");
+        // should be hold stream_mutex_
+
+        // include_in_progress = true here and nowhere else: the steady-state
+        // send (next_write) leaves the tick being collected alone so a later
+        // entry can cut it whole, but shutdown is the point where no later
+        // entry will come, so shipping it partial beats losing it. The drain
+        // also empties completed_, so the ticks a stalled stream never got to
+        // (up to kMaxCompletedSnapshots) go out in the same message.
+        const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
+        if (snapshot->empty()) {
+            LOG_DEBUG("stats - no url stat tick to flush on shutdown");
+            return STREAM_CONTINUE;
+        }
+
+        const auto entries = snapshot->getEachStats().size();
+        if (!stats_channel_ready()) {
+            // Counted rather than attempted: a write on a channel that is not
+            // READY cannot complete inside the shutdown deadline, and the
+            // snapshot is already drained, so the count is the only record
+            // these entries leave.
+            shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
+            LOG_INFO("drop {} url stat entries on shutdown: channel not ready", entries);
+            return STREAM_CONTINUE;
+        }
+
+        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
+        msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
+        LOG_INFO("flushing {} url stat entries on shutdown", entries);
+        return STREAM_WRITE;
+    } catch (const std::exception& e) {
+        LOG_ERROR("failed to build the shutdown url stat flush: exception = {}", e.what());
+        // Same reasoning as next_write's handler: no StartWrite was issued for
+        // this msg_, so nothing will reset the arena.
+        arena_.Reset();
+        return STREAM_CONTINUE;
+    }
+
+    void GrpcStats::flush_url_stats_on_shutdown() {
+        // Java does not send the tick in progress at shutdown
+        // (AsyncQueueingExecutor.stop drains only the input queue, and the
+        // polling UriStatCollectingJob is already closed); the Go agent does,
+        // from shutdownAgent's flushUrlStat(true). This follows Go — see
+        // doc/java_parity.md. Without this the tick in progress (up to 30s of
+        // traffic) and whatever completed_ still held were lost on every
+        // clean shutdown.
+        //
+        // An explicit one-shot flush rather than narrowing next_write()'s
+        // stopping() gate to stop_requested_ alone: that gate is not what
+        // makes the old attempt unreachable. run_stats_worker's own
+        // `if (stop)` returns first, and it must — the token-driven loop has
+        // no business running after a stop request. Narrowing next_write()
+        // would have to be paired with letting the loop keep serving tokens
+        // while exiting, which is a larger change to the shutdown contract
+        // for a strictly worse result: the flush is one message, and only a
+        // dedicated call site can bound it, probe the channel and count what
+        // it could not send.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+
+        // No live stream to carry the flush: either one was never started
+        // (start_stats_stream kept failing on a dead channel) or one of the
+        // close paths already ran StartWritesDone, after which the callback
+        // API forbids StartWrite. Drain and count anyway — the entries are
+        // going nowhere, and the count is what says so.
+        if (stream_context_ == nullptr || grpc_status_ == STREAM_DONE ||
+            stats_stream_closing_.load(std::memory_order_relaxed)) {
+            if (const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
+                !snapshot->empty()) {
+                const auto entries = snapshot->getEachStats().size();
+                shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
+                LOG_INFO("drop {} url stat entries on shutdown: no live stats stream", entries);
+            }
+            return;
+        }
+
+        if (build_shutdown_url_stat_write() != STREAM_WRITE) {
+            return;
+        }
+
+        grpc_status_ = STREAM_WRITE;
+        // Tells stopStatsWorker() that this pending write is the flush and
+        // must not be cancelled out from under it; see there.
+        shutdown_flush_writing_ = true;
+        StartWrite(msg_);
+        const bool completed = stream_cv_.wait_for(
+            lock, tuning_.stats_shutdown_flush_timeout,
+            [this] { return grpc_status_ != STREAM_WRITE; });
+        shutdown_flush_writing_ = false;
+        if (completed) {
+            return;
+        }
+
+        // Out of budget. Close and cancel instead of waiting longer: the
+        // caller runs finish_stats_stream() next, whose close is then the
+        // no-op the exchange guard makes it and whose bounded OnDone wait is
+        // the only one this path pays for. No record_stream_stall() — the
+        // escalation it feeds is a forced channel rotation, and there is no
+        // next stream to rotate for.
+        LOG_WARN("shutdown url stat flush did not complete in time, cancelling");
+        close_stats_stream_locked();
+        if (stream_context_ != nullptr) {
+            stream_context_->TryCancel();
+        }
     }
 
     void GrpcStats::enqueueStats(const StatsType stats) noexcept try {
@@ -2999,6 +3120,13 @@ namespace pinpoint {
                         [this] { return stopping(); },
                         [this] { return run_stats_worker(); },
                         [this] { drain_stats_stream_on_error(); });
+
+        // run_stats_worker's stop branch is the path that actually sends the
+        // flush, but a worker that ended because start_stats_stream() kept
+        // failing never reached it. Idempotent: that branch already drained
+        // the snapshot, so this call finds it empty; when it does not, there
+        // is no stream left and it only records the drop.
+        try { flush_url_stats_on_shutdown(); } CATCH_AND_LOG("grpc stats worker shutdown flush")
     }
 
     bool GrpcStats::run_stats_worker() {
@@ -3015,6 +3143,10 @@ namespace pinpoint {
             lock.unlock();
 
             if (stop) {
+                // Last write of this stream's life, while it is still live:
+                // finish_stats_stream() below closes it, and once
+                // StartWritesDone has run no write is allowed.
+                flush_url_stats_on_shutdown();
                 finish_stats_stream();
                 return true;
             }
@@ -3061,8 +3193,29 @@ namespace pinpoint {
         // that lock while holding stream_mutex_ (next_write), so the opposite
         // nesting here would risk deadlock.
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        if (stream_context_ != nullptr && grpc_status_ != STREAM_DONE) {
-            stream_context_->TryCancel();
+        if (stream_context_ == nullptr || grpc_status_ != STREAM_WRITE) {
+            // No write is pending, so nothing here is stuck. Cancelling
+            // anyway would kill a stream the worker still needs: it is parked
+            // on stats_queue_cv_ and about to run its one shutdown
+            // URL-stat flush over exactly this stream. A cancelled context
+            // fails that write (OnWriteDone(false)) and the flush is
+            // unrepeatable, so a clean shutdown lost the tick it exists to
+            // save. stream_mutex_ makes the test exact rather than a guess:
+            // write_and_await_stats_stream holds this lock for its whole
+            // body and releases it only inside the write wait, where
+            // grpc_status_ is STREAM_WRITE, so observing anything else here
+            // means the worker is not in that wait. Every other stream wait
+            // on the shutdown path (finish_stats_stream, the write-timeout
+            // recycle, drain_stats_stream_on_error) is bounded and cancels
+            // itself, so none of them needs this one.
+            return;
         }
+        if (shutdown_flush_writing_) {
+            // The pending write *is* the flush. A second stop request (the
+            // function is idempotent and called from more than one place)
+            // must not cancel it; its own bounded wait handles a stall.
+            return;
+        }
+        stream_context_->TryCancel();
     }
 }

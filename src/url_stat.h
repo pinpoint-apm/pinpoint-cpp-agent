@@ -224,9 +224,14 @@ namespace pinpoint {
         /// UriStatCollectingJob stops on a null poll
         /// (UriStatCollectingJob.java:52-55).
         /// @param include_in_progress also takes the tick still being
-        /// collected, splitting it across two messages. Only the shutdown
-        /// flush passes true: nothing will arrive later to cut that tick, so
-        /// there it is split-or-lose rather than split-or-wait.
+        /// collected, splitting it across two messages. Exactly one caller
+        /// in production passes true — GrpcStats::flush_url_stats_on_shutdown(),
+        /// the stats worker's last act before it closes its stream — because that is
+        /// the one point where nothing will arrive later to cut the tick, so
+        /// it is split-or-lose rather than split-or-wait. The steady-state
+        /// send (GrpcStats::next_write) always passes false. Sending this
+        /// tick at all is a deliberate divergence from Java; see
+        /// doc/java_parity.md.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot(bool include_in_progress = false);
 
     private:

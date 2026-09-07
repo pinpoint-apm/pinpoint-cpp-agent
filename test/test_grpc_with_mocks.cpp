@@ -726,10 +726,21 @@ public:
     }
     GrpcStreamStatus nextWriteForTest() { return next_write(); }
 
+    // The shutdown URL-stat flush. stats_channel_ready() probes a live
+    // grpc::Channel's connectivity state, which no unit test has, so it is
+    // driven from here instead; the rest of the flush is the production code.
+    bool stats_channel_ready() const override { return stats_channel_ready_; }
+    void setStatsChannelReady(bool ready) { stats_channel_ready_ = ready; }
+    GrpcStreamStatus buildShutdownFlushForTest() { return build_shutdown_url_stat_write(); }
+    void flushUrlStatsOnShutdownForTest() { flush_url_stats_on_shutdown(); }
+    const v1::PStatMessage* pendingMessageForTest() const { return pending_message(); }
+    uint64_t shutdownDroppedUrlStatsForTest() const { return shutdown_dropped_url_stats(); }
+
 private:
     // Toggled by the test body while the worker thread polls readyChannel();
     // atomic so TSan-clean, like ready_channel_failures_.
     std::atomic<bool> ready_channel_{true};
+    std::atomic<bool> stats_channel_ready_{true};
 };
 
 class ThrowingReadyGrpcAgent : public GrpcAgent {
@@ -1395,6 +1406,168 @@ TEST_F(GrpcMockTest, GrpcStatsSendsNoMessageWhenNoUrlStatTickCompleted) {
     stats_client.enqueueStats(URL_STATS);
     EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_WRITE)
         << "a completed tick must still be written";
+}
+
+// The tick still being collected must go out on the way down. Java does not
+// send it (AsyncQueueingExecutor.stop drains only the input queue and the
+// polling UriStatCollectingJob is already closed); the Go agent does, from
+// shutdownAgent's flushUrlStat(true), and this agent follows Go — see
+// doc/java_parity.md.
+//
+// Regression: the flush used to be attempted inside next_write(), as
+// takeSnapshot(agent_->isExiting()). isExiting() turns true the instant
+// do_shutdown() runs, and stopping() is `stop_requested_ || isExiting()`, so
+// both the worker loop and next_write() itself returned before reaching that
+// line — the argument could only ever be false, and every clean shutdown lost
+// the tick in progress.
+TEST_F(GrpcMockTest, GrpcStatsShutdownFlushSendsTickStillInProgress) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    // A single entry: its tick is open, and nothing has been cut into
+    // completed_ behind it.
+    UrlStatEntry entry{"/api/shutdown", "GET", 200};
+    entry.elapsed_ = 42;
+    entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+    url_stats.addSnapshot(&entry, *config);
+
+    // Steady state still sends nothing — the open tick may yet be cut whole.
+    stats_client.enqueueStats(URL_STATS);
+    EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_CONTINUE)
+        << "a periodic send must not split the tick in progress";
+
+    mock_agent_service_->setExiting(true);
+    stats_client.setStatsChannelReady(true);
+
+    ASSERT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_WRITE)
+        << "the shutdown flush must write the tick in progress";
+    const auto* msg = stats_client.pendingMessageForTest();
+    ASSERT_NE(msg, nullptr);
+    ASSERT_TRUE(msg->has_agenturistat());
+    const auto& uri_stat = msg->agenturistat();
+    ASSERT_EQ(uri_stat.eachuristat_size(), 1);
+    EXPECT_EQ(uri_stat.eachuristat(0).uri(), "/api/shutdown");
+    // 1000s bucketed into the 30s tick that starts at 990s.
+    EXPECT_EQ(uri_stat.eachuristat(0).timestamp(), 990000);
+    EXPECT_EQ(uri_stat.eachuristat(0).totalhistogram().total(), 42);
+}
+
+// The same flush also has to carry the completed ticks a stalled stream never
+// drained (up to kMaxCompletedSnapshots of them), not just the open one:
+// takeSnapshot merges completed_ into the message either way, and losing two
+// minutes of ticks to a shutdown is the same bug at a larger scale.
+TEST_F(GrpcMockTest, GrpcStatsShutdownFlushAlsoSendsRetainedCompletedTicks) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    // Three consecutive ticks: each entry's arrival cuts the previous tick
+    // into completed_, leaving the last one open. Nothing consumes them, as
+    // if the stats stream had been down the whole time.
+    for (const int64_t second : {1000, 1030, 1060}) {
+        UrlStatEntry entry{"/api/retained", "GET", 200};
+        entry.elapsed_ = 10;
+        entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(second));
+        url_stats.addSnapshot(&entry, *config);
+    }
+
+    mock_agent_service_->setExiting(true);
+    stats_client.setStatsChannelReady(true);
+
+    ASSERT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_WRITE);
+    const auto* msg = stats_client.pendingMessageForTest();
+    ASSERT_NE(msg, nullptr);
+    ASSERT_TRUE(msg->has_agenturistat());
+    const auto& uri_stat = msg->agenturistat();
+    ASSERT_EQ(uri_stat.eachuristat_size(), 3)
+        << "the two retained completed ticks must leave with the open one";
+    std::vector<int64_t> ticks;
+    for (const auto& each : uri_stat.eachuristat()) {
+        EXPECT_EQ(each.uri(), "/api/retained");
+        ticks.push_back(each.timestamp());
+    }
+    std::sort(ticks.begin(), ticks.end());
+    EXPECT_EQ(ticks, (std::vector<int64_t>{990000, 1020000, 1050000}));
+
+    // The flush is a drain: a second one has nothing left to send, so a
+    // worker that reaches both flush call sites cannot double-send.
+    EXPECT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_CONTINUE);
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 0U)
+        << "an empty drain is not a drop";
+}
+
+// A channel that is not READY cannot deliver a write inside the shutdown
+// deadline, so the flush must not start one — it records the loss instead.
+// Same policy, and the same reason, as GrpcSpan::flush_remaining's
+// channel-state probe.
+TEST_F(GrpcMockTest, GrpcStatsShutdownFlushDropsAndCountsWhenChannelNotReady) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    for (const auto* uri : {"/api/dropped/one", "/api/dropped/two"}) {
+        UrlStatEntry entry{uri, "GET", 200};
+        entry.elapsed_ = 10;
+        entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+        url_stats.addSnapshot(&entry, *config);
+    }
+
+    mock_agent_service_->setExiting(true);
+    stats_client.setStatsChannelReady(false);
+
+    EXPECT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_CONTINUE)
+        << "no write may be attempted on a channel that is not READY";
+    EXPECT_EQ(stats_client.pendingMessageForTest(), nullptr)
+        << "nothing may be built for a send that cannot happen";
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 2U);
+
+    // Nothing is left to drop, so the count stops moving.
+    EXPECT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_CONTINUE);
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 2U);
+
+    // The worker-exit call site: with no stats stream ever started there is
+    // nothing to write on, whatever the channel says, and the same count is
+    // the only record the entries leave.
+    stats_client.setStatsChannelReady(true);
+    UrlStatEntry late{"/api/dropped/three", "GET", 200};
+    late.elapsed_ = 10;
+    late.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+    url_stats.addSnapshot(&late, *config);
+
+    stats_client.flushUrlStatsOnShutdownForTest();
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 3U)
+        << "a flush with no live stream must count the drop, not send";
+}
+
+// Reachability, driven through the real worker rather than the seam: the
+// original bug was not a wrong flush but an unreachable one, so the call site
+// is what needs locking. With readyChannel() false the worker never opens a
+// stream and ends on the stop request, and sendStatsWorker's exit-path flush
+// is the only thing that can account for the entries.
+TEST_F(GrpcMockTest, GrpcStatsWorkerRunsShutdownFlushOnEveryExitPath) {
+    GrpcClientTuning tuning;
+    tuning.worker_restart_delay = std::chrono::milliseconds(10);
+    TestableGrpcStats stats_client(mock_agent_service_.get(), tuning);
+    stats_client.setMockStatsStub(std::make_unique<NiceMock<v1::MockStatStub>>());
+    stats_client.setReadyChannel(false);
+
+    UrlStatEntry entry{"/api/worker-exit", "GET", 200};
+    entry.elapsed_ = 10;
+    entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(1000));
+    mock_agent_service_->getUrlStats().addSnapshot(&entry, *mock_agent_service_->getConfig());
+
+    ScopedWorker stats_worker([&stats_client] { stats_client.stopStatsWorker(); },
+                              [&stats_client] { stats_client.sendStatsWorker(); });
+
+    mock_agent_service_->setExiting(true);
+    stats_client.stopStatsWorker();
+    if (stats_worker.joinable()) stats_worker.join();
+
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 1U)
+        << "the worker must reach the shutdown flush even with no stream to write on";
+    // And the snapshot really was drained by the worker, not merely observed.
+    EXPECT_TRUE(mock_agent_service_->getUrlStats().takeSnapshot(true)->empty());
 }
 
 TEST_F(GrpcMockTest, GrpcStatsWorkerContainsChannelSetupException) {

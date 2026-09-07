@@ -103,8 +103,10 @@ namespace pinpoint {
         // boundary anyway, and a tick with no traffic has nothing to cut.
         // A send no longer takes the tick in progress (see takeSnapshot),
         // so this is the only thing that closes one under load. A trailing
-        // tick that never gets a successor waits here until the shutdown
-        // flush, takeSnapshot(include_in_progress = true).
+        // tick that never gets a successor is closed by closeElapsedTick()
+        // once its window is over; one that is still inside its window when
+        // the agent exits leaves on the shutdown flush,
+        // GrpcStats::flush_url_stats_on_shutdown().
         //
         // Strictly-newer only: a straggler for an already-cut tick (drained
         // out of order across shards) must not cut again. It lands in the
@@ -194,11 +196,12 @@ namespace pinpoint {
             completed_.pop_front();
         }
         if (include_in_progress) {
-            // Shutdown flush: no later entry will ever arrive to cut this
-            // tick, so losing it outright is worse than shipping it partial.
-            // Swapped in a fresh snapshot rather than merging in place — a
-            // drained one keeps its tick_, and a stale high watermark would
-            // suppress the next cut in addLocked.
+            // Shutdown flush only (GrpcStats::flush_url_stats_on_shutdown is
+            // the sole caller that passes true): no later entry will ever
+            // arrive to cut this tick, so losing it outright is worse than
+            // shipping it partial. Swapped in a fresh snapshot rather than
+            // merging in place — a drained one keeps its tick_, and a stale
+            // high watermark would suppress the next cut in addLocked.
             taken->merge(*snapshot_);
             snapshot_ = std::move(fresh);
         }
