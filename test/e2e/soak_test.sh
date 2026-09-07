@@ -337,6 +337,34 @@ if len(rows) < 4:
 num = lambda r, k: float(r[k])
 el  = [num(r, "elapsed_s") for r in rows]
 rss = [num(r, "rss_kb")/1024 for r in rows]
+
+# Least-squares slope and its standard error, both in units per hour. Every
+# drift check here goes through this. The obvious alternative -- last value
+# minus the window minimum -- is positive for any series that merely
+# oscillates, so it cannot tell jitter from a trend and reports growth on a
+# healthy run.
+def trend_per_hour(xs, ys):
+    n = len(xs)
+    if n < 3:
+        return 0.0, float("inf")
+    mx = sum(xs)/n
+    my = sum(ys)/n
+    den = sum((x-mx)**2 for x in xs)
+    if den == 0:
+        return 0.0, float("inf")
+    b = sum((x-mx)*(y-my) for x, y in zip(xs, ys))/den
+    a = my - b*mx
+    resid = sum((y - (a + b*x))**2 for x, y in zip(xs, ys))
+    return b*3600, (((resid/(n-2))/den) ** 0.5) * 3600
+
+# A thread or fd count leaking this slowly is still worth a look: +0.5/h is
+# +12/day. But magnitude alone is not enough -- a slope fitted to pure jitter
+# is not zero either, and its noise floor grows with the amplitude of the
+# jitter, so a wide-but-flat band can clear any fixed threshold by luck. Also
+# require the slope to stand clear of its own standard error.
+COUNT_SLOPE_LIMIT = 0.5
+COUNT_SLOPE_SIGMA = 2.0
+
 hours = el[-1]/3600
 print(f"\nResource series: {len(rows)} samples over {hours:.2f} h")
 print(f"  RSS     first {rss[0]:7.1f} MB   max {max(rss):7.1f} MB   last {rss[-1]:7.1f} MB"
@@ -346,9 +374,16 @@ print(f"  RSS     first {rss[0]:7.1f} MB   max {max(rss):7.1f} MB   last {rss[-1
 h = len(rows)//2
 for k in ("threads", "fds"):
     v = [num(r, k) for r in rows]
-    drift = v[-1] - min(v[h:])
+    sec = v[h:]
+    drift, err = trend_per_hour(el[h:], sec)
+    # The band and the error are printed alongside the slope because they
+    # answer different questions: a wide band with a flat slope is a busy pool
+    # idling, which is what threads and fds normally look like here, and
+    # +0.9 +/- 0.8 per hour is noise wearing a trend's clothes.
     print(f"  {k:7s} first {v[0]:7.0f}      max {max(v):7.0f}      last {v[-1]:7.0f}"
-          f"   2nd-half drift {drift:+.0f}" + ("   <-- GROWING" if drift > 0 else ""))
+          f"   2nd half {min(sec):.0f}-{max(sec):.0f} at {drift:+.2f}+/-{err:.2f}/h"
+          + ("   <-- GROWING" if drift > COUNT_SLOPE_LIMIT
+             and drift > COUNT_SLOPE_SIGMA * err else ""))
 cpu = [num(r, "cpu_s") for r in rows]
 span = el[-1] - el[0]
 print(f"  CPU     {cpu[-1]-cpu[0]:.1f} s over the series ({(cpu[-1]-cpu[0])/span*100:.2f} % of one core)")
@@ -358,10 +393,7 @@ if reqs > 0:
 bad = [r["iso_time"] for r in rows if r["agent_enabled"] != "true"]
 print(f"  agent_enabled != true at {len(bad)} of {len(rows)} samples"
       + (f"   FIRST: {bad[0]}" if bad else ""))
-xs, ys = el[h:], rss[h:]
-n = len(xs); mx = sum(xs)/n; my = sum(ys)/n
-den = sum((x-mx)**2 for x in xs)
-slope = (sum((x-mx)*(y-my) for x, y in zip(xs, ys))/den if den else 0.0) * 3600
+slope, _ = trend_per_hour(el[h:], rss[h:])
 print(f"\n  RSS slope, 2nd half only: {slope:+.3f} MB/h")
 if hours < 1:
     print("  Verdict: run too short for a leak verdict -- RSS is still warming up.")
