@@ -94,6 +94,23 @@ else()
   set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(gRPC)
 
+  # Every dependency configured above exposes a knob to skip its tests; the
+  # vendored BoringSSL does not, and adds its test executables unconditionally,
+  # so they reach the default target and are compiled although nothing here runs
+  # them. Drop them afterwards instead. Beyond the wasted build time they are the
+  # only targets in the graph carrying BoringSSL's own `-Werror
+  # -Wframe-larger-than=25344`, a limit the wider stack frames of an instrumented
+  # build push two of them past on Clang 13+, which breaks the `ubsan` preset.
+  # The support libraries exist only to link those tests; our own tests use the
+  # googletest fetched in test/CMakeLists.txt, not BoringSSL's vendored copy.
+  foreach(_pp_bssl_target IN ITEMS
+      crypto_test ssl_test decrepit_test urandom_test pki_test
+      test_support_lib boringssl_gtest)
+    if(TARGET ${_pp_bssl_target})
+      set_target_properties(${_pp_bssl_target} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+  endforeach()
+
   # Match the target names exported by the vcpkg packages.
   foreach(_pp_grpc_target IN ITEMS grpc++ grpc++_reflection)
     if(TARGET ${_pp_grpc_target} AND NOT TARGET gRPC::${_pp_grpc_target})
