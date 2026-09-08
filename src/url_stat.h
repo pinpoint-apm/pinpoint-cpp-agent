@@ -276,15 +276,25 @@ namespace pinpoint {
         // cycle and leak the agent.
         AgentService* agent_{};
 
-        // Queue for incoming URL stats. pending_ is the exact number of
-        // queued-but-not-drained entries across all shards: it is incremented
-        // under the same shard lock as the push and decremented under the same
-        // shard lock as the drain swap, so it can never go negative and serves
-        // both as the global size limit and the worker's wait predicate.
-        // add_mutex_ only pairs enqueue wakeups with the worker's wait — it is
-        // taken on the enqueue path solely on the empty→non-empty transition.
+        // Queue for incoming URL stats. Each shard is bounded on its own, by
+        // url_stat.queue_size, under its own mutex: the enqueue path touches
+        // nothing shared between request threads. A process-wide counter
+        // (the previous design) cost every request one RMW on a single
+        // cache line plus, whenever the worker had caught up, a lock and a
+        // futex wake to restart it — the same cross-core traffic stat.h
+        // measured at ~23 ns/request when its counters were still shared.
+        // The worker instead drains every shard on a fixed cadence
+        // (kDrainInterval); a 30 s tick does not notice a 10 ms aggregation
+        // delay. add_mutex_/add_cond_var_ now serve only the shutdown wakeup
+        // (stopAddUrlStatsWorker) and the worker's timed wait.
+        //
+        // Bound semantics: the cap applies per shard, so a single busy thread
+        // still buffers up to queue_size entries, and the physical worst case
+        // across all shards is kQueueShardCount * queue_size (default
+        // 16 * 1024 entries) — the same physical-vs-logical trade the span
+        // queue documents in benchmark/README.md.
+        static constexpr std::chrono::milliseconds kDrainInterval{10};
         std::array<QueueShard, kQueueShardCount> queue_shards_{};
-        std::atomic<int64_t> pending_{0};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
         // Flipped once by stopAddUrlStatsWorker(); enqueueUrlStats drops

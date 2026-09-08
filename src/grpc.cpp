@@ -2407,23 +2407,30 @@ namespace pinpoint {
 
         // Gather more items until either the batch is full or the collect
         // deadline elapses. Matches Java SpanBatchGrpcDataSender.collectBatch.
+        //
+        // Once the batch has its first item, this loop does NOT go back
+        // through wait_dequeue_until: that would re-arm span_consumer_waiting_
+        // and make every enqueue on a request thread pay the wait mutex plus
+        // a futex wake while a batch is being gathered — at a few thousand
+        // spans/s, effectively a syscall and a consumer context switch per
+        // span. Instead it sleeps in fixed short slices on the same CV with
+        // the flag left down, so producers stay on their lock-free fast path,
+        // then drains whatever accumulated with one try_dequeue_batch (which
+        // locks each active shard at most once). Only stopSpanWorker()
+        // notifies span_queue_cv_ with the flag down, so a slice ends early
+        // only for shutdown. The slice is well inside the collect deadline it
+        // subdivides, so batch latency is unchanged in the worst case and
+        // shorter in the common one.
         const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
+        constexpr auto kCollectSlice = std::chrono::milliseconds(5);
         while (buffer.size() < batch_size) {
-            // Drain everything that is already published before paying the
-            // cost of another sleep/wakeup round trip. The batch call locks
-            // each active shard at most once, where dequeuing one item at a
-            // time pays a lock per probed shard per item — O(active_shards)
-            // mutex ops per item when a skewed producer load concentrates
-            // the backlog in one shard.
             span_queue_.try_dequeue_batch(buffer, batch_size - buffer.size());
-            if (buffer.size() >= batch_size || stopping() ||
-                    std::chrono::steady_clock::now() >= deadline) {
+            const auto now = std::chrono::steady_clock::now();
+            if (buffer.size() >= batch_size || stopping() || now >= deadline) {
                 break;
             }
-            if (!wait_dequeue_until(span, deadline)) {
-                break;
-            }
-            buffer.push_back(std::move(span));
+            std::unique_lock<std::mutex> lock(span_wait_mutex_);
+            span_queue_cv_.wait_until(lock, std::min(deadline, now + kCollectSlice));
         }
         LOG_DEBUG("collect_batch: collected={} batch_size_limit={}", buffer.size(), batch_size);
     }

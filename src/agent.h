@@ -82,8 +82,12 @@ namespace pinpoint {
         /// built without this factory keeps the unbounded-join fallback.
         template <typename... Args>
         static std::shared_ptr<AgentImpl> createShared(Args&&... args) {
-            return std::shared_ptr<AgentImpl>(new AgentImpl(std::forward<Args>(args)...),
-                                              SharedDeleter{});
+            auto agent = std::shared_ptr<AgentImpl>(new AgentImpl(std::forward<Args>(args)...),
+                                                    SharedDeleter{});
+            // Written once before the pointer is published; selfRef() reads
+            // it from every request thread afterwards.
+            agent->self_weak_ = agent;
+            return agent;
         }
 
         /// @brief Creates a new span for an outbound operation.
@@ -137,6 +141,16 @@ namespace pinpoint {
         /// @brief Shared self-handle for span keep-alive; empty when the agent
         /// is not shared_ptr-owned (stack-constructed test instances).
         std::shared_ptr<AgentService> selfRef() noexcept override {
+            // Every sampled span takes one of these (SpanImpl::agent_ref_), so
+            // the cost is paid per request on the agent's single control
+            // block. lock() on the stored weak_ptr is one CAS on the strong
+            // count; weak_from_this().lock() would additionally copy the
+            // weak_ptr and destroy the copy — two more RMWs on the same
+            // contended line. The fallback covers shared agents built without
+            // createShared() (tests), whose self_weak_ is never set.
+            if (auto self = self_weak_.lock()) {
+                return self;
+            }
             return weak_from_this().lock();
         }
         const std::string& getAppName() const override;
@@ -268,6 +282,8 @@ namespace pinpoint {
         std::atomic<uint64_t> trace_id_sequence_{};
         std::atomic<bool> enabled_{false};
         std::atomic<bool> shutting_down_{false};
+        // Set by createShared(); see selfRef().
+        std::weak_ptr<AgentImpl> self_weak_;
         // Start() flips started_ and records owner_pid_. The supported model
         // starts the agent in the process that uses it (StartAgent() per
         // worker); owner_pid_ exists to keep MISUSE crash-free: an agent

@@ -709,7 +709,7 @@ namespace pinpoint {
                     impl->getSpanData()->setAcceptorHostIfAbsent(endpoint);
                     HttpTracerUtil::setProxyHeader(
                         request_reader, impl->getSpanData()->getAnnotations(),
-                        impl->getConfig()->http.server.proxy_user_header_names);
+                        impl->getConfig().http.server.proxy_user_header_names);
                 }
                 span->RecordHeader(HTTP_REQUEST, request_reader);
             }

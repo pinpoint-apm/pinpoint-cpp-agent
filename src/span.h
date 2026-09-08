@@ -578,7 +578,7 @@ namespace pinpoint {
         // The config generation this span captured (never null, see the ctor).
         // Impl-level only: the HTTP request helpers read the settings that
         // govern recording off it, so a config reload cannot land mid-request.
-        const std::shared_ptr<const Config>& getConfig() const { return config_; }
+        const Config& getConfig() const { return *config_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
         std::string getUrlTemplate() const {
@@ -619,8 +619,13 @@ namespace pinpoint {
             // runtime_ is null — never null itself). The per-event hot paths
             // read this instead of agent_->getConfig(), so they pay no atomic
             // shared_ptr load per call and the span's limits stay consistent
-            // even when a config reload lands mid-span.
-            std::shared_ptr<const Config> config_;
+            // even when a config reload lands mid-span. A plain pointer, not
+            // a shared_ptr copy: runtime_ already pins the Config, and the
+            // copy's inc/dec landed on the one Config control block every
+            // request thread shares. config_owner_ pins it only on the
+            // runtime-less (test) path.
+            const Config* config_{nullptr};
+            std::shared_ptr<const Config> config_owner_;
             std::shared_ptr<SpanData> data_;
             // The SpanData holding this trace's shared error flag. Null on a
             // trace root, where it is data_ itself; NewAsyncSpan points an

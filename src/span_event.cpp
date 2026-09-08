@@ -24,6 +24,7 @@
 
 #include "cache.h"
 #include "callstack.h"
+#include "http.h"
 #include "logging.h"
 #include "noop.h"
 #include "span.h"
@@ -455,7 +456,18 @@ namespace pinpoint {
         // Reaches the agent, so it needs the same gate as every span access:
         // agent_ outlives this event only while the span holds it (see
         // spanIfAlive).
-        if (spanIfAlive() == nullptr) return;
+        auto* span = spanIfAlive();
+        if (span == nullptr) return;
+        // Same as SpanImpl::RecordHeader: use the span's pinned runtime rather
+        // than the agent's live one, which re-loads and copies per call.
+        if (span->runtime_) {
+            if (which >= HTTP_REQUEST && which <= HTTP_COOKIE) {
+                if (const auto& recorder = span->runtime_->http_cli_header_recorder[which]) {
+                    recorder->recordHeader(reader, &annotations_);
+                }
+            }
+            return;
+        }
         agent_->recordClientHeader(which, reader, &annotations_);
     } CATCH_AND_LOG("record header")
 

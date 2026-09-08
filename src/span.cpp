@@ -271,7 +271,12 @@ namespace pinpoint {
         url_stat_{},
         exceptions_{} {
         assert(agent_ != nullptr);
-        config_ = runtime_ ? runtime_->config : agent_->getConfig();
+        if (runtime_) {
+            config_ = runtime_->config.get();
+        } else {
+            config_owner_ = agent_->getConfig();
+            config_ = config_owner_.get();
+        }
         const auto app_type = agent_->getAppType();
         // Async child spans are created with an empty operation (see
         // NewAsyncSpan): skip the api-cache lookup — api_id 0 is simply not
@@ -839,6 +844,21 @@ namespace pinpoint {
 
     void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         CHECK_FINISHED();
+        // Through the span's own runtime snapshot, not the agent's live one:
+        // AgentImpl::recordHttpHeader re-loads runtime_ and copies the
+        // recorder shared_ptr (two RMWs on a control block every request
+        // thread shares) on each of the up-to-three calls per request, and it
+        // records under whatever generation is live rather than the one this
+        // span captured. runtime_ is owned by this span, so no re-entrant
+        // load during reader.Get() can free the recorder mid-call.
+        if (runtime_) {
+            if (which >= HTTP_REQUEST && which <= HTTP_COOKIE) {
+                if (const auto& recorder = runtime_->http_srv_header_recorder[which]) {
+                    recorder->recordHeader(reader, data_->getAnnotations());
+                }
+            }
+            return;
+        }
         agent_->recordServerHeader(which, reader, data_->getAnnotations());
     } CATCH_AND_LOG("record header")
 

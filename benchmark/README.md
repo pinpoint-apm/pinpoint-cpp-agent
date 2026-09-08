@@ -221,6 +221,10 @@ cmake --build --preset default --target span_lifecycle_benchmark
 
 The optional argument is the request count **per thread**, so the total work
 grows with the thread count and `ns/req` stays comparable across rows.
+`--url-stat` turns `Http.CollectUrlStat` on and records one URL stat per
+request, so the per-request push onto the URL-stat queue (and the worker
+that drains it) becomes part of the measured lifecycle; it is off by default
+because a plain request does not perform it.
 `ns/req` is wall time divided by requests per thread — the same per-thread
 convention as the atomic-shared-pointer benchmark, so a column that stays
 flat as threads are added means the agent accumulates no cross-core

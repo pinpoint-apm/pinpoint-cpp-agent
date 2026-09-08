@@ -156,7 +156,7 @@ namespace pinpoint {
         // would let two concurrent EndSpan calls both pass the guard and run
         // dropActiveSpan / collectResponseTime / recordUrlStat twice.
         if (finished_.exchange(true)) {
-            LOG_WARN("span is already finished");
+            LOG_WARN_THROTTLED("span is already finished");
             return;
         }
 
@@ -256,7 +256,7 @@ namespace pinpoint {
         // with EndSpan's exchange-then-consume.
         std::lock_guard<std::mutex> lock(url_stat_mutex_);
         if (finished_) {
-            LOG_WARN("span is already finished");
+            LOG_WARN_THROTTLED("span is already finished");
             return;
         }
         url_stat_.emplace(url_pattern, method, status_code);

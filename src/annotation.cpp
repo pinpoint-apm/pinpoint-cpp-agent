@@ -36,7 +36,7 @@ namespace pinpoint {
             return false;
         }
         try {
-            LOG_WARN("annotation is already finished");
+            LOG_WARN_THROTTLED("annotation is already finished");
         } catch (...) {
         }
         return true;

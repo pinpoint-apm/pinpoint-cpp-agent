@@ -356,21 +356,17 @@ namespace pinpoint {
         }
 
         auto& shard = queueShard();
-        int64_t prev_pending = 0;
         bool dropped_now = false;
         {
             std::lock_guard<std::mutex> shard_lock(shard.mutex_);
-            // The limit check uses its own relaxed load; concurrent enqueues
-            // on other shards can overshoot it by at most kQueueShardCount
-            // entries, which is harmless for a drop threshold. This bound is
+            // Per-shard bound (see queue_shards_ in url_stat.h). This bound is
             // url_stat.queue_size, not url_stat.limit: limit caps distinct
             // URL keys per snapshot, while queue_size caps the per-request
             // records buffered here awaiting aggregation.
-            if (pending_.load(std::memory_order_relaxed) >= static_cast<int64_t>(config.http.url_stat.queue_size)) {
+            if (shard.queue_.size() >= config.http.url_stat.queue_size) {
                 dropped_now = true;
             } else {
                 shard.queue_.push(std::move(stats));
-                prev_pending = pending_.fetch_add(1, std::memory_order_relaxed);
             }
         }
 
@@ -385,23 +381,8 @@ namespace pinpoint {
             }
             return;
         }
-
-        // Wake the worker only on the empty→non-empty transition, decided by
-        // the fetch_add return value: it is atomic with the increment, so the
-        // transition cannot be missed. (A pending_ value loaded before the
-        // push could go stale — the worker drains to zero and blocks between
-        // the load and the push — and then no enqueue would ever notify
-        // again, stranding the worker forever.) While entries are already
-        // pending the worker is awake (or will re-check its predicate before
-        // blocking), so the common case skips add_mutex_ entirely. Taking the
-        // (empty) lock pairs the notify with the worker's predicate check, so
-        // it cannot fire between the worker reading pending_ == 0 and
-        // blocking — a lost wakeup that would strand the entry until the next
-        // enqueue.
-        if (prev_pending == 0) {
-            { std::lock_guard<std::mutex> lock(add_mutex_); }
-            add_cond_var_.notify_one();
-        }
+        // No wakeup: the worker drains on its own cadence (kDrainInterval),
+        // so the request thread never touches add_mutex_ or a futex here.
     } catch (const std::exception &e) {
         LOG_ERROR("failed to enqueue url stats: exception = {}", e.what());
     } catch (...) {
@@ -432,7 +413,6 @@ namespace pinpoint {
                     continue;
                 }
                 batch.swap(shard.queue_);
-                pending_.fetch_sub(static_cast<int64_t>(batch.size()), std::memory_order_relaxed);
             }
 
             while (!batch.empty()) {
@@ -470,13 +450,12 @@ namespace pinpoint {
     void UrlStats::runAddUrlStatsWorker(const Config& config) {
         std::unique_lock<std::mutex> lock(add_mutex_);
         while (!agent_->isExiting()) {
-            // Entries enqueued while draining don't re-notify (only the
-            // empty→non-empty transition does), so the predicate re-check on
-            // pending_ before blocking is what picks them up.
-            add_cond_var_.wait(lock, [this] {
-                return pending_.load(std::memory_order_relaxed) > 0 || agent_->isExiting();
-            });
-            if (agent_->isExiting()) {
+            // Timed wait, not a wakeup per enqueue: the request path never
+            // notifies (see enqueueUrlStats), only stopAddUrlStatsWorker does.
+            // Draining every shard on a 10 ms cadence costs kQueueShardCount
+            // uncontended lock/unlock pairs per cycle — nothing against the
+            // per-request lock + futex wake it replaces.
+            if (add_cond_var_.wait_for(lock, kDrainInterval, [this] { return agent_->isExiting(); })) {
                 break;
             }
 
@@ -493,8 +472,8 @@ namespace pinpoint {
         // Always notify, without consulting any config: re-deriving the
         // worker's boot decision from a config load here would couple
         // shutdown to the non-reloadability invariant documented in
-        // addUrlStatsWorker — get it wrong and the only wakeup for a worker
-        // parked in an untimed wait is skipped, hanging shutdown forever.
+        // addUrlStatsWorker — get it wrong and the worker only notices
+        // isExiting() at its next kDrainInterval tick.
         // Taking the lock pairs the notify with the worker's predicate check
         // (isExiting), so it cannot fire in the window between the worker
         // reading the flag as false and blocking — a lost wakeup that would

@@ -182,6 +182,11 @@ namespace benchmark {
     // percent_rate picks the shape the sampler admits: 0 never samples a new
     // trace (UnsampledSpan), 100 always does (SpanImpl). Both clamp exactly in
     // PercentSampler, so neither phase depends on a counter landing right.
+    // --url-stat: enable Http.CollectUrlStat and record one url stat per
+    // request, so the per-request enqueue onto UrlStats' queue (and the
+    // worker draining it) is part of the measured lifecycle.
+    bool g_url_stat = false;
+
     std::shared_ptr<Config> make_bench_config(double percent_rate) {
         auto cfg = std::make_shared<Config>();
         cfg->enable = true;
@@ -201,7 +206,7 @@ namespace benchmark {
         // work, and url stats in particular would add a queue push per
         // request that the measured lifecycle does not otherwise perform.
         cfg->stat.enable = false;
-        cfg->http.url_stat.enable = false;
+        cfg->http.url_stat.enable = g_url_stat;
         return cfg;
     }
 
@@ -256,6 +261,9 @@ namespace benchmark {
     void run_request(AgentImpl& agent, Shape shape, const Endpoint& endpoint,
                      TraceContextReader& reader, size_t events) {
         auto span = new_span(agent, shape, endpoint, reader);
+        if (g_url_stat) {
+            span->SetUrlStat(endpoint.url, "GET", 200);
+        }
         for (size_t e = 0; e < events; e++) {
             auto* event = span->NewSpanEvent(kEventOperations[e % kEventOperationCount]);
             event->EndEvent();
@@ -440,8 +448,13 @@ int main(int argc, char** argv) {
     using namespace pinpoint::benchmark;
 
     size_t requests_per_thread = 50000;
-    if (argc > 1) {
-        requests_per_thread = static_cast<size_t>(std::stoull(argv[1]));
+    for (int i = 1; i < argc; i++) {
+        const std::string_view arg = argv[i];
+        if (arg == "--url-stat") {
+            g_url_stat = true;
+        } else {
+            requests_per_thread = static_cast<size_t>(std::stoull(std::string(arg)));
+        }
     }
 
     const auto endpoints = make_endpoints();

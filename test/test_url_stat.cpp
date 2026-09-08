@@ -604,7 +604,7 @@ TEST_F(UrlStatTest, StopWorkerAfterUrlStatDisabledByReloadTest) {
         url_stats.addUrlStatsWorker();
     });
 
-    // Give the worker time to park in its untimed wait.
+    // Give the worker time to park in its timed wait.
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     // Simulate a config reload turning CollectUrlStat off while the worker
