@@ -1410,11 +1410,31 @@ namespace pinpoint {
         }
     } CATCH_AND_LOG("failed to remove cached sql uid meta:")
 
-    void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
+    void AgentService::recordException(
+            const TraceId& trace_id, int64_t span_id,
+            std::string_view url_template,
+            std::vector<std::unique_ptr<Exception>>&& exceptions,
+            const Config& /*config*/) const {
+        recordException(trace_id, span_id, url_template, std::move(exceptions));
+    }
+
+    void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id,
+                                    std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
-        // Cheap flag first, config load second (same ordering as the getters
-        // below): a disabled agent must not look up or retain a runtime snapshot.
-        if (!enabled_ || !getConfig()->enable_callstack_trace) {
+        // Legacy/direct callers use the current generation. Spans call the
+        // snapshot-taking overload below so their captured generation wins.
+        const auto config = getConfig();
+        if (!config) {
+            return;
+        }
+        recordException(trace_id, span_id, url_template, std::move(exceptions), *config);
+    } CATCH_AND_LOG("failed to record exception meta:")
+
+    void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id,
+                                    std::string_view url_template,
+                                    std::vector<std::unique_ptr<Exception>>&& exceptions,
+                                    const Config& config) const try {
+        if (!enabled_ || !config.enable_callstack_trace) {
             return;
         }
 

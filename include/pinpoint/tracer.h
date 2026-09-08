@@ -302,6 +302,10 @@ namespace pinpoint {
         int64_t revision = 0;
         /// Resolved user proxy header names for this config generation.
         std::vector<std::string> http_server_proxy_user_header_names;
+        /// Resolved EnableCallstackTrace. Defaults off because a
+        /// default-constructed snapshot carries no resolved configuration and
+        /// binding layers must not capture stack frames on incomplete data.
+        bool enable_callstack_trace = false;
     };
 
     /**

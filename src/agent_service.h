@@ -166,6 +166,15 @@
       /// @brief Queues exceptions captured during span processing.
       virtual void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                                    std::vector<std::unique_ptr<Exception>>&& exceptions) const = 0;
+      /// @brief Queues exceptions under the caller's captured config generation.
+      ///
+      /// Spans use this overload so a later hot reload cannot discard an
+      /// exception chain admitted by the span-local EnableCallstackTrace flag.
+      /// The out-of-line default forwards to the legacy overload for mocks.
+      virtual void recordException(const TraceId& trace_id, int64_t span_id,
+                                   std::string_view url_template,
+                                   std::vector<std::unique_ptr<Exception>>&& exceptions,
+                                   const Config& config) const;
       /// @brief Queues agent- or URL-level statistics for delivery.
       virtual void recordStats(StatsType stats) const = 0;
 

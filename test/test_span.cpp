@@ -422,6 +422,7 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.http.server.rec_request_header = {"X-First"};
         config.http.client.rec_response_header = {"X-Client"};
         config.sql.trace_bind_value = true;
+        config.enable_callstack_trace = true;
     });
 
     SpanImpl first(mock_agent_service_.get(), "first", "/first");
@@ -438,6 +439,7 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_EQ(first_config.http_client_headers[HTTP_RESPONSE],
               std::vector<std::string>{"X-Client"});
     EXPECT_TRUE(first_config.sql_trace_bind_value);
+    EXPECT_TRUE(first_config.enable_callstack_trace);
 
     mock_agent_service_->publishConfig([](Config& config) {
         config.revision = 2;
@@ -445,12 +447,14 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.span.max_event_sequence = 23;
         config.http.server.rec_request_header = {"X-Reloaded"};
         config.sql.trace_bind_value = false;
+        config.enable_callstack_trace = false;
     });
 
     // An existing span keeps the generation (and revision) it was admitted under.
     EXPECT_EQ(first.GetConfigRevision(), 1);
     EXPECT_EQ(first.GetConfigSnapshot().max_event_depth, 7);
     EXPECT_TRUE(first.GetConfigSnapshot().sql_trace_bind_value);
+    EXPECT_TRUE(first.GetConfigSnapshot().enable_callstack_trace);
     EXPECT_EQ(first.GetConfigSnapshot().http_server_headers[HTTP_REQUEST],
               std::vector<std::string>{"X-First"});
 
@@ -463,6 +467,7 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_EQ(reloaded_config.http_server_headers[HTTP_REQUEST],
               std::vector<std::string>{"X-Reloaded"});
     EXPECT_FALSE(reloaded_config.sql_trace_bind_value);
+    EXPECT_FALSE(reloaded_config.enable_callstack_trace);
 }
 
 TEST_F(SpanTest, SpanConfigSnapshotDefaultsBindValueCaptureOff) {
@@ -470,6 +475,10 @@ TEST_F(SpanTest, SpanConfigSnapshotDefaultsBindValueCaptureOff) {
     // flag has to read false there even though Config defaults it to true.
     EXPECT_FALSE(SpanConfigSnapshot{}.sql_trace_bind_value);
     EXPECT_TRUE(Config{}.sql.trace_bind_value);
+}
+
+TEST_F(SpanTest, SpanConfigSnapshotDefaultsCallstackCaptureOff) {
+    EXPECT_FALSE(SpanConfigSnapshot{}.enable_callstack_trace);
 }
 
 TEST_F(SpanTest, SpanImplCompoundAnnotationTest) {

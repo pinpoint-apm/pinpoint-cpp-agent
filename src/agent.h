@@ -170,6 +170,10 @@ namespace pinpoint {
         void recordUrlStat(UrlStatEntry stat, const Config& config) const override;
         void recordException(const TraceId& trace_id, int64_t span_id, std::string_view url_template,
                              std::vector<std::unique_ptr<Exception>>&& exceptions) const override;
+        void recordException(const TraceId& trace_id, int64_t span_id,
+                             std::string_view url_template,
+                             std::vector<std::unique_ptr<Exception>>&& exceptions,
+                             const Config& config) const override;
         void recordStats(StatsType stats) const override;
 
         int32_t cacheApi(std::string_view api_str, int32_t api_type) const override;
