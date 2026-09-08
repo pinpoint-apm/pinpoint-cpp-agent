@@ -300,6 +300,8 @@ namespace pinpoint {
         /// layers cache the agent snapshot and compare this against
         /// Span::GetConfigRevision() to refresh only when a reload happened.
         int64_t revision = 0;
+        /// Resolved user proxy header names for this config generation.
+        std::vector<std::string> http_server_proxy_user_header_names;
     };
 
     /**
