@@ -310,7 +310,7 @@ namespace pinpoint {
         }
     }
 
-    std::string HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
+    std::string_view HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
         // Canonical mixed-case lookups, here and in setProxyHeader/
         // recordHeader below: correct only under the Get contract in
         // pinpoint/tracer.h, which requires HTTP-backed readers to match
@@ -319,7 +319,7 @@ namespace pinpoint {
         if (auto xff = reader.Get("X-Forwarded-For"); xff.has_value()) {
             auto ip = extractFirstIp(xff.value());
             if (!ip.empty()) {
-                return std::string(ip);
+                return ip;
             }
         }
 
@@ -327,22 +327,22 @@ namespace pinpoint {
         if (auto xri = reader.Get("X-Real-Ip"); xri.has_value()) {
             auto ip = extractFirstIp(xri.value());
             if (!ip.empty()) {
-                return std::string(ip);
+                return ip;
             }
         }
 
         // No proxy headers, extract IP from RemoteAddr (may include port).
-        // Parse on the view and materialize the result string exactly once —
-        // this is the common direct-connection path, and the previous code
-        // copied remote_addr into a std::string and then substr()'d it, up to
-        // two heap allocations where one suffices.
+        // Every result is a substring of the header value or of remote_addr,
+        // so a view is returned and the single copy is the span's
+        // SetRemoteAddress — this runs for every server request, including
+        // the unsampled majority, where it used to be the only allocation.
 
         // Handle IPv6 addresses enclosed in brackets [::]:port
         if (!remote_addr.empty() && remote_addr[0] == '[') {
             auto bracket_end = remote_addr.find(']');
             if (bracket_end != std::string_view::npos) {
                 // Extract IPv6 address with brackets
-                return std::string(remote_addr.substr(0, bracket_end + 1));
+                return remote_addr.substr(0, bracket_end + 1);
             }
         }
 
@@ -353,13 +353,13 @@ namespace pinpoint {
             auto first_colon = remote_addr.find(':');
             if (first_colon != colon_pos) {
                 // Multiple colons, likely IPv6 without brackets - return as is
-                return std::string(remote_addr);
+                return remote_addr;
             }
             // Single colon, extract host part (IPv4:port)
-            return std::string(remote_addr.substr(0, colon_pos));
+            return remote_addr.substr(0, colon_pos);
         }
 
-        return std::string(remote_addr);
+        return remote_addr;
     }
 
     namespace {
@@ -691,15 +691,22 @@ namespace pinpoint {
             // the cookie overload copying a second time to forward.
             void traceServerRequest(const SpanPtr& span, std::string_view remote_addr,
                                     std::string_view endpoint, HeaderReader& request_reader) {
-                std::string r_addr = HttpTracerUtil::getRemoteAddr(request_reader, remote_addr);
-                span->SetRemoteAddress(r_addr);
+                // View into the reader or remote_addr; consumed before the
+                // next Get() on request_reader (see getRemoteAddr).
+                span->SetRemoteAddress(HttpTracerUtil::getRemoteAddr(request_reader, remote_addr));
                 span->SetEndPoint(endpoint);
 
                 // The proxy-header annotation uses an internal-only payload
                 // format, so it is recorded straight into the recording
                 // span's annotation container; noop/unsampled spans have
                 // none and record nothing, as before.
-                if (auto* impl = dynamic_cast<SpanImpl*>(span.get())) {
+                // IsSampled() is true for SpanImpl and nothing else (noop and
+                // unsampled spans return false), so it stands in for the
+                // dynamic_cast this used to do per request — an RTTI walk
+                // that can degrade to a name strcmp across a shared-library
+                // boundary.
+                if (span->IsSampled()) {
+                    auto* impl = static_cast<SpanImpl*>(span.get());
                     // Java ServerRequestRecorder.recordParentInfo records
                     // Pinpoint-Host as the acceptor host and falls back to
                     // requestAdaptor.getAcceptorHost() when the peer sent

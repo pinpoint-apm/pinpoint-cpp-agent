@@ -136,7 +136,7 @@ namespace pinpoint {
         file_enabled_ = false;
     }
 
-    void Logger::write(LogLevel level, std::string_view file, int line, const std::string& message) {
+    void Logger::write(LogLevel level, std::string_view file, int line, std::string_view message) {
         const char* level_str = level == LogLevel::kDebug ? LOG_LEVEL_DEBUG :
                                 level == LogLevel::kInfo ? LOG_LEVEL_INFO :
                                 level == LogLevel::kWarn ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR;

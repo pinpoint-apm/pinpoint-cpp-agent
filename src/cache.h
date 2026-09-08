@@ -281,10 +281,17 @@ namespace pinpoint {
         // max_size is clamped to >= 1: with a capacity of 0 the eviction in
         // insert_or_promote() would erase the just-inserted front node and
         // then return a reference into the freed list node — use-after-free.
-        explicit LruCacheImpl(size_t max_size, CacheExpiry expiry = {})
+        // `invalidations`, when given, is bumped (relaxed) every time an entry
+        // leaves this cache — LRU eviction or remove() — so a reader holding
+        // values outside the cache (AgentImpl::cacheApi's per-thread front
+        // cache) can tell that anything it cached may now be stale. Written
+        // only on those rare paths, never on a hit.
+        explicit LruCacheImpl(size_t max_size, CacheExpiry expiry = {},
+                              std::atomic<uint64_t>* invalidations = nullptr)
             : max_size_(max_size > 0 ? max_size : 1),
               promote_age_threshold_(max_size_ / 2 > 0 ? max_size_ / 2 : 1),
-              expiry_(std::move(expiry)) {
+              expiry_(std::move(expiry)),
+              invalidations_(invalidations) {
             // Reserve buckets up front so the map never rehashes while warming
             // up to capacity. +1 covers the transient over-capacity entry that
             // exists between insertion and eviction inside insert_or_promote().
@@ -402,6 +409,7 @@ namespace pinpoint {
             if (it != cache_map_.end() && it->second->value == expected) {
                 removed.splice(removed.begin(), cache_list_, it->second);
                 cache_map_.erase(it);
+                note_invalidation();
             }
         }
 
@@ -464,8 +472,15 @@ namespace pinpoint {
                 const auto victim = std::prev(cache_list_.end());
                 cache_map_.erase(KeyTraits::map_key(victim->key));
                 staged.splice(staged.end(), cache_list_, victim);
+                note_invalidation();
             }
             return LruCacheResult<ValueType>{list_it->value, false};
+        }
+
+        void note_invalidation() noexcept {
+            if (invalidations_ != nullptr) {
+                invalidations_->fetch_add(1, std::memory_order_release);
+            }
         }
 
         uint64_t next_op_seq() noexcept {
@@ -499,6 +514,7 @@ namespace pinpoint {
         // Counts inserts and promotions; entry age is measured against it.
         std::atomic<uint64_t> op_seq_{0};
         const CacheExpiry expiry_{};
+        std::atomic<uint64_t>* invalidations_{nullptr};
         mutable std::shared_mutex mutex_{};
     };
 
@@ -558,7 +574,7 @@ namespace pinpoint {
             shards_.reserve(actual_shards);
             for (size_t i = 0; i < actual_shards; ++i) {
                 const size_t capacity = base_size + (i < remainder ? 1 : 0);
-                shards_.emplace_back(std::make_unique<Shard>(capacity, expiry));
+                shards_.emplace_back(std::make_unique<Shard>(capacity, expiry, &invalidations_));
             }
         }
         ~ShardedLruCache() = default;
@@ -601,14 +617,24 @@ namespace pinpoint {
             return shards_.size();
         }
 
+        /// @brief Count of entries that have left any shard (eviction or
+        /// remove), summed across shards. Monotonic; a change means a value
+        /// read earlier may no longer be in the cache.
+        uint64_t invalidations() const noexcept {
+            return invalidations_.load(std::memory_order_acquire);
+        }
+
     private:
         using ShardCache = LruCacheImpl<ValueType, typename ShardTraits::InnerTraits>;
+        // One counter for all shards: written only on eviction/remove, read
+        // per lookup by front caches, so a single line is the cheaper shape.
+        std::atomic<uint64_t> invalidations_{0};
 
         // Shards live behind unique_ptr: LruCacheImpl is immovable (it owns a
         // shared_mutex), so the vector could not hold it by value.
         struct Shard {
-            Shard(size_t capacity, const CacheExpiry& expiry)
-                : cache(capacity, expiry) {}
+            Shard(size_t capacity, const CacheExpiry& expiry, std::atomic<uint64_t>* invalidations)
+                : cache(capacity, expiry, invalidations) {}
             ShardCache cache;
         };
 
@@ -724,6 +750,11 @@ namespace pinpoint {
 
         size_t shardCount() const noexcept {
             return cache_.shardCount();
+        }
+
+        /// @brief See ShardedLruCache::invalidations().
+        uint64_t invalidations() const noexcept {
+            return cache_.invalidations();
         }
 
     private:

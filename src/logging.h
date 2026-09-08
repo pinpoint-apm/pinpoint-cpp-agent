@@ -173,11 +173,16 @@ namespace pinpoint {
                 return;
             }
             try {
-                std::string message;
+                // Inline storage for typical lines: the previous std::string
+                // heap-allocated once per emitted line before write() copied
+                // it into the line buffer.
+                fmt::memory_buffer message;
                 try {
-                    message = fmt::vformat(format, fmt::make_format_args(args...));
+                    fmt::vformat_to(std::back_inserter(message), format,
+                                    fmt::make_format_args(args...));
                 } catch (const std::exception& e) {
-                    message = fmt::format("log format error: {}", e.what());
+                    message.clear();
+                    fmt::format_to(std::back_inserter(message), "log format error: {}", e.what());
                 }
                 if (occurrences > 1) {
                     // Duplicates a LOG_*_THROTTLED site suppressed since its
@@ -185,7 +190,7 @@ namespace pinpoint {
                     fmt::format_to(std::back_inserter(message),
                                    " [{} occurrences since last report]", occurrences);
                 }
-                write(level, file, line, message);
+                write(level, file, line, std::string_view{message.data(), message.size()});
             } catch (...) {
                 // Drop the message: logging failure must stay invisible to
                 // the host application.
@@ -196,7 +201,7 @@ namespace pinpoint {
             return static_cast<int>(level) >= current_level_.load(std::memory_order_relaxed);
         }
 
-        void write(LogLevel level, std::string_view file, int line, const std::string& message);
+        void write(LogLevel level, std::string_view file, int line, std::string_view message);
         bool openFileLocked();
         void rotateFileIfNeededLocked();
 

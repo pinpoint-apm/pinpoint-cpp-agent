@@ -961,9 +961,10 @@ namespace pinpoint {
             // — drop to a noop span rather than record a trace with no agent
             // id. A failed *parse* never reaches this point: it is not a
             // continued trace, so the request starts a new one.
-            TraceId trace_id = inbound.continued ? std::move(inbound.trace_id)
-                                                 : generateTraceId();
-            if (trace_id.empty()) {
+            if (!inbound.continued) {
+                inbound.trace_id = generateTraceId();
+            }
+            if (inbound.trace_id.empty()) {
                 return noopSpan();
             }
             // Pass this runtime snapshot so the span skips further atomic
@@ -971,7 +972,7 @@ namespace pinpoint {
             // lives on the same config generation its admission was decided
             // under, and hand the resolved trace id to the impl-level extract.
             auto span = std::make_shared<SpanImpl>(this, operation, rpc_point, std::move(runtime));
-            span->extractContext(reader, std::move(trace_id), inbound.continued);
+            span->extractContext(reader, std::move(inbound));
             return span;
         }
         return std::make_shared<UnsampledSpan>(this, std::move(runtime));
@@ -1215,19 +1216,62 @@ namespace pinpoint {
         }
     }
 
+    namespace {
+        // Per-thread front cache in front of the sharded ApiIdCache. That
+        // cache's hit path is a shared_lock on the shard the key hashes to —
+        // two RMWs on the shard's lock word — and a hot operation name
+        // always hashes to the same shard, so with N request threads all
+        // serving the same endpoint that one cache line bounces between
+        // their cores once per span and once per named span event. A hit
+        // here does no shared write at all: the entry is validated by owner
+        // (agent instance), the shared cache's invalidation count (bumped on
+        // every eviction or remove, so an id that left the shared cache is
+        // never served from here — the collector must see the fresh id's
+        // metadata), hash, type and the key bytes. Direct-mapped: an application cycling through more
+        // distinct names than slots on one thread falls back to the shared
+        // cache and pays one extra hash per lookup.
+        struct ApiFrontCacheEntry {
+            uint64_t owner{0};
+            uint64_t generation{0};
+            size_t hash{0};
+            int32_t api_type{0};
+            int32_t id{0};
+            std::string api_str;
+        };
+        constexpr size_t kApiFrontCacheSlots = 32;
+        using ApiFrontCache = std::array<ApiFrontCacheEntry, kApiFrontCacheSlots>;
+
+        ApiFrontCache& api_front_cache() {
+            return thread_local_lazy<ApiFrontCache>([] { return new ApiFrontCache(); });
+        }
+    }
+
     int32_t AgentImpl::cacheApi(std::string_view api_str, int32_t api_type) const try {
         if (!enabled_) {
             return 0;
         }
 
-        const auto [id, found] = api_cache_->get(ApiCacheKey{api_str, api_type});
-        if (found) {
-            return id;
+        const auto hash = ApiCacheKeyHash{}(ApiCacheKey{api_str, api_type});
+        const auto generation = api_cache_->invalidations();
+        auto& entry = api_front_cache()[hash % kApiFrontCacheSlots];
+        if (entry.owner == api_cache_owner_ && entry.generation == generation &&
+            entry.hash == hash && entry.api_type == api_type && entry.api_str == api_str) {
+            return entry.id;
         }
 
-        auto meta = std::make_unique<MetaData>(ApiMeta(id, api_type, api_str));
-        grpc_metadata_->enqueueMeta(std::move(meta));
-
+        const auto [id, found] = api_cache_->get(ApiCacheKey{api_str, api_type});
+        if (!found) {
+            auto meta = std::make_unique<MetaData>(ApiMeta(id, api_type, api_str));
+            grpc_metadata_->enqueueMeta(std::move(meta));
+        }
+        if (id > 0) {
+            entry.owner = api_cache_owner_;
+            entry.generation = generation;
+            entry.hash = hash;
+            entry.api_type = api_type;
+            entry.id = id;
+            entry.api_str.assign(api_str.data(), api_str.size());
+        }
         return id;
     } CATCH_AND_LOG_RETURN("failed to cache api meta:", 0)
 

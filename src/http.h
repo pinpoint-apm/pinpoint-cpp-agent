@@ -144,7 +144,10 @@ namespace pinpoint {
     public:
         /// @brief Extracts the real remote address, checking X-Forwarded-For
         ///        and X-Real-Ip before falling back to @p remote_addr.
-        static std::string getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
+        /// @brief Returns a view into either a header value of @p reader (valid
+        /// until the next Get() on it) or @p remote_addr; consume it before
+        /// touching the reader again.
+        static std::string_view getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
 
         /**
          * @brief Parses the Pinpoint proxy headers and records the timing and

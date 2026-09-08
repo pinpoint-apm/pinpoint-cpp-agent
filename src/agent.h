@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -220,6 +221,10 @@ namespace pinpoint {
         std::string service_name_;
 
         std::unique_ptr<ApiIdCache> api_cache_{};
+        // Distinguishes this agent's front-cache entries from a previous
+        // agent's that happened to live at the same address.
+        inline static std::atomic<uint64_t> next_api_cache_owner_{1};
+        const uint64_t api_cache_owner_{next_api_cache_owner_.fetch_add(1, std::memory_order_relaxed)};
         std::unique_ptr<IdCache> error_cache_{};
         std::unique_ptr<IdCache> sql_cache_{};
         std::unique_ptr<SqlUidCache> sql_uid_cache_{};

@@ -2266,8 +2266,17 @@ namespace pinpoint {
     // Heap-resident state for a single async SendSpanBatch call. Lives as
     // long as the callback's shared_ptr keeps it alive.
     struct PendingSpanBatch {
+        // A 20-span batch is tens of KB of arena (messages, arena-resident
+        // strings, cleanup nodes); from protobuf's 256 B default start block
+        // the arena doubles through ~8 mallocs per batch before it reaches
+        // steady state. Start at 64 KB so a typical batch fits in one block.
+        static google::protobuf::ArenaOptions arena_options() {
+            google::protobuf::ArenaOptions options;
+            options.start_block_size = 64 * 1024;
+            return options;
+        }
         grpc::ClientContext ctx;
-        google::protobuf::Arena arena;
+        google::protobuf::Arena arena{arena_options()};
         v1::PSpanMessageBatch* request{nullptr};
         v1::PSpanResultBatch reply;
         // Pins the channel (and stub) this batch was launched on until the

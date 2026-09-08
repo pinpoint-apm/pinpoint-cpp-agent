@@ -523,7 +523,18 @@ namespace pinpoint {
                 // But 'agent_stats_snapshots_' is protected by 'mutex_'.
 
                 if (static_cast<size_t>(batch_) < agent_stats_snapshots_.size()) {
-                    collectAgentStat(agent_stats_snapshots_[batch_]);
+                    // Collect into a local, not into the slot under mutex_:
+                    // collectAgentStat reads /proc (the fd walk alone is
+                    // ~1.6 ms at 10k fds), and takeSnapshots() — the stats
+                    // sender — blocks on mutex_ for the whole time otherwise.
+                    // The collector's own state (last_collect_time_, the
+                    // per-thread shards) belongs to this worker thread and
+                    // needs no lock.
+                    lock.unlock();
+                    AgentStatsSnapshot collected;
+                    collectAgentStat(collected);
+                    lock.lock();
+                    agent_stats_snapshots_[batch_] = std::move(collected);
                     batch_++;
                 }
 

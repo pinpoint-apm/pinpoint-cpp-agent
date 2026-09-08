@@ -52,6 +52,15 @@ namespace pinpoint {
         TraceId trace_id;
         /// Whether the inbound headers describe a hop a span can attach to.
         bool continued{false};
+        /// `Pinpoint-SpanID` / `Pinpoint-pSpanID`, parsed while their presence
+        /// is checked so extractContext() does not fetch the same two headers
+        /// a second time (a host reader's Get() is typically a linear scan of
+        /// the header list). Meaningful only when `continued`; nullopt means
+        /// the header was present but did not parse — a new span id is minted
+        /// for the first, the parent keeps its "no parent" default for the
+        /// second.
+        std::optional<int64_t> span_id;
+        std::optional<int64_t> parent_span_id;
     };
 
     /**
@@ -393,6 +402,8 @@ namespace pinpoint {
         // a 512-byte block in every span's constructor even when no event is
         // ever recorded, while a vector allocates nothing. Nesting depth is
         // capped by span.max_event_depth, so regrowth is rare.
+        static constexpr size_t kInitialEventStackCapacity = 8;
+        static constexpr size_t kInitialFinishedEventsCapacity = 16;
         std::vector<std::unique_ptr<SpanEventImpl>> event_stack_;
         // Kept sequence-ordered as events finish so chunks do not need to sort.
         // Not mutex-guarded: a span is single-threaded (see the Span
@@ -532,7 +543,10 @@ namespace pinpoint {
          *                 this trace. Mirrors Java's `if (!recorder.isRoot())`
          *                 gate in ServerRequestRecorder.
          */
-        void extractContext(TraceContextReader& reader, TraceId trace_id, bool continued);
+        /// @param inbound readInboundTrace()'s verdict, with trace_id already
+        ///        resolved by the caller (parsed when continued, generated
+        ///        otherwise; never empty).
+        void extractContext(TraceContextReader& reader, InboundTrace inbound);
         /**
          * @brief Injects this span's context into an outbound carrier.
          *

@@ -178,7 +178,7 @@ namespace pinpoint {
         // destroyed the payload heap is gone entirely, so no post-finish path
         // may touch those fields — the guard is load-bearing for memory
         // safety, not just race avoidance.
-        if (finished_) {
+        if (finished_.load(std::memory_order_relaxed)) {
             LOG_WARN_THROTTLED("span event is already finished");
             return true;
         }
@@ -211,7 +211,9 @@ namespace pinpoint {
         // Atomic exchange so only the first end proceeds: ending an event
         // twice would pop a DIFFERENT (still-active) event from the span's
         // stack and desync the whole call tree.
-        if (finished_.exchange(true)) {
+        // Relaxed, as SpanImpl::EndSpan: the guard is idempotency, and the
+        // handoff to the gRPC worker is ordered by the queue's shard mutex.
+        if (finished_.exchange(true, std::memory_order_relaxed)) {
             LOG_WARN_THROTTLED("span event is already finished");
             return;
         }
@@ -236,7 +238,7 @@ namespace pinpoint {
     void SpanEventImpl::finish() {
         // Ended through an internal path (event-stack pop): mark it so a
         // later user-level EndEvent on this event is rejected by the guard.
-        finished_.store(true);
+        finished_.store(true, std::memory_order_relaxed);
         // Seal the annotation list too: an internal append path that bypasses
         // the finished_ guard above must become a no-op, since the list may
         // be under serialization on the gRPC worker once this event reaches

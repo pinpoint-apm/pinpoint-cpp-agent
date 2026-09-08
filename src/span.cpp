@@ -46,6 +46,11 @@ namespace pinpoint {
         se->setDepth(depth);
  
         auto* event = se.get();
+        // First event: reserve once instead of growing 1 -> 2 -> 4 -> 8. A
+        // span with no event still allocates nothing (see the member note).
+        if (event_stack_.capacity() == 0) {
+            event_stack_.reserve(kInitialEventStackCapacity);
+        }
         event_stack_.push_back(std::move(se));
         return event;
     }
@@ -82,6 +87,11 @@ namespace pinpoint {
 
     void SpanData::storeFinishedEvent(std::unique_ptr<SpanEventImpl> se) try {
         const auto sequence = se->getSequence();
+        if (finished_events.capacity() == 0) {
+            // Same first-push reserve as event_stack_; the list fills to
+            // span.event_chunk_size (default 20) before a chunk drains it.
+            finished_events.reserve(kInitialFinishedEventsCapacity);
+        }
         if (finished_events.empty() || finished_events.back()->getSequence() < sequence) {
             finished_events.emplace_back(std::move(se));
             return;
@@ -222,7 +232,7 @@ namespace pinpoint {
     // is getting wrong — just once, instead of once per request.
     #define CHECK_FINISHED_WITH_RETURN(retval) \
         do { \
-            if (finished_) { \
+            if (finished_.load(std::memory_order_relaxed)) { \
                 LOG_WARN_THROTTLED("span is already finished"); \
                 return retval; \
             } \
@@ -457,7 +467,12 @@ namespace pinpoint {
         // Atomic exchange so only the first caller proceeds: a check-then-set
         // would let two concurrent EndSpan calls both pass the guard and run
         // record_chunk / dropActiveSpan / collectResponseTime twice.
-        if (finished_.exchange(true)) {
+        // Relaxed: an idempotency guard on a single-threaded object, not a
+        // synchronization point. The cross-thread handoff of the span's data
+        // to the gRPC worker is ordered by the span queue's shard mutex, so a
+        // full barrier here (dmb ish on arm64, locked xchg on x86) per
+        // EndSpan bought nothing.
+        if (finished_.exchange(true, std::memory_order_relaxed)) {
             LOG_WARN_THROTTLED("span is already finished");
             return;
         }
@@ -582,22 +597,40 @@ namespace pinpoint {
         // parse is a broken id on a hop that does exist, which is not the same
         // as a hop that was never described (see extractContext below and
         // doc/java_parity.md).
-        if (!reader.Get(HEADER_SPAN_ID).has_value() ||
-            !reader.Get(HEADER_PARENT_SPAN_ID).has_value()) {
+        const auto span_id = reader.Get(HEADER_SPAN_ID);
+        if (!span_id.has_value()) {
             return {};
         }
-        return {std::move(trace_id), true};
+        // Parsed now, while the view is valid, rather than fetched again by
+        // extractContext(). A malformed value used to leave the span id at
+        // its 0 default, which the collector cannot tell from a real id —
+        // every such request collapsed onto the same node. Treat it as no id
+        // at all (extractContext mints one). Throttled: the value is
+        // peer-controlled, so an unthrottled line per request would serialize
+        // request threads on the logger.
+        InboundTrace inbound{std::move(trace_id), true};
+        inbound.span_id = stoll_(span_id.value());
+        if (!inbound.span_id) {
+            LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
+                               HEADER_SPAN_ID, span_id.value());
+        }
+        const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID);
+        if (!parent_span_id.has_value()) {
+            return {};
+        }
+        inbound.parent_span_id = stoll_(parent_span_id.value());
+        return inbound;
     }
 
-    void SpanImpl::extractContext(TraceContextReader& reader, TraceId trace_id, bool continued) {
+    void SpanImpl::extractContext(TraceContextReader& reader, InboundTrace inbound) {
         CHECK_FINISHED();
 
         // The trace id is resolved by NewSpan (parsed or generated) before this
         // call; an empty/failed one never reaches here — NewSpan hands back a
         // noop span in that case.
-        data_->setTraceId(std::move(trace_id));
+        data_->setTraceId(std::move(inbound.trace_id));
 
-        if (!continued) {
+        if (!inbound.continued) {
             // A brand new root trace: nothing upstream belongs to it, so no
             // inbound header is read. Adopting a peer's span/parent id here
             // would record a root span pointing at a parent that does not
@@ -606,29 +639,11 @@ namespace pinpoint {
             // span id keeps its -1 default, i.e. "no parent".
             data_->setSpanId(generate_span_id());
         } else {
-            // continued is readInboundTrace()'s verdict, and it only reports a
-            // continued trace when HEADER_SPAN_ID is present — so value_or here
-            // is not an absent-header case but a total default that keeps an
-            // impossible miss on the malformed path below.
-            const auto span_id = reader.Get(HEADER_SPAN_ID).value_or("");
-            if (const auto result = stoll_(span_id); result.has_value()) {
-                data_->setSpanId(result.value());
-            } else {
-                // A malformed header used to leave the span id at its 0 default,
-                // which the collector cannot tell from a real id — every such
-                // request collapsed onto the same node. Treat it as no id at all.
-                // Throttled: the value is peer-controlled, so an unthrottled line
-                // per request would serialize request threads on the logger.
-                LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
-                                   HEADER_SPAN_ID, span_id);
-                data_->setSpanId(generate_span_id());
-            }
-
-            if (const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID); parent_span_id.has_value()) {
-                auto result = stoll_(parent_span_id.value());
-                if (result.has_value()) {
-                    data_->setParentSpanId(result.value());
-                }
+            // Both ids were parsed by readInboundTrace() from the same Get()
+            // that established their presence (see InboundTrace).
+            data_->setSpanId(inbound.span_id ? *inbound.span_id : generate_span_id());
+            if (inbound.parent_span_id) {
+                data_->setParentSpanId(*inbound.parent_span_id);
             }
 
             if (const auto parent_app_name = reader.Get(HEADER_PARENT_APP_NAME); parent_app_name.has_value()) {

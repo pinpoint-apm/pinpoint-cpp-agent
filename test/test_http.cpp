@@ -735,7 +735,7 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForSingleTest) {
     };
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from X-Forwarded-For";
 }
 
@@ -746,7 +746,7 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForMultipleTest) {
     };
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from comma-separated list";
 }
 
@@ -757,7 +757,7 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForWithSpacesTest) {
     };
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "203.0.113.45") << "Should trim whitespace from IP";
 }
 
@@ -768,7 +768,7 @@ TEST_F(HttpTest, GetRemoteAddrXRealIpTest) {
     };
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract IP from X-Real-Ip";
 }
 
@@ -780,7 +780,7 @@ TEST_F(HttpTest, GetRemoteAddrBothHeadersTest) {
     };
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "203.0.113.45") << "X-Forwarded-For should take priority";
 }
 
@@ -789,7 +789,7 @@ TEST_F(HttpTest, GetRemoteAddrNoProxyWithPortTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
     EXPECT_EQ(addr, "192.168.1.100") << "Should extract host from host:port";
 }
 
@@ -798,7 +798,7 @@ TEST_F(HttpTest, GetRemoteAddrNoProxyWithoutPortTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100");
     EXPECT_EQ(addr, "192.168.1.100") << "Should return address as is";
 }
 
@@ -806,7 +806,7 @@ TEST_F(HttpTest, GetRemoteAddrIPv6Test) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
     
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "[2001:db8::1]:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "[2001:db8::1]:8080");
     EXPECT_EQ(addr, "[2001:db8::1]") << "Should handle IPv6 addresses";
 }
 
@@ -1087,7 +1087,7 @@ TEST_F(HttpTest, GetRemoteAddrEmptyAddressTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
 
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "");
     EXPECT_EQ(addr, "") << "Empty remote_addr should return empty string";
 }
 
@@ -1096,7 +1096,7 @@ TEST_F(HttpTest, GetRemoteAddrIPv6NoBracketsTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
 
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "2001:db8::1");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "2001:db8::1");
     EXPECT_EQ(addr, "2001:db8::1") << "IPv6 without brackets should be returned as-is";
 }
 
@@ -1108,7 +1108,7 @@ TEST_F(HttpTest, GetRemoteAddrEmptyXFFWithXRealIpTest) {
     };
     MockHeaderReader reader(headers);
 
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.1:8080");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.1:8080");
     EXPECT_EQ(addr, "10.0.0.1") << "Empty XFF should fall back to X-Real-Ip";
 }
 
@@ -1120,7 +1120,7 @@ TEST_F(HttpTest, GetRemoteAddrEmptyBothProxyHeadersTest) {
     };
     MockHeaderReader reader(headers);
 
-    std::string addr = HttpTracerUtil::getRemoteAddr(reader, "10.1.2.3:9090");
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "10.1.2.3:9090");
     EXPECT_EQ(addr, "10.1.2.3") << "Empty proxy headers should fall back to remote_addr";
 }
 

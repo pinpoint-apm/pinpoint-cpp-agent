@@ -70,9 +70,10 @@ protected:
 // here instead would let this suite pass on a decision production never makes.
 static void extract_context(SpanImpl& span, AgentService& agent, TraceContextReader& reader) {
     auto inbound = readInboundTrace(reader);
-    span.extractContext(reader,
-                        inbound.continued ? std::move(inbound.trace_id) : agent.generateTraceId(),
-                        inbound.continued);
+    if (!inbound.continued) {
+        inbound.trace_id = agent.generateTraceId();
+    }
+    span.extractContext(reader, std::move(inbound));
 }
 
 // ========== SpanData Tests ==========

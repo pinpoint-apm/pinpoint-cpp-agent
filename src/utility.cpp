@@ -58,7 +58,15 @@ namespace pinpoint {
     }
 
     int64_t generate_next_span_id(const int64_t span_id, const int64_t parent_span_id) {
-        return generate_next_span_id(span_id, parent_span_id, random_span_id);
+        // Not routed through the std::function overload: that would build a
+        // std::function around random_span_id on every span creation and
+        // InjectContext. The injectable overload above exists for tests.
+        while (true) {
+            const auto id = random_span_id();
+            if (id != kNullSpanId && id != span_id && id != parent_span_id) {
+                return id;
+            }
+        }
     }
 
     int64_t generate_span_id() {
