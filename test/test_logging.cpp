@@ -25,6 +25,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <chrono>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -792,6 +794,73 @@ TEST_F(LoggingTest, ClearingTheSinkRestoresTheFile) {
     auto content = read_file(log_file_.string());
     EXPECT_EQ(content.find("to the sink"), std::string::npos);
     EXPECT_NE(content.find("back to the file"), std::string::npos);
+}
+
+// The sink runs without the logger mutex held, so a sink that logs back into
+// the agent (any pt_*/pinpoint call can) no longer self-deadlocks; the line it
+// would log from inside itself is dropped rather than delivered recursively.
+TEST_F(LoggingTest, SinkMayReenterTheLoggerWithoutDeadlock) {
+    std::atomic<int> calls{0};
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        calls.fetch_add(1);
+        if (std::string_view(message).find("outer") != std::string_view::npos) {
+            Logger::getInstance().logWarn("test.cpp", 2, "inner, logged from the sink");
+        }
+    });
+
+    Logger::getInstance().logWarn("test.cpp", 1, "outer");
+    EXPECT_EQ(calls.load(), 1) << "the reentrant line is dropped, not delivered";
+
+    Logger::getInstance().logWarn("test.cpp", 3, "after");
+    EXPECT_EQ(calls.load(), 2) << "the drop is scoped to the sink call, not sticky";
+    Logger::getInstance().shutdown();
+}
+
+// A sink is allowed to shut the logger down from inside itself: the drain
+// that waits for in-flight sink calls must not wait for the calling thread.
+TEST_F(LoggingTest, SinkMayCallShutdownFromInside) {
+    std::atomic<int> calls{0};
+    Logger::getInstance().setSink([&](const char*, const char*) {
+        calls.fetch_add(1);
+        Logger::getInstance().shutdown();
+    });
+    Logger::getInstance().logWarn("test.cpp", 1, "triggers shutdown");
+    Logger::getInstance().logWarn("test.cpp", 2, "after shutdown");
+    EXPECT_EQ(calls.load(), 1);
+}
+
+// Once shutdown()/setSink({}) returns, no call into the old sink is in flight
+// on any thread — the host may free the sink's state right after.
+TEST_F(LoggingTest, ClearingTheSinkWaitsForInFlightCalls) {
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+    std::atomic<bool> finished{false};
+    Logger::getInstance().setSink([&](const char*, const char*) {
+        entered.store(true);
+        while (!release.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        finished.store(true);
+    });
+
+    std::thread logger([] { Logger::getInstance().logWarn("test.cpp", 1, "slow sink"); });
+    while (!entered.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    std::atomic<bool> cleared{false};
+    std::thread clearer([&] {
+        Logger::getInstance().setSink({});
+        cleared.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(cleared.load()) << "setSink({}) must block while a sink call is in flight";
+
+    release.store(true);
+    clearer.join();
+    logger.join();
+    EXPECT_TRUE(finished.load());
+    EXPECT_TRUE(cleared.load());
 }
 
 // ========== Log.MaxBackups Tests ==========

@@ -164,8 +164,9 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 > `pt_agent_options_set_log_sink()` (C) before starting the agent. A sink
 > replaces the built-in sinks, so lines are not duplicated, and the settings
 > above then apply to nothing. Read the callback contract in the header first:
-> the sink runs under the agent's logger mutex, must not call back into the
-> agent, and must not block.
+> the sink must not block and must be thread-safe; a line the agent would log
+> from inside the sink is dropped, and once shutdown returns no call into the
+> sink is still in flight.
 
 > **Multi-process hosts:** the built-in size rotation is not safe when several
 > worker processes share one log file — use the `%pid%` placeholder to give

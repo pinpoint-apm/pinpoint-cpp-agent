@@ -410,8 +410,12 @@ void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type)
  * call; copy anything the sink keeps.
  *
  * Contract:
- * - NOT reentrant: the sink runs while the agent holds its logger mutex, so
- *   calling any pt_* function from it deadlocks the calling thread.
+ * - Reentrancy is tolerated: the sink runs without the agent's logger mutex
+ *   held, so a pt_* call from inside it does not deadlock; any line the agent
+ *   would log from inside the sink on that thread is dropped.
+ * - Cleared synchronously: once pt_agent_shutdown() (or a failed
+ *   pt_start_agent()) returns, no call into the sink is in flight on any
+ *   thread, so userdata may be freed.
  * - Must not block: it runs inline on whichever thread logged, including host
  *   request threads and the agent's gRPC workers.
  * - Must be thread-safe: several threads call it concurrently.

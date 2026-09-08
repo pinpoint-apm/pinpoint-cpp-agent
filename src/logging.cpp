@@ -100,24 +100,52 @@ namespace pinpoint {
         return true;
     }
 
+    namespace {
+        // Set while this thread is inside the host sink. A line logged from
+        // there is dropped: the sink is already running for this thread, and
+        // re-locking sink_gate_ (shared, recursively) on the same thread is
+        // UB with std::shared_mutex.
+        thread_local bool in_sink_call = false;
+    }
+
     void Logger::setSink(LogSink sink) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        sink_ = std::move(sink);
-        // Release: publishes sink_ to the acquire-load in write(), which reads
-        // it before taking mutex_.
-        sink_enabled_.store(static_cast<bool>(sink_), std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            sink_ = sink ? std::make_shared<const LogSink>(std::move(sink)) : nullptr;
+            // Release: publishes sink_ to the acquire-load in write(), which
+            // reads it before taking mutex_.
+            sink_enabled_.store(static_cast<bool>(sink_), std::memory_order_release);
+        }
+        drain_sink_calls();
+    }
+
+    void Logger::drain_sink_calls() noexcept {
+        if (in_sink_call) {
+            return;
+        }
+        try {
+            // Exclusive: returns once every write() that copied the previous
+            // sink_ has finished calling it.
+            std::unique_lock<std::shared_mutex> gate(sink_gate_);
+        } catch (...) {
+        }
     }
 
     void Logger::shutdown() {
-        std::lock_guard<std::mutex> lock(mutex_);
-
         // Drop the host sink first. Unlike the file, it is not ours to keep
         // using: Shutdown() is where the host stops guaranteeing its logger is
         // alive, and a straggler calling into a torn-down callback is a
         // use-after-free in the host, not a lost log line. Stragglers fall
-        // back to the file rules below.
-        sink_enabled_.store(false, std::memory_order_release);
-        sink_ = nullptr;
+        // back to the file rules below. The drain makes "dropped" mean no
+        // call is still in flight when this returns.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            sink_enabled_.store(false, std::memory_order_release);
+            sink_ = nullptr;
+        }
+        drain_sink_calls();
+
+        std::lock_guard<std::mutex> lock(mutex_);
 
         if (file_stream_ && file_stream_->is_open()) {
             file_stream_->flush();
@@ -146,17 +174,32 @@ namespace pinpoint {
         // own. Checked ahead of the timestamp and line assembly below so that
         // work is skipped entirely for hosts that took the log over.
         if (sink_enabled_.load(std::memory_order_acquire)) {
+            if (in_sink_call) {
+                // Logged from inside the host sink on this thread: dropped, not
+                // spilled to a file/stdout the host asked us to leave alone.
+                return;
+            }
             const auto payload = fmt::format("[pinpoint][{}:{}] {}", file, line, message);
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (sink_) {
+            // Shared gate first, then the pointer copy under mutex_, so a
+            // setSink()/shutdown() that swaps the pointer and then takes the
+            // gate exclusively cannot return while this call is in flight.
+            std::shared_lock<std::shared_mutex> gate(sink_gate_);
+            std::shared_ptr<const LogSink> sink;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                sink = sink_;
+            }
+            if (sink) {
+                in_sink_call = true;
                 try {
-                    sink_(level_str, payload.c_str());
+                    (*sink)(level_str, payload.c_str());
                 } catch (...) {
                     // A throwing host sink drops its line and nothing more. It
                     // must not take the process down, and must not spill the
                     // agent's diagnostics into a file or stdout the host asked
                     // us to leave alone.
                 }
+                in_sink_call = false;
                 return;
             }
             // Raced with setSink({}) / shutdown(): fall through to the file.

@@ -546,9 +546,12 @@ namespace pinpoint {
      * the call; copy anything the sink keeps.
      *
      * @warning Contract, enforced by nothing but this comment:
-     * - **Not reentrant.** The sink runs while the agent holds its logger
-     *   mutex. Calling any pinpoint API from it — anything that can log —
-     *   deadlocks the calling thread on that mutex.
+     * - **Reentrancy is tolerated, not useful.** The sink runs without the
+     *   agent's logger mutex held, so calling a pinpoint API from it does not
+     *   deadlock; any line the agent would log from inside the sink on that
+     *   thread is dropped. Calling Shutdown() from the sink is allowed.
+     * - **Cleared synchronously.** Once Shutdown() (or a failed StartAgent())
+     *   returns, no call into the sink is in flight on any thread.
      * - **Must not block.** It is called inline on whichever thread logged,
      *   including host request threads and the gRPC workers.
      * - Exceptions escaping it are swallowed and the line is dropped.

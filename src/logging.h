@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <mutex>
+#include <shared_mutex>
 #include <utility>
 #include <fmt/format.h>
 
@@ -105,6 +106,10 @@ namespace pinpoint {
          * point the host's logger may already be gone.
          */
         void setSink(LogSink sink);
+        /// @brief Waits for calls into a sink just replaced/cleared to return.
+        /// No-op on a thread that is itself inside the sink (a sink that
+        /// calls Shutdown() must not wait for itself).
+        void drain_sink_calls() noexcept;
         /// @brief Flushes pending log messages and releases file resources,
         /// and bans the std::cout fallback from there on (see `closed_`).
         /// Idempotent: the teardown paths call it more than once, and the
@@ -228,13 +233,21 @@ namespace pinpoint {
         // Cleared by setFileLogger().
         bool file_broken_{false};
         std::unique_ptr<std::ofstream> file_stream_;
-        // Guarded by mutex_, like the file sink it replaces — and so called
-        // with mutex_ held, which is what makes a sink that logs back into the
-        // agent a self-deadlock (documented at pinpoint::LogSink). Checked
-        // through sink_enabled_ so the no-sink path, which is every host that
-        // does not set one, keeps building its line before taking the lock.
-        LogSink sink_;
+        // The pointer is guarded by mutex_; the CALL is not made under it.
+        // write() copies the shared_ptr under mutex_ and invokes the sink
+        // holding only a shared lock on sink_gate_, so a sink that logs back
+        // into the agent (any pt_*/pinpoint call can) no longer re-locks the
+        // non-recursive mutex_ — that was UB, in practice a self-deadlock.
+        // setSink()/shutdown() swap the pointer and then take sink_gate_
+        // exclusively, so once they return no call into the old sink is in
+        // flight and the host may free its userdata. A reentrant line (logged
+        // from inside the sink, tracked per thread) is dropped rather than
+        // taking sink_gate_ again on the same thread. Checked through
+        // sink_enabled_ so the no-sink path, which is every host that does
+        // not set one, keeps building its line before taking any lock.
+        std::shared_ptr<const LogSink> sink_;
         std::atomic<bool> sink_enabled_{false};
+        mutable std::shared_mutex sink_gate_;
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};
 
