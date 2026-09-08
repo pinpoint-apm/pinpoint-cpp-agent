@@ -102,24 +102,20 @@ namespace pinpoint {
         void incrSkipCont() { responseTimeShard().skip_cont_.fetch_add(1, std::memory_order_relaxed); }
 
         /**
-         * @brief Returns a copy of the last completed collection cycle.
+         * @brief Takes the pending completed cycle, or an empty batch.
          *
-         * The worker fills agent_stats_snapshots_ in place and copies it into
-         * completed_batch_ when a cycle ends, right before it enqueues the
-         * AGENT_STATS token. The token carries no payload: the gRPC stats
-         * stream reads this whenever it gets to the token, so the payload is
-         * the finished cycle no matter how late that is. (Handing out the
-         * working vector meant a stream stalled longer than one collect
-         * interval sent slots the next cycle had already overwritten — mixed
-         * timestamps, then the same slots again on the next token.) Only a
-         * stall longer than a whole cycle loses data: the next completion
-         * replaces an unsent batch (reported, see stat_batch_drop_reporter_)
-         * and the pending token sends the newer one.
+         * The worker publishes a cycle before enqueueing its AGENT_STATS
+         * token. An older token can consume the new cycle during that gap;
+         * draining here prevents the new token from sending it a second time.
+         * Working slots remain separate, so collection cannot change a pending
+         * cycle. A later completed cycle overwrites an unsent one, reporting
+         * the drop through stat_batch_drop_reporter_.
          */
-        std::vector<AgentStatsSnapshot> copySnapshots() {
+        std::vector<AgentStatsSnapshot> takeSnapshots() {
             std::lock_guard<std::mutex> lock(mutex_);
-            completed_batch_sent_ = true;
-            return completed_batch_;
+            std::vector<AgentStatsSnapshot> taken;
+            taken.swap(completed_batch_);
+            return taken;
         }
 
         void initAgentStats();
@@ -237,12 +233,8 @@ namespace pinpoint {
         pid_t owner_pid_{0};
 
         std::vector<AgentStatsSnapshot> agent_stats_snapshots_;
-        // Last completed cycle; see copySnapshots().
+        // Last completed cycle; see takeSnapshots().
         std::vector<AgentStatsSnapshot> completed_batch_;
-        // False from the moment a cycle is published until copySnapshots()
-        // hands it to the stats stream. A completion arriving while it is
-        // false overwrites a batch nobody ever sent.
-        bool completed_batch_sent_{true};
         // Rate-limited overflow reporting (see QueueDropReporter), matching
         // the span/metadata/url_stat queues.
         QueueDropReporter stat_batch_drop_reporter_{};

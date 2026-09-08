@@ -216,13 +216,17 @@ namespace pinpoint {
     // plotted as a real measurement.
     static int64_t get_open_fd_count() {
 #ifdef __APPLE__
-        // A NULL buffer asks only for the size the list would need, so this
-        // never allocates or copies the table.
+        // The sizing query includes spare capacity, not just open descriptors.
+        // Only the populated list's returned byte count is a measurement.
         const int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, nullptr, 0);
         if (bytes <= 0) {
             return -1;
         }
-        return bytes / static_cast<int64_t>(sizeof(struct proc_fdinfo));
+        std::vector<proc_fdinfo> descriptors(
+            static_cast<size_t>(bytes) / sizeof(proc_fdinfo));
+        const int used = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0,
+                                      descriptors.data(), bytes);
+        return used > 0 ? used / static_cast<int64_t>(sizeof(proc_fdinfo)) : -1;
 #else
         // The only reading here whose cost scales with process state, and it
         // scales linearly: measured on a 6.x kernel at ~0.16us per open fd
@@ -525,9 +529,9 @@ namespace pinpoint {
 
                 if (batch_ >= config.stat.batch_count) {
                     // Hand the finished cycle to the sender before enqueuing
-                    // its token (see copySnapshots): from the next tick on
+                    // its token (see takeSnapshots): from the next tick on
                     // the working slots are overwritten in place.
-                    if (!completed_batch_sent_ && !completed_batch_.empty()) {
+                    if (!completed_batch_.empty()) {
                         // Logged under mutex_ on purpose: the reporter grants
                         // at most one line per interval, so this cannot stall
                         // a collect cycle more than momentarily once a minute.
@@ -539,7 +543,6 @@ namespace pinpoint {
                         }
                     }
                     completed_batch_ = agent_stats_snapshots_;
-                    completed_batch_sent_ = false;
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);

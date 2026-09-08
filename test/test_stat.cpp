@@ -23,6 +23,10 @@
 #include <string_view>
 #include <vector>
 #include <iostream>
+#ifdef __APPLE__
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "../src/stat.h"
 #include "../src/url_stat.h"
@@ -80,6 +84,31 @@ TEST_F(StatTest, CollectAgentStatTest) {
         << "open file descriptors must be counted on this platform, got "
         << snapshot.open_fd_count_;
 }
+
+#ifdef __APPLE__
+TEST_F(StatTest, OpenFdCountMeasuresDescriptorsRatherThanTableCapacity) {
+    // A sparse high fd grows the kernel table without opening all its slots.
+    // Count independently with fcntl, not the API under test.
+    const int fd = open("/dev/null", O_RDONLY);
+    ASSERT_GE(fd, 0);
+    const int high_fd = fcntl(fd, F_DUPFD, 200);
+    struct FdGuard {
+        int fd;
+        ~FdGuard() { if (fd >= 0) close(fd); }
+    } first{fd}, high{high_fd};
+    ASSERT_GE(high_fd, 200);
+
+    const long limit = sysconf(_SC_OPEN_MAX);
+    ASSERT_GT(limit, high_fd);
+    int64_t expected = 0;
+    for (int candidate = 0; candidate < limit; ++candidate) {
+        if (fcntl(candidate, F_GETFD) != -1) ++expected;
+    }
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+    EXPECT_EQ(snapshot.open_fd_count_, expected);
+}
+#endif
 
 // The CPU-load rewrite computes a load only when a prior baseline exists and
 // clamps the result to [0,1]; the fix prevents a transient read glitch (or the
@@ -165,14 +194,14 @@ TEST_F(StatTest, CollectIntervalIsAlwaysMeasuredTest) {
 
     std::thread worker([this] { agent_stats_->agentStatsWorker(); });
 
-    // copySnapshots() stays empty until a batch completes, so the first
+    // takeSnapshots() stays empty until a batch completes, so the first
     // non-empty read is the worker's first batch — i.e. its first collection
     // is batch[0]. A whole further batch (600ms) would have to elapse between
     // two 10ms polls for that to stop holding.
     std::vector<AgentStatsSnapshot> batch;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
-        batch = agent_stats_->copySnapshots();
+        batch = agent_stats_->takeSnapshots();
         if (batch.size() == batch_count) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -288,34 +317,27 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     agent_stats_->dropActiveSpan(node2);
 }
 
-TEST_F(StatTest, GetAgentStatSnapshotsTest) {
-    // Test that we can copy the snapshots batch
-    auto snapshots = agent_stats_->copySnapshots();
-
-    size_t initial_size = snapshots.size();
-
-    // Collect some stats
+TEST_F(StatTest, TakeSnapshotsWaitsForCompletedCycle) {
+    EXPECT_TRUE(agent_stats_->takeSnapshots().empty());
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
-
-    // The snapshots batch should be accessible
-    EXPECT_GE(agent_stats_->copySnapshots().size(), initial_size)
-        << "Snapshots batch should be accessible";
+    EXPECT_TRUE(agent_stats_->takeSnapshots().empty())
+        << "an individual collection must not publish an incomplete batch";
 }
 
-// The gRPC stats stream reads copySnapshots() when it consumes the
+// The gRPC stats stream reads takeSnapshots() when it consumes the
 // AGENT_STATS token, which a stalled stream can delay well past the next
 // collect tick. It must still get the cycle the token was enqueued for:
 // handing out the working vector meant that with a 2-slot batch a copy taken
 // between two publications was [tick 3, tick 2] — the next cycle's first
 // slot in front of the pending cycle's second.
-TEST_F(StatTest, CopySnapshotsHoldsCompletedBatchWhileNextCycleCollects) {
+TEST_F(StatTest, TakeSnapshotsKeepsCompletedCyclesIntact) {
     auto& cfg = *mock_agent_service_->mutableConfig();
     cfg.stat.enable = true;
     cfg.stat.collect_interval = 20;  // ms
     cfg.stat.batch_count = 2;
 
-    EXPECT_TRUE(agent_stats_->copySnapshots().empty()) << "no cycle has completed yet";
+    EXPECT_TRUE(agent_stats_->takeSnapshots().empty()) << "no cycle has completed yet";
 
     std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
 
@@ -324,17 +346,22 @@ TEST_F(StatTest, CopySnapshotsHoldsCompletedBatchWhileNextCycleCollects) {
            std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    const auto first = agent_stats_->copySnapshots();
+    const auto first = agent_stats_->takeSnapshots();
 
     // Poll across the whole window until the second cycle is published: every
-    // copy must be a complete cycle, i.e. slots in collection order.
+    // non-empty take must be a complete cycle, with slots in collection order.
     bool consistent = true;
+    int64_t previous_end = first.empty() ? 0 : first.back().sample_time_;
     while (mock_agent_service_->recorded_stats_calls_.load() < 2 &&
            std::chrono::steady_clock::now() < deadline) {
-        const auto copy = agent_stats_->copySnapshots();
-        if (copy.size() != 2 || copy[0].sample_time_ > copy[1].sample_time_) {
-            consistent = false;
-            break;
+        const auto copy = agent_stats_->takeSnapshots();
+        if (!copy.empty()) {
+            if (copy.size() != 2 || copy[0].sample_time_ > copy[1].sample_time_ ||
+                copy[0].sample_time_ <= previous_end) {
+                consistent = false;
+                break;
+            }
+            previous_end = copy.back().sample_time_;
         }
         std::this_thread::yield();
     }
@@ -348,7 +375,7 @@ TEST_F(StatTest, CopySnapshotsHoldsCompletedBatchWhileNextCycleCollects) {
     EXPECT_GT(first[0].sample_time_, 0);
     EXPECT_LE(first[0].sample_time_, first[1].sample_time_);
     EXPECT_TRUE(consistent)
-        << "slot 0 was overwritten by the next cycle while its batch was still pending";
+        << "a batch was incomplete, out of order, or consumed more than once";
 }
 
 // A stats stream stalled past a whole collect cycle loses the pending batch:
@@ -362,7 +389,7 @@ TEST_F(StatTest, OverwritingAnUnsentBatchWarnsOnceAndIsRateLimited) {
     cfg.stat.collect_interval = 20;  // ms
     cfg.stat.batch_count = 1;
 
-    // Nothing calls copySnapshots() here, so every batch after the first is
+    // Nothing calls takeSnapshots() here, so every batch after the first is
     // published over an unsent predecessor — exactly the stalled-stream case.
     // The default sink is stdout, so no logger state has to be swapped.
     std::cout.flush();

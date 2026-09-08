@@ -669,9 +669,7 @@ namespace pinpoint {
         return names.empty() ? "none (config watcher, AgentInfo scheduler or channel close)" : names;
     }
 
-    bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy,
-                                                   bool& runner_detached) noexcept {
-        runner_detached = false;
+    bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
         // The workers dereference `this` (isExiting/getConfig/getAgentStats),
         // so they must be joined, never detached, before the members they use
         // are destroyed — abandoning a straggler would be a use-after-free.
@@ -715,12 +713,8 @@ namespace pinpoint {
                 }
                 state->cv.notify_all();
                 if (abandoned) {
-                    // do_shutdown() returned without closing the logger
-                    // precisely so this line, and whatever the stragglers
-                    // logged on the way out, are still recorded; closing it
-                    // is this thread's job now that nothing else will write.
-                    // Logger is a never-destroyed singleton with an
-                    // idempotent, mutex-guarded shutdown.
+                    // Shutdown clears the host sink, but a configured file
+                    // can reopen for these final worker diagnostics.
                     try {
                         LOG_INFO("agent shutdown: background teardown finished {}ms after shutdown began",
                                  std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -778,6 +772,11 @@ namespace pinpoint {
             return false;
         }
 
+        // Capture diagnostics before publishing delete_when_done: the runner
+        // may delete this object as soon as state->m is released below.
+        std::string worker_names;
+        try { worker_names = running_worker_names(); } catch (...) {}
+
         bool abandoned = false;
         const bool defer_destroy = keep_alive == nullptr;
         try {
@@ -799,16 +798,12 @@ namespace pinpoint {
             return false;
         }
         runner.detach();
-        // The helper owns the logger's close from here (see the header): its
-        // completion line and everything the draining workers log still have
-        // to get through.
-        runner_detached = true;
         try {
             LOG_WARN("agent shutdown exceeded the {}ms deadline; workers keep draining "
                      "in the background and the agent is {} when they finish; "
                      "worker threads not yet joined: {}",
                      agent_shutdown_deadline().count(),
-                     defer_destroy ? "destroyed" : "released", running_worker_names());
+                     defer_destroy ? "destroyed" : "released", worker_names);
         } catch (...) {}
         return defer_destroy;
     }
@@ -1081,20 +1076,13 @@ namespace pinpoint {
             return false;
         }
 
-        bool runner_detached = false;
-        const bool destroy_deferred =
-            teardown_workers_with_deadline(may_defer_destroy, runner_detached);
-        // Nothing below may touch members: on the deferred-destroy path the
-        // runner owns the object from here and may already have deleted it.
-        // runner_detached is a local, so reading it stays safe.
-        //
-        // Closing the logger here would drop exactly the lines a detached
-        // runner exists to produce — the stragglers' output and its own
-        // "teardown finished" line — so on that path the runner closes it
-        // instead, once there is nothing left to write.
-        if (!runner_detached) {
-            try { shutdown_logger(); } catch (...) {}
-        }
+        const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
+        // The runner may already have deleted this object. Only locals and
+        // the process-wide logger may be accessed from here.
+        // Always release the host sink before returning to its owner. Logger
+        // shutdown bans stdout, but still allows a configured file to reopen
+        // for stragglers; the runner closes it again when they finish.
+        try { shutdown_logger(); } catch (...) {}
         return destroy_deferred;
     }
 

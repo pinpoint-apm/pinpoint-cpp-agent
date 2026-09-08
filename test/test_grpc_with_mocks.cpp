@@ -1380,6 +1380,59 @@ TEST_F(GrpcMockTest, GrpcStatsStallCoalescesTokensAndKeepsProducerData) {
         << "a stalled stream must not discard the URL snapshot";
 }
 
+// Pause publication after the new payload becomes visible but before its
+// token is enqueued. The old token consumes that payload during the pause.
+class DelayedStatTokenAgent : public MockAgentService {
+public:
+    TestableGrpcStats* sender{};
+    mutable std::mutex mutex;
+    mutable std::condition_variable cv;
+    mutable int published{0};
+    mutable bool released{false};
+
+    void recordStats(StatsType type) const override {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++published;
+        cv.notify_all();
+        if (published == 2) cv.wait(lock, [&] { return released; });
+        sender->enqueueStats(type);
+    }
+};
+
+TEST_F(GrpcMockTest, GrpcStatsDoesNotResendBatchWhenTokenRacesPublication) {
+    DelayedStatTokenAgent agent;
+    agent.mutableConfig()->stat.collect_interval = 10;
+    agent.mutableConfig()->stat.batch_count = 1;
+    TestableGrpcStats sender(&agent);
+    agent.sender = &sender;
+    auto& stats = agent.getAgentStats();
+    std::thread worker([&] { stats.agentStatsWorker(); });
+    bool second_published;
+    {
+        std::unique_lock<std::mutex> lock(agent.mutex);
+        second_published = agent.cv.wait_for(lock, std::chrono::seconds(5),
+                                             [&] { return agent.published == 2; });
+    }
+    EXPECT_TRUE(second_published);
+    EXPECT_EQ(sender.nextWriteForTest(), STREAM_WRITE);
+    sender.OnWriteDone(true);
+
+    // Prevent a third publication and let the delayed second token through.
+    agent.setExiting(true);
+    {
+        std::lock_guard<std::mutex> lock(agent.mutex);
+        agent.released = true;
+        agent.cv.notify_all();
+    }
+    stats.stopAgentStatsWorker();
+    worker.join();
+    agent.setExiting(false);
+    EXPECT_EQ(sender.queuedStatsForTest(), (std::vector<StatsType>{AGENT_STATS}));
+    EXPECT_EQ(sender.nextWriteForTest(), STREAM_CONTINUE)
+        << "the second token's batch was already consumed by the first token";
+    EXPECT_TRUE(sender.queuedStatsForTest().empty());
+}
+
 // No traffic must produce no message at all, not an empty PAgentUriStat every
 // send interval. Java stops as soon as its completed queue polls null
 // (UriStatCollectingJob.java:52-55); an idle agent sent nothing there and

@@ -2913,7 +2913,7 @@ namespace pinpoint {
         }
 
         // The payload is read now, not when the token was enqueued: AgentStats
-        // publishes its finished cycle before enqueuing (copySnapshots), and
+        // publishes its finished cycle before enqueuing (takeSnapshots), and
         // the URL snapshot drain takes every tick completed so far.
         //
         // Taken before msg_ is created so an empty drain can bail out without
@@ -2927,7 +2927,13 @@ namespace pinpoint {
         // out — passing agent_->isExiting() here instead could never be
         // true, because stopping() above already returned on it.
         std::unique_ptr<UrlStatSnapshot> url_snapshot;
-        if (stats != AGENT_STATS) {
+        std::vector<AgentStatsSnapshot> agent_snapshot;
+        if (stats == AGENT_STATS) {
+            agent_snapshot = agent_->getAgentStats().takeSnapshots();
+            if (agent_snapshot.empty()) {
+                return STREAM_CONTINUE;
+            }
+        } else {
             url_snapshot = agent_->getUrlStats().takeSnapshot();
             if (url_snapshot->empty()) {
                 // No tick completed since the last send. Send nothing at all
@@ -2940,7 +2946,7 @@ namespace pinpoint {
 
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         if (stats == AGENT_STATS) {
-            msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_->getAgentStats().copySnapshots(), &arena_));
+            msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_snapshot, &arena_));
         } else {
             msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(url_snapshot.get(), &arena_));
         }

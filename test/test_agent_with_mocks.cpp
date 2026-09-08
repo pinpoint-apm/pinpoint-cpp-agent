@@ -1198,9 +1198,8 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
 
 // Regression: a detached reaper keeps logging after Shutdown() returns — the
 // stragglers' output and its own completion line are what make an overrun
-// teardown observable at all. So do_shutdown() must leave the logger open for
-// it and let the reaper close it; closing it on the way out puts those lines
-// behind the post-shutdown drop guard, where they are lost.
+// teardown observable at all. Logger shutdown must allow the configured file
+// to reopen even though it releases the host callback and silences stdout.
 TEST(AgentShutdownDeadlineTest, DetachedTeardownRunnerStillReachesTheLog) {
     ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
 
@@ -1238,6 +1237,39 @@ TEST(AgentShutdownDeadlineTest, DetachedTeardownRunnerStillReachesTheLog) {
         << content;
 
     std::filesystem::remove(log_file, ec);
+}
+
+TEST(AgentShutdownDeadlineTest, DetachedTeardownReleasesHostSinkBeforeReturning) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(30));
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto agent = make_wedged_agent(make_test_config(), &wedged);
+    struct LoggerGuard {
+        ~LoggerGuard() {
+            Logger::getInstance().setSink({});
+            Logger::getInstance().setFileLogger("", 0);
+        }
+    } logger_guard;
+    std::atomic<bool> returned{false};
+    std::atomic<int> late_calls{0};
+    auto host_state = std::make_shared<int>(0);
+    std::weak_ptr<int> weak_host = host_state;
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setSink(
+        [&, host_state](const char*, const char*) {
+            if (returned.load()) ++late_calls;
+        });
+    host_state.reset();
+
+    agent->Shutdown();
+    returned = true;
+    EXPECT_TRUE(weak_host.expired()) << "Shutdown must release the host callback";
+
+    std::weak_ptr<AgentImpl> weak_agent = agent;
+    agent.reset();
+    wedged->release();
+    EXPECT_TRUE(wait_for_condition([&] { return weak_agent.expired(); }, std::chrono::seconds(5)));
+    EXPECT_EQ(late_calls.load(), 0) << "stragglers must not call the host after Shutdown";
+    Logger::getInstance().setSink({});
 }
 
 // Dropping the last reference WITHOUT Shutdown() must be just as bounded:
