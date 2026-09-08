@@ -700,20 +700,17 @@ namespace pinpoint {
                 // format, so it is recorded straight into the recording
                 // span's annotation container; noop/unsampled spans have
                 // none and record nothing, as before.
-                // IsSampled() is true for SpanImpl and nothing else (noop and
-                // unsampled spans return false), so it stands in for the
-                // dynamic_cast this used to do per request — an RTTI walk
-                // that can degrade to a name strcmp across a shared-library
-                // boundary.
-                if (span->IsSampled()) {
-                    auto* impl = static_cast<SpanImpl*>(span.get());
+                // recordingSpanImpl() is non-null for SpanImpl only, without
+                // the RTTI walk a dynamic_cast per request would cost — and,
+                // unlike IsSampled(), a third-party Span cannot answer it.
+                if (auto* impl = span->recordingSpanImpl()) {
                     // Java ServerRequestRecorder.recordParentInfo records
                     // Pinpoint-Host as the acceptor host and falls back to
                     // requestAdaptor.getAcceptorHost() when the peer sent
                     // none; this endpoint is that value here. extractContext()
                     // has already stored the header if there was one, so this
                     // only fills the gap (see doc/java_parity.md).
-                    impl->getSpanData()->setAcceptorHostIfAbsent(endpoint);
+                    impl->SetAcceptorHostIfAbsent(endpoint);
                     HttpTracerUtil::setProxyHeader(
                         request_reader, impl->getSpanData()->getAnnotations(),
                         impl->getConfig().http.server.proxy_user_header_names);

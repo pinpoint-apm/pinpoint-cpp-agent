@@ -821,6 +821,14 @@ namespace pinpoint {
         data_->setEndPoint(endpoint);
     } CATCH_AND_LOG("set end point")
 
+    void SpanImpl::SetAcceptorHostIfAbsent(std::string_view host) try {
+        // Same guard as every other mutator: after EndSpan the final chunk is
+        // on the worker, which reads acceptor_host_ through getEndPoint() /
+        // getAcceptorHost(); an unguarded write here would race it.
+        CHECK_FINISHED();
+        data_->setAcceptorHostIfAbsent(host);
+    } CATCH_AND_LOG("set acceptor host if absent")
+
     void SpanImpl::SetAcceptorHost(std::string_view host) try {
         CHECK_FINISHED();
         data_->setAcceptorHost(host);

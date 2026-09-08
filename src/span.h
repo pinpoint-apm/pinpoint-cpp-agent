@@ -569,6 +569,9 @@ namespace pinpoint {
         std::string GetTraceId() override;
         int64_t GetSpanId() override { return data_->getSpanId(); }
         bool IsSampled() override { return true; }
+        SpanImpl* recordingSpanImpl() noexcept override { return this; }
+        /// @brief SpanData::setAcceptorHostIfAbsent behind the finished guard.
+        void SetAcceptorHostIfAbsent(std::string_view host);
         SpanConfigSnapshot GetConfigSnapshot() const override;
         // Cheap per-creation read for binding layers: just the revision of the
         // config generation this span captured, no snapshot building.

@@ -2020,6 +2020,50 @@ TEST_F(SpanTest, SpanImplAcceptorHostFallsBackToEndpointWithoutHostHeaderTest) {
         << "the endpoint the host integration supplies is this agent's acceptor host";
 }
 
+// After EndSpan the final chunk is on the worker, which reads acceptor_host_
+// through getEndPoint()/getAcceptorHost(); the fallback must go through the
+// span's finished guard like every other mutator, or a late
+// TraceHttpServerRequest() would write the string under the worker's read.
+TEST_F(SpanTest, SpanImplAcceptorHostFallbackIsNoopAfterEndSpanTest) {
+    auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "100");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+    extract_context(*span, *mock_agent_service_, reader);
+    span->EndSpan();
+
+    MockHeaderReader header_reader;
+    helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
+
+    EXPECT_TRUE(span->getSpanData()->getAcceptorHost().empty())
+        << "a finished span must not accept the acceptor-host fallback";
+}
+
+// recordingSpanImpl() is the agent's downcast gate. IsSampled() is a public
+// predicate a third-party Span may answer true to, so it must not be one: the
+// HTTP helper and pt_span_get_trace_id would static_cast a foreign object.
+namespace {
+    class ForeignSampledSpan final : public NoopSpan {
+    public:
+        bool IsSampled() override { return true; }
+    };
+}
+
+TEST_F(SpanTest, RecordingSpanImplGateRejectsForeignSampledSpanTest) {
+    auto foreign = std::make_shared<ForeignSampledSpan>();
+    ASSERT_TRUE(foreign->IsSampled());
+    EXPECT_EQ(foreign->recordingSpanImpl(), nullptr);
+
+    MockHeaderReader header_reader;
+    // Would be a type confusion crash if the helper still keyed on IsSampled().
+    EXPECT_NO_FATAL_FAILURE(
+        helper::TraceHttpServerRequest(foreign, "10.0.0.1:54321", "api.example.com:8080", header_reader));
+
+    auto impl = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    EXPECT_EQ(impl->recordingSpanImpl(), impl.get());
+}
+
 // The header still wins when the peer sent one: it names the host as the
 // *caller* addressed it, which is what the server map draws.
 TEST_F(SpanTest, SpanImplHostHeaderWinsOverAcceptorHostFallbackTest) {

@@ -841,13 +841,12 @@ size_t pt_span_get_trace_id(pt_span_t span, char* buf, size_t buf_size) {
             // A recording span caches its wire-form trace id; read it by
             // reference instead of paying GetTraceId()'s std::string (the id
             // is ~40-60 bytes, past SSO) once per request for bindings that
-            // log it. IsSampled() is true only for SpanImpl (see
-            // traceServerRequest in http.cpp), and every other span reports
-            // an empty id.
+            // log it. recordingSpanImpl() is non-null for SpanImpl only (see
+            // traceServerRequest in http.cpp); every other span reports an
+            // empty id.
             static const std::string kNoTraceId;
-            const std::string& tid = valid->ptr->IsSampled()
-                ? static_cast<pinpoint::SpanImpl*>(valid->ptr.get())->getSpanData()->getTraceIdWire()
-                : kNoTraceId;
+            auto* impl = valid->ptr->recordingSpanImpl();
+            const std::string& tid = impl != nullptr ? impl->getSpanData()->getTraceIdWire() : kNoTraceId;
             if (buf && buf_size > 0) {
                 // snprintf semantics: copy up to buf_size-1 bytes, always NUL-
                 // terminate, and report the full length so the caller can detect

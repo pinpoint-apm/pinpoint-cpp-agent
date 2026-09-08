@@ -191,6 +191,7 @@ namespace pinpoint {
         int line;
     };
     
+    class SpanImpl;
     class Span;
     using SpanPtr = std::shared_ptr<Span>;
 
@@ -399,6 +400,13 @@ namespace pinpoint {
         ///        default (0, "no resolved config") keeps third-party Span
         ///        implementations source-compatible.
         virtual int64_t GetConfigRevision() const { return 0; }
+        /// @brief Internal: the agent's own recording span, or nullptr for
+        ///        every other implementation (noop, unsampled, third-party).
+        ///        The agent's hot paths use this instead of RTTI to reach the
+        ///        recording span; IsSampled() is a public predicate any Span
+        ///        may answer true to, so it is not a safe downcast gate.
+        ///        Never override this outside the agent.
+        virtual SpanImpl* recordingSpanImpl() noexcept { return nullptr; }
 
         /// @brief Sets the span service type.
         virtual void SetServiceType(int32_t service_type) = 0;
