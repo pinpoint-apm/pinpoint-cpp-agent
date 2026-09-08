@@ -275,17 +275,21 @@ namespace pinpoint {
         agent_ = agent;
     }
 
-    // gRPC metadata key constants
-    const std::string METADATA_APPLICATION_NAME = "applicationname";
-    const std::string METADATA_AGENT_ID = "agentid";
-    const std::string METADATA_START_TIME = "starttime";
-    const std::string METADATA_SERVICE_TYPE = "servicetype";
-    const std::string METADATA_AGENT_NAME = "agentname";
-    const std::string METADATA_SOCKET_ID = "socketid";
-    const std::string METADATA_SUPPORT_COMMAND_CODE = "supportcommandcode";
-    const std::string METADATA_PROTOCOL_VERSION = "protocol.version";
-    const std::string METADATA_SERVICE_NAME = "servicename";
-    const std::string METADATA_API_KEY = "apikey";
+    // gRPC metadata key constants. constexpr views, not std::string: workers
+    // that outlive the shutdown deadline can still (re)connect while the
+    // host's exit() runs static destructors, and a namespace-scope
+    // std::string would be destroyed under them (same reasoning as the
+    // sampling.h constants).
+    constexpr std::string_view METADATA_APPLICATION_NAME = "applicationname";
+    constexpr std::string_view METADATA_AGENT_ID = "agentid";
+    constexpr std::string_view METADATA_START_TIME = "starttime";
+    constexpr std::string_view METADATA_SERVICE_TYPE = "servicetype";
+    constexpr std::string_view METADATA_AGENT_NAME = "agentname";
+    constexpr std::string_view METADATA_SOCKET_ID = "socketid";
+    constexpr std::string_view METADATA_SUPPORT_COMMAND_CODE = "supportcommandcode";
+    constexpr std::string_view METADATA_PROTOCOL_VERSION = "protocol.version";
+    constexpr std::string_view METADATA_SERVICE_NAME = "servicename";
+    constexpr std::string_view METADATA_API_KEY = "apikey";
 
     std::vector<std::pair<std::string, std::string>>
     build_grpc_metadata(const Config& config, std::string_view agent_id,
@@ -324,7 +328,7 @@ namespace pinpoint {
             context->AddMetadata(key, value);
         }
         if (socket_id > 0) {
-            context->AddMetadata(METADATA_SOCKET_ID, std::to_string(socket_id));
+            context->AddMetadata(std::string(METADATA_SOCKET_ID), std::to_string(socket_id));
         }
     }
 
@@ -1626,7 +1630,7 @@ namespace pinpoint {
 
             grpc::ClientContext context;
             build_grpc_context(&context, ++socket_id_);
-            context.AddMetadata(METADATA_SUPPORT_COMMAND_CODE, support_command_code_header());
+            context.AddMetadata(std::string(METADATA_SUPPORT_COMMAND_CODE), support_command_code_header());
             // This worker sits in a blocking Read() for the stream's whole
             // life, so there is no loop boundary at which to check either the
             // stream max age or the channel-rotation deadline. End at the
@@ -1788,7 +1792,10 @@ namespace pinpoint {
 
         auto* config_service_info = meta_data->add_serviceinfo();
         config_service_info->set_servicename("Pinpoint Agent");
-        for (const auto& config_string : to_non_default_config_strings(*config)) {
+        // Precomputed per config generation (AgentRuntime), so this send
+        // path — which can run on a straggling worker during process exit —
+        // never enters yaml-cpp.
+        for (const auto& config_string : agent_->getNonDefaultConfigStrings()) {
             config_service_info->add_servicelib(config_string);
         }
 

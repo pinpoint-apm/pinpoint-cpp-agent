@@ -309,12 +309,21 @@ TEST(TracerCAgentOptionsTest, LogSinkReceivesAgentLines) {
     // Nothing else is configured, so the agent will not start; the point is the
     // refusal/configuration lines it emits on the way, which must land here.
     pt_agent_options_set_config_yaml(opts, "Enable: false\nLog:\n  Level: debug\n");
-    pt_start_agent(opts);
+    ASSERT_FALSE(pt_start_agent(opts));
     pt_agent_options_free(opts);
 
-    pinpoint::Logger::getInstance().setSink({});
-
+    // The failed start must already have dropped the sink (tracer_c.h: the
+    // host may free userdata once pt_start_agent() has failed), so a later
+    // warning must not reach `capture`.
+    size_t lines_after_start;
+    {
+        std::lock_guard<std::mutex> lock(capture.mutex);
+        lines_after_start = capture.lines.size();
+    }
+    pt_span_destroy(reinterpret_cast<pt_span_t>(static_cast<uintptr_t>(0x9001)));  // unknown handle → warning
     std::lock_guard<std::mutex> lock(capture.mutex);
+    EXPECT_EQ(capture.lines.size(), lines_after_start)
+        << "a failed pt_start_agent() must leave no sink installed";
     ASSERT_FALSE(capture.lines.empty()) << "the agent logs its configuration on start";
     for (const auto& line : capture.lines) {
         EXPECT_NE(line.find("[pinpoint]["), std::string::npos) << line;

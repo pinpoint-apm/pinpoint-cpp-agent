@@ -429,11 +429,13 @@ typedef void (*pt_log_sink_fn)(void* userdata, const char* level, const char* me
  * are not duplicated. The sink is installed by pt_start_agent() before the
  * configuration is parsed — configuration errors reach it too — and dropped
  * again by pt_agent_shutdown(), after which the host's logger may be torn
- * down. A NULL @p sink clears it.
+ * down. A pt_start_agent() that returns false drops it as well, so a host
+ * may free @p userdata right after a failed start. A NULL @p sink clears it.
  *
  * @param userdata Opaque pointer passed back to every call. Not owned by the
  *                 agent; it must outlive the agent, or at least the last log
- *                 line, which is the pt_agent_shutdown() that clears the sink.
+ *                 line, which is the pt_agent_shutdown() that clears the sink
+ *                 (or the pt_start_agent() call itself when that fails).
  */
 void pt_agent_options_set_log_sink(pt_agent_options_t options,
                                    pt_log_sink_fn sink,

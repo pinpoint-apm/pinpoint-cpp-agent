@@ -384,6 +384,7 @@ namespace pinpoint {
 
         auto rt = std::make_shared<AgentRuntime>();
         rt->config = std::move(cfg);
+        rt->non_default_config_strings = to_non_default_config_strings(*rt->config);
         // Not config-derived: every generation shares the same stats sinks,
         // so spans admitted under different generations aggregate into one
         // place (see AgentRuntime::stats for why spans take them from the
@@ -1185,7 +1186,7 @@ namespace pinpoint {
     }
 
     void AgentImpl::recordSpan(std::unique_ptr<SpanChunk> span) const {
-        if (enabled_) {
+        if (tracing_active()) {
             grpc_span_->enqueueSpan(std::move(span));
         }
     }
@@ -1198,20 +1199,28 @@ namespace pinpoint {
         recordUrlStat(std::move(stat));
     }
 
+    std::vector<std::string> AgentService::getNonDefaultConfigStrings() const {
+        return to_non_default_config_strings(*getConfig());
+    }
+
+    std::vector<std::string> AgentImpl::getNonDefaultConfigStrings() const {
+        return runtime_.load_cached_ref()->non_default_config_strings;
+    }
+
     void AgentImpl::recordUrlStat(UrlStatEntry stat) const {
-        if (enabled_) {
+        if (tracing_active()) {
             url_stats_->enqueueUrlStats(std::move(stat));
         }
     }
 
     void AgentImpl::recordUrlStat(UrlStatEntry stat, const Config& config) const {
-        if (enabled_) {
+        if (tracing_active()) {
             url_stats_->enqueueUrlStats(std::move(stat), config);
         }
     }
 
     void AgentImpl::recordStats(const StatsType stats) const {
-        if (enabled_) {
+        if (tracing_active()) {
             grpc_stat_->enqueueStats(stats);
         }
     }
@@ -1247,7 +1256,7 @@ namespace pinpoint {
     }
 
     int32_t AgentImpl::cacheApi(std::string_view api_str, int32_t api_type) const try {
-        if (!enabled_) {
+        if (!tracing_active()) {
             return 0;
         }
 
@@ -1287,7 +1296,7 @@ namespace pinpoint {
     } CATCH_AND_LOG("failed to remove cached api meta:")
 
     int32_t AgentImpl::cacheError(std::string_view error_name) const try {
-        if (!enabled_) {
+        if (!tracing_active()) {
             return 0;
         }
 
@@ -1309,7 +1318,7 @@ namespace pinpoint {
     } CATCH_AND_LOG("failed to remove cached error meta:")
 
     int32_t AgentImpl::cacheSql(std::string_view sql_query) const try {
-        if (!enabled_) {
+        if (!tracing_active()) {
             return 0;
         }
 
@@ -1326,7 +1335,7 @@ namespace pinpoint {
 
     std::optional<PreparedSqlResult> AgentImpl::prepareSql(
             std::string_view raw_sql, SqlMetaMode mode) const try {
-        if (!enabled_) {
+        if (!tracing_active()) {
             return std::nullopt;
         }
         if (mode != SqlMetaMode::Id && mode != SqlMetaMode::Uid) {
@@ -1382,7 +1391,7 @@ namespace pinpoint {
     } CATCH_AND_LOG("failed to remove cached sql meta:")
 
     std::optional<SqlUid> AgentImpl::cacheSqlUid(std::string_view sql) const try {
-        if (!enabled_) {
+        if (!tracing_active()) {
             return std::nullopt;
         }
 
@@ -1434,7 +1443,7 @@ namespace pinpoint {
                                     std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions,
                                     const Config& config) const try {
-        if (!enabled_ || !config.enable_callstack_trace) {
+        if (!tracing_active() || !config.enable_callstack_trace) {
             return;
         }
 
@@ -1564,6 +1573,21 @@ namespace pinpoint {
             agent.reset();
         }
 
+        // Every failure below must drop the host sink installed above: with
+        // no agent published, pt_agent_shutdown() reaches the noop agent and
+        // a pure-C host has no other way to detach it, so a later warning
+        // (e.g. from pt_agent_options_free) would call into userdata the host
+        // already freed. The C header promises the sink is gone once
+        // StartAgent() has failed.
+        struct SinkGuard {
+            bool armed{true};
+            ~SinkGuard() {
+                if (armed) {
+                    try { Logger::getInstance().setSink({}); } catch (...) {}
+                }
+            }
+        } sink_guard;
+
         auto cfg = make_config(options);
         if (!cfg || !cfg->check()) {
             return false;
@@ -1582,6 +1606,7 @@ namespace pinpoint {
             return false;
         }
         global_agent().store(agent);
+        sink_guard.armed = false;
         return true;
     } catch (...) {
         return false;

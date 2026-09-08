@@ -18,6 +18,8 @@
 
 #include <array>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace pinpoint {
 
@@ -46,6 +48,13 @@ namespace pinpoint {
      */
     struct AgentRuntime {
         std::shared_ptr<const Config> config;
+        // to_non_default_config_strings(*config), computed once per generation
+        // here (Start()/reload, on the caller's thread) so the AgentInfo
+        // sender never runs yaml-cpp's emitter itself. A worker that outlives
+        // the shutdown deadline can still be registering while the host's
+        // exit() destroys yaml-cpp's function-local statics; reading a plain
+        // vector keeps that path free of dynamic-destructor globals.
+        std::vector<std::string> non_default_config_strings;
         std::shared_ptr<TraceSampler> sampler;
         std::shared_ptr<HttpUrlFilter> http_url_filter;
         std::shared_ptr<HttpMethodFilter> http_method_filter;

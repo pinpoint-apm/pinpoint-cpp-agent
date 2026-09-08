@@ -1746,6 +1746,28 @@ TEST_F(StartAgentTest, StartAgentAgainKeepsTheRunningAgentsLogSink) {
         << "a repeated StartAgent() must leave the running agent's sink installed";
 }
 
+// A failed StartAgent() must drop the host sink it installed before parsing
+// the config: no agent is published, so pt_agent_shutdown() reaches the noop
+// agent and a pure-C host has no other way to detach it. Leaving it would call
+// into userdata the host frees after the failure on the next warning.
+TEST_F(StartAgentTest, StartAgentFailureDropsTheHostLogSink) {
+    std::atomic<int> sink_calls{0};
+    options_.log_sink = [&](const char*, const char*) { sink_calls.fetch_add(1); };
+    // check() fails on the empty application name.
+    set_config_string(R"(
+ApplicationName: ""
+Collector:
+  GrpcHost: 127.0.0.1
+)");
+    ASSERT_FALSE(StartAgent());
+    EXPECT_GT(sink_calls.load(), 0) << "the refusal itself is reported through the sink";
+
+    const int before = sink_calls.load();
+    Logger::getInstance().logWarn("test.cpp", 1, "must not reach the host");
+    EXPECT_EQ(sink_calls.load(), before)
+        << "a failed StartAgent() must leave no host sink installed";
+}
+
 // reloadConfig() with a make_config(options, old) rebuild applies reloadable
 // fields — the same path the config-file watcher drives.
 TEST_F(StartAgentTest, ReloadConfigAppliesReloadableFields) {

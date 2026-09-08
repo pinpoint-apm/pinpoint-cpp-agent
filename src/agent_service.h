@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include "pinpoint/tracer.h"
 // prepareSql returns PreparedSqlResult by value, so the cache types must be
 // complete here.
@@ -143,6 +144,11 @@
       ///        Java ObjectName.getServiceName).
       virtual const std::string& getServiceName() const = 0;
       virtual std::shared_ptr<const Config> getConfig() const = 0;
+      /// @brief AgentInfo's "Pinpoint Agent" service libs: the non-default
+      /// settings of the published config. AgentImpl serves a vector
+      /// precomputed per config generation; the default recomputes it for
+      /// test doubles that publish plain configs.
+      virtual std::vector<std::string> getNonDefaultConfigStrings() const;
       /// @brief Agent start timestamp (epoch milliseconds).
       virtual int64_t getStartTime() const = 0;
       /// @brief Reloads config-dependent helpers (samplers, filters, recorders).
