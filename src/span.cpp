@@ -837,6 +837,15 @@ namespace pinpoint {
         markSpanError(ErrorCategory::kException, error_name, error_message);
     } CATCH_AND_LOG("set error")
 
+    void SpanImpl::MarkError(std::string_view error_name,
+                             std::string_view error_message) try {
+        CHECK_FINISHED();
+        // Verdict only: deliberately skip cacheError(), error_string_ and the
+        // exception/call-stack buffers. This is DisabledSpanEvent::SetError's
+        // observable effect when a language binding owns overflow detection.
+        markSpanError(ErrorCategory::kException, error_name, error_message);
+    } CATCH_AND_LOG("mark error")
+
     void SpanImpl::SetStatusCode(int status) {
         CHECK_FINISHED();
 

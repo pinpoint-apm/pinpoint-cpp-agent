@@ -237,6 +237,23 @@ TEST_F(NoopTest, UnsampledSpanSetErrorFailsUrlStatTest) {
     EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_);
 }
 
+TEST_F(NoopTest, UnsampledSpanMarkErrorFailsOnlyTheUrlStatTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+    span.SetUrlStat("/api/users", "GET", 200);
+
+    span.MarkError("VerdictOnlyError", "no event or metadata");
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_);
+    EXPECT_TRUE(mock_agent_service_->recorded_spans_.empty());
+
+    // The new verdict API has a strict late-call no-op contract.
+    span.MarkError("Late", "already ended");
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+}
+
 // Span.IgnoreErrors has to reach this path too, or an excluded error would
 // fail unsampled requests while sparing sampled ones. The filter needs the
 // runtime snapshot every production span is built with.

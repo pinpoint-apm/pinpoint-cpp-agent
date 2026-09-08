@@ -179,6 +179,8 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message) override {
             markError(error_name, error_message);
         }
+        void MarkError(std::string_view error_name,
+                       std::string_view error_message) override;
         void EndSpan() override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 

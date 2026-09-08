@@ -609,6 +609,8 @@ namespace pinpoint {
         void SetAcceptorHost(std::string_view host) override;
         void SetError(std::string_view error_message) override;
         void SetError(std::string_view error_name, std::string_view error_message) override;
+        void MarkError(std::string_view error_name,
+                       std::string_view error_message) override;
         void SetStatusCode(int status) override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         /// @brief Records the logging flag and injects the context into a logger.

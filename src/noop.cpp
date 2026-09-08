@@ -123,6 +123,18 @@ namespace pinpoint {
         err_.store(true, std::memory_order_relaxed);
     } CATCH_AND_LOG("set error")
 
+    void UnsampledSpan::MarkError(std::string_view error_name,
+                                  std::string_view error_message) {
+        // This verdict-only binding API follows the same late-call contract as
+        // the rest of the span surface. SetError historically leaves a harmless
+        // post-EndSpan flag behind; MarkError is new and can make the stronger
+        // no-op guarantee because its only consumer is a deferred batch flush.
+        if (finished_.load(std::memory_order_relaxed)) {
+            return;
+        }
+        markError(error_name, error_message);
+    }
+
     AgentStats* UnsampledSpan::statsSink() const {
         if (runtime_ && runtime_->stats) {
             return runtime_->stats.get();

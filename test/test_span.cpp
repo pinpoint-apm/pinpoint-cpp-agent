@@ -2211,6 +2211,29 @@ TEST_F(SpanTest, SpanImplSetErrorSingleArgTest) {
     EXPECT_GE(mock_agent_service_->getCachedErrorId("Error"), 0);
 }
 
+TEST_F(SpanTest, MarkErrorAppliesOnlyTheExceptionVerdictTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+
+    span.MarkError("VerdictOnlyError", "profiling detail was discarded");
+    EXPECT_EQ(span.getSpanData()->getErr(),
+              static_cast<int>(ErrorCategory::kException));
+    EXPECT_TRUE(span.getExceptions().empty());
+    EXPECT_TRUE(span.getSpanData()->getErrorString().empty());
+
+    span.EndSpan();
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    auto chunk = std::move(mock_agent_service_->recorded_spans_.back());
+    google::protobuf::Arena arena;
+    auto* pspan = build_grpc_span(std::move(chunk), &arena);
+    ASSERT_NE(pspan, nullptr);
+    EXPECT_EQ(pspan->err(), static_cast<int>(ErrorCategory::kException));
+    EXPECT_FALSE(pspan->has_exceptioninfo())
+        << "verdict-only marking must not synthesize root error metadata";
+    EXPECT_EQ(pspan->spanevent_size(), 0)
+        << "verdict-only marking must not synthesize an event";
+}
+
 // An exception recorded only on a span event (DB/external call) must fail the
 // whole transaction like Java: PSpan.err carries kException and the URL stat
 // entry counts in the failed histogram, even with a 200 status.

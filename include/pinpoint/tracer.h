@@ -410,6 +410,16 @@ namespace pinpoint {
         virtual void SetError(std::string_view error_message) = 0;
         /// @brief Records a named error message at the span level.
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
+        /// @brief Applies an exception to the transaction error policy without
+        ///        recording span/event error fields or exception metadata.
+        ///
+        /// Binding layers that discard profiling detail before reaching the
+        /// native event API (for example, batched overflow placeholders) use
+        /// this to preserve the verdict of DisabledSpanEvent::SetError. The
+        /// default no-op keeps third-party Span implementations source
+        /// compatible; recording and unsampled native spans override it.
+        virtual void MarkError(std::string_view error_name,
+                               std::string_view error_message) {}
         /// @brief Records the HTTP status code for the span.
         virtual void SetStatusCode(int status) = 0;
         /// @brief Records URL statistics for the span.
