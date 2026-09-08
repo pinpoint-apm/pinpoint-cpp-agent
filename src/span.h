@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -272,7 +273,9 @@ namespace pinpoint {
             // elapsed time. Only the low side is clamped: the wire field is
             // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a
             // user-supplied start time in seconds instead of ms) wraps.
-            elapsed_ = static_cast<int32_t>(std::max<int64_t>(to_milli_seconds(end_time_) - start_time_, 0));
+            // Clamped on both sides: see SpanEventImpl::finish().
+            elapsed_ = static_cast<int32_t>(std::clamp<int64_t>(
+                to_milli_seconds(end_time_) - start_time_, 0, std::numeric_limits<int32_t>::max()));
         }
         std::chrono::system_clock::time_point getEndTime() const { return end_time_; }
         int32_t getElapsed() const { return elapsed_; }

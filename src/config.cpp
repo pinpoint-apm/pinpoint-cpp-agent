@@ -382,7 +382,15 @@ namespace pinpoint {
             }
             watcher_to_join = std::move(thread_);
         }
-        watcher_to_join.join();
+        try {
+            watcher_to_join.join();
+        } catch (...) {
+            // join() throws only for resource_deadlock_would_occur (stop()
+            // called from the watcher thread itself) or a dead handle.
+            // Destroying a joinable std::thread during the unwind would
+            // std::terminate the host, so drop the handle instead.
+            abandon_thread(watcher_to_join);
+        }
     }
 
     // yaml-cpp resolves map keys case-sensitively; users may write them in any
@@ -409,12 +417,23 @@ namespace pinpoint {
 
     // Resolves a dotted path ("Collector.Grpc.SslEnable") one case-insensitive
     // segment at a time. Undefined (falsy) when any segment is missing.
+    // Iterative: the path can come from the environment (ActiveProfile), and
+    // a recursion per segment would let a long dotted value overflow the stack.
     static YAML::Node find_path(const YAML::Node& yaml, std::string_view path) {
-        const auto dot = path.find('.');
-        if (dot == std::string_view::npos) {
-            return find_node(yaml, path);
+        YAML::Node node = yaml;
+        for (;;) {
+            const auto dot = path.find('.');
+            if (dot == std::string_view::npos) {
+                return find_node(node, path);
+            }
+            // reset(), not operator=: assigning to a YAML::Node writes the
+            // value into the document it aliases; reset re-seats the handle.
+            node.reset(find_node(node, path.substr(0, dot)));
+            if (!node.IsDefined()) {
+                return node;
+            }
+            path.remove_prefix(dot + 1);
         }
-        return find_path(find_node(yaml, path.substr(0, dot)), path.substr(dot + 1));
     }
 
     // The getter guards the whole lookup, not just the conversion: yaml-cpp

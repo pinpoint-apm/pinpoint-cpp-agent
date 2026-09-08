@@ -692,6 +692,17 @@ TEST_F(ConfigTest, EnvSourcedValueSurvivesFileReload) {
 // Same layout and semantics as the Go agent's `profile.<name>`: the selected
 // subtree overrides the file's top-level keys and is itself overridden by the
 // environment. Defaults < file < profile < env.
+// ActiveProfile comes from the environment, so its dotted-path lookup must not
+// recurse once per segment: a long value would overflow the stack. It resolves
+// to "no such profile" and the base config stands.
+TEST_F(ConfigTest, ActiveProfileWithManyDotsDoesNotOverflowTheStack) {
+    std::string deep(200000, '.');
+    set_config_string("ApplicationName: ProfileApp\nActiveProfile: \"" + deep + "\"\nSampling:\n  CounterRate: 3\n");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->sampling.counter_rate, 3);
+}
+
 TEST_F(ConfigTest, ActiveProfileOverridesBaseAndEnvOverridesProfile) {
     set_config_string(R"(
 ApplicationName: ProfileApp

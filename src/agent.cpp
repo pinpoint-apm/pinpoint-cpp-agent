@@ -643,7 +643,17 @@ namespace pinpoint {
             // worker is joined (or kept alive by the teardown reaper) before
             // the agent is destroyed.
             return std::thread{[this, bit, body = std::move(body)] {
-                body();
+                // Last line of defense: the bodies are supervised, but the
+                // code before/after their supervisor (getConfig() snapshots,
+                // shutdown drains) can still throw on allocation failure, and
+                // an exception leaving a std::thread body terminates the host.
+                try {
+                    body();
+                } catch (const std::exception& e) {
+                    try { LOG_ERROR("worker exited by exception: {}", e.what()); } catch (...) {}
+                } catch (...) {
+                    try { LOG_ERROR("worker exited by unknown exception"); } catch (...) {}
+                }
                 running_workers_.fetch_and(~bit, std::memory_order_relaxed);
             }};
         } catch (...) {
@@ -1274,12 +1284,15 @@ namespace pinpoint {
             grpc_metadata_->enqueueMeta(std::move(meta));
         }
         if (id > 0) {
+            // The only throwing step goes first: if the string assignment
+            // fails, the entry keeps its previous consistent contents instead
+            // of a new id paired with the old key.
+            entry.api_str.assign(api_str.data(), api_str.size());
             entry.owner = api_cache_owner_;
             entry.generation = generation;
             entry.hash = hash;
             entry.api_type = api_type;
             entry.id = id;
-            entry.api_str.assign(api_str.data(), api_str.size());
         }
         return id;
     } CATCH_AND_LOG_RETURN("failed to cache api meta:", 0)

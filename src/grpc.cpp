@@ -1020,7 +1020,7 @@ namespace pinpoint {
         // collector is one condition, not one condition per id, and an
         // unthrottled line per rejection serializes the worker on the logger
         // mutex and its per-line flush. The first rejection always reports.
-        for (auto& call : done) {
+        for (auto& call : done) try {
             if (call->status.ok() && call->reply.success()) {
                 LOG_DEBUG("success to send {} metadata", call->operation_name);
                 continue;
@@ -1062,6 +1062,16 @@ namespace pinpoint {
                           call->operation_name, call->reply.message(), rejected);
             }
             schedule_cache_release(std::move(call->meta));
+        } catch (...) {
+            // Per item, so one failing release/report cannot abandon the rest
+            // of the batch: the supervisor would restart the worker and this
+            // vector would die with its items, leaving their cache ids
+            // published for metadata the collector never accepted. Keep the
+            // drop ⇒ release invariant for the failing item too.
+            try { LOG_ERROR("failed to process completed {} metadata", call->operation_name); } catch (...) {}
+            if (call->meta) {
+                try { release_failed_cache(*call->meta); } catch (...) {}
+            }
         }
     }
 
@@ -1109,7 +1119,11 @@ namespace pinpoint {
                         [this] { run_meta_worker(); return true; });
         // Runs on this worker thread, which the shutdown path joins under its
         // deadline — the signal phase (stopMetaWorker) stays non-blocking.
-        await_in_flight_requests();
+        // Outside the supervisor, so its own boundary: an allocation failure
+        // here would otherwise leave the thread body and terminate the host.
+        try {
+            await_in_flight_requests();
+        } CATCH_AND_LOG("await in-flight meta requests")
     }
 
     void GrpcMetadata::run_meta_worker() {
@@ -1596,7 +1610,11 @@ namespace pinpoint {
                             [this] { return stopping(); },
                             [this] { run_command_worker(); return true; });
         }
-        stop_active_thread_count_streams();
+        // Outside the supervisor: a lock or join failure here must not leave
+        // the thread body (std::terminate in the host).
+        try {
+            stop_active_thread_count_streams();
+        } CATCH_AND_LOG("stop active thread count streams")
     }
 
     void GrpcCommand::run_command_worker() {
@@ -2194,8 +2212,16 @@ namespace pinpoint {
         LOG_DEBUG("ping - OnDone : {}", static_cast<int>(status.error_code()));
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_status_ = status;
+        // STREAM_DONE first: the worker's await_stream_done() is an unbounded
+        // wait on it, and gRPC does not catch exceptions out of a scheduled
+        // OnDone. The status copy allocates its message strings and is the
+        // only thing here that can throw; on failure keep the code alone.
         grpc_status_ = STREAM_DONE;
+        try {
+            stream_status_ = status;
+        } catch (...) {
+            stream_status_ = grpc::Status(status.error_code(), "");
+        }
         stream_cv_.notify_one();
     }
 
@@ -2914,8 +2940,14 @@ namespace pinpoint {
         LOG_DEBUG("stats - OnDone: {}", static_cast<int>(status.error_code()));
 
         std::unique_lock<std::mutex> lock(stream_mutex_);
-        stream_status_ = status;
+        // Same ordering as GrpcAgent::OnDone: the worker waits on STREAM_DONE
+        // without bound, so it is set before the throwing status copy.
         grpc_status_ = STREAM_DONE;
+        try {
+            stream_status_ = status;
+        } catch (...) {
+            stream_status_ = grpc::Status(status.error_code(), "");
+        }
         stream_cv_.notify_one();
     }
 

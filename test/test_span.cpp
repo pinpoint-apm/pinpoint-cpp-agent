@@ -787,6 +787,45 @@ TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
     span.EndSpan();
 }
 
+// Wrapper-supplied depth/sequence below the valid range are malformed: they
+// must be dropped like an overflow, not recorded (and `depth - 1` must not
+// overflow on INT32_MIN).
+TEST_F(SpanTest, RecordSpanEventRejectsNegativeDepthAndSequenceTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    const int64_t now_ms = 1700000000000;
+
+    span.RecordSpanEvent("bad-depth", 2100, 0, 0, now_ms, now_ms, NONE_ASYNC_ID)->EndEvent();
+    span.RecordSpanEvent("bad-depth", 2100, 1, std::numeric_limits<int32_t>::min(),
+                         now_ms, now_ms, NONE_ASYNC_ID)->EndEvent();
+    span.RecordSpanEvent("bad-seq", 2100, -1, 1, now_ms, now_ms, NONE_ASYNC_ID)->EndEvent();
+    span.RecordSpanEvent("kept", 2100, 0, 1, now_ms, now_ms, NONE_ASYNC_ID)->EndEvent();
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 1u);
+}
+
+// The wire elapsed field is int32 ms. A start time supplied in seconds rather
+// than milliseconds yields a delta far past INT32_MAX; it must saturate, not
+// wrap to a negative value that the response-time stats would then sum.
+TEST_F(SpanTest, ElapsedClampedToInt32MaxTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    // "Seconds since the epoch" mistaken for milliseconds: ~1.7e9 ms in 1970.
+    const auto seconds_as_ms = std::chrono::system_clock::time_point(std::chrono::milliseconds(1700000000));
+    span.SetStartTime(seconds_as_ms);
+
+    const int64_t now_ms = 1700000000000;
+    auto event = span.RecordSpanEvent("long", 2100, 0, 1, 1700000000, now_ms, NONE_ASYNC_ID);
+    event->EndEvent();
+    span.EndSpan();
+
+    EXPECT_EQ(span.getSpanData()->getElapsed(), std::numeric_limits<int32_t>::max());
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    const auto& events = mock_agent_service_->recorded_spans_.back()->getSpanEventChunk();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0]->getEndElapsed(), std::numeric_limits<int32_t>::max());
+}
+
 // system_clock can step backwards (NTP); elapsed must be clamped, never
 // negative. Simulated by forcing a start time in the future.
 TEST_F(SpanTest, ElapsedClampedToNonNegativeTest) {

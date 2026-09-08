@@ -51,7 +51,15 @@ namespace pinpoint {
         if (event_stack_.capacity() == 0) {
             event_stack_.reserve(kInitialEventStackCapacity);
         }
-        event_stack_.push_back(std::move(se));
+        try {
+            event_stack_.push_back(std::move(se));
+        } catch (...) {
+            // Allocation failed before the move: give back the depth
+            // reserved above, or every later event on this span would be
+            // judged one level too deep for the rest of its life.
+            decrEventDepth();
+            throw;
+        }
         return event;
     }
 
@@ -145,12 +153,19 @@ namespace pinpoint {
         // exactly that on every chunk flush, so a long-lived span reallocates
         // and copies the whole vector per flush (O(E^2/C)). Plain emplace_back
         // grows geometrically instead — O(log E) reallocations overall.
+        const auto first_retired = retired_events_.size();
         try {
             for (auto& event : finished_events) {
                 out.push_back(event.get());
                 retired_events_.emplace_back(std::move(event));
             }
         } catch (...) {
+            // The events already moved to retired_events_ will never ride a
+            // chunk (out is cleared below), so nothing else would free their
+            // payload before the span dies; release it here.
+            for (auto i = first_retired; i < retired_events_.size(); ++i) {
+                retired_events_[i]->releaseRetiredPayload();
+            }
             // A mid-loop failure leaves already-processed events owned by
             // retired_events_ and their finished_events slots null. Compact
             // the nulls away — a later flush must not hand a chunk null
@@ -365,6 +380,12 @@ namespace pinpoint {
      * Shared by both event entry points so the two cannot drift apart.
      */
     static bool is_event_overflow(const Config& cfg, int32_t depth, int32_t sequence) {
+        // depth/sequence can be wrapper input (RecordSpanEvent): a depth below
+        // 1 or a negative sequence is malformed, and rejecting them first also
+        // keeps `depth - 1` from overflowing on INT32_MIN.
+        if (depth < 1 || sequence < 0) {
+            return true;
+        }
         return depth - 1 > cfg.span.max_event_depth || sequence >= cfg.span.max_event_sequence;
     }
 

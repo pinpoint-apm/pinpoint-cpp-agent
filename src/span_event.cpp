@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <limits>
 #include <cassert>
 #include <iterator>
 #include <type_traits>
@@ -252,11 +253,12 @@ namespace pinpoint {
             ? end_time_
             : to_milli_seconds(std::chrono::system_clock::now());
         // system_clock can step backwards (NTP); never report a negative
-        // elapsed time. Only the low side is clamped: the wire field is
-        // int32 ms, so a delta beyond INT32_MAX ms (~24.8 days — e.g. a
-        // user-supplied start time in seconds instead of ms) wraps.
-        elapsed_ = static_cast<int32_t>(
-            std::max<int64_t>(end_time - start_time_, 0));
+        // elapsed time. The high side is clamped too: the wire field is
+        // int32 ms, and a delta beyond INT32_MAX ms (~24.8 days — e.g. a
+        // user-supplied start time in seconds instead of ms) would wrap
+        // negative and be summed into the response-time stats.
+        elapsed_ = static_cast<int32_t>(std::clamp<int64_t>(
+            end_time - start_time_, 0, std::numeric_limits<int32_t>::max()));
     }
 
     void SpanEventImpl::releaseRetiredPayload() noexcept {
