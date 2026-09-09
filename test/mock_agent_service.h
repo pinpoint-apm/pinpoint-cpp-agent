@@ -168,10 +168,10 @@ public:
                 std::move(normalized.parameters),
                 std::move(normalized.normalized_sql)});
         };
-        auto& cache = (mode == SqlMetaMode::Id) ? raw_sql_id_cache_
-                                                : raw_sql_uid_cache_;
-        auto sql = config->sql.enable_raw_sql_cache ? cache.get(raw_sql, prepare).value
-                                                    : prepare();
+        // Mode-independent, like AgentImpl's raw_sql_cache_.
+        auto sql = config->sql.enable_raw_sql_cache
+                       ? raw_sql_cache_.get(raw_sql, prepare).value
+                       : prepare();
 
         if (mode == SqlMetaMode::Id) {
             const auto id = cacheSql(sql->normalized_sql);
@@ -325,8 +325,7 @@ public:
     mutable std::atomic<int> removed_error_count_{0};
     mutable std::atomic<int> removed_sql_count_{0};
     mutable std::atomic<int> removed_sql_uid_count_{0};
-    mutable RawSqlCache raw_sql_id_cache_{128, 4};
-    mutable RawSqlCache raw_sql_uid_cache_{128, 4};
+    mutable RawSqlCache raw_sql_cache_{128, 4};
     mutable std::atomic<uint64_t> sql_normalize_count_{0};
     mutable std::atomic<bool> force_sql_id_failure_{false};
 

@@ -813,6 +813,8 @@ TEST_F(AgentImplTest, RemoveCacheIgnoresReleaseCarryingAStaleId) {
     EXPECT_EQ(api_id, agent_->cacheApi("GET /users", 1000));
 }
 
+// The raw cache is shared by both modes; only the identity namespaces differ.
+// Invalidating the UID must not disturb the id path or the shared entry.
 TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
     constexpr std::string_view raw_sql = "SELECT * FROM users WHERE id = 42";
     auto id_entry = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
@@ -820,7 +822,8 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
 
     ASSERT_TRUE(id_entry.has_value());
     ASSERT_TRUE(uid_entry.has_value());
-    EXPECT_NE(id_entry->sql, uid_entry->sql);
+    EXPECT_EQ(id_entry->sql, uid_entry->sql)
+        << "the normalization is mode-independent and cached once";
     EXPECT_TRUE(std::holds_alternative<int32_t>(id_entry->identity));
     EXPECT_TRUE(std::holds_alternative<SqlUid>(uid_entry->identity));
 
@@ -835,6 +838,35 @@ TEST_F(AgentImplTest, PrepareSqlKeepsIdAndUidNamespacesIndependent) {
     auto id_hit = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
     ASSERT_TRUE(id_hit.has_value());
     EXPECT_EQ(id_entry->sql, id_hit->sql);
+}
+
+// A raw statement is normalized once no matter how the mode alternates: the
+// raw cache holds the mode-independent normalization and is shared, so the
+// second mode hits the entry the first one populated instead of recomputing
+// (and storing) it a second time. Pointer identity of the immutable
+// PreparedSql is the observable proof of a single normalization.
+TEST_F(AgentImplTest, PrepareSqlNormalizesOnceAcrossAlternatingModes) {
+    constexpr std::string_view raw_sql =
+        "SELECT * FROM orders WHERE customer_id = 7 AND status = 'PAID'";
+
+    auto id_first = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
+    auto uid_first = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
+    auto id_second = agent_->prepareSql(raw_sql, SqlMetaMode::Id);
+    auto uid_second = agent_->prepareSql(raw_sql, SqlMetaMode::Uid);
+
+    ASSERT_TRUE(id_first.has_value());
+    ASSERT_TRUE(uid_first.has_value());
+    ASSERT_TRUE(id_second.has_value());
+    ASSERT_TRUE(uid_second.has_value());
+    ASSERT_NE(id_first->sql, nullptr);
+    EXPECT_EQ(id_first->sql, uid_first->sql);
+    EXPECT_EQ(id_first->sql, id_second->sql);
+    EXPECT_EQ(id_first->sql, uid_second->sql);
+    EXPECT_EQ(id_first->sql->parameters, "7,PAID");
+    EXPECT_TRUE(std::holds_alternative<int32_t>(id_first->identity));
+    EXPECT_TRUE(std::holds_alternative<SqlUid>(uid_first->identity));
+    EXPECT_EQ(id_first->identity, id_second->identity);
+    EXPECT_EQ(uid_first->identity, uid_second->identity);
 }
 
 // Sql.CacheLengthLimit must reach the SQL caches the ctor builds: a statement

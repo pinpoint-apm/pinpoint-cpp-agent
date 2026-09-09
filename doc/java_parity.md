@@ -32,6 +32,7 @@ by side.
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Oversize SQL statement | `DefaultSqlNormalizer` (no cap) | **Exceeds Java, shared with Go** — see [below](#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go) |
 | Queued SQL / error metadata text | `SqlCacheService`, `profiler.jdbc.maxsqllength` | **Same as Java** — see [below](#queued-metadata-text-is-abbreviated-at-cache-time--same-as-java) |
+| Raw-SQL normalization cache | none (`DefaultSqlNormalizer` re-normalizes every call) | **Exceeds Java, shared with Go** — see [below](#raw-sql-normalization-cache--exceeds-java-shared-with-go) |
 | Per-environment configuration profiles | `ProfileConfigLoader`, `pinpoint.profiler.profiles.active`, `profiles/{release,local}/pinpoint.config` | **Same idea, Go's layout** — see [below](#configuration-profiles--same-idea-gos-layout) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
@@ -302,6 +303,25 @@ in both.
 
 **Upgrade note.** A statement over 1 MiB used to appear with a truncated key;
 it now does not appear at all, and a throttled warning names its size.
+
+## Raw-SQL normalization cache — exceeds Java, shared with Go
+
+**Java.** There is no cache in front of the normalizer: `DefaultSqlNormalizer`
+re-parses every statement, and the only caches are the id/uid ones keyed by
+the *normalized* text (`SqlCacheService`).
+
+**Go.** One `rawSqlCache` (`agent.go`) maps raw text to the normalization
+result (`normalizedSql{sql, param}`), shared by the id and uid paths.
+
+**This agent.** One `raw_sql_cache_` (`AgentImpl`, `RawSqlCache` in
+`src/cache.h`), likewise shared by both `SqlMetaMode`s. It briefly held two
+caches, one per mode (gap C6): the cached `PreparedSql` is only the parameters
+and the normalized text, which the same normalizer with the same
+`Sql.CacheLengthLimit` produces regardless of mode, and the id/uid is resolved
+per use from the id/uid caches. The split therefore stored identical entries
+twice and doubled the raw cache's worst-case memory for nothing; flipping
+`Sql.EnableSqlStats` at runtime also lost every warm entry. The single cache
+is toggled by `Sql.EnableRawSqlCache` (reloadable) and matches Go.
 
 ## Queued metadata text is abbreviated at cache time — same as Java
 

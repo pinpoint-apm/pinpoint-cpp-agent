@@ -130,7 +130,7 @@ namespace pinpoint {
         // Sql.CacheLengthLimit additionally caps what the SQL caches may
         // retain (see kNoCacheLengthLimit): the normalizer admits statements
         // up to kMaxNormalizedSqlLength, so without it a 1024-entry cache is
-        // ~1GB in the worst case, three times over. Startup-only,
+        // ~1GB in the worst case, twice over. Startup-only,
         // like the cache sizes themselves. Deliberately not applied to
         // sql_cache_: its ids come from a sequence, so a bypassed statement
         // would burn a fresh id — and a fresh StringMeta — on every single
@@ -155,9 +155,7 @@ namespace pinpoint {
         sql_uid_cache_ = std::make_unique<SqlUidCache>(
             cache_size, kDefaultCacheShardCount, sql_cache_length_limit,
             sql_uid_expiry);
-        raw_sql_id_cache_ = std::make_unique<RawSqlCache>(
-            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
-        raw_sql_uid_cache_ = std::make_unique<RawSqlCache>(
+        raw_sql_cache_ = std::make_unique<RawSqlCache>(
             cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
         sql_normalizer_ = std::make_unique<const SqlNormalizer>(
             kMaxNormalizedSqlLength, cfg->sql.remove_comments);
@@ -1386,12 +1384,15 @@ namespace pinpoint {
                 std::move(normalized.normalized_sql)});
         };
 
-        auto& cache = (mode == SqlMetaMode::Id) ? *raw_sql_id_cache_
-                                                : *raw_sql_uid_cache_;
+        // The cache is shared by both modes (see raw_sql_cache_): the
+        // normalization does not depend on the mode, only the identity
+        // resolution below does, so switching Sql.EnableSqlStats at runtime
+        // keeps every entry valid.
+        //
         // One relaxed load instead of a runtime snapshot lookup plus owning
         // Config copy: this runs once per SQL statement and only needs this flag.
         auto sql = raw_sql_cache_enabled_.load(std::memory_order_relaxed)
-                       ? cache.get(raw_sql, prepare).value
+                       ? raw_sql_cache_->get(raw_sql, prepare).value
                        : prepare();
 
         if (mode == SqlMetaMode::Id) {

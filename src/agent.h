@@ -233,8 +233,13 @@ namespace pinpoint {
         std::unique_ptr<IdCache> error_cache_{};
         std::unique_ptr<IdCache> sql_cache_{};
         std::unique_ptr<SqlUidCache> sql_uid_cache_{};
-        std::unique_ptr<RawSqlCache> raw_sql_id_cache_{};
-        std::unique_ptr<RawSqlCache> raw_sql_uid_cache_{};
+        // One cache for both SqlMetaModes: a PreparedSql holds only the
+        // normalization result (parameters + normalized text), which the same
+        // normalizer with the same length limit produces for a given raw
+        // statement regardless of mode. The id/uid is resolved per use from
+        // sql_cache_/sql_uid_cache_, so nothing mode-specific lives here and
+        // splitting it would only store the same entries twice.
+        std::unique_ptr<RawSqlCache> raw_sql_cache_{};
         // Immutable after the ctor (Sql.RemoveComments is startup-only) and
         // normalize() keeps all state local, so it is shared by every thread.
         std::unique_ptr<const SqlNormalizer> sql_normalizer_{};
