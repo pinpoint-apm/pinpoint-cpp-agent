@@ -376,8 +376,12 @@ TEST(ForkLifecycleTest, InheritedActiveSpanRegistryIsInertInChild) {
         // retries the drop for as long as the span object lives.
         stats.dropActiveSpan(parent_node);
         const bool parent_abandoned = !parent_node.isLinked();
+        // The inherited counter came across counting the parent's span;
+        // abandoning it must take it back out, or the child's copy reports
+        // a leak forever.
+        const bool count_settled = stats.activeSpanCount() == 0;
 
-        _exit((histogram_empty && child_unlinked && parent_abandoned) ? 0 : 1);
+        _exit((histogram_empty && child_unlinked && parent_abandoned && count_settled) ? 0 : 1);
     }
 
     int status = 0;
@@ -392,7 +396,9 @@ TEST(ForkLifecycleTest, InheritedActiveSpanRegistryIsInertInChild) {
     int32_t buckets[4] = {0, 0, 0, 0};
     stats.collectActiveRequests(buckets, kStartTime + 100);
     EXPECT_EQ(buckets[0] + buckets[1] + buckets[2] + buckets[3], 1);
+    EXPECT_EQ(stats.activeSpanCount(), 1u);
     stats.dropActiveSpan(parent_node);
+    EXPECT_EQ(stats.activeSpanCount(), 0u);
 }
 
 } // namespace pinpoint

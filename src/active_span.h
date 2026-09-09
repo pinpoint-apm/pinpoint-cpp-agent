@@ -76,6 +76,11 @@ namespace pinpoint {
     struct alignas(64) ActiveSpanShard {
         std::mutex mutex_;
         ActiveSpanNode* head_{nullptr};
+        // Nodes currently linked into head_'s list. Per shard, not one
+        // registry-wide atomic, so the increment at span start lands on the
+        // cache line this request already owns. Atomic because abandon()
+        // adjusts it without the mutex, and size() sums the shards unlocked.
+        std::atomic<size_t> count_{0};
     };
 
     /**
@@ -85,17 +90,39 @@ namespace pinpoint {
      * Header-only so benchmark/active_span_benchmark.cpp measures the exact
      * production code. AgentStats owns one instance and delegates
      * addActiveSpan/dropActiveSpan/collectActiveRequests to it.
+     *
+     * There is deliberately no size cap. Java's DefaultActiveTraceRepository
+     * evicts past maximumSize=10240, but it stores copies in a map, so any
+     * entry may be discarded. Here the nodes are owned by the spans and only
+     * linked into the shard lists: the registry unlinking one on its own
+     * would race the owner's drop and break the linked_ handshake (add's
+     * release / drop's acquire). Refusing an add is not an option either —
+     * drop would then unlink a node that was never linked. The registry only
+     * counts (see size()); the owner (AgentStats) turns a count above
+     * kActiveSpanWarnThreshold into a rate-limited warning.
      */
     class ActiveSpanRegistry {
     public:
-        void add(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
+        static constexpr size_t kShardCount = 64;
+
+        /**
+         * @brief Links @p node into the shard picked by @p span_id.
+         *
+         * @return The number of nodes in that shard after linking, or 0 when
+         *         the call was a no-op. The caller can use it as a cheap
+         *         overflow trigger: when every shard holds at most T/kShardCount
+         *         nodes the registry holds at most T, so a total above T
+         *         implies some shard's count exceeds T/kShardCount — only then
+         *         is the 64-load size() worth computing.
+         */
+        size_t add(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
             // A span registers exactly once (SpanImpl::extractContext or the
             // UnsampledSpan constructor). Re-linking a linked node would
             // corrupt the shard list, so degrade a contract violation to a
             // no-op — the same tolerance the old map's try_emplace used to
             // give a duplicate id.
             if (node.linked_.load(std::memory_order_relaxed)) {
-                return;
+                return 0;
             }
             auto& shard = shardOf(span_id);
             node.start_time_ = start_time;
@@ -107,10 +134,12 @@ namespace pinpoint {
                 shard.head_->prev_ = &node;
             }
             shard.head_ = &node;
+            const auto count = shard.count_.fetch_add(1, std::memory_order_relaxed) + 1;
             // Release pairs with the acquire in drop's unlocked check: a
             // dropper that sees true must also see shard_, which it reads
             // before taking the shard lock.
             node.linked_.store(true, std::memory_order_release);
+            return count;
         }
 
         void drop(ActiveSpanNode& node) {
@@ -137,6 +166,7 @@ namespace pinpoint {
             }
             node.prev_ = nullptr;
             node.next_ = nullptr;
+            shard->count_.fetch_sub(1, std::memory_order_relaxed);
             node.linked_.store(false, std::memory_order_release);
         }
 
@@ -149,9 +179,29 @@ namespace pinpoint {
          * list itself is deliberately left alone: it is the owning process's
          * copy that matters, and this process must not walk it. Clearing
          * `linked_` keeps the destructor backstop from retrying the drop.
+         *
+         * The shard counter is this process's copy-on-write copy, so it is
+         * safe to adjust without the mutex and must be: it was inherited
+         * counting this node, and nothing else will ever subtract it. Only
+         * the call that flips `linked_` subtracts, so a repeated abandon (or
+         * one on a node that never linked) leaves the count alone.
          */
         static void abandon(ActiveSpanNode& node) noexcept {
-            node.linked_.store(false, std::memory_order_release);
+            if (node.linked_.exchange(false, std::memory_order_acq_rel)) {
+                node.shard_->count_.fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+
+        /// @brief Nodes currently linked, summed over the shards without
+        /// locking — a snapshot that concurrent add/drop may already have
+        /// moved past. kShardCount relaxed loads, so callers on the request
+        /// path should gate it on the trigger add() returns.
+        size_t size() const noexcept {
+            size_t total = 0;
+            for (const auto& shard : shards_) {
+                total += shard.count_.load(std::memory_order_relaxed);
+            }
+            return total;
         }
 
         /// @brief Buckets every linked span's age at @p sample_time_ms into
@@ -183,8 +233,6 @@ namespace pinpoint {
         }
 
     private:
-        static constexpr size_t kShardCount = 64;
-
         ActiveSpanShard& shardOf(int64_t span_id) {
             const auto shard_index = std::hash<int64_t>{}(span_id) % shards_.size();
             return shards_[shard_index];

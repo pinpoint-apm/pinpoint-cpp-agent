@@ -1877,6 +1877,8 @@ TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
         stats.collectActiveRequests(counts, now_ms);
         EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1)
             << "Span should be registered as active";
+        EXPECT_EQ(stats.activeSpanCount(), 1u)
+            << "A span that was never ended stays in the registration count";
         // Dropped here WITHOUT EndSpan — an early-return/exception path.
     }
 
@@ -1884,6 +1886,8 @@ TEST_F(SpanTest, SpanDroppedWithoutEndSpanReleasesActiveSpanTest) {
     stats.collectActiveRequests(counts, now_ms);
     EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 0)
         << "Destroying a span without EndSpan must still release its active-span entry";
+    EXPECT_EQ(stats.activeSpanCount(), 0u)
+        << "The destructor backstop must also take the span out of the count";
 }
 
 TEST_F(SpanTest, FinishedSpanDestructorDoesNotReenterAgentStatsTest) {

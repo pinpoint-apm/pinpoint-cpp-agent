@@ -46,6 +46,7 @@ by side.
 | Proxy request headers | `DefaultProxyRequestRecorder`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser` | **Same as Java, Go still diverges** — see [below](#proxy-request-headers--same-as-java-go-still-diverges) |
 | Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, Go still diverges** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges) |
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
+| Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -879,6 +880,41 @@ partial batch too — `runAgentStatsWorker` re-takes only the CPU/time baseline
 (`resetCollectionBaseline()`) on a restart, and cold-initializes
 (`initAgentStats()`) only on its first run — which is the liveness edge this
 agent keeps over Java's `StatMonitorJob`.
+
+---
+
+## Active span registry cap — declined, replaced by a warning
+
+**Java.** `DefaultActiveTraceRepository` keeps in-flight traces in a Caffeine
+cache built with `maximumSize(DEFAULT_MAX_ACTIVE_TRACE_SIZE)` (`1024 * 10`).
+The map holds copies (`ActiveTraceHandle`), so when instrumentation forgets to
+end a trace the cache silently evicts arbitrary entries and memory stays
+bounded — at the cost of an active-trace histogram that under-reports.
+
+**Go.** `activeSpanRegistry` is a set of per-shard maps with no cap. Its entries
+are real map values, so the same missing-end bug accumulates memory there far
+faster than here; a real cap or eviction is worth considering on that side.
+
+**This agent.** `ActiveSpanRegistry` (`src/active_span.h`) has no cap and does
+not evict, deliberately. Registrations are intrusive nodes owned by the span
+(`ActiveSpanNode` is embedded in `SpanImpl` / `UnsampledSpan`) and merely
+linked into a shard list. The registry unlinking one on its own would race the
+owner's `drop` and break the `linked_` handshake (the release in `add` paired
+with the acquire in `drop`); refusing an `add` past a limit would leave `drop`
+unlinking a node that was never linked. Either needs a redesign of the
+ownership contract, not a size check. What a leaked node costs is also
+different: the span already owns the memory, the registry adds no allocation,
+so the leak is the span's, and eviction would only hide it from the histogram.
+
+Instead the registry counts its nodes (a per-shard atomic, adjusted by `add`,
+`drop` and the fork-only `abandon`), and `AgentStats::addActiveSpan`
+(`src/stat.cpp`) logs a rate-limited WARN (the `LOG_WARN_THROTTLED` /
+`QueueDropReporter` pattern) when the total exceeds
+`AgentStats::kActiveSpanWarnThreshold`, Java's 10240, naming the count and the
+threshold so the operator can suspect a missing `EndSpan`. The threshold is not
+configurable: Java's is a constant too, and a count above it is never
+legitimate load. The count is not added to `PAgentStat` — the active-request
+histogram already sums to it.
 
 ---
 

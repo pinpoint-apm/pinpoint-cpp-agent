@@ -1091,4 +1091,121 @@ TEST_F(StatTest, ManyActiveSpansTest) {
     }
 }
 
+// ========== Active span registration counter ==========
+
+TEST_F(StatTest, ActiveSpanCountReturnsToZeroAfterAddAndDrop) {
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 0u);
+
+    ActiveSpanNode nodes[3];
+    for (int i = 0; i < 3; i++) {
+        agent_stats_->addActiveSpan(nodes[i], 7001 + i, 1'000'000);
+    }
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 3u);
+
+    // A duplicate add is a no-op and must not count twice.
+    agent_stats_->addActiveSpan(nodes[0], 7001, 1'000'000);
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 3u);
+
+    agent_stats_->dropActiveSpan(nodes[0]);
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 2u);
+    // A repeated drop (destructor backstop after EndSpan) is a no-op too.
+    agent_stats_->dropActiveSpan(nodes[0]);
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 2u);
+
+    agent_stats_->dropActiveSpan(nodes[1]);
+    agent_stats_->dropActiveSpan(nodes[2]);
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 0u);
+}
+
+// A node whose owner never dropped it stays counted — that is the leak the
+// warning exists to surface. The registry cannot evict (see active_span.h).
+TEST_F(StatTest, ActiveSpanMissingDropStaysCounted) {
+    ActiveSpanNode ended, leaked;
+    agent_stats_->addActiveSpan(ended, 7101, 1'000'000);
+    agent_stats_->addActiveSpan(leaked, 7102, 1'000'000);
+    agent_stats_->dropActiveSpan(ended);
+
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 1u);
+    int32_t buckets[4]{};
+    agent_stats_->collectActiveRequests(buckets, 1'000'000 + 100'000);
+    EXPECT_EQ(buckets[0] + buckets[1] + buckets[2] + buckets[3], 1)
+        << "the histogram and the counter must agree on the leaked span";
+
+    agent_stats_->dropActiveSpan(leaked);
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 0u);
+}
+
+// abandon() is the fork-inherited path: it clears linked_ without touching
+// the shard list, and must take the node out of the count exactly once.
+TEST(ActiveSpanRegistryTest, AbandonKeepsTheCountExact) {
+    ActiveSpanRegistry registry;
+    ActiveSpanNode linked, never_linked;
+    registry.add(linked, 4242, 1'000'000);
+    ASSERT_EQ(registry.size(), 1u);
+
+    ActiveSpanRegistry::abandon(linked);
+    EXPECT_FALSE(linked.isLinked());
+    EXPECT_EQ(registry.size(), 0u);
+
+    // Repeated abandon and abandon of a node that never linked must not
+    // underflow the counter.
+    ActiveSpanRegistry::abandon(linked);
+    ActiveSpanRegistry::abandon(never_linked);
+    EXPECT_EQ(registry.size(), 0u);
+    // drop after abandon is the destructor-backstop path: a no-op.
+    registry.drop(linked);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
+// Crossing kActiveSpanWarnThreshold logs once per report interval, however
+// many further registrations happen while over it; the message carries the
+// current count and the threshold.
+TEST_F(StatTest, ActiveSpanCountAboveThresholdWarnsOnceAndIsRateLimited) {
+    constexpr size_t kOver = 16;
+    const size_t total = AgentStats::kActiveSpanWarnThreshold + kOver;
+    std::vector<ActiveSpanNode> nodes(total);
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    for (size_t i = 0; i < total; i++) {
+        agent_stats_->addActiveSpan(nodes[i], static_cast<int64_t>(100'000 + i), 1'000'000);
+    }
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+
+    EXPECT_EQ(agent_stats_->activeSpanCount(), total);
+    const auto first = logged.find("active span count");
+    ASSERT_NE(first, std::string::npos)
+        << "crossing the threshold must be reported; got: " << logged;
+    EXPECT_NE(logged.find("exceeds " + std::to_string(AgentStats::kActiveSpanWarnThreshold)),
+              std::string::npos) << logged;
+    EXPECT_EQ(logged.find("active span count", first + 1), std::string::npos)
+        << "the report must be rate-limited to one line per interval; got: " << logged;
+
+    for (size_t i = 0; i < total; i++) {
+        agent_stats_->dropActiveSpan(nodes[i]);
+    }
+    EXPECT_EQ(agent_stats_->activeSpanCount(), 0u);
+}
+
+// Exactly at the threshold nothing is logged: the warning means "more than
+// Java would keep", not "as many as".
+TEST_F(StatTest, ActiveSpanCountAtThresholdDoesNotWarn) {
+    const size_t total = AgentStats::kActiveSpanWarnThreshold;
+    std::vector<ActiveSpanNode> nodes(total);
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    for (size_t i = 0; i < total; i++) {
+        agent_stats_->addActiveSpan(nodes[i], static_cast<int64_t>(200'000 + i), 1'000'000);
+    }
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(logged.find("active span count"), std::string::npos) << logged;
+
+    for (size_t i = 0; i < total; i++) {
+        agent_stats_->dropActiveSpan(nodes[i]);
+    }
+}
+
 } // namespace pinpoint

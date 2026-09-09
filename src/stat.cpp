@@ -431,7 +431,24 @@ namespace pinpoint {
         if (inheritedAcrossFork()) {
             return;
         }
-        active_spans_.add(node, span_id, start_time);
+        const auto shard_count = active_spans_.add(node, span_id, start_time);
+        // Pigeonhole trigger (see ActiveSpanRegistry::add): the total can
+        // only exceed the threshold once some shard holds more than its
+        // 1/kShardCount share, so the healthy path pays one comparison and
+        // never the 64-shard sum.
+        if (shard_count * ActiveSpanRegistry::kShardCount > kActiveSpanWarnThreshold) {
+            const auto total = active_spans_.size();
+            if (total > kActiveSpanWarnThreshold) {
+                LOG_WARN_THROTTLED("active span count {} exceeds {}: spans may not be ended "
+                                   "(missing EndSpan/EndSpan on an error path); the registry "
+                                   "does not evict, so this grows until they are",
+                                   total, kActiveSpanWarnThreshold);
+            }
+        }
+    }
+
+    size_t AgentStats::activeSpanCount() const noexcept {
+        return active_spans_.size();
     }
 
     void AgentStats::dropActiveSpan(ActiveSpanNode& node) {

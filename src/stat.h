@@ -88,6 +88,19 @@ namespace pinpoint {
         // backstop, releaseActiveSpanOnError) is an atomic load and return.
         void addActiveSpan(ActiveSpanNode& node, int64_t span_id, int64_t start_time);
         void dropActiveSpan(ActiveSpanNode& node);
+        /// @brief Spans currently registered (a lock-free snapshot). Not sent
+        /// to the collector — PAgentStat has no field for it and the
+        /// histogram already carries the same total — it backs the
+        /// kActiveSpanWarnThreshold warning and tests.
+        size_t activeSpanCount() const noexcept;
+
+        // Registered spans above which addActiveSpan logs a rate-limited
+        // WARN. Java's DefaultActiveTraceRepository evicts past this same
+        // size (DEFAULT_MAX_ACTIVE_TRACE_SIZE = 1024 * 10); this registry
+        // cannot evict (see active_span.h), so the count is only reported.
+        // A sustained count above it means spans are not being ended — an
+        // instrumentation bug in the host — not legitimate load.
+        static constexpr size_t kActiveSpanWarnThreshold = 10240;
         
         // Counter incrementers. Called once per request, routed to the
         // caller's per-thread shard (see ResponseTimeShard) so the RMW lands
