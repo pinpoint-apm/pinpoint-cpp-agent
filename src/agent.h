@@ -270,25 +270,54 @@ namespace pinpoint {
         std::shared_ptr<UrlStats> url_stats_{};
         std::shared_ptr<AgentStats> agent_stats_{};
 
-        std::thread init_thread_;
-        std::thread ping_thread_;
-        std::thread meta_thread_;
-        std::thread span_thread_;
-        std::thread stat_thread_;
-        std::thread command_thread_;
-        std::thread url_stat_add_thread_;
-        std::thread url_stat_send_thread_;
-        std::thread agent_stat_thread_;
+        /// The worker threads this agent owns. One entry per Worker, indexed
+        /// by the enum value; the thread's body, log name, stop signal and
+        /// start condition live in the WorkerSpec table (worker_specs()),
+        /// so adding a worker means adding an enumerator and a table row —
+        /// the spawn, stop, join and abandon loops are all table-driven.
+        enum Worker : unsigned {
+            kInit, kPing, kMeta, kSpan, kStat, kCommand,
+            kUrlStatAdd, kUrlStatSend, kAgentStat, kWorkerCount
+        };
+        /// When a worker is spawned: kInit is spawned by Start() and spawns
+        /// the kAfterRegistration workers itself once the collector accepted
+        /// the first AgentInfo (init_grpc_workers).
+        enum class WorkerPhase { kBoot, kAfterRegistration };
+        struct WorkerSpec {
+            Worker worker;
+            const char* name;              // for running_worker_names()
+            WorkerPhase phase;
+            /// Null means unconditional; otherwise the worker is spawned and
+            /// signaled only while this returns true (command worker: only
+            /// when a command client was built).
+            bool (*enabled)(const AgentImpl&);
+            /// The thread body, run under spawn_worker()'s guard.
+            void (*body)(AgentImpl&);
+            /// Non-blocking stop signal (flag / cv notify / TryCancel only).
+            void (*stop)(AgentImpl&);
+        };
+        /// The single description of every worker, indexed by Worker. Table
+        /// order is spawn order; teardown follows kTeardownOrder instead.
+        static constexpr std::array<WorkerSpec, kWorkerCount> worker_specs();
+        /// @brief Compile-time check that the table, kTeardownOrder and the
+        /// enum agree (static_asserted in spawn_worker()).
+        static constexpr bool worker_table_consistent();
+        /// Stop-signal and join order. Not the enum order, and not sortable:
+        /// kInit must be joined first because init_grpc_workers assigns the
+        /// other worker_threads_ entries, so joining them earlier would race
+        /// those writes. The remaining order is the historical one, kept so
+        /// this refactor changes no behavior.
+        static constexpr std::array<Worker, kWorkerCount> kTeardownOrder{{
+            kInit, kUrlStatAdd, kUrlStatSend, kAgentStat,
+            kPing, kMeta, kSpan, kStat, kCommand,
+        }};
+        std::array<std::thread, kWorkerCount> worker_threads_{};
 
         /// One bit per worker thread above, set by spawn_worker() before the
         /// thread exists and cleared as its body returns. Read only when the
         /// shutdown deadline expires, to name the threads not yet joined:
         /// std::thread::joinable() cannot be asked that while the teardown
         /// runner is join()ing them (a data race on the thread object).
-        enum Worker : unsigned {
-            kInit, kPing, kMeta, kSpan, kStat, kCommand,
-            kUrlStatAdd, kUrlStatSend, kAgentStat, kWorkerCount
-        };
         std::atomic<unsigned> running_workers_{0};
 
         // Serializes reloadConfig() writers. Building a new AgentRuntime is a
@@ -385,6 +414,8 @@ namespace pinpoint {
         void wait_grpc_workers();
         /// @brief Spawns @p body on a std::thread tracked in running_workers_.
         std::thread spawn_worker(Worker worker, std::function<void()> body);
+        /// @brief Spawns the table entry for @p worker into worker_threads_.
+        void spawn_worker(Worker worker);
         /// @brief Names of the workers whose thread has not returned yet.
         std::string running_worker_names() const;
         /// @brief Performs the actual shutdown work (workers, watcher, logger)

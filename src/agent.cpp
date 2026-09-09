@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <string>
 #include <exception>
+#include <iterator>
 #include <utility>
 #include <condition_variable>
 #include <mutex>
@@ -339,7 +340,7 @@ namespace pinpoint {
         }
 
         try {
-            init_thread_ = spawn_worker(kInit, [this] { init_grpc_workers(); });
+            spawn_worker(kInit);
         } catch (...) {
             if (config_watcher_) {
                 config_watcher_->stop();
@@ -564,16 +565,12 @@ namespace pinpoint {
         // never touch enabled_.
         grpc_agent_->startAgentInfo();
 
-        ping_thread_ = spawn_worker(kPing, [this] { grpc_agent_->sendPingWorker(); });
-        meta_thread_ = spawn_worker(kMeta, [this] { grpc_metadata_->sendMetaWorker(); });
-        span_thread_ = spawn_worker(kSpan, [this] { grpc_span_->sendSpanWorker(); });
-        stat_thread_ = spawn_worker(kStat, [this] { grpc_stat_->sendStatsWorker(); });
-        if (grpc_command_) {
-            command_thread_ = spawn_worker(kCommand, [this] { grpc_command_->commandWorker(); });
+        for (const auto& spec : worker_specs()) {
+            if (spec.phase == WorkerPhase::kAfterRegistration &&
+                (spec.enabled == nullptr || spec.enabled(*this))) {
+                spawn_worker(spec.worker);
+            }
         }
-        url_stat_add_thread_ = spawn_worker(kUrlStatAdd, [this] { url_stats_->addUrlStatsWorker(); });
-        url_stat_send_thread_ = spawn_worker(kUrlStatSend, [this] { url_stats_->sendUrlStatsWorker(); });
-        agent_stat_thread_ = spawn_worker(kAgentStat, [this] { agent_stats_->agentStatsWorker(); });
 
         // All workers are up: enable span recording. A shutdown racing this
         // init must not re-enable an agent being torn down.
@@ -607,22 +604,98 @@ namespace pinpoint {
         return;
     }
 
+    // The worker table. Adding a worker: add its enumerator to Worker, a row
+    // here (same position), and its place in kTeardownOrder; the static_asserts
+    // below fail the build otherwise. Bodies and stop signals are captureless
+    // lambdas so the table stays constexpr; they run with `this` as the
+    // argument. The stop entries must not block (see request_stop_workers).
+    constexpr std::array<AgentImpl::WorkerSpec, AgentImpl::kWorkerCount> AgentImpl::worker_specs() {
+        return {{
+            // kInit's stop signal is requestStopAgentInfo(): the init thread
+            // waits on the AgentInfo cv inside registerAgentWithRetry(), and
+            // the same signal also stops the AgentInfo scheduler thread that
+            // GrpcAgent owns (not a table worker; joined by stopAgentInfo()).
+            {kInit, "init", WorkerPhase::kBoot, nullptr,
+             [](AgentImpl& a) { a.init_grpc_workers(); },
+             [](AgentImpl& a) { a.grpc_agent_->requestStopAgentInfo(); }},
+            {kPing, "ping", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.grpc_agent_->sendPingWorker(); },
+             [](AgentImpl& a) { a.grpc_agent_->stopPingWorker(); }},
+            {kMeta, "meta", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.grpc_metadata_->sendMetaWorker(); },
+             [](AgentImpl& a) { a.grpc_metadata_->stopMetaWorker(); }},
+            {kSpan, "span", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.grpc_span_->sendSpanWorker(); },
+             [](AgentImpl& a) { a.grpc_span_->stopSpanWorker(); }},
+            {kStat, "stat", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.grpc_stat_->sendStatsWorker(); },
+             [](AgentImpl& a) { a.grpc_stat_->stopStatsWorker(); }},
+            {kCommand, "command", WorkerPhase::kAfterRegistration,
+             [](const AgentImpl& a) { return a.grpc_command_ != nullptr; },
+             [](AgentImpl& a) { a.grpc_command_->commandWorker(); },
+             [](AgentImpl& a) { a.grpc_command_->requestStopCommandWorker(); }},
+            {kUrlStatAdd, "url-stat-add", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.url_stats_->addUrlStatsWorker(); },
+             [](AgentImpl& a) { a.url_stats_->stopAddUrlStatsWorker(); }},
+            {kUrlStatSend, "url-stat-send", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.url_stats_->sendUrlStatsWorker(); },
+             [](AgentImpl& a) { a.url_stats_->stopSendUrlStatsWorker(); }},
+            {kAgentStat, "agent-stat", WorkerPhase::kAfterRegistration, nullptr,
+             [](AgentImpl& a) { a.agent_stats_->agentStatsWorker(); },
+             [](AgentImpl& a) { a.agent_stats_->stopAgentStatsWorker(); }},
+        }};
+    }
+
+    constexpr bool AgentImpl::worker_table_consistent() {
+        // Every row sits at the index of its own enumerator, so
+        // worker_specs()[w] describes w; kTeardownOrder is a permutation of
+        // the enumerators (nothing missing, nothing twice); every row has a
+        // name, a body and a stop signal.
+        const auto specs = worker_specs();
+        unsigned seen = 0;
+        for (unsigned i = 0; i < specs.size(); ++i) {
+            if (specs[i].worker != i || specs[i].name == nullptr ||
+                specs[i].body == nullptr || specs[i].stop == nullptr) {
+                return false;
+            }
+        }
+        for (const Worker worker : kTeardownOrder) {
+            if (worker >= kWorkerCount || (seen & (1u << worker)) != 0) {
+                return false;
+            }
+            seen |= 1u << worker;
+        }
+        return seen == (1u << kWorkerCount) - 1u;
+    }
+
+    void AgentImpl::spawn_worker(Worker worker) {
+        static_assert(std::size(worker_specs()) == kWorkerCount, "worker table and enum disagree");
+        static_assert(std::size(kTeardownOrder) == kWorkerCount, "teardown order and enum disagree");
+        static_assert(kWorkerCount <= 32, "running_workers_ is a 32-bit mask");
+        static_assert(worker_table_consistent(), "worker table rows must match their Worker enumerator");
+        constexpr auto specs = worker_specs();
+        const auto body = specs[worker].body;
+        worker_threads_[worker] = spawn_worker(worker, [this, body] { body(*this); });
+    }
+
     void AgentImpl::request_stop_workers() noexcept {
         // Every call here only sets flags, notifies condition variables or
         // issues a best-effort TryCancel — none of them blocks. Signaling
         // everything before any join lets all workers wind down in parallel
         // inside the shutdown deadline instead of serially behind each other.
         // Per-call try/catch so one failing signal cannot skip the rest.
+        // The config watcher is not a table worker (owned by ConfigFileWatcher,
+        // joined first in teardown_workers()); signal it first as well.
         try { if (config_watcher_) config_watcher_->requestStop(); } catch (...) {}
-        try { grpc_agent_->requestStopAgentInfo(); } catch (...) {}
-        try { url_stats_->stopAddUrlStatsWorker(); } catch (...) {}
-        try { url_stats_->stopSendUrlStatsWorker(); } catch (...) {}
-        try { agent_stats_->stopAgentStatsWorker(); } catch (...) {}
-        try { grpc_agent_->stopPingWorker(); } catch (...) {}
-        try { grpc_metadata_->stopMetaWorker(); } catch (...) {}
-        try { grpc_span_->stopSpanWorker(); } catch (...) {}
-        try { grpc_stat_->stopStatsWorker(); } catch (...) {}
-        try { if (grpc_command_) grpc_command_->requestStopCommandWorker(); } catch (...) {}
+        constexpr auto specs = worker_specs();
+        for (const Worker worker : kTeardownOrder) {
+            const auto& spec = specs[worker];
+            try {
+                if (spec.enabled == nullptr || spec.enabled(*this)) {
+                    spec.stop(*this);
+                }
+            } catch (...) {}
+        }
     }
 
     void AgentImpl::teardown_workers() noexcept {
@@ -655,35 +728,23 @@ namespace pinpoint {
         // Abandon (never join or detach) every worker handle, including
         // handles inherited across fork(), on which even pthread_detach is
         // unsafe — see abandon_thread().
-        abandon_thread(init_thread_);
-        abandon_thread(ping_thread_);
-        abandon_thread(meta_thread_);
-        abandon_thread(span_thread_);
-        abandon_thread(stat_thread_);
-        abandon_thread(command_thread_);
-        abandon_thread(url_stat_add_thread_);
-        abandon_thread(url_stat_send_thread_);
-        abandon_thread(agent_stat_thread_);
+        for (auto& thread : worker_threads_) {
+            abandon_thread(thread);
+        }
     }
 
     void AgentImpl::wait_grpc_workers() {
-        // init_grpc_workers assigns the other thread members; join it first so
-        // the joins below cannot race those assignments. The init thread may
-        // be blocked in the boot-phase registration, but request_stop_workers()
-        // has already signaled stopAgentInfo's cv, which interrupts that retry
-        // loop, and an in-flight registerAgent() call has a request deadline.
-        if (init_thread_.joinable()) {
-            init_thread_.join();
-        }
-
-        std::thread* workers[] = {
-            &url_stat_add_thread_, &url_stat_send_thread_,
-            &agent_stat_thread_, &ping_thread_, &meta_thread_,
-            &span_thread_, &stat_thread_, &command_thread_,
-        };
-        for (auto* worker : workers) {
-            if (worker->joinable()) {
-                worker->join();
+        // kTeardownOrder puts kInit first: init_grpc_workers assigns the other
+        // worker_threads_ entries, so joining it first keeps the joins below
+        // from racing those assignments. The init thread may be blocked in
+        // the boot-phase registration, but request_stop_workers() has already
+        // signaled stopAgentInfo's cv, which interrupts that retry loop, and
+        // an in-flight registerAgent() call has a request deadline.
+        static_assert(kTeardownOrder[0] == kInit, "the init thread must be joined first");
+        for (const Worker worker : kTeardownOrder) {
+            auto& thread = worker_threads_[worker];
+            if (thread.joinable()) {
+                thread.join();
             }
         }
     }
@@ -717,16 +778,13 @@ namespace pinpoint {
     }
 
     std::string AgentImpl::running_worker_names() const {
-        static constexpr const char* kNames[kWorkerCount] = {
-            "init", "ping", "meta", "span", "stat", "command",
-            "url-stat-add", "url-stat-send", "agent-stat",
-        };
+        constexpr auto specs = worker_specs();
         const unsigned running = running_workers_.load(std::memory_order_relaxed);
         std::string names;
         for (unsigned i = 0; i < kWorkerCount; ++i) {
             if (running & (1u << i)) {
                 names += names.empty() ? "" : ", ";
-                names += kNames[i];
+                names += specs[i].name;
             }
         }
         // Empty means the straggler is outside these threads: the config

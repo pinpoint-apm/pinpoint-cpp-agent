@@ -51,6 +51,7 @@ by side.
 | gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout same as Java; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults) |
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
 | URL stat entry without an end time | `AgentUriStatData.add` | **Same as Java** — see [below](#url-stat-entry-without-an-end-time-is-skipped--same-as-java) |
+| Worker thread lifecycle | `GrpcModuleLifeCycle`, `DefaultApplicationContext`, each `DataSender.close()` | **Same goal, declared as a table** — see [below](#worker-thread-lifecycle--same-goal-declared-as-a-table) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -1077,6 +1078,53 @@ counter nor advance the watermark. Rather than Java's INFO, the skip is
 reported through a rate-limited WARN (the `QueueDropReporter` pattern) naming
 the URL, since its only purpose is to surface a new producer that does not set
 the end time.
+
+---
+
+## Worker thread lifecycle — same goal, declared as a table
+
+**Java.** Module lifetime is a first-class concept. `ModuleLifeCycle`
+implementations (`GrpcModuleLifeCycle` for the gRPC senders,
+`DefaultApplicationContext` for the rest) name each module once in `start()`
+and once in `shutdown()`; the threads themselves belong to the module — a
+`DataSender.close()` or `ExecutorService` shutdown joins its own executor with
+a 3-second bound (`MoreExecutors.shutdownAndAwaitTermination`). Nothing
+outside the module knows its thread, so adding a sender is one provider and
+two lines, and a forgotten line is a leak, never a crash.
+
+**Go.** Each goroutine is started by the client that owns it and stopped
+through its own context / channel close; there is no central list either.
+
+**This agent.** The `AgentImpl` owns every worker thread directly (the
+workers dereference the agent, so they must be joined before it dies —
+`std::thread` cannot be left joinable without `std::terminate`). Until this
+change, the same nine workers were listed in six places: the `Worker` enum,
+the name array behind `running_worker_names()`, the spawn sites, the stop
+list in `request_stop_workers()`, the join order in `wait_grpc_workers()` and
+the abandon list used on the fork path. Missing one place meant a missed join
+(a `std::terminate` at destruction) or a leaked signal.
+
+Module lifetime is now declared as a table: `AgentImpl::worker_specs()`
+(`src/agent.cpp`) holds one `WorkerSpec` row per `Worker` enumerator — log
+name, spawn phase (boot vs after registration), start condition (the command
+worker exists only when a command client was built), thread body and
+non-blocking stop signal — and the threads live in
+`std::array<std::thread, kWorkerCount> worker_threads_`. Spawn, stop, join
+and abandon all iterate that table. The order constraints that Java expresses
+by writing the calls out are kept explicit in `kTeardownOrder`: the init
+thread is joined first because it assigns the other thread slots, and the
+config watcher (owned by `ConfigFileWatcher`, not a table row) is signaled
+and joined before everything because its reload callback dereferences the
+agent. `static_assert`s make a row/enum/order mismatch a build error, which
+is the property Java gets from having no list to keep in sync at all.
+
+Not in the table, deliberately: the AgentInfo re-send scheduler (owned by
+`GrpcAgent`, joined by `stopAgentInfo()`) and the config watcher, both of
+which stay owned by their module the way Java's senders own their executors.
+
+**Revisit if** a worker ever needs to be owned by its gRPC client rather than
+the agent — then the Java shape (client-owned thread, `close()` joins) fits
+and the table row would shrink to a start/stop pair.
 
 ---
 
