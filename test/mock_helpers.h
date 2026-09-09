@@ -44,9 +44,12 @@ struct BareGrpcServer {
     v1::Agent::Service unimplemented;
     std::unique_ptr<grpc::Server> server;
 
-    BareGrpcServer() {
+    // @p fixed_port 0 picks a free port; a specific port lets a test bring a
+    // server up on an address a channel is already failing to reach.
+    explicit BareGrpcServer(int fixed_port = 0) {
         grpc::ServerBuilder builder;
-        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+        builder.AddListeningPort("127.0.0.1:" + std::to_string(fixed_port),
+                                 grpc::InsecureServerCredentials(), &port);
         builder.RegisterService(&unimplemented);
         server = builder.BuildAndStart();
     }

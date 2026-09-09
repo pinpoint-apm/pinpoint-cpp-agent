@@ -248,7 +248,9 @@ namespace pinpoint {
     GrpcClient::GrpcClient(ClientType client_type, std::shared_ptr<const Config> config,
                            const GrpcClientTuning& tuning)
         : config_{std::move(config)}, tuning_{tuning}, client_type_(client_type),
-          channel_ready_backoff_{tuning} {
+          channel_ready_backoff_{tuning},
+          channel_state_reporter_{tuning.channel_state_log_interval},
+          channel_outage_reporter_{tuning.channel_state_log_interval} {
         client_name_ = grpc_client_name(client_type_);
         // The channel and stub are NOT built here: doing so would trigger
         // grpc_init (and gRPC's background threads) at agent construction
@@ -344,7 +346,54 @@ namespace pinpoint {
         }
     }
 
-    bool GrpcClient::wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const {
+    const char* channel_state_name(grpc_connectivity_state state) noexcept {
+        switch (state) {
+            case GRPC_CHANNEL_IDLE: return "IDLE";
+            case GRPC_CHANNEL_CONNECTING: return "CONNECTING";
+            case GRPC_CHANNEL_READY: return "READY";
+            case GRPC_CHANNEL_TRANSIENT_FAILURE: return "TRANSIENT_FAILURE";
+            case GRPC_CHANNEL_SHUTDOWN: return "SHUTDOWN";
+        }
+        return "UNKNOWN";
+    }
+
+    void GrpcClient::log_channel_state_change(grpc_connectivity_state from, grpc_connectivity_state to,
+                                              std::string_view label) noexcept {
+        if (from == GRPC_CHANNEL_READY) {
+            channel_ready_lost_pending_ = true;
+        }
+        // A READY that ends a loss, or the first READY ever: never throttled.
+        // Only the former counts as the window's recovery line, so a first
+        // connect never hides the recovery from a loss that follows it.
+        const bool recovery = to == GRPC_CHANNEL_READY && channel_ready_lost_pending_;
+        const bool first_ready = to == GRPC_CHANNEL_READY && !channel_ever_ready_;
+        if (to == GRPC_CHANNEL_READY) {
+            channel_ready_lost_pending_ = false;
+            channel_ever_ready_ = true;
+        }
+        const auto folded = channel_state_reporter_.acquire();
+        if (folded > 0) {
+            // This line closes a throttle window; a recovery it reports
+            // counts as that window's, the next one starts clean.
+            channel_recovery_logged_ = recovery;
+            if (folded > 1) {
+                LOG_INFO("{} grpc {} state {} -> {} ({} transitions since the last state line)",
+                         client_name_, label, channel_state_name(from), channel_state_name(to), folded);
+            } else {
+                LOG_INFO("{} grpc {} state {} -> {}", client_name_, label,
+                         channel_state_name(from), channel_state_name(to));
+            }
+            return;
+        }
+        if (first_ready || (recovery && !channel_recovery_logged_)) {
+            channel_recovery_logged_ = channel_recovery_logged_ || recovery;
+            LOG_INFO("{} grpc {} state {} -> {} (other transitions are folded into the next state line)",
+                     client_name_, label, channel_state_name(from), channel_state_name(to));
+        }
+    }
+
+    bool GrpcClient::wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay,
+                                        std::string_view label) {
         auto state = channel.GetState(true);
         if (state == GRPC_CHANNEL_READY) {
             return true;
@@ -368,7 +417,11 @@ namespace pinpoint {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto wait_for = std::min(remaining, tuning_.backoff_sleep_slice);
             channel.WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
-            state = channel.GetState(false);
+            const auto next = channel.GetState(false);
+            if (next != state) {
+                log_channel_state_change(state, next, label);
+            }
+            state = next;
         }
 
         return state == GRPC_CHANNEL_READY;
@@ -398,8 +451,20 @@ namespace pinpoint {
             // closeChannel()/openChannel() blocked during shutdown is
             // blocked here, and a slow-shutdown report needs to see it.
             const auto waiting_since = std::chrono::steady_clock::now();
+            // IDLE is a channel that has not connected yet (first use, or
+            // gRPC's idle timeout), not a lost connection: only the other
+            // states count as an outage in the summary below.
+            const bool lost_ready = channel.GetState(false) != GRPC_CHANNEL_IDLE;
+            if (lost_ready) {
+                ++channel_ready_lost_count_;
+                channel_ready_lost_pending_ = true;
+            }
             while (true) {
                 if (stopping()) {
+                    if (lost_ready) {
+                        channel_unready_total_ += std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - waiting_since);
+                    }
                     return false;
                 }
                 const auto delay = channel_ready_backoff_.next_delay();
@@ -407,12 +472,29 @@ namespace pinpoint {
                     std::chrono::steady_clock::now() - waiting_since);
                 LOG_INFO("{} grpc channel not ready (state {}): waited {}ms so far holding channel_mutex_, "
                          "next check window {}ms",
-                         client_name_, static_cast<int>(channel.GetState(false)), waited.count(),
+                         client_name_, channel_state_name(channel.GetState(false)), waited.count(),
                          delay.count());
                 if (wait_channel_ready(channel, delay)) {
                     channel_ready_backoff_.reset();
                     break;
                 }
+            }
+            // Outage summary with the lifetime counters, the log-only stand-in
+            // for Java's Channelz reporters. The recovery instant itself is
+            // the "-> READY" transition line above; this one is throttled
+            // like the transition lines, so a flapping channel gets one
+            // summary per interval carrying the totals.
+            const auto outage = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - waiting_since);
+            if (lost_ready) {
+                channel_unready_total_ += outage;
+            }
+            if (lost_ready && channel_outage_reporter_.acquire() > 0) {
+                LOG_INFO("{} grpc channel ready again after {}ms; lifetime: not ready {} times, "
+                         "{}ms waiting for READY in total, {} rotations ({} forced, {} abandoned)",
+                         client_name_, outage.count(), channel_ready_lost_count_,
+                         channel_unready_total_.count(), channel_rotation_count_,
+                         channel_forced_rotation_count_, channel_rotation_abandoned_count_);
             }
         } else {
             channel_ready_backoff_.reset();
@@ -480,15 +562,18 @@ namespace pinpoint {
         // A stall-forced successor gets its own connection even while
         // rotation is off (see make_channel_arguments).
         auto successor = build_channel(*config_, client_type_, stalled);
-        const bool ready = wait_channel_ready(*successor, tuning_.channel_rotation_ready_timeout);
+        const bool ready = wait_channel_ready(*successor, tuning_.channel_rotation_ready_timeout,
+                                              "successor channel");
         const auto ready_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - now).count();
         if (!ready || stopping()) {
             // Keep the working channel; the successor dies with this scope.
             // Retry one jittered period from now rather than in a tight loop.
+            ++channel_rotation_abandoned_count_;
             LOG_WARN("{} grpc channel rotation abandoned: successor not ready after {}ms (state {}); "
-                     "keeping channel #{}", client_name_, ready_ms,
-                     static_cast<int>(successor->GetState(false)), current->generation);
+                     "keeping channel #{} ({} abandoned so far)", client_name_, ready_ms,
+                     channel_state_name(successor->GetState(false)), current->generation,
+                     channel_rotation_abandoned_count_);
             arm_channel_rotation(std::chrono::steady_clock::now());
             return;
         }
@@ -496,8 +581,15 @@ namespace pinpoint {
         // next rotation. This client's reference to the previous transport
         // ends here; calls still running on it hold their own snapshots.
         create_stub(successor);
-        LOG_INFO("{} grpc channel #{} replaced by #{}: old age {}ms, successor ready in {}ms",
-                 client_name_, current->generation, transport_generation_, age_ms, ready_ms);
+        ++channel_rotation_count_;
+        if (stalled) {
+            ++channel_forced_rotation_count_;
+        }
+        LOG_INFO("{} grpc channel #{} replaced by #{}: old age {}ms, successor ready in {}ms "
+                 "({} rotation; {} rotations so far, {} of them forced by stream stalls)",
+                 client_name_, current->generation, transport_generation_, age_ms, ready_ms,
+                 stalled ? "stall-forced" : "scheduled", channel_rotation_count_,
+                 channel_forced_rotation_count_);
     } catch (const std::exception& e) {
         LOG_ERROR("{} grpc channel rotation failed: {}; keeping the current channel", client_name_, e.what());
         arm_channel_rotation(std::chrono::steady_clock::now());

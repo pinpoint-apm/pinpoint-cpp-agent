@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -22,10 +23,14 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 
 #include "../src/grpc.h"
 #include "../src/grpc_builders.h"
+#include "../src/logging.h"
 #include "../src/callstack.h"
 #include "../src/stat.h"
 #include "../src/agent_service.h"
@@ -55,7 +60,56 @@ public:
         const auto t = transport();
         return t ? t->generation : 0;
     }
+    // Connectivity diagnostics: the bounded wait with its transition logging
+    // against any channel, and the throttled transition line driven directly.
+    bool waitChannelReady(grpc::Channel& channel, std::chrono::milliseconds delay) {
+        return wait_channel_ready(channel, delay);
+    }
+    void logStateChange(grpc_connectivity_state from, grpc_connectivity_state to) {
+        log_channel_state_change(from, to, "channel");
+    }
 };
+
+// Captures every log line through the host sink for the duration of a test
+// (see test_logging.cpp, SinkTakesTheLineInsteadOfTheFile) and restores the
+// default sinks afterwards.
+class LogCapture {
+public:
+    LogCapture() {
+        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setSink([this](const char*, const char* message) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lines_.emplace_back(message);
+        });
+    }
+    ~LogCapture() {
+        Logger::getInstance().setSink({});
+    }
+    std::vector<std::string> lines() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lines_;
+    }
+    std::vector<std::string> linesContaining(std::string_view needle) const {
+        std::vector<std::string> out;
+        for (const auto& line : lines()) {
+            if (line.find(needle) != std::string::npos) {
+                out.push_back(line);
+            }
+        }
+        return out;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> lines_;
+};
+
+// A free 127.0.0.1 port that nothing listens on right now: bind an ephemeral
+// port, then release it.
+int free_local_port() {
+    BareGrpcServer probe;
+    return probe.port;
+}
 
 }  // namespace
 
@@ -946,6 +1000,171 @@ TEST(GrpcMetadataTest, SocketIdNeverInBaseHeaderSet) {
     // The socketid header is appended per-context by build_grpc_context(),
     // never by the socket-id-independent base header set.
     EXPECT_EQ(metadata_map(config, 1).count("socketid"), 0u);
+}
+
+// ========== Connectivity diagnostics: state names and transition lines ==========
+
+TEST(ChannelStateNameTest, NamesEveryConnectivityState) {
+    EXPECT_STREQ(channel_state_name(GRPC_CHANNEL_IDLE), "IDLE");
+    EXPECT_STREQ(channel_state_name(GRPC_CHANNEL_CONNECTING), "CONNECTING");
+    EXPECT_STREQ(channel_state_name(GRPC_CHANNEL_READY), "READY");
+    EXPECT_STREQ(channel_state_name(GRPC_CHANNEL_TRANSIENT_FAILURE), "TRANSIENT_FAILURE");
+    EXPECT_STREQ(channel_state_name(GRPC_CHANNEL_SHUTDOWN), "SHUTDOWN");
+}
+
+// The outage wait names the state instead of printing gRPC's enum value.
+TEST_F(GrpcTest, ReadyChannelLogsStateNamesNotNumbers) {
+    LogCapture logs;
+    mock_agent_service_->mutableConfig()->collector.agent_port = 1;
+
+    GrpcAgent client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+    client.openChannel();
+
+    auto ready = std::async(std::launch::async, [&client] { return client.readyChannel(); });
+    EXPECT_EQ(ready.wait_for(std::chrono::milliseconds(500)), std::future_status::timeout);
+    client.stopPingWorker();
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_FALSE(ready.get());
+    client.closeChannel();
+
+    const auto not_ready = logs.linesContaining("grpc channel not ready (state ");
+    ASSERT_FALSE(not_ready.empty());
+    for (const auto& line : not_ready) {
+        const auto pos = line.find("(state ") + std::string_view("(state ").size();
+        ASSERT_LT(pos, line.size());
+        EXPECT_TRUE(std::isupper(static_cast<unsigned char>(line[pos])))
+            << "state must be named, not numbered: " << line;
+        EXPECT_FALSE(std::isdigit(static_cast<unsigned char>(line[pos]))) << line;
+        EXPECT_TRUE(line.find("(state CONNECTING)") != std::string::npos ||
+                    line.find("(state TRANSIENT_FAILURE)") != std::string::npos ||
+                    line.find("(state IDLE)") != std::string::npos)
+            << line;
+    }
+}
+
+// A collector that comes back: the channel fails to connect, then the server
+// starts on the same port and the wait sees the recovery. That recovery must
+// leave one "-> READY" line, the moment an outage post-mortem needs.
+TEST_F(GrpcTest, WaitChannelReadyLogsRecoveryToReady) {
+    LogCapture logs;
+    const int port = free_local_port();
+    ASSERT_GT(port, 0);
+
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig());
+    client.setAgentService(mock_agent_service_.get());
+    auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(port),
+                                       grpc::InsecureChannelCredentials());
+    ASSERT_NE(channel, nullptr);
+
+    // Nothing listens yet: the wait times out with the channel failing.
+    ASSERT_FALSE(client.waitChannelReady(*channel, std::chrono::milliseconds(1500)));
+    ASSERT_NE(channel->GetState(false), GRPC_CHANNEL_READY);
+    EXPECT_TRUE(logs.linesContaining("-> READY").empty()) << "no recovery yet";
+
+    BareGrpcServer server(port);
+    ASSERT_NE(server.server, nullptr) << "could not reopen port " << port;
+    // gRPC's reconnect backoff starts at ~1s; give the channel a few tries.
+    ASSERT_TRUE(client.waitChannelReady(*channel, std::chrono::seconds(15)));
+
+    const auto recovered = logs.linesContaining("-> READY");
+    ASSERT_EQ(recovered.size(), 1u) << "exactly one recovery line";
+    EXPECT_TRUE(recovered[0].find("grpc channel state ") != std::string::npos) << recovered[0];
+    EXPECT_TRUE(recovered[0].find("TRANSIENT_FAILURE -> READY") != std::string::npos ||
+                recovered[0].find("CONNECTING -> READY") != std::string::npos)
+        << recovered[0];
+    for (const auto& line : logs.linesContaining("grpc channel state ")) {
+        for (int digit = 0; digit <= 4; ++digit) {
+            EXPECT_EQ(line.find("state " + std::to_string(digit)), std::string::npos)
+                << "numeric state in: " << line;
+        }
+    }
+}
+
+// Flapping: within one throttle interval the transition lines fold, but the
+// first recovery to READY is written regardless; a later window reports how
+// many transitions it folded.
+TEST_F(GrpcTest, ChannelStateTransitionLinesAreThrottledButFirstRecoveryAlwaysLogged) {
+    LogCapture logs;
+    GrpcClientTuning tuning;
+    tuning.channel_state_log_interval = std::chrono::seconds(60);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+    ASSERT_EQ(logs.linesContaining("grpc channel state ").size(), 1u) << "the first transition reports";
+
+    client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_READY);
+    auto lines = logs.linesContaining("grpc channel state ");
+    ASSERT_EQ(lines.size(), 2u) << "the first recovery must not be throttled";
+    EXPECT_TRUE(lines[1].find("TRANSIENT_FAILURE -> READY") != std::string::npos) << lines[1];
+
+    for (int i = 0; i < 5; ++i) {
+        client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+        client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_CONNECTING);
+        client.logStateChange(GRPC_CHANNEL_CONNECTING, GRPC_CHANNEL_READY);
+    }
+    EXPECT_EQ(logs.linesContaining("grpc channel state ").size(), 2u)
+        << "repeated flapping inside the interval must stay silent";
+}
+
+// The first connect (IDLE -> CONNECTING -> READY) must not use up the
+// window's recovery line: a loss right after startup still logs its recovery.
+TEST_F(GrpcTest, FirstConnectDoesNotConsumeTheRecoveryLine) {
+    LogCapture logs;
+    GrpcClientTuning tuning;
+    tuning.channel_state_log_interval = std::chrono::seconds(60);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+
+    client.logStateChange(GRPC_CHANNEL_IDLE, GRPC_CHANNEL_CONNECTING);
+    client.logStateChange(GRPC_CHANNEL_CONNECTING, GRPC_CHANNEL_READY);
+    ASSERT_EQ(logs.linesContaining("grpc channel state ").size(), 2u) << "the first READY is always logged";
+
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+    client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_CONNECTING);
+    EXPECT_EQ(logs.linesContaining("grpc channel state ").size(), 2u) << "the loss itself is throttled";
+    client.logStateChange(GRPC_CHANNEL_CONNECTING, GRPC_CHANNEL_READY);
+    const auto lines = logs.linesContaining("grpc channel state ");
+    ASSERT_EQ(lines.size(), 3u) << "the recovery after a loss must be logged";
+    EXPECT_TRUE(lines[2].find("CONNECTING -> READY") != std::string::npos) << lines[2];
+}
+
+TEST_F(GrpcTest, ChannelStateTransitionLineReportsFoldedTransitionsAfterInterval) {
+    LogCapture logs;
+    GrpcClientTuning tuning;
+    tuning.channel_state_log_interval = std::chrono::seconds(0);  // see below
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+
+    // A zero interval grants every call: each transition is its own line and
+    // nothing is folded.
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+    client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_READY);
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+    EXPECT_EQ(logs.linesContaining("grpc channel state ").size(), 3u);
+    EXPECT_TRUE(logs.linesContaining("transitions since the last state line").empty());
+}
+
+TEST_F(GrpcTest, ChannelStateTransitionLineCountsFoldedTransitions) {
+    LogCapture logs;
+    GrpcClientTuning tuning;
+    tuning.channel_state_log_interval = std::chrono::seconds(1);
+    RotationProbeGrpcSpan client(mock_agent_service_->getConfig(), tuning);
+    client.setAgentService(mock_agent_service_.get());
+
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);   // granted
+    client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_READY);   // recovery, always written
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);   // folded
+    client.logStateChange(GRPC_CHANNEL_TRANSIENT_FAILURE, GRPC_CHANNEL_READY);   // folded (recovery already written)
+    ASSERT_EQ(logs.linesContaining("grpc channel state ").size(), 2u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    client.logStateChange(GRPC_CHANNEL_READY, GRPC_CHANNEL_TRANSIENT_FAILURE);
+    const auto lines = logs.linesContaining("grpc channel state ");
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_TRUE(lines[2].find("(4 transitions since the last state line)") != std::string::npos)
+        << lines[2];
 }
 
 } // namespace pinpoint

@@ -320,6 +320,45 @@ Logs show connection or gRPC errors.
    blocked the agent never registers, and tracing stays off entirely — see
    [Verifying Agent Startup](#verifying-agent-startup).
 
+#### Reconstructing the connection history from the log
+
+Each gRPC client (`agent`, `span`, `stat`, `meta`) logs its channel's
+connectivity at INFO, using gRPC's state names (`IDLE`, `CONNECTING`, `READY`,
+`TRANSIENT_FAILURE`, `SHUTDOWN`), never the numeric enum values:
+
+```
+span grpc channel not ready (state TRANSIENT_FAILURE): waited 3012ms so far holding channel_mutex_, next check window 6104ms
+span grpc channel state TRANSIENT_FAILURE -> CONNECTING
+span grpc channel state CONNECTING -> READY (other transitions are folded into the next state line)
+span grpc channel ready again after 9231ms; lifetime: not ready 3 times, 21877ms waiting for READY in total, 2 rotations (1 forced, 0 abandoned)
+```
+
+- `grpc channel not ready (state X)`: the worker found its channel down at a
+  cycle boundary and is waiting for it; one line per backoff step (3s growing
+  to 30s) with the cumulative wait.
+- `grpc channel state A -> B`: a connectivity-state transition observed while
+  waiting (the equivalent of the Java agent's ConnectivityStateMonitor lines).
+  `... -> READY` is the moment of recovery. Transition lines are rate-limited
+  per client to one per minute; a suppressed run is reported by the next
+  granted line as `(N transitions since the last state line)`. The first
+  `-> READY` after a loss (and the first connect) is always written, so a
+  recovery is never lost to the throttle, even on a flapping connection.
+  `grpc successor channel state ...` lines belong to the channel a rotation is
+  connecting, not to the one in use.
+- `grpc channel ready again after Nms; lifetime: ...`: the outage summary,
+  also at most one per minute per client. The lifetime counters are the
+  log-only counterpart of the Java agent's Channelz reporting: how many times
+  this client found its channel not READY, how long it waited for READY in
+  total, and how many channel rotations it made — `forced` ones were triggered
+  by stream stalls (see `stream write timeouts ... connecting a successor`),
+  `abandoned` ones never got a READY successor and kept the old channel.
+  A channel that is merely `IDLE` (first use, or gRPC's idle timeout) is not
+  counted as an outage.
+- `grpc channel #N replaced by #M: ... (scheduled|stall-forced rotation; K
+  rotations so far, F of them forced by stream stalls)` and `grpc channel
+  rotation abandoned: ... (A abandoned so far)`: the rotation lines carry the
+  same counters.
+
 ### Missing Distributed Tracing
 
 1. **Verify context propagation** — both inject and extract must be implemented:

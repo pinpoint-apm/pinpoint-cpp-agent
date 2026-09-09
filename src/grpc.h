@@ -160,6 +160,14 @@ namespace pinpoint {
         /// (see GrpcClient::rotate_channel_if_due).
         std::chrono::milliseconds channel_rotation_ready_timeout{3000};
 
+        /// Minimum spacing between channel connectivity-state transition
+        /// lines (see GrpcClient::log_channel_state_change) and between
+        /// channel outage summaries (see GrpcClient::readyChannel). A
+        /// flapping connection folds its transitions into one line per
+        /// interval; the first recovery to READY in an interval is never
+        /// suppressed.
+        std::chrono::seconds channel_state_log_interval{60};
+
         /// Stream-stall escalation (see GrpcClient::record_stream_stall):
         /// Java SimpleStreamState's limitCount / limitTime pair, applied to
         /// stream write timeouts. A channel rotation is forced once at least
@@ -198,6 +206,12 @@ namespace pinpoint {
         int attempt_{0};
         std::mt19937_64 rng_;
     };
+
+    /// @brief Name of a gRPC channel connectivity state (IDLE, CONNECTING,
+    ///        READY, TRANSIENT_FAILURE, SHUTDOWN) for log lines; never a
+    ///        number an operator would have to decode. Unknown values map to
+    ///        "UNKNOWN".
+    const char* channel_state_name(grpc_connectivity_state state) noexcept;
 
     /**
      * @brief Java IntervalFunction.ofRandomized(interval, factor): a uniform
@@ -328,6 +342,29 @@ namespace pinpoint {
         GrpcStreamStatus grpc_status_{STREAM_CONTINUE};
         ExponentialBackoff channel_ready_backoff_;
 
+        // Connectivity diagnostics, all touched under channel_mutex_ (in
+        // readyChannel() and the rotation it runs). Lifetime counters that
+        // the outage summary and the rotation lines report: how often the
+        // current channel was found not READY at a cycle boundary, the time
+        // spent waiting for it in total, and the rotations by cause.
+        uint64_t channel_ready_lost_count_{0};
+        std::chrono::milliseconds channel_unready_total_{0};
+        uint32_t channel_rotation_count_{0};
+        uint32_t channel_forced_rotation_count_{0};
+        uint32_t channel_rotation_abandoned_count_{0};
+        // Throttles for the transition lines and the outage summary (acquire()
+        // mode, see QueueDropReporter), and whether the current throttle
+        // window already carried a recovery-to-READY line.
+        QueueDropReporter channel_state_reporter_;
+        QueueDropReporter channel_outage_reporter_;
+        bool channel_recovery_logged_{false};
+        // A loss of READY was seen (a transition out of READY, or a cycle
+        // boundary finding a non-IDLE channel not READY) and its recovery has
+        // not been logged yet; and whether this client ever reached READY, so
+        // the first connect is logged once regardless of the throttle.
+        bool channel_ready_lost_pending_{false};
+        bool channel_ever_ready_{false};
+
         // Per-client stop, set by this client's stopXWorker(). do_shutdown()
         // sets the agent-wide exiting flag first, so workers terminate either
         // way, but the wait loops (readyChannel's unbounded retry, the
@@ -343,7 +380,31 @@ namespace pinpoint {
         }
 
         /// @brief Blocks until @p channel is ready or the delay is exceeded.
-        bool wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay) const;
+        ///        Every connectivity-state transition observed while waiting
+        ///        is logged through log_channel_state_change(); @p label
+        ///        names the channel in those lines ("channel" for the
+        ///        current one, "successor channel" during a rotation).
+        bool wait_channel_ready(grpc::Channel& channel, std::chrono::milliseconds delay,
+                                std::string_view label = "channel");
+
+        /**
+         * @brief One INFO line for a connectivity-state transition, the
+         *        counterpart of the Java agent's ConnectivityStateMonitor
+         *        (AbstractGrpcDataSender), which logs every transition.
+         *
+         * Rate-limited per client through channel_state_reporter_ so a
+         * flapping connection cannot flood the log: within one
+         * `tuning_.channel_state_log_interval` a granted line reports how
+         * many transitions it folds, and the rest are silent — except the
+         * first transition to READY in a window that follows a loss of READY
+         * (and the very first READY of the client), which is always written,
+         * because the moment of recovery is the fact an outage post-mortem
+         * needs most. Suppressed calls cost one relaxed increment, one clock
+         * read and one relaxed load, and no formatting: the caller holds
+         * channel_mutex_.
+         */
+        void log_channel_state_change(grpc_connectivity_state from, grpc_connectivity_state to,
+                                      std::string_view label) noexcept;
 
         /**
          * @brief Waits under @p lock (stream_mutex_) until grpc_status_ ==
