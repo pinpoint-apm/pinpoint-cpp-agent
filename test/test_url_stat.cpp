@@ -1245,10 +1245,15 @@ TEST_F(UrlStatTest, TickClockAlignmentTest) {
 TEST_F(UrlStatTest, TickClockNearbyTimesSameTickTest) {
     TickClock clock(30);
 
-    auto now = std::chrono::system_clock::now();
-    auto near = now + std::chrono::milliseconds(100); // 100ms later
+    // Anchor to the start of a 30-second window rather than to the raw wall
+    // clock: a `now` that lands in the last 100ms of a window would otherwise
+    // push `near` into the next one and fail this test roughly once in 300 runs.
+    using namespace std::chrono;
+    const auto epoch_millis = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    const auto window_start = system_clock::time_point{milliseconds(epoch_millis - epoch_millis % 30000)};
+    const auto near = window_start + milliseconds(100); // 100ms into the same window
 
-    int64_t tick1 = clock.tick(now);
+    int64_t tick1 = clock.tick(window_start);
     int64_t tick2 = clock.tick(near);
 
     // Within same 30-second window, ticks should be the same
