@@ -47,6 +47,7 @@ by side.
 | Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, Go still diverges** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges) |
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
+| Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -917,6 +918,46 @@ threshold so the operator can suspect a missing `EndSpan`. The threshold is not
 configurable: Java's is a constant too, and a count above it is never
 legitimate load. The count is not added to `PAgentStat` — the active-request
 histogram already sums to it.
+
+---
+
+## Automatic shutdown at process exit — opt-in, default off
+
+**Java.** The agent registers a JVM shutdown hook (`ShutdownHookRegister`,
+one of the Java 7 / Java 9 / `Runtime` variants) that calls
+`DefaultAgent.close()`, so the last queued spans are flushed and the collector
+learns the agent stopped without the application doing anything. The JVM owns
+the process, and a shutdown hook runs on normal exit and on `SIGTERM`/`SIGINT`
+alike.
+
+**Go.** No `signal.Notify` and no exit hook; `Shutdown()` must be called by
+the host (`os.Exit` and a fatal signal do not run deferred calls, so a missed
+call there loses the tail the same way). An opt-in helper with the same
+default-off policy as this agent's is the intended pairing.
+
+**This agent.** `Shutdown()` (`Agent::Shutdown()`, `include/pinpoint/tracer.h`)
+is the only path that flushes the span queue and closes the ping stream, and
+by default nothing calls it at process exit — the queued spans are dropped and
+the collector is not told the agent stopped. That is deliberate, not an
+omission: this is a library embedded in a host application, and the global
+agent is heap-allocated and never destroyed precisely so that no teardown
+(thread joins, gRPC channel teardown, logging through singletons that may
+already be gone) runs during `__cxa_atexit` unless the host has decided it is
+safe (see `global_agent()` in `src/agent.cpp`). A signal handler is ruled out
+outright: `Shutdown()` is not async-signal-safe, and a library must not take
+over the host's signal dispositions.
+
+The host therefore chooses: `helper::ScopedAgent` binds `Shutdown()` to a
+scope (the recommended form), an explicit `Shutdown()` call works anywhere,
+and `AgentOptions::install_atexit_shutdown` registers a `std::atexit` hook for
+a plain executable that owns its process. The flag is off by default and is
+documented with its caveats (reverse-order destruction of host objects created
+after `StartAgent()`, no coverage of fatal signals). The documentation
+(`Agent::Shutdown()`, `doc/quick_start.md`, `doc/trouble_shooting.md`) states
+the loss plainly instead of leaving it implied.
+
+**Revisit if** the agent stops being embeddable (a standalone process of its
+own) — then a Java-style unconditional hook would be the right default.
 
 ---
 

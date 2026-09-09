@@ -129,8 +129,20 @@ programs in `example/` use. The workflow is five steps:
 2. **Trace** — use `Agent::NewSpan` at the top of each request handler to start tracing a transaction.
 3. **Record work** — create span events and annotations for sub-operations.
 4. **End** — call `EndSpan()` before the handler returns, on every code path.
-5. **Shutdown** — call `agent->Shutdown()` after the server stops listening.
+5. **Shutdown** — make sure `Shutdown()` runs before the process ends: wrap
+   `main()` in a `pinpoint::helper::ScopedAgent`, or call `agent->Shutdown()`
+   explicitly after the server stops listening.
 
+> **`Shutdown()` is the only thing that delivers the tail of a run.** The last
+> queued spans are sent, and the collector is told the agent stopped, only
+> while the agent is torn down. If the process just ends — `main()` returns
+> without it, `exit()`, a fatal signal — those spans are dropped and the
+> Pinpoint UI keeps showing the agent as running. The library deliberately
+> installs no exit hook or signal handler of its own (it is embedded in your
+> process; see `AgentOptions::install_atexit_shutdown` for the opt-in hook), so
+> make your signal handler stop the server loop and let `main()` return. See
+> [Spans from just before exit are missing](trouble_shooting.md#spans-from-just-before-exit-are-missing).
+>
 > `StartAgent()` returns before the agent has registered with the collector, and
 > `Shutdown()` is terminal for an agent instance. Both contracts — including how
 > to tell a real failure from a deliberate `Enable: false`, and how to resume
@@ -144,6 +156,7 @@ programs in `example/` use. The workflow is five steps:
 a span to the caller's trace.
 
 ```cpp
+#include <csignal>   // std::signal
 #include <cstdlib>   // setenv
 #include <iostream>
 
@@ -185,27 +198,50 @@ void on_users(const httplib::Request& req, httplib::Response& res) {
     span->EndSpan();   // must run on every path, including error returns
 }
 
+// Signal handling is the host's job: the agent installs no handler. Stop the
+// listener so main() returns normally and the ScopedAgent below runs Shutdown().
+httplib::Server* g_server = nullptr;
+void stop_server(int) { if (g_server) g_server->stop(); }
+
 int main() {
     // Configure via environment or file
     setenv("PINPOINT_CPP_APPLICATION_NAME", "my-first-app", 0);
     setenv("PINPOINT_CPP_COLLECTOR_HOST", "localhost", 0);
 
-    if (!pinpoint::StartAgent()) {
+    // StartAgent() now, Shutdown() when main() returns — on every return path.
+    pinpoint::helper::ScopedAgent agent_guard;
+    if (!agent_guard.started()) {
         // A deliberate Enable: false and a synchronous setup failure share this
         // return path. The application keeps running untraced either way.
         std::cerr << "pinpoint tracing is not active; "
                      "if this is unexpected, check the agent log" << std::endl;
     }
-    auto agent = pinpoint::GlobalAgent();
 
     httplib::Server server;
-    server.Get("/users", on_users);
-    server.listen("0.0.0.0", 8090);   // blocks until the server stops
+    g_server = &server;
+    std::signal(SIGINT, stop_server);
+    std::signal(SIGTERM, stop_server);
 
-    agent->Shutdown();
-    return 0;
+    server.Get("/users", on_users);
+    server.listen("0.0.0.0", 8090);   // blocks until stop_server() runs
+
+    return 0;   // agent_guard: Shutdown() flushes the last spans
 }
 ```
+
+Without the guard, the equivalent is an explicit call after the server stops:
+
+```cpp
+    server.listen("0.0.0.0", 8090);
+    pinpoint::GlobalAgent()->Shutdown();   // must run on every exit path
+```
+
+A plain executable that cannot wrap `main()` can instead set
+`AgentOptions::install_atexit_shutdown = true` before `StartAgent()`; the agent
+then registers a `std::atexit` hook that calls `Shutdown()` on normal exit
+(`main()` returning or `exit()`). It is off by default and does not cover a
+fatal signal, `_exit()` or `abort()` — nothing does; those need the host's
+handler to reach a normal exit path.
 
 See the full working programs — client-side tracing with context propagation
 in [`example/proxy.cpp`](../example/proxy.cpp), and server-side tracing with a

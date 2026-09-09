@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -399,6 +400,159 @@ TEST(ForkLifecycleTest, InheritedActiveSpanRegistryIsInertInChild) {
     EXPECT_EQ(stats.activeSpanCount(), 1u);
     stats.dropActiveSpan(parent_node);
     EXPECT_EQ(stats.activeSpanCount(), 0u);
+}
+
+// --- Opt-in process-exit teardown -------------------------------------------
+//
+// The library installs no exit hook by default (see global_agent() in
+// src/agent.cpp): tearing the agent down during __cxa_atexit is the host's
+// decision. AgentOptions::install_atexit_shutdown opts in, and
+// helper::ScopedAgent binds Shutdown() to a scope instead. Both are exercised
+// in forked children so that the hook can actually fire (the child calls
+// exit()) without touching the test runner's own exit.
+
+namespace {
+
+AgentOptions fork_start_options() {
+    AgentOptions options;
+    // A test-only prefix keeps a developer's PINPOINT_CPP_* environment from
+    // overriding the inline configuration.
+    options.env_prefix = "PINPOINT_CPP_FORK_TEST_ISOLATED";
+    options.config_yaml = R"(
+ApplicationName: fork-app
+AgentName: fork-agent-name
+Enable: true
+Log:
+  Level: error
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 1
+)";
+    return options;
+}
+
+// The agent a child started, for the exit-time verifiers below. Set once per
+// child, never freed: the verifier ends the process with _exit().
+AgentPtr* g_child_agent = nullptr;
+
+// Registered by the child BEFORE StartAgent(), so it runs AFTER anything
+// StartAgent() registers (atexit handlers run in reverse order). Ends the
+// process with _exit() so no static destructor runs with an agent alive.
+void verify_agent_shut_down_at_exit() {
+    auto impl = g_child_agent ? std::dynamic_pointer_cast<AgentImpl>(*g_child_agent) : nullptr;
+    const bool hook_ran = impl != nullptr && impl->isExiting() && !impl->Enable();
+    const bool global_cleared =
+        std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()) == nullptr;
+    _exit((hook_ran && global_cleared) ? 0 : 2);
+}
+
+void verify_agent_untouched_at_exit() {
+    auto impl = g_child_agent ? std::dynamic_pointer_cast<AgentImpl>(*g_child_agent) : nullptr;
+    const bool untouched = impl != nullptr && !impl->isExiting();
+    const bool still_global =
+        std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get() == impl.get();
+    _exit((untouched && still_global) ? 0 : 2);
+}
+
+} // namespace
+
+TEST(ExitTeardownTest, DefaultRegistersNoAtexitHook) {
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        if (std::atexit(&verify_agent_untouched_at_exit) != 0) _exit(3);
+        if (!StartAgent(fork_start_options())) _exit(4);
+        g_child_agent = new AgentPtr(GlobalAgent());
+        if (atexit_shutdown_hook_installed()) _exit(5);
+        // Normal exit: with no hook registered the agent must still be the
+        // live global agent when the verifier runs (nothing shut it down).
+        exit(0);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status)) << "child died during exit";
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "by default StartAgent() must register nothing and exit() must not tear the agent down";
+}
+
+TEST(ExitTeardownTest, OptInAtexitHookShutsDownTheGlobalAgentOnExit) {
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        if (std::atexit(&verify_agent_shut_down_at_exit) != 0) _exit(3);
+        auto options = fork_start_options();
+        options.install_atexit_shutdown = true;
+        if (!StartAgent(options)) _exit(4);
+        g_child_agent = new AgentPtr(GlobalAgent());
+        if (!atexit_shutdown_hook_installed()) _exit(5);
+        // A second StartAgent() with the flag is a no-op for the running
+        // agent and must not double-register (still installed, no crash).
+        if (!StartAgent(options) || !atexit_shutdown_hook_installed()) _exit(6);
+        // Normal exit: the library's hook runs first (registered later) and
+        // must have shut the agent down by the time the verifier runs.
+        exit(0);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status)) << "child died during exit-time shutdown";
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "with install_atexit_shutdown the hook must run Shutdown() at exit";
+}
+
+TEST(ExitTeardownTest, ScopedAgentShutsDownAtScopeExitAndIsIdempotent) {
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        // A guard whose StartAgent() failed (Enable: false) holds the noop
+        // agent and its destructor must be a harmless no-op.
+        {
+            auto disabled = fork_start_options();
+            disabled.config_yaml = "Enable: false\nApplicationName: fork-app\n";
+            helper::ScopedAgent guard(disabled);
+            if (guard.started() || guard.agent() == nullptr ||
+                std::dynamic_pointer_cast<AgentImpl>(guard.agent()) != nullptr) {
+                _exit(3);
+            }
+        }
+
+        std::shared_ptr<AgentImpl> impl;
+        {
+            helper::ScopedAgent guard(fork_start_options());
+            impl = std::dynamic_pointer_cast<AgentImpl>(guard.agent());
+            if (!guard.started() || impl == nullptr) _exit(4);
+            if (std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get() != impl.get()) _exit(5);
+            if (impl->isExiting()) _exit(6);
+        }
+        // Scope exit ran Shutdown(): terminal for the instance, global cleared.
+        if (!impl->isExiting() || impl->Enable()) _exit(7);
+        if (std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()) != nullptr) _exit(8);
+
+        // Explicit Shutdown() through the guard, twice, then the destructor:
+        // three Shutdown() calls on one agent must all be safe.
+        std::shared_ptr<AgentImpl> impl2;
+        {
+            helper::ScopedAgent guard(fork_start_options());
+            impl2 = std::dynamic_pointer_cast<AgentImpl>(guard.agent());
+            if (!guard.started() || impl2 == nullptr) _exit(9);
+            guard.Shutdown();
+            guard.Shutdown();
+            if (!impl2->isExiting() || guard.agent().get() != impl2.get()) _exit(10);
+        }
+        if (!impl2->isExiting()) _exit(11);
+        _exit(0);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status)) << "child crashed in ScopedAgent teardown";
+    EXPECT_EQ(WEXITSTATUS(status), 0) << "ScopedAgent lifecycle failed (see exit code)";
 }
 
 } // namespace pinpoint

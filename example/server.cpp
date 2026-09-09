@@ -22,6 +22,7 @@
  * of parameters, and span events use the RAII helper::ScopedSpanEvent.
  */
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -116,17 +117,37 @@ static void run_async_audit() {
 
 /* ---- Entry point --------------------------------------------------------- */
 
+// Signal handling is the host's job, not the agent's: the agent installs no
+// handler (Shutdown() joins threads and tears down gRPC, none of which is
+// async-signal-safe). Stop the listener from the handler so that main()
+// unwinds normally and the ScopedAgent below runs Shutdown(); exiting from
+// the handler (or being killed) would drop every span still queued.
+httplib::Server* g_server = nullptr;
+
+void stop_server(int) {
+    if (g_server) {
+        g_server->stop();
+    }
+}
+
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-db-server", 0);
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     // Record only the User-Agent request header on the span (see doc/config.md).
     setenv("PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER", "User-Agent", 0);
 
-    if (!pinpoint::StartAgent()) {
+    // Starts the agent now and calls Shutdown() when main() returns, on every
+    // return path. Shutdown() is the only thing that delivers the last queued
+    // spans and tells the collector the agent stopped.
+    pinpoint::helper::ScopedAgent agent_guard;
+    if (!agent_guard.started()) {
         std::cerr << "failed to start the pinpoint agent: check the agent log" << std::endl;
     }
 
     httplib::Server server;
+    g_server = &server;
+    std::signal(SIGINT, stop_server);
+    std::signal(SIGTERM, stop_server);
     server.Get("/api/members", [](const httplib::Request& req, httplib::Response& res) {
         // 1. Root span from the inbound trace context, published to the
         //    traced helpers through the thread-local slot.
@@ -155,6 +176,6 @@ int main() {
     });
 
     std::cout << "db server listening on :8081" << std::endl;
-    server.listen("0.0.0.0", 8081);
-    pinpoint::GlobalAgent()->Shutdown();
+    server.listen("0.0.0.0", 8081);   // returns after stop_server()
+    // agent_guard goes out of scope here: Shutdown() flushes the queued spans.
 }

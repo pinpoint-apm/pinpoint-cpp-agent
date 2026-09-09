@@ -511,6 +511,35 @@ namespace pinpoint {
         ///        spans are submitted when a channel is available, but delivery
         ///        is not guaranteed.
         ///
+        /// @warning Shutdown() is the ONLY path that delivers the tail of a
+        /// run. The span worker sends whatever is still queued (its final
+        /// flush) only while it exits, and it exits only when the agent is
+        /// torn down; the ping stream that tells the collector the agent is
+        /// alive is closed on the same path. A host that never tears the
+        /// agent down therefore loses both:
+        /// - every span still in the send queue is dropped, never sent — at
+        ///   the default batching that is the last few hundred milliseconds
+        ///   of traffic, more under a slow collector;
+        /// - the collector is not told the agent stopped: it only finds out
+        ///   if and when its own connection timeouts notice the dead ping
+        ///   stream, so the Pinpoint UI keeps listing the agent as running
+        ///   until then, with no end time of its own.
+        /// Releasing the last AgentPtr (without Shutdown()) tears the agent
+        /// down too, so it does flush. But when the process simply ends —
+        /// main() returns without either, or exit() / a fatal signal ends it
+        /// with the agent still installed — NEITHER happens: the library
+        /// deliberately installs no exit hook or signal handler of its own
+        /// (see AgentOptions::install_atexit_shutdown for the opt-in, and
+        /// helper::ScopedAgent for a scope-bound alternative). Call
+        /// Shutdown() before the process ends, on every exit path you
+        /// control; signal handling stays the host's responsibility.
+        ///
+        /// The final flush sends only over a span channel that is already
+        /// connected, so it stays inside the deadline below: a process that
+        /// ends before its first span batch was ever sent (the channel is
+        /// still idle) drops that tail with an INFO log line
+        /// ("drop N remaining spans on shutdown: channel not ready").
+        ///
         /// Bounded: Shutdown() returns within a 3-second deadline even if a
         /// worker is wedged in an RPC that ignores cancellation. Stragglers
         /// then keep draining on a background thread that holds the agent
@@ -519,6 +548,8 @@ namespace pinpoint {
         /// without calling Shutdown() is bounded the same way — destruction
         /// is deferred until the workers finish (the object stays leaked if
         /// they never do) rather than blocking the release.
+        ///
+        /// Idempotent: a second call (from any thread) is a harmless no-op.
         ///
         /// Terminal for this instance: it can never be brought back online,
         /// Enable() stays false and NewSpan() only returns noop spans. When
@@ -599,6 +630,34 @@ namespace pinpoint {
         /// Loaded service libraries included in AgentInfo.
         std::vector<std::string> libs;
 
+        /// Register a std::atexit hook that calls Shutdown() on the global
+        /// agent when the process exits normally (main() returns or exit()
+        /// is called). Default: false — the library never tears itself down
+        /// during process exit unless asked: for a library embedded in a
+        /// host application, joining threads and closing gRPC channels
+        /// during static destruction is only safe when the host has decided
+        /// it is. Enable this for a plain executable that owns its process
+        /// and cannot wrap main() in a helper::ScopedAgent; prefer the guard
+        /// (or an explicit Shutdown() call) whenever you can. Notes:
+        /// - Installed once per process, by the first successful StartAgent()
+        ///   that asks for it; later StartAgent() cycles reuse it. At exit
+        ///   the hook shuts down whichever agent is the global agent then.
+        /// - atexit hooks run in reverse registration order, so a host
+        ///   object created AFTER StartAgent() (its logger behind @ref
+        ///   log_sink, for example) is destroyed BEFORE the hook runs. Keep
+        ///   anything the sink touches alive from before StartAgent().
+        /// - It runs only on normal exit. A fatal signal, _exit(),
+        ///   std::quick_exit() or abort() skips it — like every other atexit
+        ///   hook — so the queued spans are lost then (see Agent::Shutdown()).
+        ///   The library installs no signal handler: Shutdown() is not
+        ///   async-signal-safe (it joins threads and tears down gRPC), and a
+        ///   library must not take over the host's signal dispositions. The
+        ///   host's handler should stop the application and let the normal
+        ///   exit path (or the guard) call Shutdown().
+        /// - The hook shuts the agent down within the usual 3-second bound,
+        ///   which adds that much to a slow exit in the worst case.
+        bool install_atexit_shutdown = false;
+
         /// Optional host log sink, for embedders that already own a log
         /// pipeline (nginx `error_log`, an application logger). When set it
         /// REPLACES the built-in sinks: nothing goes to `Log.FilePath` or to
@@ -648,6 +707,11 @@ namespace pinpoint {
      * Calling StartAgent() again in the same process leaves the already
      * running agent untouched and returns true (with a warning). After
      * Shutdown() a new StartAgent() call builds a fresh agent.
+     *
+     * @warning Pair every StartAgent() with a Shutdown() before the process
+     * ends — through helper::ScopedAgent, an explicit call, or the opt-in
+     * AgentOptions::install_atexit_shutdown. Nothing is flushed when the
+     * process just ends: see Agent::Shutdown() for what is lost.
      *
      * @warning An agent handle (or the global agent) inherited across fork()
      * is unusable in the child and is refused: its threads and gRPC runtime
@@ -738,7 +802,81 @@ namespace pinpoint {
             SpanPtr span_;
             SpanEventPtr event_{nullptr};
         };
-   
+
+        /// @brief Scope guard that starts the global agent and shuts it down
+        ///        when the guard goes out of scope.
+        ///
+        /// The recommended way to make sure Agent::Shutdown() runs for a
+        /// program that owns its main(): the last queued spans and the
+        /// agent's end time are only delivered by Shutdown() (see there), and
+        /// nothing runs it when main() returns without calling it.
+        ///
+        /// @code
+        /// int main() {
+        ///     pinpoint::helper::ScopedAgent agent_guard;   // StartAgent()
+        ///     if (!agent_guard.started()) { /* untraced; check the agent log */ }
+        ///     serve();                                     // blocks until stopped
+        /// }                                                // Shutdown() here
+        /// @endcode
+        ///
+        /// The guard shuts down the agent it started (the one GlobalAgent()
+        /// returned right after StartAgent()), not whatever is global at
+        /// scope exit, so a later StartAgent() cycle owned elsewhere is left
+        /// alone. Shutdown() may be called through the guard early; the
+        /// destructor is then a no-op, as is destroying a guard whose
+        /// StartAgent() failed (it holds the noop agent). Like every scope
+        /// guard it needs the scope to end: exit(), a fatal signal or
+        /// std::quick_exit() skips destructors, so a host that stops on
+        /// SIGTERM must have its handler unblock main() (stop the server
+        /// loop) rather than exit from the handler — see
+        /// AgentOptions::install_atexit_shutdown for why the library does not
+        /// install a handler itself.
+        class ScopedAgent {
+        public:
+            explicit ScopedAgent(const AgentOptions& options = {})
+                : started_(StartAgent(options)), agent_(GlobalAgent()) {}
+
+            // Non-copyable (and thereby non-movable): two guards for one
+            // agent would call Shutdown() twice, which is harmless, but a
+            // copy would also silently split ownership of the scope.
+            ScopedAgent(const ScopedAgent&) = delete;
+            ScopedAgent& operator=(const ScopedAgent&) = delete;
+
+            ~ScopedAgent() {
+                // Shutdown() is noexcept in the library; swallow anyway, an
+                // exception escaping a destructor terminates the host.
+                try {
+                    Shutdown();
+                } catch (...) {
+                }
+            }
+
+            /// @brief What StartAgent() returned: false means tracing is off
+            ///        (deliberately or through a setup failure) and the guard
+            ///        holds the noop agent.
+            bool started() const { return started_; }
+
+            /// @brief The agent this guard started (the noop agent when
+            ///        StartAgent() failed). Never null; after Shutdown() it
+            ///        is the same handle, which then serves noop spans.
+            AgentPtr agent() const { return agent_; }
+            Agent* operator->() const { return agent_.get(); }
+
+            /// @brief Shuts the agent down now instead of at scope exit.
+            ///        Idempotent; the destructor then does nothing.
+            void Shutdown() {
+                if (!shut_down_) {
+                    shut_down_ = true;
+                    agent_->Shutdown();
+                }
+            }
+
+        private:
+            bool started_{false};
+            AgentPtr agent_;
+            bool shut_down_{false};
+        };
+
     };
     
 }  // namespace pinpoint

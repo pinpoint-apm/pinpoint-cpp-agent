@@ -2900,6 +2900,66 @@ TEST_F(AgentIntegrationTest, ShutdownStopsTracingAndServesNoopSpansToTheApp) {
     EXPECT_EQ(after.api_metadata.size(), quiesced.api_metadata.size());
 }
 
+// Shutdown() is the only path that delivers the tail of a run: the span
+// worker's final flush runs while it exits. Spans ended right before
+// Shutdown() — fewer than a batch, no flush interval elapsed — must still reach
+// the collector, and the ping stream must be closed in an orderly way so the
+// collector learns the agent stopped. This pins the loss a host suffers when
+// it never calls Shutdown() (see Agent::Shutdown() in tracer.h).
+TEST_F(AgentIntegrationTest, ShutdownDeliversSpansQueuedRightBeforeIt) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.ping_streams.empty();
+    }, kWaitTimeout));
+
+    // One delivered span first: the span channel is opened lazily and stays
+    // IDLE until its first RPC, and the shutdown flush sends only over a
+    // channel that is already READY (it must stay bounded, so it does not
+    // wait for a connection). Without this warm-up the tail would be dropped
+    // with "drop N remaining spans on shutdown: channel not ready" — the
+    // documented short-lived-process limitation, not the case pinned here.
+    {
+        auto span = agent_->NewSpan("shutdown.tail", "/shutdown-tail-warmup");
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+    }
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/shutdown-tail-warmup").has_value();
+    }, kWaitTimeout));
+
+    // Below SpanBatch.Size (4) so no full batch triggers a send on its own,
+    // and Shutdown() follows immediately, well inside FlushIntervalMs.
+    constexpr int kTailSpans = 3;
+    for (int i = 0; i < kTailSpans; ++i) {
+        auto span = agent_->NewSpan("shutdown.tail",
+                                    "/shutdown-tail-" + std::to_string(i));
+        ASSERT_TRUE(span->IsSampled());
+        span->EndSpan();
+    }
+    agent_->Shutdown();
+    EXPECT_FALSE(agent_->Enable());
+
+    // The workers were joined inside Shutdown(); only the collector's own
+    // bookkeeping may still be catching up.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        for (int i = 0; i < kTailSpans; ++i) {
+            if (count_spans_by_rpc(snapshot, "/shutdown-tail-" + std::to_string(i)) != 1U) {
+                return false;
+            }
+        }
+        return true;
+    }, kWaitTimeout)) << "spans ended right before Shutdown() were not flushed";
+
+    // The ping stream ending is how the collector learns the agent stopped.
+    // Shutdown() cancels the (possibly blocked) reader rather than waiting
+    // for a graceful close, so the recorded outcome is CANCELLED, not OK;
+    // what matters here is that the collector observed the end at all.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_result(snapshot, CollectorRpc::PingSession, grpc::StatusCode::CANCELLED) ||
+               has_result(snapshot, CollectorRpc::PingSession, grpc::StatusCode::OK);
+    }, kWaitTimeout)) << "the collector never saw the ping stream end after Shutdown()";
+}
+
 // A host that stops and resumes tracing while it keeps serving must go through
 // StartAgent() again: Shutdown() is terminal for an agent instance. These two
 // pin both halves of that contract end-to-end — the supported cycle keeps

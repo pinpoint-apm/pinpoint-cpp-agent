@@ -22,6 +22,7 @@
  *     → response recorded via helper::TraceHttpServerResponse
  *       (status code, URL stats, configured response headers), span ended
  */
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -33,6 +34,14 @@
 static std::string env_or(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
     return (value && *value) ? value : fallback;
+}
+
+httplib::Server* g_server = nullptr;
+
+void stop_server(int) {
+    if (g_server) {
+        g_server->stop();
+    }
 }
 
 int main() {
@@ -50,6 +59,12 @@ int main() {
     const std::string backend = env_or("BACKEND", "127.0.0.1:8081");
 
     httplib::Server server;
+    // Ctrl-C / SIGTERM stop the listener so main() reaches the Shutdown()
+    // call below. The agent installs no signal handler of its own; without
+    // this the process would die with its last spans still queued.
+    g_server = &server;
+    std::signal(SIGINT, stop_server);
+    std::signal(SIGTERM, stop_server);
     server.Get("/api/members", [&backend](const httplib::Request& req, httplib::Response& res) {
         // 1. Root span for the inbound request.
         //    Opens the root span for an inbound request. NewSpan() reads any Pinpoint-*
@@ -103,6 +118,9 @@ int main() {
     });
 
     std::cout << "proxy listening on :8080, forwarding to " << backend << std::endl;
-    server.listen("0.0.0.0", 8080);
+    server.listen("0.0.0.0", 8080);   // returns after stop_server()
+    // Explicit shutdown: delivers the queued spans and closes the ping
+    // stream so the collector learns the agent stopped. See
+    // pinpoint::helper::ScopedAgent (used by server.cpp) for the RAII form.
     pinpoint::GlobalAgent()->Shutdown();
 }

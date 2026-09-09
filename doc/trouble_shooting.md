@@ -127,6 +127,8 @@ Points to keep in mind:
   queued spans drain, and returns within a 3-second deadline even if a worker
   is stuck in an unresponsive RPC (stragglers finish draining on a background
   thread). Still, do not call it from a latency-sensitive path.
+- **Shutdown is the only path that flushes.** Nothing runs it for you when the
+  process ends — see [Spans from just before exit are missing](#spans-from-just-before-exit-are-missing).
 - **Calling `StartAgent()` while an agent is running** is safe: it leaves the
   running agent untouched and returns `true` with a warning log.
 
@@ -201,6 +203,59 @@ The agent starts successfully but no traces appear.
 6. **Check the collector side** — the agent log can show a clean `AgentInfo sent`
    and spans still be rejected downstream. Review the Pinpoint **collector** logs
    before assuming the agent is at fault.
+
+### Spans from just before exit are missing
+
+**Symptom.** Everything is traced while the application runs, but the last
+requests before it stopped never show up — a short-lived job or CLI shows no
+spans at all — and the Pinpoint UI keeps listing the agent as running long
+after the process is gone.
+
+**Cause.** `Shutdown()` never ran. Spans are queued and sent in batches by a
+worker thread; whatever is still queued is sent by that worker's final flush,
+which only happens when the agent is torn down. The ping stream that tells the
+collector the agent is alive is closed on the same path. The library
+deliberately does **not** tear itself down when the process exits — no
+`atexit` hook, no signal handler — because it is embedded in your process:
+joining threads and closing gRPC channels during static destruction, or from a
+signal handler, is only safe when the host decides it is. So when `main()`
+returns without calling `Shutdown()`, or the process ends through `exit()`, a
+fatal signal or `_exit()` with the agent still installed:
+
+- every span still in the send queue is dropped (at default batching, the last
+  few hundred milliseconds of traffic; a lot more under a slow collector);
+- the collector is not told the agent stopped, and only notices the dead
+  connection through its own timeouts, so the UI shows the agent as running.
+
+Dropping the last `AgentPtr` does tear the agent down (bounded, same as
+`Shutdown()`), but the global agent installed by `StartAgent()` is never
+dropped automatically, so in practice this only helps for handles you own.
+
+**Fix.** Make sure `Shutdown()` runs on every exit path you control:
+
+- **RAII (recommended).** Wrap `main()` — or the scope that owns the server —
+  in a `pinpoint::helper::ScopedAgent`; its destructor calls `Shutdown()`.
+- **Explicit call.** `pinpoint::GlobalAgent()->Shutdown();` after the server
+  loop returns. Calling it twice is harmless.
+- **Opt-in exit hook.** For a plain executable that cannot wrap `main()`, set
+  `AgentOptions::install_atexit_shutdown = true` before `StartAgent()`. A
+  `std::atexit` hook then calls `Shutdown()` on normal exit (`main()` returning,
+  `exit()`). Off by default. `atexit` hooks run in reverse registration order,
+  so anything created *after* `StartAgent()` — the logger behind
+  `AgentOptions::log_sink`, for instance — is already gone when the hook runs.
+- **Signals are yours to handle.** None of the above runs on `SIGTERM`/`SIGINT`
+  unless your handler makes the process take a normal exit path: stop the
+  server loop (`server.stop()`), let `main()` return, and the guard or the
+  explicit call does the rest. Do **not** call `Shutdown()` from the handler
+  itself — it joins threads and tears down gRPC, none of which is
+  async-signal-safe. The programs in [`example/`](../example/) show the pattern.
+
+**Verify.** At `Log.Level: info` a shutdown logs
+`flushing N remaining spans on shutdown` (or `drop N remaining spans on
+shutdown: channel not ready` — the flush sends only over a span channel that is
+already connected, so a process that ends before its very first batch was ever
+sent still loses that tail; nothing is logged at all if `Shutdown()` never ran),
+followed by `grpc span worker end`.
 
 ### Incomplete Traces
 

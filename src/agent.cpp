@@ -18,6 +18,7 @@
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <string>
 #include <exception>
 #include <utility>
@@ -78,6 +79,51 @@ namespace pinpoint {
         std::chrono::milliseconds agent_shutdown_deadline() {
             return std::chrono::milliseconds{shutdown_deadline_ms.load(std::memory_order_relaxed)};
         }
+    }
+
+    namespace {
+        // Opt-in process-exit hook (AgentOptions::install_atexit_shutdown).
+        // Registered at most once per process; at exit it shuts down whichever
+        // agent is the global agent then, so StartAgent() cycles after the
+        // registering one are covered too. Nothing here runs unless a host
+        // asked for it: the default keeps the "no teardown during
+        // __cxa_atexit" invariant documented at global_agent() above.
+        std::atomic<bool> atexit_shutdown_hook_installed_{false};
+
+        void atexit_shutdown_hook() noexcept {
+            std::shared_ptr<AgentImpl> agent;
+            try {
+                std::lock_guard<std::mutex> lock(global_agent_mutex);
+                agent = global_agent().load();
+            } catch (...) {}
+            if (agent) {
+                // Shutdown() (not a plain release) so the teardown is the
+                // shared-owned one: a straggler past the deadline is parked on
+                // a keep-alive instead of a deferred destroy.
+                agent->Shutdown();
+            }
+        }
+
+        // Called with global_agent_mutex held, right after the agent has been
+        // published. A failed std::atexit (table full) is logged and leaves
+        // the flag clear so a later StartAgent() retries.
+        void maybe_install_atexit_shutdown_hook(const AgentOptions& options) {
+            if (!options.install_atexit_shutdown ||
+                atexit_shutdown_hook_installed_.load(std::memory_order_acquire)) {
+                return;
+            }
+            if (std::atexit(&atexit_shutdown_hook) != 0) {
+                LOG_WARN("failed to register the atexit shutdown hook; "
+                         "call Shutdown() explicitly before the process exits");
+                return;
+            }
+            atexit_shutdown_hook_installed_.store(true, std::memory_order_release);
+            LOG_INFO("atexit shutdown hook installed");
+        }
+    }
+
+    bool atexit_shutdown_hook_installed() {
+        return atexit_shutdown_hook_installed_.load(std::memory_order_acquire);
     }
 
     void set_agent_shutdown_deadline(std::chrono::milliseconds deadline) {
@@ -1650,6 +1696,7 @@ namespace pinpoint {
         }
         global_agent().store(agent);
         sink_guard.armed = false;
+        maybe_install_atexit_shutdown_hook(options);
         return true;
     } catch (...) {
         return false;

@@ -401,6 +401,10 @@ namespace pinpoint {
     // Test helpers for managing the global agent singleton
     void set_global_agent(std::shared_ptr<AgentImpl> agent);
     void reset_global_agent();
+    /// Whether StartAgent() has registered the opt-in std::atexit shutdown
+    /// hook (AgentOptions::install_atexit_shutdown) in this process. Test
+    /// observability: the hook itself only fires at process exit.
+    bool atexit_shutdown_hook_installed();
 
     /// @brief Overrides the hard wall-clock bound applied to the blocking
     ///        phase of agent shutdown; a non-positive value restores the
