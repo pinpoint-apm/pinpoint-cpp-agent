@@ -891,9 +891,11 @@ The map holds copies (`ActiveTraceHandle`), so when instrumentation forgets to
 end a trace the cache silently evicts arbitrary entries and memory stays
 bounded — at the cost of an active-trace histogram that under-reports.
 
-**Go.** `activeSpanRegistry` is a set of per-shard maps with no cap. Its entries
-are real map values, so the same missing-end bug accumulates memory there far
-faster than here; a real cap or eviction is worth considering on that side.
+**Go.** `activeSpanRegistry` is a set of per-shard maps whose entries are real
+map values, so the same missing-end bug accumulates memory there rather than in
+the spans. It therefore adopts Java's cap: `activeSpanMaxSize` (10240) applied
+per shard, a full shard evicting an arbitrary existing entry for the new span,
+with the same rate-limited WARN.
 
 **This agent.** `ActiveSpanRegistry` (`src/active_span.h`) has no cap and does
 not evict, deliberately. Registrations are intrusive nodes owned by the span
