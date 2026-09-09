@@ -120,7 +120,12 @@ namespace pinpoint {
         // both sinks off every runtime generation so spans reach them without
         // an agent keep-alive.
         agent_stats_ = std::make_shared<AgentStats>(this);
-        url_stats_ = std::make_shared<UrlStats>(this);
+        // The send worker's timed wait follows Stat.BatchInterval, as Java's
+        // UriStatCollectingJob rides the agent stat scheduler; a completed
+        // tick wakes it immediately regardless. Boot-time value: the key is
+        // not reloadable (see Config::retainNonReloadableFrom).
+        url_stats_ = std::make_shared<UrlStats>(this, URL_STAT_TICK_INTERVAL,
+                                                std::chrono::milliseconds(cfg->stat.collect_interval));
 
         // Each cache shards its store by kDefaultCacheShardCount (see
         // ShardedLruCache): the api cache in particular is hit once per span

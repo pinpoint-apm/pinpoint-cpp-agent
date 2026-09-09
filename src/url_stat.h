@@ -46,10 +46,16 @@ namespace pinpoint {
     constexpr std::string_view URL_STAT_UNKNOWN = "/NULL";
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
 
-    // Production intervals; UrlStats accepts overrides so tests can drive the
-    // tick bucketing and the periodic send in milliseconds instead of 30s.
+    // Production tick width (the (url, tick) bucket the server aggregates by;
+    // Java's TickClock, Go's urlStatCollectInterval). UrlStats accepts an
+    // override so tests can drive the bucketing in seconds instead of 30s.
+    //
+    // There is no separate send interval constant: the send worker follows
+    // Stat.BatchInterval (config.stat.collect_interval), the way Java's
+    // UriStatCollectingJob rides the agent stat scheduler
+    // (profiler.jvm.stat.collect.interval), and a completed tick wakes the
+    // worker immediately regardless of that interval. See the constructor.
     constexpr auto URL_STAT_TICK_INTERVAL = std::chrono::seconds(30);
-    constexpr auto URL_STAT_SEND_INTERVAL = std::chrono::seconds(30);
 
     /// @brief Fixed-interval clock used to bucketize URL statistics.
     class TickClock {
@@ -183,12 +189,21 @@ namespace pinpoint {
     /// @brief Background workers for collecting and sending URL statistics.
     class UrlStats {
     public:
-        /// @brief @p tick_interval (bucket width) and @p send_interval default
-        ///        to the production values; tests inject shorter ones.
+        /// @brief @p tick_interval (bucket width) defaults to the production
+        ///        value. @p send_interval is the send worker's timed wait: the
+        ///        agent passes Stat.BatchInterval, and the default is that
+        ///        key's default, so URL stats leave on the agent stat cadence
+        ///        as in Java. It is a ceiling, not a period — a completed tick
+        ///        wakes the worker at once — so what it bounds is the close of
+        ///        the last tick after traffic stops. Tests inject shorter ones.
         explicit UrlStats(AgentService* agent,
                           std::chrono::seconds tick_interval = URL_STAT_TICK_INTERVAL,
-                          std::chrono::milliseconds send_interval = URL_STAT_SEND_INTERVAL);
+                          std::chrono::milliseconds send_interval =
+                              std::chrono::milliseconds(defaults::STAT_INTERVAL_MS));
         ~UrlStats() = default;
+
+        /// @brief The send worker's timed-wait ceiling (see the constructor).
+        std::chrono::milliseconds sendInterval() const noexcept { return send_interval_; }
 
         /// @brief Queues a URL statistic for aggregation.
         void enqueueUrlStats(UrlStatEntry stats) noexcept;
@@ -258,7 +273,9 @@ namespace pinpoint {
         void addLocked(const UrlStatEntry& us, const Config& config);
         /// @brief Moves the snapshot in progress onto completed_, evicting the
         ///        oldest tick if the queue is full, and starts a fresh one.
-        ///        Caller must hold snapshot_mutex_.
+        ///        Wakes the send worker: a completed tick is sent right away
+        ///        rather than on the next timed wait. Caller must hold
+        ///        snapshot_mutex_.
         void cutInProgressLocked();
         /// @brief One supervised run of the aggregation loop; the public
         /// worker restarts it after a transient exception.
@@ -323,9 +340,16 @@ namespace pinpoint {
         std::deque<std::unique_ptr<UrlStatSnapshot>> completed_{};
         std::mutex snapshot_mutex_{};
 
-        // Send worker synchronization
+        // Send worker synchronization. tick_completed_ (under send_mutex_) is
+        // the wake reason cutInProgressLocked sets; the worker's predicate
+        // reads it alongside isExiting() so a shutdown wakeup and a "tick is
+        // ready" wakeup on the shared cond_var are told apart. Lock order is
+        // snapshot_mutex_ -> send_mutex_ (the cut notifies from under the
+        // snapshot lock); the worker therefore never touches the snapshot
+        // while holding send_mutex_.
         std::chrono::milliseconds send_interval_;
         std::mutex send_mutex_{};
         std::condition_variable send_cond_var_{};
+        bool tick_completed_{false};
     };
 }

@@ -1896,9 +1896,16 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
     constexpr int kUrlsPerTick = 5;   // more than kLimit, so each tick overflows
     constexpr int kStalledTicks = 10; // 10 x 30s = the five-minute outage
     constexpr int64_t kTickMillis = 30000;
-    // Tick-aligned so the expected tick values are exact.
-    constexpr int64_t kBaseMillis = 1700000010000;
-    static_assert(kBaseMillis % kTickMillis == 0, "base must sit on a tick boundary");
+    // Tick-aligned so the expected tick values are exact, and an hour ahead
+    // of the wall clock (like CloseUrlStatTick's cutter): the URL stat send
+    // worker closes a tick whose window has elapsed on every timed wakeup
+    // (Stat.BatchInterval, 1s in this fixture), so synthetic ticks in the
+    // past could be cut by the clock in the middle of the loop below, leaving
+    // a straggler snapshot that skews the retained set.
+    const int64_t kBaseMillis = (std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch()).count() /
+                                     kTickMillis + 120) * kTickMillis;
+    ASSERT_EQ(kBaseMillis % kTickMillis, 0) << "base must sit on a tick boundary";
 
     cfg_.url_stat_limit = kLimit;
     cfg_.url_stat_enable_trim_path = false;
@@ -1906,7 +1913,15 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
 
     // The stat port stops listening: the stream dies and cannot be reopened,
     // so no send token can consume a snapshot until the port comes back.
+    // The agent only learns that on a failed write, so let the fixture's 1s
+    // agent-stat send (BatchInterval: 1000) fail once and park the stats
+    // worker in its channel wait before any tick is cut: every cut below
+    // wakes the URL stat send worker and issues a token at once, and a token
+    // consumed on a stream that is dead but not yet known dead takes the
+    // completed ticks into a write that fails — the send-path loss this test
+    // is not about.
     ASSERT_TRUE(collector_.StopEndpoint(CollectorEndpoint::Stat));
+    std::this_thread::sleep_for(2500ms);
 
     const auto config = impl_->getConfig();
     auto& url_stats = impl_->getUrlStats();
@@ -1922,7 +1937,6 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
             url_stats.addSnapshot(&entry, *config);
         }
     }
-
     // Wait for the stat stream to actually reopen before asking for a send:
     // next_write() takes the snapshot when it consumes the token, so a token
     // driven into a stream that is still down would discard the whole outage.
@@ -1948,8 +1962,9 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
         }
         return by_tick;
     };
-    // Stats are only sent on a token; the agent's own 30s timer would outlast
-    // the test, so drive it the way FlushUrlStatsUntil does.
+    // Stats are only sent on a token. The cuts above already queued one, which
+    // the worker consumes as soon as its stream is back; drive more the way
+    // FlushUrlStatsUntil does so the test does not depend on that timing.
     bool delivered = false;
     for (int attempt = 0; attempt < 20 && !delivered; ++attempt) {
         impl_->recordStats(URL_STATS);

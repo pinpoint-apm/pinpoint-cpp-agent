@@ -1649,4 +1649,128 @@ TEST_F(UrlStatTest, CloseElapsedTickOnAnIdleAgentProducesNothing) {
     }
 }
 
+// ========== Send worker wakeups ==========
+//
+// The send worker's timed wait follows Stat.BatchInterval, but a completed
+// tick must not wait for it: Java's UriStatCollectingJob runs on the agent
+// stat scheduler (5-10s) and the tick is over the moment it is cut, so the
+// cut itself wakes the worker. A send interval far longer than the test lets
+// these cases tell an immediate wakeup from a timer expiry.
+
+static constexpr auto kNeverOnItsOwn = std::chrono::minutes(10);
+
+static bool wait_for_stats_calls(const MockAgentService& mock, int at_least,
+                                 std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (mock.recorded_stats_calls_.load() < at_least) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+// The arrival cut (addLocked crossing a tick boundary) wakes the worker.
+TEST_F(UrlStatTest, ArrivalCutWakesTheSendWorkerWithoutWaitingForTheInterval) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1), kNeverOnItsOwn);
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    add_at(url_stats, *config, "/api/a", 1000);  // opens tick 1000
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(mock_agent_service_->recorded_stats_calls_.load(), 0)
+        << "an open tick is not a reason to send";
+
+    add_at(url_stats, *config, "/api/a", 1001);  // cuts tick 1000
+    EXPECT_TRUE(wait_for_stats_calls(*mock_agent_service_, 1))
+        << "the cut must put a send token in immediately, not after the send interval";
+    EXPECT_EQ(mock_agent_service_->last_stats_type_.load(), URL_STATS);
+
+    // The wakeup ends one wait, not the worker: a later cut wakes it again.
+    add_at(url_stats, *config, "/api/a", 1002);  // cuts tick 1001
+    EXPECT_TRUE(wait_for_stats_calls(*mock_agent_service_, 2))
+        << "a completed-tick wakeup must not be mistaken for the exit signal";
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+
+    const auto snapshot = url_stats.takeSnapshot();
+    EXPECT_EQ(snapshot->getEachStats().size(), 2u) << "both cut ticks are waiting for the token's send";
+}
+
+// The clock cut (closeElapsedTick on a trailing tick) wakes the worker too,
+// and only when it actually closed something.
+TEST_F(UrlStatTest, ClockCutWakesTheSendWorkerOnlyWhenATickWasClosed) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->http.url_stat.enable_trim_path = false;
+    const auto config = mock_agent_service_->getConfig();
+
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1), kNeverOnItsOwn);
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    // Idle: nothing to close, so no wakeup and no token.
+    for (int i = 0; i < 3; i++) {
+        url_stats.closeElapsedTick();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(mock_agent_service_->recorded_stats_calls_.load(), 0)
+        << "closing nothing must not wake the worker";
+
+    // Real wall-clock end time: closeElapsedTick asks the clock.
+    UrlStatEntry entry("/api/quiet", "GET", 200);
+    entry.elapsed_ = 10;
+    entry.end_time_ = std::chrono::system_clock::now();
+    url_stats.addSnapshot(&entry, *config);
+    url_stats.closeElapsedTick();  // still inside its window
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(mock_agent_service_->recorded_stats_calls_.load(), 0)
+        << "a tick still inside its window is not closed and must not wake the worker";
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    url_stats.closeElapsedTick();  // window over: cuts the tick
+    EXPECT_TRUE(wait_for_stats_calls(*mock_agent_service_, 1))
+        << "the clock cut must wake the worker without waiting for the send interval";
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+}
+
+// The exit signal shares the cond_var with the completed-tick wakeup and must
+// end the worker without a token; a timer expiry with nothing completed keeps
+// the old behavior of a token that finds nothing to send.
+TEST_F(UrlStatTest, ExitWakeupIsNotATickCompletion) {
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1), kNeverOnItsOwn);
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+
+    EXPECT_EQ(mock_agent_service_->recorded_stats_calls_.load(), 0)
+        << "shutdown must not be taken for a completed tick and issue a send token";
+    EXPECT_TRUE(url_stats.takeSnapshot()->empty());
+}
+
+TEST_F(UrlStatTest, TimerWakeupWithNoCompletedTickHasNothingToSend) {
+    UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(30), std::chrono::milliseconds(20));
+    std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
+
+    EXPECT_TRUE(wait_for_stats_calls(*mock_agent_service_, 3)) << "the timed wait still fires";
+    // Whatever the token's consumer drains here is empty, so next_write()
+    // builds no message (see NoTrafficLeavesNothingToSend).
+    EXPECT_TRUE(url_stats.takeSnapshot()->empty())
+        << "a timer wakeup with no completed tick must not manufacture one";
+
+    mock_agent_service_->setExiting(true);
+    url_stats.stopSendUrlStatsWorker();
+    send_worker.join();
+}
+
 } // namespace pinpoint

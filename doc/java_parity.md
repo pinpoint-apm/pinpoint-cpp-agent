@@ -271,6 +271,74 @@ parity rather than a divergence.
 
 ---
 
+## URL statistics send cadence — same as Java (structure)
+
+**Java.** `UriStatCollectingJob` has no timer of its own: it is a job on the
+agent stat scheduler, so it polls the completed-tick queue every
+`profiler.jvm.stat.collect.interval` (5000 ms in code, 10000 ms in the release
+profile). The queue only ever holds *completed* 30s ticks. In addition,
+`AsyncQueueingUriStatStorage`'s consumer wakes on a 2s queue-poll timeout and
+runs `checkAndFlushOldData`, so the last tick of a burst is closed within about
+2s of its window ending and sent on the next scheduler run.
+
+**Before.** `UrlStats::runSendUrlStatsWorker` waited on a fixed 30s
+`URL_STAT_SEND_INTERVAL` (`std::make_shared<UrlStats>(this)` took the default,
+so production could not change it) and the timer was the only thing that
+issued a send token. A tick cut by traffic at its boundary waited up to 30s for
+the timer; a trailing tick, closed by the same timer, up to 30s to close and
+then the send on top. The Go agent's `sendUrlStatWorker` had the same fixed
+30s ticker.
+
+**Now.** Two changes, the same in both ports.
+
+1. **A completed tick wakes the send worker.** `cutInProgressLocked` — the one
+   place a tick moves onto `completed_`, reached from both the arrival cut in
+   `addLocked` and the clock cut in `closeElapsedTick` — sets `tick_completed_`
+   and notifies `send_cond_var_`. The worker's wait predicate reads that flag
+   next to `isExiting()`, so the shutdown wakeup on the same condition variable
+   is told apart from a ready tick, and a wake with nothing completed issues a
+   token whose consumer finds `completed_` empty and builds no message (the
+   pre-existing behavior). Under traffic the send interval no longer matters:
+   the tick leaves within milliseconds of its boundary, ahead of Java's 5–10s.
+   Go signals a capacity-1 channel from `completeLocked` and selects on it
+   beside the ticker.
+2. **The timed wait follows the stat collect interval** — `Stat.BatchInterval`
+   here (`config.stat.collect_interval`, default 5000 ms, range 1–60 s), passed
+   by `AgentImpl` into the `UrlStats` constructor; `Stat.CollectInterval` in
+   Go. There is no separate key. Its only remaining job is the trailing tick of
+   an agent whose traffic stopped, which nothing arrives to cut:
+   `closeElapsedTick` runs on every timed wakeup, so that tick is closed within
+   one stat interval of its window ending and, through (1), sent at once.
+
+**Why no separate key (option B over option A).** A `Http.UrlStat.SendInterval`
+key defaulting to the stat interval was considered and rejected. With (1) the
+interval is not a send cadence any more — a tick is sent when it completes —
+but only the bound on the idle-agent close of the last tick, and there is no
+case for tuning that bound apart from the agent stat cadence: both answer "how
+promptly does this agent report a quiet period", and a deployment that
+tightens or relaxes one wants the other to follow. That is also Java's
+structure verbatim: one scheduler, one interval, URL stats riding on it. The
+cost is that URL stats cannot be paced independently of agent stats, which is
+exactly Java's constraint too.
+
+**Java's 2s close is not matched.** Java closes the trailing tick within its
+2s poll timeout but still sends it only on the next 5–10s scheduler run, so
+its end-to-end latency for the last tick is 5–10s. Here the close and the send
+are one event, bounded by `Stat.BatchInterval` — 5s by default, so equal or
+better at the defaults; a deployment running `Stat.BatchInterval: 60000`
+accepts a 60s close of its last tick along with 60s agent stats. A dedicated
+2s poll would buy nothing at the defaults and would be a second timer with its
+own constant, which is what this change removes.
+
+**Test injection.** The constructor keeps `send_interval` as a parameter so
+`test/test_url_stat.cpp` can run the worker in milliseconds; the default is
+`defaults::STAT_INTERVAL_MS`, which `JavaParityLockTest.UrlStatWindow` locks
+in place of the old `URL_STAT_SEND_INTERVAL == 30s` assertion. The tick width
+(`URL_STAT_TICK_INTERVAL`, 30s), the bucket layout, `bucketVersion` and the
+completed cap of 4 are unchanged and still locked.
+
+---
+
 ## Oversize SQL is dropped, not cut — exceeds Java, shared with Go
 
 **Java.** `DefaultSqlNormalizer` has no length limit: the whole statement is
@@ -866,8 +934,13 @@ not, because the agents knowingly differ; each has its own entry above or in
   gRPC C-core defaults so the BDP estimator can tune the window.
 - **Stat collect interval** — the locked 5000 ms is Java's *code* default
   (`DefaultMonitorConfig`); Java's release profile ships 10000 ms.
-- **URL statistics send cadence** — Java polls on the stat scheduler (5–10s),
-  both ports use a dedicated 30s timer.
+- **URL statistics send cadence** — not a constant of its own in any of the
+  three. Java polls on the stat scheduler (5–10s); both ports now send a
+  completed tick the moment it is closed and time their trailing-tick close by
+  the stat collect interval (`Stat.BatchInterval` here, `Stat.CollectInterval`
+  in Go). `UrlStatWindow` locks that the default of that ceiling is the stat
+  interval's default, not a second 30s timer — see
+  [URL statistics send cadence](#url-statistics-send-cadence--same-as-java-structure).
 
 ### Skipped assertions
 

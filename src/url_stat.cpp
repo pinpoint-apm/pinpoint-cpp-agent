@@ -145,6 +145,20 @@ namespace pinpoint {
         }
         completed_.push_back(std::move(snapshot_));
         snapshot_ = std::move(fresh);
+
+        // Wake the send worker now instead of at its next timed wait: the
+        // tick is over, so nothing that can still join it is coming, and the
+        // timed wait exists only to close the trailing tick of an agent whose
+        // traffic stopped. Under the send lock so the flag cannot be set
+        // between the worker's predicate check and its block (a lost wakeup
+        // would fall back to the timed wait rather than hang, but the point
+        // of this notify is that it does not). snapshot_mutex_ is held here;
+        // the worker never nests the two locks the other way around.
+        {
+            std::lock_guard<std::mutex> send_lock(send_mutex_);
+            tick_completed_ = true;
+        }
+        send_cond_var_.notify_one();
     }
 
     void UrlStats::closeElapsedTick() {
@@ -500,13 +514,34 @@ namespace pinpoint {
     void UrlStats::runSendUrlStatsWorker() {
         std::unique_lock<std::mutex> lock(send_mutex_);
         while (!agent_->isExiting()) {
-            if (!send_cond_var_.wait_for(lock, send_interval_, [this]{ return agent_->isExiting(); })) {
-                // Before the token, not after: next_write() drains whatever
-                // completed_ holds when it consumes the token, so a tick
-                // closed here goes out on this send rather than the next.
-                closeElapsedTick();
-                agent_->recordStats(URL_STATS);
+            // Three ways out of the wait, told apart by the predicate: exit
+            // (stopSendUrlStatsWorker), a tick cut onto completed_
+            // (cutInProgressLocked sets tick_completed_), or the timed wait
+            // elapsing. The last two both end in a send token; the timed
+            // path additionally closes a tick whose window has elapsed with
+            // no newer entry to cut it — the trailing tick of an agent whose
+            // traffic stopped — so send_interval_ (Stat.BatchInterval) is
+            // the ceiling on how late that tick is reported, not the cadence
+            // of URL stat sends under traffic.
+            send_cond_var_.wait_for(lock, send_interval_,
+                                    [this] { return agent_->isExiting() || tick_completed_; });
+            if (agent_->isExiting()) {
+                break;
             }
+            tick_completed_ = false;
+
+            // Released across the snapshot work: closeElapsedTick takes
+            // snapshot_mutex_, and cutInProgressLocked takes send_mutex_ from
+            // under it (see the member comment on lock order). A cut made
+            // here re-arms tick_completed_, which costs one extra token that
+            // next_write() finds empty and skips.
+            lock.unlock();
+            // Before the token, not after: next_write() drains whatever
+            // completed_ holds when it consumes the token, so a tick closed
+            // here goes out on this send rather than the next.
+            closeElapsedTick();
+            agent_->recordStats(URL_STATS);
+            lock.lock();
         }
     }
 
@@ -514,7 +549,8 @@ namespace pinpoint {
         // Same rationale as stopAddUrlStatsWorker: notify unconditionally and
         // under the lock. This worker's wait_for bounds a lost wakeup at the
         // send interval rather than forever, but shutdown should not stall at
-        // all.
+        // all. The worker reads isExiting() in its predicate, so this wakeup
+        // is not mistaken for a completed tick (tick_completed_).
         std::lock_guard<std::mutex> lock(send_mutex_);
         send_cond_var_.notify_one();
     }

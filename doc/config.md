@@ -231,7 +231,7 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 |---|---|---|---|---|
 | `Stat.Enable` | `PINPOINT_CPP_STAT_ENABLE` | bool | `true` | Enable/disable system statistics collection. |
 | `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. Valid range: `1`-`100`. |
-| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`60000`. |
+| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`60000`. Also the timer of the URL statistics send worker (see [HTTP configuration](#http-configuration)): a completed URL stat tick is sent immediately, and this is the ceiling on how late the last tick is closed once traffic stops. |
 
 What the collector receives in each `PAgentStat` row, since the C++ agent has no JVM to report on:
 
@@ -394,11 +394,17 @@ stays in the agent until it is closed, so one tick is never split across two
 messages — a split would report a separate maximum and average for each half.
 A tick is closed either by the first request of a newer tick or, if none
 arrives, by the send timer once the tick's 30-second window has elapsed, so an
-agent whose traffic stops still reports its last tick. **A send with no completed tick sends no
-message at all**, so an idle agent puts nothing on the stats stream. This
-matches Java, whose `UriStatCollectingJob` drains only the completed queue and
-stops as soon as it polls empty. The one exception is agent shutdown, which
-flushes the tick in progress rather than dropping it.
+agent whose traffic stops still reports its last tick. **A completed tick is
+sent as soon as it is closed**, not on the next timer expiry. The send timer
+itself has no key of its own: it follows `Stat.BatchInterval` (default 5 s),
+the way Java's `UriStatCollectingJob` runs on the agent stat scheduler, so
+under traffic a tick leaves within milliseconds of its boundary and after
+traffic stops the last tick is closed within one `Stat.BatchInterval`. **A
+send with no completed tick sends no message at all**, so an idle agent puts
+nothing on the stats stream. This matches Java, whose `UriStatCollectingJob`
+drains only the completed queue and stops as soon as it polls empty. The one
+exception is agent shutdown, which flushes the tick in progress rather than
+dropping it.
 
 A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's `URITemplate.NULL_URI` verbatim, so a mixed Java/C++ application keeps one "no URI recorded" bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
 

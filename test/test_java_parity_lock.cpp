@@ -490,10 +490,14 @@ TEST(JavaParityLockTest, UrlStatHistogramBuckets) {
 
 // The tick size and the completed-queue cap. Java:
 // AsyncQueueingUriStatStorage buckets on a 30s TickClock and keeps four
-// snapshots.
+// snapshots. The send cadence is not a URL-stat constant: Java's
+// UriStatCollectingJob runs on the agent stat scheduler
+// (profiler.jvm.stat.collect.interval), so the default send ceiling here is
+// Stat.BatchInterval's default rather than a second 30s timer.
 TEST(JavaParityLockTest, UrlStatWindow) {
     EXPECT_EQ(URL_STAT_TICK_INTERVAL, std::chrono::seconds(30)) << "Java TickClock interval";
-    EXPECT_EQ(URL_STAT_SEND_INTERVAL, std::chrono::seconds(30));
+    EXPECT_EQ(UrlStats(nullptr).sendInterval(), std::chrono::milliseconds(defaults::STAT_INTERVAL_MS))
+        << "URL stats leave on the agent stat cadence, as Java's UriStatCollectingJob does";
 
     // Two completions 30s apart fall in different ticks; anything inside the
     // same window shares one.
