@@ -368,6 +368,48 @@ TEST_F(GrpcTest, SqlUidMetaBoundsQueuedSqlOnCacheBypass) {
     EXPECT_EQ(cached.cache_key_, long_sql);
 }
 
+// StringMeta keeps the same shape: the queued copy of an oversize SQL is
+// abbreviated to kMaxSqlMetaLength on construction, exactly once, while the
+// whole normalized SQL survives as the id cache key removeCacheSql() evicts by.
+TEST_F(GrpcTest, StringMetaBoundsQueuedSqlOnConstruction) {
+    const std::string long_sql(70000, 'a');
+    const std::string marker = "...(70000)";
+
+    const StringMeta meta(7, long_sql, STRING_META_SQL);
+    EXPECT_EQ(meta.str_val_, std::string(kMaxSqlMetaLength, 'a') + marker);
+    EXPECT_LE(meta.str_val_.size(), kMaxSqlMetaLength + marker.size());
+    EXPECT_EQ(meta.str_val_.find("...("), kMaxSqlMetaLength)
+        << "the marker is appended exactly once";
+    EXPECT_EQ(meta.str_val_.find("...(", kMaxSqlMetaLength + 1), std::string::npos);
+    EXPECT_EQ(meta.cache_key_, long_sql)
+        << "the eviction key is the whole string the id cache stored under";
+
+    const StringMeta within(8, "SELECT 1", STRING_META_SQL);
+    EXPECT_EQ(within.str_val_, "SELECT 1");
+    EXPECT_EQ(within.cache_key_, "SELECT 1");
+}
+
+// An error name travels under kMaxErrorStringLength (256), not the SQL cap:
+// a name within it is verbatim, so the abbreviation is a no-op for the error
+// recording path, and a longer one is cut once with a single marker.
+TEST_F(GrpcTest, StringMetaBoundsQueuedErrorNameByItsOwnCap) {
+    const std::string at_cap(kMaxErrorStringLength, 'e');
+    const StringMeta verbatim(1, at_cap, STRING_META_ERROR);
+    EXPECT_EQ(verbatim.str_val_, at_cap);
+    EXPECT_EQ(verbatim.cache_key_, at_cap);
+
+    const std::string over_cap(kMaxErrorStringLength + 44, 'e');
+    const StringMeta cut(2, over_cap, STRING_META_ERROR);
+    EXPECT_EQ(cut.str_val_, at_cap + "...(300)");
+    EXPECT_EQ(cut.str_val_.find("...(", kMaxErrorStringLength + 1), std::string::npos)
+        << "the marker is appended exactly once";
+    EXPECT_EQ(cut.cache_key_, over_cap);
+
+    // The same length as SQL is not cut, so the caps are really per type.
+    const StringMeta as_sql(3, over_cap, STRING_META_SQL);
+    EXPECT_EQ(as_sql.str_val_, over_cap);
+}
+
 TEST_F(GrpcTest, MetaDataExceptionTest) {
     TraceId txid{"agent", 100, 5};
     std::vector<std::unique_ptr<Exception>> exceptions;

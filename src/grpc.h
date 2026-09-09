@@ -498,13 +498,31 @@ namespace pinpoint {
     };
 
     /// @brief Metadata describing a cached string value (error or SQL).
+    ///
+    /// `str_val_` is the transmitted copy, abbreviated up front to the cap
+    /// its type travels under: kMaxErrorStringLength for an error name
+    /// (PStringMetaData) and kMaxSqlMetaLength for SQL (PSqlMetaData, where
+    /// Java's SqlCacheService abbreviates it). `cache_key_` is the whole
+    /// string the id cache stored under, which is what removeCacheError() /
+    /// removeCacheSql() evict by. So a queued SQL item holds at most
+    /// kMaxSqlMetaLength + the cache key's bytes of SQL instead of twice the
+    /// normalizer's 1 MiB worth, the same bound SqlUidMeta already keeps.
     struct StringMeta {
         int32_t id_;
         std::string str_val_;
+        std::string cache_key_;
         StringMetaType type_;
-        
-        StringMeta(int32_t id, std::string_view str_val, StringMetaType type) 
-            : id_(id), str_val_(str_val), type_(type) {}
+
+        StringMeta(int32_t id, std::string_view str_val, StringMetaType type)
+            : id_(id), str_val_(abbreviateString(str_val, maxLength(type))),
+              cache_key_(str_val), type_(type) {}
+
+        /// @brief The transmitted-copy cap for @p type. Explicit per type so
+        ///        an error name is never cut at the SQL cap or vice versa.
+        static constexpr size_t maxLength(StringMetaType type) {
+            return type == STRING_META_ERROR ? kMaxErrorStringLength
+                                             : kMaxSqlMetaLength;
+        }
     };
 
     /// @brief Metadata describing a SQL UID.

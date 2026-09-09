@@ -1326,7 +1326,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheError(const StringMeta& error_meta) const try {
         if (enabled_) {
-            error_cache_->remove(error_meta.str_val_, error_meta.id_);
+            error_cache_->remove(error_meta.cache_key_, error_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached error meta:")
 
@@ -1399,7 +1399,7 @@ namespace pinpoint {
             // The raw cache needs no invalidation: it holds no ids, so the
             // next use of any raw variant re-resolves through this cache and
             // picks up the fresh id on its own.
-            sql_cache_->remove(sql_meta.str_val_, sql_meta.id_);
+            sql_cache_->remove(sql_meta.cache_key_, sql_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached sql meta:")
 

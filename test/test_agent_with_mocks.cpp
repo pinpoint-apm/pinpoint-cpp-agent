@@ -701,6 +701,23 @@ TEST_F(AgentImplTest, PrepareSqlMetadataFailureLeavesUnrelatedRawEntriesIntact) 
     EXPECT_EQ(other_id, std::get<int32_t>(other_again->identity));
 }
 
+// The queued StringMeta abbreviates its transmitted copy of an oversize SQL,
+// but the cache stored the whole statement: the release must evict by the
+// uncut key, or the failed id would stay cached and never be re-registered.
+TEST_F(AgentImplTest, RemoveCacheSqlEvictsAnOversizeStatementByItsUncutKey) {
+    const std::string long_sql(70000, 'a');
+    const auto sql_id = agent_->cacheSql(long_sql);
+    ASSERT_GT(sql_id, 0);
+    ASSERT_EQ(sql_id, agent_->cacheSql(long_sql));
+
+    const StringMeta queued(sql_id, long_sql, STRING_META_SQL);
+    ASSERT_LT(queued.str_val_.size(), long_sql.size());
+    agent_->removeCacheSql(queued);
+
+    EXPECT_NE(sql_id, agent_->cacheSql(long_sql))
+        << "the entry was evicted, so the statement gets a fresh id";
+}
+
 // A release lands after retries, a retry delay, or a queue drop — by then the
 // entry may have been evicted and re-registered under a healthy id. Releasing
 // that one would burn a fresh id and re-publish for nothing.

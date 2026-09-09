@@ -31,6 +31,7 @@ by side.
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Oversize SQL statement | `DefaultSqlNormalizer` (no cap) | **Exceeds Java, shared with Go** — see [below](#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go) |
+| Queued SQL / error metadata text | `SqlCacheService`, `profiler.jdbc.maxsqllength` | **Same as Java** — see [below](#queued-metadata-text-is-abbreviated-at-cache-time--same-as-java) |
 | Per-environment configuration profiles | `ProfileConfigLoader`, `pinpoint.profiler.profiles.active`, `profiles/{release,local}/pinpoint.config` | **Same idea, Go's layout** — see [below](#configuration-profiles--same-idea-gos-layout) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
@@ -300,6 +301,28 @@ in both.
 
 **Upgrade note.** A statement over 1 MiB used to appear with a truncated key;
 it now does not appear at all, and a throttled warning names its size.
+
+## Queued metadata text is abbreviated at cache time — same as Java
+
+**Java.** `SqlCacheService` abbreviates the SQL text to
+`profiler.jdbc.maxsqllength` (65536) when the statement first enters the
+cache, and that abbreviated copy is what the metadata sender queues. No
+queued item carries more than 64 KiB of SQL, however long the normalizer's
+output was.
+
+**This agent.** `SqlUidMeta` already did the same: `sql_` is abbreviated to
+`kMaxSqlMetaLength` on construction and only the uid cache key stays whole.
+`StringMeta` used to queue the whole normalized SQL (up to
+`kMaxNormalizedSqlLength`, 1 MiB) and abbreviate only when building
+`PSqlMetaData`, so `Grpc.SenderQueueSize` items could pin ~1 GiB of SQL
+after a collector outage. It now has the same shape as `SqlUidMeta`:
+`str_val_` is the transmitted copy, abbreviated on construction to the cap
+of its type — `kMaxSqlMetaLength` (64 KiB) for SQL, `kMaxErrorStringLength`
+(256) for an error name — and `cache_key_` is the whole string the id cache
+stored under, which `removeCacheSql()` / `removeCacheError()` evict by. The
+send path no longer abbreviates, so the `...(<original length>)` marker is
+appended exactly once. The caps themselves are unchanged and stay locked by
+`JavaParityLockTest.MessageLimits`.
 
 ## Configuration profiles — same idea, Go's layout
 

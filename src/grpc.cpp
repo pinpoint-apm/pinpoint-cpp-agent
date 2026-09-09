@@ -748,14 +748,14 @@ namespace pinpoint {
                         call->operation_name = "sql";
                         auto* request = google::protobuf::Arena::Create<v1::PSqlMetaData>(&call->arena);
                         request->set_sqlid(value.id_);
-                        // Only the transmitted copy is abbreviated, exactly
-                        // where Java's SqlCacheService abbreviates it. The
-                        // queued StringMeta keeps the whole normalized SQL:
-                        // that is the id cache key removeCacheSql() evicts
-                        // after retry exhaustion.
-                        // Abbreviate first, then replace: U+FFFD is 3 bytes, so replacing
-                        // before the cut could push the text back over the cap.
-                        request->set_sql(toValidUtf8(abbreviateString(value.str_val_, kMaxSqlMetaLength)));
+                        // StringMeta abbreviated str_val_ on construction
+                        // (the id cache key removeCacheSql() evicts by after
+                        // retry exhaustion lives in cache_key_). Do not
+                        // abbreviate again: a second cut would append a
+                        // second "...(<length>)" marker and eat the real
+                        // length. toValidUtf8 may still grow the text
+                        // (U+FFFD is 3 bytes), as it does for SqlUidMeta.
+                        request->set_sql(toValidUtf8(value.str_val_));
                         async_stub->RequestSqlMetaData(&call->ctx, request, &call->reply, on_done);
                     }
                 } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
