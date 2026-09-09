@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <cctype>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -361,21 +362,34 @@ namespace pinpoint {
         stat.response_time_avg_ = request_count > 0 ? acc_response_time / request_count : 0;
     }
 
-    void AgentStats::initAgentStats() {
-        // Callers must NOT hold mutex_ (the worker calls this before taking
-        // it). Locking here keeps batch_ and the collect-time/CPU-time
-        // bookkeeping from racing the worker's collection cycle, which reads
-        // and writes the same non-atomic fields under mutex_.
-        std::lock_guard<std::mutex> lock(mutex_);
+    void AgentStats::resetCollectionBaselineLocked() {
         // A failed reading leaves the baseline empty; getCpuLoad then reports
         // 0 and establishes the baseline on the first successful sample.
         const auto cpu_sample = get_cpu_time();
         last_sys_cpu_time_ = cpu_sample.sys_time;
         last_proc_cpu_time_ = cpu_sample.proc_time;
 
+        last_collect_time_ = std::chrono::system_clock::now();
+    }
+
+    void AgentStats::resetCollectionBaseline() {
+        // Callers must NOT hold mutex_. Locking here keeps the collect-time/
+        // CPU-time bookkeeping from racing the worker's collection cycle,
+        // which reads and writes the same non-atomic fields under mutex_.
+        std::lock_guard<std::mutex> lock(mutex_);
+        resetCollectionBaselineLocked();
+    }
+
+    void AgentStats::initAgentStats() {
+        // Callers must NOT hold mutex_ (the worker calls this before taking
+        // it). Locking here keeps batch_ and the collect-time/CPU-time
+        // bookkeeping from racing the worker's collection cycle, which reads
+        // and writes the same non-atomic fields under mutex_.
+        std::lock_guard<std::mutex> lock(mutex_);
+        resetCollectionBaselineLocked();
+
         resetAgentStats();
 
-        last_collect_time_ = std::chrono::system_clock::now();
         batch_ = 0;
     }
 
@@ -444,6 +458,11 @@ namespace pinpoint {
     }
 
     void AgentStats::collectAgentStat(AgentStatsSnapshot &stat) {
+        if (collect_throws_remaining_.load(std::memory_order_relaxed) > 0) {
+            collect_throws_remaining_--;
+            throw std::runtime_error("injected collectAgentStat failure");
+        }
+
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         // Clamped to 1ms because this is wall time: an NTP correction or an
         // operator setting the date backwards between two collections makes
@@ -504,7 +523,22 @@ namespace pinpoint {
     }
 
     void AgentStats::runAgentStatsWorker(const Config& config) {
-        initAgentStats();
+        // First run: cold-initialize everything. A later run is a supervisor
+        // restart after an exception escaped the loop below: only the CPU/time
+        // baseline is re-taken, so the first cycle after the restart does not
+        // report the restart gap as load, while the snapshots already in the
+        // partial batch are kept rather than thrown away with the run.
+        bool restarted = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            restarted = worker_started_;
+            worker_started_ = true;
+        }
+        if (restarted) {
+            resetCollectionBaseline();
+        } else {
+            initAgentStats();
+        }
 
         {
             // Resize vector safely
@@ -532,10 +566,36 @@ namespace pinpoint {
                     // needs no lock.
                     lock.unlock();
                     AgentStatsSnapshot collected;
-                    collectAgentStat(collected);
+                    // First line of defense, as Java's CollectJob.run(): a
+                    // collection failure (a transient /proc read error, an
+                    // allocation failure while walking fds) costs this one
+                    // snapshot, not the partial batch. The batch cursor is
+                    // left alone, so the next cycle fills the same slot.
+                    // superviseWorker remains the backstop for anything
+                    // thrown outside this call.
+                    bool collected_ok = true;
+                    try {
+                        collectAgentStat(collected);
+                    } catch (const std::exception& e) {
+                        collected_ok = false;
+                        if (const auto failures = stat_collect_failure_reporter_.record()) {
+                            LOG_WARN("agent stat collection failed, snapshot skipped: "
+                                     "{} failure(s) in total; exception = {}",
+                                     failures, e.what());
+                        }
+                    } catch (...) {
+                        collected_ok = false;
+                        if (const auto failures = stat_collect_failure_reporter_.record()) {
+                            LOG_WARN("agent stat collection failed, snapshot skipped: "
+                                     "{} failure(s) in total; unknown exception",
+                                     failures);
+                        }
+                    }
                     lock.lock();
-                    agent_stats_snapshots_[batch_] = std::move(collected);
-                    batch_++;
+                    if (collected_ok) {
+                        agent_stats_snapshots_[batch_] = std::move(collected);
+                        batch_++;
+                    }
                 }
 
                 if (batch_ >= config.stat.batch_count) {
@@ -554,12 +614,15 @@ namespace pinpoint {
                         }
                     }
                     completed_batch_ = agent_stats_snapshots_;
+                    // Reset before the send: the cycle is published, so a
+                    // recordStats exception (and the supervisor restart it
+                    // causes) must not leave the cursor at batch_count and
+                    // republish the same cycle on the next tick.
+                    batch_ = 0;
                     // Release lock while sending data to avoid blocking stop/collect
                     lock.unlock();
                     agent_->recordStats(AGENT_STATS);
                     lock.lock();
-
-                    batch_ = 0;
                 }
             }
         }

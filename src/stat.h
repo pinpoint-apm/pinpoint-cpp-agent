@@ -118,7 +118,23 @@ namespace pinpoint {
             return taken;
         }
 
+        /**
+         * @brief Cold initialization: CPU/time baseline, request counters,
+         *        and the batch cursor.
+         *
+         * Callers must NOT hold mutex_ (it is taken here).
+         */
         void initAgentStats();
+        /**
+         * @brief Re-takes only the CPU-time and collect-time baseline, leaving
+         *        the request counters and the partial batch untouched.
+         *
+         * Used when the supervisor restarts the collect loop: the first cycle
+         * after a restart must not report the whole restart gap as CPU load or
+         * interval, yet the snapshots gathered before the restart stay in the
+         * batch. Callers must NOT hold mutex_ (it is taken here).
+         */
+        void resetCollectionBaseline();
         void collectAgentStat(AgentStatsSnapshot &stat);
         void collectActiveRequests(int32_t active_requests[4], int64_t sample_time_ms);
         void resetAgentStats();
@@ -144,9 +160,13 @@ namespace pinpoint {
         static ProcessStatus parseProcStatus(std::string_view status_text);
 
     private:
+        friend class StatTest;
+
         /// @brief One supervised run of the collect loop; agentStatsWorker
         /// restarts it after a transient exception.
         void runAgentStatsWorker(const Config& config);
+        /// @brief resetCollectionBaseline() body; the caller holds mutex_.
+        void resetCollectionBaselineLocked();
         /**
          * @brief True when this object was created in another process, i.e.
          *        the host forked and the child reached an inherited agent.
@@ -238,7 +258,15 @@ namespace pinpoint {
         // Rate-limited overflow reporting (see QueueDropReporter), matching
         // the span/metadata/url_stat queues.
         QueueDropReporter stat_batch_drop_reporter_{};
+        // Rate-limited reporting of collect cycles whose snapshot was skipped
+        // because collectAgentStat threw (see runAgentStatsWorker).
+        QueueDropReporter stat_collect_failure_reporter_{};
         int batch_{0};
+        // Set on the first run of the collect loop; a later run is a
+        // supervisor restart and keeps the partial batch.
+        bool worker_started_{false};
+        // Test seam: number of upcoming collectAgentStat calls that throw.
+        std::atomic<int> collect_throws_remaining_{0};
         
         // Cached system constants
         long sc_clk_tck_{0};

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <vector>
 #include <iostream>
@@ -50,6 +51,24 @@ protected:
     void TearDown() override {
         agent_stats_.reset();
         mock_agent_service_.reset();
+    }
+
+    // Private-state accessors (StatTest is a friend of AgentStats; the
+    // TEST_F subclasses are not, so they go through these).
+    int batch() {
+        std::lock_guard<std::mutex> lock(agent_stats_->mutex_);
+        return agent_stats_->batch_;
+    }
+    void injectCollectFailures(int count) { agent_stats_->collect_throws_remaining_ = count; }
+    bool collectFailuresPending() { return agent_stats_->collect_throws_remaining_.load() > 0; }
+    std::optional<clock_t> lastProcCpuTime() {
+        std::lock_guard<std::mutex> lock(agent_stats_->mutex_);
+        return agent_stats_->last_proc_cpu_time_;
+    }
+    void clearCpuBaseline() {
+        std::lock_guard<std::mutex> lock(agent_stats_->mutex_);
+        agent_stats_->last_proc_cpu_time_.reset();
+        agent_stats_->last_sys_cpu_time_.reset();
     }
 
     std::unique_ptr<MockAgentService> mock_agent_service_;
@@ -418,6 +437,124 @@ TEST_F(StatTest, OverwritingAnUnsentBatchWarnsOnceAndIsRateLimited) {
     // reporter must have granted exactly one line.
     EXPECT_EQ(logged.find("agent stat batch overwritten", first + 1), std::string::npos)
         << "the report must be rate-limited to one line per interval; got: " << logged;
+}
+
+// A collectAgentStat exception used to escape the loop and restart the worker,
+// which re-ran initAgentStats() and threw away the partial batch (up to
+// batch_count-1 snapshots). It now costs exactly the snapshot of that cycle,
+// as in Java's CollectJob.run(): the batch cursor stays put and the next cycle
+// fills the same slot, and the failure is reported through a rate-limited WARN.
+TEST_F(StatTest, CollectFailureSkipsOnlyThatSnapshotAndKeepsTheBatch) {
+    auto& cfg = *mock_agent_service_->mutableConfig();
+    cfg.stat.enable = true;
+    cfg.stat.collect_interval = 20;  // ms
+    cfg.stat.batch_count = 100;      // never completes within the test
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+
+    std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    auto wait_for = [&](auto&& pred) {
+        while (!pred() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return pred();
+    };
+
+    // Two good snapshots first, so a wrongly reset cursor is distinguishable
+    // from one that was simply not advanced.
+    ASSERT_TRUE(wait_for([&] { return batch() >= 2; })) << "the worker never collected";
+    injectCollectFailures(1);
+    ASSERT_TRUE(wait_for([&] { return !collectFailuresPending(); }))
+        << "the injected failure was never hit";
+    // Read well inside the 20 ms until the next cycle: a reset would show 0.
+    EXPECT_GE(batch(), 2) << "a collection failure must not reset the partial batch";
+    ASSERT_TRUE(wait_for([&] { return batch() >= 3; }))
+        << "the loop must continue collecting after a failed cycle";
+
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker_thread.join();
+
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+    EXPECT_NE(logged.find("agent stat collection failed"), std::string::npos)
+        << "a skipped snapshot must be reported; got: " << logged;
+    EXPECT_NE(logged.find("1 failure(s) in total"), std::string::npos)
+        << "the report must carry the failure count; got: " << logged;
+    // The failure was handled at the collect site, not by the supervisor.
+    EXPECT_EQ(logged.find("agent stats worker exception"), std::string::npos)
+        << "the collect loop must not have been restarted; got: " << logged;
+}
+
+// Two failures inside one report interval yield one WARN line that carries the
+// count, like the other queue-drop reporters.
+TEST_F(StatTest, CollectFailureReportIsRateLimited) {
+    auto& cfg = *mock_agent_service_->mutableConfig();
+    cfg.stat.enable = true;
+    cfg.stat.collect_interval = 10;  // ms
+    cfg.stat.batch_count = 100;
+
+    injectCollectFailures(2);
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+
+    std::thread worker_thread([this]() { agent_stats_->agentStatsWorker(); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((collectFailuresPending() || batch() < 1) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    mock_agent_service_->setExiting(true);
+    agent_stats_->stopAgentStatsWorker();
+    worker_thread.join();
+
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+    ASSERT_FALSE(collectFailuresPending()) << "the injected failures were never hit";
+    EXPECT_GE(batch(), 1) << "collection must resume after the failures";
+
+    const auto first = logged.find("agent stat collection failed");
+    ASSERT_NE(first, std::string::npos) << "got: " << logged;
+    EXPECT_EQ(logged.find("agent stat collection failed", first + 1), std::string::npos)
+        << "the report must be rate-limited to one line per interval; got: " << logged;
+}
+
+// The restart path re-takes the CPU and time baseline without touching the
+// batch or the request counters. Without the fresh baseline the first cycle
+// after a restart would report the restart gap as load and interval.
+TEST_F(StatTest, ResetCollectionBaselineRetakesCpuBaselineAndKeepsBatchState) {
+    // Make sure the process has consumed at least one CPU tick.
+    const auto spin_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    volatile double sink = 0.0;
+    while (std::chrono::steady_clock::now() < spin_until) { sink = sink + 1.0; }
+
+    agent_stats_->incrSampleNew();
+    agent_stats_->collectResponseTime(100);
+    clearCpuBaseline();
+    ASSERT_FALSE(lastProcCpuTime().has_value());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    agent_stats_->resetCollectionBaseline();
+
+    // CPU baseline re-taken from a live reading.
+    const auto baseline = lastProcCpuTime();
+    ASSERT_TRUE(baseline.has_value()) << "the CPU baseline must be re-established";
+    EXPECT_GT(*baseline, 0);
+
+    // Time baseline re-taken: the collect interval is measured from the
+    // reset, not from the previous collection before the 60 ms gap.
+    AgentStatsSnapshot snapshot;
+    agent_stats_->collectAgentStat(snapshot);
+    EXPECT_LT(snapshot.interval_, 60);
+    EXPECT_LE(snapshot.process_cpu_time_, 1.0);
+    EXPECT_GE(snapshot.process_cpu_time_, 0.0);
+
+    // Unlike initAgentStats(), the request counters survive the reset.
+    EXPECT_EQ(snapshot.num_sample_new_, 1);
+    EXPECT_EQ(snapshot.response_time_max_, 100);
 }
 
 // ========== AgentStats Class Tests ==========

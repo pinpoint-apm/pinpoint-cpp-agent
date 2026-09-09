@@ -44,6 +44,7 @@ by side.
 | `PSpan.err` error cause mask | `ConfigurableErrorRecorder`, `ErrorCategory`, `DefaultShared.maskErrorCode` | **Same as Java, Go still diverges** — see [below](#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges) |
 | Proxy request headers | `DefaultProxyRequestRecorder`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser` | **Same as Java, Go still diverges** — see [below](#proxy-request-headers--same-as-java-go-still-diverges) |
 | Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, Go still diverges** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges) |
+| Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -754,6 +755,31 @@ integration supplies it per request.
 **Decision: no divergence from Java.** A blank acceptor host is not only a
 blank field: `SpanData::getEndPoint` and `getRemoteAddr` default through it, so
 a caller that recorded neither used to send `UNKNOWN` for both.
+
+---
+
+## Agent stat collection failure loses one sample — same as Java
+
+**Java.** `CollectJob.run()` wraps the whole collection of one agent-stat
+snapshot in `try/catch (Exception)`: a failure logs at WARN, skips that one
+snapshot, and leaves the batch and the scheduler untouched. `StatMonitorJob.run()`
+then runs its sub-jobs unprotected, so an exception escaping *there* cancels the
+`scheduleAtFixedRate` task for the life of the process.
+
+**Go.** `collectAgentStatWorker` has no per-collection guard; a panic restarts
+the worker and rebuilds `collected`/`batch`, losing the partial batch.
+
+**This agent.** `AgentStats::runAgentStatsWorker` (`src/stat.cpp`) wraps
+`collectAgentStat()` in `try/catch`, as `CollectJob` does: a collection
+exception costs exactly that cycle's snapshot, the batch cursor is not advanced,
+and the next cycle fills the same slot. Failures are counted and reported through
+a rate-limited WARN (`stat_collect_failure_reporter_`, the `QueueDropReporter`
+pattern the send queues use) rather than swallowed. `superviseWorker` stays as
+the backstop for anything thrown outside that call; that restart keeps the
+partial batch too — `runAgentStatsWorker` re-takes only the CPU/time baseline
+(`resetCollectionBaseline()`) on a restart, and cold-initializes
+(`initAgentStats()`) only on its first run — which is the liveness edge this
+agent keeps over Java's `StatMonitorJob`.
 
 ---
 
