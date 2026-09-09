@@ -543,6 +543,7 @@ namespace pinpoint {
         {"Collector.Grpc.SenderQueueSize", REF(collector.grpc.channel.sender_queue_size), FIXED, env::GRPC_SENDER_QUEUE_SIZE},
         {"Collector.Grpc.ChannelMaxAgeMs", REF(collector.grpc.channel.channel_max_age_ms), FIXED, env::GRPC_CHANNEL_MAX_AGE_MS},
         {"Collector.Grpc.StreamMaxAgeMs", REF(collector.grpc.channel.stream_max_age_ms), FIXED, env::GRPC_STREAM_MAX_AGE_MS},
+        {"Collector.Grpc.IdleTimeoutMs", REF(collector.grpc.channel.idle_timeout_ms), FIXED, env::GRPC_IDLE_TIMEOUT_MS},
         {"Collector.AgentInfo.RefreshIntervalMs", REF(collector.agent_info.refresh_interval_ms), FIXED, env::AGENT_INFO_REFRESH_INTERVAL_MS},
         {"Collector.AgentInfo.SendRetryIntervalMs", REF(collector.agent_info.send_retry_interval_ms), FIXED, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS},
         {"Collector.AgentInfo.MaxTryPerAttempt", REF(collector.agent_info.max_try_per_attempt), FIXED, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT},
@@ -754,6 +755,8 @@ namespace pinpoint {
     constexpr int MAX_STAT_INTERVAL_MS = 60000;
     constexpr int MIN_GRPC_QUEUE_SIZE = 1;
     constexpr int MAX_GRPC_QUEUE_SIZE = 65536;
+    // Documented minimum of GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS (channel_arg_names.h).
+    constexpr int MIN_GRPC_IDLE_TIMEOUT_MS = 1000;
     constexpr int MIN_URL_STAT_QUEUE_SIZE = 1;
     constexpr int MAX_URL_STAT_QUEUE_SIZE = 65536;
     // Per SQL cache; three caches, each bounded by this x Sql.CacheLengthLimit
@@ -1072,6 +1075,13 @@ namespace pinpoint {
         // positive age is honored (tests run rotation in milliseconds).
         at_least(channel.channel_max_age_ms, 0, defaults::GRPC_CHANNEL_MAX_AGE_MS, "grpc channel max age");
         at_least(channel.stream_max_age_ms, 0, defaults::GRPC_STREAM_MAX_AGE_MS, "grpc stream max age");
+        // 0 disables, negative normalizes to 0. gRPC's documented minimum for
+        // GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS is 1s, so a positive value below it
+        // is raised rather than handed to gRPC.
+        at_least(channel.idle_timeout_ms, 0, defaults::GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
+        if (channel.idle_timeout_ms > 0) {
+            clamp_min(channel.idle_timeout_ms, MIN_GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
+        }
 
         // Auto-detect only on the first load. On a reload the value is already
         // seeded from the running config (env- or file-sourced) at the top of

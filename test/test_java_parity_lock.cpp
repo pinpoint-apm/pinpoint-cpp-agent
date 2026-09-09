@@ -627,13 +627,16 @@ TEST(JavaParityLockTest, CollectorPortDefaults) {
 // The channel options verified equal across the three agents. flowControlWindow,
 // writeBufferSize and maxHeaderListSize are deliberately left at the gRPC
 // C-core defaults here where Java and Go pin them; doc/java_parity.md records
-// that, and there is nothing to assert for them.
+// that, and there is nothing to assert for them. The idle timeout is locked
+// as a decision (off, like Java's 30-day "disable" sentinel), not as a value:
+// 0 here maps to GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX.
 TEST(JavaParityLockTest, GrpcChannelDefaults) {
     EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIME_MS, 30 * 1000) << "Java ClientOption keepAliveTime";
     EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIMEOUT_MS, 60 * 1000) << "Java ClientOption keepAliveTimeout";
     EXPECT_EQ(defaults::GRPC_MAX_MESSAGE_SIZE, 4 * 1024 * 1024) << "Java ClientOption maxInboundMessageSize";
     EXPECT_EQ(defaults::GRPC_CHANNEL_MAX_AGE_MS, 0) << "renewal off, as in Java";
     EXPECT_EQ(defaults::GRPC_STREAM_MAX_AGE_MS, 0) << "renewal off, as in Java";
+    EXPECT_EQ(defaults::GRPC_IDLE_TIMEOUT_MS, 0) << "idle timeout off, as Java's IDLE_TIMEOUT_MILLIS_DISABLE";
 }
 
 // The AgentInfo refresh cadence. The retry interval deliberately differs from

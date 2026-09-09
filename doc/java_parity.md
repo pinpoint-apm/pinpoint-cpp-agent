@@ -48,6 +48,7 @@ by side.
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
 | Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
+| gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout same as Java; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -961,6 +962,57 @@ own) — then a Java-style unconditional hook would be the right default.
 
 ---
 
+## gRPC channel arguments — idle timeout same as Java, the rest left at C-core defaults
+
+Keepalive and the message-size limits are locked (group 11 below). The other
+HTTP/2 tuning that `ClientOption` carries is compared here, knob by knob. The
+C-core mechanics behind each decision (BDP probing, the metadata soft/hard
+limits, the write-buffer hint) are documented above `make_channel_arguments` in
+`src/grpc.cpp`; this section holds only what the other two agents do.
+
+**Java.** `DefaultChannelFactory.setupClientOption` applies `ClientOption` to a
+`NettyChannelBuilder`: `flowControlWindow(1 MiB)` (which turns Netty's
+auto-tuning off), `maxInboundMetadataSize(8 KB)`, `WRITE_BUFFER_WATER_MARK` low
+/ high, `CONNECT_TIMEOUT_MILLIS`, and `idleTimeout(idleTimeoutMillis)` where
+`ClientOption.IDLE_TIMEOUT_MILLIS_DISABLE` is 30 days — the constant is named
+as a disable sentinel, and nothing in the agent overrides it.
+
+**Go.** `grpc.go dialOptions` mirrors Java's fixed values:
+`WithInitialWindowSize` / `WithInitialConnWindowSize(1 MiB)` (which sets
+`StaticWindowSize` so no BDP estimator is created), `WithWriteBufferSize`,
+`WithMaxHeaderListSize(8 KB)`. It does **not** call `WithIdleTimeout`, so the
+Go agent runs grpc-go's default of 30 minutes (`dialoptions.go`, v1.82.1) and
+its channels do drop to `Idle` after half an hour without an RPC.
+
+**This agent.**
+
+| Knob | Java | Go | C++ (gRPC C-core 1.81.1) |
+|---|---|---|---|
+| Flow control window | fixed 1 MiB, auto-tuning off | fixed 1 MiB, no BDP estimator | **unset**: BDP probing on, window sized from measured bandwidth-delay product |
+| Max header list size | 8 KB inbound | 8 KB inbound | **unset**: default is already 8 KB soft / 16 KB hard |
+| Write buffer | Netty writability watermarks | socket write batching | **unset**: the only C-core knob is a no-op without `GRPC_WRITE_BUFFER_HINT` |
+| Connect timeout | `CONNECT_TIMEOUT_MILLIS` | grpc-go dialer default | **unset**: no C-core equivalent; `readyChannel()` + backoff own reconnects |
+| Idle timeout | 30 days (disabled) | 30 min (grpc-go default) | **disabled** by default: `GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX`; `Collector.Grpc.IdleTimeoutMs` re-enables it |
+
+The first four are left alone because the C-core default is equal or better
+than the pinned value, and a pinned value would either disable auto-tuning or
+be a no-op. The idle timeout is the one knob whose C-core default (30 minutes,
+`legacy_channel_idle_filter.cc kDefaultIdleTimeout`) is worse than Java's
+setting: an idle channel closes its transport and stops its keepalive pings,
+so an application with no traffic pays a reconnect and a `readyChannel()`
+backoff on its next send, and a firewall or L4 balancer can drop the silent
+connection unnoticed in between. The decision follows Java; the value cannot
+(30 days does not fit a 32-bit millisecond argument), so `0` in this agent's
+config is the disable sentinel and maps to the `INT_MAX` that C-core documents
+as unlimited. Only the decision is locked
+(`JavaParityLockTest.GrpcChannelDefaults`), not the sentinel value.
+
+**Revisit if** Java stops disabling the idle timeout, or if the Go agent starts
+setting `WithIdleTimeout` — then the three should agree on one value and this
+row moves into group 11.
+
+---
+
 ## Locked parity invariants — verified identical
 
 Everything else in this file records a place where the three agents deliberately
@@ -1008,9 +1060,12 @@ not, because the agents knowingly differ; each has its own entry above or in
   asserted at its port value with a comment pointing here.
 - **Span batch size** — 20 in Java's shipped config and in the C++ agent, 50 in
   the Go agent.
-- **Flow-control window, write buffer, max header list size** — Java pins them
-  (`ClientOption`) and the Go agent follows; the C++ agent leaves them at the
-  gRPC C-core defaults so the BDP estimator can tune the window.
+- **Flow-control window, write buffer, max header list size, idle timeout** —
+  Java pins the first three (`ClientOption`) and the Go agent follows; the C++
+  agent leaves them at the gRPC C-core defaults so the BDP estimator can tune
+  the window. The idle timeout is disabled in Java and here but not in Go, and
+  the disable sentinel differs (30 days vs `0` → `INT_MAX`). See
+  [gRPC channel arguments](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults).
 - **Stat collect interval** — the locked 5000 ms is Java's *code* default
   (`DefaultMonitorConfig`); Java's release profile ships 10000 ms.
 - **URL statistics send cadence** — not a constant of its own in any of the

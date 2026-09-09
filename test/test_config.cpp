@@ -132,6 +132,7 @@ Collector:
     SenderQueueSize: 1100
     ChannelMaxAgeMs: 3600000
     StreamMaxAgeMs: 1800000
+    IdleTimeoutMs: 600000
   AgentInfo:
     RefreshIntervalMs: 60000
     SendRetryIntervalMs: 25
@@ -263,6 +264,7 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     // channel and one stream for the process lifetime.
     EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 0) << "Channel rotation should be disabled by default";
     EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 0) << "Stream max age should be disabled by default";
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 0) << "gRPC idle timeout should be disabled by default";
 
     // Test sampling defaults
     EXPECT_EQ(config->sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
@@ -439,6 +441,7 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.sender_queue_size, 1100) << "gRPC sender queue size should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 3600000) << "gRPC channel max age should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 1800000) << "gRPC stream max age should match YAML";
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 600000) << "gRPC idle timeout should match YAML";
 
     // Test sampling configuration
     EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
@@ -581,6 +584,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     setenv(full_env(env::GRPC_MAX_RECEIVE_MESSAGE_SIZE).c_str(), "55555", 1);
     setenv(full_env(env::GRPC_CHANNEL_MAX_AGE_MS).c_str(), "600000", 1);
     setenv(full_env(env::GRPC_STREAM_MAX_AGE_MS).c_str(), "300000", 1);
+    setenv(full_env(env::GRPC_IDLE_TIMEOUT_MS).c_str(), "120000", 1);
 
     auto config = make_config();
     
@@ -619,6 +623,7 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.max_receive_message_size, 55555) << "gRPC max receive size should match environment variable";
     EXPECT_EQ(config->collector.grpc.channel.channel_max_age_ms, 600000) << "gRPC channel max age should match environment variable";
     EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 300000) << "gRPC stream max age should match environment variable";
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 120000) << "gRPC idle timeout should match environment variable";
 }
 
 // Regression: is_container is reloadable and is NOT restored by
@@ -2871,6 +2876,7 @@ Collector:
     SenderQueueSize: 0
     ChannelMaxAgeMs: -5
     StreamMaxAgeMs: -1
+    IdleTimeoutMs: -1
 )");
 
     const auto config = make_config();
@@ -2885,6 +2891,41 @@ Collector:
     // grpc.cpp treats as off.
     EXPECT_EQ(channel.channel_max_age_ms, 0);
     EXPECT_EQ(channel.stream_max_age_ms, 0);
+    // A negative idle timeout means "disabled" too, normalized to the 0 that
+    // grpc.cpp maps to GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX.
+    EXPECT_EQ(channel.idle_timeout_ms, 0);
+}
+
+// The gRPC idle timeout: 0 stays 0 (disabled), a positive value below gRPC's
+// documented 1s minimum is raised to 1000 instead of being handed to gRPC,
+// and 1000 itself passes unchanged.
+TEST_F(ConfigTest, GrpcIdleTimeoutBoundaryValues) {
+    set_config_string(R"(
+Collector:
+  Grpc:
+    IdleTimeoutMs: 0
+)");
+    auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 0);
+
+    set_config_string(R"(
+Collector:
+  Grpc:
+    IdleTimeoutMs: 999
+)");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 1000);
+
+    set_config_string(R"(
+Collector:
+  Grpc:
+    IdleTimeoutMs: 1000
+)");
+    config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 1000);
 }
 
 // Zero is valid for gRPC keepalive controls, -1 means an unlimited message

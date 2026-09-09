@@ -15,6 +15,7 @@
  */
 
 #include <cassert>
+#include <climits>
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -101,37 +102,42 @@ namespace pinpoint {
             return grpc::SslCredentials(ssl_options);
         }
 
-        // Only keepalive and message-size limits are set here; the rest of
-        // the HTTP/2 tuning the Java (DefaultChannelFactory.setupClientOption)
-        // and Go (grpc.go dialOptions) agents configure is deliberately left
-        // at the gRPC C-core defaults, which are already better or equal:
+        // Keepalive, message-size limits and the idle timeout are the only
+        // HTTP/2 tuning set here. The remaining knobs stay at the gRPC C-core
+        // defaults on purpose (doc/java_parity.md, "gRPC channel arguments",
+        // compares this with the other agents):
         //
         // - Flow control window: unset means BDP probing stays on
         //   (chttp2_transport.cc reads GRPC_ARG_HTTP2_BDP_PROBE with
         //   value_or(true)) and TransportFlowControl::PeriodicUpdate() sizes
         //   the receive window from the measured bandwidth-delay product,
-        //   max(4MB, 2*BDP) under low memory pressure. Java calls
-        //   NettyChannelBuilder.flowControlWindow(1MiB), which sets
-        //   autoFlowControl=false, and Go calls WithInitialWindowSize /
-        //   WithInitialConnWindowSize(1MiB), which set StaticWindowSize=true so
-        //   no bdpEstimator is created (http2_client.go): both run a fixed 1MiB
-        //   window with auto-tuning off. GRPC_ARG_HTTP2_STREAM_LOOKAHEAD_BYTES
-        //   would not give parity either: it only seeds the target that
-        //   PeriodicUpdate() then overwrites on every BDP ping.
-        // - Max header list size: Java/Go set 8KB for inbound metadata. The
-        //   C-core default is already an 8KB soft / 16KB hard limit
-        //   (metadata_info.h); setting GRPC_ARG_MAX_METADATA_SIZE=8KB would only
-        //   shrink the hard limit to 10KB.
+        //   max(4MB, 2*BDP) under low memory pressure. Pinning a window would
+        //   turn that off, and GRPC_ARG_HTTP2_STREAM_LOOKAHEAD_BYTES only
+        //   seeds the target that PeriodicUpdate() then overwrites on every
+        //   BDP ping.
+        // - Max header list size: the C-core default is already an 8KB soft /
+        //   16KB hard limit (metadata_info.h); setting
+        //   GRPC_ARG_MAX_METADATA_SIZE=8KB would only shrink the hard limit
+        //   to 10KB.
         // - Write buffer: GRPC_ARG_HTTP2_WRITE_BUFFER_SIZE applies only to
         //   writes flagged GRPC_WRITE_BUFFER_HINT, which this agent never sets,
-        //   so it would be a no-op. Go's WithWriteBufferSize (socket write
-        //   batching) and Java's WRITE_BUFFER_WATER_MARK (Netty writability)
-        //   have no C-core counterpart.
-        // - Connect timeout: no C-core equivalent of Netty's
-        //   CONNECT_TIMEOUT_MILLIS; the closest, GRPC_ARG_MIN_RECONNECT_BACKOFF_MS
-        //   (doubles as the min connect timeout in subchannel.cc), is not
-        //   needed because readyChannel() + ExponentialBackoff already manage
-        //   reconnects. TCP_NODELAY is always on in the C-core posix engine.
+        //   so it would be a no-op.
+        // - Connect timeout: the closest C-core knob,
+        //   GRPC_ARG_MIN_RECONNECT_BACKOFF_MS (doubles as the min connect
+        //   timeout in subchannel.cc), is not needed because readyChannel() +
+        //   ExponentialBackoff already manage reconnects. TCP_NODELAY is
+        //   always on in the C-core posix engine.
+        // - Idle timeout: NOT left at the default. C-core drops a channel to
+        //   IDLE 30 minutes after its last RPC ends
+        //   (legacy_channel_idle_filter.cc kDefaultIdleTimeout), which
+        //   closes the transport and with it the keepalive pings, so the
+        //   next send pays a reconnect and readyChannel() waits out a
+        //   backoff. GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX is the
+        //   documented "unlimited" (channel_arg_names.h;
+        //   ChannelArgs::GetDurationFromIntMillis maps INT_MAX to
+        //   Duration::Infinity(), and the idle filter is not even installed
+        //   then). That is the default; Collector.Grpc.IdleTimeoutMs > 0
+        //   re-enables it.
         grpc::ChannelArguments make_channel_arguments(const Config::GrpcChannelOptions& options,
                                                       bool private_connection) {
             grpc::ChannelArguments channel_args;
@@ -142,6 +148,8 @@ namespace pinpoint {
                                 options.keepalive_permit_without_calls ? 1 : 0);
             channel_args.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, options.max_send_message_size);
             channel_args.SetInt(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH, options.max_receive_message_size);
+            channel_args.SetInt(GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS,
+                                options.idle_timeout_ms > 0 ? options.idle_timeout_ms : INT_MAX);
 
             // Channel rotation exists to land on a different backend, which
             // takes a new TCP connection. By default C-core shares

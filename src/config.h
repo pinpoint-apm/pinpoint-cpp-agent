@@ -60,6 +60,10 @@ namespace pinpoint {
         //   STREAM_MAX_AGE_MS  <-> profiler.transport.grpc.span.sender.rpc.age.max.millis
         constexpr int GRPC_CHANNEL_MAX_AGE_MS = 0;
         constexpr int GRPC_STREAM_MAX_AGE_MS = 0;
+        // Client idle timeout, disabled (0) so a quiet channel keeps its
+        // connection and its keepalive instead of dropping to IDLE (see
+        // make_channel_arguments in grpc.cpp).
+        constexpr int GRPC_IDLE_TIMEOUT_MS = 0;
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
@@ -150,6 +154,7 @@ namespace pinpoint {
         constexpr const char* GRPC_SENDER_QUEUE_SIZE = "GRPC_SENDER_QUEUE_SIZE";
         constexpr const char* GRPC_CHANNEL_MAX_AGE_MS = "GRPC_CHANNEL_MAX_AGE_MS";
         constexpr const char* GRPC_STREAM_MAX_AGE_MS = "GRPC_STREAM_MAX_AGE_MS";
+        constexpr const char* GRPC_IDLE_TIMEOUT_MS = "GRPC_IDLE_TIMEOUT_MS";
         constexpr const char* IS_CONTAINER = "IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
@@ -334,6 +339,11 @@ namespace pinpoint {
             // jittered by +-10% and 0 disables them (negative normalizes to 0).
             int channel_max_age_ms = defaults::GRPC_CHANNEL_MAX_AGE_MS;
             int stream_max_age_ms = defaults::GRPC_STREAM_MAX_AGE_MS;
+            // Time without an RPC after which gRPC drops a channel to IDLE
+            // (GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS). 0 disables (negative
+            // normalizes to 0); a positive value below gRPC's 1s minimum is
+            // raised to 1000.
+            int idle_timeout_ms = defaults::GRPC_IDLE_TIMEOUT_MS;
         };
 
         struct {
