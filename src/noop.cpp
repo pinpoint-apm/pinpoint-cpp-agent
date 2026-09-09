@@ -254,6 +254,14 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        recordUrlStat(url_pattern, method, status_code, false);
+    } CATCH_AND_LOG("set url stat")
+
+    void UnsampledSpan::ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        recordUrlStat(url_pattern, method, status_code, true);
+    } CATCH_AND_LOG("force url stat")
+
+    void UnsampledSpan::recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force) {
         // Gate at entry creation (see SpanImpl::SetUrlStat): with URL stats
         // disabled the entry's two heap string copies were built only to be
         // dropped in enqueueUrlStats(). Unlike SpanImpl there is no exception
@@ -271,8 +279,15 @@ namespace pinpoint {
             LOG_WARN_THROTTLED("span is already finished");
             return;
         }
+        // Same first-wins policy as SpanImpl::recordUrlStat: the pattern is
+        // Java's CAS, the method and status code are the last caller's.
+        if (!force && url_stat_ && !url_stat_->url_pattern_.empty()) {
+            url_stat_->method_.assign(method);
+            url_stat_->status_code_ = status_code;
+            return;
+        }
         url_stat_.emplace(url_pattern, method, status_code);
-    } CATCH_AND_LOG("set url stat")
+    }
 
     void UnsampledSpanEvent::InjectContext(TraceContextWriter& writer) try {
         writer.Set(HEADER_SAMPLED, "s0");

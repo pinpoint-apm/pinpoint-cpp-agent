@@ -292,6 +292,18 @@ TEST_F(NoopTest, UnsampledSpanSetUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0) << "URL stat should not be recorded until EndSpan is called";
 }
 
+// Java's setUriTemplate(uriTemplate, force = true) on the unsampled path.
+TEST_F(NoopTest, UnsampledSpanForceUrlStatReplacesThePatternTest) {
+    UnsampledSpan span(mock_agent_service_.get());
+
+    span.SetUrlStat("/api/users/42", "GET", 0);
+    span.ForceUrlStat("/api/users/{id}", "GET", 200);
+    span.EndSpan();
+
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/users/{id}");
+}
+
 // A failed unsampled request must count as failed in URL stats: unsampled
 // spans are the majority when sampling is on, so missing the failed flag
 // here would skew the failure rate toward zero.
@@ -371,17 +383,17 @@ TEST_F(NoopTest, UnsampledSpanCompleteWorkflowTest) {
 TEST_F(NoopTest, UnsampledSpanMultipleUrlStatCallsTest) {
     UnsampledSpan span(mock_agent_service_.get());
 
-    // First call should set the URL stat
+    // First call claims the url pattern (Java's setUriTemplate CAS)
     span.SetUrlStat("/api/users", "GET", 200);
-    
-    // Second call should replace the first one
+
+    // Second call keeps the pattern and refreshes method / status code
     span.SetUrlStat("/api/orders", "POST", 201);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     span.EndSpan();
 
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "Only one URL stat should be recorded";
-    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/orders") << "Last URL should be recorded";
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/users") << "First URL should be recorded";
     EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "POST") << "Last method should be recorded";
     EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 201) << "Last status code should be recorded";
 }

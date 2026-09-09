@@ -435,7 +435,23 @@ namespace pinpoint {
         /// @brief Records the HTTP status code for the span.
         virtual void SetStatusCode(int status) = 0;
         /// @brief Records URL statistics for the span.
+        ///
+        /// The URL pattern is first-wins, as Java's
+        /// `Shared.setUriTemplate(uriTemplate)` (a null -> value CAS): once a
+        /// non-empty pattern is recorded, later calls keep it and only refresh
+        /// the method and status code. An empty pattern counts as "not yet
+        /// recorded". Use ForceUrlStat() to replace a recorded pattern.
         virtual void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) = 0;
+        /// @brief Records URL statistics for the span, replacing any pattern
+        ///        recorded before — Java's `setUriTemplate(uriTemplate, true)`.
+        ///
+        /// For a host that has to correct an early, less precise guess with
+        /// the route it eventually matched. The default forwards to
+        /// SetUrlStat(), which keeps third-party Span implementations source
+        /// compatible; the native spans override it.
+        virtual void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) {
+            SetUrlStat(url_pattern, method, status_code);
+        }
         /// @brief Records the logging flag and injects the span context into a logger.
         virtual void SetLogging(TraceContextWriter& writer) = 0;
         /// @brief Records HTTP headers for the span.

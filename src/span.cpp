@@ -809,6 +809,14 @@ namespace pinpoint {
     } CATCH_AND_LOG_RETURN("record span event", noopSpanEvent())
 
     void SpanImpl::SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        recordUrlStat(url_pattern, method, status_code, false);
+    } CATCH_AND_LOG("set url stat")
+
+    void SpanImpl::ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) try {
+        recordUrlStat(url_pattern, method, status_code, true);
+    } CATCH_AND_LOG("force url stat")
+
+    void SpanImpl::recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force) {
         CHECK_FINISHED();
         // Gate at entry creation: with URL stats disabled (the default) the
         // entry would cost two heap string copies only to be dropped at
@@ -819,8 +827,22 @@ namespace pinpoint {
         if (runtime_ && !config_->http.url_stat.enable && !config_->enable_callstack_trace) {
             return;
         }
+        // First-wins on the pattern only, like Java: DefaultShared.setUriTemplate
+        // is a null -> value CAS, while the http method and status code are
+        // plain setters that the last caller owns. A framework that recorded
+        // the matched route first must not have it replaced by a later, less
+        // precise layer; the status code, though, is legitimately final only
+        // at the end of the request. This also pins recordException's
+        // url_template (getUrlTemplate) to the first pattern. An empty pattern
+        // stands for "not recorded yet" (Java's null), so a later non-empty
+        // one still fills it in. force is Java's setUriTemplate(value, true).
+        if (!force && url_stat_ && !url_stat_->url_pattern_.empty()) {
+            url_stat_->method_.assign(method);
+            url_stat_->status_code_ = status_code;
+            return;
+        }
         url_stat_.emplace(url_pattern, method, status_code);
-    } CATCH_AND_LOG("set url stat")
+    }
 
     void SpanImpl::SetServiceType(int32_t service_type) {
         CHECK_FINISHED();

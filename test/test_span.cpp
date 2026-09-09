@@ -3134,6 +3134,75 @@ TEST_F(SpanTest, UrlStatKeptForCallstackTemplateThenDroppedOnEndSpanTest) {
         << "url stats are disabled: the entry must be dropped, not enqueued";
 }
 
+// Java parity (DefaultShared.setUriTemplate is a null -> value CAS): the first
+// recorded url pattern wins. A framework that recorded the matched route must
+// not have it replaced by a later, less precise layer. The method and status
+// code are last-wins, as Java's plain setters.
+TEST_F(SpanTest, SetUrlStatKeepsTheFirstPatternTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
+
+    span.SetUrlStat("/api/v1/users/{id}", "GET", 0);
+    span.SetUrlStat("/api/v1/users/42", "POST", 200);
+
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users/{id}")
+        << "recordException tags the exception with the first pattern";
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/v1/users/{id}");
+    EXPECT_EQ(mock_agent_service_->last_url_stat_method_, "POST")
+        << "the method is not part of the CAS";
+    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 200)
+        << "the status code is final only at the end of the request";
+}
+
+// An empty pattern is Java's null: it does not claim the slot.
+TEST_F(SpanTest, SetUrlStatEmptyPatternDoesNotClaimTheSlotTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
+
+    span.SetUrlStat("", "GET", 0);
+    span.SetUrlStat("/api/v1/users/{id}", "GET", 200);
+
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users/{id}");
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/v1/users/{id}");
+}
+
+// Java's setUriTemplate(uriTemplate, force = true): the host corrects an early
+// guess with the route it eventually matched.
+TEST_F(SpanTest, ForceUrlStatReplacesTheRecordedPatternTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
+
+    span.SetUrlStat("/api/v1/users/42", "GET", 0);
+    span.ForceUrlStat("/api/v1/users/{id}", "GET", 200);
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users/{id}");
+
+    span.SetUrlStat("/api/v1/users/other", "GET", 200);
+    EXPECT_EQ(span.getUrlTemplate(), "/api/v1/users/{id}")
+        << "a forced pattern is first-wins against later plain calls again";
+
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
+    EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/v1/users/{id}");
+}
+
+// The entry-creation gate is unchanged: with url stats and callstack tracing
+// both off, neither overload records anything.
+TEST_F(SpanTest, UrlStatGateStillDropsBothOverloadsTest) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.url_stat.enable = false;
+    config->enable_callstack_trace = false;
+    auto runtime = std::make_shared<AgentRuntime>();
+    runtime->config = config;
+    SpanImpl span(mock_agent_service_.get(), "test-op", "/test", runtime);
+
+    span.SetUrlStat("/api/v1/users/{id}", "GET", 200);
+    span.ForceUrlStat("/api/v1/users/{id}", "GET", 200);
+    EXPECT_EQ(span.getUrlTemplate(), "NULL");
+
+    span.EndSpan();
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0);
+}
+
 // The overflowed event's contract in two halves: every *recording* call is a
 // no-op (the depth limit is exactly the recording it skips), but every
 // SetError overload still reaches the trace root, so a transaction whose only

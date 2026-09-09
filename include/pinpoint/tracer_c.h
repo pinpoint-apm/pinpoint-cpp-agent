@@ -711,6 +711,10 @@ void pt_span_set_status_code(pt_span_t span, int status_code);
 void pt_span_set_url_stat(pt_span_t span, const char* url_pattern,
                           const char* method, int status_code);
 
+/** Mirrors pinpoint::Span::ForceUrlStat(). */
+void pt_span_force_url_stat(pt_span_t span, const char* url_pattern,
+                            const char* method, int status_code);
+
 /** Mirrors pinpoint::Span::SetLogging(). */
 void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer);
 

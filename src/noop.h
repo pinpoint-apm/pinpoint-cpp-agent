@@ -183,6 +183,7 @@ namespace pinpoint {
                        std::string_view error_message) override;
         void EndSpan() override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
+        void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 
         int64_t GetSpanId() override {
             return span_id_;
@@ -223,6 +224,7 @@ namespace pinpoint {
         // warn/no-op instead of a data race on the moved-from entry.
         std::mutex url_stat_mutex_;
         std::optional<UrlStatEntry> url_stat_;
+        void recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force);
         // Runtime snapshot of this span's admission decision; null only when
         // constructed without one (tests). See the ctor comment.
         std::shared_ptr<const AgentRuntime> runtime_;

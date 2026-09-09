@@ -539,6 +539,12 @@ span->SetUrlStat("/users/:id", "GET", 200);
 
 This collects statistics normalized by URL pattern, HTTP method, and response status code. Enable it with `Http.CollectUrlStat`.
 
+The URL pattern is first-wins, as in the Java agent: once a non-empty pattern has been recorded on a span, later `SetUrlStat()` calls keep it and only refresh the method and status code. To replace a pattern deliberately (for example, to correct an early guess with the route that was eventually matched), use `ForceUrlStat()`:
+
+```cpp
+span->ForceUrlStat("/users/{id}", "GET", 200);
+```
+
 ---
 
 ## 8. Database and Backend Instrumentation

@@ -621,6 +621,8 @@ static void call_downstream(pt_span_t span) {
 pt_span_set_url_stat(span, "/api/users", "GET", 200);
 ```
 
+The URL pattern is first-wins: later calls keep the first non-empty pattern and only refresh the method and status code. `pt_span_force_url_stat()` replaces it.
+
 ---
 
 ## 11. Asynchronous Spans

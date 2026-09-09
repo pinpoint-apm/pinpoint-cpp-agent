@@ -957,6 +957,17 @@ void pt_span_set_url_stat(pt_span_t span, const char* url_pattern,
     });
 }
 
+void pt_span_force_url_stat(pt_span_t span, const char* url_pattern,
+                            const char* method, int status_code) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->ForceUrlStat(url_pattern ? url_pattern : "",
+                                     method      ? method      : "",
+                                     status_code);
+        });
+    });
+}
+
 void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer) {
     pt_api_call(__func__, [&] {
         if (!writer) return;

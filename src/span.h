@@ -619,6 +619,7 @@ namespace pinpoint {
                        std::string_view error_message) override;
         void SetStatusCode(int status) override;
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
+        void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         /// @brief Records the logging flag and injects the context into a logger.
         void SetLogging(TraceContextWriter& writer) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
@@ -665,6 +666,8 @@ namespace pinpoint {
             // spans never link theirs.
             ActiveSpanNode active_node_;
             std::optional<UrlStatEntry> url_stat_;
+
+        void recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force);
             std::vector<std::unique_ptr<Exception>> exceptions_;
             // The exception chain currently open on this span, shared by
             // every span event of the span (SpanEventImpl::recordException

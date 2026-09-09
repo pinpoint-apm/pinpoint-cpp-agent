@@ -384,6 +384,7 @@ TEST(TracerCNullSafetyTest, NullSpanCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_set_error_named(nullptr, "n", "m"));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_status_code(nullptr, 200));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_url_stat(nullptr, "/", "GET", 200));
+    EXPECT_NO_FATAL_FAILURE(pt_span_force_url_stat(nullptr, "/", "GET", 200));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_logging(nullptr, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_int(nullptr, PT_ANNOTATION_API, 0));
@@ -546,6 +547,7 @@ TEST_F(TracerCApiTest, SpanSettersDontCrash) {
     pt_span_set_error_named(span, "RuntimeError", "index out of bounds");
     pt_span_set_status_code(span, 500);
     pt_span_set_url_stat(span, "/api/v1/users", "GET", 200);
+    pt_span_force_url_stat(span, "/api/v1/users/{id}", "GET", 200);
 
     pt_span_end(span);
     pt_span_destroy(span);
