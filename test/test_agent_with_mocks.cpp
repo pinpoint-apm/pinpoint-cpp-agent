@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -317,6 +318,82 @@ TEST_F(AgentImplTest, NewSpanWithHeaderMapAndMethodExtractsContext) {
     ASSERT_NE(span, nullptr);
     EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
     EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
+}
+
+// The map overload is the agent's own TraceContextReader adapter, so it owes
+// the case-insensitive matching tracer.h demands of HTTP-backed readers:
+// HTTP/2/3 deliver every field name lowercase, and a binding layer that dumps
+// the request headers as-is must still continue the trace.
+TEST_F(AgentImplTest, NewSpanWithLowercaseHeaderMapKeysContinuesTrace) {
+    std::map<std::string, std::string> headers{
+        {"pinpoint-traceid", "upstream-agent^1700000000^7"},
+        {"pinpoint-spanid", "555"},
+        {"pinpoint-pspanid", "111"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "GET", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
+    EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
+}
+
+TEST_F(AgentImplTest, NewSpanWithMixedCaseHeaderMapKeysContinuesTrace) {
+    std::map<std::string, std::string> headers{
+        {"Pinpoint-TraceId", "upstream-agent^1700000000^7"},
+        {"PINPOINT-SPANID", "555"},
+        {"pinpoint-PSpanId", "111"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "a valid continued trace should be sampled";
+    EXPECT_EQ(span->GetTraceId(), "upstream-agent^1700000000^7");
+}
+
+TEST_F(AgentImplTest, NewSpanWithLowercaseSampledHeaderIsHonored) {
+    // The fallback must cover every header the funnel reads, not just the
+    // trace id: a lowercase s0 still short-circuits to an unsampled span.
+    std::map<std::string, std::string> headers{
+        {"pinpoint-traceid", "upstream-agent^1700000000^7"},
+        {"pinpoint-spanid", "555"},
+        {"pinpoint-pspanid", "111"},
+        {"pinpoint-sampled", "s0"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_FALSE(span->IsSampled()) << "a lowercase Pinpoint-Sampled: s0 must still be honored";
+}
+
+// A map holding only keys the agent does not know starts a fresh transaction,
+// as before, but now leaves a throttled warning behind so the operator can see
+// why every request became its own trace.
+TEST_F(AgentImplTest, NewSpanWithUnrecognizedHeaderMapKeysStartsFreshTraceAndWarns) {
+    struct LoggerGuard {
+        ~LoggerGuard() { Logger::getInstance().setSink({}); }
+    } logger_guard;
+    std::vector<std::string> captured;
+    std::mutex captured_mutex;
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setSink([&](const char* level, const char* message) {
+        std::lock_guard<std::mutex> lock(captured_mutex);
+        if (std::string_view(level) == "warning") {
+            captured.emplace_back(message);
+        }
+    });
+
+    std::map<std::string, std::string> headers{
+        {"X-Request-Id", "abc"},
+        {"Content-Type", "text/plain"},
+    };
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_TRUE(span->IsSampled()) << "unrecognized headers start a fresh sampled trace";
+    EXPECT_FALSE(span->GetTraceId().empty());
+
+    Logger::getInstance().setSink({});
+    std::lock_guard<std::mutex> lock(captured_mutex);
+    const auto warned = std::any_of(captured.begin(), captured.end(), [](const std::string& line) {
+        return line.find("Pinpoint headers present but unrecognized") != std::string::npos;
+    });
+    EXPECT_TRUE(warned) << "expected a throttled warning about unrecognized Pinpoint headers";
 }
 
 // A trace id that does not parse describes no hop this agent can attach to, so

@@ -180,3 +180,23 @@ Two consequences for a `TraceContextReader` implementation:
 - `Pinpoint-Sampled: s0` is checked **before** any of this and short-circuits
   everything (unsampled span, no sampler consulted). `Pinpoint-Flags` takes
   part in no decision and defaults to `0` when absent.
+
+### Key rules for the header-map `NewSpan()` overload
+
+`NewSpan(operation, rpc_point, method, const std::map<std::string, std::string>&)`
+wraps the map in the agent's own `TraceContextReader`, and that adapter keeps
+the contract `tracer.h` places on HTTP-backed readers:
+
+- **Keys are matched case-insensitively.** The canonical names
+  (`Pinpoint-TraceID`, `HEADER_TRACE_ID`, ...) are the fast path — an exact map
+  lookup. Any other spelling, including the all-lowercase form HTTP/2 and
+  HTTP/3 deliver (`pinpoint-traceid`), falls back to a linear scan of the map
+  compared case-insensitively. A binding layer may therefore dump the request
+  headers as received; it does not have to re-case them.
+- **Values are taken verbatim.** Only the key comparison ignores case.
+- **A non-empty map with no trace id under any spelling** starts a fresh
+  transaction exactly as an empty map does, and additionally logs a throttled
+  warning, `Pinpoint headers present but unrecognized`, so a binding bug that
+  turns every request into its own trace is visible in the agent log.
+- The three-header rule above applies unchanged; case-insensitive matching
+  changes how a header is *found*, not which headers are *required*.

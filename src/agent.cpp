@@ -902,13 +902,24 @@ namespace pinpoint {
                 : headers_(headers) {}
 
             std::optional<std::string_view> Get(std::string_view key) const override {
-                // Keys are the short canonical Pinpoint-* names, so the lookup
-                // string stays within SSO.
+                // Two-tier lookup. Most binding layers key the map by the
+                // canonical Pinpoint-* names, so the exact O(log n) find hits
+                // first; the key string stays within SSO. HTTP field names are
+                // case-insensitive and HTTP/2/3 deliver them lowercase, so a
+                // miss falls back to a case-insensitive scan, honoring the
+                // TraceContextReader contract for HTTP-backed readers. The map
+                // holds at most a handful of Pinpoint headers and NewSpan runs
+                // once per request, so the scan is cheap on the miss path.
                 const auto it = headers_.find(std::string(key));
-                if (it == headers_.end()) {
-                    return std::nullopt;
+                if (it != headers_.end()) {
+                    return std::string_view(it->second);
                 }
-                return std::string_view(it->second);
+                for (const auto& [name, value] : headers_) {
+                    if (absl::EqualsIgnoreCase(name, key)) {
+                        return std::string_view(value);
+                    }
+                }
+                return std::nullopt;
             }
 
         private:
@@ -920,6 +931,14 @@ namespace pinpoint {
                                std::string_view method,
                                const std::map<std::string, std::string>& pinpoint_headers) {
         MapTraceContextReader reader(pinpoint_headers);
+        // A non-empty map without a trace id under any spelling means the
+        // caller handed over headers the agent cannot recognize (a bug in the
+        // binding layer, or non-Pinpoint headers dumped wholesale). The span
+        // below silently starts a fresh transaction, so leave a trail here.
+        if (!pinpoint_headers.empty() && !reader.Get(HEADER_TRACE_ID)) {
+            LOG_WARN_THROTTLED("Pinpoint headers present but unrecognized: {} header(s) given, no {} under any case",
+                               pinpoint_headers.size(), HEADER_TRACE_ID);
+        }
         return NewSpan(operation, rpc_point, method, reader);
     }
 

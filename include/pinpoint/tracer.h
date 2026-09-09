@@ -475,10 +475,17 @@ namespace pinpoint {
         /// @brief Creates a new span, also recording the HTTP @p method.
         virtual SpanPtr NewSpan(std::string_view operation, std::string_view rpc_point, std::string_view method, TraceContextReader& reader) = 0;
         /// @brief Creates a new span, extracting context from a pre-extracted
-        ///        map of Pinpoint propagation headers keyed by their canonical
-        ///        names (e.g. HEADER_TRACE_ID). Callers that already dumped the
-        ///        Pinpoint-* headers (binding layers) pass them here instead of
-        ///        implementing a TraceContextReader.
+        ///        map of Pinpoint propagation headers. Callers that already
+        ///        dumped the Pinpoint-* headers (binding layers) pass them here
+        ///        instead of implementing a TraceContextReader.
+        ///        Keys are matched case-insensitively, as the
+        ///        TraceContextReader contract requires of HTTP-backed readers:
+        ///        the canonical names (e.g. HEADER_TRACE_ID), the lowercase
+        ///        forms HTTP/2/3 deliver, and any other casing all work. The
+        ///        canonical spelling is the fast path (an exact map lookup);
+        ///        other spellings fall back to a linear scan of the map. A
+        ///        non-empty map with no trace id under any spelling starts a
+        ///        fresh transaction and logs a throttled warning.
         ///        @p method is the HTTP request method, needed for the
         ///        Http.Server.ExcludeMethod filter — that filter is skipped for
         ///        an empty method, which means "not HTTP" (messaging consumers,
