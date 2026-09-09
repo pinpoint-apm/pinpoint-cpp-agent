@@ -399,8 +399,8 @@ keeps `SimpleCache`'s own default. This agent follows that split exactly:
 `sql_uid_cache_` and `raw_sql_cache_`, and the api/error caches stay at
 `AgentImpl::kDefaultCacheSize`. The raw cache has no Java counterpart, so it
 takes the SQL size because it is keyed per statement like the other two. The
-Go agent still hardcodes `cacheSize = 1024` for every cache; its key, when
-opened, is `SQL.CacheSize` in that port's naming.
+Go agent exposes the same setting, with the same scope and range, as
+`SQL.CacheSize` in that port's naming.
 
 ## Queued metadata text is abbreviated at cache time — same as Java
 
