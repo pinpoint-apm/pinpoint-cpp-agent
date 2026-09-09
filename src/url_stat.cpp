@@ -262,8 +262,27 @@ namespace pinpoint {
         }
     }
 
+    // Rate-limited like the drop reporters in UrlStats, but file-static: a
+    // snapshot lives one tick, and the report is about producers, not about
+    // any one snapshot.
+    static QueueDropReporter epoch_end_time_reporter{};
+
     bool UrlStatSnapshot::add(const UrlStatEntry* us, const Config& config, TickClock& tick_clock) {
         if (us == nullptr) {
+            return true;
+        }
+        // An entry whose end time was never set would key under tick 0
+        // (1970) and pin a bogus watermark. Java's AgentUriStatData.add skips
+        // an endTime of 0 the same way: it is a producer bug, not a capacity
+        // event, so it returns true ("handled") rather than false, which the
+        // caller (UrlStats::addLocked) would count as a limit drop. Both
+        // producers today (SpanImpl::sendUrlStat, UnsampledSpan::EndSpan) set
+        // the end time; the log is here to expose a new one that does not.
+        if (us->end_time_ == std::chrono::system_clock::time_point{}) {
+            if (const auto skipped = epoch_end_time_reporter.acquire()) {
+                LOG_WARN("url stat entry skipped: end time is not set ({} in this interval, last url {})",
+                         skipped, us->url_pattern_);
+            }
             return true;
         }
 

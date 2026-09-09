@@ -538,6 +538,82 @@ TEST_F(UrlStatTest, SnapshotRepeatedHitsAccumulateAndLimitRejectsMiss) {
     EXPECT_EQ(stats.begin()->second.total.total(), 129);
 }
 
+// Java parity (AgentUriStatData.add skips an endTime of 0): an entry whose end
+// time was never set is skipped, not stored under a 1970 key, and it does not
+// move the tick watermark that UrlStats::addLocked cuts on.
+TEST_F(UrlStatTest, SnapshotSkipsEntryWithEpochEndTime) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    TickClock tick_clock(1);
+
+    UrlStatEntry epoch("/epoch/api", "GET", 200);
+    epoch.elapsed_ = 10;
+    ASSERT_EQ(epoch.end_time_, std::chrono::system_clock::time_point{})
+        << "a fresh entry has no end time";
+
+    EXPECT_TRUE(snapshot.add(&epoch, config, tick_clock))
+        << "a skip is not a limit drop: returning false would bump the drop reporter";
+    EXPECT_TRUE(snapshot.empty());
+    EXPECT_EQ(snapshot.tick(), 0);
+
+    // A normal entry that arrives with it is unaffected.
+    UrlStatEntry normal("/normal/api", "GET", 200);
+    normal.elapsed_ = 10;
+    normal.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(700));
+    EXPECT_TRUE(snapshot.add(&normal, config, tick_clock));
+    ASSERT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.getEachStats().begin()->first.tick_, tick_clock.tick(normal.end_time_));
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(normal.end_time_));
+
+    // Nor does an epoch straggler after it move the watermark or add a key.
+    EXPECT_TRUE(snapshot.add(&epoch, config, tick_clock));
+    EXPECT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(normal.end_time_));
+}
+
+// The skip does not consume a slot either, so it cannot push a later valid
+// url over the limit.
+TEST_F(UrlStatTest, SnapshotEpochEntryDoesNotConsumeTheLimit) {
+    UrlStatSnapshot snapshot;
+    Config config;
+    config.http.url_stat.limit = 1;
+    TickClock tick_clock(1);
+
+    UrlStatEntry epoch("/epoch/api", "GET", 200);
+    EXPECT_TRUE(snapshot.add(&epoch, config, tick_clock));
+
+    UrlStatEntry valid("/valid/api", "GET", 200);
+    valid.elapsed_ = 1;
+    valid.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(700));
+    EXPECT_TRUE(snapshot.add(&valid, config, tick_clock))
+        << "the only slot must still be free";
+    EXPECT_EQ(snapshot.getEachStats().size(), 1u);
+}
+
+// Through the real add path: an epoch entry neither lands in the in-progress
+// tick nor cuts it, and a valid entry that follows is collected as usual.
+TEST_F(UrlStatTest, UrlStatsSkipsEpochEntryWithoutCuttingTheTick) {
+    UrlStats url_stats(mock_agent_service_.get());
+    Config config;
+
+    UrlStatEntry valid("/valid/api", "GET", 200);
+    valid.elapsed_ = 5;
+    valid.end_time_ = std::chrono::system_clock::now();
+    url_stats.addSnapshot(&valid, config);
+
+    UrlStatEntry epoch("/epoch/api", "GET", 200);
+    epoch.elapsed_ = 5;
+    url_stats.addSnapshot(&epoch, config);
+
+    auto cut = url_stats.takeSnapshot(false);
+    EXPECT_TRUE(!cut || cut->empty())
+        << "nothing was cut: the epoch entry must not close the tick in progress";
+    auto snapshot = url_stats.takeSnapshot(true);
+    ASSERT_NE(snapshot.get(), nullptr);
+    ASSERT_EQ(snapshot->getEachStats().size(), 1u) << "only the valid entry is kept";
+    EXPECT_NE(snapshot->getEachStats().begin()->first.tick_, 0);
+}
+
 // ========== UrlStats Class Tests ==========
 
 TEST_F(UrlStatTest, UrlStatsConstructorTest) {
@@ -673,12 +749,18 @@ TEST_F(UrlStatTest, FullWorkflowTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
     // Create and enqueue multiple stats
+    // Every producer sets the end time; an entry without one is skipped
+    // (see UrlStatSnapshot::add), so these carry one like real entries do.
+    const auto now = std::chrono::system_clock::now();
     UrlStatEntry stat1{"/api/users", "GET", 200};
     stat1.elapsed_ = 100;
+    stat1.end_time_ = now;
     UrlStatEntry stat2{"/api/posts", "POST", 201};
     stat2.elapsed_ = 200;
+    stat2.end_time_ = now;
     UrlStatEntry stat3{"/api/users", "GET", 500};
     stat3.elapsed_ = 300;
+    stat3.end_time_ = now;
     
     url_stats.enqueueUrlStats(std::move(stat1));
     url_stats.enqueueUrlStats(std::move(stat2));

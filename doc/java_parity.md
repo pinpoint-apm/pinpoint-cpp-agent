@@ -50,6 +50,7 @@ by side.
 | Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
 | gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout same as Java; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults) |
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
+| URL stat entry without an end time | `AgentUriStatData.add` | **Same as Java** — see [below](#url-stat-entry-without-an-end-time-is-skipped--same-as-java) |
 | Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
@@ -1046,6 +1047,36 @@ last-wins reproduces Java's per-field semantics inside the existing structure.
 This also fixes the exception tagging path: `recordException` reads
 `getUrlTemplate()` off the same entry, so the `url_template` of a reported
 exception is now the first recorded pattern, as in Java.
+
+---
+
+## URL stat entry without an end time is skipped — same as Java
+
+**Java.** `AgentUriStatData.add` checks `uriStatInfo.getEndTime() == 0L` and,
+if so, logs at INFO and returns `true` — the entry is *skipped*, which is a
+different outcome from the capacity check just above it that returns `false`
+(a *drop*).
+
+**Go.** `urlStats.add` and `urlStatSnapshot.add` in `url_stat.go` both return
+early on `us.endTime.IsZero()`.
+
+**This agent.** `UrlStatSnapshot::add` (`src/url_stat.cpp`) only guarded
+against a null entry and called `tick_clock.tick(us->end_time_)` directly. An
+entry whose `end_time_` was never set would have keyed under tick 0 (1970),
+and, since `UrlStats::addLocked` compares that tick to the snapshot watermark,
+could have disturbed the cut of legitimate ticks. Both producers today
+(`SpanImpl::sendUrlStat`, `UnsampledSpan::EndSpan`) set the end time, so this
+was latent — but Java and Go both guard it, and a new producer that forgot
+would otherwise fail silently. (gap **U7**)
+
+The guard now sits right after the null check and mirrors Java's return
+value: it returns `true`, because `addLocked` reads `false` as "the snapshot
+refused this entry for capacity" and feeds the limit-drop reporter. A skipped
+entry is a producer bug, not a capacity event, so it must not pollute that
+counter nor advance the watermark. Rather than Java's INFO, the skip is
+reported through a rate-limited WARN (the `QueueDropReporter` pattern) naming
+the URL, since its only purpose is to surface a new producer that does not set
+the end time.
 
 ---
 
