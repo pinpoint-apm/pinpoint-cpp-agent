@@ -667,6 +667,7 @@ TEST(JavaParityLockTest, StatCollectionDefaults) {
 // The SQL cache bounds. All three agents bypass the UID cache for a statement
 // at or over the length limit and re-publish a UID's metadata after the expiry.
 TEST(JavaParityLockTest, SqlCacheDefaults) {
+    EXPECT_EQ(defaults::SQL_CACHE_SIZE, 1024) << "Java profiler.jdbc.sqlcachesize";
     EXPECT_EQ(defaults::SQL_CACHE_LENGTH_LIMIT, 2048) << "Java profiler.jdbc.sqlcachelengthlimit";
     EXPECT_EQ(defaults::SQL_CACHE_EXPIRE_HOURS, 168) << "Java profiler.jdbc.sqlcacheexpirehours";
     EXPECT_EQ(defaults::SQL_MAX_BIND_ARGS_SIZE, 1024) << "Java profiler.jdbc.maxsqlbindvaluesize";

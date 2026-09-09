@@ -135,6 +135,11 @@ namespace pinpoint {
         // sql_cache_: its ids come from a sequence, so a bypassed statement
         // would burn a fresh id — and a fresh StringMeta — on every single
         // use. Java bypasses only the UID cache, for the same reason.
+        //
+        // Sql.CacheSize sizes the three SQL caches only (see kDefaultCacheSize
+        // for why api/error keep the ctor parameter). make_config() has
+        // already confined it to [1, 65536], so the cast is safe.
+        const size_t sql_cache_size = static_cast<size_t>(cfg->sql.cache_size);
         const size_t sql_cache_length_limit =
             cfg->sql.cache_length_limit < 0
                 ? kNoCacheLengthLimit
@@ -151,12 +156,12 @@ namespace pinpoint {
                 : CacheExpiry::Clock::duration::zero()};
         api_cache_ = std::make_unique<ApiIdCache>(cache_size);
         error_cache_ = std::make_unique<IdCache>(cache_size);
-        sql_cache_ = std::make_unique<IdCache>(cache_size);
+        sql_cache_ = std::make_unique<IdCache>(sql_cache_size);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(
-            cache_size, kDefaultCacheShardCount, sql_cache_length_limit,
+            sql_cache_size, kDefaultCacheShardCount, sql_cache_length_limit,
             sql_uid_expiry);
         raw_sql_cache_ = std::make_unique<RawSqlCache>(
-            cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
+            sql_cache_size, kDefaultCacheShardCount, sql_cache_length_limit);
         sql_normalizer_ = std::make_unique<const SqlNormalizer>(
             kMaxNormalizedSqlLength, cfg->sql.remove_comments);
 

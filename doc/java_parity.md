@@ -323,6 +323,17 @@ twice and doubled the raw cache's worst-case memory for nothing; flipping
 `Sql.EnableSqlStats` at runtime also lost every warm entry. The single cache
 is toggled by `Sql.EnableRawSqlCache` (reloadable) and matches Go.
 
+**Cache size (gap C7).** Java sizes its SQL id and uid caches by
+`profiler.jdbc.sqlcachesize` (1024) through `SimpleCacheFactory.newSqlCache()`
+/ `newSqlUidCache()`, while `newSimpleCache()` — the api and string caches —
+keeps `SimpleCache`'s own default. This agent follows that split exactly:
+`Sql.CacheSize` (default 1024, startup-only) sizes `sql_cache_`,
+`sql_uid_cache_` and `raw_sql_cache_`, and the api/error caches stay at
+`AgentImpl::kDefaultCacheSize`. The raw cache has no Java counterpart, so it
+takes the SQL size because it is keyed per statement like the other two. The
+Go agent still hardcodes `cacheSize = 1024` for every cache; its key, when
+opened, is `SQL.CacheSize` in that port's naming.
+
 ## Queued metadata text is abbreviated at cache time — same as Java
 
 **Java.** `SqlCacheService` abbreviates the SQL text to
@@ -835,7 +846,7 @@ divergence entry above saying why.
 | 8 | active trace histogram layout | `common/trace/BaseHistogramSchema` NORMAL schema | the four slots at 1000 / 3000 / 5000 ms with an **inclusive** upper bound, so a span at exactly 1000 ms is still "fast" | `…ActiveTraceHistogram` | `…ActiveTraceHistogram` |
 | 9 | transaction counters | `context/id/DefaultTransactionCounter` | all six counters (sampled/unsampled/skipped × new/continuation) exist and drain independently, and a drain resets them | `test_stat.cpp` (`SamplingCountersTest`, `AllCountersMixedIncrementTest`, `CollectResetsCountersBetweenCallsTest`) | `…TransactionCounters` |
 | 10 | message truncation format | `StringUtils.abbreviate`, `AbstractRecorder.recordException` | a value within the cap is returned verbatim; a longer one keeps its first *n* bytes and gains a `...(original length)` suffix; the caps 256 (span / span event error) and 65536 (SQL metadata text); the cut lands on a UTF-8 boundary so the result stays valid for protobuf | `…TruncationFormat`, `…TruncationCutsOnAUtf8Boundary`, `…MessageLimits` | `…TruncationFormat`, `…TruncationCutsOnARuneBoundary`, `…MessageLimits` |
-| 11 | gRPC channel constants | `grpc/.../client/config/ClientOption`, `GrpcTransportConfig`, `AgentInfoSender`, `pinpoint-root.config` | collector ports 9991 / 9992 / 9993; keepalive 30s / 60s without permit-without-stream; 4 MiB max message; connection and stream renewal off; AgentInfo refresh 24h with 3 tries per attempt; span batch 20 / 1000 ms / 500 ms / 10 concurrent; stat 5000 ms × 6; SQL cache limit 2048, expiry 168h, bind value 1024, error count 100 | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…AgentInfoSchedule`, `…SpanBatchDefaults`, `…StatCollectionDefaults`, `…SqlCacheDefaults` | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…ReconnectBackoff`, `…AgentInfoSchedule` |
+| 11 | gRPC channel constants | `grpc/.../client/config/ClientOption`, `GrpcTransportConfig`, `AgentInfoSender`, `pinpoint-root.config` | collector ports 9991 / 9992 / 9993; keepalive 30s / 60s without permit-without-stream; 4 MiB max message; connection and stream renewal off; AgentInfo refresh 24h with 3 tries per attempt; span batch 20 / 1000 ms / 500 ms / 10 concurrent; stat 5000 ms × 6; SQL cache size 1024, limit 2048, expiry 168h, bind value 1024, error count 100 | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…AgentInfoSchedule`, `…SpanBatchDefaults`, `…StatCollectionDefaults`, `…SqlCacheDefaults` | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…ReconnectBackoff`, `…AgentInfoSchedule` |
 
 ### Deliberately not locked
 

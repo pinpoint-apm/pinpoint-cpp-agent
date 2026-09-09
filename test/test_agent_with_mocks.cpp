@@ -2451,6 +2451,7 @@ TEST(AgentImplCacheSizeTest, ApiCacheEvictionMintsFreshId) {
 
 TEST(AgentImplCacheSizeTest, ErrorAndSqlCacheEvictionMintsFreshIds) {
     auto cfg = make_test_config();
+    cfg->sql.cache_size = 1;  // the SQL caches are sized by the config
     auto agent = make_test_agent(cfg, 1);
     wait_cache_test_agent_enabled(agent);
 
@@ -2461,6 +2462,41 @@ TEST(AgentImplCacheSizeTest, ErrorAndSqlCacheEvictionMintsFreshIds) {
     const int32_t first_sql = agent->cacheSql("SELECT 1");
     agent->cacheSql("SELECT 2");
     EXPECT_NE(agent->cacheSql("SELECT 1"), first_sql);
+
+    agent->Shutdown();
+}
+
+// Sql.CacheSize must be the capacity the ctor gives the SQL caches, and only
+// those: with the ctor parameter left at its default, the api cache keeps its
+// entries while a capacity-1 SQL id cache evicts and reissues, and the raw
+// cache (same capacity) re-normalizes the statement it just evicted.
+TEST(AgentImplCacheSizeTest, SqlCacheSizeConfigSizesOnlyTheSqlCaches) {
+    auto cfg = make_test_config();
+    cfg->sql.cache_size = 1;
+    auto agent = make_test_agent(cfg);
+    wait_cache_test_agent_enabled(agent);
+
+    const int32_t first_sql = agent->cacheSql("SELECT 1");
+    ASSERT_GT(first_sql, 0);
+    agent->cacheSql("SELECT 2");
+    EXPECT_NE(agent->cacheSql("SELECT 1"), first_sql)
+        << "a capacity-1 SQL id cache must have evicted the first statement";
+
+    constexpr std::string_view raw_one = "SELECT * FROM t WHERE id = 1";
+    constexpr std::string_view raw_two = "SELECT * FROM t WHERE id = 2";
+    auto first = agent->prepareSql(raw_one, SqlMetaMode::Id);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(agent->prepareSql(raw_two, SqlMetaMode::Id).has_value());
+    auto again = agent->prepareSql(raw_one, SqlMetaMode::Id);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_NE(first->sql, again->sql)
+        << "a capacity-1 raw cache must have evicted the first statement";
+
+    const int32_t first_api = agent->cacheApi("api.one", 100);
+    ASSERT_GT(first_api, 0);
+    agent->cacheApi("api.two", 100);
+    EXPECT_EQ(agent->cacheApi("api.one", 100), first_api)
+        << "the api cache keeps its default capacity";
 
     agent->Shutdown();
 }

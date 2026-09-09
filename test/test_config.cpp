@@ -1836,6 +1836,46 @@ Sql:
         << "Raw SQL cache should be disabled by environment variable";
 }
 
+TEST_F(ConfigTest, SqlCacheSizeTest) {
+    auto default_config = make_config();
+    EXPECT_EQ(default_config->sql.cache_size, 1024)
+        << "SQL cache size should default to the Java agent's 1024";
+
+    set_config_string(R"(
+Sql:
+  CacheSize: 4096
+)");
+    EXPECT_EQ(make_config()->sql.cache_size, 4096)
+        << "SQL cache size should be read from YAML";
+
+    set_config_string("");
+    setenv(full_env(env::SQL_CACHE_SIZE).c_str(), "256", 1);
+    EXPECT_EQ(make_config()->sql.cache_size, 256)
+        << "SQL cache size should be read from the environment";
+    unsetenv(full_env(env::SQL_CACHE_SIZE).c_str());
+
+    // Out of range in either direction warns and falls back to the default:
+    // 0 or a negative would leave the SQL caches empty or cast to an absurd
+    // size_t, and the upper bound keeps a typo from committing gigabytes.
+    for (const char* bad : {"0", "-1", "65537"}) {
+        set_config_string(std::string("Sql:\n  CacheSize: ") + bad + "\n");
+        EXPECT_EQ(make_config()->sql.cache_size, 1024)
+            << "out-of-range cache size " << bad << " should fall back to the default";
+    }
+    set_config_string(R"(
+Sql:
+  CacheSize: 65536
+)");
+    EXPECT_EQ(make_config()->sql.cache_size, 65536)
+        << "the upper bound itself is valid";
+    set_config_string(R"(
+Sql:
+  CacheSize: 1
+)");
+    EXPECT_EQ(make_config()->sql.cache_size, 1)
+        << "the lower bound itself is valid";
+}
+
 TEST_F(ConfigTest, SqlCacheLengthLimitTest) {
     auto default_config = make_config();
     EXPECT_EQ(default_config->sql.cache_length_limit, 2048)

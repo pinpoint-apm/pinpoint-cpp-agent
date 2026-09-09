@@ -51,11 +51,16 @@ namespace pinpoint {
     class AgentImpl final : public Agent, public AgentService,
                             public std::enable_shared_from_this<AgentImpl> {
     public:
-        /// Capacity of each metadata cache (api/error/sql/sql-uid/raw-sql).
+        /// Capacity of the api and error metadata caches. The SQL caches
+        /// (sql/sql-uid/raw-sql) take theirs from Sql.CacheSize instead, as
+        /// Java sizes only its SQL caches by profiler.jdbc.sqlcachesize and
+        /// leaves the api/string caches at their default.
         static constexpr size_t kDefaultCacheSize = 1024;
 
-        /// @brief @p cache_size defaults to the production value; tests inject
-        /// small sizes to exercise eviction-driven id reissue.
+        /// @brief @p cache_size sizes the api/error caches and defaults to the
+        /// production value; tests inject small sizes to exercise
+        /// eviction-driven id reissue. The SQL caches read Sql.CacheSize from
+        /// @p options, so tests size those through the config.
         AgentImpl(std::shared_ptr<const Config> options,
                   std::unique_ptr<GrpcAgent> grpc_agent,
                   std::unique_ptr<GrpcMetadata> grpc_metadata,

@@ -63,6 +63,9 @@ namespace pinpoint {
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
+        // Entries per SQL cache (id, uid and raw). Mirrors the Java agent's
+        // profiler.jdbc.sqlcachesize (1024).
+        constexpr int SQL_CACHE_SIZE = 1024;
         // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
         constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
         // Hours a cached SQL UID survives before its metadata is re-published.
@@ -165,6 +168,7 @@ namespace pinpoint {
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
+        constexpr const char* SQL_CACHE_SIZE = "SQL_CACHE_SIZE";
         constexpr const char* SQL_CACHE_LENGTH_LIMIT = "SQL_CACHE_LENGTH_LIMIT";
         constexpr const char* SQL_CACHE_EXPIRE_HOURS = "SQL_CACHE_EXPIRE_HOURS";
         constexpr const char* SQL_ENABLE_SQL_STATS = "SQL_ENABLE_SQL_STATS";
@@ -449,6 +453,16 @@ namespace pinpoint {
             // turning it off changes SQL ids/UIDs of commented SQL and makes
             // them diverge from Java's.
             bool remove_comments = true;
+            // Entries each SQL cache (SQL-ID, SQL-UID, raw-SQL) holds. Once
+            // full, the least recently used statement is evicted and its
+            // next use re-registers it under a fresh id and a fresh metadata
+            // send, so applications with many distinct statements raise this
+            // to keep metadata traffic down. Startup-only: the caches are
+            // built in AgentImpl's ctor and resizing them mid-run would
+            // orphan ids already referenced by in-flight spans. Applies to
+            // the SQL caches only, like Java, whose api/string caches keep
+            // their own default. Java parity: profiler.jdbc.sqlcachesize.
+            int cache_size = defaults::SQL_CACHE_SIZE;
             // Length at or above which a SQL statement bypasses the SQL-UID
             // and raw-SQL caches, keeping their memory bounded by
             // entries x this limit instead of by the largest statement seen.

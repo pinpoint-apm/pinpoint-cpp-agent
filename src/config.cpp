@@ -586,6 +586,7 @@ namespace pinpoint {
         {"Sql.EnableRawSqlCache", REF(sql.enable_raw_sql_cache), RELOAD, env::SQL_ENABLE_RAW_SQL_CACHE},
         {"Sql.TraceBindValue", REF(sql.trace_bind_value), RELOAD, env::SQL_TRACE_BIND_VALUE},
         {"Sql.RemoveComments", REF(sql.remove_comments), FIXED, env::SQL_REMOVE_COMMENTS},
+        {"Sql.CacheSize", REF(sql.cache_size), FIXED, env::SQL_CACHE_SIZE},
         {"Sql.CacheLengthLimit", REF(sql.cache_length_limit), FIXED, env::SQL_CACHE_LENGTH_LIMIT},
         {"Sql.CacheExpireHours", REF(sql.cache_expire_hours), FIXED, env::SQL_CACHE_EXPIRE_HOURS},
         {"Sql.ErrorCount", REF(sql.error_count), RELOAD, env::SQL_ERROR_COUNT},
@@ -755,6 +756,11 @@ namespace pinpoint {
     constexpr int MAX_GRPC_QUEUE_SIZE = 65536;
     constexpr int MIN_URL_STAT_QUEUE_SIZE = 1;
     constexpr int MAX_URL_STAT_QUEUE_SIZE = 65536;
+    // Per SQL cache; three caches, each bounded by this x Sql.CacheLengthLimit
+    // (the id cache by the largest statement seen), so the cap keeps a typo
+    // from committing gigabytes at startup.
+    constexpr int MIN_SQL_CACHE_SIZE = 1;
+    constexpr int MAX_SQL_CACHE_SIZE = 65536;
 
     // Range/validity checks shared by every clamp site in make_config().
     // in_range: outside [lo, hi] warns and falls back. at_least: below min
@@ -1029,6 +1035,10 @@ namespace pinpoint {
         // compares with >= - is not reachable through one key, and is a gap in
         // Java's validation rather than a feature to port.
         at_least(config->sql.error_count, 0, 0, "sql error count");
+        // 0 or a negative would cast to an empty or absurd size_t at the use
+        // site (AgentImpl's ctor); see MAX_SQL_CACHE_SIZE for the upper bound.
+        in_range(config->sql.cache_size, MIN_SQL_CACHE_SIZE, MAX_SQL_CACHE_SIZE,
+                 defaults::SQL_CACHE_SIZE, "sql cache size");
         // UNLIMITED_SIZE (-1) is the only valid negative: anything below it
         // would cast to a huge size_t at the use site (AgentImpl's ctor) and
         // silently disable the bypass.
