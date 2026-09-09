@@ -1398,6 +1398,135 @@ TEST(AgentShutdownDeadlineTest, DetachedTeardownReleasesHostSinkBeforeReturning)
     Logger::getInstance().setSink({});
 }
 
+namespace {
+
+// Collects every log line through the host sink for the guard's lifetime,
+// then restores the default logger so later tests are unaffected.
+class LogCapture {
+public:
+    LogCapture() {
+        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setSink([this](const char*, const char* message) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lines_ += message;
+            lines_ += '\n';
+        });
+    }
+    ~LogCapture() {
+        Logger::getInstance().setSink({});
+        Logger::getInstance().setFileLogger("", 0);
+    }
+
+    std::string lines() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lines_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::string lines_;
+};
+
+// A GrpcAgent whose boot registration succeeds and whose AgentInfo re-send
+// scheduler then wedges in registerAgent() until released — a scheduler
+// thread that ignores its stop signal, so stopAgentInfo()'s join is the
+// shutdown straggler. It is not a table worker: without the dedicated flag
+// the deadline report cannot name it.
+class WedgedSchedulerGrpcAgent : public TestableGrpcAgent {
+public:
+    explicit WedgedSchedulerGrpcAgent(std::shared_ptr<const Config> config)
+        : TestableGrpcAgent(std::move(config)) {}
+
+    GrpcRequestStatus registerAgent() override {
+        std::unique_lock<std::mutex> lock(m_);
+        if (calls_++ == 0) {
+            return SEND_OK;  // boot-phase registration on the init thread
+        }
+        wedged_ = true;
+        cv_.notify_all();
+        cv_.wait(lock, [this] { return released_; });
+        return SEND_FAIL;
+    }
+
+    bool waitUntilWedged(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(m_);
+        return cv_.wait_for(lock, timeout, [this] { return wedged_; });
+    }
+
+    void release() {
+        std::lock_guard<std::mutex> lock(m_);
+        released_ = true;
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex m_;
+    std::condition_variable cv_;
+    int calls_{0};
+    bool wedged_{false};
+    bool released_{false};
+};
+
+}  // namespace
+
+// The deadline report must name the worker that is still running: here the
+// init thread, wedged in the boot-phase registration.
+TEST(AgentShutdownDeadlineTest, DeadlineReportNamesTheStragglingWorker) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(50));
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto agent = make_wedged_agent(make_test_config(), &wedged);
+    LogCapture log;
+
+    agent->Shutdown();
+    const auto lines = log.lines();
+    EXPECT_NE(lines.find("exceeded the 50ms deadline"), std::string::npos) << lines;
+    EXPECT_NE(lines.find("still running: init"), std::string::npos)
+        << "the wedged init worker must be named; log was:\n" << lines;
+    EXPECT_EQ(lines.find("none (checked"), std::string::npos) << lines;
+
+    std::weak_ptr<AgentImpl> weak = agent;
+    agent.reset();
+    wedged->release();
+    EXPECT_TRUE(wait_for_condition([&] { return weak.expired(); }, std::chrono::seconds(5)));
+}
+
+// The AgentInfo scheduler is owned by GrpcAgent, outside the worker table;
+// when its join is what overruns the deadline the report must still say so
+// instead of listing nothing.
+TEST(AgentShutdownDeadlineTest, DeadlineReportNamesTheAgentInfoScheduler) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(100));
+    auto cfg = make_test_config();
+    cfg->collector.agent_info.refresh_interval_ms = 10;  // first re-send right after boot
+
+    auto wedged_owner = std::make_unique<WedgedSchedulerGrpcAgent>(cfg);
+    auto* wedged = wedged_owner.get();
+    wedged->injectMockStubs();
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
+    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
+    grpc_metadata->injectMockStubs();
+    grpc_span->injectMockStubs();
+    grpc_stat->injectMockStubs();
+    auto agent = AgentImpl::createShared(
+        cfg, std::move(wedged_owner), std::move(grpc_metadata),
+        std::move(grpc_span), std::move(grpc_stat));
+    agent->Start();
+    ASSERT_TRUE(wedged->waitUntilWedged(std::chrono::seconds(5)))
+        << "the scheduler never reached its first re-send";
+    LogCapture log;
+
+    agent->Shutdown();
+    const auto lines = log.lines();
+    EXPECT_NE(lines.find("exceeded the 100ms deadline"), std::string::npos) << lines;
+    EXPECT_NE(lines.find("agent-info scheduler"), std::string::npos)
+        << "the wedged AgentInfo scheduler must be named; log was:\n" << lines;
+
+    std::weak_ptr<AgentImpl> weak = agent;
+    agent.reset();
+    wedged->release();
+    EXPECT_TRUE(wait_for_condition([&] { return weak.expired(); }, std::chrono::seconds(5)));
+}
+
 // Dropping the last reference WITHOUT Shutdown() must be just as bounded:
 // the SharedDeleter runs the teardown under the deadline and, on expiry,
 // defers destruction to the teardown runner instead of joining unbounded.

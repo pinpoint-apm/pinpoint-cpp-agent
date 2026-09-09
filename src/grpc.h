@@ -284,9 +284,23 @@ namespace pinpoint {
         ///        place channel rotation runs (see rotate_channel_if_due()).
         virtual bool readyChannel();
         void closeChannel() {
-            std::unique_lock<std::mutex> lock(channel_mutex_);
-            transport_.store(nullptr);
+            // closing_channel_ brackets the whole call so a shutdown-deadline
+            // report can name a closeChannel() stuck behind channel_mutex_
+            // (held by a readyChannel() wait) as the straggler.
+            closing_channel_.store(true, std::memory_order_relaxed);
+            {
+                std::unique_lock<std::mutex> lock(channel_mutex_);
+                transport_.store(nullptr);
+            }
+            closing_channel_.store(false, std::memory_order_relaxed);
         }
+        /// @brief True while a closeChannel() call is in progress. Lock-free,
+        ///        so the shutdown-deadline reporter may ask from another thread.
+        bool closingChannel() const noexcept {
+            return closing_channel_.load(std::memory_order_relaxed);
+        }
+        /// @brief The client's log name ("agent", "metadata", "span", "stats").
+        const std::string& clientName() const noexcept { return client_name_; }
 
     protected:
         // Non-owning. AgentImpl owns every gRPC client (unique_ptr members) and
@@ -301,6 +315,7 @@ namespace pinpoint {
         // See the stub access invariant in the class comment.
         AtomicSharedPtr<const Transport> transport_{};
         std::mutex channel_mutex_{};
+        std::atomic<bool> closing_channel_{false};
         std::string client_name_{};
         ClientType client_type_;
 
@@ -812,6 +827,13 @@ namespace pinpoint {
         /// @brief Stops the scheduler and wakes a blocked
         /// registerAgentWithRetry(); joins the scheduler thread.
         void stopAgentInfo();
+        /// @brief True from startAgentInfo() until the scheduler thread's body
+        ///        has returned. Lock-free (no agent_info_mutex_, no
+        ///        std::thread::joinable()), so the shutdown-deadline reporter
+        ///        may ask while stopAgentInfo() is join()ing the thread.
+        bool agentInfoRunning() const noexcept {
+            return agent_info_thread_live_.load(std::memory_order_relaxed);
+        }
         /// @brief Sets server metadata included in AgentInfo.
         void setServerMetaData(std::string_view server_info,
                                const std::vector<std::string>& args,
@@ -857,6 +879,10 @@ namespace pinpoint {
         std::atomic<bool> last_register_rejected_{false};
         bool agent_info_running_{false};
         bool agent_info_stop_requested_{false};
+        // Set before the scheduler thread is created, cleared as its body
+        // returns; see agentInfoRunning(). agent_info_running_ above is the
+        // mutex-guarded start/stop bookkeeping and stays true until the join.
+        std::atomic<bool> agent_info_thread_live_{false};
         bool server_meta_data_set_{false};
         ServerMetaData server_meta_data_;
 

@@ -416,7 +416,11 @@ namespace pinpoint {
         std::thread spawn_worker(Worker worker, std::function<void()> body);
         /// @brief Spawns the table entry for @p worker into worker_threads_.
         void spawn_worker(Worker worker);
-        /// @brief Names of the workers whose thread has not returned yet.
+        /// @brief Names everything the shutdown may still be waiting on:
+        /// the table workers whose thread has not returned yet, plus the
+        /// three threads/calls outside the table (AgentInfo scheduler,
+        /// config watcher, a closeChannel() in progress). Only atomic flags
+        /// are read, so it is safe while the teardown runner is join()ing.
         std::string running_worker_names() const;
         /// @brief Performs the actual shutdown work (workers, watcher, logger)
         /// without touching the global_agent singleton. Safe to call from the

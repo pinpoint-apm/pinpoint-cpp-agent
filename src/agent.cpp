@@ -787,9 +787,36 @@ namespace pinpoint {
                 names += specs[i].name;
             }
         }
-        // Empty means the straggler is outside these threads: the config
-        // watcher's stop, the AgentInfo scheduler's join or a closeChannel().
-        return names.empty() ? "none (config watcher, AgentInfo scheduler or channel close)" : names;
+        // The threads teardown_workers() waits on that are not table workers
+        // (owned by GrpcAgent / ConfigFileWatcher, see worker_specs()), and
+        // the channel closes it runs after the joins. Each is an atomic flag
+        // read: this runs while the teardown runner may be join()ing, so
+        // nothing here may lock a mutex or ask std::thread::joinable().
+        const auto add = [&names](const char* what) {
+            names += names.empty() ? "" : ", ";
+            names += what;
+        };
+        if (grpc_agent_->agentInfoRunning()) {
+            add("agent-info scheduler");
+        }
+        if (config_watcher_ && config_watcher_->running()) {
+            add("config watcher");
+        }
+        const GrpcClient* clients[] = {
+            grpc_agent_.get(), grpc_metadata_.get(), grpc_span_.get(),
+            grpc_stat_.get(), grpc_command_.get(),
+        };
+        for (const auto* client : clients) {
+            if (client != nullptr && client->closingChannel()) {
+                names += names.empty() ? "" : ", ";
+                names += client->clientName() + " channel close";
+            }
+        }
+        // Empty means every tracked thread already returned: the remaining
+        // wait is a join() completing or the teardown runner's own exit.
+        return names.empty()
+            ? "none (checked: worker threads, agent-info scheduler, config watcher, channel closes)"
+            : names;
     }
 
     bool AgentImpl::teardown_workers_with_deadline(bool may_defer_destroy) noexcept {
@@ -888,7 +915,7 @@ namespace pinpoint {
         if (keep_alive == nullptr && !may_defer_destroy) {
             try {
                 LOG_WARN("agent shutdown exceeded the {}ms deadline; not shared-owned, "
-                         "waiting for workers to finish; worker threads not yet joined: {}",
+                         "waiting for workers to finish; still running: {}",
                          agent_shutdown_deadline().count(), running_worker_names());
             } catch (...) {}
             runner.join();
@@ -924,7 +951,7 @@ namespace pinpoint {
         try {
             LOG_WARN("agent shutdown exceeded the {}ms deadline; workers keep draining "
                      "in the background and the agent is {} when they finish; "
-                     "worker threads not yet joined: {}",
+                     "still running: {}",
                      agent_shutdown_deadline().count(),
                      defer_destroy ? "destroyed" : "released", worker_names);
         } catch (...) {}

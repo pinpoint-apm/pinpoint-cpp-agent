@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <atomic>
 #include <thread>
 #include <vector>
 #include <sys/types.h>
@@ -565,6 +566,11 @@ namespace pinpoint {
         ///        inherited across fork() is abandoned instead (never joined
         ///        or detached — see abandon_thread()).
         void stop();
+        /// @brief True from start() until the watcher thread's body has
+        ///        returned. Lock-free (no mutex_, no std::thread::joinable()),
+        ///        so the agent's shutdown-deadline reporter may ask while
+        ///        stop() is join()ing the thread.
+        bool running() const noexcept { return running_.load(std::memory_order_relaxed); }
 
     private:
         std::string file_path_;
@@ -573,6 +579,9 @@ namespace pinpoint {
         std::thread thread_;
         std::shared_ptr<StopSignal> stop_;
         pid_t owner_pid_{0};
+        // See running(). Set before the thread is created, cleared as its
+        // body returns.
+        std::atomic<bool> running_{false};
     };
 
     /**

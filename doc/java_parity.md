@@ -1121,6 +1121,19 @@ is the property Java gets from having no list to keep in sync at all.
 Not in the table, deliberately: the AgentInfo re-send scheduler (owned by
 `GrpcAgent`, joined by `stopAgentInfo()`) and the config watcher, both of
 which stay owned by their module the way Java's senders own their executors.
+Folding them into the table would have meant spawning them through
+`spawn_worker()` from an owner that is not the agent, moving thread ownership
+for the sake of one diagnostic. Instead the shutdown-deadline report
+(`running_worker_names()`) asks each owner through a lock-free flag —
+`GrpcAgent::agentInfoRunning()`, `ConfigFileWatcher::running()`,
+`GrpcClient::closingChannel()` — set before the thread (or the
+`closeChannel()` call) starts and cleared as it returns. When the 3-second
+deadline is exceeded the WARN therefore names the straggler ("still running:
+agent-info scheduler") rather than listing three candidates, and an empty
+result says what was checked. Java gets the equivalent for free from
+`shutdownAndAwaitTermination`'s per-executor "shutdown failed" warning; this
+agent has one deadline for the whole teardown, so the report has to name the
+thread itself.
 
 **Revisit if** a worker ever needs to be owned by its gRPC client rather than
 the agent — then the Java shape (client-owned thread, `close()` joins) fits

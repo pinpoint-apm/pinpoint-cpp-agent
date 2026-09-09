@@ -290,7 +290,20 @@ namespace pinpoint {
         // thread.
         const auto tick = std::chrono::milliseconds(config_watcher_poll_interval_ms.load());
 
-        thread_ = std::thread([path = file_path_, reload = reload_, stop, tick]() {
+        // running_ is published before the thread exists and cleared as the
+        // body exits (see running()); if thread creation throws, the rollback
+        // clears it again. The body captures `this` only for that store:
+        // stop() joins the thread before this object is destroyed, and an
+        // inherited (fork) handle never runs here at all.
+        running_.store(true, std::memory_order_relaxed);
+        struct ClearOnExit {
+            std::atomic<bool>& flag;
+            bool armed{true};
+            ~ClearOnExit() { if (armed) flag.store(false, std::memory_order_relaxed); }
+        };
+        ClearOnExit rollback_if_spawn_throws{running_};
+        thread_ = std::thread([this, path = file_path_, reload = reload_, stop, tick]() {
+            ClearOnExit clear_running{running_};
             // Non-throwing overload: the throwing form could escape this thread
             // function (the file may have been removed since the exists() check
             // above), and an exception leaving a std::thread calls
@@ -353,6 +366,8 @@ namespace pinpoint {
                 }
             }
         });
+        // Spawned: clearing the flag is now the thread's job.
+        rollback_if_spawn_throws.armed = false;
     }
 
     void ConfigFileWatcher::requestStop() {

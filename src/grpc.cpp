@@ -2028,7 +2028,20 @@ namespace pinpoint {
         }
         agent_info_stop_requested_ = false;
         agent_info_running_ = true;
-        agent_info_thread_ = std::thread{&GrpcAgent::agent_info_worker, this};
+        // Published before the thread exists and cleared as the body exits
+        // (see agentInfoRunning()); rolled back if thread creation throws.
+        agent_info_thread_live_.store(true, std::memory_order_relaxed);
+        struct ClearOnExit {
+            std::atomic<bool>& flag;
+            bool armed{true};
+            ~ClearOnExit() { if (armed) flag.store(false, std::memory_order_relaxed); }
+        };
+        ClearOnExit rollback_if_spawn_throws{agent_info_thread_live_};
+        agent_info_thread_ = std::thread{[this] {
+            ClearOnExit clear_live{agent_info_thread_live_};
+            agent_info_worker();
+        }};
+        rollback_if_spawn_throws.armed = false;
     }
 
     void GrpcAgent::requestStopAgentInfo() {
