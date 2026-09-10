@@ -938,9 +938,6 @@ protected:
         cfg->span.queue_size = 1024;
         cfg->http.url_stat.enable = true;
         cfg->http.url_stat.limit = 1024;
-        // 4, not the default 3: GrpcAgentRegisterAgentUsesDefaultServerMetaData
-        // asserts this key reaches serviceLib, and only non-default values are
-        // reported there (see to_non_default_config_strings).
         cfg->http.url_stat.trim_path_depth = 4;
         cfg->collector.host = "localhost";
         cfg->collector.agent_port = 9991;
@@ -1018,24 +1015,7 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
     const auto& server_metadata = captured_agent_info.servermetadata();
     EXPECT_EQ(server_metadata.serverinfo(), "C/C++ Application");
     EXPECT_EQ(server_metadata.vmarg_size(), 0);
-    ASSERT_EQ(server_metadata.serviceinfo_size(), 1);
-
-    const auto& service_info = server_metadata.serviceinfo(0);
-    EXPECT_EQ(service_info.servicename(), "Pinpoint Agent");
-
-    auto has_service_lib = [&service_info](const std::string& expected) {
-        for (const auto& service_lib : service_info.servicelib()) {
-            if (service_lib == expected) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    EXPECT_TRUE(has_service_lib("Span.MaxEventDepth=32"));
-    EXPECT_TRUE(has_service_lib("Span.EventChunkSize=10"));
-    EXPECT_TRUE(has_service_lib("Http.CollectUrlStat=true"));
-    EXPECT_TRUE(has_service_lib("Http.UrlStatTrimPathDepth=4"));
+    EXPECT_EQ(server_metadata.serviceinfo_size(), 0);
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentReportsReloadedConfig) {
@@ -1065,18 +1045,8 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentReportsReloadedConfig) {
     EXPECT_EQ(agent.registerAgent(), SEND_OK);
     ASSERT_EQ(captured.size(), 2U);
 
-    auto has_service_lib = [](const v1::PAgentInfo& info, const std::string& expected) {
-        for (const auto& service_info : info.servermetadata().serviceinfo()) {
-            for (const auto& lib : service_info.servicelib()) {
-                if (lib == expected) return true;
-            }
-        }
-        return false;
-    };
     EXPECT_FALSE(captured[0].container());
-    EXPECT_FALSE(has_service_lib(captured[0], "Sampling.PercentRate=12.5"));
     EXPECT_TRUE(captured[1].container());
-    EXPECT_TRUE(has_service_lib(captured[1], "Sampling.PercentRate=12.5"));
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentRacesConfigReload) {
@@ -1126,25 +1096,12 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
     EXPECT_EQ(server_metadata.vmarg(0), "--port=8080");
     EXPECT_EQ(server_metadata.vmarg(1), "--worker=4");
 
-    ASSERT_EQ(server_metadata.serviceinfo_size(), 2);
+    ASSERT_EQ(server_metadata.serviceinfo_size(), 1);
     const auto& service_info = server_metadata.serviceinfo(0);
     EXPECT_EQ(service_info.servicename(), "Libraries");
     ASSERT_EQ(service_info.servicelib_size(), 2);
     EXPECT_EQ(service_info.servicelib(0), "libfoo.so");
     EXPECT_EQ(service_info.servicelib(1), "libbar.so");
-
-    const auto& config_service_info = server_metadata.serviceinfo(1);
-    EXPECT_EQ(config_service_info.servicename(), "Pinpoint Agent");
-    auto has_config_service_lib = [&config_service_info](const std::string& expected) {
-        for (const auto& service_lib : config_service_info.servicelib()) {
-            if (service_lib == expected) {
-                return true;
-            }
-        }
-        return false;
-    };
-    EXPECT_TRUE(has_config_service_lib("Span.MaxEventDepth=32"));
-    EXPECT_TRUE(has_config_service_lib("Http.CollectUrlStat=true"));
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSanitizesInvalidUtf8) {

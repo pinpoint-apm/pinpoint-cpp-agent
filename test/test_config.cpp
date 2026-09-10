@@ -1541,42 +1541,6 @@ Collector:
         << "Config string should not contain plaintext API key";
 }
 
-TEST_F(ConfigTest, NonDefaultConfigStringsTest) {
-    Config config;
-    EXPECT_TRUE(to_non_default_config_strings(config).empty())
-        << "Default config should not produce config strings";
-
-    config.log.level = "debug";
-    config.span.max_event_depth = 32;
-    config.http.url_stat.enable = true;
-    config.sql.enable_sql_stats = true;
-    config.sql.enable_raw_sql_cache = false;
-    config.sql.trace_bind_value = false;
-    config.sql.remove_comments = false;
-    config.uid_version_ = "v4";
-
-    const auto config_strings = to_non_default_config_strings(config);
-    EXPECT_EQ(config_strings.size(), 8);
-
-    auto contains_config = [&config_strings](const std::string& expected) {
-        for (const auto& config_string : config_strings) {
-            if (config_string == expected) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    EXPECT_TRUE(contains_config("UidVersion=v4"));
-    EXPECT_TRUE(contains_config("Log.Level=debug"));
-    EXPECT_TRUE(contains_config("Span.MaxEventDepth=32"));
-    EXPECT_TRUE(contains_config("Http.CollectUrlStat=true"));
-    EXPECT_TRUE(contains_config("Sql.EnableSqlStats=true"));
-    EXPECT_TRUE(contains_config("Sql.EnableRawSqlCache=false"));
-    EXPECT_TRUE(contains_config("Sql.TraceBindValue=false"));
-    EXPECT_TRUE(contains_config("Sql.RemoveComments=false"));
-}
-
 // ========== Integration Tests ==========
 
 TEST_F(ConfigTest, CompleteConfigurationFlowTest) {

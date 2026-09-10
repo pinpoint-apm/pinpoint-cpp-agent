@@ -165,7 +165,6 @@ namespace pinpoint {
         const std::string& getServiceName() const override;
 
         std::shared_ptr<const Config> getConfig() const override;
-        std::vector<std::string> getNonDefaultConfigStrings() const override;
         int64_t getStartTime() const override { return start_time_; }
         /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
         void reloadConfig(std::shared_ptr<const Config> cfg) override;

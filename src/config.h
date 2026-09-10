@@ -621,7 +621,4 @@ namespace pinpoint {
      * fallback semantics.
      */
     std::string to_config_string(const Config& config);
-
-    /// @brief Config entries whose values differ from defaults, as `Key=Value`.
-    std::vector<std::string> to_non_default_config_strings(const Config& config);
 }  // namespace pinpoint

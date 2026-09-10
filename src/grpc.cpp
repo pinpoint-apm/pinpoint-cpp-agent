@@ -1908,15 +1908,6 @@ namespace pinpoint {
             meta_data->set_serverinfo("C/C++ Application");
         }
 
-        auto* config_service_info = meta_data->add_serviceinfo();
-        config_service_info->set_servicename("Pinpoint Agent");
-        // Precomputed per config generation (AgentRuntime), so this send
-        // path — which can run on a straggling worker during process exit —
-        // never enters yaml-cpp.
-        for (const auto& config_string : agent_->getNonDefaultConfigStrings()) {
-            config_service_info->add_servicelib(config_string);
-        }
-
         agent_info->unsafe_arena_set_allocated_servermetadata(meta_data);
     }
 

@@ -439,7 +439,6 @@ namespace pinpoint {
 
         auto rt = std::make_shared<AgentRuntime>();
         rt->config = std::move(cfg);
-        rt->non_default_config_strings = to_non_default_config_strings(*rt->config);
         // Not config-derived: every generation shares the same stats sinks,
         // so spans admitted under different generations aggregate into one
         // place (see AgentRuntime::stats for why spans take them from the
@@ -1365,14 +1364,6 @@ namespace pinpoint {
     // UrlStatEntry complete there.
     void AgentService::recordUrlStat(UrlStatEntry stat, const Config& /*config*/) const {
         recordUrlStat(std::move(stat));
-    }
-
-    std::vector<std::string> AgentService::getNonDefaultConfigStrings() const {
-        return to_non_default_config_strings(*getConfig());
-    }
-
-    std::vector<std::string> AgentImpl::getNonDefaultConfigStrings() const {
-        return runtime_.load_cached_ref()->non_default_config_strings;
     }
 
     void AgentImpl::recordUrlStat(UrlStatEntry stat) const {

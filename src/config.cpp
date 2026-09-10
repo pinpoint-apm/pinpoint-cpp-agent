@@ -1128,57 +1128,6 @@ namespace pinpoint {
         return nullptr;
     }
 
-    namespace {
-        // Flattens the nested map emitted by to_config_string() into
-        // ("Dotted.Key", "<emitted value>") pairs in document order.
-        void flatten_config(const YAML::Node& node, const std::string& prefix,
-                            std::vector<std::pair<std::string, std::string>>& out) {
-            for (const auto& kv : node) {
-                auto key = kv.first.as<std::string>();
-                if (!prefix.empty()) {
-                    key = absl::StrCat(prefix, ".", key);
-                }
-                if (kv.second.IsMap()) {
-                    flatten_config(kv.second, key, out);
-                } else {
-                    YAML::Emitter emitter;
-                    emitter << YAML::Flow << kv.second;
-                    out.emplace_back(std::move(key), emitter.c_str());
-                }
-            }
-        }
-    }
-
-    std::vector<std::string> to_non_default_config_strings(const Config& config) {
-        // Diffing against a default-constructed Config keeps this list in
-        // lockstep with to_config_string(): a field added there is reported
-        // here automatically. Identity and endpoint fields are excluded —
-        // they are always explicitly set, so reporting them as "non-default"
-        // would be noise.
-        static constexpr std::string_view always_set[] = {
-            "ApplicationName", "AgentName", "ServiceName", "ApiKey",
-            "Enable", "IsContainer", "Collector.Host",
-            "Collector.AgentPort", "Collector.SpanPort", "Collector.StatPort",
-        };
-
-        std::vector<std::pair<std::string, std::string>> current, defaults;
-        flatten_config(YAML::Load(to_config_string(config)), "", current);
-        flatten_config(YAML::Load(to_config_string(Config{})), "", defaults);
-        const std::unordered_map<std::string, std::string> default_values(defaults.begin(), defaults.end());
-
-        std::vector<std::string> config_strings;
-        for (const auto& [key, value] : current) {
-            if (std::find(std::begin(always_set), std::end(always_set), key) != std::end(always_set)) {
-                continue;
-            }
-            const auto it = default_values.find(key);
-            if (it == default_values.end() || it->second != value) {
-                config_strings.push_back(absl::StrCat(key, "=", value));
-            }
-        }
-        return config_strings;
-    }
-
     std::string to_config_string(const Config& config) {
         // Built as a node tree rather than emitted directly: yaml-cpp keeps map
         // entries in insertion order, so the table order still defines the
