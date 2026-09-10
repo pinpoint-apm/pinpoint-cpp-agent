@@ -115,6 +115,12 @@ namespace pinpoint {
         /// Idempotent: the teardown paths call it more than once, and the
         /// last call is what closes the file a straggler reopened.
         void shutdown();
+        /// @brief Shuts down only if no sink/file reconfiguration happened
+        ///        since @p revision was captured.
+        void shutdown(uint64_t revision);
+        uint64_t revision() const noexcept {
+            return revision_.load(std::memory_order_acquire);
+        }
 
         template <typename... Args>
         void logDebug(std::string_view file, int line, fmt::string_view format, Args&&... args) {
@@ -247,6 +253,8 @@ namespace pinpoint {
         // not set one, keeps building its line before taking any lock.
         std::shared_ptr<const LogSink> sink_;
         std::atomic<bool> sink_enabled_{false};
+        // Zero is reserved by shutdown() for its unconditional form.
+        std::atomic<uint64_t> revision_{1};
         mutable std::shared_mutex sink_gate_;
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};

@@ -2001,6 +2001,24 @@ TEST_F(StartAgentTest, StartAgentAgainKeepsTheRunningAgentsLogSink) {
         << "a repeated StartAgent() must leave the running agent's sink installed";
 }
 
+TEST_F(StartAgentTest, LogSinkCanShutdownDuringRepeatedStart) {
+    auto agent = install_mock_agent(make_test_config_for_create_agent());
+    ASSERT_TRUE(agent->Enable());
+
+    std::atomic<bool> shutdown_called{false};
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (std::string_view(message).find("called again") != std::string_view::npos) {
+            shutdown_called = true;
+            GlobalAgent()->Shutdown();
+        }
+    });
+
+    set_config_string(kBaseConfigYaml);
+    EXPECT_TRUE(StartAgent());
+    EXPECT_TRUE(shutdown_called);
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr);
+}
+
 // A failed StartAgent() must drop the host sink it installed before parsing
 // the config: no agent is published, so pt_agent_shutdown() reaches the noop
 // agent and a pure-C host has no other way to detach it. Leaving it would call
@@ -2446,6 +2464,46 @@ TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
     EXPECT_NE(returned_impl.get(), dead_agent.get())
         << "an init-failed agent must never be kept as the running agent";
     EXPECT_FALSE(returned_impl->initFailed());
+}
+
+TEST_F(StartAgentTest, ReplacingInitFailedAgentKeepsNewLogSink) {
+    set_global_agent(make_init_failed_agent(make_test_config_for_create_agent()));
+
+    std::atomic<int> marker_calls{0};
+    options_.log_sink = [&](const char*, const char* message) {
+        if (std::string_view(message).find("replacement-marker") != std::string_view::npos) {
+            ++marker_calls;
+        }
+    };
+    set_config_string(kBaseConfigYaml);
+
+    ASSERT_TRUE(StartAgent());
+    LOG_WARN("replacement-marker");
+    EXPECT_EQ(marker_calls.load(), 1);
+}
+
+TEST_F(StartAgentTest, OldTeardownDoesNotCloseNewLogSink) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(30));
+    WedgedRegisterGrpcAgent* wedged = nullptr;
+    auto old_agent = make_wedged_agent(make_test_config(), &wedged);
+    old_agent->Shutdown();
+    std::weak_ptr<AgentImpl> old_weak = old_agent;
+    old_agent.reset();
+
+    std::atomic<int> marker_calls{0};
+    options_.log_sink = [&](const char*, const char* message) {
+        if (std::string_view(message).find("new-agent-marker") != std::string_view::npos) {
+            ++marker_calls;
+        }
+    };
+    set_config_string(kBaseConfigYaml);
+    ASSERT_TRUE(StartAgent());
+
+    LOG_WARN("new-agent-marker-before");
+    wedged->release();
+    ASSERT_TRUE(wait_for_condition([&] { return old_weak.expired(); }, std::chrono::seconds(5)));
+    LOG_WARN("new-agent-marker-after");
+    EXPECT_EQ(marker_calls.load(), 2);
 }
 
 TEST_F(StartAgentTest, ReloadConfigAppliesMultipleTimes) {

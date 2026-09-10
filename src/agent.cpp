@@ -49,7 +49,9 @@ namespace pinpoint {
         // AtomicSharedPtr below, so per-request lookups cannot contend with a
         // create/reload that holds this mutex across make_config()'s file I/O
         // and YAML parsing.
-        std::mutex global_agent_mutex;
+        // Recursive because the documented host log sink may call Shutdown()
+        // while StartAgent() is logging under this writer lock.
+        std::recursive_mutex global_agent_mutex;
 
         // Heap-allocated and never destroyed so its own static destruction
         // cannot release the last AgentImpl: tearing the agent down during
@@ -94,7 +96,7 @@ namespace pinpoint {
         void atexit_shutdown_hook() noexcept {
             std::shared_ptr<AgentImpl> agent;
             try {
-                std::lock_guard<std::mutex> lock(global_agent_mutex);
+                std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
                 agent = global_agent().load();
             } catch (...) {}
             if (agent) {
@@ -843,6 +845,7 @@ namespace pinpoint {
             // stragglers never finish.
             std::shared_ptr<AgentImpl> keep_alive;
             bool delete_when_done{false};
+            uint64_t logger_revision{Logger::getInstance().revision()};
             std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
         };
 
@@ -862,14 +865,15 @@ namespace pinpoint {
                 }
                 state->cv.notify_all();
                 if (abandoned) {
-                    // Shutdown clears the host sink, but a configured file
-                    // can reopen for these final worker diagnostics.
+                    // Shutdown clears the old host sink, but a configured file
+                    // can reopen for these final worker diagnostics. Close it
+                    // only if no newer agent reconfigured the global logger.
                     try {
                         LOG_INFO("agent shutdown: background teardown finished {}ms after shutdown began",
                                  std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - state->started).count());
                     } catch (...) {}
-                    try { shutdown_logger(); } catch (...) {}
+                    try { Logger::getInstance().shutdown(state->logger_revision); } catch (...) {}
                 }
                 if (delete_when_done) {
                     // Deferred destroy: the SharedDeleter skipped destruction
@@ -1156,7 +1160,7 @@ namespace pinpoint {
         // Shutdown() was reached through a raw pointer or reference.
         std::shared_ptr<AgentImpl> self;
         try {
-            std::lock_guard<std::mutex> lock(global_agent_mutex);
+            std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
             self = global_agent().load();
             if (self.get() == this) {
                 global_agent().store(nullptr);
@@ -1680,7 +1684,7 @@ namespace pinpoint {
     // surface as a false return, never as an exception in the host
     // application.
     bool StartAgent(const AgentOptions& options) try {
-        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
 
         auto agent = global_agent().load();
 
@@ -1694,13 +1698,9 @@ namespace pinpoint {
             return true;
         }
 
-        // Before anything that can log, so the host's own log pipeline also
-        // gets the refusals and configuration errors below — those are exactly
-        // the lines a host debugging a silent agent needs. An options object
-        // without a sink clears any previous one, which is what a fresh start
-        // means.
-        Logger::getInstance().setSink(options.log_sink);
-
+        bool inherited_agent = false;
+        bool init_failed_agent = false;
+        bool replaced_agent = false;
         if (agent != nullptr) {
             // A global agent inherited across fork() is unusable here (its
             // threads and gRPC runtime live in the parent), and a fresh agent
@@ -1709,9 +1709,7 @@ namespace pinpoint {
             // grpc_init. Refuse loudly — the master process must not call
             // StartAgent() before forking.
             if (!agent->ownedByThisProcess()) {
-                LOG_ERROR("StartAgent() refused: the global agent was started in another process "
-                          "(a master must not start an agent before fork()); tracing stays "
-                          "disabled in this process");
+                inherited_agent = true;
                 // Evict the inherited handle so GlobalAgent() degrades to the
                 // noop agent from now on, matching the message above. Dropping
                 // what may be the last reference is safe: destruction in a
@@ -1720,23 +1718,19 @@ namespace pinpoint {
                 // gRPC clients instead of touching them.
                 global_agent().store(nullptr);
                 agent.reset();
-                return false;
-            }
-
-            // Neither a shut-down agent nor one whose async init failed is
-            // restartable: drop it from the singleton and build a fresh one.
-            // (Clearing it here also keeps GlobalAgent() degrading to the noop
-            // agent if the rebuild fails.) Resetting what may be the last
-            // reference tears the dead agent down through its SharedDeleter,
-            // joining any workers a partial initialization spawned.
-            if (agent->initFailed()) {
-                LOG_WARN("global agent failed to initialize; replacing it with a new agent");
             } else {
-                LOG_WARN("global agent is shut down; replacing it with a new agent");
+                // Neither a shut-down agent nor one whose async init failed is
+                // restartable: drop it before installing the next log sink, so
+                // its teardown cannot clear the replacement's callback.
+                init_failed_agent = agent->initFailed();
+                replaced_agent = true;
+                global_agent().store(nullptr);
+                agent.reset();
             }
-            global_agent().store(nullptr);
-            agent.reset();
         }
+
+        // Install the new sink after the previous agent has released its own.
+        Logger::getInstance().setSink(options.log_sink);
 
         // Every failure below must drop the host sink installed above: with
         // no agent published, pt_agent_shutdown() reaches the noop agent and
@@ -1752,6 +1746,18 @@ namespace pinpoint {
                 }
             }
         } sink_guard;
+
+        if (inherited_agent) {
+            LOG_ERROR("StartAgent() refused: the global agent was started in another process "
+                      "(a master must not start an agent before fork()); tracing stays "
+                      "disabled in this process");
+            return false;
+        }
+        if (init_failed_agent) {
+            LOG_WARN("global agent failed to initialize; replacing it with a new agent");
+        } else if (replaced_agent) {
+            LOG_WARN("global agent is shut down; replacing it with a new agent");
+        }
 
         auto cfg = make_config(options);
         if (!cfg || !cfg->check()) {
@@ -1792,12 +1798,12 @@ namespace pinpoint {
     }
 
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {
-        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
         global_agent().store(std::move(agent));
     }
 
     void reset_global_agent() {
-        std::lock_guard<std::mutex> lock(global_agent_mutex);
+        std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
         global_agent().store(nullptr);
     }
 
