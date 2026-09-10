@@ -37,16 +37,15 @@ namespace pinpoint {
     /**
     * @brief Hard memory cap on the SQL text the normalizer will process.
     *
-    * Not a Java-parity value and not the metadata cap: like Java, the whole
-    * statement is normalized and the result is the SQL id/UID cache key in
-    * full, and only the copy that travels in PSqlMetaData.sql is abbreviated
+    * This is not the metadata cap: the whole statement is normalized and the
+    * result is the SQL id/UID cache key in full; only the copy that travels
+    * in PSqlMetaData.sql is abbreviated
     * (kMaxSqlMetaLength). This cap exists purely so a pathological
     * multi-megabyte statement cannot make one span allocate without bound.
     *
     * A statement over the cap is dropped whole (no annotation, no SQL count),
     * never cut: a cut landing inside a literal changes the normalized text,
-    * and with it the SQL id/UID, away from what another agent computes for
-    * the same statement. See doc/java_parity.md.
+    * and with it the SQL id/UID.
     */
     inline constexpr size_t kMaxNormalizedSqlLength = 1024 * 1024;
 
@@ -54,16 +53,14 @@ namespace pinpoint {
     * SQL normalizer for APM tracing. Replaces numeric literals with indexed
     * placeholders (0#, 1#, ...) and string literals with '0$', '1$', ...,
     * optionally strips comments, and extracts both literal kinds in order
-    * (comma-separated). Byte-compatible with the Java agent's
-    * DefaultSqlNormalizer: the output is the SQL id/UID cache key.
+    * (comma-separated). The output is the SQL id/UID cache key.
     */
     class SqlNormalizer {
     public:
         /// @p max_sql_length has no default on purpose: the agent passes
         /// kMaxNormalizedSqlLength, and a silently smaller limit would drop
         /// statements the agent would have kept. Comments are removed by
-        /// default, matching the Java agent (DefaultJdbcOption.removeComments
-        /// =true). Nothing is put in their place — again like Java.
+        /// default and are not replaced.
         explicit SqlNormalizer(size_t max_sql_length, bool remove_comments = true);
         ~SqlNormalizer() = default;
 
@@ -84,7 +81,7 @@ namespace pinpoint {
 
         /**
         * Recomputes the "number token start enabled" flag after a regular
-        * character, mirroring Java's ParserContext.numberTokenStartEnable. A
+        * character. A
         * digit counts as a numeric literal only while the flag is enabled, so
         * a digit following an identifier character (the '1' in "col1") is left
         * alone. @p next_c covers the '$' positional-placeholder case, for which

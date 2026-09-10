@@ -91,9 +91,7 @@ namespace pinpoint {
      * production code. AgentStats owns one instance and delegates
      * addActiveSpan/dropActiveSpan/collectActiveRequests to it.
      *
-     * There is deliberately no size cap. Java's DefaultActiveTraceRepository
-     * evicts past maximumSize=10240, but it stores copies in a map, so any
-     * entry may be discarded. Here the nodes are owned by the spans and only
+     * There is deliberately no size cap. Here the nodes are owned by the spans and only
      * linked into the shard lists: the registry unlinking one on its own
      * would race the owner's drop and break the linked_ handshake (add's
      * release / drop's acquire). Refusing an add is not an option either —
@@ -216,8 +214,7 @@ namespace pinpoint {
                 std::lock_guard<std::mutex> lock(shard.mutex_);
                 for (const auto* node = shard.head_; node != nullptr; node = node->next_) {
                     auto active_time = sample_time_ms - node->start_time_;
-                    // Inclusive upper bounds, as in Java's BaseHistogramSchema
-                    // (elapsedTime <= slotTime): a span at exactly 1000ms is
+                    // Inclusive upper bounds: a span at exactly 1000ms is
                     // still "fast".
                     if (active_time <= 1000) {
                         buckets[0]++;

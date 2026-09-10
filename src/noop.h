@@ -173,8 +173,7 @@ namespace pinpoint {
         // An unsampled span records nothing and is never sent, but it still
         // produces a URL stat entry — so an error has to fail that entry, or
         // the failure rate is structurally biased toward zero on the path that
-        // carries most of the traffic when sampling is on. Java's
-        // DisableSpanRecorder.recordException does the same.
+        // carries most of the traffic when sampling is on.
         void SetError(std::string_view error_message) override { markError("Error", error_message); }
         void SetError(std::string_view error_name, std::string_view error_message) override {
             markError(error_name, error_message);

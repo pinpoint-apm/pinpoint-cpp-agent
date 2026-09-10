@@ -51,13 +51,11 @@ namespace pinpoint {
         template<class... Ts>
         overloaded(Ts...) -> overloaded<Ts...>;
 
-        // Java SpanMessageMapper.DEFAULT_END_POINT / DEFAULT_REMOTE_ADDRESS:
-        // an accept event whose endpoint or remote address was never set goes
+        // An accept event whose endpoint or remote address was never set goes
         // out as "UNKNOWN", not as an empty string. The distinction is
         // collector-visible — the server UI renders an empty caller address as
         // a blank cell, while "UNKNOWN" reads as "the agent could not tell".
-        // Only PAcceptEvent gets the default in Java; PSpanChunk.endPoint and
-        // PMessageEvent.endPoint keep their empty value, so neither is touched.
+        // PSpanChunk.endPoint and PMessageEvent.endPoint keep their empty value.
         constexpr std::string_view kUnknownAddress = "UNKNOWN";
 
         std::string_view or_unknown(const std::string& value) {
@@ -202,10 +200,7 @@ namespace pinpoint {
                 // Only when there is a name to fall back to: NewSpanEvent("")
                 // leaves both the id and the name empty, and an ANNOTATION_API
                 // carrying an empty string is worse than none — the collector
-                // shows a blank api instead of the caller's service type. Go
-                // skips the fallback on an empty operationName and Java's
-                // AbstractRecorder.recordApi records nothing for a null
-                // descriptor; match them.
+                // shows a blank api instead of the caller's service type.
                 build_string_annotation(span_event->add_annotation(), ANNOTATION_API, operation, arena);
             }
 
@@ -277,8 +272,7 @@ namespace pinpoint {
             agent_stat->unsafe_arena_set_allocated_totalthread(total_thread);
 
             // Already the uncollected sentinel when the platform reading
-            // failed (see AgentStatsSnapshot::open_fd_count_), so it travels
-            // as-is; Java's AgentStatCollector sends the field the same way.
+            // failed (see AgentStatsSnapshot::open_fd_count_), so it travels as-is.
             auto* file_descriptor = google::protobuf::Arena::Create<v1::PFileDescriptor>(arena);
             file_descriptor->set_openfiledescriptorcount(stat.open_fd_count_);
             agent_stat->unsafe_arena_set_allocated_filedescriptor(file_descriptor);
@@ -288,10 +282,8 @@ namespace pinpoint {
             // A histogram with no samples goes out as an empty message rather
             // than eight zero buckets. build_each_url_stat calls this for the
             // failed histogram of every URI, and most URIs never fail, so the
-            // zeroes would be the bulk of a PAgentUriStat. Java maps an empty
-            // one to PUriHistogram.getDefaultInstance() (UriStatMapper.java:63-69)
-            // and Go returns &pb.PUriHistogram{} (grpc.go:1729-1731). The
-            // message itself is still set by the caller — an absent field is
+            // zeroes would be the bulk of a PAgentUriStat. The message itself
+            // is still set by the caller — an absent field is
             // not what the collector expects.
             if (url_histogram.empty()) {
                 return;

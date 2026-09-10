@@ -46,8 +46,8 @@ namespace pinpoint {
 
     int64_t generate_next_span_id(const int64_t span_id, const int64_t parent_span_id,
                                   const std::function<int64_t()>& rand_source) {
-        // Java SpanId.createSpanId/nextSpanID: redraw instead of masking the
-        // value, so the result stays a uniform 64-bit draw. A redraw is a
+        // Redraw instead of masking the value, so the result stays a uniform
+        // 64-bit draw. A redraw is a
         // 3-in-2^64 event, so this is a loop only in principle.
         while (true) {
             const auto id = rand_source();
@@ -71,7 +71,7 @@ namespace pinpoint {
 
     int64_t generate_span_id() {
         // A root span has no context to collide with, so only the NULL
-        // sentinel is excluded (Java SpanId.newSpanId()).
+        // sentinel is excluded.
         return generate_next_span_id(kNullSpanId, kNullSpanId);
     }
 
@@ -384,10 +384,8 @@ namespace pinpoint {
         // The UID travels on the wire and is the collector's key, so its bytes
         // must not depend on the host's byte order. Take the hash's two 64-bit
         // halves and serialize them little-endian instead of letting
-        // MurmurHash3 store the host representation: that is the layout Guava's
-        // Hashing.murmur3_128().hashBytes(...).asBytes() produces for the Java
-        // agent (see UidGenerator.Murmur), and the one every existing
-        // little-endian build already emits.
+        // MurmurHash3 store the host representation. Existing little-endian
+        // builds already emit this layout.
         uint64_t halves[2] = {0, 0};
         MurmurHash3_x64_128(sql.data(), length, kMurmurHashSeed, halves);
 

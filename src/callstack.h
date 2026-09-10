@@ -45,8 +45,7 @@ namespace pinpoint {
          *        (PException.exceptionClassName). Empty falls back to the top
          *        frame's module in the metadata builder.
          * @param error_time Start time (epoch ms) of the span event the
-         *        exception belongs to, matching Java's ExceptionWrapper
-         *        startTime. 0 stamps the wall clock instead.
+         *        exception belongs to. 0 stamps the wall clock instead.
          */
         CallStack(std::string_view error_message, std::string_view error_name = {}, int64_t error_time = 0)
             : error_message_(abbreviateString(error_message, kMaxErrorMessageLength)),
@@ -111,9 +110,7 @@ namespace pinpoint {
         // paying for kMaxFrames when stacks are shallow.
         static constexpr size_t kInitialFrameCapacity = 16;
         static constexpr size_t kMaxFrameStringLength = 1024;
-        // PException.exceptionMessage cap, matching Java's
-        // profiler.exceptiontrace.errormessage.max default (2048) passed to
-        // StringUtils.abbreviate(): over the cap the message ends in
+        // PException.exceptionMessage cap. Over the cap the message ends in
         // "...(original length)" rather than being cut silently. Not applied
         // to error_name_, where a suffix would corrupt exceptionClassName.
         static constexpr size_t kMaxErrorMessageLength = 2048;
@@ -137,8 +134,8 @@ namespace pinpoint {
          * @brief Wraps a call stack, optionally joining an existing chain.
          *
          * @param callstack Captured frames.
-         * @param chain_id Id of the exception chain this call stack continues
-         *        (Java's per-context exceptionId). 0 starts a new chain, which
+         * @param chain_id Id of the exception chain this call stack continues.
+         *        0 starts a new chain, which
          *        generates the next id.
          */
         Exception(std::unique_ptr<CallStack> callstack, int64_t chain_id = 0)
@@ -148,12 +145,9 @@ namespace pinpoint {
         int64_t getId() const { return id_; }
         /// @brief Returns the depth sent as PException.exceptionDepth.
         ///
-        /// Java's ExceptionWrapperFactory and the Go agent's cause walk number
-        /// a chain 0 (the exception), 1 (its cause), 2 ... This agent has no
-        /// way to tell which recorded call stack caused which - every link is
-        /// one explicit SetError call - so the chain is flat: every link is
-        /// depth 0. Kept as a method so the wire builder does not encode that
-        /// decision itself.
+        /// This agent cannot identify causes across explicit SetError calls, so
+        /// a chain is flat: every link is depth 0. Kept as a method so the wire
+        /// builder does not encode that decision itself.
         int32_t getDepth() const { return 0; }
         /// @brief Returns a reference to the captured call stack.
         const CallStack& getCallStack() const { return *callstack_; }

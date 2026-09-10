@@ -24,7 +24,7 @@
 namespace pinpoint {
 
     /**
-     * @brief Agent self-identity version, mirroring Java's NameVersion
+     * @brief Agent self-identity version.
      *        (config key "pinpoint.modules.uid.version").
      *
      * v1 and v3 both produce an ObjectName with version 1 (protocol.version 100);
@@ -37,7 +37,7 @@ namespace pinpoint {
     NameVersion parse_name_version(std::string_view value);
 
     namespace object_name {
-        // Length limits, identical to Java PinpointConstants. Lengths are measured
+        // Length limits. Lengths are measured
         // in bytes; since the allowed charset is ASCII-only ([a-zA-Z0-9._-]), byte
         // length always equals character count for any valid id.
         constexpr size_t AGENT_ID_MAX_LEN = 24;
@@ -47,7 +47,7 @@ namespace pinpoint {
         constexpr size_t APPLICATION_NAME_MAX_LEN_V3 = SERVICE_NAME_MAX_LEN; // 254
         constexpr size_t AGENT_NAME_MAX_LEN_V4 = SERVICE_NAME_MAX_LEN;       // 254
 
-        // ObjectName versions (Java ObjectName.VERSION_V1 / VERSION_V4).
+        // ObjectName protocol versions.
         constexpr int VERSION_V1 = 1;
         constexpr int VERSION_V4 = 4;
     }
@@ -60,15 +60,13 @@ namespace pinpoint {
 
     /**
      * @brief Generate an RFC 9562 UUID version 7 (Unix epoch ms based, time-ordered).
-     *        Compatible with Java's fasterxml TimeBasedEpochGenerator.
      */
     Uuid generate_uuid_v7();
 
     /**
      * @brief Encode a UUID into a 22-character URL-and-filename-safe Base64 string
-     *        (RFC 4648 section 5, padding removed). Byte-compatible with Java's
-     *        Base64Utils.encode(UUID): msb big-endian into bytes[0..7], lsb into
-     *        bytes[8..15], then URL-safe base64 (absl::WebSafeBase64Escape).
+     *        (RFC 4648 section 5, padding removed): msb big-endian into
+     *        bytes[0..7], lsb into bytes[8..15], then URL-safe base64.
      */
     std::string base64_encode_uuid(const Uuid& uuid);
 
@@ -80,8 +78,7 @@ namespace pinpoint {
     std::optional<Uuid> base64_decode_uuid(std::string_view value);
 
     /**
-     * @brief Validate an id, matching Java IdValidateUtils.validateId.
-     *        Allowed characters: [a-zA-Z0-9], '.', '-', '_'. Empty fails.
+     * @brief Validate an id. Allowed characters: [a-zA-Z0-9], '.', '-', '_'. Empty fails.
      *        Length is the byte length and must be in (0, max_len].
      */
     bool validate_id(std::string_view value, size_t max_len);

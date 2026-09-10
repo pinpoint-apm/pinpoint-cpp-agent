@@ -222,8 +222,7 @@ namespace pinpoint {
 
     /**
      * @brief Span event handed out when the span's event stack has overflowed
-     *        (max depth/sequence reached), mirroring the Java agent's
-     *        DisableSpanEvent: nothing is recorded locally, but InjectContext
+     *        (max depth/sequence reached): nothing is recorded locally, but InjectContext
      *        still writes the full trace context so the distributed trace is
      *        not cut at the overflow point — overflow is a profiling depth
      *        limit, not a sampling decision.
@@ -252,9 +251,6 @@ namespace pinpoint {
         // string, no annotation, no buffered call stack — but the failure
         // still reaches the trace root, so a transaction whose only exception
         // happened past the depth/sequence limit is not reported healthy.
-        // Java does the same: traceBlockBegin past the call-stack limit hands
-        // back a DisableSpanEventRecorder whose recordException still calls
-        // recordError on the shared trace root.
         void SetError(std::string_view error_message) override { SetError("Error", error_message); }
         void SetError(std::string_view error_name, std::string_view error_message) override;
         // The call-stack overloads drop the frames (buffering them is the

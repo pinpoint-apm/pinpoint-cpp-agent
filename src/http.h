@@ -156,7 +156,7 @@ namespace pinpoint {
          * Every known header is inspected and each valid one appends its own
          * annotation, so a request that passed through two proxies records
          * two. A header whose `t=` is missing or non-positive is discarded
-         * whole (see doc/java_parity.md).
+         * whole.
          *
          * @param user_header_names Header names holding a user-defined proxy
          *        header (`Http.Server.ProxyUserHeaderNames`). Defaulted so the

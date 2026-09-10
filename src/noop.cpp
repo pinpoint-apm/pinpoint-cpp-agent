@@ -279,8 +279,8 @@ namespace pinpoint {
             LOG_WARN_THROTTLED("span is already finished");
             return;
         }
-        // Same first-wins policy as SpanImpl::recordUrlStat: the pattern is
-        // Java's CAS, the method and status code are the last caller's.
+        // Same first-wins policy as SpanImpl::recordUrlStat: the method and
+        // status code are owned by the last caller.
         if (!force && url_stat_ && !url_stat_->url_pattern_.empty()) {
             url_stat_->method_.assign(method);
             url_stat_->status_code_ = status_code;

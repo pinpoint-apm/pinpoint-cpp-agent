@@ -25,10 +25,7 @@ namespace pinpoint {
      * @brief Token bucket rate limiter used for sampling throughput limits.
      *
      * Capacity is `tps` tokens and the refill rate is `tps` tokens per second
-     * off a monotonic clock, which is what the Java agent gets from Guava's
-     * `RateLimiter.create(tps)` (SmoothBursty, one second of burst) and the Go
-     * agent from `rate.NewLimiter(rate.Every(time.Second/tps), tps)`. A fixed
-     * wall-clock window would instead admit up to 2*tps across a second
+     * off a monotonic clock. A fixed wall-clock window would instead admit up to 2*tps across a second
      * boundary and tie the window to wall time.
      *
      * The whole bucket is one 64-bit atomic: the theoretical arrival time of
@@ -73,8 +70,7 @@ namespace pinpoint {
 
     private:
         // Nanoseconds per token. 0 only for tps == 0, which allow() rejects
-        // outright: zero tokens per second literally admits nothing, and Guava
-        // and Go's rate.Every() will not build such a limiter at all. Note this
+        // outright: zero tokens per second literally admits nothing. Note this
         // is NOT the config-level "0 = unlimited" of Sampling.*Throughput and
         // CallstackTraceNewThroughput — the call sites spell unlimited as a
         // null limiter and never construct RateLimiter(0).

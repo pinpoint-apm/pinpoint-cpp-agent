@@ -76,9 +76,7 @@ namespace pinpoint {
      * presence, not their contents. A peer that sends a trace id alone
      * describes a hop this agent cannot place: extracting it would record a
      * non-root span whose parent is in no trace, and spend a
-     * continue-sampler slot doing it. Java runs the same checks in order and
-     * starts a new trace as soon as one fails
-     * (`DefaultTraceHeaderReader.java:54-70`).
+     * continue-sampler slot doing it. A new trace starts as soon as one fails.
      *
      * `Pinpoint-Sampled: s0` is handled by NewSpan before this is reached, and
      * `Pinpoint-Flags` takes part in no decision (absent means 0).
@@ -167,11 +165,8 @@ namespace pinpoint {
         const std::string& getRemoteAddr() const { return remote_addr_set_ ? remote_addr_ : acceptor_host_; }
 
         void setAcceptorHost(std::string_view acceptor_host) { acceptor_host_ = acceptor_host; }
-        // Java ServerRequestRecorder.recordParentInfo prefers the Pinpoint-Host
-        // header and falls back to requestAdaptor.getAcceptorHost(). Those two
-        // arrive at different times here — the header while the inbound context
-        // is read, the host integration's own value with the request itself — so
-        // the fallback is applied on arrival and must not overwrite the header.
+        // The Pinpoint-Host header takes precedence. The fallback arrives with
+        // request details and must not overwrite it.
         void setAcceptorHostIfAbsent(std::string_view acceptor_host) {
             if (acceptor_host_.empty()) {
                 acceptor_host_ = acceptor_host;
@@ -237,14 +232,12 @@ namespace pinpoint {
         }
         void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
-        /// @brief Java's Shared.maskErrorCode (DefaultShared.java:69-72): ORs
-        /// one ErrorCategory bit into the accumulated mask, so a transaction
+        /// @brief ORs one ErrorCategory bit into the accumulated mask, so a transaction
         /// that failed for several reasons reports all of them.
         void maskErr(int err) { err_.fetch_or(err, std::memory_order_relaxed); }
         int getErr() const { return err_.load(std::memory_order_relaxed); }
 
-        /// @brief Java's Shared.incrementAndGetSqlCount
-        /// (DefaultShared.java:185-187): returns the POST-increment value,
+        /// @brief Returns the post-increment SQL count,
         /// which is what SpanImpl::countSqlExecution compares against
         /// Sql.ErrorCount.
         int incrementAndGetSqlCount() { return sql_count_.fetch_add(1, std::memory_order_relaxed) + 1; }
@@ -430,8 +423,8 @@ namespace pinpoint {
         // with it, so a long-lived span grows by a fixed-size husk per event.
         std::vector<std::unique_ptr<SpanEventImpl>> retired_events_;
         // Handed out instead of a real event while the event stack is
-        // overflowed (Java agent's DisableSpanEvent parity): records nothing
-        // but still injects trace context. One shared instance per span, and
+        // overflowed: records nothing but still injects trace context. One
+        // shared instance per span, and
         // a member by value rather than a lazily-built unique_ptr: the lazy
         // build was a plain read-modify-write of the pointer, so two threads
         // racing the contract (see disabledSpanEvent()) could each install
@@ -543,8 +536,7 @@ namespace pinpoint {
          *                 new root trace, so no inbound header is read:
          *                 adopting an upstream span/parent id here would point
          *                 the root span at a parent that does not exist in
-         *                 this trace. Mirrors Java's `if (!recorder.isRoot())`
-         *                 gate in ServerRequestRecorder.
+         *                 this trace.
          */
         /// @param inbound readInboundTrace()'s verdict, with trace_id already
         ///        resolved by the caller (parsed when continued, generated
@@ -671,9 +663,7 @@ namespace pinpoint {
             std::vector<std::unique_ptr<Exception>> exceptions_;
             // The exception chain currently open on this span, shared by
             // every span event of the span (SpanEventImpl::recordException
-            // reads and writes it). Java keeps this state in the trace's
-            // ExceptionContext and the Go agent per span (span.errorChains);
-            // per span is the widest scope that makes sense here, because the
+            // reads and writes it). Per span is the widest scope that makes sense here, because the
             // chain is sent inside this span's PExceptionMetaData and an
             // async child span has its own buffer (exceptions_) and span id.
             // A span-wide chain is what lets one exception recorded on a
@@ -682,8 +672,7 @@ namespace pinpoint {
             //
             // Id of the span's chain; 0 until the first link is buffered.
             int64_t exception_chain_id_{0};
-            // Java's DISABLED sampling state for the chain: set once it is
-            // refused by the rate limiter or a link cannot be buffered, and
+            // Set once it is refused by the rate limiter or a link cannot be buffered, and
             // never cleared, so the rest of the chain is neither recorded nor
             // charged a second time.
             bool exception_chain_disabled_{false};
@@ -711,36 +700,20 @@ namespace pinpoint {
             bool isStatusFail(int status) const;
             // Single point that writes SpanData::err_: span-level SetError,
             // 5xx status codes, SQL count overflow and SpanEventImpl::SetError
-            // all route here (Java ORs every recorded error into the shared
-            // errorCode).
+            // all route here.
             //
             // The mask lands on the TRACE ROOT, not on this span: only the
             // root's PSpan carries err on the wire (a span chunk has no such
             // field), so an error recorded on an async child would otherwise
-            // reach neither the collector nor the URL stat. This is Java's
-            // TraceRoot.getShared().maskErrorCode(). A child that ends after
-            // the root already flushed its final chunk marks the mask too late
-            // to be sent — the same limit Java has, since both serialize the
-            // PSpan once, at root end: DefaultTrace.close() calls logSpan(),
-            // which stores the PSpan right there (DefaultTrace.java:181-199),
-            // and that is the trace every ordinary entry point builds
-            // (DefaultBaseTraceFactory.java:191, newDefaultTrace).
-            // The one exception is AsyncDefaultTrace, which awaits its last
-            // async child and leaves the store to SpanAsyncStateListener
-            // (AsyncDefaultTrace.java:24-31, SpanAsyncStateListener.java:59);
-            // its entry points are the vert.x-only ones marked
-            // @InterfaceAudience.LimitedPrivate("vert.x")
-            // (DefaultBaseTraceFactory.java:148,161). So this matches Java on
-            // the normal path — deferring the store would go beyond Java, not
-            // close a gap against it.
+            // reach neither the collector nor the URL stat. A child that ends
+            // after the root flushed its final chunk marks the mask too late to
+            // be sent.
             //
             // What lands there is the CATEGORY bit, OR-ed into whatever is
             // already set, so one transaction that hit an exception and
             // returned 5xx reports both causes. A category the operator
             // removed with Span.ErrorMark / Span.ErrorMarkExclude records
-            // nothing at all — not even kUnknown — which is Java's
-            // ConfigurableErrorRecorder.recordError: the mask is applied only
-            // when the category is in the enabled set.
+            // nothing at all — not even kUnknown.
             void markSpanError(ErrorCategory category) {
                 const auto bit = static_cast<int>(category);
                 if ((config_->span.error_mark_mask & bit) == 0) {
@@ -751,7 +724,7 @@ namespace pinpoint {
             // The overload both SetError paths use, so the Span.IgnoreErrors
             // filter is applied in exactly one place. A status code carries
             // no error name or message, so SetStatusCode keeps the plain
-            // overload — Java's ignore handler is throwable-only too.
+            // overload.
             void markSpanError(ErrorCategory category,
                                std::string_view error_name, std::string_view error_message) {
                 if (shouldMarkError(error_name, error_message)) {
@@ -760,13 +733,12 @@ namespace pinpoint {
             }
             // False when the error matches a Span.IgnoreErrors rule: it is
             // still recorded as exceptionInfo, it just does not fail the
-            // transaction (Java's profiler.ignore-error-handler). config_ is
+            // transaction. config_ is
             // never null, so no fallback is needed here.
             bool shouldMarkError(std::string_view error_name, std::string_view error_message) const {
                 return !is_ignored_error(config_->span.ignore_errors, error_name, error_message);
             }
-            // Java's ExceptionChainSampler.isNewSampled(): a NEW exception
-            // chain is admitted only while the agent-wide budget of
+            // A new exception chain is admitted only while the agent-wide budget of
             // Config::callstack_trace_new_throughput chains per second holds.
             // Links continuing an already-admitted chain are never limited, so
             // a cause chain is never recorded half-way. A span created without
@@ -777,17 +749,14 @@ namespace pinpoint {
                 }
                 return runtime_->exception_chain_limiter->allow();
             }
-            // Java's DefaultSqlCountService: a transaction running more than
-            // Sql.ErrorCount SQL statements is marked failed, which is how an
+            // A transaction running more than Sql.ErrorCount SQL statements is
+            // marked failed, which is how an
             // N+1 query pattern surfaces in the UI. An already-failed
-            // transaction is skipped (Java's shared.getErrorCode() != 0
-            // guard), so the counter stops once anything else failed it.
+            // transaction is skipped, so the counter stops once anything else failed it.
             // The count is kept on the TRACE ROOT, so it is one budget per
-            // transaction rather than a fresh one per async span: Java's
-            // DefaultSqlCountService increments the trace root's Shared
-            // (DefaultSqlCountService.java:15-25,
-            // DefaultShared.java:185-187), and the failure it raises lands on
-            // that same SpanData like every other error. traceRootData() is
+            // transaction rather than a fresh one per async span, and the
+            // failure lands on that same SpanData like every other error.
+            // traceRootData() is
             // held by shared_ptr, so a child may count — and fail the root —
             // after the root SpanImpl itself is gone.
             // The name-less markSpanError overload deliberately bypasses

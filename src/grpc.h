@@ -57,8 +57,7 @@ namespace pinpoint {
     /**
      * @brief Build the ordered gRPC metadata header set for a request.
      *
-     * Mirrors Java's ClientHeaderFactoryV1 / ClientHeaderFactoryV4: v1/v3 send
-     * protocol.version=100 (agentname only when present), v4 sends
+     * v1/v3 send protocol.version=100 (agentname only when present); v4 sends
      * protocol.version=400 plus agentname (always), servicename and apikey.
      * A pure function so the per-version header set is unit-testable.
      *
@@ -127,10 +126,8 @@ namespace pinpoint {
         /// collector outage fill it with retries and starve new metadata,
         /// whose drop path releases the cache entry and so re-enqueues the
         /// same item from the next span — a drop-feeds-inflow amplification
-        /// loop (Go's grpc.go metaGrpcTimeOut comment records the same
-        /// failure). Java (HashedWheelTimer) and Go (goroutine + permit)
-        /// keep retries off the send queue entirely; two bounds are the
-        /// equivalent here. Overflow policy: see GrpcMetadata::retry_or_drop.
+        /// loop. Retries stay off the send queue; two bounds enforce that.
+        /// Overflow policy: see GrpcMetadata::retry_or_drop.
         size_t meta_retry_queue_size{1000};
         /// Concurrently in-flight metadata RPCs. Unary sends are pipelined
         /// behind this permit cap instead of serialized one blocking call at
@@ -168,9 +165,8 @@ namespace pinpoint {
         /// suppressed.
         std::chrono::seconds channel_state_log_interval{60};
 
-        /// Stream-stall escalation (see GrpcClient::record_stream_stall):
-        /// Java SimpleStreamState's limitCount / limitTime pair, applied to
-        /// stream write timeouts. A channel rotation is forced once at least
+        /// Stream-stall escalation (see GrpcClient::record_stream_stall),
+        /// applied to stream write timeouts. A channel rotation is forced once at least
         /// `stream_stall_limit_count` consecutive timeouts have been recorded
         /// AND the first of them is at least `stream_stall_limit_time` old.
         /// Both must hold, so one timed-out write never costs a working
@@ -214,8 +210,7 @@ namespace pinpoint {
     const char* channel_state_name(grpc_connectivity_state state) noexcept;
 
     /**
-     * @brief Java IntervalFunction.ofRandomized(interval, factor): a uniform
-     *        draw from [interval * (1 - factor), interval * (1 + factor)].
+     * @brief Uniform draw from [interval * (1 - factor), interval * (1 + factor)].
      *
      * Deliberately not ExponentialBackoff: this jitters a renewal period, not
      * a retry delay — it never escalates or resets. Takes the caller's rng so
@@ -337,8 +332,8 @@ namespace pinpoint {
         int stream_stall_count_{0};
         std::chrono::steady_clock::time_point first_stream_stall_at_{};
         // Ping/stat renewal deadline: the earlier of the configured stream
-        // max age (Java SpanGrpcDataSender's rpc max age) and the current
-        // channel's rotation time. max() while both are disabled. The command
+        // max age and the current channel's rotation time. max() while both are
+        // disabled. The command
         // stream uses the same calculation as a ClientContext deadline.
         std::chrono::steady_clock::time_point stream_expires_at_{
             std::chrono::steady_clock::time_point::max()};
@@ -403,9 +398,7 @@ namespace pinpoint {
                                 std::string_view label = "channel");
 
         /**
-         * @brief One INFO line for a connectivity-state transition, the
-         *        counterpart of the Java agent's ConnectivityStateMonitor
-         *        (AbstractGrpcDataSender), which logs every transition.
+         * @brief One INFO line for a connectivity-state transition.
          *
          * Rate-limited per client through channel_state_reporter_ so a
          * flapping connection cannot flood the log: within one
@@ -472,8 +465,7 @@ namespace pinpoint {
         virtual void create_stub(const std::shared_ptr<grpc::Channel>& channel) = 0;
 
         /**
-         * @brief Channel rotation, the C++ equivalent of the Java agent's
-         *        SubconnectionExpiringLoadBalancer.
+         * @brief Rotates an aged or stalled channel.
          *
          * No-op while `channel_max_age_ms` is 0 or the current transport is
          * younger than its jittered max age, unless the stream-stall limit
@@ -511,8 +503,7 @@ namespace pinpoint {
          * backend behind it stops reading the ping/stat stream. Neither the
          * channel-ready backoff nor age-based rotation notices, so without
          * this the worker reopens stream after stream on the same stalled
-         * backend forever (Java's SimpleStreamState restarts only the stream
-         * too; Go has no counterpart). Once the two-condition limit in
+         * backend forever. Once the two-condition limit in
          * GrpcClientTuning is reached, the next rotate_channel_if_due() —
          * i.e. the readyChannel() that reopens the stream — forces a
          * make-before-break rotation whose successor gets its own connection
@@ -577,8 +568,8 @@ namespace pinpoint {
     ///
     /// `str_val_` is the transmitted copy, abbreviated up front to the cap
     /// its type travels under: kMaxErrorStringLength for an error name
-    /// (PStringMetaData) and kMaxSqlMetaLength for SQL (PSqlMetaData, where
-    /// Java's SqlCacheService abbreviates it). `cache_key_` is the whole
+    /// (PStringMetaData) and kMaxSqlMetaLength for SQL (PSqlMetaData).
+    /// `cache_key_` is the whole
     /// string the id cache stored under, which is what removeCacheError() /
     /// removeCacheSql() evict by. So a queued SQL item holds at most
     /// kMaxSqlMetaLength + the cache key's bytes of SQL instead of twice the
@@ -604,7 +595,7 @@ namespace pinpoint {
     /// @brief Metadata describing a SQL UID.
     ///
     /// `sql_` is the transmitted copy, abbreviated to kMaxSqlMetaLength up
-    /// front (where Java's SqlCacheService abbreviates it). `cache_key_` is
+    /// front. `cache_key_` is
     /// the whole normalized SQL the uid cache stored under, which is what
     /// removeCacheSqlUid() evicts by; it is left empty when the cache bypassed
     /// the statement (Sql.CacheLengthLimit), since there is no entry to evict
@@ -912,8 +903,7 @@ namespace pinpoint {
      * @brief gRPC client that sends span batches to the collector via the
      *        unary @c SendSpanBatch RPC.
      *
-     * Mirrors the Java agent's @c SpanBatchGrpcDataSender; configuration lives
-     * under @c Config::span::batch.
+     * Configuration lives under @c Config::span::batch.
      *
      * - **Batching (size or time bounded).** The worker blocks up to
      *   @c flush_interval_ms for the first chunk, then gathers more until the
@@ -1063,8 +1053,7 @@ namespace pinpoint {
         const v1::PStatMessage* pending_message() const { return msg_; }
 
         /// @brief Sends the ticks the collectors still hold, once, over the
-        /// live stats stream on the way out. See the definition for why this
-        /// exceeds Java and matches the Go agent.
+        /// live stats stream on the way out.
         void flush_url_stats_on_shutdown();
 
     private:

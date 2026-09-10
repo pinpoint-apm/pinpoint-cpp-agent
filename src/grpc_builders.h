@@ -45,8 +45,7 @@ namespace pinpoint {
     // interprets both against the same schema, so they must always agree.
     constexpr int32_t ACTIVE_TRACE_HISTOGRAM_SCHEMA_TYPE = 2;
 
-    // Pinpoint's "this metric was not collected" sentinel, matching the Java
-    // agent's MemoryMetric/GarbageCollectorMetric UNCOLLECTED_VALUE. Sent for
+    // Pinpoint's "this metric was not collected" sentinel. Sent for
     // the PJvmGc fields the C++ agent has no source for (the JVM non-heap
     // pools and the old-generation GC counters). It cannot be expressed by
     // leaving the fields unset: they are proto3 implicit-presence scalars, so

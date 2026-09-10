@@ -55,7 +55,7 @@ namespace pinpoint {
      * back to the raw variants that produced it — so invalidation could only
      * be done wholesale. Resolving the identity per use instead costs one
      * shared-lock lookup in the id/uid cache and keeps one failed send from
-     * touching any other entry. Matches the Go agent's raw cache.
+     * touching any other entry.
      */
     struct PreparedSql {
         std::string parameters;
@@ -778,8 +778,7 @@ namespace pinpoint {
      * SqlUidMetaData row is written exactly once — and that row has a TTL of
      * its own (180 days). A process outliving it would keep emitting UIDs whose
      * SQL text the collector no longer has, and the UI would show empty SQL
-     * until a restart. Expiring on write, as Java does at 168 hours
-     * (profiler.jdbc.sqlcacheexpirehours), re-publishes in time to refresh it.
+     * until a restart. Expiring on write re-publishes it in time to refresh it.
      */
     class SqlUidCache {
     public:
@@ -803,8 +802,7 @@ namespace pinpoint {
          * Statements at or above the length limit are never stored: the UID is
          * a content hash, so recomputing it is free of side effects and yields
          * the same bytes. `found` stays false for them, which makes the caller
-         * re-send the UID metadata on every use — the same trade Java's
-         * UidCache bypass makes.
+         * re-send the UID metadata on every use.
          *
          * @param key Normalized SQL string (no allocation on cache hit).
          * @return Cache result containing UID bytes and whether the entry existed.

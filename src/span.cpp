@@ -366,13 +366,12 @@ namespace pinpoint {
 
     /**
      * @brief Tells whether an event at (depth, sequence) exceeds the per-span
-     * limits, matching Java DefaultCallStack::isOverflow().
+     * limits.
      *
      * `depth` is 1-based (the first event of a span sits at depth 1), so
-     * `depth - 1` is how many events were already on the stack — exactly the
-     * `index` Java compares in `maxDepth < index`, which it evaluates before
-     * the push. `Span.MaxEventDepth` is therefore an allowance of `max + 1`
-     * nesting levels on both agents: `MaxEventDepth: 3` records depth 1..4.
+     * `depth - 1` is how many events were already on the stack. Therefore
+     * `Span.MaxEventDepth` allows `max + 1` nesting levels: `MaxEventDepth: 3`
+     * records depth 1..4.
      * Written as `depth - 1 > max` rather than the equivalent `depth > max + 1`
      * because an unlimited MaxEventDepth (-1) is normalized to INT32_MAX, and
      * `max + 1` would then overflow. The sequence side is exclusive on both
@@ -582,17 +581,13 @@ namespace pinpoint {
         writer.Set(HEADER_PARENT_APP_NAME, agent_->getAppName());
         writer.Set(HEADER_PARENT_APP_TYPE, num(agent_->getAppType()));
         // Sent only when present — i.e. uid.version=v4; v1/v3 leave it empty
-        // and the header is omitted. Mirrors Java DefaultRequestTraceWriter.
+        // and the header is omitted.
         if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
             writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
         }
         // No header is written for the cluster namespace: this agent has no
         // namespace setting, and an empty one is not the same as an absent one
-        // downstream. A Java receiver with profiler.cluster.namespace set runs
-        // DefaultNameSpaceChecker, which passes only on null (no header) or an
-        // exact match — "" fails the equals() and RequestTraceReader falls back
-        // to newTrace(), breaking the trace at this hop. Java's writer likewise
-        // normalizes an unset value to null and skips the header.
+        // downstream: it can break continuation at this hop.
         if (!host.empty()) {
             writer.Set(HEADER_HOST, host);
         }
@@ -604,7 +599,7 @@ namespace pinpoint {
             // No trace id, or a present-but-blank one: nothing upstream to
             // attach to, so this is a new trace. A blank value is peer input
             // this agent chooses to read as "no header" rather than feed to
-            // the parser; see doc/java_parity.md for what Java does with it.
+            // the parser.
             return {};
         }
         // Parsed here, while the view is still valid (Get() only guarantees it
@@ -616,10 +611,9 @@ namespace pinpoint {
         if (trace_id.empty()) {
             return {};
         }
-        // Presence only, exactly like Java's null checks: a value that does not
-        // parse is a broken id on a hop that does exist, which is not the same
-        // as a hop that was never described (see extractContext below and
-        // doc/java_parity.md).
+        // Presence only: a value that does not parse is a broken id on a hop
+        // that does exist, which is not the same as a hop that was never
+        // described (see extractContext below).
         const auto span_id = reader.Get(HEADER_SPAN_ID);
         if (!span_id.has_value()) {
             return {};
@@ -657,9 +651,8 @@ namespace pinpoint {
             // A brand new root trace: nothing upstream belongs to it, so no
             // inbound header is read. Adopting a peer's span/parent id here
             // would record a root span pointing at a parent that does not
-            // exist in this trace. Java gates the same block behind
-            // ServerRequestRecorder's `if (!recorder.isRoot())`. The parent
-            // span id keeps its -1 default, i.e. "no parent".
+            // exist in this trace. The parent span id keeps its -1 default,
+            // i.e. "no parent".
             data_->setSpanId(generate_span_id());
         } else {
             // Both ids were parsed by readInboundTrace() from the same Get()
@@ -701,9 +694,7 @@ namespace pinpoint {
             // request itself — helper::traceServerRequest passes the endpoint
             // to setAcceptorHostIfAbsent(). Filling it in here is not possible:
             // this runs while the span is created, before any request detail is
-            // known. Java's fallback is the same value from the other side
-            // (ServerRequestRecorder.recordParentInfo reads
-            // requestAdaptor.getAcceptorHost()); see doc/java_parity.md.
+            // known.
         }
 
         agent_->getAgentStats().addActiveSpan(active_node_, data_->getSpanId(), data_->getStartTime());
@@ -827,15 +818,14 @@ namespace pinpoint {
         if (runtime_ && !config_->http.url_stat.enable && !config_->enable_callstack_trace) {
             return;
         }
-        // First-wins on the pattern only, like Java: DefaultShared.setUriTemplate
-        // is a null -> value CAS, while the http method and status code are
+        // First-wins on the pattern only, while the HTTP method and status code are
         // plain setters that the last caller owns. A framework that recorded
         // the matched route first must not have it replaced by a later, less
         // precise layer; the status code, though, is legitimately final only
         // at the end of the request. This also pins recordException's
         // url_template (getUrlTemplate) to the first pattern. An empty pattern
-        // stands for "not recorded yet" (Java's null), so a later non-empty
-        // one still fills it in. force is Java's setUriTemplate(value, true).
+        // stands for "not recorded yet", so a later non-empty one still fills
+        // it in. force replaces a recorded pattern.
         if (!force && url_stat_ && !url_stat_->url_pattern_.empty()) {
             url_stat_->method_.assign(method);
             url_stat_->status_code_ = status_code;
@@ -957,8 +947,7 @@ namespace pinpoint {
         url_stat_->end_time_ = data_->getEndTime();
         url_stat_->elapsed_ = data_->getElapsed();
         // A span-event exception (DB/external call) fails the transaction too,
-        // matching Java's URI stat status = (errorCode == 0). Read through the
-        // trace root — only spans that own a url_stat_ get here, so this is
+        // Read through the trace root — only spans that own a url_stat_ get here, so this is
         // data_ itself, but the flag's home is the root either way and an
         // async child that ended first has already marked it.
         url_stat_->failed_ = isStatusFail(url_stat_->status_code_) ||

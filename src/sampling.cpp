@@ -29,9 +29,8 @@ namespace pinpoint {
 
         // The pre-increment value is what gets tested, so the counter starts at
         // 0 and the first request after startup is sampled, then every rate_-th
-        // one after it. Same phase as Java's CountingSampler
-        // (counter.getAndIncrement()); testing the post-increment value instead
-        // would sample requests N, 2N, ... and hide the first request on
+        // one after it. Testing the post-increment value instead would sample
+        // requests N, 2N, ... and hide the first request on
         // low-traffic or test deployments.
         //
         // A config reload restarts this phase only when it actually changes
@@ -53,11 +52,8 @@ namespace pinpoint {
             return false;
         }
 
-        // A full rate is always-sample. Java has no such branch because
-        // PercentRateSampler rejects samplingRate >= MAX and PercentSamplerFactory
-        // hands that case to TrueSampler; the constructor clamp folds it in here
-        // instead, and the admission test below would never fire for it (the
-        // remainder is 0 on every call).
+        // A full rate is always-sample; the admission test below would never
+        // fire for it because the remainder is always 0.
         if (rate_ >= MAX_PERCENT_RATE) {
             return true;
         }
@@ -65,12 +61,11 @@ namespace pinpoint {
         // Relaxed for the same reason as CounterSampler: only the counter
         // value itself matters, not its ordering against other memory.
         //
-        // The admission window is (0, rate_], matching Java's PercentRateSampler
-        // (`remainder > 0 && remainder <= samplingRate`). Testing [0, rate_)
-        // instead samples just as often but shifts the phase by one, so the first
+        // The admission window is (0, rate_]. Testing [0, rate_) instead samples
+        // just as often but shifts the phase by one, so the first
         // transaction after startup (or a Sampling.* reload) is never sampled:
-        // `PercentRate: 50` would admit the 2nd, 4th, ... request where Java
-        // admits the 1st, 3rd, ... Same reasoning as CounterSampler testing the
+        // `PercentRate: 50` would admit the 2nd, 4th, ... request instead of
+        // the 1st, 3rd, ... Same reasoning as CounterSampler testing the
         // pre-increment value.
         const auto count = sampling_count_.fetch_add(rate_, std::memory_order_relaxed) + rate_;
         const uint64_t r = count % MAX_PERCENT_RATE;

@@ -55,10 +55,7 @@ namespace pinpoint {
         constexpr int GRPC_KEEPALIVE_TIMEOUT_MS = 60 * 1000;
         constexpr int GRPC_MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
         constexpr int GRPC_SENDER_QUEUE_SIZE = 1000;
-        // Periodic connection renewal, both disabled (0) like the Java agent's
-        // defaults (3153600000000 ms, "disabled" by convention there):
-        //   CHANNEL_MAX_AGE_MS <-> profiler.transport.grpc.loadbalancer.renew.period.millis
-        //   STREAM_MAX_AGE_MS  <-> profiler.transport.grpc.span.sender.rpc.age.max.millis
+        // Periodic connection renewal, disabled by default (0).
         constexpr int GRPC_CHANNEL_MAX_AGE_MS = 0;
         constexpr int GRPC_STREAM_MAX_AGE_MS = 0;
         // Client idle timeout, disabled (0) so a quiet channel keeps its
@@ -68,23 +65,18 @@ namespace pinpoint {
         constexpr int HTTP_URL_STAT_LIMIT = 1024;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
-        // Entries per SQL cache (id, uid and raw). Mirrors the Java agent's
-        // profiler.jdbc.sqlcachesize (1024).
+        // Entries per SQL cache (id, uid and raw).
         constexpr int SQL_CACHE_SIZE = 1024;
-        // Mirrors the Java agent's profiler.jdbc.sqlcachelengthlimit (2048).
         constexpr int SQL_CACHE_LENGTH_LIMIT = 2048;
         // Hours a cached SQL UID survives before its metadata is re-published.
-        // Mirrors the Java agent's profiler.jdbc.sqlcacheexpirehours (168).
         constexpr int SQL_CACHE_EXPIRE_HOURS = 168;
         // SQL statements one transaction may run before it is marked failed.
-        // Mirrors the Java agent's profiler.sql.error.count (100).
         constexpr int SQL_ERROR_COUNT = 100;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         // Rotated files kept alongside the live one (agent.log.1 ..
         // agent.log.N). 1 is what the agent did before the setting existed.
         constexpr int LOG_MAX_BACKUPS = 1;
-        // New exception chains admitted per second. Mirrors the Java agent's
-        // profiler.exceptiontrace.new.throughput (1000).
+        // New exception chains admitted per second.
         constexpr int CALLSTACK_TRACE_NEW_THROUGHPUT = 1000;
         constexpr const char* LOG_LEVEL = "info";
 
@@ -193,8 +185,7 @@ namespace pinpoint {
      * @brief One `Span.IgnoreErrors` rule: an error matching it is recorded
      *        (exceptionInfo) but does not mark the span as failed.
      *
-     * C++ counterpart of Java's `profiler.ignore-error-handler.<id>.*`,
-     * limited to its two leaf matchers: `class-name` (exact) and
+     * The two matchers are `class-name` (exact) and
      * `exception-message@contains` (substring). An empty field matches
      * anything, so a rule with both empty is dropped at load time — it would
      * silence every error.
@@ -218,11 +209,8 @@ namespace pinpoint {
      *
      * The bit values are a wire contract, not an internal detail: the
      * collector reads them to tell an exception apart from a failing HTTP
-     * status, so they must keep matching Java's `common/trace/ErrorCategory`
-     * and must never be renumbered. `kUnknown` is the category of a failure
-     * with no cause attached; it is what an agent that does not classify at
-     * all reports (Java's `SimpleErrorRecorder`, used when
-     * `profiler.error.enable=false`).
+     * status, so they must never be renumbered. `kUnknown` is the category of
+     * a failure with no cause attached.
      */
     enum class ErrorCategory : int {
         kUnknown = 1 << 0,
@@ -242,8 +230,7 @@ namespace pinpoint {
      * @brief Resolves `Span.ErrorMark` / `Span.ErrorMarkExclude` into the mask
      *        of categories allowed to fail a transaction.
      *
-     * An empty @p mark enables every category, the way Java's unset
-     * `profiler.error.mark` does. Entries are trimmed and matched
+     * An empty @p mark enables every category. Entries are trimmed and matched
      * case-insensitively against `exception`, `http-status` and `sql`; an
      * unknown one is warned about and ignored. `kUnknown` is always enabled,
      * whatever the two lists say.
@@ -284,11 +271,11 @@ namespace pinpoint {
         int object_name_version_ = 1;
         // Set by make_config() from resolve_object_name(): false when a required
         // identity value is missing/invalid for the configured uid version. Gated
-        // by check() so startup degrades to a noop agent (Java aborts here).
+        // by check() so startup degrades to a noop agent.
         // Defaults to true so directly-constructed Config values stay valid.
         bool identity_resolved_ = true;
 
-        // gRPC protocol.version header wire value (Java ProtocolVersion: V1=100, V4=400).
+        // gRPC protocol.version header wire value (V1=100, V4=400).
         int protocol_version() const { return object_name_version_ == 4 ? 400 : 100; }
         bool is_v4() const { return object_name_version_ == 4; }
 
@@ -296,7 +283,7 @@ namespace pinpoint {
         bool is_container = false;
         bool enable_callstack_trace = false;
         // New exception chains admitted per second, agent-wide, so an error
-        // storm cannot flood the metadata queue (Java's ExceptionChainSampler).
+        // storm cannot flood the metadata queue.
         // 0 = unlimited. See SpanImpl::allowNewExceptionChain.
         int callstack_trace_new_throughput = defaults::CALLSTACK_TRACE_NEW_THROUGHPUT;
         // Opt-in for the config-file watcher (hot reload). Consumed once by
@@ -306,8 +293,7 @@ namespace pinpoint {
         // callback.
         bool enable_config_file_watcher = false;
         // Name of the `Profile.<name>` subtree of the config file that is
-        // applied on top of the file's top-level keys (same key and layout
-        // as the Go agent's `profile.<name>`). Empty: no profile. Read from
+        // applied on top of the file's top-level keys. Empty: no profile. Read from
         // the environment first, then the file, before the file is loaded.
         std::string active_profile;
 
@@ -397,17 +383,14 @@ namespace pinpoint {
             // Errors matched here are recorded but never mark the span as
             // failed (see is_ignored_error / SpanImpl::markSpanError).
             std::vector<IgnoreErrorRule> ignore_errors;
-            // Java's profiler.error.mark / profiler.error.mark.exclude: which
-            // error causes are allowed to fail a transaction. An empty
-            // error_mark means "every category", as Java's unset (null) string
-            // does; error_mark_exclude then removes from that.
+            // Error causes allowed to fail a transaction. An empty error_mark
+            // enables every category; error_mark_exclude then removes from it.
             std::vector<std::string> error_mark;
             std::vector<std::string> error_mark_exclude;
             // Derived from the two lists above by make_config(), not a
             // configuration input of its own - so it is deliberately absent
             // from kConfigFields and from the serialized config. A Config
-            // built directly (tests) keeps every category enabled, which is
-            // Java's default.
+            // built directly (tests) keeps every category enabled.
             int error_mark_mask = ALL_ERROR_CATEGORIES;
         } span;
 
@@ -424,9 +407,8 @@ namespace pinpoint {
                 // URI template must turn it off (see doc/config.md).
                 bool enable_trim_path = true;
                 // 3, not 1: at depth 1 every path under a prefix collapses
-                // into one key ("/api/users/123" -> "/api/*"), so the default
-                // threw away the route that Java and Go keep verbatim. 3
-                // keeps a typical "/api/users/{id}" route intact and still
+                // into one key ("/api/users/123" -> "/api/*"). 3 keeps a
+                // typical "/api/users/{id}" route intact and still
                 // folds anything deeper. Callers that record URI templates
                 // should set enable_trim_path=false, not tune this.
                 int trim_path_depth = 3;
@@ -440,10 +422,9 @@ namespace pinpoint {
                 std::vector<std::string> rec_request_header;
                 std::vector<std::string> rec_request_cookie;
                 std::vector<std::string> rec_response_header;
-                // Header names carrying a user-defined proxy header, Java's
-                // `profiler.proxy.http.headers` (UserRequestParser.init).
-                // Empty by default, which is Java's default too: the user
-                // proxy type records nothing until a name is configured.
+                // Header names carrying a user-defined proxy header. Empty by
+                // default: the user proxy type records nothing until a name is
+                // configured.
                 std::vector<std::string> proxy_user_header_names;
             } server;
 
@@ -459,10 +440,8 @@ namespace pinpoint {
             bool enable_sql_stats = false;
             bool enable_raw_sql_cache = true;
             bool trace_bind_value = true;
-            // Strip SQL comments before normalization. On by default like the
-            // Java agent, whose profiler.jdbc.removecomments defaults to true;
-            // turning it off changes SQL ids/UIDs of commented SQL and makes
-            // them diverge from Java's.
+            // Strip SQL comments before normalization. Turning it off changes
+            // SQL ids/UIDs of commented statements.
             bool remove_comments = true;
             // Entries each SQL cache (SQL-ID, SQL-UID, raw-SQL) holds. Once
             // full, the least recently used statement is evicted and its
@@ -470,29 +449,24 @@ namespace pinpoint {
             // send, so applications with many distinct statements raise this
             // to keep metadata traffic down. Startup-only: the caches are
             // built in AgentImpl's ctor and resizing them mid-run would
-            // orphan ids already referenced by in-flight spans. Applies to
-            // the SQL caches only, like Java, whose api/string caches keep
-            // their own default. Java parity: profiler.jdbc.sqlcachesize.
+            // orphan ids already referenced by in-flight spans.
             int cache_size = defaults::SQL_CACHE_SIZE;
             // Length at or above which a SQL statement bypasses the SQL-UID
             // and raw-SQL caches, keeping their memory bounded by
             // entries x this limit instead of by the largest statement seen.
             // -1 disables the bypass (cache everything), 0 bypasses
-            // everything. Java parity: profiler.jdbc.sqlcachelengthlimit.
+            // everything.
             int cache_length_limit = defaults::SQL_CACHE_LENGTH_LIMIT;
             // Hours after which a cached SQL UID is re-published to the
             // collector, refreshing the SqlUidMetaData row before its
             // server-side TTL (180 days) drops the SQL text and leaves the UI
             // showing an empty statement. 0 never expires, which is only
             // safe for processes shorter-lived than that TTL; make_config()
-            // resets a negative to the default. Java parity:
-            // profiler.jdbc.sqlcacheexpirehours.
+            // resets a negative to the default.
             int cache_expire_hours = defaults::SQL_CACHE_EXPIRE_HOURS;
             // SQL statements one transaction may run before the span is
             // marked failed, which is how an N+1 query pattern surfaces in
-            // the UI. 0 = never mark. Java parity: profiler.sql.error.count,
-            // whose profiler.sql.error.enable=false is this field set to 0.
-            // See SpanImpl::countSqlExecution.
+            // the UI. 0 = never mark. See SpanImpl::countSqlExecution.
             int error_count = defaults::SQL_ERROR_COUNT;
         } sql;
 

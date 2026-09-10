@@ -37,10 +37,7 @@ namespace pinpoint {
     constexpr const char* LOG_LEVEL_DEBUG = "debug";
     constexpr const char* LOG_LEVEL_INFO = "info";
     constexpr const char* LOG_LEVEL_WARN = "warning";
-    /// Second accepted spelling of LOG_LEVEL_WARN. Go/logrus parses both
-    /// "warn" and "warning" and Java writes "WARN", so a level copied from
-    /// either agent's configuration works here instead of being rejected as a
-    /// typo and silently leaving the level alone. Input only: write() labels
+    /// Second accepted spelling of LOG_LEVEL_WARN. Input only: write() labels
     /// lines with LOG_LEVEL_WARN.
     constexpr const char* LOG_LEVEL_WARN_ALIAS = "warn";
     constexpr const char* LOG_LEVEL_ERROR = "error";

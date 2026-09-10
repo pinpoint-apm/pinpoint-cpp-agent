@@ -85,11 +85,10 @@ namespace pinpoint {
         result.normalized_sql.reserve(sql_length);
         result.parameters.reserve(64);
 
-        // Tracks whether the next digit begins a numeric literal. Mirrors the Java
-        // ParserContext.numberTokenStartEnable flag: a digit that follows an identifier
+        // Tracks whether the next digit begins a numeric literal: a digit that follows an identifier
         // character (e.g. "col1") is part of the identifier, not a literal.
-        // Comments never touch the flag, kept or removed: like Java, a removed
-        // comment leaves no separator behind ("SELECT/*c*/1" -> "SELECT1").
+        // Comments never touch the flag, kept or removed: a removed comment
+        // leaves no separator behind ("SELECT/*c*/1" -> "SELECT1").
         bool number_token_start_enable = true;
 
         for (size_t i = 0; i < sql_length; ++i) {
@@ -172,8 +171,8 @@ namespace pinpoint {
             appendParameterChar(result, state_ch);
         }
 
-        // Java/Go parity: an unterminated literal (unbalanced quote, or SQL
-        // cut at max_sql_length mid-string) keeps only the opening quote. Its
+        // An unterminated literal (unbalanced quote, or SQL cut at
+        // max_sql_length mid-string) keeps only the opening quote. Its
         // content is still recorded in the parameters, but no placeholder is
         // emitted.
         if (closed) {
@@ -229,10 +228,7 @@ namespace pinpoint {
                 // Letters begin an identifier (no number token); any other character may
                 // precede a numeric literal. Bytes of a multibyte UTF-8 character land
                 // here and return true, so a digit after a non-ASCII identifier is
-                // extracted ("테이블1" -> "테이블0#"). The Java agent behaves the same:
-                // ParserContext.isNumberTokenStart is this exact ASCII-only check on
-                // UTF-16 chars. Do not "fix" this without the Java side changing first —
-                // SQL metadata/UIDs must stay identical across agents.
+                // extracted ("테이블1" -> "테이블0#").
                 return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z');
         }
     }

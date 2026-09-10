@@ -45,7 +45,7 @@
 
 namespace pinpoint {
 
-    /// @brief The reserved "no span" id, matching Java SpanId.NULL. Never a
+    /// @brief The reserved "no span" id. Never a
     ///        valid span id, so generation must never produce it.
     inline constexpr int64_t kNullSpanId = -1;
 
@@ -57,8 +57,8 @@ namespace pinpoint {
      * @brief Span id for a call this span makes, distinct from kNullSpanId and
      *        from both ids already in this span's context.
      *
-     * Mirrors Java SpanId.nextSpanID(): the generated id becomes the callee's
-     * span id while @p span_id becomes its parent span id, so an id equal to
+     * The generated id becomes the callee's span id while @p span_id becomes
+     * its parent span id, so an id equal to
      * either would make the callee its own parent (or its own grandparent) and
      * break the call tree the collector reconstructs. Redraws until the value
      * clears all three.
@@ -187,28 +187,26 @@ namespace pinpoint {
     std::string repairUtf8(std::string_view s);
 
     /**
-     * @brief True when every byte of @p s is in Java's id charset
-     * ([a-zA-Z0-9._-], `IdValidateUtils.ID_PATTERN_VALUE`). An empty string
+     * @brief True when every byte of @p s is in the id charset
+     * ([a-zA-Z0-9._-]). An empty string
      * passes; callers that need a non-empty id check that themselves.
      *
      * Shared by the callers that validate an id taken from an untrusted
      * carrier: the inbound transaction id (`TraceId::parseTraceId`) and the
      * proxy header's `app=` value (`HttpTracerUtil::setProxyHeader`). Both
      * values are echoed to downstream calls and displayed as HTML by the web
-     * UI (`TransactionIdUtils.java`: "should not use html syntax"), so
-     * anything else — '<', '>', CR/LF, control bytes — is rejected.
+     * UI, so anything else — '<', '>', CR/LF, control bytes — is rejected.
      */
     bool isIdChars(std::string_view s) noexcept;
 
     /**
      * @brief Replaces every invalid UTF-8 sequence in @p s with U+FFFD, one
-     * replacement per maximal invalid run (the policy of Go's
-     * strings.ToValidUTF8, which the Go agent applies for the same reason).
+     * replacement per maximal invalid run.
      *
      * Callers feed network- and user-origin bytes into protobuf string fields
      * (percent-decoded URL paths, binary row keys, driver error strings). The
-     * C++ runtime only logs on marshalling invalid UTF-8, but the collector's
-     * protobuf-java readStringRequireUtf8 throws, rejecting the whole span,
+     * C++ runtime only logs on marshalling invalid UTF-8, but the collector
+     * can reject the whole span,
      * stat or metadata message — and a failed span stream Send cancels the
      * stream. Applied at the protobuf conversion boundary, off the
      * instrumentation hot path. Valid input is copied once, untouched.
@@ -225,36 +223,24 @@ namespace pinpoint {
         return isValidUtf8(s) ? std::string{s} : repairUtf8(s);
     }
 
-    /// @brief Cap on the error string carried by a span or span event,
-    ///        matching the 256 Java passes to StringUtils.abbreviate().
+    /// @brief Cap on the error string carried by a span or span event.
     inline constexpr size_t kMaxErrorStringLength = 256;
 
-    /// @brief Cap on the SQL text carried by PSqlMetaData/PSqlUidMetaData,
-    ///        matching the 65536 (profiler.jdbc.maxsqllength) Java passes to
-    ///        StringUtils.abbreviate() in SqlCacheService.
+    /// @brief Cap on the SQL text carried by PSqlMetaData/PSqlUidMetaData.
     inline constexpr size_t kMaxSqlMetaLength = 64 * 1024;
 
     /**
-     * @brief Abbreviates @p s the way Java's StringUtils.abbreviate(s,
-     * max_len) does: a string within the cap is returned verbatim, a longer
+     * @brief Abbreviates @p s: a string within the cap is returned verbatim; a longer
      * one keeps its first @p max_len bytes and gains a
      * "...(<original length>)" suffix naming the length that was dropped.
      *
-     * The cut is by byte, not by Java char — that is the unit the payload is
-     * billed in, the unit the agent's other truncations use, and identical to
-     * Java for ASCII input. utf8SafeCutLength keeps the cut off a multibyte
+     * The cut is by byte. utf8SafeCutLength keeps the cut off a multibyte
      * boundary so the result stays valid UTF-8 for protobuf.
      */
     std::string abbreviateString(std::string_view s, size_t max_len);
 
     /**
-     * @brief Abbreviates an error message the way Java's
-     * StringUtils.abbreviate(msg, 256) does.
-     *
-     * Java's AbstractRecorder.recordException stores
-     * StringUtils.abbreviate(throwable.getMessage(), 256). Uncapped, a single
-     * driver error carrying a whole SQL statement inflates every span that
-     * records it.
+     * @brief Abbreviates an error message to kMaxErrorStringLength.
      */
     std::string abbreviateErrorString(std::string_view msg);
 

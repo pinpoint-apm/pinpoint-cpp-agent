@@ -78,8 +78,7 @@ namespace pinpoint {
             }
 
             const auto max_size = static_cast<std::size_t>(max_bind_args_size);
-            // Separator and truncation marker both follow Java's
-            // BindValueUtils.bindValueToString: values are joined with ", "
+            // Values are joined with ", "
             // and a dropped tail is reported as "...(<number of bind values>)"
             // — the count, not the byte limit, so the reader can tell how many
             // values the statement had. A value abbreviated below carries the
@@ -106,8 +105,7 @@ namespace pinpoint {
             fmt::memory_buffer scratch;
             for (std::size_t i = 0; i < bind_args.size(); ++i) {
                 const auto arg = sqlBindValueView(bind_args[i], scratch);
-                // Java appends the separator after every value but the last,
-                // so it precedes whatever comes next: the value, or the marker
+                // The separator precedes whatever comes next: the value, or the marker
                 // that stands in for the values left out.
                 if (i != 0) {
                     joined_bind_args.append(kSeparator);
@@ -118,9 +116,8 @@ namespace pinpoint {
                     break;
                 }
                 if (arg.size() > max_size - joined_bind_args.size()) {
-                    // Java keeps the head of a value that outruns the budget
-                    // (StringUtils.appendAbbreviate) instead of dropping it,
-                    // so a bind larger than the whole budget — a JSON blob, a
+                    // Keep the head of a value that outruns the budget instead
+                    // of dropping it, so a bind larger than the whole budget — a JSON blob, a
                     // CLOB, base64 — still leaves something to debug with.
                     // The next round sees the budget spent and closes the
                     // join with the count marker.
@@ -356,18 +353,14 @@ namespace pinpoint {
         // rate limited. The chain state lives on the span rather than on this
         // event so that an exception recorded on a nested event and again on
         // the event that catches it - the same exception, seen twice on its
-        // way up - stays one chain and is charged once, as Java's CONTINUED
-        // state (ExceptionRecordingState.isChaining) and the Go agent's
-        // span.errorChains lookup keep it. Both of those tell a cause from an
-        // unrelated exception by throwable identity; this agent has none, so
-        // it neither separates chains nor nests them: the chain is flat
+        // way up - stays one chain and is charged once. This agent cannot
+        // distinguish a cause from an unrelated exception, so it neither
+        // separates chains nor nests them: the chain is flat
         // (Exception::getDepth is 0 for every link).
         //
         // A rejected chain keeps the plain error (SetError already ran and
-        // marked the span); only the call stack is dropped, which is what
-        // Java's DISABLED sampling state does. That verdict is latched for the
-        // rest of the span, because Java's DISABLED state lives in the trace
-        // context and every later link reads it back. Asking per link instead
+        // marked the span); only the call stack is dropped. That verdict is
+        // latched for the rest of the span. Asking per link instead
         // would charge one logical chain several times over, and once a token
         // refilled mid-chain it would record a later link as a brand new chain
         // with its head missing - the half-recorded chain the reuse above
@@ -390,10 +383,8 @@ namespace pinpoint {
             return;
         }
         span.exception_chain_id_ = exception_id;
-        // Java stamps EXCEPTION_CHAIN_ID on every event that records a link
-        // (WrappedSpanEventRecorder.recordDetailedException), which is how the
-        // UI reaches the chain from each step; one stamp per event is enough
-        // for that.
+        // Each event that records a link carries EXCEPTION_CHAIN_ID so the UI
+        // can reach the chain from that step.
         if (annotated_exception_id_ != exception_id) {
             annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
             annotated_exception_id_ = exception_id;
@@ -422,9 +413,8 @@ namespace pinpoint {
         if (!prepared || !prepared->sql) {
             return;
         }
-        // One recorded SQL execution for this transaction. Charged where Java
-        // charges it (SqlCountService.recordSqlCount, once the SQL annotation
-        // is built), so a statement the normalizer rejected is not counted.
+        // One recorded SQL execution for this transaction. Count only after
+        // building the SQL annotation, so a rejected statement is not counted.
         span->countSqlExecution();
 
         std::string joined_bind_args;
@@ -528,9 +518,8 @@ namespace pinpoint {
 
     void DisabledSpanEvent::InjectContext(TraceContextWriter& writer) try {
         // The overflowed event is never recorded, so the generated child span
-        // id is not stored anywhere either — the same shape as the Java
-        // agent, where recordNextSpanId on the DisableSpanEventRecorder is a
-        // no-op but the full header set is still written.
+        // id is not stored anywhere either, but the full header set is still
+        // written.
         auto* span = data_->getOwner();
         if (span == nullptr) {
             injectDeadSpanContext(writer);

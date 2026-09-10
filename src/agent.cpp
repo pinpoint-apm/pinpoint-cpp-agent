@@ -169,8 +169,7 @@ namespace pinpoint {
         // both sinks off every runtime generation so spans reach them without
         // an agent keep-alive.
         agent_stats_ = std::make_shared<AgentStats>(this);
-        // The send worker's timed wait follows Stat.BatchInterval, as Java's
-        // UriStatCollectingJob rides the agent stat scheduler; a completed
+        // The send worker's timed wait follows Stat.BatchInterval; a completed
         // tick wakes it immediately regardless. Boot-time value: the key is
         // not reloadable (see Config::retainNonReloadableFrom).
         url_stats_ = std::make_shared<UrlStats>(this, URL_STAT_TICK_INTERVAL,
@@ -188,7 +187,7 @@ namespace pinpoint {
         // like the cache sizes themselves. Deliberately not applied to
         // sql_cache_: its ids come from a sequence, so a bypassed statement
         // would burn a fresh id — and a fresh StringMeta — on every single
-        // use. Java bypasses only the UID cache, for the same reason.
+        // use.
         //
         // Sql.CacheSize sizes the three SQL caches only (see kDefaultCacheSize
         // for why api/error keep the ctor parameter). make_config() has
@@ -201,8 +200,8 @@ namespace pinpoint {
         // Only the UID cache expires: a hit there suppresses re-publication of
         // metadata whose collector-side row has a TTL of its own, so an entry
         // that outlives that row leaves the UI with no SQL text (see
-        // SqlUidCache). The id caches have no equivalent problem — Java gives
-        // them no TTL either — so they are left alone.
+        // SqlUidCache). The id caches have no equivalent problem, so they are
+        // left alone.
         const CacheExpiry sql_uid_expiry{
             cfg->sql.cache_expire_hours > 0
                 ? std::chrono::duration_cast<CacheExpiry::Clock::duration>(
@@ -449,8 +448,7 @@ namespace pinpoint {
         rt->url_stats = url_stats_;
         const Config& c = *rt->config;
 
-        // Carried over when every Sampling.* key is unchanged, matching Go
-        // (newTraceSampler, gated on sameValues). Rebuilding restarts the
+        // Carried over when every Sampling.* key is unchanged. Rebuilding restarts the
         // sampler's counter at 0, and the counter is tested pre-increment, so
         // `CounterRate: 100` would sample the very next request after any
         // unrelated config edit; the throughput buckets would likewise start
@@ -481,14 +479,14 @@ namespace pinpoint {
                                                          c.sampling.cont_throughput);
         }
 
-        // Java's ExceptionChainSampler: an error storm produces one exception
-        // metadata per errored span, so new chains are admitted at most
+        // An error storm produces one exception metadata per errored span, so
+        // new chains are admitted at most
         // CallstackTraceNewThroughput per second and the rest are recorded as
         // plain errors without a call stack. Non-positive is unlimited, null.
         //
         // Carried over on an unchanged throughput for the same reason as the
-        // sampler (Go's newExceptionLimiter): a rebuilt bucket is a full second
-        // of exception chains, so a reload during an error storm would lift the
+        // sampler: a rebuilt bucket is a full second of exception chains, so a
+        // reload during an error storm would lift the
         // cap it exists to enforce.
         if (prev_cfg != nullptr &&
             prev_cfg->callstack_trace_new_throughput == c.callstack_trace_new_throughput) {
@@ -1262,7 +1260,7 @@ namespace pinpoint {
     namespace {
         // Strict Long.parseLong: optional leading '+'/'-', then ASCII digits only,
         // no whitespace, range-checked. stoll_ (absl::SimpleAtoi) is not used
-        // here because it tolerates surrounding whitespace, which Java rejects.
+        // here because it tolerates surrounding whitespace.
         std::optional<int64_t> parseLongStrict(std::string_view s) noexcept {
             const char* first = s.data();
             const char* const last = first + s.size();
@@ -1278,8 +1276,8 @@ namespace pinpoint {
         }
     }
 
-    // Mirrors Java TransactionIdUtils.parseTransactionId: agentId^startTime^sequence,
-    // agent id checked for charset only (the 24-char limit applies to self
+    // Transaction ids are agentId^startTime^sequence. The agent id is checked
+    // for charset only (the 24-char limit applies to self
     // registration, not to inbound ids), a fourth field ignored. Warnings are
     // throttled per reason: a malformed header is peer-controlled input that can
     // recur once per request.
@@ -1316,10 +1314,8 @@ namespace pinpoint {
             LOG_WARN_THROTTLED("parsing Txid: StartTime too long (length={}, max={})", start_time_len, kMaxInt64StringLength);
             return {};
         }
-        // Sequence (third field), cut at the next '^' like Java: anything after
-        // it is ignored rather than rejected. (Java: "next index may not exist
-        // since default value does not have a delimiter after
-        // transactionSequence. may need fixing when id spec changes".)
+        // Sequence (third field), cut at the next '^': anything after it is
+        // ignored rather than rejected.
         const auto pos3 = sv.find('^', pos2 + 1);
         const auto sequence_str = sv.substr(pos2 + 1, pos3 == std::string_view::npos ? std::string_view::npos : pos3 - pos2 - 1);
         if (sequence_str.length() > kMaxInt64StringLength) {

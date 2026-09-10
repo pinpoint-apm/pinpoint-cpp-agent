@@ -276,8 +276,8 @@ namespace pinpoint {
         std::string service_name;
         /// Resolved Span.MaxEventDepth. A binding layer computing event
         /// positions itself must remember that the allowance is
-        /// max_event_depth + 1 nesting levels (Java DefaultCallStack parity):
-        /// the limit is compared against the events already on the stack.
+        /// max_event_depth + 1 nesting levels: the limit is compared against
+        /// the events already on the stack.
         int32_t max_event_depth = 0;
         /// Resolved Span.MaxEventSequence, and here the count is exact:
         /// max_event_sequence events are recorded per span.
@@ -436,14 +436,13 @@ namespace pinpoint {
         virtual void SetStatusCode(int status) = 0;
         /// @brief Records URL statistics for the span.
         ///
-        /// The URL pattern is first-wins, as Java's
-        /// `Shared.setUriTemplate(uriTemplate)` (a null -> value CAS): once a
-        /// non-empty pattern is recorded, later calls keep it and only refresh
+        /// The URL pattern is first-wins: once a non-empty pattern is
+        /// recorded, later calls keep it and only refresh
         /// the method and status code. An empty pattern counts as "not yet
         /// recorded". Use ForceUrlStat() to replace a recorded pattern.
         virtual void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) = 0;
         /// @brief Records URL statistics for the span, replacing any pattern
-        ///        recorded before — Java's `setUriTemplate(uriTemplate, true)`.
+        ///        recorded before.
         ///
         /// For a host that has to correct an early, less precise guess with
         /// the route it eventually matched. The default forwards to
@@ -709,9 +708,7 @@ namespace pinpoint {
      * collected, so a collector whose agent port (9991) alone is unreachable
      * yields zero spans even though the span and stat ports are open. The
      * registration is retried indefinitely, and the agent logs an INFO line
-     * every 30 seconds while it waits, naming this consequence. This differs
-     * from the Java agent, which sends spans while registration retries in
-     * the background.
+     * every 30 seconds while it waits, naming this consequence.
      *
      * @return true when the agent was launched and installed as the global
      * agent — obtain the handle with GlobalAgent(). false on a configuration

@@ -44,8 +44,7 @@ namespace pinpoint {
         double     system_cpu_time_{0};
         double     process_cpu_time_{0};
         // Thread count and resident memory, or -1 when the platform reading
-        // failed (Java's MemoryMetric UNCOLLECTED_VALUE; TotalThreadMetric
-        // omits the message instead, Go sends -1 like we do). Defaulted to
+        // failed. Defaulted to
         // the sentinel so a /proc that is unmounted or hidepid-restricted
         // never plots as a measured 0 in Inspector's Heap Usage and Thread
         // Count charts.
@@ -62,8 +61,7 @@ namespace pinpoint {
         int64_t    num_skip_cont_{0};
         int32_t    active_requests_[4]{0, 0, 0, 0};
         // Open file descriptors, or -1 when the platform reading failed (the
-        // same uncollected sentinel grpc_builders.h uses for nonHeap/gc, and
-        // what Java's FileDescriptorMetric reports on unsupported platforms).
+        // same uncollected sentinel grpc_builders.h uses for nonHeap/gc).
         // Defaulted to the sentinel so a snapshot slot never travels as a 0
         // the UI would plot as "no files open".
         int64_t    open_fd_count_{UNCOLLECTED_STAT_VALUE};
@@ -95,9 +93,8 @@ namespace pinpoint {
         size_t activeSpanCount() const noexcept;
 
         // Registered spans above which addActiveSpan logs a rate-limited
-        // WARN. Java's DefaultActiveTraceRepository evicts past this same
-        // size (DEFAULT_MAX_ACTIVE_TRACE_SIZE = 1024 * 10); this registry
-        // cannot evict (see active_span.h), so the count is only reported.
+        // WARN. This registry cannot evict (see active_span.h), so the count
+        // is only reported.
         // A sustained count above it means spans are not being ended — an
         // instrumentation bug in the host — not legitimate load.
         static constexpr size_t kActiveSpanWarnThreshold = 10240;

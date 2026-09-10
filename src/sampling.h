@@ -33,7 +33,7 @@ namespace pinpoint {
     // Shutdown() — a dynamic destructor here would make that a use-after-free.
     /// @brief Sampling mode that relies on counter-based periodic selection.
     inline constexpr std::string_view COUNTER_SAMPLING = "COUNTER";
-    /// @brief Java's name for counter sampling (`SamplerType.COUNTING`), accepted as an alias.
+    /// @brief Alternate name accepted for counter sampling.
     inline constexpr std::string_view COUNTING_SAMPLING = "COUNTING";
     /// @brief Sampling mode that uses percentage-based selection.
     inline constexpr std::string_view PERCENT_SAMPLING = "PERCENT";
@@ -69,17 +69,8 @@ namespace pinpoint {
     class PercentSampler final : public Sampler {
     public:
         explicit PercentSampler(const double rate) {
-            // Truncate, like Java's PercentSamplerFactory
-            // (`(long) (samplingRateDouble * MULTIPLIER)`) and Go's
-            // `uint64(percent * 100)`. Truncation loses a hundredth of a
-            // percent to double representation error — 0.29 * 100 is
-            // 28.999999999999996, so 0.29 samples 0.28% — but the same config
-            // producing the same rate in all three agents outranks handing the
-            // operator back the digit they typed. A positive rate below 0.01
-            // truncates to 0 and never samples, which is what Java does too —
-            // parseSamplingRate truncates first, then createSampler sends a
-            // non-positive rate to FalseSampler
-            // (PercentSamplerFactory.java:40-48,56-58).
+            // Truncate to hundredths of a percent. A positive rate below 0.01
+            // therefore never samples.
             //
             // Clamping the product (not the result) keeps this defined for
             // out-of-range rates that bypass the config validation, and leaves

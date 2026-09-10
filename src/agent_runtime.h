@@ -52,8 +52,7 @@ namespace pinpoint {
         std::shared_ptr<HttpUrlFilter> http_url_filter;
         std::shared_ptr<HttpMethodFilter> http_method_filter;
         std::shared_ptr<HttpStatusErrors> http_status_errors;
-        // Agent-wide budget for NEW exception chains (Java's
-        // ExceptionChainSampler). Null means unlimited, which is what a
+        // Agent-wide budget for new exception chains. Null means unlimited, which is what a
         // non-positive Config::callstack_trace_new_throughput builds.
         std::shared_ptr<RateLimiter> exception_chain_limiter;
         std::array<std::shared_ptr<HttpHeaderRecorder>, 3> http_srv_header_recorder;

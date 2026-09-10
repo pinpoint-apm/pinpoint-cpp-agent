@@ -62,9 +62,7 @@ namespace pinpoint {
                                           bool method_prefix_enabled) {
         // A prefix built from an empty method would leave a leading space
         // (" /api/users"), splitting the same URL into two server-side keys
-        // depending on whether the method was known. Java's
-        // UriMethodTransformer and Go's url_stat.go both skip the prefix in
-        // that case; match them.
+        // depending on whether the method was known.
         const bool method_prefix = method_prefix_enabled && !us.method_.empty();
         const auto method_prefix_size = method_prefix ? us.method_.size() + 1 : 0;
         std::string url;
@@ -162,10 +160,9 @@ namespace pinpoint {
     }
 
     void UrlStats::closeElapsedTick() {
-        // Java's AsyncQueueingUriStatStorage.checkAndFlushOldData
-        // (AsyncQueueingUriStatStorage.java:162-165): a tick whose window has
-        // elapsed is complete whether or not a newer entry ever arrives to cut
-        // it. addLocked closes ticks on arrival, which covers an agent under
+        // A tick whose window has elapsed is complete whether or not a newer
+        // entry arrives to cut it. addLocked closes ticks on arrival, which
+        // covers an agent under
         // load; an agent whose traffic stops would otherwise hold its last
         // tick until traffic resumed, because nothing would ever cut it.
         //
@@ -189,9 +186,7 @@ namespace pinpoint {
         // and would still add them up, but every derived value that is not a
         // sum — the per-tick max, and the average implied by total/count — is
         // computed per message, so a split tick reports a max and an average
-        // for each half instead of for the tick. Java never splits one either:
-        // UriStatCollectingJob drains only the completed queue
-        // (AsyncQueueingUriStatStorage.java:188-189).
+        // for each half instead of for the tick.
         //
         // Allocated before touching snapshot_: if this throws under memory
         // pressure the member must stay intact — moving it out first would
@@ -272,8 +267,7 @@ namespace pinpoint {
             return true;
         }
         // An entry whose end time was never set would key under tick 0
-        // (1970) and pin a bogus watermark. Java's AgentUriStatData.add skips
-        // an endTime of 0 the same way: it is a producer bug, not a capacity
+        // (1970) and pin a bogus watermark. It is a producer bug, not a capacity
         // event, so it returns true ("handled") rather than false, which the
         // caller (UrlStats::addLocked) would count as a limit drop. Both
         // producers today (SpanImpl::sendUrlStat, UnsampledSpan::EndSpan) set
@@ -288,7 +282,7 @@ namespace pinpoint {
 
         const auto tick = tick_clock.tick(us->end_time_);
         // An empty pattern would aggregate under an unreadable empty key on
-        // the server; bucket it under the same stand-in Java/Go use.
+        // the server; bucket it under the stand-in key.
         const std::string_view url = us->url_pattern_.empty()
             ? URL_STAT_UNKNOWN
             : std::string_view{us->url_pattern_};

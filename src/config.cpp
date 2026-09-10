@@ -86,18 +86,15 @@ namespace pinpoint {
     bool is_ignored_error(const std::vector<IgnoreErrorRule>& rules,
                           const std::string_view error_name, const std::string_view error_message) {
         return std::any_of(rules.begin(), rules.end(), [&](const IgnoreErrorRule& rule) {
-            // An empty field is a wildcard, so a rule is "name and/or
-            // message" — Java's class-name / exception-message@contains
-            // matchers, ANDed the same way.
+            // An empty field is a wildcard, so a rule is "name and/or message".
             return (rule.name.empty() || rule.name == error_name) &&
                    (rule.message_contains.empty() || absl::StrContains(error_message, rule.message_contains));
         });
     }
 
     // One `Span.ErrorMark` / `Span.ErrorMarkExclude` token to its bit, 0 for
-    // an unrecognised one. The spellings are Java's
-    // (ConfigurableErrorRecorderFactory.toCategorySet), matched
-    // case-insensitively like every other config value here. kUnknown has no
+    // an unrecognised one. Tokens are matched case-insensitively like every
+    // other config value here. kUnknown has no
     // spelling on purpose: it is never selectable, because it is always on.
     static int error_category_bit(const std::string_view token) {
         if (absl::EqualsIgnoreCase(token, "exception")) {
@@ -112,10 +109,9 @@ namespace pinpoint {
         return 0;
     }
 
-    // Folds a category list into a mask. Each entry is split on commas as
-    // well, so Java's single comma-separated string works verbatim in the
-    // YAML list too. An empty entry is skipped silently (Java's `case ""`);
-    // anything else unrecognised is a typo worth naming, since it silently
+    // Folds a category list into a mask. Each entry is split on commas, so the
+    // YAML list also accepts comma-separated values. An empty entry is skipped
+    // silently; anything else unrecognised is a typo worth naming, since it silently
     // widens or narrows which errors fail a transaction.
     static int to_category_mask(const std::vector<std::string>& categories,
                                 const std::string_view key) {
@@ -141,8 +137,7 @@ namespace pinpoint {
         const int marked = mark.empty() ? ALL_ERROR_CATEGORIES
                                         : to_category_mask(mark, "Span.ErrorMark");
         const int excluded = to_category_mask(exclude, "Span.ErrorMarkExclude");
-        // kUnknown survives every exclusion, exactly as Java re-adds it after
-        // removing the excluded ones (getEnabledTypes). It is the category of
+        // kUnknown survives every exclusion. It is the category of
         // a failure whose cause was not classified, so excluding it would
         // amount to "never fail a transaction" - which is not what either
         // key is for.
@@ -314,9 +309,7 @@ namespace pinpoint {
 
             // A missing file is a state, not an error: a ConfigMap update
             // replaces the file rather than rewriting it, so the path is
-            // briefly absent on every rollout. Go never even sees it — viper's
-            // WatchConfig watches the directory and drops the fsnotify Remove
-            // event on the floor (viper.go:486). We poll a path instead, so we
+            // briefly absent on every rollout. We poll a path, so we
             // report it, but at most once per reporter window rather than once
             // per tick, and we keep polling so the replacement is picked up.
             QueueDropReporter missing_reporter{};
@@ -610,7 +603,7 @@ namespace pinpoint {
         {"CallstackTraceNewThroughput", REF(callstack_trace_new_throughput), RELOAD, env::CALLSTACK_TRACE_NEW_THROUGHPUT},
         {"EnableConfigFileWatcher", REF(enable_config_file_watcher), FIXED, env::ENABLE_CONFIG_FILE_WATCHER},
         // RELOAD: a reload re-reads the file's ActiveProfile and applies that
-        // profile, as the Go agent's reloadConfig() does.
+        // profile.
         {"ActiveProfile", REF(active_profile), RELOAD, env::ACTIVE_PROFILE},
     };
 #undef REF
@@ -619,7 +612,7 @@ namespace pinpoint {
     // node when no profile applies. The name comes from the environment first
     // (it outranks the file everywhere else too), then the file's own
     // ActiveProfile key, then the running/default value. A name that the file
-    // has no subtree for is warned about and ignored, as in the Go agent.
+    // has no subtree for is warned about and ignored.
     // find_path() makes both "Profile" and the name case-insensitive and lets a
     // dotted name select a nested subtree, matching viper's `profile.<name>`.
     static YAML::Node select_profile(const YAML::Node& yaml, const std::string& prefix,
@@ -888,9 +881,7 @@ namespace pinpoint {
         // every load: seeding from the running config alone would let the file
         // take an env-sourced key over the moment it starts naming it. Only
         // variables actually present in the process environment are applied, so
-        // a file-only key still reloads normally. Same rule as the Go agent's
-        // source ranking (default < file < env), which skips a reload for any
-        // key whose value did not come from the file.
+        // a file-only key still reloads normally.
         load_env_config(prefix, *config, is_container_set, /*reloadable_only=*/old != nullptr);
 
         // Configure the logger immediately on the first load so the rest of
@@ -903,7 +894,7 @@ namespace pinpoint {
         }
 
         // Resolve agent self-identity (ObjectName) according to the configured
-        // uid version. Mirrors Java ObjectNameResolver{V1,V4}. The resolver owns
+        // uid version. The resolver owns
         // version-aware validation (e.g. applicationName <=24 for v1 vs <=254 for
         // v3, which check() cannot distinguish since both map to version 1).
         {
@@ -953,10 +944,9 @@ namespace pinpoint {
         in_range(config->stat.collect_interval, MIN_STAT_INTERVAL_MS, MAX_STAT_INTERVAL_MS,
                  defaults::STAT_INTERVAL_MS, "stat collect interval");
 
-        // Java names the counter mode COUNTING (SamplerType), so accept that
-        // spelling as an alias and canonicalise it here — the rest of the
+        // COUNTING is accepted as an alias and canonicalised here — the rest of the
         // agent only ever compares against COUNTER/PERCENT. An unrecognised
-        // value falls back to the default, mirroring SamplerType.of().
+        // value falls back to the default.
         if (absl::EqualsIgnoreCase(config->sampling.type, COUNTING_SAMPLING)) {
             config->sampling.type = std::string(COUNTER_SAMPLING);
         } else if (!absl::EqualsIgnoreCase(config->sampling.type, COUNTER_SAMPLING) &&
@@ -967,12 +957,10 @@ namespace pinpoint {
         }
 
         at_least(config->sampling.counter_rate, 0, 0, "sampling counter rate");
-        // Three outcomes, matching Java's PercentSamplerFactory.createSampler()
-        // (PercentSamplerFactory.java:40-48): <= 0 never samples (FalseSampler),
-        // >= 100 always samples (TrueSampler), and everything between runs the
-        // percent sampler on the truncated rate (parseSamplingRate,
-        // PercentSamplerFactory.java:56-58). Nothing is raised to a minimum
-        // here: PercentSampler's truncation is the first branch, and
+        // Three outcomes: <= 0 never samples, >= 100 always samples, and
+        // everything between runs the percent sampler on the truncated rate.
+        // Nothing is raised to a minimum here: PercentSampler's truncation is
+        // the first branch, and
         // isSampled()'s `rate_ <= 0` / `rate_ >= MAX_PERCENT_RATE` guards are
         // the other two.
         //
@@ -980,8 +968,7 @@ namespace pinpoint {
         // "off" switch, so it is INFO, not a warning about a mistake. A
         // positive rate below 0.01 is different: the operator asked for
         // sampling and truncation silently gives them none, so that one keeps
-        // the warning. Java truncates the same way without saying anything;
-        // telling the operator costs one line and saves a support ticket.
+        // the warning.
         if (config->sampling.percent_rate < 0.0) {
             LOG_INFO("sampling percent rate {} is not positive, disabling percent sampling",
                      config->sampling.percent_rate);
@@ -1043,15 +1030,8 @@ namespace pinpoint {
                  defaults::CALLSTACK_TRACE_NEW_THROUGHPUT, "callstack trace new throughput");
 
         at_least(config->sql.max_bind_args_size, 0, 0, "sql max bind args size");
-        // A negative count means "off", not "use the default". The merged key
-        // gave 0 the meaning of Java's profiler.sql.error.enable=false
-        // (SqlCountServiceProvider.java:21-27), so "off" is the only reading a
-        // negative threshold can consistently carry; restoring 100 here turned
-        // counting back on for an operator who asked to turn it off. Java's
-        // literal arithmetic - enable=true with count <= 0 marks the very first
-        // statement failed, since DefaultSqlCountService validates nothing and
-        // compares with >= - is not reachable through one key, and is a gap in
-        // Java's validation rather than a feature to port.
+        // A negative count means "off", not "use the default": restoring 100
+        // would turn counting back on for an operator who asked to disable it.
         at_least(config->sql.error_count, 0, 0, "sql error count");
         // 0 or a negative would cast to an empty or absurd size_t at the use
         // site (AgentImpl's ctor); see MAX_SQL_CACHE_SIZE for the upper bound.

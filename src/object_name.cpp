@@ -35,7 +35,7 @@ namespace pinpoint {
         if (absl::EqualsIgnoreCase(value, "v4")) {
             return NameVersion::kV4;
         }
-        // "v3", unknown, or empty all fall back to v3 (Java NameVersion.getVersion).
+        // "v3", unknown, or empty all fall back to v3.
         return NameVersion::kV3;
     }
 
@@ -59,13 +59,13 @@ namespace pinpoint {
 
     std::string base64_encode_uuid(const Uuid& uuid) {
         // Standard UUID byte layout: msb big-endian into bytes[0..7], lsb into
-        // bytes[8..15] (Java Base64Utils.encode).
+        // bytes[8..15].
         std::string bytes(16, '\0');
         write_be64(uuid.msb, &bytes[0]);
         write_be64(uuid.lsb, &bytes[8]);
 
-        // URL-and-filename-safe alphabet ('-' '_'), matching Java's
-        // Base64.getUrlEncoder(); strip the trailing padding to 22 chars.
+        // Use the URL-and-filename-safe alphabet ('-' '_') and strip trailing
+        // padding to 22 characters.
         std::string encoded;
         absl::WebSafeBase64Escape(bytes, &encoded);
         while (!encoded.empty() && encoded.back() == '=') {
@@ -207,10 +207,9 @@ namespace pinpoint {
             }
             obj.application_name = input.application_name;
 
-            // serviceName: required, like Java (ObjectNameResolverV4 throws
-            // "ServiceName not provided") and Go. No "DEFAULT" fallback: a
-            // missing or mistyped name must fail startup, not register the
-            // agent under the wrong service.
+            // serviceName: required. No "DEFAULT" fallback: a missing or
+            // mistyped name must fail startup, not register the agent under
+            // the wrong service.
             if (!validate_id(input.service_name, object_name::SERVICE_NAME_MAX_LEN)) {
                 LOG_ERROR("Failed to resolve ServiceName (required for uid.version=v4, max length {})",
                           object_name::SERVICE_NAME_MAX_LEN);

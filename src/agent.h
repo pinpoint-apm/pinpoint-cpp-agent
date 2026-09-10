@@ -52,9 +52,7 @@ namespace pinpoint {
                             public std::enable_shared_from_this<AgentImpl> {
     public:
         /// Capacity of the api and error metadata caches. The SQL caches
-        /// (sql/sql-uid/raw-sql) take theirs from Sql.CacheSize instead, as
-        /// Java sizes only its SQL caches by profiler.jdbc.sqlcachesize and
-        /// leaves the api/string caches at their default.
+        /// (sql/sql-uid/raw-sql) take theirs from Sql.CacheSize instead.
         static constexpr size_t kDefaultCacheSize = 1024;
 
         /// @brief @p cache_size sizes the api/error caches and defaults to the
@@ -304,8 +302,8 @@ namespace pinpoint {
         /// Stop-signal and join order. Not the enum order, and not sortable:
         /// kInit must be joined first because init_grpc_workers assigns the
         /// other worker_threads_ entries, so joining them earlier would race
-        /// those writes. The remaining order is the historical one, kept so
-        /// this refactor changes no behavior.
+        /// those writes. The remaining order preserves the required worker
+        /// shutdown dependencies.
         static constexpr std::array<Worker, kWorkerCount> kTeardownOrder{{
             kInit, kUrlStatAdd, kUrlStatSend, kAgentStat,
             kPing, kMeta, kSpan, kStat, kCommand,

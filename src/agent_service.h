@@ -140,8 +140,7 @@
       virtual int32_t getAppType() const = 0;
       /// @brief Agent identifier used as the collector instance key.
       virtual const std::string& getAgentId() const = 0;
-      /// @brief Only populated for uid version v4; empty for v1/v3 (mirrors
-      ///        Java ObjectName.getServiceName).
+      /// @brief Only populated for uid version v4; empty for v1/v3.
       virtual const std::string& getServiceName() const = 0;
       virtual std::shared_ptr<const Config> getConfig() const = 0;
       /// @brief Agent start timestamp (epoch milliseconds).

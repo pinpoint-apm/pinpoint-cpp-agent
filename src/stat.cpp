@@ -211,8 +211,7 @@ namespace pinpoint {
     }
 
     // Open file descriptors, or -1 when the reading fails — the uncollected
-    // sentinel (grpc_builders.h), which is also what Java's
-    // FileDescriptorMetric reports where the platform cannot supply a count.
+    // sentinel (grpc_builders.h).
     // Never a 0 fallback: a live process always holds fds, so 0 would be
     // plotted as a real measurement.
     static int64_t get_open_fd_count() {
@@ -488,8 +487,7 @@ namespace pinpoint {
         // (AvgUsingIntervalPostProcessor's count/(intervalMs/1000)), so 0 is
         // as unusable as a negative. system_clock is still the right source —
         // sample_time_ has to be wall time, so the gap comes off the same
-        // reading rather than a second, monotonic one, which is also what
-        // Java's CollectJob does with System.currentTimeMillis().
+        // reading rather than a second, monotonic one.
         const auto period = std::max(
             std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_),
             std::chrono::milliseconds{1});
@@ -499,8 +497,7 @@ namespace pinpoint {
         // Always measured, never the configured value: the collect timer fires
         // late under load, and the collector treats this as the window the
         // row's counters were accumulated over. initAgentStats() sets the
-        // baseline, so the first collection has one too — Java's CollectJob
-        // does the same, taking prevCollectionTimestamp in its constructor.
+        // baseline, so the first collection has one too.
         stat.interval_ = period.count();
 
         const auto cpu_load = getCpuLoad(period);
@@ -583,8 +580,7 @@ namespace pinpoint {
                     // needs no lock.
                     lock.unlock();
                     AgentStatsSnapshot collected;
-                    // First line of defense, as Java's CollectJob.run(): a
-                    // collection failure (a transient /proc read error, an
+                    // First line of defense: a collection failure (a transient /proc read error, an
                     // allocation failure while walking fds) costs this one
                     // snapshot, not the partial batch. The batch cursor is
                     // left alone, so the next cycle fills the same slot.

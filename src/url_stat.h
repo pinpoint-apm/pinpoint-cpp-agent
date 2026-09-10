@@ -39,21 +39,16 @@
 namespace pinpoint {
     constexpr int URL_STATS_BUCKET_SIZE      = 8;
     // Stand-in key for a span that recorded URL stats without a URL, so the
-    // server shows an identifiable bucket instead of an empty string. The
-    // value is Java's URITemplate.NULL_URI verbatim, so a mixed Java/C++
-    // application aggregates its "no URI recorded" traffic under one key
-    // instead of two; the Go agent's own stand-in ("UNKNOWN_URL") differs.
+    // server shows an identifiable bucket instead of an empty string.
     constexpr std::string_view URL_STAT_UNKNOWN = "/NULL";
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
 
-    // Production tick width (the (url, tick) bucket the server aggregates by;
-    // Java's TickClock, Go's urlStatCollectInterval). UrlStats accepts an
+    // Production tick width (the (url, tick) bucket the server aggregates by).
+    // UrlStats accepts an
     // override so tests can drive the bucketing in seconds instead of 30s.
     //
     // There is no separate send interval constant: the send worker follows
-    // Stat.BatchInterval (config.stat.collect_interval), the way Java's
-    // UriStatCollectingJob rides the agent stat scheduler
-    // (profiler.jvm.stat.collect.interval), and a completed tick wakes the
+    // Stat.BatchInterval (config.stat.collect_interval), and a completed tick wakes the
     // worker immediately regardless of that interval. See the constructor.
     constexpr auto URL_STAT_TICK_INTERVAL = std::chrono::seconds(30);
 
@@ -93,10 +88,7 @@ namespace pinpoint {
         /// @brief True when no sample has been recorded, so the histogram can
         /// travel as an empty message (see build_url_histogram).
         ///
-        /// Every bucket zero, which is Go's urlStatHistogram.isEmpty()
-        /// (url_stat.go:153-160) verbatim. Java asks getCount() == 0
-        /// (UriStatMapper.java:63-69); there is no count member here, and
-        /// total_ cannot stand in for one because it sums elapsed times and
+        /// total_ cannot stand in for a count because it sums elapsed times and
         /// stays 0 for a histogram of nothing but 0ms samples. add() bumps
         /// exactly one bucket per sample, so the bucket sum is the count.
         bool empty() const {
@@ -192,8 +184,8 @@ namespace pinpoint {
         /// @brief @p tick_interval (bucket width) defaults to the production
         ///        value. @p send_interval is the send worker's timed wait: the
         ///        agent passes Stat.BatchInterval, and the default is that
-        ///        key's default, so URL stats leave on the agent stat cadence
-        ///        as in Java. It is a ceiling, not a period — a completed tick
+        ///        key's default, so URL stats leave on the agent stat cadence.
+        ///        It is a ceiling, not a period — a completed tick
         ///        wakes the worker at once — so what it bounds is the close of
         ///        the last tick after traffic stops. Tests inject shorter ones.
         explicit UrlStats(AgentService* agent,
@@ -228,32 +220,25 @@ namespace pinpoint {
         void addSnapshot(const UrlStatEntry* us, const Config& config);
         /// @brief Closes the tick in progress when its window has elapsed,
         /// so a tick is reported once it is over rather than only once a
-        /// newer entry arrives to cut it. Driven by the send worker, the way
-        /// Java drives checkAndFlushOldData
-        /// (AsyncQueueingUriStatStorage.java:162-165); a tick with no
-        /// successor traffic would otherwise sit here indefinitely.
+        /// newer entry arrives to cut it. Driven by the send worker so a tick
+        /// with no successor traffic does not sit here indefinitely.
         void closeElapsedTick();
         /// @brief Extracts the ticks already cut into completed_, merged
         /// into a single snapshot. Empty when nothing was cut since the last
-        /// call — the caller must then send no message at all, the way Java's
-        /// UriStatCollectingJob stops on a null poll
-        /// (UriStatCollectingJob.java:52-55).
+        /// call — the caller must then send no message at all.
         /// @param include_in_progress also takes the tick still being
         /// collected, splitting it across two messages. Exactly one caller
         /// in production passes true — GrpcStats::flush_url_stats_on_shutdown(),
         /// the stats worker's last act before it closes its stream — because that is
         /// the one point where nothing will arrive later to cut the tick, so
         /// it is split-or-lose rather than split-or-wait. The steady-state
-        /// send (GrpcStats::next_write) always passes false. Sending this
-        /// tick at all is a deliberate divergence from Java; see
-        /// doc/java_parity.md.
+        /// send (GrpcStats::next_write) always passes false.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot(bool include_in_progress = false);
 
     private:
         static constexpr size_t kQueueShardCount = 16;
-        // Completed ticks retained while the stats stream is down, matching
-        // Java's AsyncQueueingUriStatStorage snapshotQueue capacity of 4 —
-        // two minutes of 30s ticks. Bounded because a stream that never
+        // Completed ticks retained while the stats stream is down: two minutes
+        // of 30s ticks. Bounded because a stream that never
         // recovers would otherwise grow this without limit; the oldest tick
         // is the one worth losing first.
         static constexpr size_t kMaxCompletedSnapshots = 4;

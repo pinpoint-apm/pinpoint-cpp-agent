@@ -104,8 +104,7 @@ namespace pinpoint {
 
         // Keepalive, message-size limits and the idle timeout are the only
         // HTTP/2 tuning set here. The remaining knobs stay at the gRPC C-core
-        // defaults on purpose (doc/java_parity.md, "gRPC channel arguments",
-        // compares this with the other agents):
+        // defaults on purpose:
         //
         // - Flow control window: unset means BDP probing stays on
         //   (chttp2_transport.cc reads GRPC_ARG_HTTP2_BDP_PROBE with
@@ -175,7 +174,7 @@ namespace pinpoint {
             // moment a stall actually forces a rotation keeps the default
             // count unchanged until the feature is needed. The connection the
             // stalled channel shared with the metadata/command channels stays
-            // theirs — they carry no stall signal, same as in Java.
+            // theirs — they carry no stall signal.
             if (options.channel_max_age_ms > 0 || private_connection) {
                 channel_args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
             }
@@ -238,7 +237,7 @@ namespace pinpoint {
         attempt_ = 0;
     }
 
-    // Java: IntervalFunction.ofRandomized(x, 0.1) for both renewal periods.
+    // Jitter factor for both renewal periods.
     constexpr double kRenewalJitterFactor = 0.1;
 
     std::chrono::milliseconds randomize_interval(std::chrono::milliseconds interval, double factor,
@@ -487,8 +486,7 @@ namespace pinpoint {
                     break;
                 }
             }
-            // Outage summary with the lifetime counters, the log-only stand-in
-            // for Java's Channelz reporters. The recovery instant itself is
+            // Outage summary with the lifetime counters. The recovery instant itself is
             // the "-> READY" transition line above; this one is throttled
             // like the transition lines, so a flapping channel gets one
             // summary per interval carrying the totals.
@@ -641,9 +639,8 @@ namespace pinpoint {
     //GrpcMetadata
 
     namespace {
-        // Whether a failed metadata RPC is worth sending again. Go's agent
-        // (grpc.go isRetryableError) retries exactly these two and nothing
-        // else; every other code is a verdict the same request earns again,
+        // Whether a failed metadata RPC is worth sending again. Every other
+        // code is a verdict the same request earns again,
         // so retrying it only burns permits and retry-schedule slots while a
         // schema mismatch or an auth failure rejects every item.
         //
@@ -669,11 +666,7 @@ namespace pinpoint {
         //   UNKNOWN - a server exception carrying no status, or a status that
         //     could not be parsed; in Pinpoint's collector the common source
         //     is an application-level exception on the request itself, which
-        //     repeats. Java's hedging config (HedgingServiceConfigBuilder
-        //     DEFAULT_STATUS_CODES = UNKNOWN, UNAVAILABLE) does include it,
-        //     but hedging fires a parallel attempt to beat latency rather
-        //     than re-sending a verdict, so it is not evidence that a retry
-        //     helps here. Go leaves it out; so do we.
+        //     repeats. Retrying a verdict cannot change the result.
         //
         // Every code left out still gets its cache entry released on the drop,
         // so the id is regenerated and re-sent from a later span once the
@@ -917,8 +910,6 @@ namespace pinpoint {
     // only by the trace that just created it, so dropping it orphans the
     // least. It also keeps the critical section to a size check and one
     // push_back, with no second item to carry out of the lock for release.
-    // Java's metadata sender (GrpcDataSender: offer() failure) behaves the
-    // same way.
     void GrpcMetadata::enqueueMeta(std::unique_ptr<MetaData> meta) noexcept try {
         if (meta == nullptr || (agent_ != nullptr && agent_->isExiting())) {
             return;
@@ -1149,11 +1140,8 @@ namespace pinpoint {
             // is a verdict on the request's content (bad id, unsupported field,
             // rejected payload), and the retry would replay the same bytes for
             // the same verdict, so this is dropped like a non-retryable status
-            // rather than retried. The Java agent does retry it
-            // (RetryResponseStreamObserver.onNext reschedules the send on a
-            // false PResult.success); diverging from it is deliberate, and the
-            // reasoning lives in doc/java_parity.md. Releasing the cache entry
-            // keeps the recovery path: a later span re-registers the id and
+            // rather than retried. Releasing the cache entry keeps the recovery
+            // path: a later span re-registers the id and
             // sends a *new* request, which is the only thing that can produce
             // a different answer.
             if (const auto rejected = meta_reject_reporter_.record()) {
@@ -1874,8 +1862,7 @@ namespace pinpoint {
 
     void GrpcAgent::build_agent_info(v1::PAgentInfo* agent_info, google::protobuf::Arena* arena) const {
         // The published (possibly reloaded) config, not the pinned boot
-        // snapshot in config_: like Java's AgentInfoFactory, which fetches the
-        // ServerMetaData live on every send, the periodic re-registration must
+        // snapshot in config_: periodic re-registration must
         // report what the agent is running with now.
         const auto config = agent_->getConfig();
 
@@ -2552,7 +2539,7 @@ namespace pinpoint {
         buffer.push_back(std::move(span));
 
         // Gather more items until either the batch is full or the collect
-        // deadline elapses. Matches Java SpanBatchGrpcDataSender.collectBatch.
+        // deadline elapses.
         //
         // Once the batch has its first item, this loop does NOT go back
         // through wait_dequeue_until: that would re-arm span_consumer_waiting_
@@ -3096,8 +3083,7 @@ namespace pinpoint {
             url_snapshot = agent_->getUrlStats().takeSnapshot();
             if (url_snapshot->empty()) {
                 // No tick completed since the last send. Send nothing at all
-                // rather than an empty PAgentUriStat, matching Java's
-                // UriStatCollectingJob (UriStatCollectingJob.java:52-55).
+                // rather than an empty PAgentUriStat.
                 LOG_DEBUG("stats - no completed url stat tick");
                 return STREAM_CONTINUE;
             }
@@ -3172,13 +3158,8 @@ namespace pinpoint {
     }
 
     void GrpcStats::flush_url_stats_on_shutdown() {
-        // Java does not send the tick in progress at shutdown
-        // (AsyncQueueingExecutor.stop drains only the input queue, and the
-        // polling UriStatCollectingJob is already closed); the Go agent does,
-        // from shutdownAgent's flushUrlStat(true). This follows Go — see
-        // doc/java_parity.md. Without this the tick in progress (up to 30s of
-        // traffic) and whatever completed_ still held were lost on every
-        // clean shutdown.
+        // Include the tick in progress so up to 30 seconds of traffic and
+        // completed snapshots are not lost on clean shutdown.
         //
         // An explicit one-shot flush rather than narrowing next_write()'s
         // stopping() gate to stop_requested_ alone: that gate is not what
