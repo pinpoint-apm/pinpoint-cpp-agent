@@ -2460,6 +2460,18 @@ namespace pinpoint {
         // Completion order is not observed. Key by call identity so callbacks
         // can remove their registry entry without a linear scan or shifts.
         std::unordered_set<std::shared_ptr<PendingSpanBatch>> pending;
+        // Spans lost on the send side, as opposed to the queue's own
+        // overwritten-oldest count: a batch dropped for want of a permit,
+        // a launch that threw, an RPC that failed, spans the collector
+        // rejected, and batches cleared while the channel was down or on
+        // shutdown. Lives here, not on GrpcSpan, because the completion
+        // callback that records an RPC failure captures this state and
+        // never `this`. GrpcSpan reports queue + send drops as one total
+        // (see maybe_log_span_drops), as the Go agent's spanDrops does.
+        std::atomic<uint64_t> dropped_spans{0};
+        void recordDrop(size_t spans) noexcept {
+            dropped_spans.fetch_add(spans, std::memory_order_relaxed);
+        }
 
         void completeCall(const std::shared_ptr<PendingSpanBatch>& call) {
             bool released = false;
@@ -2608,16 +2620,24 @@ namespace pinpoint {
         LOG_DEBUG("collect_batch: collected={} batch_size_limit={}", buffer.size(), batch_size);
     }
 
-    void GrpcSpan::maybe_log_span_queue_drops() {
+    uint64_t GrpcSpan::droppedSpans() const noexcept {
+        return span_queue_.dropped_oldest() + inflight_->dropped_spans.load(std::memory_order_relaxed);
+    }
+
+    void GrpcSpan::maybe_log_span_drops() {
         // Polled once per worker cycle (collect_batch's flush deadline bounds
-        // the poll gap), feeding the queue's own cumulative drop counter into
-        // the shared rate-limited reporter: producers already count
-        // overwritten-oldest drops under their shard locks, so the enqueue
-        // hot path pays no extra clock read or logging. WARN like the other
-        // queue-overflow reports (metadata/stats/url-stat).
-        if (const auto dropped = span_drop_reporter_.report_if_due(span_queue_.dropped_oldest())) {
-            LOG_WARN("span queue overflow: {} dropped in total (oldest overwritten, max queue size {})",
-                     dropped, config_->span.queue_size);
+        // the poll gap), feeding one cumulative total into the rate-limited
+        // reporter: the queue's own overwritten-oldest count (producers
+        // count it under their shard locks, so the enqueue hot path pays no
+        // clock read or logging) plus the send-side drops recorded in
+        // inflight_. One number answers "how many spans did this agent
+        // lose"; the two parts say where. WARN like the other drop reports.
+        const auto queue_dropped = span_queue_.dropped_oldest();
+        const auto send_dropped = inflight_->dropped_spans.load(std::memory_order_relaxed);
+        if (const auto dropped = span_drop_reporter_.report_if_due(queue_dropped + send_dropped)) {
+            LOG_WARN("span drops: {} in total ({} queue overflow, oldest overwritten at max queue size {}; "
+                     "{} not sent: no permit, launch or RPC failure, rejected, or channel down)",
+                     dropped, queue_dropped, config_->span.queue_size, send_dropped);
         }
     }
 
@@ -2630,10 +2650,14 @@ namespace pinpoint {
         // pipeline is saturated the batch is dropped without paying the
         // (potentially large) protobuf build cost, and backpressure engages
         // one batch sooner.
+        // Every drop path below charges this count: the batch is cleared as
+        // soon as it is serialized, so the size is taken up front.
+        const auto batch_count = batch.size();
         const auto flush_timeout = std::chrono::milliseconds(config_->collector.span_batch.flush_interval_ms);
         if (!try_acquire_permit(flush_timeout)) {
             LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
                      flush_timeout.count());
+            inflight_->recordDrop(batch_count);
             batch.clear();
             return;
         }
@@ -2645,8 +2669,9 @@ namespace pinpoint {
         // the in-flight pipeline for the rest of the process lifetime.
         std::shared_ptr<PendingSpanBatch> pending;
         bool registered = false;
-        const auto release_unlaunched = [this, &batch, &pending, &registered]() {
+        const auto release_unlaunched = [this, &batch, &pending, &registered, batch_count]() {
             batch.clear();
+            inflight_->recordDrop(batch_count);
             // The call was never launched: hand the permit back, but exactly
             // once. Release only if this batch still owns the permit — either it
             // was never registered (so no completion callback exists for it), or
@@ -2695,7 +2720,6 @@ namespace pinpoint {
             build_grpc_context(&pending->ctx, 0);
             set_request_deadline(pending->ctx);
 
-            const int batch_count = pending->request->span_size();
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
                 inflight_->pending.insert(pending);
@@ -2714,6 +2738,9 @@ namespace pinpoint {
                 [state, pending, batch_count](const grpc::Status& status) {
                     state->completeCall(pending);
                     if (!status.ok()) {
+                        // The spans are gone: not retried (Java's stream
+                        // sender does not either), so they count as lost.
+                        state->recordDrop(batch_count);
                         LOG_INFO("SendSpanBatch failed: {}, {}",
                                  static_cast<int>(status.error_code()), status.error_message());
                         return;
@@ -2724,6 +2751,7 @@ namespace pinpoint {
                     }
                     const auto& ps = pending->reply.partial_success();
                     if (ps.rejected_spans() > 0) {
+                        state->recordDrop(static_cast<size_t>(std::max<int64_t>(0, ps.rejected_spans())));
                         LOG_WARN("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
                                  ps.rejected_spans(), ps.errorid(), ps.error_message());
                     } else if (!ps.error_message().empty()) {
@@ -2745,9 +2773,11 @@ namespace pinpoint {
         // were not sent, and flush_remaining() keeps appending to the same
         // vector across calls, so leftovers here would be re-sent by its next
         // send_batch_async round.
+        inflight_->recordDrop(batch.size());
         batch.clear();
         LOG_ERROR("failed to build span batch: exception = {}", e.what());
     } catch (...) {
+        inflight_->recordDrop(batch.size());
         batch.clear();
         LOG_ERROR("failed to build span batch: unknown exception");
     }
@@ -2807,6 +2837,7 @@ namespace pinpoint {
                 }
                 send_batch_async(batch);
             } else {
+                inflight_->recordDrop(remaining.size());
                 LOG_INFO("drop {} remaining spans on shutdown: channel not ready", remaining.size());
             }
             remaining.clear();
@@ -2851,7 +2882,7 @@ namespace pinpoint {
             batch.clear();
 
             collect_batch(batch);
-            maybe_log_span_queue_drops();
+            maybe_log_span_drops();
             if (batch.empty()) {
                 continue;
             }
@@ -2866,8 +2897,9 @@ namespace pinpoint {
                 // producers filled the freed slots during channel shutdown.
                 return;
             } else {
-                // Preserve the existing outage policy: a batch collected while
-                // the channel cannot become ready is not retried indefinitely.
+                // No channel to send on (closed, or a test injected a bare
+                // stub): the batch is lost, and counted as such.
+                inflight_->recordDrop(batch.size());
                 batch.clear();
             }
         }

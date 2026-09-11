@@ -376,3 +376,12 @@
 - **A log file that cannot be opened is reported on stderr**, naming the path
   and the OS reason, before the logger falls back to stdout. The operator
   used to see only an absent file and agent lines mixed into stdout.
+
+- **Every lost span is counted, and one report carries the total.** The
+  drop reporter read only the queue's overwritten-oldest count; a batch
+  dropped for want of a permit, a launch that threw, a failed `SendSpanBatch`,
+  spans the collector rejected, and batches cleared while the channel was
+  down or on shutdown were logged but never counted. They now feed one
+  cumulative `span drops: N in total (...)` line that says how many came
+  from the queue and how many were never sent, as the Go agent's `spanDrops`
+  does. `GrpcSpan::droppedSpans()` exposes the same total.

@@ -3017,6 +3017,8 @@ TEST_F(GrpcMockTest, GrpcSpanPermitExhaustionDropsBatchTest) {
     span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data2, true));
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     EXPECT_EQ(fake->batchCount(), 1u) << "Batch should be dropped while the permit is in flight";
+    EXPECT_EQ(span_client.droppedSpans(), 1u)
+        << "a batch dropped for want of a permit must be counted as lost (T-3)";
 
     // Completing the in-flight RPC returns the permit; the next batch goes out
     fake->releaseHeldCallbacks(grpc::Status::OK);
@@ -3130,6 +3132,11 @@ TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
     mock_agent_service_->setExiting(true);
     span_client.stopSpanWorker();
     if (worker.joinable()) worker.join();
+
+    // T-8: spans lost to a failed RPC are counted, not just logged. Both
+    // batches failed (the fake answers every call with an error status).
+    EXPECT_EQ(span_client.droppedSpans(), 2u)
+        << "every span whose RPC failed must be counted as lost";
 }
 
 TEST_F(GrpcMockTest, GrpcSpanPartialSuccessHandledTest) {

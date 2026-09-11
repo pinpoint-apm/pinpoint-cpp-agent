@@ -961,6 +961,13 @@ namespace pinpoint {
         /// @brief Signals the worker to stop; on a connected channel it sends
         ///        pending spans before exiting.
         void stopSpanWorker();
+        /// @brief Spans this client lost, lifetime: queue overflow (oldest
+        ///        overwritten) plus every send-side drop — no permit within
+        ///        the flush timeout, a launch that threw, a failed RPC, spans
+        ///        the collector rejected, a batch cleared while the channel
+        ///        was down or on shutdown. The rate-limited "span drops"
+        ///        report carries the same total.
+        uint64_t droppedSpans() const noexcept;
 
     protected:
         using SpanStub = v1::Span::StubInterface;
@@ -979,8 +986,8 @@ namespace pinpoint {
         std::mutex span_wait_mutex_{};
         std::condition_variable span_queue_cv_{};
         std::atomic<bool> span_consumer_waiting_{false};
-        // Rate-limited overflow reporting, fed by the queue's own drop
-        // counter via report_if_due() — see maybe_log_span_queue_drops().
+        // Rate-limited drop reporting, fed the queue's own drop counter plus
+        // the send-side count via report_if_due() — see maybe_log_span_drops().
         QueueDropReporter span_drop_reporter_;
 
         // Permit-based semaphore that caps the number of concurrently in-flight
@@ -990,7 +997,7 @@ namespace pinpoint {
         std::shared_ptr<SpanBatchInflight> inflight_{};
 
         void collect_batch(std::vector<std::unique_ptr<SpanChunk>>& buffer);
-        void maybe_log_span_queue_drops();
+        void maybe_log_span_drops();
         bool wait_dequeue_until(std::unique_ptr<SpanChunk>& span,
                                 std::chrono::steady_clock::time_point deadline);
         void notify_span_worker();
