@@ -723,6 +723,29 @@ TEST_F(UrlStatTest, UrlStatsWithExitingAgentTest) {
     SUCCEED() << "Workers should exit quickly when agent is exiting";
 }
 
+// U-1: entries still queued when the add worker stops must reach the
+// snapshot the stats worker flushes on shutdown, not die in the shard queues.
+// The agent is already exiting when the worker starts, so its drain loop
+// never runs: only the final drain can move the entries.
+TEST_F(UrlStatTest, AddWorkerDrainsQueuedEntriesOnShutdown) {
+    UrlStats url_stats(mock_agent_service_.get());
+    const auto now = std::chrono::system_clock::now();
+    for (int i = 0; i < 3; ++i) {
+        UrlStatEntry stat("/api/shutdown/" + std::to_string(i), "GET", 200);
+        stat.end_time_ = now;
+        url_stats.enqueueUrlStats(std::move(stat));
+    }
+
+    mock_agent_service_->setExiting(true);
+    std::thread add_worker([&url_stats] { url_stats.addUrlStatsWorker(); });
+    url_stats.stopAddUrlStatsWorker();
+    add_worker.join();
+
+    const auto snapshot = url_stats.takeSnapshot(true);
+    EXPECT_EQ(snapshot->getEachStats().size(), 3u)
+        << "the final drain must hand every queued entry to the snapshot";
+}
+
 // ========== Global Functions Tests ==========
 
 TEST_F(UrlStatTest, AddAndTakeSnapshotTest) {

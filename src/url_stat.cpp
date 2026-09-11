@@ -490,6 +490,17 @@ namespace pinpoint {
             drainQueueShards(config);
             lock.lock();
         }
+        lock.unlock();
+
+        // Final drain, like Java's AsyncQueueingExecutor.stop() falling through
+        // to flushQueue(): isExiting() flips before stopAddUrlStatsWorker()
+        // runs, so the loop above can leave with up to a full tick of entries
+        // still in the shards — entries the stats worker's shutdown flush
+        // (which takes its snapshot after this thread is joined, see
+        // kTeardownOrder) would never see. Close the gate first so the drain
+        // is the last word on the shards.
+        accepting_.store(false, std::memory_order_relaxed);
+        drainQueueShards(config);
     }
 
     void UrlStats::stopAddUrlStatsWorker() {
