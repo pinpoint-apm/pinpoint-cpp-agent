@@ -403,3 +403,9 @@
   `Pinpoint-SpanID`** (throttled). It used to be silent here and logged in
   the Go agent, so the two agents each reported a different half of the
   same broken hop.
+
+- **The active-span registry keeps its warning and takes no cap.** The Go
+  agent adopted Java's 10240-entry eviction; this agent's registry is an
+  intrusive list of nodes the spans own, so eviction would free nothing and
+  cost a heap copy per request. The rationale is expanded in
+  [doc/java_parity.md](doc/java_parity.md#active-span-registry-cap--declined-replaced-by-a-warning).

@@ -1033,6 +1033,38 @@ configurable: Java's is a constant too, and a count above it is never
 legitimate load. The count is not added to `PAgentStat` — the active-request
 histogram already sums to it.
 
+**Decision (reaffirmed in the fifth cross-agent review): keep the warning, no
+cap.** The review raised it again because the Go agent has since adopted
+Java's cap, leaving this agent the only one whose registry grows without bound
+under a missing-`EndSpan` bug. That is true, and accepted, for these reasons:
+
+- *What grows is not memory the registry owns.* Java's map holds
+  `ActiveTraceHandle` copies and Go's shards hold real map values, so in both a
+  leaked trace is a leak *in the registry* and eviction frees it. Here the node
+  is a member of the leaked `SpanImpl`; evicting it frees nothing. The leak is
+  the span's whole allocation either way, and the registry's cap in the other
+  two agents bounds only the registry's share of it.
+- *What a cap would cost is safety, not a size check.* The registry is a
+  lock-free intrusive list with a `linked_` release/acquire handshake between
+  `add` and the owner's `drop`. An eviction path would have to unlink a node it
+  does not own while its owner may be about to `drop` it, and a refused `add`
+  would leave `drop` unlinking a node that was never linked. Both require the
+  nodes to become heap copies the registry owns — one allocation and one free
+  per sampled request — to buy a bound on a structure that is a leak *detector*
+  here, not a leak *container*.
+- *What the cap buys elsewhere, the warning delivers here.* The operational
+  need is to notice the bug. Java's eviction is silent (Caffeine drops
+  arbitrary entries and the active-trace histogram under-reports); Go warns
+  once with the eviction count; this agent warns with the live count and the
+  threshold, at the same 10240. The remaining cost of no cap is the
+  per-collection walk in `AgentStats::collectActiveRequests` (`src/stat.cpp`),
+  linear in the registered count once every `Stat.BatchInterval` — a cost that
+  scales with the leak the warning has already named.
+
+**Revisit if** the registry ever has to own its entries for another reason (a
+per-span payload the collector wants, say) — then a cap is a size check on
+storage the registry already allocates, and Java's 10240 is the value to take.
+
 ---
 
 ## Automatic shutdown at process exit — opt-in, default off
