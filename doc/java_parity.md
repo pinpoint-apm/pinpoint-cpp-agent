@@ -19,6 +19,12 @@ one place that compares.
 The Go agent keeps the same file at `doc/java_parity.md`, so the two read side
 by side.
 
+**A cross-repository reference names a symbol or a file, never a line.** A line
+number in the Go tree is stale the next time that tree is edited, and nothing
+in this repository's build or review catches it; `mergeUrlStat` (`span.go`) is
+still findable a year later. Line numbers are kept only for the Java reference
+tree and for this repository's own sources.
+
 ---
 
 ## Summary
@@ -42,18 +48,18 @@ by side.
 | Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
 | `Pinpoint-Sampled: s0` checked first | `DefaultTraceHeaderReader.samplingEnable` | **Same as Java** — see [below](#pinpoint-sampled-s0-is-checked-first--same-as-java) |
 | SQL statement count scope | `DefaultSqlCountService`, `DefaultShared.incrementAndGetSqlCount` | **Same as Java** — see [below](#sqlerrorcount-is-a-per-transaction-budget--same-as-java) |
-| `PSpan.err` error cause mask | `ConfigurableErrorRecorder`, `ErrorCategory`, `DefaultShared.maskErrorCode` | **Same as Java, Go still diverges** — see [below](#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges) |
-| Proxy request headers | `DefaultProxyRequestRecorder`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser` | **Same as Java, Go still diverges** — see [below](#proxy-request-headers--same-as-java-go-still-diverges) |
-| Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, Go still diverges** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges) |
+| `PSpan.err` error cause mask | `ConfigurableErrorRecorder`, `ErrorCategory`, `DefaultShared.maskErrorCode` | **Same as Java, shared with Go** — see [below](#pspanerr-carries-the-error-cause-mask--same-as-java-shared-with-go) |
+| Proxy request headers | `DefaultProxyRequestRecorder`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser` | **Same as Java, shared with Go** — see [below](#proxy-request-headers--same-as-java-shared-with-go) |
+| Acceptor host without `Pinpoint-Host` | `ServerRequestRecorder.recordParentInfo` | **Same as Java, shared with Go** — see [below](#acceptor-host-without-pinpoint-host--same-as-java-shared-with-go) |
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
 | Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
 | Tracing while a shutdown is in progress | *(no Java counterpart)* | **Off from the first line of `Shutdown()`, Go keeps tracing until drain** — see [below](#tracing-while-a-shutdown-is-in-progress--off-at-once-go-keeps-tracing-until-drain) |
-| gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout same as Java; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults) |
+| gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout disabled as in Java and Go; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-disabled-as-in-java-and-go-the-rest-left-at-c-core-defaults) |
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
 | URL stat entry without an end time | `AgentUriStatData.add` | **Same as Java** — see [below](#url-stat-entry-without-an-end-time-is-skipped--same-as-java) |
 | Worker thread lifecycle | `GrpcModuleLifeCycle`, `DefaultApplicationContext`, each `DataSender.close()` | **Same goal, declared as a table** — see [below](#worker-thread-lifecycle--same-goal-declared-as-a-table) |
-| Locked parity invariants (11 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption` | **Verified identical** — see [below](#locked-parity-invariants--verified-identical) |
+| Locked parity invariants (16 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption`, `ErrorCategory`, `SpanBatchGrpcDataSender`, `DefaultProxyRequestRecorder` | **Verified identical** (groups 15 and 16 are a port consensus with no Java counterpart) — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
 
@@ -457,17 +463,28 @@ subtrees is what an embedding application ships. See
 Recorded because it has been flagged as a divergence in review. It is not one.
 
 **Java.** The default span sender is BATCH
-(`profiler.transport.grpc.span.sender.type=BATCH` in `pinpoint-root.config`),
-and `SpanBatchGrpcDataSender` makes room for a new item on a full queue with
-`queue.poll()` — the oldest item is discarded. Rejecting the *new* item is the
-STREAM sender's policy only.
+(`profiler.transport.grpc.span.sender.type=BATCH`, `pinpoint-root.config:135`,
+repeated in the release and local profiles), and `SpanBatchGrpcDataSender.send`
+(`:95-111`) makes room for a new item on a full queue with `queue.poll()` —
+the oldest item is discarded, under a "discard oldest message" log line — then
+re-offers the new one. Rejecting the *new* item is `GrpcDataSender.send`
+(`:56-68`, "reject message"), the base class of the non-default STREAM sender,
+reached only when `span.sender.type` is set to STREAM.
 
-**This agent.** The *span* send queue drops the oldest item when full.
-Both agents therefore leave the same gap in a sequence under back-pressure.
+**Both ports.** The *span* send queue drops the oldest item when full and
+counts the drop, in this agent and in Go alike, so all three leave the same
+gap in a sequence under back-pressure. Locked as group 13 below, where the
+repeated mis-citation of `GrpcDataSender.send` is recorded too.
 
-The stat send queue is not comparable and drops nothing: it holds one token per
-stats type with no payload, so a duplicate token is simply not enqueued and the
-producers keep their data until the stream drains it (`src/grpc.cpp:2941-2954`).
+The stat send queue is a different mechanism in each port and is compared in
+its own right. Here it neither blocks nor discards: `GrpcStats::enqueueStats`
+(`src/grpc.cpp`) holds one token per stats type with no payload, so a duplicate
+token is simply not enqueued and the producers keep their data until the
+stream drains it. This agent's stat loss point is elsewhere —
+`AgentStats::runAgentStatsWorker` (`src/stat.cpp`) overwrites a completed batch
+that the sender has not taken yet, and reports that through
+`stat_batch_drop_reporter_`. Go's `enqueueStat` head-drops its `statChan`
+instead; the Go agent records that comparison in its own file.
 
 **Decision: no divergence.** Head-drop is the Java default sender's policy.
 
@@ -710,11 +727,12 @@ and drop just the verdict with `Span.ErrorMarkExclude: [sql]`.
 
 ---
 
-## `PSpan.err` carries the error cause mask — same as Java, Go still diverges
+## `PSpan.err` carries the error cause mask — same as Java, shared with Go
 
-Recorded because it was a real divergence until it was fixed, because the fix
-is a behaviour change operators can see, and because the Go port has not landed
-the same change yet.
+Recorded because it was a real divergence until it was fixed, and because the
+fix is a behaviour change operators can see. The Go port has since landed the
+same change, so the three agents now agree; the bit values and the mask rules
+are locked as group 12 of the invariants below.
 
 **Java.** `profiler.error.enable` defaults to `true`
 (`ErrorRecorderConfig.java`), so `ApplicationContextModuleFactory.newErrorRecorderModule`
@@ -744,14 +762,17 @@ what Java's `getAndUpdate` amounts to). `kException` comes from the two
 `kUnknown` always enabled. `kUnknown` is never *recorded* here: every failure
 this agent knows about has a cause, so nothing needs the catch-all bit.
 
-**The Go agent still sends a flat `1`.** Every cause stores `1` into
-`span.root().err` there, so until the matching change lands a C++ service and
-a Go service that failed the same way report different `err` values to the same
-collector. The Go sites are the counterparts of the C++ ones: `span.SetError`
-(`span.go:884`) and `spanEvent.SetError` (`span_event.go:144`) for an
-exception, `span.SetFailure` (`span.go:888-895`), which the 5xx verdict in
-`plugin/http/config.go:248` calls, for a status code, and the SQL count
-overflow in `span_event.go:200`.
+**The Go agent does the same.** It exports `ErrorCategory` with Java's four
+bit values (`tracer.go`) and funnels every cause through one
+`span.markSpanError(category)` (`span.go`), which applies the mask and ORs the
+bit into the trace root with `atomic.Int32.Or` — the counterpart of
+`SpanData::maskErr` here. `Span.ErrorMark` and `Span.ErrorMarkExclude` are the
+same two keys, resolved by `parseErrorMarkMask` (`config.go`) under Java's
+rules. The one difference in reach: Go records `kUnknown` for a bare
+`SetFailure()` with no category, where this agent never records the catch-all
+bit because every failure it knows about has a cause. A C++ service and a Go
+service that failed the same way now report the same `err` to the same
+collector.
 
 **Decision: no divergence from Java.** The agent previously implemented only
 Java's *non-default* path (`SimpleErrorRecorder`, i.e. `profiler.error.enable=false`),
@@ -769,11 +790,12 @@ must test `err != 0` instead.
 
 ---
 
-## Proxy request headers — same as Java, Go still diverges
+## Proxy request headers — same as Java, shared with Go
 
-Recorded because four separate divergences were fixed at once, because each fix
-changes what operators see on the proxy-header annotation, and because the Go
-port has not landed the same changes yet.
+Recorded because four separate divergences were fixed at once, and because each
+fix changes what operators see on the proxy-header annotation. The Go port has
+since landed the same four; the pipeline is locked as group 14 of the
+invariants below.
 
 **Java.** `DefaultProxyRequestRecorder.record` walks **every** configured
 parser and calls `parseHeaderAndRecord` on each
@@ -813,13 +835,29 @@ empty, Java's `parseHeaderAndRecord` `return`s, skipping the *remaining* names
 for that parser; this agent continues to the next name, which is what the loop
 plainly means.
 
-**The Go agent still has all four.** `setProxyHeader`
-(`plugin/http/server.go:134`) is an if/else-if chain over the three fixed
-headers with no user type, has no `t=` gate, and parses the nginx `D=` with
-`strconv.Atoi`, which fails on every real `$request_time` and leaves the
-recorded proxy duration at 0. Until the matching change lands, a C++ service
-and a Go service behind the same nginx report different proxy annotations to
-the same collector.
+**The Go agent has the same four now.** `setProxyHeader`
+(`plugin/http/server.go`) is four independent `if`s — apache, nginx, app and
+the configured user headers — and `appendProxyHeader` is the single `t=` gate
+in front of the annotation. `nginxMillis` reads `sec.mmm` as dot-stripped
+digits, so the nginx duration is real rather than always 0, and `app=` runs
+through `IsValidId(app, 30)`. The user header names are
+`Http.Server.ProxyUserHeaderNames`, the same key. A C++ service and a Go
+service behind the same nginx now report the same proxy annotations to the
+same collector.
+
+**One Go divergence remains, found while locking this: the nginx `D=` is not
+gated on being positive.** Java applies the duration only inside
+`if (durationTimeMicroseconds > 0)`
+(`NginxRequestParser.parseHeader`), so a negative `$request_time` leaves the
+duration unset. This agent reaches the same outcome by a different route:
+`parseProxyDigits` (`src/http.cpp`) accepts `[0-9]` only, so `D=-0.123` fails
+the format check and `parseProxyNginxDurationMicros` returns 0. Go's
+`nginxMillis` (`plugin/http/server.go`) parses the value with
+`strconv.ParseInt`, which takes the sign, so `D=-0.123` is recorded as
+`-123000` µs. Java and this agent agree; Go is the odd one out, and the
+negative duration reaches the annotation. Not locked in group 14 for that
+reason — the received-time gate is locked on all three, the duration gate is
+not.
 
 **Decision: no divergence from Java.** The `t=` gate is the load-bearing one:
 an annotation whose received time is 0 is not a harmless empty field. The web
@@ -838,7 +876,7 @@ its header instead of being truncated to 32 characters.
 
 ---
 
-## Acceptor host without `Pinpoint-Host` — same as Java, Go still diverges
+## Acceptor host without `Pinpoint-Host` — same as Java, shared with Go
 
 **Java.** `ServerRequestRecorder.recordParentInfo` reads
 `Header.HTTP_HOST` and, when the peer sent none, falls back to
@@ -855,12 +893,20 @@ is created, before any request detail is known — so `helper::traceServerReques
 That endpoint is this agent's equivalent of `getAcceptorHost()`: the host
 integration supplies it per request.
 
-**The Go agent still leaves it blank.** `Extract` (`span.go`) sets
-`acceptorHost` only when the header is present, and nothing fills it in later.
+**The Go agent fills it in too.** `Extract` (`span.go`) still records the
+header when there is one, and the fallback lives in `SetEndPoint` for the same
+reason it lives outside `extractContext` here: the server plugins know the
+request host only after the span exists. An explicit `SetAcceptorHost` or a
+`Pinpoint-Host` header still wins in both.
 
 **Decision: no divergence from Java.** A blank acceptor host is not only a
 blank field: `SpanData::getEndPoint` and `getRemoteAddr` default through it, so
 a caller that recorded neither used to send `UNKNOWN` for both.
+
+What keeps the fallback from over-reaching is the parent-app-name guard: a span
+that has an acceptor host but no `Pinpoint-pAppName` emits no `PParentInfo` at
+all, so the fallback cannot invent an unnamed caller node on the server map.
+Both ports lock that guard — group 14 of the invariants below.
 
 ---
 
@@ -872,8 +918,15 @@ snapshot, and leaves the batch and the scheduler untouched. `StatMonitorJob.run(
 then runs its sub-jobs unprotected, so an exception escaping *there* cancels the
 `scheduleAtFixedRate` task for the life of the process.
 
-**Go.** `collectAgentStatWorker` has no per-collection guard; a panic restarts
-the worker and rebuilds `collected`/`batch`, losing the partial batch.
+**Go.** The same policy. `collectAgentStatWorker` (`stats.go`) samples through
+`agentStats.collect`, whose deferred `recover` is the counterpart of
+`CollectJob`'s `catch`: the panic costs that tick's snapshot, the batch cursor
+is left where it was, and the failure is reported through a throttled WARN
+(`collectFailures`) rather than swallowed. `superviseWorker` is the backstop
+for a panic outside that call, and a restart keeps the partial batch there too
+— `collected` and `batch` live on `agentStats`, and a restarted worker re-takes
+only the CPU/time baseline (`resetBaseline`, guarded by `workerStarted`) while
+the first run cold-initializes.
 
 **This agent.** `AgentStats::runAgentStatsWorker` (`src/stat.cpp`) wraps
 `collectAgentStat()` in `try/catch`, as `CollectJob` does: a collection
@@ -935,10 +988,15 @@ learns the agent stopped without the application doing anything. The JVM owns
 the process, and a shutdown hook runs on normal exit and on `SIGTERM`/`SIGINT`
 alike.
 
-**Go.** No `signal.Notify` and no exit hook; `Shutdown()` must be called by
-the host (`os.Exit` and a fatal signal do not run deferred calls, so a missed
-call there loses the tail the same way). An opt-in helper with the same
-default-off policy as this agent's is the intended pairing.
+**Go.** Same policy — off by default, opt-in — reached by a different
+mechanism, and covering the other half of the problem.
+`ShutdownOnSignal(agent, sigs...)` (`shutdown_signal.go`) installs a
+`signal.Notify` watcher that calls `Shutdown()`, restores the default
+disposition with `signal.Stop` and re-raises the signal so the process still
+exits with `128+signum`; with no signals named it watches `SIGTERM` and
+`SIGINT` (`defaultShutdownSignals`). It is opt-in because `signal.Notify` is
+process-wide state a library must not take over silently. What it cannot cover
+is `os.Exit`: Go has no `atexit` and no runtime exit hook.
 
 **This agent.** `Shutdown()` (`Agent::Shutdown()`, `include/pinpoint/tracer.h`)
 is the only path that flushes the span queue and closes the ping stream, and
@@ -954,16 +1012,34 @@ over the host's signal dispositions.
 
 The host therefore chooses: `helper::ScopedAgent` binds `Shutdown()` to a
 scope (the recommended form), an explicit `Shutdown()` call works anywhere,
-and `AgentOptions::install_atexit_shutdown` registers a `std::atexit` hook for
-a plain executable that owns its process. The flag is off by default and is
-documented with its caveats (reverse-order destruction of host objects created
-after `StartAgent()`, no coverage of fatal signals). The documentation
-(`Agent::Shutdown()`, `doc/quick_start.md`, `doc/trouble_shooting.md`) states
-the loss plainly instead of leaving it implied.
+and `AgentOptions::install_atexit_shutdown`
+(`include/pinpoint/tracer.h`, installed by `maybe_install_atexit_shutdown_hook`
+in `src/agent.cpp`) registers a `std::atexit` hook for a plain executable that
+owns its process. The flag is off by default and is documented with its caveats
+(reverse-order destruction of host objects created after `StartAgent()`, no
+coverage of fatal signals). The documentation (`Agent::Shutdown()`,
+`doc/quick_start.md`, `doc/trouble_shooting.md`) states the loss plainly
+instead of leaving it implied.
+
+**The two ports cover opposite halves.** Go's helper handles signals but not
+`os.Exit`; this agent's hook handles normal `exit()` but not signals, so under
+the default disposition a `SIGTERM` — a Kubernetes rollout, an init-system stop
+— still loses the queued spans here even with `install_atexit_shutdown` on. The
+gap is not an oversight in either port: neither mechanism is available to the
+other, and the remedies differ for the same reason. In Go a handler is
+ordinary code, so a host with its own handler calls `Shutdown()` from it. Here
+it must not: `Shutdown()` joins threads and tears down gRPC, so a host that has
+to survive `SIGTERM` makes its handler take the process down the *normal* exit
+path — stop the server loop, let `main()` return — and leaves the guard or the
+hook to do the rest. `doc/trouble_shooting.md` ("Signals are yours to handle")
+spells that out. Everything the two ports *do* agree on about shutdown — the
+3 s deadline, idempotence, naming the stragglers — is group 16 of the
+invariants below.
 
 **Revisit if** the agent stops being embeddable (a standalone process of its
 own) — then a Java-style unconditional hook would be the right default.
 
+---
 
 ## Tracing while a shutdown is in progress — off at once, Go keeps tracing until drain
 
@@ -993,9 +1069,7 @@ need traced; the change is confined to where `enabled_` is cleared.
 
 ---
 
----
-
-## gRPC channel arguments — idle timeout same as Java, the rest left at C-core defaults
+## gRPC channel arguments — idle timeout disabled as in Java and Go, the rest left at C-core defaults
 
 Keepalive and the message-size limits are locked (group 11 below). The other
 HTTP/2 tuning that `ClientOption` carries is compared here, knob by knob. The
@@ -1010,12 +1084,14 @@ auto-tuning off), `maxInboundMetadataSize(8 KB)`, `WRITE_BUFFER_WATER_MARK` low
 `ClientOption.IDLE_TIMEOUT_MILLIS_DISABLE` is 30 days — the constant is named
 as a disable sentinel, and nothing in the agent overrides it.
 
-**Go.** `grpc.go dialOptions` mirrors Java's fixed values:
+**Go.** `dialOptions` (`grpc.go`) mirrors Java's fixed values:
 `WithInitialWindowSize` / `WithInitialConnWindowSize(1 MiB)` (which sets
 `StaticWindowSize` so no BDP estimator is created), `WithWriteBufferSize`,
-`WithMaxHeaderListSize(8 KB)`. It does **not** call `WithIdleTimeout`, so the
-Go agent runs grpc-go's default of 30 minutes (`dialoptions.go`, v1.82.1) and
-its channels do drop to `Idle` after half an hour without an RPC.
+`WithMaxHeaderListSize(8 KB)`. It also passes
+`grpc.WithIdleTimeout(o.idleTimeout)` with `Collector.Grpc.IdleTimeout`
+defaulting to `0`, which is what `WithIdleTimeout` documents as "disabled";
+grpc-go's unset default would be 30 minutes (`dialoptions.go`
+`defaultDialOptions`, v1.82.1).
 
 **This agent.**
 
@@ -1025,7 +1101,7 @@ its channels do drop to `Idle` after half an hour without an RPC.
 | Max header list size | 8 KB inbound | 8 KB inbound | **unset**: default is already 8 KB soft / 16 KB hard |
 | Write buffer | Netty writability watermarks | socket write batching | **unset**: the only C-core knob is a no-op without `GRPC_WRITE_BUFFER_HINT` |
 | Connect timeout | `CONNECT_TIMEOUT_MILLIS` | grpc-go dialer default | **unset**: no C-core equivalent; `readyChannel()` + backoff own reconnects |
-| Idle timeout | 30 days (disabled) | 30 min (grpc-go default) | **disabled** by default: `GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX`; `Collector.Grpc.IdleTimeoutMs` re-enables it |
+| Idle timeout | 30 days (disabled) | `WithIdleTimeout(0)` (disabled); `Collector.Grpc.IdleTimeout` re-enables it | **disabled** by default: `GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX`; `Collector.Grpc.IdleTimeoutMs` re-enables it |
 
 The first four are left alone because the C-core default is equal or better
 than the pinned value, and a pinned value would either disable auto-tuning or
@@ -1040,9 +1116,22 @@ config is the disable sentinel and maps to the `INT_MAX` that C-core documents
 as unlimited. Only the decision is locked
 (`JavaParityLockTest.GrpcChannelDefaults`), not the sentinel value.
 
-**Revisit if** Java stops disabling the idle timeout, or if the Go agent starts
-setting `WithIdleTimeout` — then the three should agree on one value and this
-row moves into group 11.
+**All three disable idling, by three different sentinels.** Java's 30 days,
+this agent's `INT_MAX` and Go's `0` all mean "never idle" in their own runtime,
+and none of the three can spell the others' value: 30 days does not fit a
+32-bit millisecond channel argument, and `0` is C-core's "use the default", not
+its disable. So the *decision* is the shared thing and the value is not, which
+is why this row stays out of group 11 — a lock on the number would be a lock on
+an accident of three runtimes. Each port locks its own sentinel against its own
+disable semantics instead (`JavaParityLockTest.GrpcChannelDefaults` here,
+`Test_javaParityLock_GrpcChannelDefaults` in Go), and the shared decision is
+recorded in this row and in the Go agent's matching table. This resolves the
+earlier "revisit if the Go agent starts setting `WithIdleTimeout`" trigger: it
+did, with `0`, and the answer is that the row does not move.
+
+**Revisit if** Java stops disabling the idle timeout, or if a runtime changes
+what its sentinel means — then the row needs a divergence entry of its own
+rather than this one.
 
 ---
 
@@ -1053,11 +1142,32 @@ row moves into group 11.
 owns it, and later plain calls are ignored. `setUriTemplate(uriTemplate, true)`
 (the `force` overload `DefaultSpanRecorder.recordUriTemplate` exposes) is a
 plain set for the host that has to replace an early guess with the route it
-eventually matched. The HTTP method and status code travel separately
-(`setHttpMethod`, `HttpStatusCodeRecorder`) and are plain last-wins setters.
+eventually matched. The status code travels separately
+(`DefaultShared.setStatusCode:128-131`, `HttpStatusCodeRecorder`) and is a
+plain last-wins setter.
 
-**Go.** `span.go` assigns `span.urlStat = stat` on every call, so the last
-caller wins. Gap **U6** is still open there.
+**Java's HTTP method is *not* a plain setter, and both ports diverge from it.**
+`DefaultShared.setHttpMethods` (`DefaultShared.java:168-177`) is
+`HTTP_METHODS_UPDATER.compareAndSet(this, null, httpMethod)` — the same
+`null -> value` CAS as `setUriTemplate`, so Java is first-wins on the method
+too, and only `setStatusCode` is the plain setter. Both ports are last-wins on
+the method. That half is therefore a two-port consensus, not Java parity: one
+C++ call carries `(url_pattern, method, status_code)` together and the status
+code has to be last-wins (see below), so the method rides with it. The
+practical cost is nil — a request has one method, and the frameworks record it
+once — but it is a divergence and is recorded as one rather than presented as
+parity. Two in-tree comments still say otherwise and are **not** corrected by
+this entry: the comment above `SpanTest.SetUrlStatKeepsTheFirstPatternTest`
+(`test/test_span.cpp`) calls Java's method setter "plain", and the comment on
+`mergeUrlStat` (`span.go`) in the Go agent says the same. A reader meets the
+wrong claim in the code first; this file is where it is settled.
+
+**Go.** The same policy, adopted after this agent. `span.collectUrlStat` and
+`noopSpan.collectUrlStat` both go through `mergeUrlStat` (`span.go`,
+`noop.go`): once the span holds a real `Url`, a later call keeps it and
+refreshes only `Method` and `Status`. The `urlStatUnknown` stand-in is treated
+as Java's `null`, so a later real template still fills it in, and
+`MetricURLStatForce` is the `force = true` overload. Gap **U6** is closed.
 
 **This agent.** `SpanImpl::SetUrlStat` and `UnsampledSpan::SetUrlStat` used to
 `emplace` over the existing entry, i.e. last-wins like Go. They now follow Java:
@@ -1073,7 +1183,9 @@ was making the whole entry first-wins. That would have frozen the status code at
 whatever the first caller passed — typically `0`, because the framework records
 the route before the response exists — and departed from Java, where the status
 code is the last recorder's. Keeping the pattern first-wins and the rest
-last-wins reproduces Java's per-field semantics inside the existing structure.
+last-wins reproduces Java's per-field semantics for the template and the status
+code inside the existing structure, and accepts the method divergence above as
+the price.
 
 This also fixes the exception tagging path: `recordException` reads
 `getUrlTemplate()` off the same entry, so the `url_template` of a reported
@@ -1180,10 +1292,17 @@ and the Go agent, and that are now pinned by an assertion suite in each port so
 they cannot drift back apart unnoticed.
 
 The suites are `test/test_java_parity_lock.cpp` (C++) and
-`java_parity_lock_test.go` (Go). They are organised into the same eleven groups,
-in the same order, as the table below. Where an older suite already covered a
-group, the lock file cross-references it instead of duplicating it — the table's
-"locked by" column names whichever file holds the assertions.
+`java_parity_lock_test.go` (Go), plus
+`plugin/http/java_parity_lock_test.go` for the half of group 14 that lives in
+the Go agent's `plugin/http` package. They are organised into the same sixteen
+groups, in the same order, as the table below. Where an older suite already
+covered a group, the lock file cross-references it instead of duplicating it —
+the table's "locked by" column names whichever file holds the assertions.
+
+Groups 15 and 16 are the exception to the section's own rule: they lock a
+**port consensus** rather than Java parity, because Java has no counterpart to
+either. They are kept here because they are still two-agent contracts that must
+not drift apart, and each row says so.
 
 **Changing a locked value is a three-agent change.** If one of these assertions
 fails, either the change is wrong, or all three implementations, this table and
@@ -1193,17 +1312,22 @@ divergence entry above saying why.
 
 | # | Group | Java reference | What is locked | Locked by (C++) | Locked by (Go) |
 |---|---|---|---|---|---|
-| 1 | SQL normalization state machine | `commons-profiler` `sql/ParserContext.parse`, `DefaultSqlNormalizer` | `<n>#` / `<n>$` substitution drawing from **one shared index counter**; `,,` escaping of a comma inside a literal; `''` consuming no index; an unterminated literal emitting no placeholder; `#` not being a comment; `/*/`; `$`+digit staying an identifier; whitespace preserved; normalization not idempotent | `test_sql.cpp` (`SqlTest.JavaParityGoldenCases`, ported `JavaDefault*`) · `test_java_parity_lock.cpp` (`SqlNormalizer*`) | `sql_util_test.go` · `java_parity_lock_test.go` (`…SqlNormalizerGoldenCases`, `…SqlNormalizerSharedIndexCounter`, `…SqlNormalizerIsNotIdempotent`, `…SqlNormalizerWhitespaceIsNotNormalized`, `…SqlNormalizerRemoveComments`) |
-| 2 | span event depth / sequence numbering | `DefaultCallStack.isOverflow`, `DefaultInstrumentConfig`, `pinpoint-root.config` | depth 64 / sequence 5000 / event chunk 20; deepest recorded level is `maxDepth + 1`; exactly `maxSequence` events recorded; `-1` means unlimited | `…SpanEventLimitDefaults`, `…SpanEventOverflowBoundaries` | `…SpanEventLimitDefaults`, `…SpanEventLimitFloors`, `…SpanEventOverflowDecision` |
+| 1 | SQL normalization state machine | `commons-profiler` `sql/ParserContext.parse`, `DefaultSqlNormalizer` | `<n>#` / `<n>$` substitution drawing from **one shared index counter**; `,,` escaping of a comma inside a literal; `''` consuming no index; an unterminated literal emitting no placeholder; `#` not being a comment; `/*/`; `$`+digit staying an identifier; whitespace preserved; normalization not idempotent; a statement over the 1 MiB input cap **dropped whole**, never cut — the same constant and the same drop policy in both ports, a deliberate shared divergence from Java, which has no input cap at all | `test_sql.cpp` (`SqlTest.JavaParityGoldenCases`, `OversizeSqlIsDroppedNotCut`, `DropsAtHardCap`, ported `JavaDefault*`) · `test_java_parity_lock.cpp` (`SqlNormalizer*`) | `sql_util_test.go` · `java_parity_lock_test.go` (`…SqlNormalizerGoldenCases`, `…SqlNormalizerSharedIndexCounter`, `…SqlNormalizerIsNotIdempotent`, `…SqlNormalizerWhitespaceIsNotNormalized`, `…SqlNormalizerRemoveComments`, `…SqlNormalizerInputCapDropsTheWholeStatement`) |
+| 2 | span event depth / sequence numbering | `DefaultCallStack.isOverflow`, `DefaultCallStack.push`, `DefaultInstrumentConfig`, `pinpoint-root.config` | depth 64 / sequence 5000 / event chunk 20; deepest recorded level is `maxDepth + 1`; exactly `maxSequence` events recorded; `-1` means unlimited; the `(sequence, depth)` pair is **reserved atomically**, so two threads of one span can never be handed the same sequence — a two-port addition, since Java numbers under a single-thread call-stack contract (`sequence++` inside `push`) that neither port can rely on | `…SpanEventLimitDefaults`, `…SpanEventOverflowBoundaries`, `…SpanEventPositionsAreReservedAtomically` | `…SpanEventLimitDefaults`, `…SpanEventLimitFloors`, `…SpanEventOverflowDecision`, `…SpanEventPositionIsReservedAtomically` |
 | 3 | span chunk serialization | `context/compress/GrpcSpanProcessorV2` | `keyTime` — final chunk keys off the span's start time, a non-final chunk off its first event; `startElapsed` is the delta to the previous event (to `keyTime` for the first); the chunk is sorted by sequence before serialization; a non-final chunk carries the `endPoint` it was cut with | `test_span.cpp` (`SpanChunkOptimizeMultipleEventsTest`, `SpanChunkOptimizeNonFinalKeyTimeTest`, `SpanChunkEndPointSnapshotTest`) | `…ChunkKeyTimeAndStartElapsed`, `…ChunkSortsBySequence`, `…ChunkSnapshotsEndPoint` |
 | 4 | async id / span id sentinels | `DefaultAsyncIdGenerator`, `bootstrap/context/SpanId.NULL` | async id `0` and span id `-1` are reserved for "absent"; a drawn id is redrawn until it is not the sentinel | `…AsyncIdSentinel` | `…Sentinels`, `…GeneratedSpanIdIsNeverTheSentinel` |
 | 5 | propagation headers and transaction id | `Header`, `TransactionIdUtils`, `sampler/SamplingFlagUtils`, `AnnotationKey` | all ten `Pinpoint-*` header names; `agentId^startTime^sequence`; the agent-id character class; the parser stopping at the third delimiter; only the exact string `"s0"` disabling sampling; the annotation keys the agent emits (12 / 20 / 25 / 40 / 46 / 300 / −52) | `…PropagationHeaderNames`, `…AnnotationKeys`, `…TransactionIdFormat`, `…TransactionIdParsing`, `…SampledHeaderEncoding` | `…PropagationHeaderNames`, `…AnnotationKeys`, `…TransactionIdFormat`, `…TransactionIdParsing`, `…SampledHeaderEncoding` |
-| 6 | sampling formulas | `sampler/CountingSampler`, `PercentRateSampler`, `PercentSamplerFactory` | counting tests the **pre-increment** value, so the first request of the process is sampled and every rate-th one after it; the percent admission window is `(0, rate]`; the percentage is multiplied by 100 and truncated; rate 0 / 1 / 100 are the False- and TrueSampler cases; a negative rate is clamped, never promoted to unsigned | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerEdgeRates` | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerRateTruncation` |
-| 7 | URI histogram layout | `common/trace/UriStatHistogramBucket.Layout`, `AsyncQueueingUriStatStorage`, `URITemplate.NULL_URI` | the eight bucket bounds (100 / 300 / 500 / 1000 / 3000 / 5000 / 8000 / ∞); `bucketVersion = 0`; a 30s tick aligned to the epoch boundary; at most four completed snapshots; an all-zero histogram travels as an empty message while a single 0 ms sample does not; the no-URI stand-in key `/NULL` | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatUnknownKey`, `…UrlStatEmptyHistogram` | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatEmptyHistogram`, `…UrlStatUnknownKey` (skipped — see below) |
+| 6 | sampling formulas and the throughput limiter | `sampler/CountingSampler`, `PercentRateSampler`, `PercentSamplerFactory`, `RateLimiter.create` → Guava `SmoothBursty` (via `RateLimitTraceSampler`, `ExceptionChainSampler`) | counting tests the **pre-increment** value, so the first request of the process is sampled and every rate-th one after it; the percent admission window is `(0, rate]`; the percentage is multiplied by 100 and truncated; rate 0 / 1 / 100 are the False- and TrueSampler cases; a negative rate is clamped, never promoted to unsigned; the throughput bucket behind the per-second limits **starts empty** (Guava's `storedPermits = 0`), so a fresh limiter admits exactly one caller and paces the rest at tps, a rebuild on reload starts empty again, and steady-state capacity is exactly one second of permits however long the idle (`maxBurstSeconds = 1`) | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerEdgeRates`, `…ThroughputLimiterInitialState` · `test_limiter.cpp` (`FirstCallPassesThenPacesAtTps`, `IdleBurstIsCappedAtTps`, `LongIdleDoesNotAccumulate`) | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerRateTruncation`, `…ThroughputLimiterInitialState`, `…ThroughputLimiterCapacity` |
+| 7 | URI histogram layout and URL stat entry rules | `common/trace/UriStatHistogramBucket.Layout`, `AsyncQueueingUriStatStorage`, `URITemplate.NULL_URI`, `DefaultShared.setUriTemplate`, `AgentUriStatData.add` | the eight bucket bounds (100 / 300 / 500 / 1000 / 3000 / 5000 / 8000 / ∞); `bucketVersion = 0`; a 30s tick aligned to the epoch boundary; at most four completed snapshots; an all-zero histogram travels as an empty message while a single 0 ms sample does not; the no-URI stand-in key `/NULL`; the URI template is **first-write-wins** with an explicit force override, while the status code is last-write-wins (the HTTP method is last-write-wins in both ports and diverges from Java — see [URI template is first-wins](#uri-template-is-first-wins--same-as-java)); an entry whose end time was never set is **skipped**, not keyed under tick 0, and is not counted as a capacity drop | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatUnknownKey`, `…UrlStatEmptyHistogram`, `…UrlStatEntryWithoutAnEndTimeIsSkipped` · `test_span.cpp` (`SetUrlStatKeepsTheFirstPatternTest`, `SetUrlStatEmptyPatternDoesNotClaimTheSlotTest`, `ForceUrlStatReplacesTheRecordedPatternTest`) | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatEmptyHistogram`, `…UrlStatUnknownKey`, `…UrlStatTemplateIsFirstWriteWins`, `…UrlStatWithoutAnEndTimeIsSkipped` |
 | 8 | active trace histogram layout | `common/trace/BaseHistogramSchema` NORMAL schema | the four slots at 1000 / 3000 / 5000 ms with an **inclusive** upper bound, so a span at exactly 1000 ms is still "fast" | `…ActiveTraceHistogram` | `…ActiveTraceHistogram` |
 | 9 | transaction counters | `context/id/DefaultTransactionCounter` | all six counters (sampled/unsampled/skipped × new/continuation) exist and drain independently, and a drain resets them | `test_stat.cpp` (`SamplingCountersTest`, `AllCountersMixedIncrementTest`, `CollectResetsCountersBetweenCallsTest`) | `…TransactionCounters` |
 | 10 | message truncation format | `StringUtils.abbreviate`, `AbstractRecorder.recordException` | a value within the cap is returned verbatim; a longer one keeps its first *n* bytes and gains a `...(original length)` suffix; the caps 256 (span / span event error) and 65536 (SQL metadata text); the cut lands on a UTF-8 boundary so the result stays valid for protobuf | `…TruncationFormat`, `…TruncationCutsOnAUtf8Boundary`, `…MessageLimits` | `…TruncationFormat`, `…TruncationCutsOnARuneBoundary`, `…MessageLimits` |
-| 11 | gRPC channel constants | `grpc/.../client/config/ClientOption`, `GrpcTransportConfig`, `AgentInfoSender`, `pinpoint-root.config` | collector ports 9991 / 9992 / 9993; keepalive 30s / 60s without permit-without-stream; 4 MiB max message; connection and stream renewal off; AgentInfo refresh 24h with 3 tries per attempt; span batch 20 / 1000 ms / 500 ms / 10 concurrent; stat 5000 ms × 6; SQL cache size 1024, limit 2048, expiry 168h, bind value 1024, error count 100 | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…AgentInfoSchedule`, `…SpanBatchDefaults`, `…StatCollectionDefaults`, `…SqlCacheDefaults` | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…ReconnectBackoff`, `…AgentInfoSchedule` |
+| 11 | gRPC channel constants | `grpc/.../client/config/ClientOption`, `GrpcTransportConfig`, `AgentInfoSender`, `pinpoint-root.config` | collector ports 9991 / 9992 / 9993; keepalive 30s / 60s without permit-without-stream; 4 MiB max message; connection and stream renewal off; AgentInfo refresh 24h with 3 tries per attempt; span batch 20 / 1000 ms / 500 ms / 10 concurrent; stat 5000 ms × 6; SQL cache size 1024, limit 2048, expiry 168h, bind value 1024, error count 100; the SQL length limit gating the **UID cache only** and never the id cache, as Java's `UidCache.put` bypass and limit-free `newSqlCache()` do (raised as a defect by two consecutive cross-agent reviews; it is the Java behaviour, so it is locked as behaviour rather than as a constant) | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…AgentInfoSchedule`, `…SpanBatchDefaults`, `…StatCollectionDefaults`, `…SqlCacheDefaults`, `…SqlCacheLengthLimitAppliesToTheUidCacheOnly` | `…CollectorPortDefaults`, `…GrpcChannelDefaults`, `…ReconnectBackoff`, `…AgentInfoSchedule`, `…SqlCacheLengthLimitAppliesToTheUidCacheOnly` |
+| 12 | error cause categories | `commons/.../trace/ErrorCategory`, `ConfigurableErrorRecorder.recordError`, `ConfigurableErrorRecorderFactory.getEnabledTypes` | the four bits `UNKNOWN = 1`, `EXCEPTION = 2`, `HTTP_STATUS = 4`, `SQL = 8` as a **wire contract** the collector reads out of `PSpan.err`; mask resolution — an unset mark enables every category, the exclude list is subtracted from it, and `UNKNOWN` is re-added last, so it can be neither selected nor excluded; tokens are trimmed, lower-cased and comma-separable, matching `exception` / `http-status` / `sql`, and an unrecognized one is warned about and ignored rather than failing the parse; an **excluded category records nothing at all** — not its bit, not an `UNKNOWN` fallback | `…ErrorCategoryBitValues`, `…ErrorMarkMaskResolution` · `test_span.cpp` (`ErrorMarkExclude*`) | `…ErrorCategoryBits`, `…ErrorMarkMaskResolution`, `…ExcludedCategoryRecordsNothing` |
+| 13 | queue overflow policy | `pinpoint-root.config:135` (`profiler.transport.grpc.span.sender.type=BATCH`), `SpanBatchGrpcDataSender.send` | the span queue **head-drops** — the oldest entry is discarded, the newest is always taken, and every drop is counted — which is Java's *default* sender: `SpanBatchGrpcDataSender.send` offers, and on a full queue `queue.poll()`s the head away before re-offering. The tail-drop of `GrpcDataSender.send` ("reject message") belongs to the non-default STREAM sender's base class and has been **mis-cited as the reference in five successive reviews**; the config default above is where to check it before raising it a sixth time. | `…SpanQueueHeadDropsTheOldest` · `test_sharded_bounded_queue.cpp` | `…SpanQueueHeadDrops` · `span_queue_test.go` |
+| 14 | proxy request header pipeline | `DefaultProxyRequestRecorder.record`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser`, `ServerRequestRecorder.recordParentInfo` | all four parsers run **independently**, so a request behind two proxies records two annotations rather than only the hop nearest the agent; each is gated on a **positive received time**, so no `t=`, a `t=0` or one that does not parse records nothing at all; nginx's `t=` (`$msec`) and `D=` (`$request_time`) accept only `sec.mmm` — exactly three decimals — and are converted with integer arithmetic, never a float multiply (`0.123` is 123000 µs, not 122999); `PParentInfo` is emitted **only when `parentAppName` is non-empty**, which is the invariant that keeps the acceptor-host fallback from shipping a parent node with no application name. The nginx **duration** gate is deliberately *not* in this group — see [Proxy request headers](#proxy-request-headers--same-as-java-shared-with-go). | `…ProxyParsersRunIndependently`, `…ProxyHeaderNeedsAPositiveReceivedTime`, `…ProxyNginxTimestampsAreExactThreeDecimals`, `…ParentInfoOnlyWhenParentAppNameIsPresent` · `test_http.cpp` | `plugin/http/java_parity_lock_test.go` (`…ProxyParsersRunIndependently`, `…ProxyHeaderNeedsAPositiveReceivedTime`, `…ProxyNginxTimestampsAreExactThreeDecimals`) · `…ParentInfoRequiresAParentAppName` |
+| 15 | logging level policy | **none** — the Java agent's own level comes from its log4j2 configuration, which fails or falls back on its own terms | an **unsupported level string leaves the level in effect unchanged** and logs that it did, rather than resetting to a default: silently ignoring a typo looks like a successful change, and on a config reload it would leave an operator debugging at the old level with no line explaining why; `warn` and `warning` are both accepted; `MaxBackups` defaults to 1 and a value below 1 is restored to it rather than honoured, since `0` reads as "keep none" to one reader and "keep all" to another; the maximum file size defaults to 10 MB. A **two-port consensus**, not Java parity — Java has no counterpart to the first rule. | `…UnsupportedLogLevelKeepsTheCurrentLevel`, `…LogRotationDefaults` | `…UnsupportedLogLevelKeepsTheCurrentLevel`, `…ConfigRejectsAnUnsupportedLogLevel`, `…LogRotationDefaults` |
+| 16 | shutdown contract | **none** — shutdown in Java is per-component (each `DataSender.close()` / `GrpcDataSender.release` awaits its own executor for 3 s), with no wall-clock bound on the teardown as a whole and no report of what was still running | a **3 s deadline** bounds the blocking phase of shutdown, after which the teardown is abandoned and `Shutdown()` returns, because neither a gRPC cancellation nor a filesystem-bound watcher join can be bounded on its own; `Shutdown()` is **idempotent** and safe under concurrent callers; a deadline overrun names the **straggler workers by name**, not a count, since "shutdown timed out" alone is not actionable in a host process; the **worker table is the single source of truth** for spawn, stop, join and that report, so the goroutine/thread set and the drain cannot disagree. A **port consensus**, not Java parity. | group 16 of `test_java_parity_lock.cpp` (narrative) · `test_agent_with_mocks.cpp` (`AgentShutdownDeadlineTest.*`, `AgentImplTest.ShutdownIsIdempotent`), and the `static_assert`s on `worker_specs()` / `kTeardownOrder` in `src/agent.cpp` | `…ShutdownDeadline`, `…ShutdownIsIdempotent`, `…ShutdownNamesStragglers`, `…WorkerTableIsTheSingleSourceOfTruth` · `agent_test.go` |
 
 ### Deliberately not locked
 
@@ -1221,9 +1345,16 @@ not, because the agents knowingly differ; each has its own entry above or in
 - **Flow-control window, write buffer, max header list size, idle timeout** —
   Java pins the first three (`ClientOption`) and the Go agent follows; the C++
   agent leaves them at the gRPC C-core defaults so the BDP estimator can tune
-  the window. The idle timeout is disabled in Java and here but not in Go, and
-  the disable sentinel differs (30 days vs `0` → `INT_MAX`). See
-  [gRPC channel arguments](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults).
+  the window. The idle timeout is disabled in all three, but by three different
+  sentinels (30 days / `INT_MAX` / `0`), so the decision is shared and the value
+  is not. See
+  [gRPC channel arguments](#grpc-channel-arguments--idle-timeout-disabled-as-in-java-and-go-the-rest-left-at-c-core-defaults).
+- **The nginx proxy `D=` positivity gate** — group 14 locks the *received
+  time* gate on all three agents, but not the duration one. Java applies the
+  duration only when `durationTimeMicroseconds > 0` and this agent reaches the
+  same outcome through a digits-only parser; the Go agent records a negative
+  duration. See
+  [Proxy request headers](#proxy-request-headers--same-as-java-shared-with-go).
 - **Stat collect interval** — the locked 5000 ms is Java's *code* default
   (`DefaultMonitorConfig`); Java's release profile ships 10000 ms.
 - **URL statistics send cadence** — not a constant of its own in any of the
@@ -1236,15 +1367,18 @@ not, because the agents knowingly differ; each has its own entry above or in
 
 ### Skipped assertions
 
-Two Go assertions are written but skipped, each naming the gap it waits on. They
-are the fastest way to see whether a fix landed: delete the `t.Skip` line.
+None. The two that used to be here are both resolved and now run:
 
-- `Test_javaParityLock_ChunkDepthCompression` — gap **S4**. Java
-  (`GrpcSpanProcessorV2`) and the C++ agent seed the previous depth on the first
-  event of a chunk; the Go agent does not, so the second event of every chunk is
-  compared against 0 and never compressed. The wire bytes differ, the meaning
-  does not.
-- `Test_javaParityLock_UrlStatUnknownKey` — gap **U2**. Java's
-  `URITemplate.NULL_URI` is `/NULL` and the C++ agent copies it verbatim; the Go
-  agent writes `UNKNOWN_URL`, so a mixed deployment splits its "no URI recorded"
-  traffic across two server-side keys.
+- Gap **S4**, chunk depth compression — `optimizeSpanEvents` (`span.go`) seeds
+  the compression baseline with the first event's own depth, so the Go agent
+  compresses from the second event of a chunk as Java's `GrpcSpanProcessorV2`
+  and this agent do. `Test_javaParityLock_ChunkDepthCompression` asserts it
+  without a skip.
+- Gap **U2**, the no-URI stand-in key — `urlStatUnknown` (`url_stat.go`) is
+  `/NULL`, Java's `URITemplate.NULL_URI`, not the old `UNKNOWN_URL`, so a mixed
+  deployment no longer splits its "no URI recorded" traffic across two
+  server-side keys. `Test_javaParityLock_UrlStatUnknownKey` asserts it without
+  a skip, on both the sampled and the unsampled path.
+
+The group 3 note in `test/test_java_parity_lock.cpp` still describes S4 as open
+and its Go test as skipped; that comment is stale, not this table.

@@ -46,7 +46,7 @@
   (`plugin/http/server.go`) is unchanged there, so until the matching change
   lands a C++ service and a Go service behind the same nginx report different
   proxy annotations to the same collector. See
-  [doc/java_parity.md](doc/java_parity.md#proxy-request-headers--same-as-java-go-still-diverges).
+  [doc/java_parity.md](doc/java_parity.md#proxy-request-headers--same-as-java-shared-with-go).
 
 - **The acceptor host falls back to the request endpoint without
   `Pinpoint-Host`.**
@@ -61,7 +61,7 @@
   ([src/http.cpp](src/http.cpp), [src/span.cpp](src/span.cpp)); a header that
   is present still wins. The Go agent's `Extract` (`span.go`) still leaves it
   blank. See
-  [doc/java_parity.md](doc/java_parity.md#acceptor-host-without-pinpoint-host--same-as-java-go-still-diverges).
+  [doc/java_parity.md](doc/java_parity.md#acceptor-host-without-pinpoint-host--same-as-java-shared-with-go).
 
 - **`PSpan.err` now carries the error cause, not a flat `1`.**
 
@@ -93,7 +93,7 @@
   **The Go agent still sends `1`.** Until the matching change lands there, a
   C++ service and a Go service that failed the same way report different `err`
   values to the same collector. See
-  [doc/java_parity.md](doc/java_parity.md#pspanerr-carries-the-error-cause-mask--same-as-java-go-still-diverges).
+  [doc/java_parity.md](doc/java_parity.md#pspanerr-carries-the-error-cause-mask--same-as-java-shared-with-go).
 
 - **Continuing an inbound trace now requires all three trace headers.**
 
