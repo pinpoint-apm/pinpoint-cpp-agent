@@ -1969,18 +1969,19 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
     for (int attempt = 0; attempt < 20 && !delivered; ++attempt) {
         impl_->recordStats(URL_STATS);
         delivered = collector_.WaitFor([&stalled_entries](const auto& snapshot) {
-            return stalled_entries(snapshot).size() >= 4;
+            return stalled_entries(snapshot).size() >= 5;
         }, 250ms);
     }
     ASSERT_TRUE(delivered) << "retained ticks never reached the collector";
 
     const auto by_tick = stalled_entries(collector_.snapshot());
 
-    // Four completed ticks are retained; the older five were evicted whole
-    // rather than starving the newer ones. The tenth is still in progress and
-    // a send never takes that one.
-    ASSERT_EQ(by_tick.size(), 4U);
-    int expected_tick = kStalledTicks - 5;
+    // Five completed ticks are retained (Java's snapshotQueue, whose size() > 4
+    // check runs before the offer); the older four were evicted whole rather
+    // than starving the newer ones. The tenth is still in progress and a send
+    // never takes that one.
+    ASSERT_EQ(by_tick.size(), 5U);
+    int expected_tick = kStalledTicks - 6;
     for (const auto& [timestamp, uris] : by_tick) {
         EXPECT_EQ(timestamp, kBaseMillis + expected_tick * kTickMillis)
             << "ticks must be reported on the unchanged 30s grid";

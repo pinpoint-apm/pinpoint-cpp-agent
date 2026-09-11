@@ -181,6 +181,9 @@ namespace pinpoint {
     /// @brief Background workers for collecting and sending URL statistics.
     class UrlStats {
     public:
+        /// @brief Completed ticks retained while the stats stream is down
+        ///        (Java's snapshotQueue holds the same five).
+        static constexpr size_t maxCompletedSnapshots() noexcept { return kMaxCompletedSnapshots; }
         /// @brief @p tick_interval (bucket width) defaults to the production
         ///        value. @p send_interval is the send worker's timed wait: the
         ///        agent passes Stat.BatchInterval, and the default is that
@@ -237,11 +240,13 @@ namespace pinpoint {
 
     private:
         static constexpr size_t kQueueShardCount = 16;
-        // Completed ticks retained while the stats stream is down: two minutes
-        // of 30s ticks. Bounded because a stream that never
-        // recovers would otherwise grow this without limit; the oldest tick
-        // is the one worth losing first.
-        static constexpr size_t kMaxCompletedSnapshots = 4;
+        // Completed ticks retained while the stats stream is down. Java's
+        // AsyncQueueingUriStatStorage.addCompletedData compares
+        // snapshotQueue.size() > SNAPSHOT_LIMIT (4) BEFORE offering, so it
+        // holds five; the constant here is the retained count itself.
+        // Bounded because a stream that never recovers would otherwise grow
+        // this without limit; the oldest tick is the one worth losing first.
+        static constexpr size_t kMaxCompletedSnapshots = 5;
 
         // One queue per shard: each request thread sticks to one shard
         // (picked by thread id), so enqueues from different threads mostly

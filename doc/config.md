@@ -232,7 +232,7 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 |---|---|---|---|---|
 | `Stat.Enable` | `PINPOINT_CPP_STAT_ENABLE` | bool | `true` | Enable/disable system statistics collection. |
 | `Stat.BatchCount` | `PINPOINT_CPP_STAT_BATCH_COUNT` | int | `6` | Number of stat batches collected before sending. Valid range: `1`-`100`. |
-| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`60000`. Also the timer of the URL statistics send worker (see [HTTP configuration](#http-configuration)): a completed URL stat tick is sent immediately, and this is the ceiling on how late the last tick is closed once traffic stops. |
+| `Stat.BatchInterval` | `PINPOINT_CPP_STAT_BATCH_INTERVAL` | int | `5000` | Interval between collections in milliseconds. Valid range: `1000`-`10000` (Java's `DefaultAgentStatMonitor` bounds; a value outside it falls back to the default). Also the timer of the URL statistics send worker (see [HTTP configuration](#http-configuration)): a completed URL stat tick is sent immediately, and this is the ceiling on how late the last tick is closed once traffic stops. |
 
 What the collector receives in each `PAgentStat` row, since the C++ agent has no JVM to report on:
 
@@ -383,10 +383,10 @@ excluding causes individually covers the same ground.
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
-| `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1024` | Max unique URL stat keys to track. `0` records none; negative values fall back to the default. |
-| `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered per request-thread queue shard (16 shards) while waiting for aggregation, which runs every 10 ms; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. |
-| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `true` | Enable URL path trimming for normalisation. **Keep it on only if the caller passes the raw request URL; set it to `false` if the caller passes a URL pattern** — see the note below. |
-| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `3` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is, so the default depth `3` keeps `/api/users/123` and trims only from the fourth segment (`/api/users/123/comments` → `/api/users/123/*`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
+| `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1000` | Max unique URL stat keys tracked per 30-second tick (Java's `profiler.uri.stat.completed.data.limit.size`). `0` records none; negative values fall back to the default. |
+| `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered per request-thread queue shard (16 shards) while waiting for aggregation, which runs every 10 ms; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. Java buffers on one queue of `5192`; here the bound is per shard, so one thread can buffer 1024 and the process up to 16 × 1024 — see [Java parity](java_parity.md#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded). |
+| `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `false` | Trim the recorded URL to `UrlStatTrimPathDepth` leading segments plus `*`. **Off by default, like Java and Go: a recorded URI template is aggregated verbatim. Turn it on only if the caller can pass nothing but the raw request URL** — see the note below. |
+| `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `3` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is, so depth `3` keeps `/api/users/123` and trims only from the fourth segment (`/api/users/123/comments` → `/api/users/123/*`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
 
 URL statistics are bucketed into fixed 30-second **ticks** and reported per
@@ -409,46 +409,32 @@ dropping it.
 
 A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's `URITemplate.NULL_URI` verbatim, so a mixed Java/C++ application keeps one "no URI recorded" bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
 
-#### Turn trimming off when you pass a URL pattern
+#### Turn trimming on only when you pass a raw URL
 
 Trimming exists for one case only: instrumentation that can report nothing but
 the **raw request URL**, where every path parameter would otherwise become its
-own URL stat key and exhaust `Http.UrlStatLimit`. Keep it on only then.
+own URL stat key and exhaust `Http.UrlStatLimit`. Set
+`Http.UrlStatEnableTrimPath: true` (and pick a depth) only then.
 
-If your instrumentation already reports a **URL pattern** (a route template such
-as `/api/users/{id}`), that normalisation has happened once and trimming would
-apply it again, discarding the route you deliberately passed. Set
-`Http.UrlStatEnableTrimPath: false` in that case, which also matches the Java and
-Go agents: both aggregate the recorded URI template verbatim and have no
-equivalent option.
+If your instrumentation reports a **URL pattern** (a route template such as
+`/api/users/{id}`), that normalisation has already happened once and trimming
+would apply it again, discarding the route you deliberately passed — at the
+default depth `3` a four-segment template `/api/v1/users/{id}` became
+`/api/v1/users/*`. That is why trimming is **off by default**: Java and Go
+aggregate the recorded URI template verbatim and have no equivalent option, so
+off is the setting under which a C++ service and a Java service behind the same
+collector show the same URI list.
 
-Rule of thumb: **raw URL in → leave it `true`; URL pattern in → set it `false`.**
+Rule of thumb: **URL pattern in → leave it `false`; raw URL in → set it `true`.**
 
-##### Why trimming is on by default, at depth `3`
-
-The agent cannot tell a raw URL from a URI template — both arrive as a string —
-so the default has to guess for one of the two callers. It stays **on**, because
-a raw-URL caller silently blowing through `Http.UrlStatLimit` is the worse
-failure, and turning it off is a one-line opt-out for the caller that knows it
-passes templates.
-
-The **depth** is what carries the cost of that guess, and depth `1` made it too
-expensive: it collapsed every route under a prefix into a single `/api/*` key,
-so a template caller who never read this page lost its routes entirely and a
-raw-URL caller got one useless bucket per prefix. Depth `3` keeps route-shaped
-paths (`/api/users/{id}`, `/api/users/123`) intact and still folds the deep,
-high-cardinality tails. Java and Go do not normalise at all, so depth `3` also
-leaves C++ keys equal to theirs for any path of three segments or fewer.
-
-> **Breaking change — URL stat aggregation keys.** The depth default moved from
-> `1` to `3`, and the stand-in key for a request recorded without a URL moved
-> from `UNKNOWN_URL` to `/NULL` (both in the same release, so the keys break
-> once). Anything pinned to the old keys — a dashboard, an alert or a saved
-> URL stat chart built on the collapsed `/api/*` buckets — will show the new
-> keys as new series and the old ones as flat. To keep the previous behaviour,
-> set `Http.UrlStatEnableTrimPath: true` and `Http.UrlStatTrimPathDepth: 1`
-> explicitly; the `/NULL` rename has no opt-out.
-
+> **Breaking change — URL stat aggregation keys.** `Http.UrlStatEnableTrimPath`
+> used to default to `true` at depth `3`. A caller that passes raw URLs and
+> relied on the default now gets one key per distinct path and will hit
+> `Http.UrlStatLimit` sooner; set `Http.UrlStatEnableTrimPath: true` explicitly
+> to keep the previous keys. A caller that passes URI templates gets its
+> routes back unchanged, and any dashboard pinned to a trimmed key such as
+> `/api/v1/users/*` sees that series go flat while the template appears as a
+> new one.
 
 ### Server-side Tracing
 

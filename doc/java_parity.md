@@ -54,6 +54,7 @@ tree and for this repository's own sources.
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
 | Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
+| URL stat capacities | `AsyncQueueingUriStatStorage.SNAPSHOT_LIMIT`, `DefaultMonitorConfig.completedUriStatDataLimitSize`, `UriStatStorageProvider` (5192) | **Completed ticks and URI limit as Java, input queue sharded** — see [below](#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded) |
 | Tracing while a shutdown is in progress | *(no Java counterpart)* | **Off from the first line of `Shutdown()`, Go keeps tracing until drain** — see [below](#tracing-while-a-shutdown-is-in-progress--off-at-once-go-keeps-tracing-until-drain) |
 | gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout disabled as in Java and Go; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-disabled-as-in-java-and-go-the-rest-left-at-c-core-defaults) |
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
@@ -281,6 +282,35 @@ regression tests `GrpcStatsShutdownFlushSendsTickStillInProgress`,
 
 **Revisit if** Java starts flushing the open tick, at which point this is
 parity rather than a divergence.
+
+---
+
+## URL stat capacities — completed ticks and URI limit as Java, input queue sharded
+
+Three capacities decide where URL statistics start dropping. Two are now the
+Java values; the third differs by construction and is recorded here.
+
+**Java.** `AsyncQueueingUriStatStorage.addCompletedData` tests
+`snapshotQueue.size() > SNAPSHOT_LIMIT` (4) *before* offering the closed tick,
+so the queue holds **five** completed ticks. Each tick tracks at most
+`profiler.uri.stat.completed.data.limit.size` distinct URIs, **1000** by
+default (`DefaultMonitorConfig`). Requests wait for the consumer on one
+`AsyncQueueingExecutor` queue of **5192** entries (`UriStatStorageProvider`).
+
+**This agent.** `UrlStats::kMaxCompletedSnapshots` is 5 and
+`Http.UrlStatLimit` defaults to 1000 — both were 4 and 1024, the first
+because both ports read Java's constant rather than its comparison (the Go
+lock test still attributes 4 to "Java snapshotQueue capacity"; see the Go
+agent's file). The input queue is not one queue: request threads enqueue into
+16 shards of `Http.UrlStatQueueSize` (1024) each, drained every 10 ms, so a
+single thread can buffer 1024 entries and the process up to 16 × 1024. A
+5192-entry single queue has no faithful sharded equivalent (5192 / 16 is not
+whole, and a per-shard bound is a per-thread bound); the drain cadence makes
+the bound academic outside a stalled worker, where head-of-queue loss is
+counted and logged either way.
+
+**Decision: two values adopted, the queue shape kept.** Locked in
+`UrlStatWindow` of the parity invariants.
 
 ---
 
@@ -1318,7 +1348,7 @@ divergence entry above saying why.
 | 4 | async id / span id sentinels | `DefaultAsyncIdGenerator`, `bootstrap/context/SpanId.NULL` | async id `0` and span id `-1` are reserved for "absent"; a drawn id is redrawn until it is not the sentinel | `…AsyncIdSentinel` | `…Sentinels`, `…GeneratedSpanIdIsNeverTheSentinel` |
 | 5 | propagation headers and transaction id | `Header`, `TransactionIdUtils`, `sampler/SamplingFlagUtils`, `AnnotationKey` | all ten `Pinpoint-*` header names; `agentId^startTime^sequence`; the agent-id character class; the parser stopping at the third delimiter; only the exact string `"s0"` disabling sampling; the annotation keys the agent emits (12 / 20 / 25 / 40 / 46 / 300 / −52) | `…PropagationHeaderNames`, `…AnnotationKeys`, `…TransactionIdFormat`, `…TransactionIdParsing`, `…SampledHeaderEncoding` | `…PropagationHeaderNames`, `…AnnotationKeys`, `…TransactionIdFormat`, `…TransactionIdParsing`, `…SampledHeaderEncoding` |
 | 6 | sampling formulas and the throughput limiter | `sampler/CountingSampler`, `PercentRateSampler`, `PercentSamplerFactory`, `RateLimiter.create` → Guava `SmoothBursty` (via `RateLimitTraceSampler`, `ExceptionChainSampler`) | counting tests the **pre-increment** value, so the first request of the process is sampled and every rate-th one after it; the percent admission window is `(0, rate]`; the percentage is multiplied by 100 and truncated; rate 0 / 1 / 100 are the False- and TrueSampler cases; a negative rate is clamped, never promoted to unsigned; the throughput bucket behind the per-second limits **starts empty** (Guava's `storedPermits = 0`), so a fresh limiter admits exactly one caller and paces the rest at tps, a rebuild on reload starts empty again, and steady-state capacity is exactly one second of permits however long the idle (`maxBurstSeconds = 1`) | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerEdgeRates`, `…ThroughputLimiterInitialState` · `test_limiter.cpp` (`FirstCallPassesThenPacesAtTps`, `IdleBurstIsCappedAtTps`, `LongIdleDoesNotAccumulate`) | `…CountingSamplerPhase`, `…CountingSamplerEdgeRates`, `…PercentSamplerWindow`, `…PercentSamplerRateTruncation`, `…ThroughputLimiterInitialState`, `…ThroughputLimiterCapacity` |
-| 7 | URI histogram layout and URL stat entry rules | `common/trace/UriStatHistogramBucket.Layout`, `AsyncQueueingUriStatStorage`, `URITemplate.NULL_URI`, `DefaultShared.setUriTemplate`, `AgentUriStatData.add` | the eight bucket bounds (100 / 300 / 500 / 1000 / 3000 / 5000 / 8000 / ∞); `bucketVersion = 0`; a 30s tick aligned to the epoch boundary; at most four completed snapshots; an all-zero histogram travels as an empty message while a single 0 ms sample does not; the no-URI stand-in key `/NULL`; the URI template is **first-write-wins** with an explicit force override, while the status code is last-write-wins (the HTTP method is last-write-wins in both ports and diverges from Java — see [URI template is first-wins](#uri-template-is-first-wins--same-as-java)); an entry whose end time was never set is **skipped**, not keyed under tick 0, and is not counted as a capacity drop | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatUnknownKey`, `…UrlStatEmptyHistogram`, `…UrlStatEntryWithoutAnEndTimeIsSkipped` · `test_span.cpp` (`SetUrlStatKeepsTheFirstPatternTest`, `SetUrlStatEmptyPatternDoesNotClaimTheSlotTest`, `ForceUrlStatReplacesTheRecordedPatternTest`) | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatEmptyHistogram`, `…UrlStatUnknownKey`, `…UrlStatTemplateIsFirstWriteWins`, `…UrlStatWithoutAnEndTimeIsSkipped` |
+| 7 | URI histogram layout and URL stat entry rules | `common/trace/UriStatHistogramBucket.Layout`, `AsyncQueueingUriStatStorage`, `URITemplate.NULL_URI`, `DefaultShared.setUriTemplate`, `AgentUriStatData.add` | the eight bucket bounds (100 / 300 / 500 / 1000 / 3000 / 5000 / 8000 / ∞); `bucketVersion = 0`; a 30s tick aligned to the epoch boundary; five completed snapshots retained (`SNAPSHOT_LIMIT` 4 compared before the offer); the per-tick URI limit of 1000; an all-zero histogram travels as an empty message while a single 0 ms sample does not; the no-URI stand-in key `/NULL`; the URI template is **first-write-wins** with an explicit force override, while the status code is last-write-wins (the HTTP method is last-write-wins in both ports and diverges from Java — see [URI template is first-wins](#uri-template-is-first-wins--same-as-java)); an entry whose end time was never set is **skipped**, not keyed under tick 0, and is not counted as a capacity drop | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatUnknownKey`, `…UrlStatEmptyHistogram`, `…UrlStatEntryWithoutAnEndTimeIsSkipped` · `test_span.cpp` (`SetUrlStatKeepsTheFirstPatternTest`, `SetUrlStatEmptyPatternDoesNotClaimTheSlotTest`, `ForceUrlStatReplacesTheRecordedPatternTest`) | `…UrlStatHistogramBuckets`, `…UrlStatWindow`, `…UrlStatEmptyHistogram`, `…UrlStatUnknownKey`, `…UrlStatTemplateIsFirstWriteWins`, `…UrlStatWithoutAnEndTimeIsSkipped` |
 | 8 | active trace histogram layout | `common/trace/BaseHistogramSchema` NORMAL schema | the four slots at 1000 / 3000 / 5000 ms with an **inclusive** upper bound, so a span at exactly 1000 ms is still "fast" | `…ActiveTraceHistogram` | `…ActiveTraceHistogram` |
 | 9 | transaction counters | `context/id/DefaultTransactionCounter` | all six counters (sampled/unsampled/skipped × new/continuation) exist and drain independently, and a drain resets them | `test_stat.cpp` (`SamplingCountersTest`, `AllCountersMixedIncrementTest`, `CollectResetsCountersBetweenCallsTest`) | `…TransactionCounters` |
 | 10 | message truncation format | `StringUtils.abbreviate`, `AbstractRecorder.recordException` | a value within the cap is returned verbatim; a longer one keeps its first *n* bytes and gains a `...(original length)` suffix; the caps 256 (span / span event error) and 65536 (SQL metadata text); the cut lands on a UTF-8 boundary so the result stays valid for protobuf | `…TruncationFormat`, `…TruncationCutsOnAUtf8Boundary`, `…MessageLimits` | `…TruncationFormat`, `…TruncationCutsOnARuneBoundary`, `…MessageLimits` |

@@ -62,7 +62,8 @@ namespace pinpoint {
         // connection and its keepalive instead of dropping to IDLE (see
         // make_channel_arguments in grpc.cpp).
         constexpr int GRPC_IDLE_TIMEOUT_MS = 0;
-        constexpr int HTTP_URL_STAT_LIMIT = 1024;
+        // Java's profiler.uri.stat.completed.data.limit.size (DefaultMonitorConfig).
+        constexpr int HTTP_URL_STAT_LIMIT = 1000;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
         // Entries per SQL cache (id, uid and raw).
@@ -402,15 +403,18 @@ namespace pinpoint {
                 // queue_size bounds per-request records buffered between
                 // request end and worker aggregation.
                 size_t queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
-                // On by default: a caller recording raw URLs would otherwise
-                // key every path parameter separately. Callers that record a
-                // URI template must turn it off (see doc/config.md).
-                bool enable_trim_path = true;
-                // 3, not 1: at depth 1 every path under a prefix collapses
-                // into one key ("/api/users/123" -> "/api/*"). 3 keeps a
-                // typical "/api/users/{id}" route intact and still
-                // folds anything deeper. Callers that record URI templates
-                // should set enable_trim_path=false, not tune this.
+                // Off by default, like Java and Go, which aggregate the
+                // recorded URI template verbatim and have no trimming at
+                // all. On, a depth-3 trim rewrote a four-segment template
+                // ("/api/v1/users/{id}" -> "/api/v1/users/*"), so an
+                // instrumentation that records templates - the normal case -
+                // saw its routes damaged and its keys diverge from a Java
+                // service behind the same collector. A caller that can only
+                // record raw URLs opts in (see doc/config.md).
+                bool enable_trim_path = false;
+                // Applies only when enable_trim_path is on. 3, not 1: at
+                // depth 1 every path under a prefix collapses into one key
+                // ("/api/users/123" -> "/api/*").
                 int trim_path_depth = 3;
                 bool method_prefix = false;
             } url_stat;

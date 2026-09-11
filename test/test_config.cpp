@@ -293,9 +293,9 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     
     // Test HTTP defaults
     EXPECT_FALSE(config->http.url_stat.enable) << "URL stat should be disabled by default";
-    EXPECT_EQ(config->http.url_stat.limit, 1024) << "Default URL stat limit should be 1024";
+    EXPECT_EQ(config->http.url_stat.limit, 1000) << "Default URL stat limit is Java's completed.data.limit.size";
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "Default URL stat queue size should be 1024";
-    EXPECT_TRUE(config->http.url_stat.enable_trim_path) << "Enable trim path should be true by default";
+    EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "Trim path is off by default, like Java and Go";
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "Default path depth should be 3";
     EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
     
@@ -1144,7 +1144,7 @@ TEST_F(ConfigTest, ValueValidationTest) {
         << "Negative event chunk size should be corrected to default (20), not wrap to a huge unsigned value";
 
     // A negative URL stat limit would cast to a huge size_t and disable the cap.
-    EXPECT_EQ(config->http.url_stat.limit, 1024) << "Negative URL stat limit should be corrected to default (1024)";
+    EXPECT_EQ(config->http.url_stat.limit, 1000) << "Negative URL stat limit should be corrected to default (1000)";
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "URL stat queue size < 1 should be corrected to default (1024)";
 }
 
@@ -2023,7 +2023,7 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
         {"Http", "CollectUrlStat", env::HTTP_COLLECT_URL_STAT,
          [](const Config& c) { return c.http.url_stat.enable; }, false, true, "CollectUrlStat"},
         {"Http", "UrlStatEnableTrimPath", env::HTTP_URL_STAT_ENABLE_TRIM_PATH,
-         [](const Config& c) { return c.http.url_stat.enable_trim_path; }, true, true, "UrlStatEnableTrimPath"},
+         [](const Config& c) { return c.http.url_stat.enable_trim_path; }, false, true, "UrlStatEnableTrimPath"},
     };
 
     const auto yaml_for = [](const BoolKey& k, const char* value) {
@@ -2089,8 +2089,8 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
 }
 
 // The boolean value parsers are shared by every key, so the accepted spellings
-// are walked once: YAML spellings against UrlStatEnableTrimPath (default true,
-// making a parsed false observable) and environment spellings against
+// are walked once: YAML spellings against Stat.Enable (default true, making a
+// parsed false observable) and environment spellings against
 // EnableCallstackTrace (default false, making a parsed true observable).
 // Unparseable spellings fall back to the key's default.
 TEST_F(ConfigTest, BooleanValueSpellingsTest) {
@@ -2104,8 +2104,8 @@ TEST_F(ConfigTest, BooleanValueSpellingsTest) {
     };
     for (const auto& s : yaml_spellings) {
         SCOPED_TRACE(std::string("yaml: ") + s.text);
-        set_config_string(std::string("Http:\n  UrlStatEnableTrimPath: ") + s.text + "\n");
-        EXPECT_EQ(make_config()->http.url_stat.enable_trim_path, s.expected);
+        set_config_string(std::string("Stat:\n  Enable: ") + s.text + "\n");
+        EXPECT_EQ(make_config()->stat.enable, s.expected);
     }
 
     set_config_string("");
@@ -2972,14 +2972,20 @@ Stat:
     EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
         << "Interval 500 should be reset to default";
 
-    // Above maximum (60000)
+    // Above maximum (10000, Java's DefaultAgentStatMonitor.MAX_COLLECTION_INTERVAL_MS)
     set_config_string(R"(
 Stat:
-  BatchInterval: 70000
+  BatchInterval: 10001
 )");
     config = make_config();
     EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
-        << "Interval 70000 should be reset to default";
+        << "Interval 10001 should be reset to default";
+    set_config_string(R"(
+Stat:
+  BatchInterval: 10000
+)");
+    config = make_config();
+    EXPECT_EQ(config->stat.collect_interval, 10000) << "Interval 10000 (max) should be valid";
 
     // Boundary valid
     set_config_string(R"(
@@ -2994,7 +3000,8 @@ Stat:
   BatchInterval: 60000
 )");
     config = make_config();
-    EXPECT_EQ(config->stat.collect_interval, 60000) << "Interval 60000 (max) should be valid";
+    EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
+        << "Interval 60000 (the old maximum) is over Java's 10000 cap and falls back to the default";
 }
 
 // ========== Span Min Clamping Tests ==========

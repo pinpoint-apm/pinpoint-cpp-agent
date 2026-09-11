@@ -491,6 +491,24 @@ TEST(JavaParityLockTest, SampledHeaderEncoding) {
     }
 }
 
+// The parent application type recorded when Pinpoint-pAppName arrives without
+// a parseable Pinpoint-pAppType is -1, ServiceType.UNDEFINED, which Java's
+// ServerRequestRecorder.recordParentInfo produces through
+// NumberUtils.parseShort(type, UNDEFINED). Both ports used to default to 1
+// (UNKNOWN), a real service type the server map drew as a node of that type.
+// The Go agent locks the same in Test_javaParityLock_ParentAppTypeDefaultsToUndefined.
+TEST(JavaParityLockTest, ParentAppTypeDefaultsToUndefined) {
+    auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
+    span_data->setTraceId(TraceId{std::string_view{"test-agent"}, 1600000000000LL, 7LL});
+    span_data->setParentAppName("upstream");
+    google::protobuf::Arena arena;
+    const auto* child = build_grpc_span(std::make_unique<SpanChunk>(span_data, /*final=*/true), &arena);
+    ASSERT_TRUE(child->has_acceptevent());
+    ASSERT_TRUE(child->acceptevent().has_parentinfo());
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationtype(), -1)
+        << "no Pinpoint-pAppType: UNDEFINED, not UNKNOWN";
+}
+
 // ===========================================================================
 // Group 6 - sampling formulas
 // ===========================================================================
@@ -699,6 +717,13 @@ TEST(JavaParityLockTest, UrlStatWindow) {
     EXPECT_EQ(URL_STAT_TICK_INTERVAL, std::chrono::seconds(30)) << "Java TickClock interval";
     EXPECT_EQ(UrlStats(nullptr).sendInterval(), std::chrono::milliseconds(defaults::STAT_INTERVAL_MS))
         << "URL stats leave on the agent stat cadence, as Java's UriStatCollectingJob does";
+    // AsyncQueueingUriStatStorage.addCompletedData: size() > SNAPSHOT_LIMIT (4)
+    // is tested BEFORE the offer, so the queue holds five completed ticks.
+    // The earlier "4" in both ports read the constant, not the comparison.
+    EXPECT_EQ(UrlStats::maxCompletedSnapshots(), 5u)
+        << "Java snapshotQueue retains SNAPSHOT_LIMIT + 1 completed ticks";
+    EXPECT_EQ(defaults::HTTP_URL_STAT_LIMIT, 1000)
+        << "Java profiler.uri.stat.completed.data.limit.size (DefaultMonitorConfig)";
 
     // Two completions 30s apart fall in different ticks; anything inside the
     // same window shares one.
@@ -1230,7 +1255,7 @@ TEST(JavaParityLockTest, ProxyNginxTimestampsAreExactThreeDecimals) {
         const auto other = recordProxyHeaders(
             {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + d_val}});
         ASSERT_EQ(other.size(), 1u) << d_val << " must not discard the header";
-        EXPECT_EQ(other[0].intValue2, 0) << "D=" << d_val << " is not sec.mmm";
+        EXPECT_EQ(other[0].intValue2, -1) << "D=" << d_val << " is not sec.mmm: unset (-1)";
     }
 
     // The same format rule on `t=`, where failing it drops the header.
@@ -1261,9 +1286,10 @@ TEST(JavaParityLockTest, ProxyUserHeaderInfersItsWriter) {
              Case{"t=1504230492763123 D=1500", 1504230492763LL, 1500},
              Case{"t=1504230492.763 D=0.123", 1504230492763LL, 123000},
              Case{"t=1504230492763 D=42", 1504230492763LL, 42},
-             Case{"t=1504230492763 D=-5", 1504230492763LL, 0},
-             Case{"t=1504230492763 D=-0.123", 1504230492763LL, 0},
-             Case{"t=1504230492763 D=3000000.000", 1504230492763LL, 0},
+             Case{"t=1504230492763 D=-5", 1504230492763LL, -1},
+             Case{"t=1504230492763 D=-0.123", 1504230492763LL, -1},
+             Case{"t=1504230492763 D=3000000.000", 1504230492763LL, -1},
+             Case{"t=1504230492763", 1504230492763LL, -1},
          }) {
         const auto recorded = recordProxyHeaders({{"X-Proxy-Time", c.value}}, {"X-Proxy-Time"});
         ASSERT_EQ(recorded.size(), 1u) << c.value;
@@ -1286,17 +1312,17 @@ TEST(JavaParityLockTest, ProxyUserHeaderInfersItsWriter) {
 TEST(JavaParityLockTest, ProxyDurationAndPercentAreGated) {
     auto nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=-0.123"}});
     ASSERT_EQ(nginx.size(), 1u);
-    EXPECT_EQ(nginx[0].intValue2, 0) << "negative nginx D= is unset";
+    EXPECT_EQ(nginx[0].intValue2, -1) << "negative nginx D= is unset";
 
     nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=3000000.000"}});
     ASSERT_EQ(nginx.size(), 1u);
-    EXPECT_EQ(nginx[0].intValue2, 0) << "nginx D= past int32/1000 is unset, not wrapped";
+    EXPECT_EQ(nginx[0].intValue2, -1) << "nginx D= past int32/1000 is unset, not wrapped";
 
     auto apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=-7 i=101 b=-1"}});
     ASSERT_EQ(apache.size(), 1u);
-    EXPECT_EQ(apache[0].intValue2, 0) << "negative apache D= is unset";
-    EXPECT_EQ(apache[0].byteValue1, 0) << "i= above 100 is unset";
-    EXPECT_EQ(apache[0].byteValue2, 0) << "b= below 0 is unset";
+    EXPECT_EQ(apache[0].intValue2, -1) << "negative apache D= is unset";
+    EXPECT_EQ(apache[0].byteValue1, -1) << "i= above 100 is unset";
+    EXPECT_EQ(apache[0].byteValue2, -1) << "b= below 0 is unset";
 
     apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=7 i=0 b=100"}});
     ASSERT_EQ(apache.size(), 1u);

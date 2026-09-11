@@ -254,6 +254,28 @@
 
   See [Identity Versions](doc/config.md#identity-versions).
 
+- **`Http.UrlStatEnableTrimPath` now defaults to `false`.**
+
+  With trimming on at depth 3, a four-segment URI template such as
+  `/api/v1/users/{id}` was recorded as `/api/v1/users/*`, so a C++ service
+  and a Java service behind the same collector showed different URI lists.
+  Java and Go never trim. A caller that passes raw request URLs must now opt
+  in with `Http.UrlStatEnableTrimPath: true` to keep its previous keys; a
+  caller that passes templates gets its routes back. See
+  [doc/config.md](doc/config.md#turn-trimming-on-only-when-you-pass-a-raw-url).
+
+- **URL stat capacities follow Java.** Five completed ticks are retained
+  while the stats stream is down (was four: Java compares `size() > 4`
+  before offering) and `Http.UrlStatLimit` defaults to `1000` (was `1024`,
+  Java's `completed.data.limit.size`). The sharded input queue keeps its
+  shape; see
+  [doc/java_parity.md](doc/java_parity.md#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded).
+  **The Go agent still has 4 and 1024.**
+
+- **`Stat.BatchInterval` is capped at `10000` ms, Java's
+  `DefaultAgentStatMonitor` maximum** (was `60000`); a larger value falls back
+  to the default as before. **The Go agent still accepts `60000`.**
+
 ### Fixed
 
 - **The metadata worker no longer stalls inside `readyChannel()` for a whole

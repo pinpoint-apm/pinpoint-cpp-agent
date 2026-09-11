@@ -299,16 +299,16 @@ TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathAtDepthOne) {
     EXPECT_EQ(stats.begin()->first.url_, "/api/*");
 }
 
-// The shipped default (trim on, depth 3): a route-shaped path survives whole,
-// so C++ keys equal what Java and Go would have recorded verbatim. Uses a
+// The shipped default: no trimming, like Java and Go, so a URI template of
+// any depth is aggregated verbatim and C++ keys equal theirs. Uses a
 // default-constructed Config on purpose — this pins the default itself.
-TEST_F(UrlStatTest, SnapshotKeepsRouteShapedPathAtDefaultDepth) {
+TEST_F(UrlStatTest, SnapshotKeepsUriTemplateVerbatimByDefault) {
     Config config;
-    ASSERT_TRUE(config.http.url_stat.enable_trim_path);
+    ASSERT_FALSE(config.http.url_stat.enable_trim_path);
     ASSERT_EQ(config.http.url_stat.trim_path_depth, 3);
     TickClock tick_clock(1);
 
-    for (const auto* url : {"/api/users/123", "/api/users/{id}"}) {
+    for (const auto* url : {"/api/users/{id}", "/api/v1/users/{id}", "/api/users/123/comments/9"}) {
         UrlStatSnapshot snapshot;
         UrlStatEntry stat(url, "GET", 200);
         stat.elapsed_ = 30;
@@ -318,11 +318,11 @@ TEST_F(UrlStatTest, SnapshotKeepsRouteShapedPathAtDefaultDepth) {
         const auto& stats = snapshot.getEachStats();
         ASSERT_EQ(stats.size(), 1u);
         EXPECT_EQ(stats.begin()->first.url_, url)
-            << "the default depth must not collapse a route-shaped path";
+            << "the default must not rewrite a recorded URI template";
     }
 
-    // Deeper than the default depth still folds, which is the whole point of
-    // leaving trimming on for raw-URL callers.
+    // Opting in keeps depth 3, which folds from the fourth segment.
+    config.http.url_stat.enable_trim_path = true;
     UrlStatSnapshot deep;
     UrlStatEntry stat("/api/users/123/comments/9", "GET", 200);
     stat.elapsed_ = 30;
@@ -1509,13 +1509,14 @@ TEST_F(UrlStatTest, LimitStaysPerTickWhileSendingIsBlocked) {
         per_tick[key.tick_]++;
     }
 
-    // Four completed ticks are retained (Java's snapshotQueue capacity) plus
-    // the one still in progress; the older six were dropped whole.
-    EXPECT_EQ(per_tick.size(), 5u) << "retention is bounded at 4 completed ticks + the current one";
+    // Five completed ticks are retained (Java's snapshotQueue compares
+    // size() > 4 before offering, so it holds five) plus the one still in
+    // progress; the older four were dropped whole.
+    EXPECT_EQ(per_tick.size(), 6u) << "retention is bounded at 5 completed ticks + the current one";
     for (const auto& [tick, count] : per_tick) {
         EXPECT_EQ(count, 3) << "tick " << tick << " must get the full limit, not a share of it";
     }
-    EXPECT_EQ(snapshot->getEachStats().size(), 15u)
+    EXPECT_EQ(snapshot->getEachStats().size(), 18u)
         << "a stalled stream must not shrink total capacity to a single limit";
 }
 
@@ -1567,20 +1568,20 @@ TEST_F(UrlStatLogTest, CompletedSnapshotQueueDropsOldestAndReports) {
     cfg->http.url_stat.enable_trim_path = false;
     const auto config = mock_agent_service_->getConfig();
 
-    // Seven ticks: six of them get cut into a queue with four slots, so the
-    // two oldest are evicted. The seventh is still in progress.
+    // Eight ticks: seven of them get cut into a queue with five slots, so the
+    // two oldest are evicted. The eighth is still in progress.
     UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
-    for (int t = 0; t < 7; t++) {
+    for (int t = 0; t < 8; t++) {
         add_at(url_stats, *config, "/api/tick" + std::to_string(t), 1000 + t);
     }
 
     const auto snapshot = url_stats.takeSnapshot(true);
     const auto& stats = snapshot->getEachStats();
-    EXPECT_EQ(stats.size(), 5u) << "4 retained ticks + the one in progress";
+    EXPECT_EQ(stats.size(), 6u) << "5 retained ticks + the one in progress";
     EXPECT_EQ(stats.find(UrlKey{"/api/tick0", 1000000}), stats.end()) << "the oldest tick goes first";
     EXPECT_EQ(stats.find(UrlKey{"/api/tick1", 1001000}), stats.end()) << "then the next-oldest";
     EXPECT_NE(stats.find(UrlKey{"/api/tick2", 1002000}), stats.end()) << "newer ticks are kept";
-    EXPECT_NE(stats.find(UrlKey{"/api/tick6", 1006000}), stats.end()) << "including the one in progress";
+    EXPECT_NE(stats.find(UrlKey{"/api/tick7", 1007000}), stats.end()) << "including the one in progress";
 
     const auto content = logged();
     EXPECT_NE(content.find("url stat snapshot queue overflow"), std::string::npos)
