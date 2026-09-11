@@ -1968,6 +1968,10 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
          [](const Config& c) { return c.http.url_stat.enable_trim_path; }, false, true, "UrlStatEnableTrimPath"},
         {"Http:\n  Server", "ProxyHeaderEnable", env::HTTP_SERVER_PROXY_HEADER_ENABLE,
          [](const Config& c) { return c.http.server.proxy_header_enable; }, true, true, "ProxyHeaderEnable"},
+        {"Http:\n  Server", "RecordRequestParam", env::HTTP_SERVER_RECORD_REQUEST_PARAM,
+         [](const Config& c) { return c.http.server.record_request_param; }, false, true, "RecordRequestParam"},
+        {"Http:\n  Client", "RecordUrlQuery", env::HTTP_CLIENT_RECORD_URL_QUERY,
+         [](const Config& c) { return c.http.client.record_url_query; }, false, true, "RecordUrlQuery"},
     };
 
     const auto yaml_for = [](const BoolKey& k, const char* value) {
@@ -2071,6 +2075,41 @@ TEST_F(ConfigTest, BooleanValueSpellingsTest) {
         EXPECT_EQ(make_config()->enable_callstack_trace, s.expected);
     }
     unsetenv(env_name.c_str());
+}
+
+// Both HTTP recording toggles are RELOAD: a reload flips them on and off.
+TEST_F(ConfigTest, HttpRecordParamAndUrlQueryReloadTest) {
+    set_config_string("ApplicationName: \"App\"\n");
+    auto old_config = make_config();
+    ASSERT_FALSE(old_config->http.server.record_request_param);
+    ASSERT_FALSE(old_config->http.client.record_url_query);
+
+    set_config_string(R"(
+ApplicationName: "App"
+Http:
+  Server:
+    RecordRequestParam: true
+  Client:
+    RecordUrlQuery: true
+)");
+    auto reloaded = make_config(old_config);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_TRUE(reloaded->http.server.record_request_param);
+    EXPECT_TRUE(reloaded->http.client.record_url_query);
+
+    // A key absent from the file keeps its running value, so revert explicitly.
+    set_config_string(R"(
+ApplicationName: "App"
+Http:
+  Server:
+    RecordRequestParam: false
+  Client:
+    RecordUrlQuery: false
+)");
+    auto reverted = make_config(reloaded);
+    ASSERT_NE(reverted, nullptr);
+    EXPECT_FALSE(reverted->http.server.record_request_param);
+    EXPECT_FALSE(reverted->http.client.record_url_query);
 }
 
 // ========== Config File Watcher Configuration Tests ==========

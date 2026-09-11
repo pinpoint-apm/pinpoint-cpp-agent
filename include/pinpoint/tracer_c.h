@@ -880,6 +880,19 @@ void pt_trace_http_server_request_with_cookie(pt_span_t span,
                                               const pt_header_reader_t* request_reader,
                                               const pt_header_reader_t* cookie_reader);
 
+/**
+ * Mirrors the TraceHttpServerRequest() overloads taking a query string:
+ * records @p query_string (the raw text after '?') as annotation 41 when
+ * Http.Server.RecordRequestParam is on. @p cookie_reader may be NULL;
+ * a NULL @p query_string is treated as "".
+ */
+void pt_trace_http_server_request_with_query(pt_span_t span,
+                                             const char* remote_addr,
+                                             const char* endpoint,
+                                             const pt_header_reader_t* request_reader,
+                                             const pt_header_reader_t* cookie_reader,
+                                             const char* query_string);
+
 /** Mirrors pinpoint::helper::TraceHttpServerResponse(). */
 void pt_trace_http_server_response(pt_span_t span,
                                    const char* url_pattern,

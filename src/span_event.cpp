@@ -166,6 +166,10 @@ namespace pinpoint {
         return span;
     }
 
+    SpanImpl* SpanEventImpl::recordingSpanImpl() noexcept {
+        return data_->getOwner();
+    }
+
     bool SpanEventImpl::warnIfFinished() const {
         // A finished event may already sit in a chunk being serialized on the
         // gRPC worker thread; handing out the live annotation container, or

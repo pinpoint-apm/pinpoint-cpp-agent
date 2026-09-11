@@ -4,6 +4,22 @@
 
 ### Breaking
 
+- **`helper::TraceHttpClientRequest` strips the URL query by default.** The
+  `ANNOTATION_HTTP_URL` value is cut at its first `?` unless the new
+  `Http.Client.RecordUrlQuery` (default `false`) is on, matching Java's
+  `profiler.<plugin>.param` default. Query strings carry tokens and ids.
+  Endpoint and destination are unchanged.
+
+### Added
+
+- **Request parameter recording, opt-in.** New `TraceHttpServerRequest`
+  overloads taking a `query_string` (C: `pt_trace_http_server_request_with_query`)
+  record it as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's
+  `HttpServletParameterExtractor` format when `Http.Server.RecordRequestParam`
+  is on (default `false`; Java defaults on). `helper::FormatRequestParams`
+  exposes the formatter. Both toggles are reloadable and appended to
+  `SpanConfigSnapshot`.
+
 - **Proxy request headers: every header is recorded, and one without a usable
   `t=` is discarded.**
 

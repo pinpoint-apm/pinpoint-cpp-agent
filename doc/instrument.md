@@ -526,8 +526,10 @@ pinpoint::helper::TraceHttpClientResponse(se, res.status, res_reader);
 |---|---|
 | `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader)` | Sets remote address, endpoint, and records request headers |
 | `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader, cookie_reader)` | Same as above, plus records cookies |
+| `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader[, cookie_reader], query_string)` | Same as above, plus records the query string as `ANNOTATION_HTTP_PARAM` when `Http.Server.RecordRequestParam` is on (default off) |
+| `FormatRequestParams(query_string)` | The `k=v&k=v` formatter used above (Java limits: 64 chars per key/value, 512 total) |
 | `TraceHttpServerResponse(span, url_pattern, method, status_code, response_reader)` | Sets status code, URL stat, and records response headers |
-| `TraceHttpClientRequest(span_event, host, url, header_reader)` | Sets endpoint, destination, and records request headers |
+| `TraceHttpClientRequest(span_event, host, url, header_reader)` | Sets endpoint, destination, and records request headers; the URL annotation is cut at its first `?` unless `Http.Client.RecordUrlQuery` is on |
 | `TraceHttpClientRequest(span_event, host, url, header_reader, cookie_reader)` | Same as above, plus records cookies |
 | `TraceHttpClientResponse(span_event, status_code, response_reader)` | Records status code and response headers |
 

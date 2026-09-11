@@ -451,6 +451,16 @@ Rule of thumb: **URL pattern in → leave it `false`; raw URL in → set it `tru
 | `Http.Server.RecordResponseHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 | `Http.Server.ProxyUserHeaderNames` | `PINPOINT_CPP_HTTP_SERVER_PROXY_USER_HEADER_NAMES` | list&lt;string&gt; | `[]` |
 | `Http.Server.ProxyHeaderEnable` | `PINPOINT_CPP_HTTP_SERVER_PROXY_HEADER_ENABLE` | bool | `true` |
+| `Http.Server.RecordRequestParam` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_PARAM` | bool | `false` |
+
+`RecordRequestParam` is Java's `profiler.server.tracerequestparam`: when on,
+the query string passed to `helper::TraceHttpServerRequest(..., query_string)`
+is recorded as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's
+`HttpServletParameterExtractor` format — `k=v&k=v`, percent-decoded, each key
+and value cut to 64 characters and the whole string to 512, with `...` marking
+every cut. **Java defaults this to on; the C++ agent defaults it to off**
+because query strings routinely carry tokens, session ids and user ids.
+Reloadable.
 
 `ProxyHeaderEnable` is Java's `profiler.proxy.http.header.enable` (the Go
 agent's `Http.Server.ProxyHeaderEnable`): `false` stops the agent reading any
@@ -486,6 +496,13 @@ read and need no configuration.
 | `Http.Client.RecordRequestHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_HEADER` | list&lt;string&gt; | `[]` |
 | `Http.Client.RecordRequestCookie` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
 | `Http.Client.RecordResponseHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
+| `Http.Client.RecordUrlQuery` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_URL_QUERY` | bool | `false` |
+
+`RecordUrlQuery` is Java's per-plugin `profiler.<plugin>.param`
+(`ClientRequestRecorder`, `InterceptorUtils.getHttpUrl`): by default
+`helper::TraceHttpClientRequest` records the URL annotation cut at its first
+`?`, so `https://h/p?token=x` is stored as `https://h/p`. Set `true` to keep
+the query. The endpoint and destination are never affected. Reloadable.
 
 Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are documented in [Instrumentation Guide §12](instrument.md#12-http-filtering-and-header-recording).
 
@@ -568,6 +585,7 @@ are **non-reloadable** — changing them requires an application restart.
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | Proxy headers | `Http.Server.ProxyHeaderEnable`, `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
+| Query recording | `Http.Server.RecordRequestParam`, `Http.Client.RecordUrlQuery` | **Yes** (spans created after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Active profile | `ActiveProfile` | **Yes** — the profile it names is re-applied on every reload |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |

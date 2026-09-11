@@ -1042,6 +1042,25 @@ TEST_F(TracerCApiTest, TraceHttpServerRequest) {
     pt_span_destroy(span);
 }
 
+TEST_F(TracerCApiTest, TraceHttpServerRequestWithQuery) {
+    pt_span_t span = pt_agent_new_span(agent_, "GET /api", "/api");
+    ASSERT_NE(span, nullptr);
+
+    HeaderMap req_headers;
+    req_headers["Accept"] = "text/html";
+    pt_header_reader_t reader{&req_headers, hmap_get, hmap_foreach};
+
+    EXPECT_NO_FATAL_FAILURE(
+        pt_trace_http_server_request_with_query(span, "192.168.1.1", "api.example.com",
+                                                &reader, nullptr, "a=1&b=2"));
+    EXPECT_NO_FATAL_FAILURE(
+        pt_trace_http_server_request_with_query(span, "192.168.1.1", "api.example.com",
+                                                &reader, &reader, nullptr));
+
+    pt_span_end(span);
+    pt_span_destroy(span);
+}
+
 TEST_F(TracerCApiTest, TraceHttpServerRequestWithCookie) {
     pt_span_t span = pt_agent_new_span(agent_, "GET /page", "/page");
     ASSERT_NE(span, nullptr);

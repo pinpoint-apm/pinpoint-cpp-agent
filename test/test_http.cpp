@@ -1384,4 +1384,33 @@ TEST_F(HttpTest, TraceHttpHelpersNullHandlesAreSafeTest) {
     EXPECT_NO_FATAL_FAILURE(helper::TraceHttpClientResponse(SpanEventPtr{}, 200, reader));
 }
 
+// ========== helper::FormatRequestParams ==========
+//
+// Java HttpServletParameterExtractor: 64 chars per key/value, 512 total, "..."
+// marks each cut. Malformed escapes pass through untouched.
+TEST_F(HttpTest, FormatRequestParamsTest) {
+    EXPECT_EQ(helper::FormatRequestParams(""), "");
+    EXPECT_EQ(helper::FormatRequestParams("a=1&b=x%20y&empty="), "a=1&b=x y&empty=");
+    EXPECT_EQ(helper::FormatRequestParams("a+b=c+d&flag"), "a b=c d&flag=");
+    EXPECT_EQ(helper::FormatRequestParams("bad=%zz%4&ok=%41"), "bad=%zz%4&ok=A");
+    EXPECT_EQ(helper::FormatRequestParams("&&a=1&&"), "a=1");
+
+    const std::string long_value(100, 'v');
+    EXPECT_EQ(helper::FormatRequestParams("k=" + long_value),
+              "k=" + std::string(64, 'v') + "...");
+    EXPECT_EQ(helper::FormatRequestParams(long_value + "=1"),
+              std::string(64, 'v') + "...=1");
+
+    std::string many;
+    for (int i = 0; i < 100; ++i) {
+        if (!many.empty()) many += '&';
+        many += "k" + std::to_string(i) + "=vvvvvvvvvv";
+    }
+    const auto capped = helper::FormatRequestParams(many);
+    EXPECT_LE(capped.size(), 512u + 4u) << capped;
+    ASSERT_GE(capped.size(), 4u);
+    EXPECT_EQ(capped.substr(capped.size() - 4), "&...") << capped;
+    EXPECT_EQ(capped.rfind("k0=vvvvvvvvvv", 0), 0u) << capped;
+}
+
 } // namespace pinpoint

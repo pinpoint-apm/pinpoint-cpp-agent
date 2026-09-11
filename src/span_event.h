@@ -36,6 +36,10 @@ namespace pinpoint {
         SpanEventImpl(SpanImpl* span, std::string_view operation);
         ~SpanEventImpl() override {}
 
+        // Unwarned twin of spanIfAlive(): a dead span here just means "no
+        // config", and the caller's next recording call warns anyway.
+        SpanImpl* recordingSpanImpl() noexcept override;
+
         void SetServiceType(int32_t type) override { if (warnIfFinished()) return; service_type_ = type; }
         // Out-of-line: the string assignment allocates, so it needs the
         // exception boundary in span_event.cpp (as do the allocating setters

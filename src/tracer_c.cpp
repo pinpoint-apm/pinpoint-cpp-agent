@@ -1240,6 +1240,33 @@ void pt_trace_http_server_request_with_cookie(pt_span_t span,
     });
 }
 
+void pt_trace_http_server_request_with_query(pt_span_t span,
+                                             const char* remote_addr,
+                                             const char* endpoint,
+                                             const pt_header_reader_t* request_reader,
+                                             const pt_header_reader_t* cookie_reader,
+                                             const char* query_string) {
+    pt_api_call(__func__, [&] {
+        if (!request_reader) return;
+        pt_handle_call(span, [&](pt_span_t valid) {
+            CHeaderReader cpt_req(request_reader);
+            const std::string_view query = query_string ? query_string : "";
+            if (cookie_reader) {
+                CHeaderReader cpt_cookie(cookie_reader);
+                pinpoint::helper::TraceHttpServerRequest(valid->ptr,
+                                                         remote_addr ? remote_addr : "",
+                                                         endpoint    ? endpoint    : "",
+                                                         cpt_req, cpt_cookie, query);
+            } else {
+                pinpoint::helper::TraceHttpServerRequest(valid->ptr,
+                                                         remote_addr ? remote_addr : "",
+                                                         endpoint    ? endpoint    : "",
+                                                         cpt_req, query);
+            }
+        });
+    });
+}
+
 void pt_trace_http_server_response(pt_span_t span,
                                    const char* url_pattern,
                                    const char* method,

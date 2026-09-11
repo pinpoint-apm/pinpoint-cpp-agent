@@ -530,6 +530,11 @@ pt_trace_http_server_request(span, remote_addr, endpoint, &req_hdr_reader);
 pt_trace_http_server_request_with_cookie(span, remote_addr, endpoint,
                                          &req_hdr_reader, &cookie_reader);
 
+/* Server with the query string (annotation 41, needs Http.Server.RecordRequestParam);
+   cookie_reader may be NULL */
+pt_trace_http_server_request_with_query(span, remote_addr, endpoint,
+                                        &req_hdr_reader, NULL, query_string);
+
 /* Server: records response status, URL stat, and response headers */
 pt_trace_http_server_response(span, url_pattern, method,
                                status_code, &resp_hdr_reader);

@@ -163,9 +163,11 @@ namespace pinpoint {
         constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "HTTP_SERVER_RECORD_RESPONSE_HEADER";
         constexpr const char* HTTP_SERVER_PROXY_USER_HEADER_NAMES = "HTTP_SERVER_PROXY_USER_HEADER_NAMES";
         constexpr const char* HTTP_SERVER_PROXY_HEADER_ENABLE = "HTTP_SERVER_PROXY_HEADER_ENABLE";
+        constexpr const char* HTTP_SERVER_RECORD_REQUEST_PARAM = "HTTP_SERVER_RECORD_REQUEST_PARAM";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "HTTP_CLIENT_RECORD_REQUEST_HEADER";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
+        constexpr const char* HTTP_CLIENT_RECORD_URL_QUERY = "HTTP_CLIENT_RECORD_URL_QUERY";
         constexpr const char* SQL_MAX_BIND_ARGS_SIZE = "SQL_MAX_BIND_ARGS_SIZE";
         constexpr const char* SQL_CACHE_SIZE = "SQL_CACHE_SIZE";
         constexpr const char* SQL_CACHE_LENGTH_LIMIT = "SQL_CACHE_LENGTH_LIMIT";
@@ -425,12 +427,18 @@ namespace pinpoint {
                 std::vector<std::string> proxy_user_header_names;
                 // Disables all proxy-header parsers when false.
                 bool proxy_header_enable = true;
+                // Java profiler.server.tracerequestparam, but off by default:
+                // query strings carry tokens and ids.
+                bool record_request_param = false;
             } server;
 
             struct {
                 std::vector<std::string> rec_request_header;
                 std::vector<std::string> rec_request_cookie;
                 std::vector<std::string> rec_response_header;
+                // Keep the query string in the client URL annotation. Off by
+                // default, like Java's profiler.<plugin>.param.
+                bool record_url_query = false;
             } client;
         } http;
 

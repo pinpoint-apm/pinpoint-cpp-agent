@@ -69,6 +69,7 @@ namespace pinpoint {
     constexpr int32_t ANNOTATION_SQL_UID = 25;
     constexpr int32_t ANNOTATION_EXCEPTION_ID = -52;
     constexpr int32_t ANNOTATION_HTTP_URL = 40;
+    constexpr int32_t ANNOTATION_HTTP_PARAM = 41;
     constexpr int32_t ANNOTATION_HTTP_STATUS_CODE = 46;
     constexpr int32_t ANNOTATION_HTTP_COOKIE = 45;
     constexpr int32_t ANNOTATION_HTTP_REQUEST_HEADER = 47;
@@ -252,6 +253,11 @@ namespace pinpoint {
         ///        event is a warning no-op, like Span::EndSpan.
         virtual void EndEvent() = 0;
 
+        /// @brief Internal: the recording span this event belongs to, or
+        ///        nullptr for every other implementation (noop, third-party)
+        ///        and once the span is gone. Same contract as
+        ///        Span::recordingSpanImpl(); never override outside the agent.
+        virtual SpanImpl* recordingSpanImpl() noexcept { return nullptr; }
     };
 
     /// @brief Non-owning span-event pointer.
@@ -307,6 +313,12 @@ namespace pinpoint {
         /// default-constructed snapshot carries no resolved configuration and
         /// binding layers must not capture stack frames on incomplete data.
         bool enable_callstack_trace = false;
+        /// Resolved Http.Client.RecordUrlQuery: false strips the URL at its
+        /// first '?' before recording ANNOTATION_HTTP_URL.
+        bool http_client_record_url_query = false;
+        /// Resolved Http.Server.RecordRequestParam: true records the query
+        /// string as ANNOTATION_HTTP_PARAM (see helper::FormatRequestParams).
+        bool http_server_record_request_param = false;
     };
 
     /**
@@ -752,6 +764,22 @@ namespace pinpoint {
         /// @brief As above, additionally recording the configured cookies.
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader);
 
+        /// @brief As the two above, additionally recording @p query_string
+        ///        (the raw part after '?', without the '?') as
+        ///        ANNOTATION_HTTP_PARAM in FormatRequestParams() form when the
+        ///        span's Http.Server.RecordRequestParam is on. Off by
+        ///        default; an empty query records nothing.
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, std::string_view query_string);
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader, std::string_view query_string);
+
+        /// @brief Formats a raw query string the way the Java agent's
+        ///        HttpServletParameterExtractor does: `k=v&k=v`, keys and
+        ///        values percent-decoded (`+` is a space), each cut to 64
+        ///        chars plus "...", the whole capped at 512 chars — an item
+        ///        that would cross the cap is replaced by a final "...".
+        ///        Malformed escapes are kept verbatim. Never throws.
+        std::string FormatRequestParams(std::string_view query_string);
+
         /// @brief Records the response on @p span: the status code, URL stats
         ///        for @p url_pattern / @p method, and the configured response
         ///        headers. A null @p span is ignored.
@@ -759,7 +787,8 @@ namespace pinpoint {
 
         /// @brief Records an outbound call on @p span_event: service type
         ///        SERVICE_TYPE_CPP_HTTP_CLIENT, @p host as both endpoint and
-        ///        destination, @p url as ANNOTATION_HTTP_URL, and the
+        ///        destination, @p url as ANNOTATION_HTTP_URL (cut at its first
+        ///        '?' unless Http.Client.RecordUrlQuery is on), and the
         ///        configured request headers. A null @p span_event is ignored.
          void TraceHttpClientRequest(SpanEventPtr span_event, std::string_view host, std::string_view url, HeaderReader& request_reader);
 

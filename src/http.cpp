@@ -678,7 +678,8 @@ namespace pinpoint {
             // pay exactly one shared_ptr copy from their caller, instead of
             // the cookie overload copying a second time to forward.
             void traceServerRequest(const SpanPtr& span, std::string_view remote_addr,
-                                    std::string_view endpoint, HeaderReader& request_reader) {
+                                    std::string_view endpoint, HeaderReader& request_reader,
+                                    std::string_view query_string = {}) {
                 // View into the reader or remote_addr; consumed before the
                 // next Get() on request_reader (see getRemoteAddr).
                 span->SetRemoteAddress(HttpTracerUtil::getRemoteAddr(request_reader, remote_addr));
@@ -701,6 +702,10 @@ namespace pinpoint {
                             request_reader, impl->getSpanData()->getAnnotations(),
                             server.proxy_user_header_names);
                     }
+                    // Flag first: the default path never reads query_string.
+                    if (server.record_request_param && !query_string.empty()) {
+                        span->SetAnnotation(ANNOTATION_HTTP_PARAM, FormatRequestParams(query_string));
+                    }
                 }
                 span->RecordHeader(HTTP_REQUEST, request_reader);
             }
@@ -721,6 +726,82 @@ namespace pinpoint {
             span->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, std::string_view query_string) {
+            if (!span) {
+                return;
+            }
+            traceServerRequest(span, remote_addr, endpoint, request_reader, query_string);
+        }
+
+        void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader, std::string_view query_string) {
+            if (!span) {
+                return;
+            }
+            traceServerRequest(span, remote_addr, endpoint, request_reader, query_string);
+            span->RecordHeader(HTTP_COOKIE, cookie_reader);
+        }
+
+        // Java HttpServletParameterExtractor / StringUtils.abbreviate limits.
+        std::string FormatRequestParams(std::string_view query_string) try {
+            constexpr size_t kEachLimit = 64;
+            constexpr size_t kTotalLimit = 512;
+            constexpr std::string_view kEllipsis = "...";
+
+            const auto hex = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            // application/x-www-form-urlencoded decode; a malformed escape is
+            // copied through as written. Cut to kEachLimit after decoding.
+            const auto decode = [&](std::string_view s) {
+                std::string out;
+                out.reserve(s.size());
+                for (size_t i = 0; i < s.size(); ++i) {
+                    if (s[i] == '+') {
+                        out += ' ';
+                    } else if (s[i] == '%' && i + 2 < s.size() && hex(s[i + 1]) >= 0 && hex(s[i + 2]) >= 0) {
+                        out += static_cast<char>(hex(s[i + 1]) * 16 + hex(s[i + 2]));
+                        i += 2;
+                    } else {
+                        out += s[i];
+                    }
+                }
+                if (out.size() > kEachLimit) {
+                    out.resize(kEachLimit);
+                    out += kEllipsis;
+                }
+                return out;
+            };
+
+            std::string result;
+            for (size_t pos = 0; pos <= query_string.size();) {
+                size_t amp = query_string.find('&', pos);
+                if (amp == std::string_view::npos) amp = query_string.size();
+                const std::string_view item = query_string.substr(pos, amp - pos);
+                pos = amp + 1;
+                if (item.empty()) continue;
+
+                const size_t eq = item.find('=');
+                std::string entry = decode(item.substr(0, eq));
+                entry += '=';
+                if (eq != std::string_view::npos) entry += decode(item.substr(eq + 1));
+
+                const size_t sep = result.empty() ? 0 : 1;
+                if (result.size() + sep + entry.size() > kTotalLimit) {
+                    if (sep) result += '&';
+                    result += kEllipsis;
+                    break;
+                }
+                if (sep) result += '&';
+                result += entry;
+            }
+            return result;
+        } catch (...) {
+            return {};
+        }
+
         void TraceHttpServerResponse(SpanPtr span, std::string_view url_pattern, std::string_view method, int32_t status_code, HeaderReader& response_reader){
             if (!span) {
                 return;
@@ -737,6 +818,12 @@ namespace pinpoint {
             span_event->SetServiceType(SERVICE_TYPE_CPP_HTTP_CLIENT);
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
+            // Query strings carry tokens and ids: stripped unless the span's
+            // generation opted in (Java ClientRequestRecorder / getHttpUrl).
+            auto* impl = span_event->recordingSpanImpl();
+            if (!impl || !impl->getConfig().http.client.record_url_query) {
+                url = url.substr(0, url.find('?'));
+            }
             span_event->SetAnnotation(ANNOTATION_HTTP_URL, url);
             span_event->RecordHeader(HTTP_REQUEST, request_reader);
         }

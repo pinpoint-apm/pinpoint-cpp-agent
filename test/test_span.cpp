@@ -26,6 +26,7 @@
 #include <atomic>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -423,6 +424,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.http.client.rec_response_header = {"X-Client"};
         config.sql.trace_bind_value = true;
         config.enable_callstack_trace = true;
+        config.http.client.record_url_query = true;
+        config.http.server.record_request_param = true;
     });
 
     SpanImpl first(mock_agent_service_.get(), "first", "/first");
@@ -440,6 +443,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
               std::vector<std::string>{"X-Client"});
     EXPECT_TRUE(first_config.sql_trace_bind_value);
     EXPECT_TRUE(first_config.enable_callstack_trace);
+    EXPECT_TRUE(first_config.http_client_record_url_query);
+    EXPECT_TRUE(first_config.http_server_record_request_param);
 
     mock_agent_service_->publishConfig([](Config& config) {
         config.revision = 2;
@@ -448,6 +453,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.http.server.rec_request_header = {"X-Reloaded"};
         config.sql.trace_bind_value = false;
         config.enable_callstack_trace = false;
+        config.http.client.record_url_query = false;
+        config.http.server.record_request_param = false;
     });
 
     // An existing span keeps the generation (and revision) it was admitted under.
@@ -455,6 +462,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_EQ(first.GetConfigSnapshot().max_event_depth, 7);
     EXPECT_TRUE(first.GetConfigSnapshot().sql_trace_bind_value);
     EXPECT_TRUE(first.GetConfigSnapshot().enable_callstack_trace);
+    EXPECT_TRUE(first.GetConfigSnapshot().http_client_record_url_query);
+    EXPECT_TRUE(first.GetConfigSnapshot().http_server_record_request_param);
     EXPECT_EQ(first.GetConfigSnapshot().http_server_headers[HTTP_REQUEST],
               std::vector<std::string>{"X-First"});
 
@@ -468,6 +477,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
               std::vector<std::string>{"X-Reloaded"});
     EXPECT_FALSE(reloaded_config.sql_trace_bind_value);
     EXPECT_FALSE(reloaded_config.enable_callstack_trace);
+    EXPECT_FALSE(reloaded_config.http_client_record_url_query);
+    EXPECT_FALSE(reloaded_config.http_server_record_request_param);
 }
 
 TEST_F(SpanTest, SpanConfigSnapshotDefaultsBindValueCaptureOff) {
@@ -2028,6 +2039,70 @@ TEST_F(SpanTest, TraceHttpServerRequestSkipsProxyHeadersWhenDisabledTest) {
         header_reader.SetHeader("Pinpoint-ProxyApache", "t=1234567890000 D=1500 i=10 b=90");
         helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
         EXPECT_EQ(count_proxy(*span), 0) << "off: no proxy header is read at all";
+    }
+}
+
+namespace {
+    // The value of the first annotation under key, or nullopt.
+    std::optional<std::string> string_annotation(const PinpointAnnotation* annotations, int32_t key) {
+        for (const auto& [k, value] : annotations->getAnnotations()) {
+            if (k == key) return std::get<std::string>(value.data);
+        }
+        return std::nullopt;
+    }
+}
+
+TEST_F(SpanTest, TraceHttpClientRequestStripsUrlQueryByDefaultTest) {
+    MockHeaderReader header_reader;
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        auto* event = static_cast<SpanEventImpl*>(span->NewSpanEvent("client"));
+        helper::TraceHttpClientRequest(event, "h", "https://h/p?token=x", header_reader);
+        EXPECT_EQ(string_annotation(event->getAnnotations(), ANNOTATION_HTTP_URL), "https://h/p")
+            << "query stripped by default";
+        EXPECT_EQ(event->getEndPoint(), "h");
+    }
+
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.client.record_url_query = true;
+    mock_agent_service_->reloadConfig(config);
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        auto* event = static_cast<SpanEventImpl*>(span->NewSpanEvent("client"));
+        helper::TraceHttpClientRequest(event, "h", "https://h/p?token=x", header_reader);
+        EXPECT_EQ(string_annotation(event->getAnnotations(), ANNOTATION_HTTP_URL), "https://h/p?token=x");
+    }
+}
+
+TEST_F(SpanTest, TraceHttpServerRequestRecordsParamsOnlyWhenEnabledTest) {
+    MockHeaderReader header_reader;
+    MockHeaderReader cookie_reader;
+    const auto params = [](SpanImpl& s) {
+        return string_annotation(s.getSpanData()->getAnnotations(), ANNOTATION_HTTP_PARAM);
+    };
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:1", "ep", header_reader, "a=1&b=x%20y&empty=");
+        EXPECT_FALSE(params(*span).has_value()) << "off by default";
+    }
+
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.server.record_request_param = true;
+    mock_agent_service_->reloadConfig(config);
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:1", "ep", header_reader, "a=1&b=x%20y&empty=");
+        EXPECT_EQ(params(*span), "a=1&b=x y&empty=");
+    }
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:1", "ep", header_reader, cookie_reader, "q=1");
+        EXPECT_EQ(params(*span), "q=1");
+    }
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:1", "ep", header_reader, "");
+        EXPECT_FALSE(params(*span).has_value()) << "empty query records nothing";
     }
 }
 

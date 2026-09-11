@@ -334,6 +334,8 @@ namespace pinpoint {
         snapshot.revision = config.revision;
         snapshot.http_server_proxy_user_header_names = config.http.server.proxy_user_header_names;
         snapshot.enable_callstack_trace = config.enable_callstack_trace;
+        snapshot.http_client_record_url_query = config.http.client.record_url_query;
+        snapshot.http_server_record_request_param = config.http.server.record_request_param;
         return snapshot;
     }
 
