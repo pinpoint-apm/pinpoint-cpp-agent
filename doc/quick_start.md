@@ -131,7 +131,10 @@ programs in `example/` use. The workflow is five steps:
 4. **End** — call `EndSpan()` before the handler returns, on every code path.
 5. **Shutdown** — make sure `Shutdown()` runs before the process ends: wrap
    `main()` in a `pinpoint::helper::ScopedAgent`, or call `agent->Shutdown()`
-   explicitly after the server stops listening.
+   explicitly after the server stops listening. This includes `SIGTERM` (a
+   Kubernetes rollout, `systemctl stop`): install a handler that stops the
+   server loop so `main()` returns normally — the default disposition kills
+   the process before anything, `install_atexit_shutdown` included, can run.
 
 > **`Shutdown()` is the only thing that delivers the tail of a run.** The last
 > queued spans are sent, and the collector is told the agent stopped, only

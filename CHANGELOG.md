@@ -253,3 +253,57 @@
     default).
 
   See [Identity Versions](doc/config.md#identity-versions).
+
+### Fixed
+
+- **The metadata worker no longer stalls inside `readyChannel()` for a whole
+  collector outage.**
+
+  The metadata pipeline is one thread. It dequeued an item, took a permit and
+  then called `GrpcClient::readyChannel()`, which waits — holding the channel
+  mutex — until the channel is READY again. Through the outage nothing left
+  the queue, `enqueueMeta` overflowed at `Collector.Grpc.SenderQueueSize`,
+  every overflow released the item's cache entry, and the next span
+  re-registered and re-enqueued the same metadata: drops feeding their own
+  inflow, the loop the separate retry-queue budget was meant to prevent. The
+  worker now uses `GrpcClient::channelReadyNow()` ([src/grpc.cpp](src/grpc.cpp)):
+  READY sends, a connect in progress is waited for only as long as the RPC's
+  own deadline, and TRANSIENT_FAILURE fails the attempt at once so the item
+  takes the retry schedule and the worker keeps draining. Java and Go fire
+  the RPC without waiting and let the failure schedule the retry; this is the
+  same shape.
+
+  The outage tests in [test/test_grpc_with_mocks.cpp](test/test_grpc_with_mocks.cpp)
+  mocked `readyChannel()` as an immediate `false`, a value production returns
+  only when the client is stopping, and so pinned a span drop that never
+  happens. The mocks now wait like production and the span test asserts what
+  the worker really does: the batch held through the outage and the queued
+  spans are delivered on recovery.
+
+- **A queued SQL metadata item no longer holds a second, untruncated copy of
+  the statement.**
+
+  `StringMeta` kept the whole normalized SQL as the id cache's eviction key,
+  next to the abbreviated copy it sends. The SQL id cache has no length limit
+  (a bypassed statement would burn a fresh id per use), so one queue slot
+  could pin the normalizer's 1 MiB cap — about 2 GB across a full new queue
+  and retry schedule during an outage. The item now keeps the cache's hash of
+  the key and evicts with `IdCache::removeByHash()` ([src/cache.h](src/cache.h)),
+  so a slot is bounded by the wire cap whatever the statement's length.
+  **The Go agent still keeps the key** (`sqlMeta.key`, `agent.go`).
+
+- **URL statistics queued when shutdown begins are aggregated, not lost.**
+
+  `UrlStats::runAddUrlStatsWorker` ([src/url_stat.cpp](src/url_stat.cpp))
+  left as soon as the agent was exiting, abandoning up to a tick of entries in
+  its shard queues; the stats worker's shutdown flush, which runs after that
+  thread is joined, never saw them. The worker now closes its gate and drains
+  the shards once on the way out, like Java's `AsyncQueueingExecutor.stop()`
+  falling through to `flushQueue()`. **The Go agent's `collectUrlStatWorker`
+  still returns on the stop signal without draining `urlStatChan`.**
+
+- **`doc/quick_start.md` step 5 now names `SIGTERM`.** The default
+  disposition kills the process before `install_atexit_shutdown` or anything
+  else can run, so a host under Kubernetes or systemd must route the signal
+  to a normal exit. The rationale for shipping no signal helper is unchanged
+  and recorded in [doc/java_parity.md](doc/java_parity.md#automatic-shutdown-at-process-exit--opt-in-default-off).

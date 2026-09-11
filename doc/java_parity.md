@@ -48,6 +48,7 @@ by side.
 | Agent stat collection failure | `CollectJob.run()`, `StatMonitorJob.run()` | **Same as Java for the sample, exceeds Java for the scheduler** — see [below](#agent-stat-collection-failure-loses-one-sample--same-as-java) |
 | Active trace registry cap | `DefaultActiveTraceRepository`, `DEFAULT_MAX_ACTIVE_TRACE_SIZE` (Caffeine `maximumSize`) | **Declined, replaced by a warning** — see [below](#active-span-registry-cap--declined-replaced-by-a-warning) |
 | Automatic shutdown at process exit | `ShutdownHookRegister`, `DefaultAgent.close()` | **Opt-in, default off** — see [below](#automatic-shutdown-at-process-exit--opt-in-default-off) |
+| Tracing while a shutdown is in progress | *(no Java counterpart)* | **Off from the first line of `Shutdown()`, Go keeps tracing until drain** — see [below](#tracing-while-a-shutdown-is-in-progress--off-at-once-go-keeps-tracing-until-drain) |
 | gRPC channel arguments (flow control, header list, write buffer, connect timeout, idle timeout) | `ClientOption`, `DefaultChannelFactory.setupClientOption` | **Idle timeout same as Java; the rest left at C-core defaults** — see [below](#grpc-channel-arguments--idle-timeout-same-as-java-the-rest-left-at-c-core-defaults) |
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
 | URL stat entry without an end time | `AgentUriStatData.add` | **Same as Java** — see [below](#url-stat-entry-without-an-end-time-is-skipped--same-as-java) |
@@ -962,6 +963,35 @@ the loss plainly instead of leaving it implied.
 
 **Revisit if** the agent stops being embeddable (a standalone process of its
 own) — then a Java-style unconditional hook would be the right default.
+
+
+## Tracing while a shutdown is in progress — off at once, Go keeps tracing until drain
+
+Recorded because the two ports chose opposite policies and Java offers no
+tie-breaker: `DefaultAgent.close()` stops the senders and the JVM is on its
+way out, so there is no request path left to decide about.
+
+**Go.** During `phaseStopping` the agent still accepts `NewSpanTracer` and
+records spans, which the drain then sends. A request that arrives while the
+process is being taken out of the load balancer is traced.
+
+**This agent.** `AgentImpl::do_shutdown` (`src/agent.cpp`) clears `enabled_`
+before anything else, so from that instant `NewSpan()` returns the noop span
+and the in-flight requests of a graceful shutdown window are not traced. The
+workers then drain what was recorded up to that point within the 3 s bound.
+
+**Decision: keep it.** Spans recorded during the shutdown window would race
+the drain itself: a span that ends after its worker's final flush is dropped
+anyway, and one that ends after teardown would touch a torn-down pipeline.
+Turning the request path off first makes the last flush a complete picture
+of everything that will ever be sent, at the cost of the shutdown window's
+requests. Go accepts the opposite trade — the Go agent records that in its own
+file.
+
+**Revisit if** hosts report that the shutdown window carries traffic they
+need traced; the change is confined to where `enabled_` is cleared.
+
+---
 
 ---
 
