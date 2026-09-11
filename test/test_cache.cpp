@@ -400,6 +400,30 @@ TEST_F(CacheTest, BasicRemoveTest) {
     EXPECT_FALSE(result3.found) << "Removed key should be cache miss";
 }
 
+// removeByHash: the eviction path a queued StringMeta uses, which keeps only
+// the key's hash and the id (C-1). It evicts exactly the entry holding the
+// id, leaves other entries alone even in a one-shard cache, and ignores a
+// stale id whose entry was already re-registered under a new id.
+TEST_F(CacheTest, RemoveByHashEvictsOnlyTheMatchingIdTest) {
+    IdCache cache(5, 1);
+    const std::string long_sql(70000, 'a');
+
+    const auto sql = cache.get(long_sql);   // ID: 1
+    cache.get("other");                     // ID: 2
+    ASSERT_FALSE(sql.found);
+
+    cache.removeByHash(IdCache::hashKey(long_sql), sql.value);
+    auto again = cache.get(long_sql);
+    EXPECT_FALSE(again.found) << "the entry holding the id must be evicted";
+    EXPECT_EQ(again.value, 3) << "the next use mints a fresh id";
+    EXPECT_TRUE(cache.get("other").found) << "an unrelated entry in the same shard survives";
+
+    // Stale release: id 1 is gone, the key now maps to 3. Nothing is evicted.
+    cache.removeByHash(IdCache::hashKey(long_sql), 1);
+    EXPECT_TRUE(cache.get(long_sql).found) << "a stale id must not evict the re-registered entry";
+    EXPECT_NO_THROW(cache.removeByHash(12345, 99));
+}
+
 // Test remove non-existent key (should not crash)
 TEST_F(CacheTest, RemoveNonExistentKeyTest) {
     IdCache cache(5);

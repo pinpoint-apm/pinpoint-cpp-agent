@@ -41,6 +41,7 @@
 
 #include "agent_service.h"
 #include "atomic_shared_ptr.h"
+#include "cache.h"
 #include "callstack.h"
 #include "sharded_bounded_queue.h"
 #include "span.h"
@@ -585,20 +586,24 @@ namespace pinpoint {
     /// `str_val_` is the transmitted copy, abbreviated up front to the cap
     /// its type travels under: kMaxErrorStringLength for an error name
     /// (PStringMetaData) and kMaxSqlMetaLength for SQL (PSqlMetaData).
-    /// `cache_key_` is the whole
-    /// string the id cache stored under, which is what removeCacheError() /
-    /// removeCacheSql() evict by. So a queued SQL item holds at most
-    /// kMaxSqlMetaLength + the cache key's bytes of SQL instead of twice the
-    /// normalizer's 1 MiB worth, the same bound SqlUidMeta already keeps.
+    /// `cache_key_hash_` is the id cache's hash of the whole string the entry
+    /// was stored under, which together with `id_` is what removeCacheError()
+    /// / removeCacheSql() evict by (IdCache::removeByHash). The key itself is
+    /// not kept: the SQL id cache has no length limit (a bypassed statement
+    /// would burn a fresh id per use, see AgentImpl), so a queued item that
+    /// held the key could pin the normalizer's 1 MiB worth of SQL per queue
+    /// slot — ~2 GB across a full new queue and retry schedule during a
+    /// collector outage. With the hash a queued SQL item holds at most
+    /// kMaxSqlMetaLength (+ marker) bytes of SQL, whatever the statement.
     struct StringMeta {
         int32_t id_;
         std::string str_val_;
-        std::string cache_key_;
+        size_t cache_key_hash_;
         StringMetaType type_;
 
         StringMeta(int32_t id, std::string_view str_val, StringMetaType type)
             : id_(id), str_val_(abbreviateString(str_val, maxLength(type))),
-              cache_key_(str_val), type_(type) {}
+              cache_key_hash_(IdCache::hashKey(str_val)), type_(type) {}
 
         /// @brief The transmitted-copy cap for @p type. Explicit per type so
         ///        an error name is never cut at the SQL cap or vice versa.

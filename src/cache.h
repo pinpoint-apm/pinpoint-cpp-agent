@@ -413,6 +413,28 @@ namespace pinpoint {
             }
         }
 
+        /**
+         * @brief Removes the entry holding @p expected, found by value.
+         *
+         * A linear scan under the exclusive lock, for callers that no longer
+         * have the key: a queued SQL metadata item keeps only the key's hash
+         * (see StringMeta), so it cannot hold a 1 MiB normalized statement
+         * twice. Runs only on the rare release path (retry exhaustion,
+         * collector rejection, queue overflow), never on a lookup.
+         */
+        void remove_value(const ValueType& expected) {
+            std::list<Node> removed;
+            std::unique_lock<std::shared_mutex> lock(mutex_);
+
+            const auto it = std::find_if(cache_list_.begin(), cache_list_.end(),
+                                         [&expected](const Node& node) { return node.value == expected; });
+            if (it != cache_list_.end()) {
+                cache_map_.erase(KeyTraits::map_key(it->key));
+                removed.splice(removed.begin(), cache_list_, it);
+                note_invalidation();
+            }
+        }
+
     private:
         /**
          * @brief Inserts the staged node, or promotes an existing entry.
@@ -613,6 +635,18 @@ namespace pinpoint {
             shard_for(hash).remove(ShardTraits::with_hash(key, hash), expected);
         }
 
+        /// @brief Removes the entry holding @p expected from the shard that
+        ///        @p key_hash (from hashKey()) selects, without the key
+        ///        (see LruCacheImpl::remove_value).
+        void removeByHash(size_t key_hash, const ValueType& expected) {
+            shard_for(key_hash).remove_value(expected);
+        }
+
+        /// @brief The shard-selecting hash get()/remove() derive from @p key.
+        static size_t hashKey(LookupKey key) noexcept {
+            return ShardTraits::hash(key);
+        }
+
         size_t shardCount() const noexcept {
             return shards_.size();
         }
@@ -746,6 +780,25 @@ namespace pinpoint {
          */
         void remove(LookupKey key, int32_t expected_id) {
             cache_.remove(key, expected_id);
+        }
+
+        /**
+         * @brief Evicts the entry that still maps to @p expected_id, located
+         *        by the key's hash (hashKey()) instead of the key.
+         *
+         * For callers that must not retain the key: a queued metadata item
+         * evicting a 1 MiB SQL statement keeps 8 bytes instead of a second
+         * copy. Same id-compared-first guarantee as remove(): ids are minted
+         * once from the sequence, so the only entry holding @p expected_id
+         * is the one that was registered for it.
+         */
+        void removeByHash(size_t key_hash, int32_t expected_id) {
+            cache_.removeByHash(key_hash, expected_id);
+        }
+
+        /// @brief The hash removeByHash() expects for @p key.
+        static size_t hashKey(LookupKey key) noexcept {
+            return ShardedLruCache<int32_t, ShardTraits>::hashKey(key);
         }
 
         size_t shardCount() const noexcept {

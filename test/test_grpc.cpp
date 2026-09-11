@@ -423,8 +423,10 @@ TEST_F(GrpcTest, SqlUidMetaBoundsQueuedSqlOnCacheBypass) {
 }
 
 // StringMeta keeps the same shape: the queued copy of an oversize SQL is
-// abbreviated to kMaxSqlMetaLength on construction, exactly once, while the
-// whole normalized SQL survives as the id cache key removeCacheSql() evicts by.
+// abbreviated to kMaxSqlMetaLength on construction, exactly once, and only
+// the id cache's hash of the whole normalized SQL survives for
+// removeCacheSql() to evict by — never a second copy of the text, so a queue
+// slot is bounded by the cap regardless of the statement's length.
 TEST_F(GrpcTest, StringMetaBoundsQueuedSqlOnConstruction) {
     const std::string long_sql(70000, 'a');
     const std::string marker = "...(70000)";
@@ -435,12 +437,12 @@ TEST_F(GrpcTest, StringMetaBoundsQueuedSqlOnConstruction) {
     EXPECT_EQ(meta.str_val_.find("...("), kMaxSqlMetaLength)
         << "the marker is appended exactly once";
     EXPECT_EQ(meta.str_val_.find("...(", kMaxSqlMetaLength + 1), std::string::npos);
-    EXPECT_EQ(meta.cache_key_, long_sql)
-        << "the eviction key is the whole string the id cache stored under";
+    EXPECT_EQ(meta.cache_key_hash_, IdCache::hashKey(long_sql))
+        << "the eviction hash is the id cache's hash of the whole string it stored under";
 
     const StringMeta within(8, "SELECT 1", STRING_META_SQL);
     EXPECT_EQ(within.str_val_, "SELECT 1");
-    EXPECT_EQ(within.cache_key_, "SELECT 1");
+    EXPECT_EQ(within.cache_key_hash_, IdCache::hashKey("SELECT 1"));
 }
 
 // An error name travels under kMaxErrorStringLength (256), not the SQL cap:
@@ -450,14 +452,14 @@ TEST_F(GrpcTest, StringMetaBoundsQueuedErrorNameByItsOwnCap) {
     const std::string at_cap(kMaxErrorStringLength, 'e');
     const StringMeta verbatim(1, at_cap, STRING_META_ERROR);
     EXPECT_EQ(verbatim.str_val_, at_cap);
-    EXPECT_EQ(verbatim.cache_key_, at_cap);
+    EXPECT_EQ(verbatim.cache_key_hash_, IdCache::hashKey(at_cap));
 
     const std::string over_cap(kMaxErrorStringLength + 44, 'e');
     const StringMeta cut(2, over_cap, STRING_META_ERROR);
     EXPECT_EQ(cut.str_val_, at_cap + "...(300)");
     EXPECT_EQ(cut.str_val_.find("...(", kMaxErrorStringLength + 1), std::string::npos)
         << "the marker is appended exactly once";
-    EXPECT_EQ(cut.cache_key_, over_cap);
+    EXPECT_EQ(cut.cache_key_hash_, IdCache::hashKey(over_cap));
 
     // The same length as SQL is not cut, so the caps are really per type.
     const StringMeta as_sql(3, over_cap, STRING_META_SQL);
