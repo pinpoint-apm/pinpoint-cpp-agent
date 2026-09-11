@@ -40,9 +40,12 @@ Profile:
       Level: debug
 ```
 
-Keys are matched case-insensitively, as everywhere else. A name the file has
-no subtree for is logged as a warning and ignored (the Go agent's `config file
-doesn't have the profile`). A profile is inert without `ActiveProfile`. A
+Keys are matched case-insensitively, as everywhere else. A key the agent does
+not recognise — at the top level, inside a section, or inside a profile — is
+logged as `unknown config key '<path>' is ignored` and skipped, so a misspelled
+key is caught while the file is read rather than by its absence from the
+`config:` dump. A profile name the file has no subtree for is logged as a
+warning and ignored (the Go agent's `config file doesn't have the profile`). A profile is inert without `ActiveProfile`. A
 [hot reload](#configuration-hot-reload) re-reads `ActiveProfile` from the file,
 so both a changed profile value and a switch to another profile take effect;
 environment variables keep outranking the profile on every load. The Java

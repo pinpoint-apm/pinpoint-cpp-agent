@@ -2962,6 +2962,47 @@ Stat:
     EXPECT_EQ(config->stat.batch_count, 100) << "batch_count 100 (max) should be valid";
 }
 
+// G-3: a misspelled key used to be silently ignored, and being unknown it
+// never showed in the "config:" dump either, so the documented diagnostic
+// could not find it. Every unknown key is now named in a warning; known
+// sections, deprecated aliases, case variants and profile subtrees are not.
+TEST_F(ConfigTest, UnknownConfigKeysAreWarnedAbout) {
+    set_config_string(R"(
+ApplicationName: TypoApp
+sampling:
+  CounterRte: 20
+  type: COUNTER
+LogLevel: info
+Collector:
+  Grpc:
+    NoSuchOption: 1
+NotAKey: true
+Profile:
+  dev:
+    Http:
+      CollectUrlStat: true
+      CollectUrlStatt: false
+)");
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    auto config = make_config();
+    std::cout.flush();
+    const auto out = testing::internal::GetCapturedStdout();
+    ASSERT_NE(config, nullptr);
+
+    EXPECT_NE(out.find("unknown config key 'sampling.CounterRte'"), std::string::npos) << out;
+    EXPECT_NE(out.find("unknown config key 'Collector.Grpc.NoSuchOption'"), std::string::npos) << out;
+    EXPECT_NE(out.find("unknown config key 'NotAKey'"), std::string::npos) << out;
+    EXPECT_NE(out.find("unknown config key 'Http.CollectUrlStatt'"), std::string::npos)
+        << "profile subtrees are checked against the same table: " << out;
+    EXPECT_EQ(out.find("unknown config key 'sampling.type'"), std::string::npos)
+        << "a case variant of a known key is known: " << out;
+    EXPECT_EQ(out.find("unknown config key 'LogLevel'"), std::string::npos)
+        << "a deprecated alias is known: " << out;
+    EXPECT_EQ(out.find("unknown config key 'Profile"), std::string::npos) << out;
+    EXPECT_EQ(out.find("unknown config key 'Http.CollectUrlStat'"), std::string::npos) << out;
+}
+
 TEST_F(ConfigTest, StatCollectIntervalOutOfRangeTest) {
     // Below minimum (1000)
     set_config_string(R"(

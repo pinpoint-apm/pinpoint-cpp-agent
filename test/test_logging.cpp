@@ -471,6 +471,27 @@ TEST_F(LoggingTest, FileLoggerKeepsWritingToTheFileAfterShutdown) {
 // for the rest of the process, with file_enabled_ false. Shutdown must
 // silence it all the same — it is still a file logger, and it is the one
 // whose stragglers would otherwise keep landing on the host's stdout.
+// O-2: a log file that cannot be opened must say so somewhere the operator
+// looks. The file is empty (or absent) and the lines go to stdout, so the one
+// notice goes to stderr, naming the path and the OS reason.
+TEST_F(LoggingTest, UnopenableFileLoggerReportsWhyOnStderr) {
+    const auto missing_dir = std::filesystem::temp_directory_path() / "pinpoint_no_such_dir_o2";
+    std::error_code ec;
+    std::filesystem::remove_all(missing_dir, ec);
+    const auto path = (missing_dir / "agent.log").string();
+
+    std::cerr.flush();
+    testing::internal::CaptureStderr();
+    Logger::getInstance().setFileLogger(path, 10);
+    std::cerr.flush();
+    const auto err = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(err.find("cannot open log file " + path), std::string::npos) << err;
+    EXPECT_NE(err.find("No such file or directory"), std::string::npos)
+        << "the OS reason must be named: " << err;
+    EXPECT_NE(err.find("logging to stdout"), std::string::npos) << err;
+}
+
 TEST_F(LoggingTest, UnopenableFileLoggerDropsLogsAfterShutdown) {
     const auto missing_dir = std::filesystem::temp_directory_path() / "pinpoint_no_such_dir";
     std::error_code ec;

@@ -653,6 +653,64 @@ namespace pinpoint {
         }
     }
 
+    // Whether a dotted file path names a table field (or a deprecated alias),
+    // or is a strict prefix of one ("Collector", "Collector.Grpc").
+    static bool is_known_path(std::string_view path) {
+        for (const auto& f : kConfigFields) {
+            if (absl::EqualsIgnoreCase(f.path, path) ||
+                (!f.alias.empty() && absl::EqualsIgnoreCase(f.alias, path))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    static bool is_known_prefix(std::string_view path) {
+        for (const auto& f : kConfigFields) {
+            if (f.path.size() > path.size() && f.path[path.size()] == '.' &&
+                absl::EqualsIgnoreCase(f.path.substr(0, path.size()), path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The reverse of the table-driven loader: walks the file's map tree and
+    // warns about every key the table does not know. The loader only ever
+    // looks up known paths, so a misspelled key ("Sampling.CounterRte") was
+    // silently ignored and, being unknown, never appeared in the "config:"
+    // dump either — the one place the documentation sends an operator whose
+    // setting seems to have no effect. `Profile.<name>` subtrees are checked
+    // against the same table as the top level, since the loader reads them
+    // with it. Depth-bounded: the tree comes from a file the host controls,
+    // but a stack overflow is still the wrong failure for a deep document.
+    static void warn_unknown_keys(const YAML::Node& node, const std::string& prefix, int depth) {
+        if (!node || !node.IsMap() || depth > 8) {
+            return;
+        }
+        for (const auto& kv : node) {
+            if (!kv.first.IsScalar()) {
+                continue;
+            }
+            const std::string path = prefix.empty() ? kv.first.Scalar() : prefix + "." + kv.first.Scalar();
+            if (prefix.empty() && absl::EqualsIgnoreCase(path, "Profile")) {
+                if (kv.second.IsMap()) {
+                    for (const auto& profile : kv.second) {
+                        warn_unknown_keys(profile.second, "", depth + 1);
+                    }
+                }
+                continue;
+            }
+            if (is_known_path(path)) {
+                continue;
+            }
+            if (kv.second.IsMap() && is_known_prefix(path)) {
+                warn_unknown_keys(kv.second, path, depth + 1);
+                continue;
+            }
+            LOG_WARN("unknown config key '{}' is ignored (check the spelling against doc/config.md)", path);
+        }
+    }
+
     template <typename T, typename Parse>
     static T safe_env_parse(Parse parse, const char* desc, const char* env_name,
                             const char* env_value, T default_value) {
@@ -874,6 +932,7 @@ namespace pinpoint {
             if (profile) {
                 load_yaml_config(profile, *config, is_container_set);
             }
+            warn_unknown_keys(yaml, "", 0);
         } catch (const std::exception& e) {
             // E.g. a section node of the wrong shape (BadSubscript) that the
             // per-key getters cannot intercept. Keep whatever was parsed so

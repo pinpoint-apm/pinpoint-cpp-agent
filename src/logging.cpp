@@ -15,6 +15,7 @@
  */
 
 #include "logging.h"
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -82,8 +83,14 @@ namespace pinpoint {
         // A failure here deliberately keeps the std::cout fallback rather than
         // latching file_broken_: this is configuration time, and a host that
         // just pointed the agent at an unusable path still wants to see why
-        // its log file stays empty.
-        openFileLocked();
+        // its log file stays empty — so say so, once, on stderr. The file
+        // could not be opened, and this call holds mutex_, so neither the
+        // file nor the logger's own write path can carry the notice.
+        if (!openFileLocked()) {
+            const int error = errno;
+            std::cerr << "[pinpoint] cannot open log file " << file_path_ << ": "
+                      << std::strerror(error) << "; logging to stdout instead" << std::endl;
+        }
     }
 
     // Opens file_path_ in append mode and reports whether the sink came up.

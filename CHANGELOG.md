@@ -365,3 +365,14 @@
   `CallstackTraceNewThroughput` limiter on its own; a refusal is no longer
   latched for the rest of the span. See
   [doc/java_parity.md](doc/java_parity.md#exception-chain-scope-and-depth--one-entry-per-exception).
+
+- **Unknown configuration keys are warned about.** The loader only ever
+  looked up known paths, so a misspelled key (`Sampling.CounterRte`) was
+  silently ignored and, being unknown, never appeared in the `config:` dump
+  the troubleshooting guide points at. `make_config` now walks the file
+  (profiles included) and logs `unknown config key '<path>' is ignored` for
+  each key the table does not know.
+
+- **A log file that cannot be opened is reported on stderr**, naming the path
+  and the OS reason, before the logger falls back to stdout. The operator
+  used to see only an absent file and agent lines mixed into stdout.

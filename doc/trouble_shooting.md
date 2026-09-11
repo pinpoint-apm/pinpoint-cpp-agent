@@ -175,8 +175,12 @@ broken configuration; check that first.
 4. **Check the *resolved* configuration** — the agent logs the configuration it
    actually resolved (the `config:` dump, at `info` level), after the file,
    environment variables and defaults have been merged. This is the fastest way to catch a
-   setting that never took effect: a typo'd YAML key, a stale `PINPOINT_CPP_*`
-   variable overriding the file, or a value clamped into range.
+   setting that never took effect: a stale `PINPOINT_CPP_*` variable
+   overriding the file, or a value clamped into range. A **misspelled YAML
+   key does not appear in the dump at all** (only known keys are resolved), so
+   it is reported separately: every key the agent does not recognise logs
+   `unknown config key '<path>' is ignored` at `warning` level while the file
+   is read. If the dump lacks your setting, look for that line first.
 
 ### No Data in the Pinpoint UI
 
