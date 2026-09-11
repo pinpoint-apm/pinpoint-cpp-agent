@@ -61,6 +61,9 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override {}
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames) override {}
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames,
+                      const std::vector<ExceptionChainEntry>& causes) override {}
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
@@ -103,6 +106,9 @@ namespace pinpoint {
                       CallStackReader& reader) override { SetError(error_name, error_message); }
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames) override { SetError(error_name, error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames,
+                      const std::vector<ExceptionChainEntry>& causes) override { SetError(error_name, error_message); }
 
     private:
         // Non-owning: this event lives inside that span, so it cannot outlive

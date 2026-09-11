@@ -474,8 +474,8 @@ namespace pinpoint {
             grpc_exception->set_exceptionclassname(toValidUtf8(error_name.empty() ? callstack.getModuleName() : error_name));
             grpc_exception->set_exceptionmessage(toValidUtf8(callstack.getErrorMessage()));
             grpc_exception->set_starttime(callstack.getErrorTime());
-            // Links sharing an id are one chain; the depth is flat (see
-            // Exception::getDepth), not a position in record order.
+            // Links sharing an id are one chain; the depth is the position
+            // along it (see Exception::getDepth).
             grpc_exception->set_exceptiondepth(exception->getDepth());
 
             const auto& frames = callstack.getStack();

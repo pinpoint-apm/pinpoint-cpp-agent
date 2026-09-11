@@ -592,6 +592,39 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEachCallHasItsOwnExceptionIdTest) {
     EXPECT_EQ(annotation_count, 2) << "one exception id annotation per recorded exception";
 }
 
+// The chained overload records the thrown exception and its causes as one
+// chain: shared id, depth 0..n, one ANNOTATION_EXCEPTION_ID on the event.
+TEST_F(SpanEventTest, SetErrorWithCausesSharesOneChainTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    std::vector<ExceptionChainEntry> causes = {
+        {"SQLException", "wrapped", {{"libdb", "query", "db.cpp", 22}}},
+        {"IOException", "root cause", {{"libnet", "connect", "net.cpp", 11}}},
+    };
+    span_event.SetError("AppError", "outer",
+                        std::vector<CallStackFrame>{{"libapp", "handle", "app.cpp", 5}}, causes);
+
+    EXPECT_EQ(span_event.getErrorString(), "outer");
+    const auto& exceptions = test_span_->getExceptions();
+    ASSERT_EQ(exceptions.size(), 3u);
+    for (size_t i = 0; i < exceptions.size(); ++i) {
+        EXPECT_EQ(exceptions[i]->getId(), exceptions[0]->getId());
+        EXPECT_EQ(exceptions[i]->getDepth(), static_cast<int32_t>(i));
+    }
+    EXPECT_EQ(exceptions[0]->getCallStack().getErrorName(), "AppError");
+    EXPECT_EQ(exceptions[1]->getCallStack().getErrorName(), "SQLException");
+    EXPECT_EQ(exceptions[2]->getCallStack().getErrorName(), "IOException");
+    EXPECT_EQ(exceptions[2]->getCallStack().getStack()[0].function, "connect");
+
+    int annotation_count = 0;
+    for (const auto& [key, value] : span_event.getAnnotations()->getAnnotations()) {
+        if (key == ANNOTATION_EXCEPTION_ID) {
+            annotation_count++;
+        }
+    }
+    EXPECT_EQ(annotation_count, 1) << "one exception id annotation per chain";
+}
+
 // ========== Async Operations Tests ==========
 
 TEST_F(SpanEventTest, IncrAsyncSeqTest) {

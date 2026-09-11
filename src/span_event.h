@@ -53,6 +53,9 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message, CallStackReader& reader) override;
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames) override;
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames,
+                      const std::vector<ExceptionChainEntry>& causes) override;
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
@@ -142,13 +145,15 @@ namespace pinpoint {
 
     private:
         /// @brief Shared tail of the callstack SetError overloads: wrap the
-        /// built call stack in an Exception on the parent span, under the
-        /// span's open exception chain, and stamp the exception-id
-        /// annotation. `span` comes from the caller's spanIfAlive() check, so
-        /// it is never the dead-span case.
-        void recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack);
-        /// @brief Builds the CallStack for a call-stack SetError and records
-        /// it; the shared body of the two call-stack overloads.
+        /// built call stack in an Exception on the parent span and, for the
+        /// first link of a chain (`chain_id` 0), admit a new chain and stamp
+        /// the exception-id annotation. `span` comes from the caller's
+        /// spanIfAlive() check, so it is never the dead-span case. Returns the
+        /// chain id, or 0 when the exception was dropped.
+        int64_t recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack,
+                                int64_t chain_id = 0, int32_t depth = 0);
+        /// @brief Builds the CallStack for the reader-based SetError and
+        /// records it as a single-link chain.
         template <typename FillFrames>
         void setErrorWithCallStack(std::string_view error_name, std::string_view error_message,
                                    FillFrames&& fill);
@@ -259,6 +264,9 @@ namespace pinpoint {
                       CallStackReader& reader) override { SetError(error_name, error_message); }
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames) override { SetError(error_name, error_message); }
+        void SetError(std::string_view error_name, std::string_view error_message,
+                      const std::vector<CallStackFrame>& frames,
+                      const std::vector<ExceptionChainEntry>& causes) override { SetError(error_name, error_message); }
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}

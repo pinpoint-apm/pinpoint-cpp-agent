@@ -191,6 +191,15 @@ namespace pinpoint {
         std::string_view file;
         int line;
     };
+
+    /// @brief One cause in an exception chain for the chained SetError
+    ///        overload: the same (name, message, frames) as a call-stack
+    ///        SetError, consumed during that call.
+    struct ExceptionChainEntry {
+        std::string_view name;
+        std::string_view message;
+        std::vector<CallStackFrame> frames;
+    };
     
     class SpanImpl;
     class Span;
@@ -221,6 +230,16 @@ namespace pinpoint {
         ///        stack (innermost-last, the order a reader would emit).
         virtual void SetError(std::string_view error_name, std::string_view error_message,
                               const std::vector<CallStackFrame>& frames) = 0;
+        /// @brief Stores an error with its pre-collected call stack and the
+        ///        chain of causes behind it, outermost first. All entries share
+        ///        one exception id with depth 0, 1, 2, ... so the UI shows the
+        ///        root cause. The default drops the causes, keeping third-party
+        ///        SpanEvent implementations source compatible.
+        virtual void SetError(std::string_view error_name, std::string_view error_message,
+                              const std::vector<CallStackFrame>& frames,
+                              const std::vector<ExceptionChainEntry>& causes) {
+            SetError(error_name, error_message, frames);
+        }
         /// @brief Records a SQL query and its bound parameters, joined with
         ///        ", " up to the configured bind-value size limit.
         virtual void SetSqlQuery(std::string_view sql_query,

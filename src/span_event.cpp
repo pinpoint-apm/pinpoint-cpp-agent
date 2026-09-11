@@ -344,31 +344,63 @@ namespace pinpoint {
 
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message,
                                  const std::vector<CallStackFrame>& frames) {
-        setErrorWithCallStack(error_name, error_message, [&](CallStack& callstack) {
-            for (const auto& frame : frames) {
-                callstack.push(frame.module, frame.function, frame.file, frame.line);
-            }
-        });
+        SetError(error_name, error_message, frames, {});
     }
 
-    void SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack) {
-        // Each explicit error has an independent single-entry chain.
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message,
+                                 const std::vector<CallStackFrame>& frames,
+                                 const std::vector<ExceptionChainEntry>& causes) {
+        if (warnIfFinished()) return;
+        SetError(error_name, error_message);
+
+        auto* span = spanIfAlive();
+        if (span == nullptr || !span->config_->enable_callstack_trace) {
+            return;
+        }
+
+        try {
+            int64_t chain_id = 0;
+            int32_t depth = 0;
+            auto record = [&](std::string_view name, std::string_view message,
+                              const std::vector<CallStackFrame>& stack) {
+                auto callstack = std::make_unique<CallStack>(message, name, start_time_);
+                for (const auto& frame : stack) {
+                    callstack->push(frame.module, frame.function, frame.file, frame.line);
+                }
+                return recordException(*span, std::move(callstack), chain_id, depth++);
+            };
+            chain_id = record(error_name, error_message, frames);
+            // A dropped head drops its causes too: nothing would link them.
+            for (auto it = causes.begin(); chain_id != 0 && it != causes.end(); ++it) {
+                if (record(it->name, it->message, it->frames) == 0) break;
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("call stack trace exception = {}", e.what());
+        }
+    }
+
+    int64_t SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack,
+                                           int64_t chain_id, int32_t depth) {
         if (span.exception_buffer_full_) {
             ++span.dropped_exceptions_;
-            return;
+            return 0;
         }
-        if (!span.allowNewExceptionChain()) {
-            return;
+        // Only the head of a chain consumes the new-chain budget.
+        if (chain_id == 0 && !span.allowNewExceptionChain()) {
+            return 0;
         }
-        auto exception = std::make_unique<Exception>(std::move(callstack));
+        auto exception = std::make_unique<Exception>(std::move(callstack), chain_id, depth);
         const auto exception_id = exception->getId();
         if (!span.addException(std::move(exception))) {
             span.exception_buffer_full_ = true;
-            return;
+            return 0;
         }
-        // Each recorded exception carries its id on the event so the UI can
-        // reach the chain from that step.
-        annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
+        // The chain head carries its id on the event so the UI can reach the
+        // chain from that step.
+        if (depth == 0) {
+            annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
+        }
+        return exception_id;
     }
 
     void SpanEventImpl::SetSqlQuery(

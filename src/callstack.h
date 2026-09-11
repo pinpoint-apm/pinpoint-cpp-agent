@@ -137,18 +137,19 @@ namespace pinpoint {
          * @param chain_id Id of the exception chain this call stack continues.
          *        0 starts a new chain, which
          *        generates the next id.
+         * @param depth Position along the chain: 0 for the thrown exception,
+         *        1, 2, ... for each cause behind it.
          */
-        Exception(std::unique_ptr<CallStack> callstack, int64_t chain_id = 0)
-            : id_{chain_id > 0 ? chain_id : exception_id_gen.fetch_add(1)}, callstack_(std::move(callstack)) {}
+        Exception(std::unique_ptr<CallStack> callstack, int64_t chain_id = 0, int32_t depth = 0)
+            : id_{chain_id > 0 ? chain_id : exception_id_gen.fetch_add(1)}, depth_{depth},
+              callstack_(std::move(callstack)) {}
 
         /// @brief Returns the generated exception identifier.
         int64_t getId() const { return id_; }
-        /// @brief Returns the depth sent as PException.exceptionDepth.
-        ///
-        /// This agent cannot identify causes across explicit SetError calls, so
-        /// a chain is flat: every link is depth 0. Kept as a method so the wire
-        /// builder does not encode that decision itself.
-        int32_t getDepth() const { return 0; }
+        /// @brief Returns the depth sent as PException.exceptionDepth: 0 for
+        ///        the thrown exception, its position for a cause recorded via
+        ///        the chained SetError overload.
+        int32_t getDepth() const { return depth_; }
         /// @brief Returns a reference to the captured call stack.
         const CallStack& getCallStack() const { return *callstack_; }
 
@@ -159,6 +160,7 @@ namespace pinpoint {
 
     private:
         int64_t id_;
+        int32_t depth_;
         std::unique_ptr<CallStack> callstack_;
     };
 
