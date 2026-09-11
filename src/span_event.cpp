@@ -348,52 +348,39 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack) {
-        // Every call-stack SetError on one SPAN is a link of one chain: the
-        // links share the id of the first one and only that first link is
-        // rate limited. The chain state lives on the span rather than on this
-        // event so that an exception recorded on a nested event and again on
-        // the event that catches it - the same exception, seen twice on its
-        // way up - stays one chain and is charged once. This agent cannot
-        // distinguish a cause from an unrelated exception, so it neither
-        // separates chains nor nests them: the chain is flat
-        // (Exception::getDepth is 0 for every link).
+        // One exception, one chain of one entry. Java and Go build a cause
+        // chain from throwable identity (getCause()/Unwrap()) and number the
+        // causes exceptionDepth 0, 1, 2 ...; a C++ SetError carries no such
+        // link, so this agent cannot tell a cause from an unrelated exception
+        // nor order them. Sharing one exceptionId across links at depth 0,
+        // as the previous span-wide chain did, left the collector no way to
+        // order the chain (two entries at depth 0 under one id), so each call
+        // is its own chain: a fresh id, depth 0, admitted by the limiter on
+        // its own — what Java does for an exception whose predecessor is not
+        // in its cause chain (ExceptionRecordingState.NEW).
         //
-        // A rejected chain keeps the plain error (SetError already ran and
-        // marked the span); only the call stack is dropped. That verdict is
-        // latched for the rest of the span. Asking per link instead
-        // would charge one logical chain several times over, and once a token
-        // refilled mid-chain it would record a later link as a brand new chain
-        // with its head missing - the half-recorded chain the reuse above
-        // exists to avoid.
-        if (span.exception_chain_disabled_) {
-            // Latched by a full buffer (not by the rate limiter): this link
-            // would have been buffered, so it counts as cut from the chain.
-            if (span.exceptions_.size() >= SpanImpl::kMaxBufferedExceptions) {
-                ++span.dropped_exceptions_;
-            }
+        // A refusal by the limiter drops only this call stack; the plain
+        // error (SetError already ran and marked the span) stays. The one
+        // span-wide latch left is the buffer cap: it does not shrink before
+        // EndSpan, so once it is full every later exception would be
+        // refused too, and the latch keeps those from charging the limiter
+        // for a chain that cannot be stored.
+        if (span.exception_buffer_full_) {
+            ++span.dropped_exceptions_;
             return;
         }
-        if (span.exception_chain_id_ == 0 && !span.allowNewExceptionChain()) {
-            span.exception_chain_disabled_ = true;
+        if (!span.allowNewExceptionChain()) {
             return;
         }
-        auto exception = std::make_unique<Exception>(std::move(callstack), span.exception_chain_id_);
+        auto exception = std::make_unique<Exception>(std::move(callstack));
         const auto exception_id = exception->getId();
         if (!span.addException(std::move(exception))) {
-            // Buffer full. It does not shrink before EndSpan, so every later
-            // link would be dropped too — and latching here is what keeps a
-            // dropped first link from letting the next one charge the limiter
-            // for a chain that cannot be stored either.
-            span.exception_chain_disabled_ = true;
+            span.exception_buffer_full_ = true;
             return;
         }
-        span.exception_chain_id_ = exception_id;
-        // Each event that records a link carries EXCEPTION_CHAIN_ID so the UI
-        // can reach the chain from that step.
-        if (annotated_exception_id_ != exception_id) {
-            annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
-            annotated_exception_id_ = exception_id;
-        }
+        // Each recorded exception carries its id on the event so the UI can
+        // reach the chain from that step.
+        annotations_.AppendLong(ANNOTATION_EXCEPTION_ID, exception_id);
     }
 
     void SpanEventImpl::SetSqlQuery(

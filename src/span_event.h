@@ -201,10 +201,6 @@ namespace pinpoint {
         std::string destination_id_;
         int32_t error_func_id_{0};
         std::string error_string_;
-        // The exception chain id this event last annotated (0 = none). The
-        // chain itself lives on the owning span (SpanImpl::exception_chain_id_);
-        // this only keeps ANNOTATION_EXCEPTION_ID to one per chain per event.
-        int64_t annotated_exception_id_{0};
         int32_t async_id_{NONE_ASYNC_ID};
         int32_t async_seq_gen_{0};
         int32_t api_id_{0};

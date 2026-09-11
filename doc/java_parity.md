@@ -42,7 +42,7 @@ tree and for this repository's own sources.
 | Per-environment configuration profiles | `ProfileConfigLoader`, `pinpoint.profiler.profiles.active`, `profiles/{release,local}/pinpoint.config` | **Same idea, Go's layout** — see [below](#configuration-profiles--same-idea-gos-layout) |
 | Dropping the oldest item when a send queue is full | `SpanBatchGrpcDataSender` | **Same as Java** — see [below](#full-send-queue-drops-the-oldest-item--same-as-java) |
 | Exception chain on an overflowed span event | `AbstractRecorder.recordException`, `DefaultExceptionRecorder` | **Declined** — see [below](#exception-chain-on-an-overflowed-span-event--declined) |
-| Exception chain scope and depth | `ExceptionContext`, `ExceptionRecordingState.isChaining`, `ExceptionWrapperFactory` | **Scope as Go, depth flat** — see [below](#exception-chain-scope-and-depth--scope-as-go-depth-flat) |
+| Exception chain scope and depth | `ExceptionContext`, `ExceptionRecordingState.isChaining`, `ExceptionWrapperFactory` | **One entry per exception** — see [below](#exception-chain-scope-and-depth--one-entry-per-exception) |
 | Per-span exception buffer cap | `ExceptionWrapperFactory.maxDepth`, `profiler.exceptiontrace.io.buffering.buffersize` | **Declined** — see [below](#per-span-exception-buffer-cap--declined) |
 | Unusable inbound trace context | `DefaultTraceHeaderReader.read`, `DefaultTraceContext.createTraceId` | **Exceeds Java** — see [below](#unusable-inbound-trace-context--exceeds-java) |
 | Unparseable `Pinpoint-SpanID` | `DefaultTraceHeaderReader.read`, `SpanId.NULL` | **Exceeds Java** — see [below](#unparseable-pinpoint-spanid--exceeds-java) |
@@ -530,7 +530,7 @@ transaction to go on.
 
 ---
 
-## Exception chain scope and depth — scope as Go, depth flat
+## Exception chain scope and depth — one entry per exception
 
 **Java.** The chain state is the `ExceptionContext` attached to the trace's
 recorder, so it spans every span event of a trace. `ExceptionRecordingState`
@@ -545,38 +545,38 @@ order the events recorded them in.
 **Go.** `span.errorChains` keeps the chain state **per span** (`errors.go`
 `getExceptionChainId` / `findError`); an error that is already recorded, or that
 wraps a recorded chain head, reuses that chain's id, and the causes are walked
-with `depth` 1..n (`addCauserCallStack`). Identity is the error value.
+with `depth` 1..n (`addCauserCallStack`). Identity is the error value. The Go
+code states the invariant the collector needs: no two entries of one chain
+share a depth — "a second depth 0 leaves the collector no way to order the
+chain".
 
-**This agent.** The chain state (`SpanImpl::exception_chain_id_`,
-`exception_chain_disabled_`) is **per span**, as in Go, and
-`SpanEventImpl::recordException` reads and writes the owning span's copy: every
-call-stack `SetError` on any event of a span is a link of that span's one
-chain. `PException.exceptionDepth` is **0 for every link**
-(`Exception::getDepth`); `build_exception_metadata` no longer numbers links by
-their position in the buffer, which was record order and not a cause depth.
-Contract in [api_contracts.md §9](api_contracts.md#9-error-recording-and-exception-buffering).
+**This agent.** Every call-stack `SetError()` on any span event buffers **one
+`Exception` with its own `exceptionId`, at depth 0** — a chain of one entry
+(`SpanEventImpl::recordException`, `src/span_event.cpp`). Each recorded
+exception stamps `ANNOTATION_EXCEPTION_ID` on its event. The rate limiter
+(`CallstackTraceNewThroughput`) is asked once per exception, and a refusal
+drops that call stack only; the one span-wide latch left is the buffer cap
+(`SpanImpl::exception_buffer_full_`). Contract in
+[api_contracts.md §9](api_contracts.md#9-error-recording-and-exception-buffering).
 
-**Decision: span scope, not trace scope.** Per span is the widest scope the
-data model supports: a chain is sent inside its span's `PExceptionMetaData`
-(keyed by `spanId`), and an async child span has its own exception buffer and
-span id, so a chain cannot cross into it without being split on the wire
-anyway. Going to Java's trace scope would only add shared mutable state between
-spans that may end on different threads, for a chain that would still be
-serialized per span. Before this change the state was per span *event*, which
-is what no reference agent does: the same exception recorded on a nested event
-and again on its catcher was two chains, the second charged to (and under load
-refused by) the new-chain limiter.
+**Decision: single-entry chains, no cause API.** Java and Go derive both the
+chain boundary and the depth from throwable identity (`getCause()`,
+`Unwrap()`). A C++ exception carries no such link the agent could follow, so it
+cannot tell a cause from an unrelated exception nor which link caused which.
+An earlier revision kept one span-wide chain instead — every link under the
+first link's id, all at depth 0 — which is exactly the state Go's comment
+rules out: entries sharing an id and a depth cannot be ordered by the
+collector. With one entry per exception every chain is trivially well
+formed. The consequences are accepted: an exception recorded on a nested
+event and again on the event that catches it is two chains, each charged to
+the limiter (Java would join them as `CONTINUED`), and a genuine cause chain
+recorded link by link arrives as unrelated chains. Java behaves the same way
+for exceptions that are *not* in each other's cause chain (`NEW` per
+exception), so the id budget is spent the way Java spends it on unrelated
+exceptions.
 
-**Decision: flat depth, no cause API.** Java and Go derive both the chain
-boundary and the depth from throwable identity (`getCause()`, `Unwrap()`). A
-C++ exception carries no such link the agent could follow, and every link here
-is one explicit `SetError` call, so the agent cannot tell a cause from an
-unrelated exception nor which link caused which. Rather than invent a depth
-(record order, which is what the old builder sent, is not a cause depth) or ask
-callers to number causes they usually cannot identify either, the chain is
-flat. The consequences are accepted: unrelated exceptions recorded on one span
-share its id where Java and Go would open a new chain, and the collector sees
-no cause ordering within a chain.
+**Revisit if** the API grows a way to name a cause (e.g. `SetError` taking the
+id of the exception it wraps) — then a real depth could be numbered.
 
 ---
 

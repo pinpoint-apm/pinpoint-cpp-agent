@@ -334,3 +334,12 @@
   `INT32_MAX` the id caches latch, log once, and hand out id 0 as a hit so no
   metadata is enqueued and no span points at another entry's text
   ([src/cache.h](src/cache.h)). Entries minted before the wrap keep their ids.
+
+- **Every call-stack `SetError()` is now its own exception chain.** The
+  span-wide chain sent every link under one `exceptionId` at depth 0, which
+  the collector cannot order (the Go agent's `errors.go` states the invariant:
+  no two entries of a chain share a depth). Each recorded exception now gets
+  its own id and its own `ANNOTATION_EXCEPTION_ID`, and asks the
+  `CallstackTraceNewThroughput` limiter on its own; a refusal is no longer
+  latched for the rest of the span. See
+  [doc/java_parity.md](doc/java_parity.md#exception-chain-scope-and-depth--one-entry-per-exception).

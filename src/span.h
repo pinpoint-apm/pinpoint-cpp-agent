@@ -662,22 +662,17 @@ namespace pinpoint {
             std::optional<UrlStatEntry> url_stat_;
 
         void recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force);
+            // Every call-stack SetError on any event of this span buffers one
+            // Exception — its own single-entry chain (see
+            // SpanEventImpl::recordException). Sent inside this span's
+            // PExceptionMetaData at EndSpan; an async child span has its own
+            // buffer and span id.
             std::vector<std::unique_ptr<Exception>> exceptions_;
-            // The exception chain currently open on this span, shared by
-            // every span event of the span (SpanEventImpl::recordException
-            // reads and writes it). Per span is the widest scope that makes sense here, because the
-            // chain is sent inside this span's PExceptionMetaData and an
-            // async child span has its own buffer (exceptions_) and span id.
-            // A span-wide chain is what lets one exception recorded on a
-            // nested event and again on the event that catches it stay one
-            // chain, charged to the rate limiter once.
-            //
-            // Id of the span's chain; 0 until the first link is buffered.
-            int64_t exception_chain_id_{0};
-            // Set once it is refused by the rate limiter or a link cannot be buffered, and
-            // never cleared, so the rest of the chain is neither recorded nor
-            // charged a second time.
-            bool exception_chain_disabled_{false};
+            // Latched once addException refuses (kMaxBufferedExceptions) and
+            // never cleared: the buffer does not shrink before EndSpan, so
+            // every later exception would be refused too, and the latch
+            // keeps them from charging the rate limiter for nothing.
+            bool exception_buffer_full_{false};
 
             // Owning-thread guard enforcing the Span single-thread contract
             // (see pinpoint/tracer.h). Bound lazily on the first NewSpanEvent
@@ -742,9 +737,9 @@ namespace pinpoint {
             }
             // A new exception chain is admitted only while the agent-wide budget of
             // Config::callstack_trace_new_throughput chains per second holds.
-            // Links continuing an already-admitted chain are never limited, so
-            // a cause chain is never recorded half-way. A span created without
-            // a runtime snapshot (tests) has no limiter and stays unlimited.
+            // Every recorded exception is its own chain here, so every one
+            // asks. A span created without a runtime snapshot (tests) has no
+            // limiter and stays unlimited.
             bool allowNewExceptionChain() const {
                 if (!runtime_ || !runtime_->exception_chain_limiter) {
                     return true;
