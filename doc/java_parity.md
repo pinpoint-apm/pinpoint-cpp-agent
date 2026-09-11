@@ -309,9 +309,9 @@ default (`DefaultMonitorConfig`). Requests wait for the consumer on one
 
 **This agent.** `UrlStats::kMaxCompletedSnapshots` is 5 and
 `Http.UrlStatLimit` defaults to 1000 — both were 4 and 1024, the first
-because both ports read Java's constant rather than its comparison (the Go
-lock test still attributes 4 to "Java snapshotQueue capacity"; see the Go
-agent's file). The input queue is not one queue: request threads enqueue into
+because both ports read Java's constant rather than its comparison; the Go
+agent now carries the same two values and its lock test the corrected
+attribution. The input queue is not one queue: request threads enqueue into
 16 shards of `Http.UrlStatQueueSize` (1024) each, drained every 10 ms, so a
 single thread can buffer 1024 entries and the process up to 16 × 1024. A
 5192-entry single queue has no faithful sharded equivalent (5192 / 16 is not

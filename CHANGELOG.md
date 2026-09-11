@@ -270,11 +270,11 @@
   Java's `completed.data.limit.size`). The sharded input queue keeps its
   shape; see
   [doc/java_parity.md](doc/java_parity.md#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded).
-  **The Go agent still has 4 and 1024.**
+  The Go agent made the same two moves.
 
 - **`Stat.BatchInterval` is capped at `10000` ms, Java's
   `DefaultAgentStatMonitor` maximum** (was `60000`); a larger value falls back
-  to the default as before. **The Go agent still accepts `60000`.**
+  to the default as before. The Go agent adopted the same cap.
 
 ### Fixed
 
@@ -311,8 +311,8 @@
   could pin the normalizer's 1 MiB cap — about 2 GB across a full new queue
   and retry schedule during an outage. The item now keeps the cache's hash of
   the key and evicts with `IdCache::removeByHash()` ([src/cache.h](src/cache.h)),
-  so a slot is bounded by the wire cap whatever the statement's length.
-  **The Go agent still keeps the key** (`sqlMeta.key`, `agent.go`).
+  so a slot is bounded by the wire cap whatever the statement's length. The
+  Go agent dropped `sqlMeta.key` for the same reason.
 
 - **URL statistics queued when shutdown begins are aggregated, not lost.**
 
@@ -321,8 +321,8 @@
   its shard queues; the stats worker's shutdown flush, which runs after that
   thread is joined, never saw them. The worker now closes its gate and drains
   the shards once on the way out, like Java's `AsyncQueueingExecutor.stop()`
-  falling through to `flushQueue()`. **The Go agent's `collectUrlStatWorker`
-  still returns on the stop signal without draining `urlStatChan`.**
+  falling through to `flushQueue()`. The Go agent's `collectUrlStatWorker`
+  drains `urlStatChan` on the stop signal the same way.
 
 - **`doc/quick_start.md` step 5 now names `SIGTERM`.** The default
   disposition kills the process before `install_atexit_shutdown` or anything
@@ -391,8 +391,8 @@
   retry delay where Java retries it; the retry budget (3 attempts, 1 s, a
   1000-entry queue) is Java's. Group 17 of the parity invariants
   (`test/test_java_parity_lock.cpp`) pins the numbers so a change in either
-  port is a deliberate joint change. **The Go lock suite needs the same
-  group.**
+  port is a deliberate joint change; the Go suite carries the mirror group
+  (`Test_javaParityLock_MetadataRetryBudget`).
 
 - **`Http.Server.ProxyHeaderEnable` switches proxy header recording off.**
   Java's `profiler.proxy.http.header.enable` and the Go agent's key of the
