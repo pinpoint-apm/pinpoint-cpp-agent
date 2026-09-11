@@ -38,11 +38,6 @@ static std::string full_env(const char* suffix) {
 
 class ConfigTest : public ::testing::Test {
 protected:
-    // The production API takes configuration sources through AgentOptions.
-    // These fixture-level shims keep the historical two-step test shape
-    // (set_config_string(...) then make_config()) while routing through the
-    // real make_config(options, old): unqualified calls in the test bodies
-    // resolve to these members.
     AgentOptions options_;
     void set_config_string(std::string_view yaml) { options_.config_yaml = yaml; }
     void set_config_file_path(std::string_view path) { options_.config_file_path = path; }
@@ -346,10 +341,6 @@ TEST_F(ConfigTest, CallstackTraceNewThroughputValidationTest) {
         << "0 means unlimited and must be kept";
 }
 
-// 0 is the documented "never mark" value (Java's profiler.sql.error.enable
-// =false) and must survive validation; a negative value warns and lands on the
-// same 0, because "off" is the only reading it can consistently carry once 0
-// holds that meaning.
 TEST_F(ConfigTest, SqlErrorCountValidationTest) {
     set_config_string("Sql:\n  ErrorCount: 0\n");
     auto config = make_config();
@@ -626,13 +617,6 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 120000) << "gRPC idle timeout should match environment variable";
 }
 
-// Regression: is_container is reloadable and is NOT restored by
-// retainNonReloadableFrom(), so on reload it must be inherited from the running
-// config when the file does not override it. Previously make_config(old) re-ran
-// is_container_env() auto-detection here, clobbering the env-sourced value.
-// Both directions are checked so the test is independent of the host's actual
-// container state: whichever value differs from auto-detection flips pre-fix,
-// while the fix preserves both, so neither direction can false-fail.
 TEST_F(ConfigTest, IsContainerSurvivesReload) {
     // A resolvable identity keeps make_config() from logging resolution errors;
     // is_container resolution is independent of it.
@@ -657,10 +641,6 @@ TEST_F(ConfigTest, IsContainerSurvivesReload) {
         << "Reload must preserve env-sourced is_container=false";
 }
 
-// Regression: environment variables outrank the config file at every load, not
-// just the first one. Previously a reload re-applied the file on top of the
-// running config without re-reading the environment, so the moment the file
-// started naming an env-sourced reloadable key the file value won from then on.
 TEST_F(ConfigTest, EnvSourcedValueSurvivesFileReload) {
     // Resolvable identity, so make_config() logs no resolution error.
     setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
@@ -694,12 +674,6 @@ TEST_F(ConfigTest, EnvSourcedValueSurvivesFileReload) {
 
 // ========== Profiles (ActiveProfile / Profile.<name>) ==========
 
-// Same layout and semantics as the Go agent's `profile.<name>`: the selected
-// subtree overrides the file's top-level keys and is itself overridden by the
-// environment. Defaults < file < profile < env.
-// ActiveProfile comes from the environment, so its dotted-path lookup must not
-// recurse once per segment: a long value would overflow the stack. It resolves
-// to "no such profile" and the base config stands.
 TEST_F(ConfigTest, ActiveProfileWithManyDotsDoesNotOverflowTheStack) {
     std::string deep(200000, '.');
     set_config_string("ApplicationName: ProfileApp\nActiveProfile: \"" + deep + "\"\nSampling:\n  CounterRate: 3\n");
@@ -751,9 +725,6 @@ Profile:
     unsetenv(full_env(env::ACTIVE_PROFILE).c_str());
 }
 
-// Keys are matched case-insensitively like every other YAML key, and an
-// unknown profile is warned about and ignored (Go: "config file doesn't have
-// the profile"), leaving the base values in place.
 TEST_F(ConfigTest, ActiveProfileIsCaseInsensitiveAndUnknownIsIgnored) {
     set_config_string(R"(
 ApplicationName: ProfileApp
@@ -957,8 +928,6 @@ TEST_F(ConfigTest, SpanIgnoreErrorsEnvTest) {
     EXPECT_EQ(config->span.ignore_errors[2], (IgnoreErrorRule{"HttpError", "404"}));
 }
 
-// Java's ConfigurableErrorRecorderFactory.getEnabledTypes: an unset
-// profiler.error.mark enables every category, so the default mask must too.
 TEST_F(ConfigTest, SpanErrorMarkDefaultsToEveryCategoryTest) {
     setenv(full_env(env::APPLICATION_NAME).c_str(), "MyApp", 1);
 
@@ -1002,7 +971,6 @@ Span:
         << "category names are matched case-insensitively like every other value";
 }
 
-// Exclusion wins over inclusion, as Java's mark.removeAll(exclude) does.
 TEST_F(ConfigTest, SpanErrorMarkExcludeOverridesMarkTest) {
     set_config_string(R"(
 ApplicationName: "MyApp"
@@ -1033,7 +1001,6 @@ Span:
         << "everything nameable was excluded, and kUnknown alone remains";
 }
 
-// The env spelling is Java's verbatim: one comma-separated string.
 TEST_F(ConfigTest, SpanErrorMarkEnvTest) {
     setenv(full_env(env::APPLICATION_NAME).c_str(), "MyApp", 1);
     setenv(full_env(env::SPAN_ERROR_MARK).c_str(), "exception, sql", 1);
@@ -1063,7 +1030,6 @@ Span:
                   static_cast<int>(ErrorCategory::kException));
 }
 
-// The bit values are a wire contract with the Java and Go agents.
 TEST_F(ConfigTest, ErrorCategoryBitValuesMatchJavaTest) {
     EXPECT_EQ(static_cast<int>(ErrorCategory::kUnknown), 1) << "Java ErrorCategory.UNKNOWN";
     EXPECT_EQ(static_cast<int>(ErrorCategory::kException), 2) << "Java ErrorCategory.EXCEPTION";
@@ -1150,10 +1116,6 @@ TEST_F(ConfigTest, ValueValidationTest) {
 
 // Test edge case percent rates
 TEST_F(ConfigTest, PercentRateEdgeCasesTest) {
-    // A positive rate below 0.01 is left as configured — it is not raised to a
-    // minimum. PercentSampler truncates it to 0, which is never-sample, the
-    // same thing Java's parseSamplingRate + createSampler do
-    // (PercentSamplerFactory.java:40-48,56-58).
     std::string small_percent_yaml = R"(
 Sampling:
   PercentRate: 0.005
@@ -1171,9 +1133,6 @@ Sampling:
     config = make_config();
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "Negative percent rate should be corrected to 0";
 
-    // Exactly 0 stays 0 and disables percent sampling. It used to be raised to
-    // 0.01 here, which kept collecting at 0.01% for a deployment that had asked
-    // for nothing.
     std::string zero_percent_yaml = R"(
 Sampling:
   PercentRate: 0
@@ -1183,36 +1142,22 @@ Sampling:
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0) << "A percent rate of 0 should stay 0, not be raised to a minimum";
 }
 
-// The Java agent's whole PercentRate mapping, config validation and sampler
-// together, as one table. Java truncates the configured rate to hundredths of a
-// percent (`(long) (rate * 100)`, PercentSamplerFactory.java:56-58) and then
-// picks one of three samplers on the truncated value
-// (PercentSamplerFactory.java:40-48): <= 0 is FalseSampler, >= 10000 is
-// TrueSampler, anything between is PercentRateSampler. This agent reaches the
-// same three outcomes without three classes — make_config() clamps the ends,
-// PercentSampler's constructor truncates, and isSampled()'s `rate_ <= 0` and
-// `rate_ >= MAX_PERCENT_RATE` guards stand in for FalseSampler and TrueSampler.
-//
-// Keep this table identical to the Go agent's, so one config file means one
-// sampling rate across the fleet.
 TEST_F(ConfigTest, PercentRateJavaParityTableTest) {
     struct Case {
         const char* configured;      // as written in YAML
         double validated;            // what make_config() stores
-        int truncated;               // rate_, i.e. Java's parseSamplingRate
+        int truncated;
         int sampled_per_1000;        // isSampled() hits over 1000 calls
     };
 
-    // 100 and 150 both reach always-sample; 150 gets there via the > 100 clamp,
-    // 100 via the `rate_ >= MAX_PERCENT_RATE` short-circuit (Java: TrueSampler).
     const Case cases[] = {
-        {"-1",    0.0,     0,     0},     // Java: (long)(-100) <= 0 -> FalseSampler
-        {"0",     0.0,     0,     0},     // Java: 0 <= 0 -> FalseSampler
-        {"0.005", 0.005,   0,     0},     // Java: (long)(0.5) == 0 -> FalseSampler
-        {"0.01",  0.01,    1,     1},     // Java: 1 -> PercentRateSampler
-        {"50",    50.0,    5000,  500},   // Java: 5000 -> PercentRateSampler
-        {"100",   100.0,   10000, 1000},  // Java: >= MAX -> TrueSampler
-        {"150",   100.0,   10000, 1000},  // Java: 15000 >= MAX -> TrueSampler
+        {"-1",    0.0,     0,     0},
+        {"0",     0.0,     0,     0},
+        {"0.005", 0.005,   0,     0},
+        {"0.01",  0.01,    1,     1},
+        {"50",    50.0,    5000,  500},
+        {"100",   100.0,   10000, 1000},
+        {"150",   100.0,   10000, 1000},
     };
 
     for (const auto& c : cases) {
@@ -1247,9 +1192,6 @@ TEST_F(ConfigTest, PercentRateJavaParityTableTest) {
     }
 }
 
-// Java spells the counter mode COUNTING (SamplerType), so a Java config must
-// port over unchanged; anything unrecognised falls back to COUNTER the way
-// Java's SamplerType.of() does.
 TEST_F(ConfigTest, SamplingTypeCountingAliasTest) {
     std::string counting_yaml = R"(
 Sampling:
@@ -2324,11 +2266,6 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
     EXPECT_TRUE(full->check());
 }
 
-// Regression: a v4 reload must carry the running (auto-generated) agent id
-// through identity resolution instead of minting a fresh UUID. A fresh id
-// would make isReloadable() false inside retainNonReloadableFrom() and log a
-// spurious "non-reloadable config fields changed" warning on every reload,
-// even when the config file did not change at all.
 TEST_F(ConfigTest, MakeConfigV4ReloadKeepsAgentIdWithoutWarning) {
     set_config_string(
         "ApplicationName: v4-reload-app\n"
@@ -2732,8 +2669,6 @@ TEST_F(ConfigTest, LogFilePathExpandsPidPlaceholder) {
 
 // ========== Agent Identity Tests ==========
 
-// A legacy AgentId key in the config is ignored: the id is always
-// auto-generated.
 TEST_F(ConfigTest, AgentIdConfigKeyIsIgnored) {
     set_config_string(R"(
 ApplicationName: IdentityApp
@@ -2968,10 +2903,6 @@ Stat:
     EXPECT_EQ(config->stat.batch_count, 100) << "batch_count 100 (max) should be valid";
 }
 
-// G-3: a misspelled key used to be silently ignored, and being unknown it
-// never showed in the "config:" dump either, so the documented diagnostic
-// could not find it. Every unknown key is now named in a warning; known
-// sections, deprecated aliases, case variants and profile subtrees are not.
 TEST_F(ConfigTest, UnknownConfigKeysAreWarnedAbout) {
     set_config_string(R"(
 ApplicationName: TypoApp
@@ -3019,7 +2950,6 @@ Stat:
     EXPECT_EQ(config->stat.collect_interval, defaults::STAT_INTERVAL_MS)
         << "Interval 500 should be reset to default";
 
-    // Above maximum (10000, Java's DefaultAgentStatMonitor.MAX_COLLECTION_INTERVAL_MS)
     set_config_string(R"(
 Stat:
   BatchInterval: 10001

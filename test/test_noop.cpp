@@ -208,10 +208,6 @@ TEST_F(NoopTest, UnsampledSpanEventIsPerSpanTest) {
         << "Unsampled span event is distinct from the plain noop span event";
 }
 
-// An unsampled span is never sent, but it still produces a URL stat entry —
-// and unsampled requests are the majority when sampling is on, so an error
-// that did not fail that entry would bias the failure rate toward zero. Java's
-// DisableSpanRecorder.recordException marks the same way.
 TEST_F(NoopTest, UnsampledSpanEventSetErrorFailsUrlStatTest) {
     UnsampledSpan span(mock_agent_service_.get());
     span.SetUrlStat("/api/users", "GET", 200);
@@ -292,7 +288,6 @@ TEST_F(NoopTest, UnsampledSpanSetUrlStatTest) {
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0) << "URL stat should not be recorded until EndSpan is called";
 }
 
-// Java's setUriTemplate(uriTemplate, force = true) on the unsampled path.
 TEST_F(NoopTest, UnsampledSpanForceUrlStatReplacesThePatternTest) {
     UnsampledSpan span(mock_agent_service_.get());
 
@@ -383,7 +378,6 @@ TEST_F(NoopTest, UnsampledSpanCompleteWorkflowTest) {
 TEST_F(NoopTest, UnsampledSpanMultipleUrlStatCallsTest) {
     UnsampledSpan span(mock_agent_service_.get());
 
-    // First call claims the url pattern (Java's setUriTemplate CAS)
     span.SetUrlStat("/api/users", "GET", 200);
 
     // Second call keeps the pattern and refreshes method / status code

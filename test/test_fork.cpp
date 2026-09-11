@@ -100,10 +100,6 @@ Sampling:
 
 } // namespace
 
-// Regression: Abseil's process-global entropy pool can be initialized in the
-// master by any library user before fork(). Both children then inherit the
-// same pool state, so UUID generation must add a per-process discriminator
-// instead of returning identical random fields.
 TEST(ForkLifecycleTest, UuidRandomBitsDifferAfterParentInitializedEntropyPool) {
     (void)generate_uuid_v7(); // initialize and advance the parent's entropy pool
 

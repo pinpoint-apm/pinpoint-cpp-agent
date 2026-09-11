@@ -521,9 +521,6 @@ TEST_F(TracerCApiTest, NewSpanWithMethod) {
 }
 
 TEST_F(TracerCApiTest, NewSpanWithMethodNullReader) {
-    // A NULL carrier must still go through the method-aware overload (via an
-    // empty reader) and yield a real root span, not drop down to the
-    // method-less path.
     pt_span_t span = pt_agent_new_span_with_method(agent_, "op", "/rpc", "GET", nullptr);
     ASSERT_NE(span, nullptr);
     EXPECT_NE(pt_span_is_sampled(span), 0);

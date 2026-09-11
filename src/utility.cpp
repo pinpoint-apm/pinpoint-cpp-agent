@@ -194,12 +194,6 @@ namespace pinpoint {
     }
 
     pid_t current_pid() noexcept {
-        // A false flag means either that the handler could not be registered
-        // or that this file's dynamic initialization has not run yet (another
-        // translation unit's initializer calling in). Both must bypass the
-        // cache: without the fork handler a cached value can go stale in a
-        // child, and a stale pid would let an inherited agent record spans
-        // into queues whose worker threads do not exist in that process.
         if (!pid_hook_installed) {
             return getpid();
         }
@@ -375,9 +369,6 @@ namespace pinpoint {
         // MurmurHash3_x64_128 produces 16 bytes (128 bits) of output
         static_assert(SqlUid{}.size() == kMurmurHashOutputSize,
                       "SqlUid size must match MurmurHash3_x64_128 output");
-        // MurmurHash3 takes an int length; clamp so a >2 GiB input (never
-        // produced by the normalizer, which caps SQL length, but this is a
-        // public utility) cannot go negative in the cast.
         const auto length = static_cast<int>(std::min<size_t>(
             sql.length(), static_cast<size_t>(std::numeric_limits<int>::max())));
 

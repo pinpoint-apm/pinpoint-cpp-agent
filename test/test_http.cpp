@@ -834,10 +834,6 @@ TEST_F(HttpTest, SetProxyHeaderNginxTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// nginx writes $msec and $request_time, both "seconds.milliseconds", so an
-// integer parse of either always failed and the recorded proxy duration was
-// always 0. Java (NginxRequestParser) accepts only that exact shape — three
-// digits after the last '.' — and converts by deleting the '.'.
 TEST_F(HttpTest, SetProxyHeaderNginxParsesSecondsWithMillis) {
     const auto recorded = record_proxy_headers(
         {{"Pinpoint-ProxyNginx", "t=1504230492.763 D=0.123"}});
@@ -850,9 +846,6 @@ TEST_F(HttpTest, SetProxyHeaderNginxParsesSecondsWithMillis) {
         << "$request_time 0.123s is 123000us, not 0";
 }
 
-// The conversion is integer arithmetic like Java's, not a double scaled by
-// 1e6: 0.123 has no exact binary representation, so the double route
-// truncates to 122999 and every recorded duration is off by a microsecond.
 TEST_F(HttpTest, SetProxyHeaderNginxDurationIsExact) {
     struct Case {
         const char* d_val;
@@ -861,7 +854,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxDurationIsExact) {
     const Case cases[] = {
         {"0.123", 123000},
         {"0.001", 1000},
-        {"0.000", -1},  // not positive: unset, as Java's `> 0` guard leaves it
+        {"0.000", -1},
         {"1.999", 1999000},
         {"12.345", 12345000},
     };
@@ -886,7 +879,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedDuration) {
         "",         // D= present but empty
         "abc",
         "0.12a",
-        "-0.123",   // negative: Java's > 0 gate drops it too
+        "-0.123",
         "1e-3",
         "99999999999999999.999",  // overflows the int32 wire field
     };
@@ -899,14 +892,12 @@ TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedDuration) {
     }
 }
 
-// `t` is held to the same format, which also rejects the values that used to
-// reach an undefined double->int64_t cast (the header is attacker-controlled).
 TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedReceivedTime) {
     const char* rejected[] = {
         "1.5",                  // one decimal, not $msec's three
         "1504230492",           // no decimal point
-        "99999999999999999",    // used to overflow the *1000 product
-        "1e400",                // used to parse to +inf
+        "99999999999999999",
+        "1e400",
         "nan",
         "-1504230492.763",
     };
@@ -930,10 +921,6 @@ TEST_F(HttpTest, SetProxyHeaderAppTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// The app name identifies a node in the server map, so Java (AppRequestParser,
-// IdValidateUtils.validateId(app, 30)) discards the whole header when the value
-// fails the charset or length check rather than recording a mangled node name.
-// Truncating instead used to invent a node for any oversized value.
 TEST_F(HttpTest, SetProxyHeaderAppIsValidatedNotTruncated) {
     auto app_of = [](const std::string& app_val) -> std::string {
         const auto recorded = record_proxy_headers(
@@ -1124,10 +1111,6 @@ TEST_F(HttpTest, GetRemoteAddrEmptyBothProxyHeadersTest) {
     EXPECT_EQ(addr, "10.1.2.3") << "Empty proxy headers should fall back to remote_addr";
 }
 
-// Java DefaultProxyRequestRecorder.record runs every parser and records one
-// annotation per valid header, so a request that came through two proxies
-// describes both hops. A first-match if/else chain reported only the one
-// closest to the agent and silently dropped the rest of the chain.
 TEST_F(HttpTest, SetProxyHeaderRecordsEveryHeaderNotJustTheFirst) {
     const auto recorded = record_proxy_headers({
         {"Pinpoint-ProxyApache", "t=1000000000000 D=100 i=5 b=95"},
@@ -1175,10 +1158,6 @@ TEST_F(HttpTest, SetProxyHeaderRecordsAllFourTypes) {
     EXPECT_EQ(codes, (std::vector<int32_t>{1, 2, 3, 4}));
 }
 
-// Java's parsers call setValid(false) when `t=` is absent or not positive, and
-// DefaultProxyRequestRecorder records only valid headers. Recording anyway left
-// annotations whose received time was 0, which the web UI charts as a
-// proxy-to-agent gap of five decades.
 TEST_F(HttpTest, SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) {
     struct Case {
         const char* header;
@@ -1206,8 +1185,6 @@ TEST_F(HttpTest, SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) {
         {"Pinpoint-ProxyUser", "t=abcdefghijklm D=1500"},
         // t= with no value.
         {"Pinpoint-ProxyApache", "t= D=1500"},
-        // Apache's t is microseconds, so three digits or fewer is under a
-        // millisecond and Java's `length > 3` guard yields nothing.
         {"Pinpoint-ProxyApache", "t=999 D=1500"},
     };
 
@@ -1218,9 +1195,6 @@ TEST_F(HttpTest, SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) {
     }
 }
 
-// Java UserRequestParser: the header names are configuration
-// (profiler.proxy.http.headers, Http.Server.ProxyUserHeaderNames here), the
-// code is 4, and the annotation's app field carries the matched header name.
 TEST_F(HttpTest, SetProxyHeaderUserRecordsUnderCodeFour) {
     const auto recorded = record_proxy_headers(
         {{"Pinpoint-ProxyUser", "t=1504230492763 D=1500"}}, {"Pinpoint-ProxyUser"});
@@ -1252,9 +1226,6 @@ TEST_F(HttpTest, SetProxyHeaderUserNeedsAConfiguredName) {
         << "every configured name that is present records its own annotation";
 }
 
-// The user type has to accept any of the three proxies' formats, since the
-// header it reads is named by configuration (Java
-// UserRequestParser.toReceivedTimeMillis infers the format from the value).
 TEST_F(HttpTest, SetProxyHeaderUserInfersTheTimeFormat) {
     struct Case {
         const char* t_val;

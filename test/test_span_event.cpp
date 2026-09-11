@@ -376,7 +376,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
     EXPECT_EQ(exceptions[1]->getDepth(), 0);
 }
 
-// ========== Exception chain rate limit (Java ExceptionChainSampler) ==========
 
 // A span riding a runtime snapshot whose new-exception-chain budget is @p tps
 // per second. Production spans always carry a snapshot (NewSpan builds one);
@@ -421,8 +420,6 @@ TEST_F(SpanEventTest, ExceptionChainRateLimitDropsCallStackOnly) {
     EXPECT_EQ(span2->getExceptions().size(), 0u)
         << "The second new exception chain should be rate limited away";
 
-    // The refused chain is still a plain error - only the call stack is lost,
-    // which is what Java's DISABLED sampling state produces.
     EXPECT_EQ(event2.getErrorString(), "Second error");
     EXPECT_GT(event2.getErrorFuncId(), 0);
     EXPECT_EQ(span2->getSpanData()->getErr(), 2) << "The span is still marked failed";
@@ -470,9 +467,6 @@ namespace {
     };
 }
 
-// A refusal is per exception, not latched on the span: once a token refills,
-// the next exception on the same span (from the same event or another one)
-// is admitted as its own chain, like Java's NEW state re-asking the sampler.
 TEST_F(SpanEventTest, ExceptionChainRefusalIsPerException) {
     auto limiter = std::make_shared<SteppedClockLimiter>(10);  // one token per 100ms
     auto runtime = make_chain_limited_runtime(*mock_agent_service_, limiter);
@@ -506,11 +500,6 @@ TEST_F(SpanEventTest, ExceptionChainRefusalIsPerException) {
     EXPECT_EQ(span->getExceptions()[0]->getDepth(), 0);
 }
 
-// The same exception recorded on a nested event and again on the event that
-// catches it is two chains here (two ids, one annotation each). Java and Go
-// would join them through throwable identity; this agent has none, and a
-// shared id at depth 0 is not orderable by the collector, so two single-entry
-// chains is the accepted cost.
 TEST_F(SpanEventTest, ExceptionRecordedOnTwoEventsIsTwoChains) {
     auto runtime = std::make_shared<AgentRuntime>();
     runtime->config = mock_agent_service_->getConfig();
@@ -571,8 +560,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
 
     const auto& callstack = exceptions[0]->getCallStack();
 
-    // The exception is timed by the span event it belongs to (Java's
-    // ExceptionWrapper startTime), not by when the frames were collected.
     EXPECT_EQ(callstack.getErrorTime(), span_event.getStartTime())
         << "Error time should be the span event start time";
     EXPECT_EQ(callstack.getErrorName(), "TimeTestError")
@@ -722,11 +709,6 @@ TEST_F(SpanEventTest, FinishCalculatesElapsedTimeTest) {
     EXPECT_LE(span_event.getEndElapsed(), 200) << "Elapsed time should be reasonable (< 200ms)";
 }
 
-// Regression: a finished event may already be under serialization on the gRPC
-// worker thread, so every recording mutator must degrade to a no-op once the
-// event is finished — SetAnnotation included. A post-finish mutation would
-// otherwise race the worker's read of the same fields. See
-// SpanEventImpl::warnIfFinished().
 TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
     MockCallStackReader callstack_reader;
@@ -925,7 +907,6 @@ TEST_F(SpanEventTest, MultipleSpanEventsTest) {
 
 // ========== SQL Query Tests ==========
 
-// ========== SQL count -> span error (Java DefaultSqlCountService) ==========
 
 // Runs @p count distinct statements, one per span event, on the fixture span.
 static void run_sql_statements(SpanImpl& span, int count) {
@@ -998,9 +979,6 @@ TEST_F(SpanEventTest, SqlCountMarksTheSqlCategoryOnly) {
         << "kSql == 8, with no other cause bit set";
 }
 
-// Span.ErrorMarkExclude drops the verdict, not the counting: Java applies the
-// enabled-category filter inside the recorder, downstream of
-// DefaultSqlCountService.
 TEST_F(SpanEventTest, SqlCountExcludedCategoryLeavesTheTransactionClean) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 2;
@@ -1085,10 +1063,6 @@ static SpanImpl* as_impl(const std::shared_ptr<Span>& span) {
     return dynamic_cast<SpanImpl*>(span.get());
 }
 
-// The core regression: Sql.ErrorCount is a budget for the whole transaction,
-// not one per span. No single span here reaches the limit, so before the
-// counter moved to the trace root nothing was ever marked and a trace with
-// three async spans effectively got 3x the configured budget.
 TEST_F(SpanEventTest, SqlCountIsSharedAcrossTheWholeTransaction) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 10;
@@ -1135,8 +1109,6 @@ TEST_F(SpanEventTest, SqlCountOnNestedAsyncSpansReachesTheOriginalRoot) {
     EXPECT_EQ(as_impl(grandchild)->getSpanData()->getErr(), SPAN_ERR_NONE);
 }
 
-// Java's shared.getErrorCode() != 0 guard: once anything else failed the
-// transaction the counter stops turning entirely.
 TEST_F(SpanEventTest, SqlCountStopsOnAnAlreadyFailedTransaction) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 3;
@@ -1252,7 +1224,6 @@ TEST_F(SpanEventTest, SetSqlQueryFormatsVariantParameters) {
 
     auto& annotations = span_event.getAnnotations()->getAnnotations();
     ASSERT_EQ(annotations.size(), 1U);
-    // ", " separator, as Java's BindValueUtils.bindValueToString joins with.
     EXPECT_EQ(std::get<IntStringStringValue>(
                   annotations.front().second.data).stringValue2,
               "-7, 42, -9000000000, 18000000000, 3.5, 2.25, true, false, "
@@ -1328,9 +1299,6 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   at_limit_annotations.front().second.data).stringValue2,
               "1234");
 
-    // A value too big for the budget keeps its head, like Java's
-    // StringUtils.appendAbbreviate — dropping it whole would leave nothing to
-    // debug. This "...(N)" is the value's own length, not a count of values.
     auto over_limit = make_test_span_event(*test_span_, "over-limit");
     over_limit.SetSqlQuery("SELECT * FROM users WHERE id = ?", {"12345"});
     auto& over_limit_annotations = over_limit.getAnnotations()->getAnnotations();
@@ -1339,8 +1307,6 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   over_limit_annotations.front().second.data).stringValue2,
               "1234...(5)");
 
-    // Java's limit is a budget, not a hard cap: a bind far larger than the
-    // whole budget still contributes its first max_bind_args_size bytes.
     const std::string oversized(20, 'v');
     auto oversized_value = make_test_span_event(*test_span_, "oversized");
     oversized_value.SetSqlQuery("SELECT * FROM users WHERE id = ?",
@@ -1352,8 +1318,6 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   oversized_annotations.front().second.data).stringValue2,
               "vvvv...(20)");
 
-    // A value that fits, then one that does not: the second is abbreviated in
-    // place and the join ends there, matching Java's bindValueToString.
     auto mixed = make_test_span_event(*test_span_, "mixed");
     mixed.SetSqlQuery("SELECT * FROM users WHERE id = ? AND n = ?",
                       {"1", std::string(11, 'z')});
@@ -1363,8 +1327,6 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
                   mixed_annotations.front().second.data).stringValue2,
               "1, zzzz...(11)");
 
-    // Java appends the separator after every value but the last, so a tail
-    // dropped after a value that did fit reads "1234, ...(2)".
     auto tail_dropped = make_test_span_event(*test_span_, "tail-dropped");
     tail_dropped.SetSqlQuery("SELECT * FROM users WHERE id = ? AND n = ?",
                              {"1234", "5"});
@@ -1377,9 +1339,6 @@ TEST_F(SpanEventTest, SetSqlQueryStopsTracingBindValueAtConfiguredLimit) {
 }
 
 TEST_F(SpanEventTest, SetSqlQueryAbbreviatesBindValueLikeJava) {
-    // Java's BindValueUtils.bindValueToString abbreviates each value against
-    // the whole limit, so the joined string can exceed it — the limit bounds
-    // the budget, not the output.
     auto config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
     config->sql.max_bind_args_size = 10;
@@ -1394,8 +1353,6 @@ TEST_F(SpanEventTest, SetSqlQueryAbbreviatesBindValueLikeJava) {
                   java_annotations.front().second.data).stringValue2,
               "12345, " + std::string(10, 'z') + "...(11)");
 
-    // The reported case: at the default 1024 budget a 2000-byte JSON or CLOB
-    // bind used to leave "...(1)" and nothing to debug with.
     config = std::make_shared<Config>();
     config->sql.trace_bind_value = true;
     config->sql.max_bind_args_size = 1024;

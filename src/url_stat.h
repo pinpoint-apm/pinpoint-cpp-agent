@@ -181,8 +181,7 @@ namespace pinpoint {
     /// @brief Background workers for collecting and sending URL statistics.
     class UrlStats {
     public:
-        /// @brief Completed ticks retained while the stats stream is down
-        ///        (Java's snapshotQueue holds the same five).
+        /// @brief Number of completed ticks retained while sending is unavailable.
         static constexpr size_t maxCompletedSnapshots() noexcept { return kMaxCompletedSnapshots; }
         /// @brief @p tick_interval (bucket width) defaults to the production
         ///        value. @p send_interval is the send worker's timed wait: the
@@ -240,12 +239,7 @@ namespace pinpoint {
 
     private:
         static constexpr size_t kQueueShardCount = 16;
-        // Completed ticks retained while the stats stream is down. Java's
-        // AsyncQueueingUriStatStorage.addCompletedData compares
-        // snapshotQueue.size() > SNAPSHOT_LIMIT (4) BEFORE offering, so it
-        // holds five; the constant here is the retained count itself.
-        // Bounded because a stream that never recovers would otherwise grow
-        // this without limit; the oldest tick is the one worth losing first.
+        // Bound retained ticks; discard the oldest when the stream stays down.
         static constexpr size_t kMaxCompletedSnapshots = 5;
 
         // One queue per shard: each request thread sticks to one shard
@@ -283,17 +277,9 @@ namespace pinpoint {
         // cycle and leak the agent.
         AgentService* agent_{};
 
-        // Queue for incoming URL stats. Each shard is bounded on its own, by
-        // url_stat.queue_size, under its own mutex: the enqueue path touches
-        // nothing shared between request threads. A process-wide counter
-        // (the previous design) cost every request one RMW on a single
-        // cache line plus, whenever the worker had caught up, a lock and a
-        // futex wake to restart it — the same cross-core traffic stat.h
-        // measured at ~23 ns/request when its counters were still shared.
-        // The worker instead drains every shard on a fixed cadence
-        // (kDrainInterval); a 30 s tick does not notice a 10 ms aggregation
-        // delay. add_mutex_/add_cond_var_ now serve only the shutdown wakeup
-        // (stopAddUrlStatsWorker) and the worker's timed wait.
+        // Each request thread enqueues into one bounded shard. The worker
+        // drains all shards on a fixed cadence; the condition variable is for
+        // its timed wait and shutdown wakeup only.
         //
         // Bound semantics: the cap applies per shard, so a single busy thread
         // still buffers up to queue_size entries, and the physical worst case

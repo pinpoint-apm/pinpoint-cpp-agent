@@ -403,11 +403,6 @@ TEST_F(GrpcTest, MetaDataSqlUidTest) {
         << "a cached statement keeps its whole key for removeCacheSqlUid()";
 }
 
-// A queued SqlUidMeta never holds the normalizer's 1 MiB worth of SQL: the
-// transmitted copy is abbreviated on construction (Java's SqlCacheService
-// abbreviates before SqlUidMetaDataService sends, 64 KiB per item), and a
-// statement the uid cache bypassed carries no cache key because there is no
-// entry to evict for it.
 TEST_F(GrpcTest, SqlUidMetaBoundsQueuedSqlOnCacheBypass) {
     const SqlUid uid = {1, 2, 3, 4, 5};
     const std::string long_sql(70000, 'a');
@@ -945,11 +940,6 @@ TEST(GrpcMetadataTest, V4Headers) {
     EXPECT_EQ(m.at("agentid"), "AZLxoH6LfD2fLhorPE1ebw");
 }
 
-// The JVM non-heap pools and the old-generation GC counters have no C++
-// source, so they must travel as the uncollected sentinel (-1, Java's
-// UNCOLLECTED_VALUE) and not as 0: PJvmGc's fields are proto3
-// implicit-presence scalars, so an unset field reads back as 0 on the
-// collector and gets stored and plotted as a real measurement.
 TEST(GrpcAgentStatBuilderTest, UncollectedJvmFieldsTravelAsMinusOne) {
     AgentStatsSnapshot stat;
     stat.sample_time_ = 1700000000000;

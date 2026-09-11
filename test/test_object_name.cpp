@@ -47,7 +47,6 @@ struct GoldenVector {
     const char* base64;
 };
 
-// Java-verified vectors (Base64Utils.encode(UUID)). See task spec section 5.2.
 const GoldenVector kGoldenVectors[] = {
     {"00000000-0000-0000-0000-000000000000", "AAAAAAAAAAAAAAAAAAAAAA"},
     {"ffffffff-ffff-ffff-ffff-ffffffffffff", "_____________________w"},
@@ -59,9 +58,6 @@ const GoldenVector kGoldenVectors[] = {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Base64 / UUID encoding (Java byte-compatibility)
-// ---------------------------------------------------------------------------
 
 TEST(Base64Uuid, EncodeMatchesGoldenVectors) {
     for (const auto& v : kGoldenVectors) {
@@ -294,8 +290,6 @@ TEST(ResolveV4, AgentNameDefaultsToBase64AgentId) {
 }
 
 TEST(ResolveV4, MissingServiceNameFails) {
-    // Required like Java's ObjectNameResolverV4 and the Go agent: no "DEFAULT"
-    // fallback, since that would register the agent under the wrong service.
     ObjectNameInput in;
     in.application_name = "test-app";
     in.api_key = "secret-key";

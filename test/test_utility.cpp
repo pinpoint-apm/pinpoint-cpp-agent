@@ -204,8 +204,6 @@ TEST(UtilityTest, AbandonThreadDoesNotAllocateAndClearsHandle) {
 
     const bool still_joinable = thread.joinable();
     if (still_joinable) {
-        // Keeps the regression test safe against std::terminate when run
-        // against the old allocation-and-catch implementation.
         thread.join();
     }
     EXPECT_FALSE(still_joinable);
@@ -315,11 +313,6 @@ TEST(UtilityTest, GenerateSqlUidSimilarInputsDifferentOutput) {
     EXPECT_NE(uid1, uid2);
 }
 
-// The UID is the collector's key for SQL metadata, so its bytes are a wire
-// format: MurmurHash3_x64_128 (seed 0) serialized little-endian, the layout
-// Guava's Hashing.murmur3_128().asBytes() gives the Java agent. Pinning the
-// bytes catches both a hash change and a host-byte-order leak — the halves
-// are assembled by shifts, so a big-endian build must produce these too.
 TEST(UtilityTest, GenerateSqlUidMatchesLittleEndianMurmur3Golden) {
     EXPECT_EQ(generate_sql_uid("SELECT 1"),
               (SqlUid{0xe2, 0x90, 0x06, 0xb0, 0x53, 0x2c, 0x94, 0x92,
@@ -402,12 +395,6 @@ TEST(UtilityTest, CurrentPidMatchesGetpid) {
     EXPECT_EQ(current_pid(), getpid());
 }
 
-// The whole point of caching the pid is that the cache cannot go stale in a
-// forked child: every fork-inheritance guard in the agent compares a stored
-// owner pid against current_pid(), so a child still reporting the parent's pid
-// would let an inherited agent record spans into queues whose worker threads
-// do not exist in that process. test_fork covers that end to end through
-// AgentImpl; this pins the contract on the helper itself.
 TEST(UtilityTest, CurrentPidRefreshesInForkedChild) {
     // Prime the cache in the parent, so the child can only pass by having its
     // fork handler overwrite a value that is now demonstrably the parent's.
@@ -428,13 +415,6 @@ TEST(UtilityTest, CurrentPidRefreshesInForkedChild) {
            "never the cached parent pid";
 }
 
-// ========== abbreviateErrorString ==========
-//
-// Java caps the recorded exception message at
-// StringUtils.abbreviate(msg, 256): over the cap it keeps the first 256 and
-// appends "...(<original length>)"; at or under the cap it keeps the message
-// untouched. An uncapped message (a driver error carrying a whole SQL
-// statement) rides along in every span that records it.
 
 TEST(UtilityTest, AbbreviateErrorStringKeepsMessageAtOrUnderCap) {
     const std::string at_cap(kMaxErrorStringLength, 'a');
@@ -485,13 +465,6 @@ TEST(UtilityTest, AbbreviateErrorStringKeepsUtf8BoundaryIntact) {
     }
 }
 
-// ========== abbreviateString / kMaxSqlMetaLength ==========
-//
-// PSqlMetaData.sql and PSqlUidMetaData.sql carry the normalized SQL
-// abbreviated at 65536 bytes, where Java's SqlCacheService applies
-// StringUtils.abbreviate(sql, profiler.jdbc.maxsqllength). The id/UID is
-// keyed on the whole normalized SQL, so the suffix is the only place the
-// original length survives.
 TEST(UtilityTest, AbbreviateStringKeepsInputAtOrUnderCap) {
     EXPECT_EQ(abbreviateString("SELECT 0#", kMaxSqlMetaLength), "SELECT 0#");
     const std::string at_cap(kMaxSqlMetaLength, 'a');

@@ -62,12 +62,6 @@ TEST_F(RateLimiterTest, FirstCallPassesThenPacesAtTps) {
     EXPECT_FALSE(limiter.allow());
 }
 
-// Regression: the bucket fills from construction, not from the first call.
-// Guava starts its stopwatch in setRate() and converts everything elapsed
-// since into permits on the first acquire(), so an agent that idles before its
-// first request owes that request a full second of burst. Treating "never
-// used" as "no time has passed" handed out exactly one, which under-sampled
-// the very first traffic a process saw.
 TEST_F(RateLimiterTest, IdleBeforeTheFirstCallStillFillsTheBucket) {
     FakeClockLimiter limiter(10);  // one token per 100ms
 

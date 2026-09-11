@@ -114,11 +114,8 @@ namespace pinpoint {
          *         is the 64-load size() worth computing.
          */
         size_t add(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
-            // A span registers exactly once (SpanImpl::extractContext or the
-            // UnsampledSpan constructor). Re-linking a linked node would
-            // corrupt the shard list, so degrade a contract violation to a
-            // no-op — the same tolerance the old map's try_emplace used to
-            // give a duplicate id.
+            // A span registers once. Re-linking a node would corrupt its shard,
+            // so a duplicate registration is a no-op.
             if (node.linked_.load(std::memory_order_relaxed)) {
                 return 0;
             }

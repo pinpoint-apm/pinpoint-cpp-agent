@@ -62,7 +62,6 @@ namespace pinpoint {
         // connection and its keepalive instead of dropping to IDLE (see
         // make_channel_arguments in grpc.cpp).
         constexpr int GRPC_IDLE_TIMEOUT_MS = 0;
-        // Java's profiler.uri.stat.completed.data.limit.size (DefaultMonitorConfig).
         constexpr int HTTP_URL_STAT_LIMIT = 1000;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
@@ -404,14 +403,7 @@ namespace pinpoint {
                 // queue_size bounds per-request records buffered between
                 // request end and worker aggregation.
                 size_t queue_size = defaults::HTTP_URL_STAT_QUEUE_SIZE;
-                // Off by default, like Java and Go, which aggregate the
-                // recorded URI template verbatim and have no trimming at
-                // all. On, a depth-3 trim rewrote a four-segment template
-                // ("/api/v1/users/{id}" -> "/api/v1/users/*"), so an
-                // instrumentation that records templates - the normal case -
-                // saw its routes damaged and its keys diverge from a Java
-                // service behind the same collector. A caller that can only
-                // record raw URLs opts in (see doc/config.md).
+                // Preserve recorded URI templates unless trimming is requested.
                 bool enable_trim_path = false;
                 // Applies only when enable_trim_path is on. 3, not 1: at
                 // depth 1 every path under a prefix collapses into one key
@@ -431,10 +423,7 @@ namespace pinpoint {
                 // default: the user proxy type records nothing until a name is
                 // configured.
                 std::vector<std::string> proxy_user_header_names;
-                // Java's profiler.proxy.http.header.enable, Go's
-                // Http.Server.ProxyHeaderEnable: off, no proxy header is read
-                // at all — the three built-in parsers included, which an empty
-                // proxy_user_header_names cannot switch off.
+                // Disables all proxy-header parsers when false.
                 bool proxy_header_enable = true;
             } server;
 

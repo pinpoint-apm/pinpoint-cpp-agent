@@ -14,41 +14,6 @@
  * limitations under the License.
  */
 
-// Locked parity invariants.
-//
-// Every assertion in this file is a value or an algorithm that the Java agent
-// (agent-module/profiler), the Go agent and this agent were verified to agree
-// on. They are locked here so a later change has to state its intent instead
-// of drifting one agent away from the other two: a failure means either the
-// change is wrong, or all three implementations and doc/java_parity.md move
-// together.
-//
-// The Go agent keeps the same suite at java_parity_lock_test.go, group for
-// group, and doc/java_parity.md ("Locked parity invariants") is the table that
-// ties both to the Java reference. Add a group here only when the same group
-// exists there.
-//
-// Where an existing suite in this directory already locks a group, this file
-// says so and does not duplicate it - the cross-reference is the point, so a
-// reader of one file can find the other half.
-//
-// Groups:
-//   1  SQL normalization state machine   (golden cases: test_sql.cpp)
-//   2  span event depth / sequence numbering
-//   3  span chunk serialization          (test_span.cpp)
-//   4  async id / sequence sentinels
-//   5  propagation header names and transaction id format
-//   6  sampling formulas                 (limiter: test_limiter.cpp)
-//   7  URI histogram layout
-//   8  active trace histogram layout
-//   9  transaction counters              (test_stat.cpp)
-//  10  message truncation format
-//  11  gRPC channel constants
-//  12  error cause categories
-//  13  queue overflow policy             (test_sharded_bounded_queue.cpp)
-//  14  proxy request header pipeline     (test_http.cpp)
-//  15  logging level policy              (test_logging.cpp)
-//  16  shutdown contract                 (port consensus; test_agent_with_mocks.cpp)
 
 #include "pinpoint/tracer.h"
 
@@ -89,15 +54,6 @@
 
 namespace pinpoint {
 
-// ===========================================================================
-// Group 1 - SQL normalization state machine
-// ===========================================================================
-//
-// The byte-for-byte golden cases live in test_sql.cpp
-// (SqlTest.JavaParityGoldenCases plus the ported JavaDefault* cases); the Go
-// agent mirrors them in Test_javaParityLock_SqlNormalizerGoldenCases. What is
-// locked here instead is the structural invariant the collector depends on and
-// that no single case states on its own.
 
 namespace {
 
@@ -156,8 +112,6 @@ std::vector<int> scanPlaceholderIndices(std::string_view normalized) {
 // separately, and it breaks silently: every statement still normalizes, the
 // server just refills the wrong values.
 TEST(JavaParityLockTest, SqlNormalizerSharedIndexCounter) {
-    // removeComments=false is Java's DefaultSqlNormalizer no-arg constructor,
-    // which is what the golden expectations were taken from.
     const SqlNormalizer normalizer(kMaxNormalizedSqlLength, false);
 
     const char* statements[] = {
@@ -197,9 +151,6 @@ TEST(JavaParityLockTest, SqlNormalizerSharedIndexCounter) {
     }
 }
 
-// Normalizing an already-normalized statement changes it again: `0#` becomes
-// `0##`. All three agents behave this way, and a "fix" that made it idempotent
-// would change every SQL id for a statement the agent happens to see twice.
 TEST(JavaParityLockTest, SqlNormalizerIsNotIdempotent) {
     const SqlNormalizer normalizer(kMaxNormalizedSqlLength, false);
 
@@ -229,17 +180,6 @@ TEST(JavaParityLockTest, SqlNormalizerEmptyLiteralConsumesNoIndex) {
     EXPECT_EQ(result.param_index, 1);
 }
 
-// A statement over the 1 MiB input cap is dropped WHOLE - empty text, empty
-// parameters, no placeholder count - never cut. This is a deliberate shared
-// divergence from Java, which has no input cap at all: what is locked here is
-// that the value and the drop policy are the SAME in both ports. The Go agent
-// carries the identical constant (maxSqlNormalizeLength = 1 << 20) and the
-// identical policy; test_sql.cpp covers the behaviour end to end
-// (SqlTest.OversizeSqlIsDroppedNotCut, SqlTest.DropsAtHardCap).
-//
-// Cutting instead of dropping is what the shared policy rules out: a cut
-// landing inside a literal loses that literal's placeholder, which changes the
-// normalized text and with it the SQL id/UID the collector keys metadata by.
 TEST(JavaParityLockTest, SqlNormalizerOversizeStatementIsDroppedWhole) {
     EXPECT_EQ(kMaxNormalizedSqlLength, 1024u * 1024u)
         << "Go maxSqlNormalizeLength = 1 << 20";
@@ -264,9 +204,6 @@ TEST(JavaParityLockTest, SqlNormalizerOversizeStatementIsDroppedWhole) {
 // Group 2 - span event depth / sequence numbering
 // ===========================================================================
 
-// Java: profiler.callstack.max.depth=64, profiler.callstack.max.sequence=5000,
-// profiler.io.buffering.buffersize=20 (DefaultInstrumentConfig,
-// pinpoint-root.config).
 TEST(JavaParityLockTest, SpanEventLimitDefaults) {
     EXPECT_EQ(defaults::SPAN_MAX_EVENT_DEPTH, 64) << "Java profiler.callstack.max.depth";
     EXPECT_EQ(defaults::SPAN_MAX_EVENT_SEQUENCE, 5000) << "Java profiler.callstack.max.sequence";
@@ -275,15 +212,6 @@ TEST(JavaParityLockTest, SpanEventLimitDefaults) {
 
 namespace {
 
-// javaOverflowDecision mirrors the predicate all three agents implement, so the
-// boundaries below are stated once in a form a reader can compare against
-// Java's DefaultCallStack.isOverflow: `maxDepth < index || maxSequence <=
-// sequence`, where index is the number of elements already on the stack. Both
-// ports pass the depth the next event would take (index + 1), hence depth - 1.
-//
-// A mirror, not the real function: is_event_overflow is file-local to span.cpp
-// and takes a config snapshot. SpanTest covers the real one; what is locked
-// here is where the boundaries fall.
 bool javaOverflowDecision(int32_t sequence, int32_t depth, int32_t max_sequence, int32_t max_depth) {
     return sequence >= max_sequence || depth - 1 > max_depth;
 }
@@ -306,20 +234,6 @@ TEST(JavaParityLockTest, SpanEventOverflowBoundaries) {
         << "exactly maxSequence events are recorded";
 }
 
-// The (sequence, depth) position a new span event takes is reserved with
-// atomics, so two threads recording an event on one span can never be handed
-// the same sequence. Java has no such guard: DefaultCallStack.push does a
-// plain sequence++ under a single-thread call-stack contract. Both ports made
-// it atomic, because a span here may be driven from several threads of one
-// logical call stack, and a duplicate PSpanEvent.sequence breaks the
-// collector's call-tree rebuild - a silent wrong-tree, not a dropped event.
-//
-// Each counter is one fetch_add, so each is unique and gap-free on its own;
-// which depth pairs with which sequence under concurrency is not part of the
-// contract and is not asserted. SpanData::nextEventSequenceAndDepth is the
-// reservation itself: SpanImpl::NewSpanEvent is thread-bound past it (it
-// pushes onto a plain vector and warns through checkOwnerThread), so the
-// counters are exactly what the concurrent callers share.
 TEST(JavaParityLockTest, SpanEventPositionsAreReservedAtomically) {
     constexpr int kThreads = 8;
     constexpr int kPerThread = 512;
@@ -377,30 +291,11 @@ TEST(JavaParityLockTest, SpanEventPositionsAreReservedAtomically) {
     EXPECT_EQ(span_data.getEventDepth(), kTotal + 1);
 }
 
-// ===========================================================================
-// Group 3 - span chunk serialization
-// ===========================================================================
-//
-// Locked by test_span.cpp: SpanChunkOptimizeMultipleEventsTest and
-// SpanChunkOptimizeNonFinalKeyTimeTest cover keyTime (final = the span's start
-// time, non-final = the first event's) and the startElapsed deltas;
-// SpanChunkEndPointSnapshotTest covers the endPoint snapshot a non-final chunk
-// carries. The Go agent mirrors all three in
-// Test_javaParityLock_Chunk{KeyTimeAndStartElapsed,SortsBySequence,SnapshotsEndPoint}.
-//
-// Depth compression (an event at the same depth as its predecessor travels as
-// depth 0) is now locked on both sides: gap S4 of the 4th cross-agent review -
-// the Go agent's optimizeSpanEvents not seeding prevDepth on its first
-// iteration, so its second event was never compressed - is fixed, and
-// Test_javaParityLock_ChunkDepthCompression covers it there.
 
 // ===========================================================================
 // Group 4 - async id sentinel
 // ===========================================================================
 
-// Java: an async id of 0 means "no async context". NewAsyncSpan redraws while
-// the generator hands out the sentinel, so a drawn id can never be mistaken
-// for "absent".
 TEST(JavaParityLockTest, AsyncIdSentinel) {
     EXPECT_EQ(NONE_ASYNC_ID, 0) << "Java: asyncId 0 means no async context";
 }
@@ -409,8 +304,6 @@ TEST(JavaParityLockTest, AsyncIdSentinel) {
 // Group 5 - propagation header names and transaction id format
 // ===========================================================================
 
-// All ten names, against Java's Header enum (commons). A rename on one side
-// silently breaks tracing across a process boundary, with no error anywhere.
 TEST(JavaParityLockTest, PropagationHeaderNames) {
     EXPECT_EQ(HEADER_TRACE_ID, "Pinpoint-TraceID");
     EXPECT_EQ(HEADER_SPAN_ID, "Pinpoint-SpanID");
@@ -436,8 +329,6 @@ TEST(JavaParityLockTest, AnnotationKeys) {
     EXPECT_EQ(ANNOTATION_EXCEPTION_ID, -52) << "Java AnnotationKey.EXCEPTION_CHAIN_ID";
 }
 
-// The wire format `agentId^startTime^sequence` (Java TransactionIdUtils) and
-// the round trip through the parser.
 TEST(JavaParityLockTest, TransactionIdFormat) {
     const TraceId trace_id{std::string_view{"test-agent"}, 1600000000000LL, 42LL};
     EXPECT_EQ(trace_id.toString(), "test-agent^1600000000000^42");
@@ -449,9 +340,6 @@ TEST(JavaParityLockTest, TransactionIdFormat) {
     EXPECT_EQ(parsed.Sequence, 42LL);
 }
 
-// The parser's accept/reject set. Java validates the agent id character class
-// (IdValidateUtils) and stops at the third delimiter, so "a^1^2^3" is the
-// transaction "a^1^2" to all three agents.
 TEST(JavaParityLockTest, TransactionIdParsing) {
     struct Case {
         const char* txid;
@@ -480,9 +368,6 @@ TEST(JavaParityLockTest, TransactionIdParsing) {
     EXPECT_EQ(extra.Sequence, 2LL) << "the parser stops at the third delimiter";
 }
 
-// Only the exact string "s0" turns sampling off. Java:
-// SamplingFlagUtils.isSamplingFlag - anything else, "s1" or an absent header
-// included, is sampled.
 TEST(JavaParityLockTest, SampledHeaderEncoding) {
     constexpr std::string_view kSamplingFlagFalse = "s0";
 
@@ -492,12 +377,6 @@ TEST(JavaParityLockTest, SampledHeaderEncoding) {
     }
 }
 
-// The parent application type recorded when Pinpoint-pAppName arrives without
-// a parseable Pinpoint-pAppType is -1, ServiceType.UNDEFINED, which Java's
-// ServerRequestRecorder.recordParentInfo produces through
-// NumberUtils.parseShort(type, UNDEFINED). Both ports used to default to 1
-// (UNKNOWN), a real service type the server map drew as a node of that type.
-// The Go agent locks the same in Test_javaParityLock_ParentAppTypeDefaultsToUndefined.
 TEST(JavaParityLockTest, ParentAppTypeDefaultsToUndefined) {
     auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
     span_data->setTraceId(TraceId{std::string_view{"test-agent"}, 1600000000000LL, 7LL});
@@ -514,9 +393,6 @@ TEST(JavaParityLockTest, ParentAppTypeDefaultsToUndefined) {
 // Group 6 - sampling formulas
 // ===========================================================================
 
-// Java CountingSampler tests the pre-increment value, so the first request of
-// the process is sampled and every rate-th one after it - not the rate-th
-// request. SamplingTest covers rates 0 and 1; the phase is what is locked here.
 TEST(JavaParityLockTest, CountingSamplerPhase) {
     CounterSampler sampler(3);
 
@@ -530,9 +406,6 @@ TEST(JavaParityLockTest, CountingSamplerPhase) {
         << "the first call and every 3rd after it";
 }
 
-// Java PercentRateSampler adds the rate to a counter and samples on a
-// remainder in (0, rate] - the first request lands on exactly rate and is
-// sampled, where a [0, rate) window would sample the second one instead.
 TEST(JavaParityLockTest, PercentSamplerWindow) {
     PercentSampler sampler(1.0);  // rate 100 of 10000
 
@@ -546,9 +419,6 @@ TEST(JavaParityLockTest, PercentSamplerWindow) {
         << "one per hundred, starting at the first call";
 }
 
-// The truncation Java does in PercentSamplerFactory: the percentage is
-// multiplied by 100 and truncated, so anything under 0.01 collects nothing.
-// The two ends are the TrueSampler / FalseSampler cases Java hands off to.
 TEST(JavaParityLockTest, PercentSamplerEdgeRates) {
     EXPECT_EQ(MAX_PERCENT_RATE, 100 * 100) << "Java: 100 * 100";
 
@@ -578,8 +448,6 @@ TEST(JavaParityLockTest, PercentSamplerEdgeRates) {
     }
 }
 
-// Java CountingSampler with a rate of 1 samples everything and a rate of 0
-// nothing; a negative rate must not be treated as a huge unsigned one.
 TEST(JavaParityLockTest, CountingSamplerEdgeRates) {
     CounterSampler always(1);
     for (int i = 0; i < 5; ++i) {
@@ -630,15 +498,6 @@ int countAllowed(RateLimiter& limiter, const int calls) {
 
 }  // namespace
 
-// The initial state of the throughput bucket behind Sampling.NewThroughput /
-// Sampling.ContinueThroughput (and CallstackTraceNewThroughput). Java builds
-// these on Guava's RateLimiter.create (RateLimitTraceSampler), a SmoothBursty
-// whose maxBurstSeconds is 1 and whose initial storedPermits is 0, and whose
-// stopwatch is resynced in setRate() - so idle time before the first acquire
-// is already worth permits. Both ports reproduce that; the Go suite locks it
-// as Test_javaParityLock_ThroughputLimiterInitialState. test_limiter.cpp
-// covers the rest of the schedule (SteadyCallsNeverExceedTps,
-// LongIdleDoesNotAccumulate, the real-clock variants).
 TEST(JavaParityLockTest, ThroughputLimiterInitialState) {
     constexpr uint64_t kTps = 10;  // one token per 100ms
 
@@ -677,9 +536,6 @@ TEST(JavaParityLockTest, ThroughputLimiterInitialState) {
 // Group 7 - URI histogram layout
 // ===========================================================================
 
-// The eight bucket bounds, against Java's UriStatHistogramBucket.Layout. The
-// collector stores the counts positionally, so a shifted boundary silently
-// rewrites history.
 TEST(JavaParityLockTest, UrlStatHistogramBuckets) {
     EXPECT_EQ(URL_STATS_BUCKET_SIZE, 8);
     EXPECT_EQ(URL_STATS_BUCKET_VERSION, 0) << "Java UriStatHistogramBucket.getVersion";
@@ -708,19 +564,10 @@ TEST(JavaParityLockTest, UrlStatHistogramBuckets) {
     }
 }
 
-// The tick size and the completed-queue cap. Java:
-// AsyncQueueingUriStatStorage buckets on a 30s TickClock and keeps four
-// snapshots. The send cadence is not a URL-stat constant: Java's
-// UriStatCollectingJob runs on the agent stat scheduler
-// (profiler.jvm.stat.collect.interval), so the default send ceiling here is
-// Stat.BatchInterval's default rather than a second 30s timer.
 TEST(JavaParityLockTest, UrlStatWindow) {
     EXPECT_EQ(URL_STAT_TICK_INTERVAL, std::chrono::seconds(30)) << "Java TickClock interval";
     EXPECT_EQ(UrlStats(nullptr).sendInterval(), std::chrono::milliseconds(defaults::STAT_INTERVAL_MS))
         << "URL stats leave on the agent stat cadence, as Java's UriStatCollectingJob does";
-    // AsyncQueueingUriStatStorage.addCompletedData: size() > SNAPSHOT_LIMIT (4)
-    // is tested BEFORE the offer, so the queue holds five completed ticks.
-    // The earlier "4" in both ports read the constant, not the comparison.
     EXPECT_EQ(UrlStats::maxCompletedSnapshots(), 5u)
         << "Java snapshotQueue retains SNAPSHOT_LIMIT + 1 completed ticks";
     EXPECT_EQ(defaults::HTTP_URL_STAT_LIMIT, 1000)
@@ -737,16 +584,10 @@ TEST(JavaParityLockTest, UrlStatWindow) {
     EXPECT_EQ(clock.tick(base + std::chrono::milliseconds(30000)), tick + 30000);
 }
 
-// The stand-in URL for a span that recorded URL stats without a URI template.
-// Java's URITemplate.NULL_URI, verbatim, so a mixed Java/C++ application
-// aggregates its "no URI recorded" traffic under one server-side key.
 TEST(JavaParityLockTest, UrlStatUnknownKey) {
     EXPECT_EQ(URL_STAT_UNKNOWN, "/NULL") << "Java URITemplate.NULL_URI";
 }
 
-// An all-zero histogram reports empty, which is what keeps an empty
-// PUriHistogram off the wire. Java decides on a count field; both ports decide
-// on the bucket sum, so a single 0ms sample must still count as non-empty.
 TEST(JavaParityLockTest, UrlStatEmptyHistogram) {
     UrlStatHistogram histogram;
     EXPECT_TRUE(histogram.empty()) << "a fresh histogram is empty";
@@ -757,34 +598,7 @@ TEST(JavaParityLockTest, UrlStatEmptyHistogram) {
     EXPECT_EQ(histogram.histogram(0), 1);
 }
 
-// The URI template a span records is FIRST-write-wins, with an explicit force
-// override, while the HTTP method and the status code are last-write-wins.
-// Java: DefaultShared.setUriTemplate (:139-160) is a null -> value
-// compareAndSet with a setUriTemplate(value, force) overload that sets
-// unconditionally, and setStatusCode (:129-136) is a plain setter. Both ports
-// agree with Java on both of those. Span::SetUrlStat vs Span::ForceUrlStat
-// (src/span.cpp:803-834) is the same pair here, and mergeUrlStat is the Go
-// counterpart.
-//
-// One divergence found while locking this, deliberately NOT asserted as Java
-// parity: DefaultShared.setHttpMethods (:168-177) is also a null -> value CAS
-// in Java, so Java is first-wins on the method where both ports are
-// last-wins. That half is a two-port consensus (a status code is only final
-// at the end of a request, and the method belongs with it), not Java parity -
-// the pre-existing comment on SpanTest.SetUrlStatKeepsTheFirstPatternTest
-// calls Java's method setter "plain", which is wrong.
-//
-// Not asserted here: SpanImpl needs an AgentService, so exercising the three
-// rules means standing up MockAgentService. test_span.cpp already does, in
-// SetUrlStatKeepsTheFirstPatternTest (first-wins, and method/status last-wins
-// in the same test), SetUrlStatEmptyPatternDoesNotClaimTheSlotTest (an empty
-// pattern is Java's null) and ForceUrlStatReplacesTheRecordedPatternTest.
 
-// An entry whose end time was never set is SKIPPED, not keyed under tick 0.
-// Java does exactly this in AgentUriStatData.add (:56-64): endTime == 0 logs
-// and returns true, so the entry is neither bucketed nor counted as a
-// capacity drop. Keying it under tick 0 would file the sample in 1970 and
-// pin the snapshot's watermark there, dragging every later sample with it.
 TEST(JavaParityLockTest, UrlStatEntryWithoutAnEndTimeIsSkipped) {
     UrlStatSnapshot snapshot;
     const Config config;
@@ -818,9 +632,6 @@ TEST(JavaParityLockTest, UrlStatEntryWithoutAnEndTimeIsSkipped) {
 // Group 8 - active trace histogram layout
 // ===========================================================================
 
-// The four active-trace slots, against Java's NORMAL histogram schema
-// (BaseHistogramSchema: 1000/3000/5000ms with an inclusive upper bound, so a
-// span at exactly 1000ms is still "fast").
 TEST(JavaParityLockTest, ActiveTraceHistogram) {
     constexpr int64_t kSampleTimeMs = 100000;
 
@@ -851,23 +662,11 @@ TEST(JavaParityLockTest, ActiveTraceHistogram) {
     }
 }
 
-// ===========================================================================
-// Group 9 - transaction counters
-// ===========================================================================
-//
-// Locked by test_stat.cpp: StatTest.SamplingCountersTest and
-// StatTest.AllCountersMixedIncrementTest cover all six counters Java's
-// DefaultTransactionCounter reports, and
-// StatTest.CollectResetsCountersBetweenCallsTest covers the drain. The Go
-// agent mirrors both in Test_javaParityLock_TransactionCounters.
 
 // ===========================================================================
 // Group 10 - message truncation format
 // ===========================================================================
 
-// The abbreviation Java's StringUtils.abbreviate writes: the value cut to the
-// limit followed by "...(original length)". The web tier shows the marker
-// as-is, so the format is part of the contract.
 TEST(JavaParityLockTest, TruncationFormat) {
     EXPECT_EQ(abbreviateString("short", 10), "short") << "a value within the limit is untouched";
     EXPECT_EQ(abbreviateString("0123456789", 10), "0123456789") << "exactly at the limit is untouched";
@@ -875,9 +674,6 @@ TEST(JavaParityLockTest, TruncationFormat) {
         << "the marker carries the original length";
 }
 
-// The UTF-8 guard both ports add on top of Java: protobuf rejects invalid
-// UTF-8 at marshal time, so a mid-rune cut would fail the whole span or
-// metadata send carrying it.
 TEST(JavaParityLockTest, TruncationCutsOnAUtf8Boundary) {
     // U+AC00 is three bytes; a limit of 4 lands inside the second character.
     const std::string source = "\xEA\xB0\x80\xEA\xB0\x80\xEA\xB0\x80";
@@ -888,10 +684,6 @@ TEST(JavaParityLockTest, TruncationCutsOnAUtf8Boundary) {
     EXPECT_TRUE(isValidUtf8(abbreviated)) << "the result must stay valid UTF-8 for protobuf";
 }
 
-// The two message limits. Java: AbstractRecorder abbreviates an exception
-// message to 256 chars before recording it on a span or span event, and
-// profiler.jdbc.maxsqllength defaults to 65536 for the SQL text that travels
-// in PSqlMetaData.
 TEST(JavaParityLockTest, MessageLimits) {
     EXPECT_EQ(kMaxErrorStringLength, 256u) << "Java AbstractRecorder.recordException";
     EXPECT_EQ(kMaxSqlMetaLength, 64u * 1024u) << "Java profiler.jdbc.maxsqllength";
@@ -908,12 +700,6 @@ TEST(JavaParityLockTest, CollectorPortDefaults) {
     EXPECT_EQ(defaults::SPAN_PORT, 9993) << "Java profiler.transport.grpc.span.collector.port";
 }
 
-// The channel options verified equal across the three agents. flowControlWindow,
-// writeBufferSize and maxHeaderListSize are deliberately left at the gRPC
-// C-core defaults here where Java and Go pin them; doc/java_parity.md records
-// that, and there is nothing to assert for them. The idle timeout is locked
-// as a decision (off, like Java's 30-day "disable" sentinel), not as a value:
-// 0 here maps to GRPC_ARG_CLIENT_IDLE_TIMEOUT_MS=INT_MAX.
 TEST(JavaParityLockTest, GrpcChannelDefaults) {
     EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIME_MS, 30 * 1000) << "Java ClientOption keepAliveTime";
     EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIMEOUT_MS, 60 * 1000) << "Java ClientOption keepAliveTimeout";
@@ -923,10 +709,6 @@ TEST(JavaParityLockTest, GrpcChannelDefaults) {
     EXPECT_EQ(defaults::GRPC_IDLE_TIMEOUT_MS, 0) << "idle timeout off, as Java's IDLE_TIMEOUT_MILLIS_DISABLE";
 }
 
-// The AgentInfo refresh cadence. The retry interval deliberately differs from
-// Java's effective 300000ms (profiler.agentInfo.send.retry.interval):
-// registration gates tracing in both ports, so it has to retry far more often.
-// doc/java_parity.md records that.
 TEST(JavaParityLockTest, AgentInfoSchedule) {
     EXPECT_EQ(defaults::AGENT_INFO_REFRESH_INTERVAL_MS, 24 * 60 * 60 * 1000)
         << "Java AgentInfoSender refresh interval";
@@ -936,10 +718,6 @@ TEST(JavaParityLockTest, AgentInfoSchedule) {
         << "matches the Go agent, not Java's effective 300000ms - see doc/java_parity.md";
 }
 
-// Span batching. Java's pinpoint-root.config ships
-// profiler.transport.grpc.span.batch-sender.size=20 with a 1000ms flush and a
-// 500ms collect deadline; the Go agent's default size is 50, which
-// doc/java_parity.md records.
 TEST(JavaParityLockTest, SpanBatchDefaults) {
     EXPECT_EQ(defaults::SPAN_BATCH_SIZE, 20) << "Java span.batch-sender.size";
     EXPECT_EQ(defaults::SPAN_BATCH_FLUSH_INTERVAL_MS, 1000);
@@ -947,16 +725,11 @@ TEST(JavaParityLockTest, SpanBatchDefaults) {
     EXPECT_EQ(defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, 10);
 }
 
-// The stat collection cadence. Java's code default is 5000ms with a batch of 6
-// (DefaultMonitorConfig); the release profile raises the interval to 10000ms,
-// which doc/java_parity.md records.
 TEST(JavaParityLockTest, StatCollectionDefaults) {
     EXPECT_EQ(defaults::STAT_INTERVAL_MS, 5000) << "Java DefaultMonitorConfig code default";
     EXPECT_EQ(defaults::STAT_BATCH_COUNT, 6) << "Java profiler.jvm.stat.batch.send.count";
 }
 
-// The SQL cache bounds. All three agents bypass the UID cache for a statement
-// at or over the length limit and re-publish a UID's metadata after the expiry.
 TEST(JavaParityLockTest, SqlCacheDefaults) {
     EXPECT_EQ(defaults::SQL_CACHE_SIZE, 1024) << "Java profiler.jdbc.sqlcachesize";
     EXPECT_EQ(defaults::SQL_CACHE_LENGTH_LIMIT, 2048) << "Java profiler.jdbc.sqlcachelengthlimit";
@@ -965,18 +738,6 @@ TEST(JavaParityLockTest, SqlCacheDefaults) {
     EXPECT_EQ(defaults::SQL_ERROR_COUNT, 100) << "Java profiler.sql.error.count";
 }
 
-// Sql.CacheLengthLimit gates the UID cache and ONLY the UID cache; the SQL id
-// cache has no length limit at all. Java is the same shape: UidCache.put
-// (:17-23) bypasses the store when `key.length() >= bypassLength`, and
-// SimpleCacheFactory (:42-48) passes that length to newSqlUidCache() while
-// newSqlCache() -> SimpleCache.newIdCache(sqlCacheSize) takes none. Here the
-// bypass is SqlUidCache::bypasses (src/cache.h:810) and the id cache is built
-// with a size only (src/agent.cpp:212) - IdCacheImpl has no length-limit
-// parameter to pass.
-//
-// Two consecutive cross-agent reviews raised "the id cache is missing the
-// length limit" as a defect. It is not: it is the Java behaviour. Asserted as
-// behaviour rather than as a constant so the next review can see why.
 TEST(JavaParityLockTest, SqlCacheLengthLimitAppliesToTheUidCacheOnly) {
     constexpr size_t kLengthLimit = 16;
     const std::string under_limit(kLengthLimit - 1, 'a');
@@ -1009,10 +770,6 @@ TEST(JavaParityLockTest, SqlCacheLengthLimitAppliesToTheUidCacheOnly) {
 // Group 12 - error cause categories
 // ===========================================================================
 
-// The four bits, against Java's ErrorCategory (:19-23). They travel in
-// PSpan.err, where the collector reads them to tell an exception apart from a
-// failing HTTP status, so renumbering one silently changes what the UI says
-// each affected transaction failed on.
 TEST(JavaParityLockTest, ErrorCategoryBitValues) {
     EXPECT_EQ(static_cast<int>(ErrorCategory::kUnknown), 1 << 0) << "Java ErrorCategory.UNKNOWN";
     EXPECT_EQ(static_cast<int>(ErrorCategory::kException), 1 << 1) << "Java ErrorCategory.EXCEPTION";
@@ -1021,12 +778,6 @@ TEST(JavaParityLockTest, ErrorCategoryBitValues) {
     EXPECT_EQ(ALL_ERROR_CATEGORIES, 15) << "kUnknown|kException|kHttpStatus|kSql";
 }
 
-// The mask resolution rules, against Java's
-// ConfigurableErrorRecorderFactory.getEnabledTypes (:28-61): an unset mark
-// enables every category, exclude is subtracted, UNKNOWN is added back last
-// whatever the two lists say, tokens are trimmed and lower-cased before
-// matching `exception` / `http-status` / `sql`, and an unrecognized token is
-// logged and ignored rather than failing the parse.
 TEST(JavaParityLockTest, ErrorMarkMaskResolution) {
     constexpr int kUnknown = static_cast<int>(ErrorCategory::kUnknown);
     constexpr int kException = static_cast<int>(ErrorCategory::kException);
@@ -1052,13 +803,9 @@ TEST(JavaParityLockTest, ErrorMarkMaskResolution) {
     EXPECT_EQ(error_mark_mask({""}, {}), kUnknown)
         << "Java: an empty token is skipped, leaving an empty (not default) set";
 
-    // Case-insensitive, trimmed, and comma-separated inside one entry - Java
-    // splits the whole string on ',' and does category.trim().toLowerCase().
     EXPECT_EQ(error_mark_mask({"EXCEPTION", " Http-Status ", "sQl"}, {}), ALL_ERROR_CATEGORIES);
     EXPECT_EQ(error_mark_mask({"exception,sql"}, {}), kUnknown | kException | kSql);
 
-    // An unrecognized token is warned about and dropped; the rest of the list
-    // still resolves, exactly as Java's `default: logger.warn(...)` arm does.
     EXPECT_EQ(error_mark_mask({"exception", "nonsense"}, {}), kUnknown | kException);
     EXPECT_EQ(error_mark_mask({}, {"nonsense"}), ALL_ERROR_CATEGORIES);
 
@@ -1067,44 +814,11 @@ TEST(JavaParityLockTest, ErrorMarkMaskResolution) {
     EXPECT_EQ(error_mark_mask({}, {"exception", "http-status", "sql"}), kUnknown);
 }
 
-// An excluded category records NOTHING - not the category bit, and not an
-// UNKNOWN fallback either. Java: ConfigurableErrorRecorder.recordError
-// (:20-24) masks the error code only when the category is in the enabled set,
-// with no else branch. SpanImpl::markSpanError (src/span.h:717-723) returns
-// early the same way.
-//
-// Not asserted here: marking an error needs a SpanImpl and so a
-// MockAgentService. test_span.cpp covers it end to end, on the trace root and
-// on the URL stat, in ErrorMarkExcludeHttpStatusLeavesA5xxUnmarkedTest,
-// ErrorMarkExcludeHttpStatusStillMarksExceptionsTest,
-// ErrorMarkExcludeExceptionLeavesUrlStatSuccessfulTest and - through the real
-// YAML loader - ErrorMarkExcludeFromYamlLeavesA5xxUnmarkedTest.
 
 // ===========================================================================
 // Group 13 - queue overflow policy
 // ===========================================================================
 
-// A full span queue HEAD-drops: the oldest entry is discarded, the newest is
-// kept, and the drop is counted. That matches Java's DEFAULT span sender.
-// Verified in the Java tree rather than assumed:
-//
-//   * agent-module/agent/src/main/resources/pinpoint-root.config:135 ships
-//     profiler.transport.grpc.span.sender.type=BATCH (the release and local
-//     profiles set it to BATCH too), so SpanBatchGrpcDataSender is what a
-//     stock Java agent runs;
-//   * SpanBatchGrpcDataSender.send (:95-111) does queue.offer(data), and on
-//     failure queue.poll() - discarding the oldest, logging "discard oldest
-//     message" - then re-offers the new one.
-//
-// An earlier cross-agent review cited GrpcDataSender.send (:56-68) instead
-// and called this a divergence. That is the STREAM sender's base class: it
-// tail-drops ("reject message") and is only reached when sender.type is set
-// to STREAM. It has been raised five times now, always against that class;
-// the config default above is where to check it before raising it a sixth.
-//
-// test_sharded_bounded_queue.cpp covers the queue itself - per-producer FIFO,
-// quota borrowing, concurrent overflow accounting. What is locked here is the
-// policy: which end is dropped, and that the drop is observable.
 TEST(JavaParityLockTest, SpanQueueHeadDropsTheOldest) {
     constexpr size_t kCapacity = 4;
     constexpr int kEnqueued = 10;
@@ -1185,12 +899,6 @@ std::vector<LongIntIntByteByteStringValue> recordProxyHeaders(
 
 }  // namespace
 
-// All four parsers run INDEPENDENTLY, so a request that came through two
-// proxies records two annotations rather than only the hop nearest the agent.
-// Java: DefaultProxyRequestRecorder.record (:52-53) loops over every
-// registered parser, and parseHeaderAndRecord records one annotation per
-// valid header. A first-match if/else chain reports one hop and silently
-// drops the rest of the chain.
 TEST(JavaParityLockTest, ProxyParsersRunIndependently) {
     const auto recorded = recordProxyHeaders({
         {"Pinpoint-ProxyApache", "t=1000000000000 D=100 i=5 b=95"},
@@ -1209,14 +917,6 @@ TEST(JavaParityLockTest, ProxyParsersRunIndependently) {
         << "app=1, nginx=2, apache=3, user=4 - one annotation per valid header";
 }
 
-// Every parser is gated on a POSITIVE received time: no `t=`, `t=0` or a `t=`
-// that does not parse records nothing at all. Java: each parser calls
-// setValid(false) in that case and DefaultProxyRequestRecorder (:71) records
-// only a valid header. An annotation whose received time is 0 is worse than
-// no annotation - the web UI charts the proxy-to-agent gap from that field,
-// and 0 renders as a gap of five decades. test_http.cpp
-// (SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) carries the full
-// per-parser matrix; one case per parser is locked here.
 TEST(JavaParityLockTest, ProxyHeaderNeedsAPositiveReceivedTime) {
     struct Case {
         const char* header;
@@ -1236,12 +936,6 @@ TEST(JavaParityLockTest, ProxyHeaderNeedsAPositiveReceivedTime) {
     }
 }
 
-// nginx's `t=` ($msec) and `D=` ($request_time) are seconds with EXACTLY
-// three decimals, and both are computed with integer arithmetic. Java
-// (NginxRequestParser.java:74-110) checks `length - millisPosition != 4` and
-// converts by deleting the '.' and parsing the result - never by scaling a
-// double, which is what makes this exact: 0.123 has no binary representation,
-// so double(0.123) * 1e6 truncates to 122999.
 TEST(JavaParityLockTest, ProxyNginxTimestampsAreExactThreeDecimals) {
     const auto recorded = recordProxyHeaders(
         {{"Pinpoint-ProxyNginx", "t=1504230492.763 D=0.123"}});
@@ -1268,15 +962,6 @@ TEST(JavaParityLockTest, ProxyNginxTimestampsAreExactThreeDecimals) {
     }
 }
 
-// The user proxy parser infers the writer from the value's shape, as
-// UserRequestParser.toReceivedTimeMillis does: fewer than 13 characters is
-// rejected; 16 or more is apache's microseconds, converted by dropping the
-// last three digits before parsing; a '.' at index 10 or later is nginx's
-// sec.mmm; anything else is an app's milliseconds. toDurationTimeMicros reads
-// D= the same way and applies it only when positive. Reading t= as plain
-// milliseconds would put an apache hop 47,000 years out and drop an nginx
-// hop whole. The Go agent locks the same table in
-// Test_javaParityLock_ProxyUserHeaderInfersItsWriter.
 TEST(JavaParityLockTest, ProxyUserHeaderInfersItsWriter) {
     struct Case {
         const char* value;
@@ -1305,11 +990,6 @@ TEST(JavaParityLockTest, ProxyUserHeaderInfersItsWriter) {
     }
 }
 
-// The value gates the standard parsers share with UserRequestParser: D= is
-// applied only when positive, the nginx product is reported as no duration
-// rather than a wrapped int32, and apache i=/b= are applied only inside
-// [0, 100] (ApacheRequestParser). The Go agent locks the same in
-// Test_javaParityLock_ProxyDurationAndPercentAreGated.
 TEST(JavaParityLockTest, ProxyDurationAndPercentAreGated) {
     auto nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=-0.123"}});
     ASSERT_EQ(nginx.size(), 1u);
@@ -1332,17 +1012,6 @@ TEST(JavaParityLockTest, ProxyDurationAndPercentAreGated) {
     EXPECT_EQ(apache[0].byteValue2, 100);
 }
 
-// PParentInfo is emitted only when the parent application name is non-empty.
-// Java: ServerRequestRecorder.record (:76) records parent info only for a
-// non-root span, and recordParentInfo (:82-83) only when the Pinpoint-pAppName
-// header is present - the acceptor host is recorded inside that same branch.
-//
-// This is the invariant that keeps the acceptor-host fallback both ports
-// recently added (fall back to the endpoint when the peer sent no
-// Pinpoint-Host) from inventing a parent node: the fallback fills
-// acceptorHost, and without this guard a span with an acceptor host but no
-// parent would ship a PParentInfo naming an empty application, which the
-// server map draws as an unnamed caller node.
 TEST(JavaParityLockTest, ParentInfoOnlyWhenParentAppNameIsPresent) {
     const auto build = [](const std::string_view parent_app_name) {
         auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
@@ -1379,18 +1048,6 @@ TEST(JavaParityLockTest, ParentInfoOnlyWhenParentAppNameIsPresent) {
 // Group 15 - logging level policy
 // ===========================================================================
 
-// An unsupported level string leaves the CURRENT level unchanged and says so
-// in the log (src/logging.cpp:41-45). Java has no direct counterpart - its
-// level comes from a log4j2 configuration file, which fails or falls back on
-// its own terms - so this is a TWO-PORT CONSENSUS, not Java parity: silently
-// ignoring a typo looks like a successful change, and on a config reload it
-// would silently leave an operator debugging at the old level.
-//
-// `warn` and `warning` are both accepted - LOG_LEVEL_WARN_ALIAS
-// (src/logging.h:37-43), matched alongside LOG_LEVEL_WARN in setLogLevel
-// (src/logging.cpp:37). The agent writes "warning" on its own lines, and
-// refusing the spelling every other logger uses would land an operator in
-// exactly the silent-no-op above.
 TEST(JavaParityLockTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
     auto& logger = Logger::getInstance();
 
@@ -1423,11 +1080,6 @@ TEST(JavaParityLockTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
     EXPECT_FALSE(logger.debugEnabled());
 }
 
-// The rotation defaults, and the floor under MaxBackups. Also a two-port
-// consensus: Java rotates through log4j2 policies, not through agent config
-// keys. 0 backups would read as either "keep none" or "keep all" depending on
-// which agent the reader knows, so it is restored to the default of 1 rather
-// than honoured.
 TEST(JavaParityLockTest, LogRotationDefaults) {
     EXPECT_EQ(defaults::LOG_MAX_BACKUPS, 1);
     EXPECT_EQ(defaults::LOG_MAX_FILE_SIZE_MB, 10) << "10 MB before rotation";
@@ -1445,74 +1097,7 @@ TEST(JavaParityLockTest, LogRotationDefaults) {
         << "and an unset MaxFileSize stays at 10 MB";
 }
 
-// ===========================================================================
-// Group 16 - shutdown contract (port consensus, no Java counterpart)
-// ===========================================================================
-//
-// This group locks a PORT CONSENSUS, not Java parity. The Java agent has no
-// equivalent of any of it: shutdown there is per-component (each DataSender
-// and scheduler stops itself), with no overall wall-clock deadline and no
-// report of what was still running when it gave up.
-//
-// What the two ports agreed on, and where it lives here:
-//
-//   * a 3 s deadline bounds the blocking phase of shutdown
-//     (kDefaultShutdownDeadline, src/agent.cpp:78). Past it the teardown is
-//     handed to a detached reaper and Shutdown() returns, because gRPC
-//     cancellation is best-effort and the config watcher can be stuck in a
-//     filesystem call on a hung mount - neither join can be bounded on its
-//     own. The public contract is stated on Agent::Shutdown in
-//     include/pinpoint/tracer.h.
-//   * Shutdown() is idempotent and safe under concurrent calls: do_shutdown
-//     latches on shutting_down_.exchange(true) (src/agent.cpp:1190) and every
-//     later caller returns immediately, including the SharedDeleter's own
-//     terminal teardown.
-//   * a deadline overrun reports the still-running workers BY NAME
-//     (running_worker_names(), src/agent.cpp:780-818) - the table workers plus
-//     the three threads outside the table (AgentInfo scheduler, config
-//     watcher, a channel close in progress). "Shutdown timed out" without the
-//     names is not actionable in a host process.
-//   * the worker table is the single source of truth: worker_specs() and
-//     kTeardownOrder are both permutations of the Worker enum, with a name, a
-//     body and a stop signal per row. That is enforced at compile time by the
-//     static_asserts at src/agent.cpp:671-672 (plus
-//     worker_table_consistent()), so there is nothing for a runtime test to
-//     restate - a row added to the enum and forgotten in either array does
-//     not compile.
-//
-// Not asserted here: all of it needs a live AgentImpl, which means the gRPC
-// mocks. test_agent_with_mocks.cpp covers each point -
-// AgentShutdownDeadlineTest.ShutdownReturnsByDeadlineWithWedgedWorker and
-// ReleaseWithoutShutdownDefersDestructionWhenWedged for the deadline,
-// AgentImplTest.ShutdownIsIdempotent / DoubleShutdownIsNoOp for the latch,
-// and AgentShutdownDeadlineTest.DeadlineReportNamesTheStragglingWorker /
-// DeadlineReportNamesTheAgentInfoScheduler for the straggler report. The Go
-// suite mirrors the group with its own lifecycle tests.
 
-// ===========================================================================
-// Group 17 - metadata retry budget and rejection policy (port consensus)
-// ===========================================================================
-//
-// The retry BUDGET is Java's: MetadataGrpcDataSender retries a failed send
-// up to profiler.transport.grpc.metadata.sender.retry.max.count (3) times,
-// retry.delay.millis (1000) apart, and queues new metadata on an executor
-// queue of metadata.sender.executor.queue.size (1000) entries. The two ports
-// keep the same three numbers, and both keep the retry schedule on its own
-// bound of the same size as the new-metadata queue (Java has no separate
-// schedule: the HashedWheelTimer is unbounded).
-//
-// The rejection POLICY is a port consensus that diverges from Java, and is
-// locked so a change in either port cannot leave the two disagreeing
-// silently: a reply with PResult.success=false is NOT retried (Java's
-// RetryResponseStreamObserver retries it like a transport failure). The
-// item is dropped and its cache entry released after one retry delay, so
-// the next span re-registers the id at a bounded rate instead of on the very
-// next request. Rationale in doc/java_parity.md ("Retrying a rejected
-// metadata send"). The behaviour itself needs the gRPC mocks and is pinned
-// by test_grpc_with_mocks.cpp: GrpcMetadataDropsRejectedResultAndEvictsCache
-// (no retry, cache released) and
-// GrpcMetadataDelaysCacheReleaseAfterPermanentRejection (released after one
-// retry delay, not inline). The Go suite mirrors both.
 TEST(JavaParityLockTest, MetadataRetryBudget) {
     const GrpcClientTuning tuning{};
     EXPECT_EQ(tuning.meta_retry_max_attempts, 3)

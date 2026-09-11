@@ -228,16 +228,7 @@ namespace pinpoint {
                                       descriptors.data(), bytes);
         return used > 0 ? used / static_cast<int64_t>(sizeof(proc_fdinfo)) : -1;
 #else
-        // The only reading here whose cost scales with process state, and it
-        // scales linearly: measured on a 6.x kernel at ~0.16us per open fd
-        // warm (1.6ms at 10k fds, 11ms at 40k), with the first walk after a
-        // large change to the fd table ~8x that while the kernel populates
-        // the synthetic dentries. Once per collect interval on this worker
-        // thread only — never on a request thread — so even a 40k-fd process
-        // spends well under a percent of one core here. A bigger buffer is
-        // not the lever it looks like: raising it from glibc's default to
-        // 1MiB (readdir replaced by a raw getdents64 loop) moved nothing at
-        // any fd count, because the cost is the kernel's per-entry work.
+        // This linear scan runs only on the periodic stats worker.
         //
         // ponytail: an fd-exhausted process cannot open this directory, so
         // the reading it most wants comes back as the sentinel. Left alone —

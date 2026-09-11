@@ -519,15 +519,7 @@ namespace pinpoint {
             return false;
         }
         auto& channel = *transport->channel;
-        // try_to_connect: an IDLE channel (never used, or past gRPC's idle
-        // timeout) only connects when asked; without this the probe would
-        // report "not ready" forever and the retry path would drop every
-        // item. A connect in progress is waited for, but only as long as the
-        // RPC itself would wait for it (request_timeout, its deadline) — the
-        // same cost Java and Go pay by firing the RPC on a connecting
-        // channel. TRANSIENT_FAILURE is an outage and returns at once: gRPC
-        // reconnects on its own backoff, and readyChannel()'s unbounded wait
-        // is exactly what this probe exists to avoid.
+        // Start an idle channel, but do not wait out an outage here.
         auto state = channel.GetState(true);
         const auto deadline = std::chrono::steady_clock::now() + tuning_.request_timeout;
         while ((state == GRPC_CHANNEL_IDLE || state == GRPC_CHANNEL_CONNECTING) && !stopping()) {
@@ -2460,14 +2452,7 @@ namespace pinpoint {
         // Completion order is not observed. Key by call identity so callbacks
         // can remove their registry entry without a linear scan or shifts.
         std::unordered_set<std::shared_ptr<PendingSpanBatch>> pending;
-        // Spans lost on the send side, as opposed to the queue's own
-        // overwritten-oldest count: a batch dropped for want of a permit,
-        // a launch that threw, an RPC that failed, spans the collector
-        // rejected, and batches cleared while the channel was down or on
-        // shutdown. Lives here, not on GrpcSpan, because the completion
-        // callback that records an RPC failure captures this state and
-        // never `this`. GrpcSpan reports queue + send drops as one total
-        // (see maybe_log_span_drops), as the Go agent's spanDrops does.
+        // Includes losses after dequeue as well as queue overwrites.
         std::atomic<uint64_t> dropped_spans{0};
         void recordDrop(size_t spans) noexcept {
             dropped_spans.fetch_add(spans, std::memory_order_relaxed);
@@ -2590,22 +2575,7 @@ namespace pinpoint {
         }
         buffer.push_back(std::move(span));
 
-        // Gather more items until either the batch is full or the collect
-        // deadline elapses.
-        //
-        // Once the batch has its first item, this loop does NOT go back
-        // through wait_dequeue_until: that would re-arm span_consumer_waiting_
-        // and make every enqueue on a request thread pay the wait mutex plus
-        // a futex wake while a batch is being gathered — at a few thousand
-        // spans/s, effectively a syscall and a consumer context switch per
-        // span. Instead it sleeps in fixed short slices on the same CV with
-        // the flag left down, so producers stay on their lock-free fast path,
-        // then drains whatever accumulated with one try_dequeue_batch (which
-        // locks each active shard at most once). Only stopSpanWorker()
-        // notifies span_queue_cv_ with the flag down, so a slice ends early
-        // only for shutdown. The slice is well inside the collect deadline it
-        // subdivides, so batch latency is unchanged in the worst case and
-        // shorter in the common one.
+        // Accumulate without re-arming producer wakeups; shutdown interrupts the wait.
         const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
         constexpr auto kCollectSlice = std::chrono::milliseconds(5);
         while (buffer.size() < batch_size) {
@@ -2738,8 +2708,6 @@ namespace pinpoint {
                 [state, pending, batch_count](const grpc::Status& status) {
                     state->completeCall(pending);
                     if (!status.ok()) {
-                        // The spans are gone: not retried (Java's stream
-                        // sender does not either), so they count as lost.
                         state->recordDrop(batch_count);
                         LOG_INFO("SendSpanBatch failed: {}, {}",
                                  static_cast<int>(status.error_code()), status.error_message());
@@ -3194,12 +3162,7 @@ namespace pinpoint {
         LOG_DEBUG("stats - build_shutdown_url_stat_write");
         // should be hold stream_mutex_
 
-        // include_in_progress = true here and nowhere else: the steady-state
-        // send (next_write) leaves the tick being collected alone so a later
-        // entry can cut it whole, but shutdown is the point where no later
-        // entry will come, so shipping it partial beats losing it. The drain
-        // also empties completed_, so the ticks a stalled stream never got to
-        // (up to kMaxCompletedSnapshots) go out in the same message.
+        // Shutdown also sends the partial tick because no later record can complete it.
         const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
         if (snapshot->empty()) {
             LOG_DEBUG("stats - no url stat tick to flush on shutdown");
@@ -3298,17 +3261,8 @@ namespace pinpoint {
 
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
-            // One token per type. The token carries no payload — next_write
-            // reads the producer's buffer (the last completed AgentStats
-            // cycle, the current URL snapshot) when it consumes the token —
-            // so a second token of the same type queued behind a stalled
-            // stream would only send that same buffer again. This also bounds
-            // the queue at two entries without a capacity check, and a stall
-            // never discards anything: the producers keep their data until
-            // the stream drains it. (The former cap of two purged the queue,
-            // the AgentStats counters and the URL snapshot on the third token
-            // or on a channel recovery slower than 5s — every collector
-            // restart cost up to a minute of stats.)
+            // One token per type is enough: next_write reads the latest
+            // producer buffer, so duplicate tokens add no data.
             if (std::find(stats_queue_.begin(), stats_queue_.end(), stats) == stats_queue_.end()) {
                 stats_queue_.push_back(stats);
             }

@@ -314,7 +314,6 @@ TEST_F(CallStackTest, CallStackGetModuleNameEmptyStackTest) {
 TEST_F(CallStackTest, CallStackPushTemporaryStringViewTest) {
     CallStack callstack("Test error");
 
-    // Push using temporaries that go out of scope immediately
     {
         std::string temp_module = "temp_module";
         std::string temp_function = "temp_function";
@@ -407,9 +406,6 @@ TEST_F(CallStackTest, CompleteWorkflowTest) {
 
 // ========== String Length Cap Tests ==========
 
-// Oversized error messages are abbreviated like Java's
-// StringUtils.abbreviate(message, 2048): the first 2048 bytes plus a
-// "...(original length)" suffix, never a silent cut.
 TEST_F(CallStackTest, ErrorMessageAbbreviationTest) {
     const std::string long_message(100 * 1024, 'x');
     CallStack callstack(long_message);
@@ -469,4 +465,3 @@ TEST_F(CallStackTest, AbbreviationKeepsValidUtf8Test) {
 }
 
 } // namespace pinpoint
-

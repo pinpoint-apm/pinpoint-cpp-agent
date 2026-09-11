@@ -229,9 +229,8 @@ namespace pinpoint {
         std::shared_ptr<const AgentRuntime> runtime_;
         // Agent keep-alive, held ONLY when runtime_ does not carry the stats
         // sinks (tests, hand-built runtimes). A production span reaches
-        // everything it touches after construction through runtime_, so it
-        // skips the selfRef() this used to cost — a per-request CAS on the
-        // agent's single control block; see the ctor.
+        // everything it touches after construction through runtime_, avoiding
+        // a per-request selfRef() CAS; see the ctor.
         std::shared_ptr<AgentService> agent_ref_;
         // Dereferenced during construction (caller holds the agent) and on
         // the agent_ref_-protected fallback paths only: without the

@@ -819,10 +819,7 @@ namespace pinpoint {
     constexpr int MIN_STAT_BATCH_COUNT = 1;
     constexpr int MAX_STAT_BATCH_COUNT = 100;
     constexpr int MIN_STAT_INTERVAL_MS = 1000;
-    // Java's DefaultAgentStatMonitor: MIN 1000, MAX 10 * 1000, anything
-    // outside falls back to the 5000 default. 60000 used to be accepted
-    // here, making a six-minute stat batch (BatchCount x interval) reachable
-    // by misconfiguration where Java structurally cannot get there.
+    // Keep collection batches bounded even when the configuration is invalid.
     constexpr int MAX_STAT_INTERVAL_MS = 10000;
     constexpr int MIN_GRPC_QUEUE_SIZE = 1;
     constexpr int MAX_GRPC_QUEUE_SIZE = 65536;

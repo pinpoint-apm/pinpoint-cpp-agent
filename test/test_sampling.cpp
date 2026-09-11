@@ -63,8 +63,6 @@ TEST_F(SamplingTest, CounterSamplerOneRateTest) {
     }
 }
 
-// Test CounterSampler with rate N - should return true on the first call of
-// every N-call cycle (Java CountingSampler phase: counter starts at 0)
 TEST_F(SamplingTest, CounterSamplerNRateTest) {
     const int rate = 3;
     CounterSampler sampler(rate);
@@ -79,10 +77,6 @@ TEST_F(SamplingTest, CounterSamplerNRateTest) {
     }
 }
 
-// The first request must be sampled: the counter is tested before it is
-// incremented, so rate=10 samples requests 1, 11, 21, ... like Java's
-// CountingSampler, not 10, 20, 30 (which hides the first request entirely
-// on low-traffic deployments and in tests).
 TEST_F(SamplingTest, CounterSamplerSamplesFirstRequestTest) {
     const int rate = 10;
     CounterSampler sampler(rate);
@@ -139,10 +133,6 @@ TEST_F(SamplingTest, PercentSamplerZeroRateTest) {
     }
 }
 
-// The first request must be sampled, same as CounterSampler and Java's
-// PercentRateSampler: the admission window is (0, rate_], so 50% samples
-// requests 1, 3, 5, ... A [0, rate_) window keeps the frequency but shifts the
-// phase by one, hiding the first request on low-traffic deployments and in tests.
 TEST_F(SamplingTest, PercentSamplerSamplesFirstRequestTest) {
     PercentSampler half(50.0);
     for (int i = 1; i <= 6; ++i) {
@@ -177,12 +167,6 @@ TEST_F(SamplingTest, PercentSamplerOutOfRangeRateClampTest) {
     }
 }
 
-// Cross-agent parity: 0.29% must truncate to 28/10000, like Java's
-// PercentSamplerFactory (`(long) (samplingRateDouble * MULTIPLIER)`) and Go's
-// `uint64(percent * 100)`, not round to 29 — 0.29 * 100 is 28.999999999999996
-// in double. The percent sampler is deterministic and the counter advances by
-// rate_ per call, so over exactly MAX_PERCENT_RATE calls it wraps a whole
-// number of times and samples true exactly rate_ times.
 TEST_F(SamplingTest, PercentSamplerTruncatesFractionalRateTest) {
     PercentSampler sampler(0.29);
 
@@ -198,13 +182,6 @@ TEST_F(SamplingTest, PercentSamplerTruncatesFractionalRateTest) {
         << " (truncated, as Java and Go do), not 29 (rounded)";
 }
 
-// Truncation disables every rate below one hundredth-of-a-percent — including
-// 0.006, which the previous rounding kept alive at 1/MAX_PERCENT_RATE. The
-// config passes such a rate straight through (it warns, it does not raise it),
-// so this is a reachable configuration and it means never-sample, exactly as
-// Java's parseSamplingRate + createSampler resolve it
-// (PercentSamplerFactory.java:40-48,56-58). 0.01 * 100 is exactly 1.0, so the
-// smallest rate that survives truncation still samples.
 TEST_F(SamplingTest, PercentSamplerTruncatesSubHundredthRateToDisabledTest) {
     for (const double rate : {0.004, 0.006, 0.009}) {
         PercentSampler truncates_to_zero(rate);
@@ -229,11 +206,6 @@ TEST_F(SamplingTest, PercentSamplerTruncatesSubHundredthRateToDisabledTest) {
         << "0.01% (the config minimum) should stay enabled at 1/" << MAX_PERCENT_RATE;
 }
 
-// The upper edge truncates too: 99.999 * 100 is 9999.9, so rate_ is 9999 and the
-// sampler misses exactly one call per MAX_PERCENT_RATE instead of short-circuiting
-// to always-sample. Java agrees — PercentSamplerFactory hands off to TrueSampler
-// only at MAX_PERCENT_RATE, which 99.999 no longer reaches once truncated. An
-// exact 100 still does.
 TEST_F(SamplingTest, PercentSamplerTruncatesNearFullRateTest) {
     PercentSampler near_full(99.999);
     int true_count = 0;

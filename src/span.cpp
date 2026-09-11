@@ -623,13 +623,9 @@ namespace pinpoint {
         if (!span_id.has_value()) {
             return {};
         }
-        // Parsed now, while the view is valid, rather than fetched again by
-        // extractContext(). A malformed value used to leave the span id at
-        // its 0 default, which the collector cannot tell from a real id —
-        // every such request collapsed onto the same node. Treat it as no id
-        // at all (extractContext mints one). Throttled: the value is
-        // peer-controlled, so an unthrottled line per request would serialize
-        // request threads on the logger.
+        // Parse while the view is valid. A malformed id is left unset so
+        // extractContext() mints a new one; warnings are throttled because
+        // this is peer-controlled input.
         InboundTrace inbound{std::move(trace_id), true};
         inbound.span_id = stoll_(span_id.value());
         if (!inbound.span_id) {
@@ -642,10 +638,6 @@ namespace pinpoint {
         }
         inbound.parent_span_id = stoll_(parent_span_id.value());
         if (!inbound.parent_span_id) {
-            // Same fault class as the span id above and the same policy
-            // (the caller keeps the default and continues), so it gets the
-            // same throttled line; a silent half left this agent and the Go
-            // agent each logging a different half of one broken hop.
             LOG_WARN_THROTTLED("unparseable {} header = '{}', parent span id left unset",
                                HEADER_PARENT_SPAN_ID, parent_span_id.value());
         }
@@ -952,7 +944,7 @@ namespace pinpoint {
         }
         // With URL stats disabled the entry only existed so sendExceptions()
         // could read the url template (see SetUrlStat) — discard it here.
-        // Snapshot-gated like SetUrlStat: without one, legacy behavior.
+        // Tests without a runtime snapshot retain the direct path.
         if (runtime_ && !config_->http.url_stat.enable) {
             url_stat_.reset();
             return;

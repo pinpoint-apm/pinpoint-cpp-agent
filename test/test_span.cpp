@@ -877,11 +877,6 @@ TEST_F(SpanTest, SpanImplSetLoggingTest) {
     EXPECT_TRUE(pspan_id.has_value()) << "PspanId should be injected";
 }
 
-// GetTraceId(), a span event's InjectContext() and SetLogging() all read the
-// same cached wire form (getTraceIdWire()); a continued trace must surface
-// identically on all three. Regression guard for routing them through the one
-// cache: the trace id is constant across a distributed trace, so the outbound
-// header must carry the parent's exact id (only the span id changes downstream).
 TEST_F(SpanTest, TraceIdWireConsistentAcrossSurfacesTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextReader reader;
@@ -934,8 +929,6 @@ TEST_F(SpanTest, SpanEventInjectContextTest) {
     EXPECT_TRUE(parent_span_id.has_value()) << "Parent span ID should be injected";
 }
 
-// uid.version=v4: the agent has its own service name, so InjectContext must
-// propagate it via the Pinpoint-pServiceName header (Java DefaultRequestTraceWriter).
 TEST_F(SpanTest, SpanEventInjectContextWritesParentServiceNameForV4Test) {
     mock_agent_service_->setServiceName("my-service");
 
@@ -950,8 +943,6 @@ TEST_F(SpanTest, SpanEventInjectContextWritesParentServiceNameForV4Test) {
     EXPECT_EQ(service_name.value(), "my-service");
 }
 
-// uid.version=v1/v3: the agent has no service name (empty), so InjectContext must
-// omit the Pinpoint-pServiceName header (Java writes it only when serviceName != null).
 TEST_F(SpanTest, SpanEventInjectContextOmitsParentServiceNameWhenEmptyTest) {
     mock_agent_service_->setServiceName(""); // default for v1/v3
 
@@ -965,11 +956,6 @@ TEST_F(SpanTest, SpanEventInjectContextOmitsParentServiceNameWhenEmptyTest) {
         << "Pinpoint-pServiceName must be omitted when the agent has no service name (v1/v3)";
 }
 
-// A Java receiver with profiler.cluster.namespace set runs DefaultNameSpaceChecker,
-// which accepts only an absent header or an exact match — an empty Pinpoint-pAppNamespace
-// fails the equals() and RequestTraceReader starts newTrace() instead of continuing,
-// severing the trace at the C++ -> Java hop. The agent has no namespace setting, so the
-// header must never be written; every other header keeps going out unchanged.
 TEST_F(SpanTest, SpanEventInjectContextOmitsEmptyNamespaceAndHostTest) {
     mock_agent_service_->setServiceName("my-service");
 
@@ -995,8 +981,6 @@ TEST_F(SpanTest, SpanEventInjectContextOmitsEmptyNamespaceAndHostTest) {
     span.EndSpan();
 }
 
-// Java writes Pinpoint-Host only when the host is non-null; an event with no
-// destination must leave the header out rather than send "".
 TEST_F(SpanTest, SpanEventInjectContextOmitsHostWhenDestinationEmptyTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     auto se = span.NewSpanEvent("test-event"); // no SetDestination()
@@ -1071,10 +1055,6 @@ TEST_F(SpanTest, SpanImplNewAsyncSpanTest) {
     span.EndSpan();
 }
 
-// Regression: exceptions captured on an async span must be flushed when the
-// async span ends. EndSpan's async branch previously skipped sendExceptions(),
-// so a span event's ANNOTATION_EXCEPTION_ID referenced exception metadata that
-// was never sent to the collector, losing the captured call stack.
 TEST_F(SpanTest, AsyncSpanFlushesExceptionsOnEndTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
 
@@ -1302,9 +1282,6 @@ TEST_F(SpanTest, ParseTraceIdSequenceTooLongTest) {
 }
 
 TEST_F(SpanTest, ParseTraceIdJavaCompatibilityTableTest) {
-    // Accept/reject table mirroring Java TransactionIdUtils.parseTransactionId:
-    // agent id charset [a-zA-Z0-9._-] with no length cap, a fourth field ignored,
-    // numeric fields as Long.parseLong (optional sign, digits only, no whitespace).
     struct Case { std::string input; bool accept; std::string agent; int64_t start; int64_t seq; };
     const std::string id25(25, 'a');
     const std::string id64(64, 'b');
@@ -1538,9 +1515,6 @@ TEST_F(SpanTest, SpanImplOperationsAfterEndSpanTest) {
 TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
 
-    // Config max_event_depth is 64, and the allowance is max + 1 (Java
-    // DefaultCallStack parity, see is_event_overflow in span.cpp): depth
-    // 1..65 are recorded.
     std::vector<SpanEventPtr> events;
     for (int i = 0; i < 65; i++) {
         auto se = span.NewSpanEvent("event-" + std::to_string(i));
@@ -1564,10 +1538,6 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
-// MaxEventDepth allows max + 1 nesting levels, the same as Java's
-// DefaultCallStack (isOverflow() compares `maxDepth < index` against the
-// pre-push element count): MaxEventDepth=3 records events at depth 1..4, and
-// only the fifth nesting level is discarded.
 TEST_F(SpanTest, SpanImplEventDepthAllowsMaxPlusOneLevelsTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 3;
@@ -1621,8 +1591,6 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
 
     // Next one should overflow
     auto overflow = span.NewSpanEvent("overflow");
-    // The overflow event records nothing, but it is NOT the plain noop: it
-    // still injects the full trace context (Java DisableSpanEvent parity).
     EXPECT_NE(overflow, noopSpanEvent());
     MockTraceContextWriter writer;
     overflow->InjectContext(writer);
@@ -1634,7 +1602,6 @@ TEST_F(SpanTest, SpanImplEventSequenceOverflowTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
-// ========== SpanImpl Overflow: DisabledSpanEvent (Java DisableSpanEvent parity) ==========
 
 // Overflow is a profiling depth limit, not a sampling decision: the disabled
 // event returned on overflow records nothing locally but still injects the
@@ -1653,7 +1620,6 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
     extract_context(span, *mock_agent_service_, reader);
 
-    // max 2 allows three nesting levels (max + 1, Java DefaultCallStack parity).
     auto outer = span.NewSpanEvent("outer-event");           // depth 1
     auto middle = span.NewSpanEvent("middle-event");         // depth 2
     auto real = span.NewSpanEvent("real-event");             // depth 3, the last real one
@@ -1687,11 +1653,6 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
-// S-3: the shared placeholder forgets its destination once the stack is back
-// within its limit. Otherwise a later overflow that never called
-// SetDestination would inject the previous overflow's host and draw a
-// server-map edge to a node this request never called. Go clears it the same
-// way (`overflowSe.destinationId.Store("")`, span.go).
 TEST_F(SpanTest, DisabledSpanEventForgetsDestinationAfterOverflowResolvesTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 2;
@@ -1773,11 +1734,6 @@ TEST_F(SpanTest, DisabledSpanEventOverEndingIsGuardedTest) {
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
 }
 
-// Lifetime parity between the two event kinds (ASan): SpanData outlives its
-// SpanImpl whenever a chunk is still in flight, and user code may hold both a
-// real SpanEventPtr and the shared overflow placeholder that long. Calling
-// either one after the span is destroyed must be a guarded no-op, not a
-// use-after-free — the disabled event used to dereference the dead span.
 TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 2;   // three real events (max + 1), then overflow
@@ -1804,8 +1760,6 @@ TEST_F(SpanTest, EventsOutlivingTheirSpanAreGuardedTest) {
 
     EXPECT_EQ(data->getOwner(), nullptr) << "the span unlinks itself on destruction";
 
-    // Every path that used to reach through to the span: no crash, no ASan
-    // report, nothing recorded.
     MockTraceContextWriter writer;
     overflowed->SetDestination("downstream:8080");
     overflowed->InjectContext(writer);
@@ -2017,9 +1971,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdGeneratesNewTest) {
         << "Generated trace ID should use agent start time";
 }
 
-// A span id header that does not parse used to leave the span id at its 0
-// default, which is indistinguishable from a real id on the wire — every such
-// request would be linked under the same span. Treat it as no id at all.
 TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
@@ -2035,8 +1986,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
     EXPECT_NE(span_id, kNullSpanId) << "A generated span id must never be the NULL sentinel";
 }
 
-// X-6: an unparseable Pinpoint-pSpanID used to be silent while an unparseable
-// Pinpoint-SpanID warned; both halves of one broken hop now log the same way.
 TEST_F(SpanTest, SpanImplExtractContextWarnsOnUnparsableParentSpanIdTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
@@ -2054,9 +2003,6 @@ TEST_F(SpanTest, SpanImplExtractContextWarnsOnUnparsableParentSpanIdTest) {
     EXPECT_EQ(span.getSpanData()->getSpanId(), 555);
 }
 
-// X-6: Http.Server.ProxyHeaderEnable (Java profiler.proxy.http.header.enable,
-// Go Http.Server.ProxyHeaderEnable) switches every proxy parser off, the three
-// built-in ones included, which an empty ProxyUserHeaderNames cannot.
 TEST_F(SpanTest, TraceHttpServerRequestSkipsProxyHeadersWhenDisabledTest) {
     const auto count_proxy = [](SpanImpl& s) {
         int n = 0;
@@ -2085,8 +2031,6 @@ TEST_F(SpanTest, TraceHttpServerRequestSkipsProxyHeadersWhenDisabledTest) {
     }
 }
 
-// InjectContext writes this span's id as the callee's parent span id, so the
-// generated child id must differ from it (Java SpanId.nextSpanID).
 TEST_F(SpanTest, SpanEventInjectContextChildSpanIdDiffersFromParentTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
@@ -2127,11 +2071,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithHostHeaderTest) {
     EXPECT_EQ(data->getRemoteAddr(), "upstream-host:8080");
 }
 
-// Java ServerRequestRecorder.recordParentInfo falls back to
-// requestAdaptor.getAcceptorHost() when the peer sent no Pinpoint-Host, so the
-// parent info still names the host that accepted the request. Without the
-// fallback the acceptor host went out blank, and the endpoint and remote
-// address that default through it went blank with it.
 TEST_F(SpanTest, SpanImplAcceptorHostFallsBackToEndpointWithoutHostHeaderTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
@@ -2152,10 +2091,6 @@ TEST_F(SpanTest, SpanImplAcceptorHostFallsBackToEndpointWithoutHostHeaderTest) {
         << "the endpoint the host integration supplies is this agent's acceptor host";
 }
 
-// After EndSpan the final chunk is on the worker, which reads acceptor_host_
-// through getEndPoint()/getAcceptorHost(); the fallback must go through the
-// span's finished guard like every other mutator, or a late
-// TraceHttpServerRequest() would write the string under the worker's read.
 TEST_F(SpanTest, SpanImplAcceptorHostFallbackIsNoopAfterEndSpanTest) {
     auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
     MockTraceContextReader reader;
@@ -2282,11 +2217,6 @@ TEST_F(SpanTest, SpanImplExtractContextWithParentServiceNameTest) {
         << "Pinpoint-pServiceName header should populate the span's parentServiceName";
 }
 
-// A request with no Pinpoint-TraceID starts a brand new trace, so the rest of
-// the inbound Pinpoint headers belong to some *other* trace and must be ignored
-// — adopting them produced a root span pointing at a parent that does not exist
-// in this trace. Java gates the same block behind ServerRequestRecorder's
-// `if (!recorder.isRoot())`.
 TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdIgnoresUpstreamHeadersTest) {
     auto& stats = mock_agent_service_->getAgentStats();
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
@@ -2419,9 +2349,6 @@ TEST_F(SpanTest, MarkErrorAppliesOnlyTheExceptionVerdictTest) {
         << "verdict-only marking must not synthesize an event";
 }
 
-// An exception recorded only on a span event (DB/external call) must fail the
-// whole transaction like Java: PSpan.err carries kException and the URL stat
-// entry counts in the failed histogram, even with a 200 status.
 TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2457,10 +2384,6 @@ TEST_F(SpanTest, SpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     EXPECT_EQ(stats.begin()->second.fail.total(), 10) << "failed histogram must count the event-only error";
 }
 
-// The async counterpart of the test above, and a regression guard: an error
-// recorded on an async child must fail the root transaction. An async span is
-// serialized as a span chunk, which has no err field on the wire, so a flag
-// left on the child's own SpanData reached neither PSpan.err nor the URL stat.
 TEST_F(SpanTest, AsyncSpanEventSetErrorMarksRootSpanAndUrlStatFailedTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2571,11 +2494,6 @@ namespace {
     }
 }
 
-// A span event with no operation name has neither an api id nor a name to
-// fall back on, so the API annotation would go out with an empty value — the
-// collector renders that as a blank api instead of the caller's service type.
-// Go skips the fallback for an empty operationName and Java's
-// AbstractRecorder.recordApi records nothing for a null descriptor.
 TEST_F(SpanTest, EmptyOperationNameSendsNoApiAnnotationTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2635,11 +2553,6 @@ TEST_F(SpanTest, AsyncSpanSendsNoEmptyApiAnnotationTest) {
     parent.EndSpan();
 }
 
-// The third path into the same flag: an event created past MaxEventDepth /
-// MaxEventSequence is handed the shared disabled event, which records nothing.
-// Nothing recorded must not mean nothing failed — overflow caps profiling
-// detail, not the verdict (Java's traceBlockBegin past the limit still hands
-// back a recorder that reaches the trace root).
 TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 1;
@@ -2681,8 +2594,6 @@ TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
 
 // ========== Span.IgnoreErrors Tests ==========
 
-// The C++ counterpart of Java's profiler.ignore-error-handler: a matched error
-// is still recorded as exceptionInfo, it just does not fail the transaction.
 TEST_F(SpanTest, SpanIgnoreErrorsKeepsExceptionInfoWithoutErrTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"NotFound", ""}};
 
@@ -2715,8 +2626,6 @@ TEST_F(SpanTest, SpanIgnoreErrorsUnregisteredNameStillMarksErrTest) {
     EXPECT_TRUE(pspan->has_exceptioninfo());
 }
 
-// A rule with only message_contains matches any name, like Java's
-// exception-message@contains matcher on its own.
 TEST_F(SpanTest, SpanIgnoreErrorsMessageContainsTest) {
     mock_agent_service_->mutableConfig()->span.ignore_errors = {{"", "canceled by client"}};
 
@@ -2761,11 +2670,6 @@ TEST_F(SpanTest, SpanEventIgnoreErrorsSkipsErrMarkTest) {
 
 // ========== Error Category (PSpan.err) Tests ==========
 
-// PSpan.err is a bitmask of ErrorCategory, not a boolean: the collector reads
-// it to tell what failed the transaction. Java's default recorder is the
-// ConfigurableErrorRecorder (profiler.error.enable defaults to true), which
-// ORs errorCategory.getBitMask() into the shared error code; the flat 1 comes
-// only from SimpleErrorRecorder, i.e. profiler.error.enable=false.
 TEST_F(SpanTest, ErrorCategoryExceptionOnlyMarksTheExceptionBitTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2806,8 +2710,6 @@ TEST_F(SpanTest, ErrorCategoriesAccumulateAsAnOrMaskTest) {
     EXPECT_EQ(pspan->err(), 6) << "kException (2) | kHttpStatus (4)";
 }
 
-// Re-marking the same category must not double-count or clear anything: err
-// is an idempotent OR, as Java's maskErrorCode is.
 TEST_F(SpanTest, ErrorCategoryRepeatedMarksAreIdempotentTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -2825,10 +2727,6 @@ TEST_F(SpanTest, ErrorCategoryRepeatedMarksAreIdempotentTest) {
 
 // ========== Span.ErrorMark / Span.ErrorMarkExclude Tests ==========
 
-// Java's ConfigurableErrorRecorder.recordError: a category outside the enabled
-// set masks nothing at all, so "5xx is not a transaction failure" becomes
-// expressible without giving up exception marking. The status annotation is
-// still recorded - only the verdict is dropped.
 TEST_F(SpanTest, ErrorMarkExcludeHttpStatusLeavesA5xxUnmarkedTest) {
     mock_agent_service_->mutableConfig()->span.error_mark_mask =
         error_mark_mask({}, {"http-status"});
@@ -2924,9 +2822,6 @@ TEST_F(SpanTest, ErrorMarkExcludeExceptionLeavesUrlStatSuccessfulTest) {
 
 // ========== PAcceptEvent UNKNOWN Defaults ==========
 
-// Java SpanMessageMapper defaults an unset remoteAddr/endPoint to "UNKNOWN"
-// (DEFAULT_REMOTE_ADDRESS / DEFAULT_END_POINT). A span with neither set --
-// nor an acceptor host to fall back on -- must serialize the same way here.
 TEST_F(SpanTest, AcceptEventDefaultsUnsetEndPointAndRemoteAddrToUnknownTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
     seed_test_trace_id(span, *mock_agent_service_);
@@ -3223,13 +3118,6 @@ TEST_F(SpanTest, UrlStatKeptForCallstackTemplateThenDroppedOnEndSpanTest) {
         << "url stats are disabled: the entry must be dropped, not enqueued";
 }
 
-// Java parity (DefaultShared.setUriTemplate is a null -> value CAS): the first
-// recorded url pattern wins. A framework that recorded the matched route must
-// not have it replaced by a later, less precise layer. The method and status
-// code are last-wins here. Only the status matches Java for that: setStatusCode
-// (DefaultShared.java:128-131) is a plain setter, but setHttpMethods (:168-177)
-// is the same null -> value CAS as setUriTemplate, so both ports deliberately
-// diverge from Java on the method - see doc/java_parity.md.
 TEST_F(SpanTest, SetUrlStatKeepsTheFirstPatternTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
@@ -3247,7 +3135,6 @@ TEST_F(SpanTest, SetUrlStatKeepsTheFirstPatternTest) {
         << "the status code is final only at the end of the request";
 }
 
-// An empty pattern is Java's null: it does not claim the slot.
 TEST_F(SpanTest, SetUrlStatEmptyPatternDoesNotClaimTheSlotTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 
@@ -3259,8 +3146,6 @@ TEST_F(SpanTest, SetUrlStatEmptyPatternDoesNotClaimTheSlotTest) {
     EXPECT_EQ(mock_agent_service_->last_url_stat_url_, "/api/v1/users/{id}");
 }
 
-// Java's setUriTemplate(uriTemplate, force = true): the host corrects an early
-// guess with the route it eventually matched.
 TEST_F(SpanTest, ForceUrlStatReplacesTheRecordedPatternTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 

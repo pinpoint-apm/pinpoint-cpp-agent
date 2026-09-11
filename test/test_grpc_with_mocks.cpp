@@ -61,11 +61,6 @@ using ::testing::InvokeWithoutArgs;
 
 namespace {
 
-// Single-shot allocation-failure injection for the metadata completion
-// no-throw regression test, mirroring test_noop.cpp: arming makes the next
-// operator new on this thread throw bad_alloc. gRPC's own threads allocate
-// through the same replaced operator new but never see the thread-local
-// flag, so only the arming (test) thread is affected.
 thread_local bool fail_next_allocation = false;
 
 void arm_allocation_failure() noexcept {
@@ -405,11 +400,6 @@ public:
         return true;
     }
 
-    // Releases one held callback, moving `status` into the invocation. The
-    // completion no-throw regression test arms a single-shot allocation
-    // failure around this call: the const& variant above would copy the
-    // status strings in test code and consume the failure before it could
-    // reach the production completion path under test.
     bool releaseHeldCallbackByMove(size_t index, grpc::Status&& status) {
         std::function<void(grpc::Status)> held;
         {
@@ -1044,9 +1034,6 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesDefaultServerMetaData) {
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentReportsReloadedConfig) {
-    // AgentInfo is re-sent periodically; after a hot reload it must carry the
-    // current config (Java's AgentInfoFactory reads ServerMetaData live on
-    // every send), not the snapshot GrpcAgent was constructed with.
     TestableGrpcAgent agent(mock_agent_service_.get());
 
     std::vector<v1::PAgentInfo> captured;
@@ -1206,11 +1193,6 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentFailureTest) {
     EXPECT_EQ(agent.registerAgent(), SEND_FAIL);
 }
 
-// The collector can accept the RPC and still refuse the registration in the
-// response body. That verdict is what GrpcMetadata::process_completed() already
-// reads on every metadata item; registration used to ignore it and report
-// success on transport status alone, which started every worker under an
-// agent id the collector never registered.
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentRejectedByCollectorTest) {
     TestableGrpcAgent agent(mock_agent_service_.get());
 
@@ -1330,13 +1312,6 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
 
 // GrpcStats Tests with Mock Stubs
 
-// A token carries no payload: next_write reads the producer's buffer when it
-// consumes the token. So while the stream is stalled, repeated tokens of one
-// type must coalesce into the one already pending, and nothing may be
-// discarded — the payload is whatever the producers hold once the stream
-// drains the queue. (The former design capped the queue at two tokens and,
-// on the third one or on a channel recovery slower than 5s, purged the queue
-// together with the AgentStats counters and the URL snapshot.)
 TEST_F(GrpcMockTest, GrpcStatsStallCoalescesTokensAndKeepsProducerData) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
 
@@ -1415,10 +1390,6 @@ TEST_F(GrpcMockTest, GrpcStatsDoesNotResendBatchWhenTokenRacesPublication) {
     EXPECT_TRUE(sender.queuedStatsForTest().empty());
 }
 
-// No traffic must produce no message at all, not an empty PAgentUriStat every
-// send interval. Java stops as soon as its completed queue polls null
-// (UriStatCollectingJob.java:52-55); an idle agent sent nothing there and
-// sends nothing here.
 TEST_F(GrpcMockTest, GrpcStatsSendsNoMessageWhenNoUrlStatTickCompleted) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
 
@@ -1443,18 +1414,6 @@ TEST_F(GrpcMockTest, GrpcStatsSendsNoMessageWhenNoUrlStatTickCompleted) {
         << "a completed tick must still be written";
 }
 
-// The tick still being collected must go out on the way down. Java does not
-// send it (AsyncQueueingExecutor.stop drains only the input queue and the
-// polling UriStatCollectingJob is already closed); the Go agent does, from
-// shutdownAgent's flushUrlStat(true), and this agent follows Go — see
-// doc/java_parity.md.
-//
-// Regression: the flush used to be attempted inside next_write(), as
-// takeSnapshot(agent_->isExiting()). isExiting() turns true the instant
-// do_shutdown() runs, and stopping() is `stop_requested_ || isExiting()`, so
-// both the worker loop and next_write() itself returned before reaching that
-// line — the argument could only ever be false, and every clean shutdown lost
-// the tick in progress.
 TEST_F(GrpcMockTest, GrpcStatsShutdownFlushSendsTickStillInProgress) {
     TestableGrpcStats stats_client(mock_agent_service_.get());
     auto& url_stats = mock_agent_service_->getUrlStats();
@@ -1747,14 +1706,6 @@ TEST_F(GrpcMockTest, GrpcMetadataDropsRejectedResultAndEvictsCache) {
     EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 1);
 }
 
-// Regression: the cache release that follows a permanent rejection must not
-// happen the moment the collector says no. Releasing the entry is what makes
-// the next span miss the cache and re-send, so an inline release turns one
-// permanently rejecting collector into a send per span, paced only by the
-// in-flight permits and logged each time. The id is parked for one retry
-// delay first, which spaces the recovery probe out without abandoning it.
-// Both rejection paths (a non-retryable status here, PResult.success=false in
-// the test above) go through the same parking.
 TEST_F(GrpcMockTest, GrpcMetadataDelaysCacheReleaseAfterPermanentRejection) {
     constexpr auto kDelay = std::chrono::milliseconds(800);
     constexpr auto kWellInsideDelay = std::chrono::milliseconds(200);
@@ -1793,15 +1744,9 @@ TEST_F(GrpcMockTest, GrpcMetadataDelaysCacheReleaseAfterPermanentRejection) {
     metadata.stopMetaWorker();
     if (meta_worker.joinable()) meta_worker.join();
 
-    // Parking reuses the retry schedule, but a parked entry is a release, not
-    // a resend: the rejected request must never go out twice.
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u);
 }
 
-// Retry decision by status code, mirroring Go's isRetryableError: only
-// UNAVAILABLE and DEADLINE_EXCEEDED are worth resending. Everything else is a
-// verdict the same request earns again, so it costs one attempt, not four.
-// Either way the cache entry is released exactly once.
 TEST_F(GrpcMockTest, GrpcMetadataRetriesOnlyTransientStatusCodes) {
     struct Case {
         grpc::StatusCode code;
@@ -2062,12 +2007,6 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 4u);
 }
 
-// The queued StringMeta keeps the whole normalized SQL — it is the id cache
-// key the eviction paths above look up — and only the transmitted copy is
-// abbreviated, where Java's SqlCacheService abbreviates it: first
-// kMaxSqlMetaLength bytes plus a "...(<original length>)" suffix. SqlUidMeta
-// abbreviates on construction and keeps the cache key apart; the wire copy
-// comes out the same.
 TEST_F(GrpcMockTest, GrpcMetadataAbbreviatesSqlOverMetadataCapOnTheWire) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 
@@ -2519,9 +2458,6 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerExitsWhenChannelNotReady) {
                             worker_done.store(true);
                         });
 
-    // Bounded instead of an unconditional join: a regression that keeps the
-    // worker retrying on a not-ready channel must turn this test red, not
-    // hang it forever (the guard stops and joins the worker on scope exit).
     EXPECT_TRUE(wait_for_condition([&worker_done] { return worker_done.load(); },
                                    std::chrono::seconds(2)))
         << "Command worker should exit immediately when the channel is not ready";
@@ -2802,10 +2738,6 @@ TEST_F(GrpcMockTest, GrpcSpanBatchSerializesAnnotationsFromVariantValueTest) {
     EXPECT_EQ(bytes_value.stringvalue2().value(), "args");
 }
 
-// Caller-origin bytes (percent-decoded URLs, binary keys, driver error
-// strings) may not be UTF-8; protobuf-java rejects the whole message if any
-// string field is invalid, so every outbound string is sanitized at the
-// builder boundary.
 TEST_F(GrpcMockTest, GrpcSpanBuilderReplacesInvalidUtf8InStringFields) {
     const std::string bad = "\xff\xfe";
     const std::string fffd = "\xef\xbf\xbd";
@@ -3393,10 +3325,6 @@ TEST_F(GrpcMockTest, GrpcSpanShutdownDuringCollectorOutageDropsRemainingSpans) {
                             span_client.sendSpanWorker();
                             worker_done.store(true);
                         });
-    // Bounded instead of an unconditional join: if the shutdown flush
-    // regresses to blocking on the dead collector — the exact behavior this
-    // test pins — the test must go red on the elapsed assertion, not hang
-    // before reaching it (the guard stops and joins on scope exit).
     const bool finished = wait_for_condition(
         [&worker_done] { return worker_done.load(); }, std::chrono::seconds(3));
     const auto elapsed = std::chrono::steady_clock::now() - start;
@@ -3554,15 +3482,6 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
         << "the two delivered items must keep their cache entries";
 }
 
-// The new queue and the retry schedule hold independent budgets: a retry
-// backlog built up during a collector outage must not consume the room for
-// new metadata. It used to — one sender_queue_size covered both — and since
-// every drop releases the cache entry, the dropped item came straight back
-// from the next span, so drops fed their own inflow.
-//
-// A readiness failure (not a stub error) drives the retries here: it moves an
-// item from the queue into the retry schedule without any RPC, and the long
-// retry delay keeps it parked there for the whole test.
 TEST_F(GrpcMockTest, GrpcMetadataRetryBacklogDoesNotStarveNewMetaQueue) {
     mock_agent_service_->mutableConfig()->collector.grpc.channel.sender_queue_size = 2;
 
@@ -3629,13 +3548,6 @@ TEST_F(GrpcMockTest, GrpcMetadataRetryBacklogDoesNotStarveNewMetaQueue) {
         << "no RPC can have been sent while the channel was never ready";
 }
 
-// T-1 regression: the metadata worker must not park inside a blocking
-// readiness wait while holding an item and a permit. With the new queue
-// sized 1, a stalled worker would leave the first item in hand, the second
-// in the queue and drop every later one, releasing their cache entries. The
-// non-waiting probe fails each item straight into the retry schedule instead,
-// so the queue never overflows and no cache entry is released during the
-// outage. On recovery the parked items are delivered.
 TEST_F(GrpcMockTest, GrpcMetadataWorkerKeepsDrainingQueueDuringCollectorOutage) {
     mock_agent_service_->mutableConfig()->collector.grpc.channel.sender_queue_size = 1;
 
@@ -3686,10 +3598,6 @@ TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {
     SUCCEED() << "Null metadata must be ignored without touching the queue or stub";
 }
 
-// ============================================================
-// GrpcClientTuning injection tests: each verifies that a knob that used to be
-// a hardcoded constant is actually honored when injected.
-// ============================================================
 
 TEST_F(GrpcMockTest, GrpcAgentUnaryRequestUsesInjectedDeadline) {
     GrpcClientTuning tuning;
@@ -3774,8 +3682,6 @@ TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                      [&metadata] { metadata.sendMetaWorker(); });
 
-    // Both permits go in flight without waiting for either completion — the
-    // serial-sender behavior this pipeline replaced allowed only one.
     EXPECT_TRUE(fake->waitForHeldCallbacks(2, std::chrono::seconds(5)))
         << "two sends must be in flight concurrently";
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -3860,11 +3766,6 @@ TEST_F(GrpcMockTest, GrpcMetadataCompletionSurvivesAllocationPressureWithoutLosi
     // before arming, so its own allocations run unrestricted.
     grpc::Status failed_status(grpc::StatusCode::UNAVAILABLE, std::string(192, 'x'));
 
-    // The completion path runs inline on this thread. With the single-shot
-    // failure armed, any allocation between the permit release and the
-    // notify throws bad_alloc — the regression this pins: a copy assignment
-    // of the status there threw, gRPC's callback layer swallowed it, and
-    // the worker stayed parked while the item's outcome was lost.
     arm_allocation_failure();
     bool released = false;
     bool threw = false;
@@ -4059,9 +3960,6 @@ TEST_F(GrpcMockTest, RequestStopCommandWorkerDoesNotJoinBlockedActiveThreadCount
     ASSERT_EQ(write_entered.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
         << "active thread count stream should have started and entered Write";
 
-    // Run the signal phase from a helper thread: a regression that joins the
-    // blocked stream surfaces as a failed wait_for below (the release after it
-    // unblocks the join, so the test still finishes) instead of a hung test.
     auto request_stop_done = std::async(std::launch::async, [&command] {
         command.requestStopCommandWorker();
     });
@@ -4101,12 +3999,6 @@ TEST_F(GrpcMockTest, ReissuedActiveThreadCountRequestDoesNotJoinBlockedPredecess
     EXPECT_CALL(*stream, Read(_))
         .WillOnce(DoAll(SetArgPointee<0>(make_atc_request(301)), Return(true)))
         .WillOnce(Invoke([make_atc_request, write_entered_seen](v1::PCmdRequest* request) {
-            // Deliver the duplicate only once the first stream is provably
-            // parked in Write, so the handler faces a live, uncancellable
-            // predecessor for the same request id. Bounded: if the
-            // predecessor never parks (a production regression), end the
-            // command stream instead of wedging the worker inside this mock
-            // forever — the test then fails its wait below and still joins.
             if (write_entered_seen.wait_for(std::chrono::seconds(5)) !=
                 std::future_status::ready) {
                 return false;
@@ -4363,7 +4255,6 @@ TEST_F(GrpcMockTest, GrpcSpanRotationKeepsPreviousTransportAliveWhileBatchInFlig
     ASSERT_TRUE(second_stub->waitForBatchCount(1, std::chrono::seconds(5)));
     EXPECT_EQ(span_client.generation(), 2u);
 
-    // The client let go of transport #1, but the in-flight batch pins it.
     EXPECT_FALSE(previous.expired())
         << "a transport with a call in flight must outlive its replacement";
 

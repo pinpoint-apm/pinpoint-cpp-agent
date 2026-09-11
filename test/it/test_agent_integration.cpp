@@ -747,7 +747,6 @@ protected:
     }
 };
 
-// Regression fixture: channel renewal must not depend on StreamMaxAgeMs.
 class ChannelOnlyRenewalIntegrationTest : public AgentIntegrationTest {
 protected:
     void SetUp() override {
@@ -1230,14 +1229,6 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
     EXPECT_TRUE(checked_url_stat);
 }
 
-// The tick still being collected leaves on the way down. The unit tests cover
-// what the flush builds and when it declines to send; only here is the write
-// itself real, over the live stats stream, inside the shutdown deadline.
-//
-// This agent follows the Go agent here and exceeds Java, which drops the open
-// tick — see doc/java_parity.md. The flush used to be attempted from
-// GrpcStats::next_write as takeSnapshot(agent_->isExiting()), which stopping()
-// made unreachable, so every clean shutdown lost up to a full tick.
 TEST_F(AgentIntegrationTest, FlushesUrlStatTickInProgressOnShutdown) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
@@ -1801,13 +1792,6 @@ TEST_F(AgentIntegrationTest,
     }, kWaitTimeout));
     const auto baseline = agent_stat_count(collector_.snapshot());
 
-    // Both buckets fill from agent construction and cap at one second of
-    // tokens, so idling past that cap makes the bursts below deterministic
-    // however long the startup handshake took: each bucket holds exactly its
-    // throughput. A burst then admits those stored tokens plus one more — the
-    // caller that finds the bucket empty but its next token already due
-    // borrows it — which is what Guava's SmoothBursty, and so the Java agent,
-    // does with the same setting.
     std::this_thread::sleep_for(1200ms);
 
     const std::array<bool, 5> expected_new{true, true, true, false, false};
@@ -1976,10 +1960,6 @@ TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) 
 
     const auto by_tick = stalled_entries(collector_.snapshot());
 
-    // Five completed ticks are retained (Java's snapshotQueue, whose size() > 4
-    // check runs before the offer); the older four were evicted whole rather
-    // than starving the newer ones. The tenth is still in progress and a send
-    // never takes that one.
     ASSERT_EQ(by_tick.size(), 5U);
     int expected_tick = kStalledTicks - 6;
     for (const auto& [timestamp, uris] : by_tick) {
@@ -2961,11 +2941,6 @@ TEST_F(AgentIntegrationTest, ShutdownDeliversSpansQueuedRightBeforeIt) {
     }, kWaitTimeout)) << "the collector never saw the ping stream end after Shutdown()";
 }
 
-// A host that stops and resumes tracing while it keeps serving must go through
-// StartAgent() again: Shutdown() is terminal for an agent instance. These two
-// pin both halves of that contract end-to-end — the supported cycle keeps
-// working, and the unsupported same-handle restart stays refused rather than
-// half-starting an agent.
 
 TEST_F(AgentIntegrationTest, StartAfterShutdownIsRefusedAndKeepsServingNoopSpans) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
@@ -3148,9 +3123,6 @@ TEST_F(AgentIntegrationTest, KeepsTraceContextWhenEventLimitsOverflow) {
     auto* deepest_event = span->NewSpanEvent("depth.level3");
     ASSERT_NE(deepest_event, nullptr);
 
-    // MaxEventDepth allows max + 1 levels (Java DefaultCallStack parity), so
-    // depth 1..3 are recorded and only this fourth nesting level overflows
-    // into the shared disabled event that records nothing.
     auto* overflowed = span->NewSpanEvent("depth.level4.discarded");
     ASSERT_NE(overflowed, nullptr);
     overflowed->SetDestination("discarded-destination");
@@ -3881,10 +3853,6 @@ TEST_F(AgentIntegrationTest, RecordsEveryProxyHeaderAndDiscardsInvalidOnes) {
                                    "app.example.test:80", app_request);
     app_span->EndSpan();
 
-    // A timestamp that is not nginx's "seconds.milliseconds" — here the value
-    // that used to reach an undefined double->int64 cast — discards the header
-    // whole, as Java's setValid(false) does. An annotation carrying a received
-    // time of 0 is charted as a proxy-to-agent gap of five decades.
     auto nginx_span = agent_->NewSpan("http.proxy.nginx.range",
                                       "/proxy-nginx-range");
     ASSERT_TRUE(nginx_span->IsSampled());
@@ -4022,10 +3990,6 @@ TEST_F(AgentIntegrationTest, TruncatesSqlBindArgsAtConfiguredLimit) {
     const auto* uid_annotation = find_annotation(events[0].annotation(),
                                                  ANNOTATION_SQL_UID);
     ASSERT_NE(uid_annotation, nullptr);
-    // "0123456789, abcdefgh" fills exactly the 20 allowed bytes; the third
-    // value no longer fits, so the join stops and — like Java's
-    // BindValueUtils — reports how many bind values there were after the
-    // separator it had already appended.
     EXPECT_EQ(uid_annotation->value().bytesstringstringvalue()
                   .stringvalue2().value(),
               "0123456789, abcdefgh, ...(3)");

@@ -170,7 +170,7 @@
       ///
       /// Spans use this overload so a later hot reload cannot discard an
       /// exception chain admitted by the span-local EnableCallstackTrace flag.
-      /// The out-of-line default forwards to the legacy overload for mocks.
+      /// The out-of-line default forwards to the compatibility overload for mocks.
       virtual void recordException(const TraceId& trace_id, int64_t span_id,
                                    std::string_view url_template,
                                    std::vector<std::unique_ptr<Exception>>&& exceptions,

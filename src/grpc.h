@@ -279,21 +279,7 @@ namespace pinpoint {
         ///        stopping first, or no channel was opened. Also the one
         ///        place channel rotation runs (see rotate_channel_if_due()).
         virtual bool readyChannel();
-        /// @brief Bounded readiness check: true if the channel is READY, or
-        ///        becomes READY within request_timeout from IDLE/CONNECTING
-        ///        (a fresh channel is asked to connect); false at once in
-        ///        TRANSIENT_FAILURE, i.e. during a collector outage, instead
-        ///        of readyChannel()'s unbounded wait. Runs channel rotation
-        ///        like readyChannel().
-        ///        The metadata pipeline uses this instead of readyChannel():
-        ///        that worker is a single thread holding a permit and an
-        ///        item, so waiting out a collector outage there stalled the
-        ///        whole pipeline while the new-metadata queue overflowed and
-        ///        each drop released a cache entry that the next span
-        ///        re-registered — the drop-feeds-inflow loop the two queue
-        ///        budgets alone cannot prevent. Java and Go never wait here
-        ///        either: they fire the RPC and let a failure take the retry
-        ///        schedule.
+        /// @brief Bounded readiness check for metadata sends.
         virtual bool channelReadyNow();
         void closeChannel() {
             // closing_channel_ brackets the whole call so a shutdown-deadline

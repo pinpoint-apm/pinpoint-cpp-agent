@@ -1142,11 +1142,6 @@ TEST_F(SqlUidCacheTest, UidConsistencyTest) {
     }
 }
 
-// A statement at or above Sql.CacheLengthLimit is never stored, so `found`
-// stays false on every use. That flag is the exact predicate
-// AgentImpl::cacheSqlUid enqueues the UID metadata on, so two misses here mean
-// two metadata sends — the bounded-memory-for-repeated-metadata trade Java's
-// UidCache bypass makes.
 TEST_F(SqlUidCacheTest, LengthLimitBypassesStorageAndReportsEveryUseAsNew) {
     SqlUidCache cache(1024, 16, 2048);
 
@@ -1286,8 +1281,6 @@ TEST_F(SqlUidCacheTest, SqlUidCacheExpiresEntriesWhileFull) {
     EXPECT_TRUE(cache.get("SELECT 3").found);
 }
 
-// Expiry is opt-in: the default leaves entries in place forever, which is what
-// the api/error/sql id caches rely on (Java gives them no TTL either).
 TEST_F(SqlUidCacheTest, SqlUidCacheWithoutTtlNeverExpires) {
     SqlUidCache cache(1024, 4);
 

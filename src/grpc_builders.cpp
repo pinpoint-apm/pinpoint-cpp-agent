@@ -354,10 +354,7 @@ namespace pinpoint {
         auto* accept_event = build_accept_event(span, arena);
         grpc_span->unsafe_arena_set_allocated_acceptevent(accept_event);
 
-        // Same empty-name guard as build_span_event, and it is the common
-        // case here rather than the edge one: an async child span is created
-        // with an empty operation on purpose (see NewAsyncSpan), so every one
-        // of them used to carry a blank ANNOTATION_API.
+        // Async child spans may have no operation, so omit an empty API annotation.
         if (auto api_id = span->getApiId(); api_id > 0) {
             grpc_span->set_apiid(api_id);
         } else if (const auto& operation = span->getOperationName(); !operation.empty()) {

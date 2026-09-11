@@ -444,10 +444,6 @@ namespace {
     }
 
     TEST(ShardedBoundedQueueTest, HeadDropDestroysOverwrittenValuesPromptly) {
-        // Regression: the saturated overwrite path used to advance head_ past
-        // the dropped oldest value without destroying it, so up to the full
-        // physical ring (shard_count * capacity cells) of already-dropped
-        // values stayed alive instead of the documented `capacity` bound.
         constexpr size_t kProducerCount = 2;
         constexpr size_t kItemsPerProducer = 200;
         constexpr size_t kCapacity = 64;

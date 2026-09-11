@@ -53,8 +53,6 @@ protected:
         mock_agent_service_.reset();
     }
 
-    // Private-state accessors (StatTest is a friend of AgentStats; the
-    // TEST_F subclasses are not, so they go through these).
     int batch() {
         std::lock_guard<std::mutex> lock(agent_stats_->mutex_);
         return agent_stats_->batch_;
@@ -178,9 +176,6 @@ TEST(ProcStatusParseTest, HeapMaxComesFromVmHWMNotVmPeak) {
     EXPECT_EQ(status.num_threads, 7);
 }
 
-// Missing fields stay at the uncollected sentinel (-1, as Java's
-// MemoryMetric reports) rather than 0 or a neighbouring line's value, and
-// the last line needs no trailing newline to be parsed.
 TEST(ProcStatusParseTest, MissingFieldsStayUncollected) {
     const auto status = AgentStats::parseProcStatus("Name:\tpinpoint\nVmRSS:\t   1024 kB");
 
@@ -196,13 +191,6 @@ TEST(ProcStatusParseTest, MissingFieldsStayUncollected) {
     EXPECT_EQ(empty.num_threads, UNCOLLECTED_STAT_VALUE);
 }
 
-// collectInterval must be the gap actually measured between collections, not
-// the configured value: the collect timer fires late under load and the
-// collector divides the row's counters by whatever interval it is handed
-// (Java's CollectJob reports the same measured gap). That includes the first
-// collection — initAgentStats() sets the baseline, so it has a predecessor to
-// measure against. Driven through the real worker, which is where the
-// configured interval is known.
 TEST_F(StatTest, CollectIntervalIsAlwaysMeasuredTest) {
     constexpr int configured_ms = 200;
     constexpr size_t batch_count = 3;
@@ -305,9 +293,6 @@ TEST_F(StatTest, ActiveSpanManagementTest) {
     int64_t span_id_2 = 67890;
     int64_t start_time = 1234567890;
 
-    // Add active spans directly via AgentStats. In production the node is
-    // embedded in the span object; local nodes stand in for it here and must
-    // be dropped before they go out of scope (see active_span.h).
     ActiveSpanNode node1, node2;
     agent_stats_->addActiveSpan(node1, span_id_1, start_time);
     agent_stats_->addActiveSpan(node2, span_id_2, start_time + 100);
@@ -397,11 +382,6 @@ TEST_F(StatTest, TakeSnapshotsKeepsCompletedCyclesIntact) {
         << "a batch was incomplete, out of order, or consumed more than once";
 }
 
-// A stats stream stalled past a whole collect cycle loses the pending batch:
-// the next completion overwrites it. That used to be entirely silent — no
-// counter, no log — so a stall just made rows disappear. It is now reported
-// like the span/metadata/url_stat queue drops, and rate-limited the same way,
-// so a permanently stalled stream cannot flood the log at one line per cycle.
 TEST_F(StatTest, OverwritingAnUnsentBatchWarnsOnceAndIsRateLimited) {
     auto& cfg = *mock_agent_service_->mutableConfig();
     cfg.stat.enable = true;
@@ -439,11 +419,6 @@ TEST_F(StatTest, OverwritingAnUnsentBatchWarnsOnceAndIsRateLimited) {
         << "the report must be rate-limited to one line per interval; got: " << logged;
 }
 
-// A collectAgentStat exception used to escape the loop and restart the worker,
-// which re-ran initAgentStats() and threw away the partial batch (up to
-// batch_count-1 snapshots). It now costs exactly the snapshot of that cycle,
-// as in Java's CollectJob.run(): the batch cursor stays put and the next cycle
-// fills the same slot, and the failure is reported through a rate-limited WARN.
 TEST_F(StatTest, CollectFailureSkipsOnlyThatSnapshotAndKeepsTheBatch) {
     auto& cfg = *mock_agent_service_->mutableConfig();
     cfg.stat.enable = true;
@@ -830,8 +805,6 @@ TEST_F(StatTest, CollectActiveRequestsMatchesHistogramBucketsTest) {
     agent_stats_->dropActiveSpan(nodes[3]);
 }
 
-// Bucket bounds are inclusive like Java's BaseHistogramSchema
-// (elapsedTime <= 1000/3000/5000): 999 and 1000 are fast, 1001 is normal.
 TEST_F(StatTest, ActiveRequestBucketBoundsAreInclusiveTest) {
     const int64_t now_ms = 1'000'000;
     const int64_t ages[] = {999, 1000, 1001, 3000, 5000, 5001};
@@ -1188,8 +1161,6 @@ TEST_F(StatTest, ActiveSpanCountAboveThresholdWarnsOnceAndIsRateLimited) {
     EXPECT_EQ(agent_stats_->activeSpanCount(), 0u);
 }
 
-// Exactly at the threshold nothing is logged: the warning means "more than
-// Java would keep", not "as many as".
 TEST_F(StatTest, ActiveSpanCountAtThresholdDoesNotWarn) {
     const size_t total = AgentStats::kActiveSpanWarnThreshold;
     std::vector<ActiveSpanNode> nodes(total);

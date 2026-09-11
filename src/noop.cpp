@@ -86,7 +86,7 @@ namespace pinpoint {
         // unsampled spans are the majority path when sampling is on, and that
         // CAS measured as half this path's four-thread cost
         // (span_lifecycle_benchmark). Without the sinks (tests, hand-built
-        // runtimes) the legacy keep-alive covers the agent_ fallbacks below.
+        // runtimes), agent_ref_ protects the fallback paths below.
         agent_ref_(runtime_ && runtime_->stats && runtime_->url_stats
                        ? nullptr
                        : (agent != nullptr ? agent->selfRef() : nullptr)),
@@ -125,10 +125,7 @@ namespace pinpoint {
 
     void UnsampledSpan::MarkError(std::string_view error_name,
                                   std::string_view error_message) {
-        // This verdict-only binding API follows the same late-call contract as
-        // the rest of the span surface. SetError historically leaves a harmless
-        // post-EndSpan flag behind; MarkError is new and can make the stronger
-        // no-op guarantee because its only consumer is a deferred batch flush.
+        // This verdict-only API is a no-op after EndSpan.
         if (finished_.load(std::memory_order_relaxed)) {
             return;
         }
@@ -210,11 +207,7 @@ namespace pinpoint {
                 url_stat_->failed_ = err ||
                     (status_errors && status_errors->isErrorCode(url_stat_->status_code_));
                 if (runtime_->url_stats) {
-                    // Straight into the runtime-owned sink, no agent deref:
-                    // this span may hold no agent keep-alive (see the ctor).
-                    // The agent's enabled_ gate that recordUrlStat used to
-                    // apply is preserved by the sink's own accepting_ flag,
-                    // flipped when shutdown begins.
+                    // The runtime-owned sink gates admission during shutdown.
                     runtime_->url_stats->enqueueUrlStats(std::move(*url_stat_),
                                                          *runtime_->config);
                 } else if (agent_ != nullptr) {
@@ -265,8 +258,8 @@ namespace pinpoint {
         // Gate at entry creation (see SpanImpl::SetUrlStat): with URL stats
         // disabled the entry's two heap string copies were built only to be
         // dropped in enqueueUrlStats(). Unlike SpanImpl there is no exception
-        // url_template to preserve. Snapshot-gated: without one (tests),
-        // legacy record-then-drop behavior.
+        // url_template to preserve. Tests without a snapshot retain the
+        // direct path.
         if (runtime_ && !runtime_->config->http.url_stat.enable) {
             return;
         }

@@ -112,10 +112,10 @@ TEST_F(UrlStatTest, UrlStatHistogramConstructorTest) {
 TEST_F(UrlStatTest, UrlStatHistogramAddTest) {
     UrlStatHistogram histogram;
     
-    histogram.add(50);   // Should go to bucket 0 (< 100)
-    histogram.add(250);  // Should go to bucket 1 (100-299)
-    histogram.add(450);  // Should go to bucket 2 (300-499)
-    histogram.add(750);  // Should go to bucket 3 (500-999)
+    histogram.add(50);
+    histogram.add(250);
+    histogram.add(450);
+    histogram.add(750);
     
     EXPECT_EQ(histogram.total(), 1500) << "Total should be sum of elapsed times (50+250+450+750=1500)";
     EXPECT_EQ(histogram.max(), 750) << "Max should be 750";
@@ -169,8 +169,6 @@ TEST_F(UrlStatTest, EachUrlStatHistogramModificationTest) {
 // ========== UrlKey Tests ==========
 
 TEST_F(UrlStatTest, UrlKeyEqualityTest) {
-    // UrlKey is an unordered_map key (UrlKeyHash): equality is the whole
-    // comparison contract — the former operator< was unused and removed.
     UrlKey key1{"/api/users", 1000};
     UrlKey key2{"/api/users", 1000};
     UrlKey key3{"/api/users", 2000};
@@ -299,9 +297,6 @@ TEST_F(UrlStatTest, SnapshotTrimsRawUrlPathAtDepthOne) {
     EXPECT_EQ(stats.begin()->first.url_, "/api/*");
 }
 
-// The shipped default: no trimming, like Java and Go, so a URI template of
-// any depth is aggregated verbatim and C++ keys equal theirs. Uses a
-// default-constructed Config on purpose — this pins the default itself.
 TEST_F(UrlStatTest, SnapshotKeepsUriTemplateVerbatimByDefault) {
     Config config;
     ASSERT_FALSE(config.http.url_stat.enable_trim_path);
@@ -347,9 +342,6 @@ TEST_F(UrlStatTest, SnapshotBucketsEmptyUrlUnderUnknownConstant) {
     trim_config.http.url_stat.enable_trim_path = true;
     trimmed_snapshot.add(&stat, trim_config, tick_clock);
 
-    // The literal, not just the constant: the value is Java's
-    // URITemplate.NULL_URI, so a rename would split the mixed-language
-    // "no URI recorded" bucket in two without any test noticing.
     EXPECT_EQ(URL_STAT_UNKNOWN, "/NULL");
     ASSERT_EQ(snapshot.getEachStats().size(), 1u);
     EXPECT_EQ(snapshot.getEachStats().begin()->first.url_, URL_STAT_UNKNOWN);
@@ -402,10 +394,6 @@ TEST_F(UrlStatTest, SnapshotTrimPrefixAndWireFormatStayExact) {
     EXPECT_EQ(each.failedhistogram().histogram(2), 1);
 }
 
-// An empty histogram travels as an empty message, not as eight zero buckets.
-// The failed histogram is empty for every URI that never failed, so those
-// eight zeroes would otherwise ride along with every URI on every tick.
-// Matches Java's UriStatMapper.checkEmptyThenMap and Go's makePUriHistogram.
 TEST_F(UrlStatTest, EmptyFailedHistogramIsSerializedAsAnEmptyMessage) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -424,8 +412,6 @@ TEST_F(UrlStatTest, EmptyFailedHistogramIsSerializedAsAnEmptyMessage) {
     ASSERT_EQ(wire->eachuristat_size(), 1);
 
     const auto& each = wire->eachuristat(0);
-    // The message must still be present: Java substitutes
-    // PUriHistogram.getDefaultInstance(), it does not clear the field.
     ASSERT_TRUE(each.has_failedhistogram());
     EXPECT_EQ(each.failedhistogram().histogram_size(), 0);
     EXPECT_EQ(each.failedhistogram().total(), 0);
@@ -538,9 +524,6 @@ TEST_F(UrlStatTest, SnapshotRepeatedHitsAccumulateAndLimitRejectsMiss) {
     EXPECT_EQ(stats.begin()->second.total.total(), 129);
 }
 
-// Java parity (AgentUriStatData.add skips an endTime of 0): an entry whose end
-// time was never set is skipped, not stored under a 1970 key, and it does not
-// move the tick watermark that UrlStats::addLocked cuts on.
 TEST_F(UrlStatTest, SnapshotSkipsEntryWithEpochEndTime) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -698,8 +681,6 @@ TEST_F(UrlStatTest, StopWorkerAfterUrlStatDisabledByReloadTest) {
     url_stats.stopAddUrlStatsWorker();
 
     auto joined = std::async(std::launch::async, [&add_worker] { add_worker.join(); });
-    // On failure the worker never wakes; the process aborts on the un-joined
-    // thread, which is the intended loud signal for this regression.
     ASSERT_EQ(joined.wait_for(std::chrono::seconds(10)), std::future_status::ready)
         << "stop must wake the add worker even when url_stat was disabled by reload";
 }
@@ -1364,9 +1345,6 @@ TEST_F(UrlStatTest, EachUrlStatSeparateHistogramsTest) {
     EXPECT_NE(stat.total.total(), stat.fail.total());
 }
 
-// ========== Injected interval tests ==========
-// The tick and send intervals used to be hardcoded to 30s, which made the
-// periodic send and cross-tick bucketing unreachable from tests.
 
 TEST_F(UrlStatTest, SendWorkerHonorsInjectedSendInterval) {
     UrlStats url_stats(mock_agent_service_.get(),
@@ -1481,11 +1459,6 @@ static void add_at(UrlStats& stats, const Config& config, const std::string& url
     stats.addSnapshot(&entry, config);
 }
 
-// The regression this whole change exists for: while the stats stream is
-// stalled, `limit` must stay a per-tick capacity. Before tick-boundary
-// snapshots, one map accumulated every stalled tick's keys and `limit`
-// rejected everything past the first `limit` keys of the whole outage — a
-// 5-minute stall cut each tick's capacity to a tenth.
 TEST_F(UrlStatTest, LimitStaysPerTickWhileSendingIsBlocked) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->http.url_stat.enable_trim_path = false;
@@ -1509,9 +1482,6 @@ TEST_F(UrlStatTest, LimitStaysPerTickWhileSendingIsBlocked) {
         per_tick[key.tick_]++;
     }
 
-    // Five completed ticks are retained (Java's snapshotQueue compares
-    // size() > 4 before offering, so it holds five) plus the one still in
-    // progress; the older four were dropped whole.
     EXPECT_EQ(per_tick.size(), 6u) << "retention is bounded at 5 completed ticks + the current one";
     for (const auto& [tick, count] : per_tick) {
         EXPECT_EQ(count, 3) << "tick " << tick << " must get the full limit, not a share of it";
@@ -1588,9 +1558,6 @@ TEST_F(UrlStatLogTest, CompletedSnapshotQueueDropsOldestAndReports) {
         << "discarding a whole tick must not be silent";
 }
 
-// A prefix built from an empty method used to produce " /api/users": the same
-// url split into two server-side keys depending on whether the method was
-// known. Java's UriMethodTransformer and Go both skip the prefix instead.
 TEST_F(UrlStatTest, MethodPrefixIsSkippedForEmptyMethod) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -1618,11 +1585,6 @@ TEST_F(UrlStatTest, MethodPrefixIsSkippedForEmptyMethod) {
 
 // ========== Completed-tick-only sends ==========
 
-// The split-send regression. tick and send intervals are both 30s but free
-// running, so a send lands mid-tick roughly always. Taking the tick in
-// progress put half of it in one message and half in the next: the server
-// sums the counts back up, but the per-tick max and the total/count average
-// are computed per message, so one tick reported two maxima and two averages.
 TEST_F(UrlStatTest, SendsInsideOneTickDoNotSplitIt) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->http.url_stat.enable_trim_path = false;
@@ -1655,7 +1617,6 @@ TEST_F(UrlStatTest, SendsInsideOneTickDoNotSplitIt) {
     EXPECT_EQ(found->second.total.histogram(0), 2);
 }
 
-// An idle agent used to send an empty PAgentUriStat once per send interval.
 TEST_F(UrlStatTest, NoTrafficLeavesNothingToSend) {
     UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1));
 
@@ -1714,11 +1675,6 @@ TEST_F(UrlStatTest, ShutdownFlushTakesTheTickStillInProgress) {
 }
 
 
-// A tick with no successor traffic is still over once its window elapses.
-// Cutting only on the arrival of a newer entry (addLocked) covers an agent
-// under load; an agent that goes quiet would hold its last tick until traffic
-// resumed. Java closes it on the clock instead
-// (AsyncQueueingUriStatStorage.checkAndFlushOldData).
 TEST_F(UrlStatTest, ElapsedTickIsClosedWithoutNewerTraffic) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->http.url_stat.enable_trim_path = false;
@@ -1760,13 +1716,6 @@ TEST_F(UrlStatTest, CloseElapsedTickOnAnIdleAgentProducesNothing) {
     }
 }
 
-// ========== Send worker wakeups ==========
-//
-// The send worker's timed wait follows Stat.BatchInterval, but a completed
-// tick must not wait for it: Java's UriStatCollectingJob runs on the agent
-// stat scheduler (5-10s) and the tick is over the moment it is cut, so the
-// cut itself wakes the worker. A send interval far longer than the test lets
-// these cases tell an immediate wakeup from a timer expiry.
 
 static constexpr auto kNeverOnItsOwn = std::chrono::minutes(10);
 

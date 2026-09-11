@@ -972,24 +972,8 @@ namespace pinpoint {
         // process is likely on its way down and we don't want to block.
         abandon_grpc_workers();
 
-        // Destroying parent-created gRPC clients in a forked child is unsafe:
-        // they own internal threads that do not exist in this process, and
-        // their destructors would join the dead handles and abort. Leak the
-        // client objects instead — the child either builds its own agent via
-        // Start() or is short-lived. Done here rather than in do_shutdown() so
-        // the pointers stay valid while the object is alive.
-        //
-        // The stats aggregators go the same way, for a second reason: they own
-        // condition variables the abandoned url_stat/agent_stat workers were
-        // waiting on when fork() ran. The waiter count lives in the condvar and
-        // is inherited, so glibc's pthread_cond_destroy blocks forever on
-        // waiters that do not exist here. They are shared-owned (every
-        // AgentRuntime generation carries them), so nulling this member is not
-        // enough — inherited snapshots in the runtime_ holder, live spans and
-        // TLS caches hold them too, and whichever reference dies LAST would run
-        // those destructors. Leak one extra strong reference so no release here
-        // can be the last. nothrow keeps the noexcept contract; if even this
-        // allocation fails the leak is skipped and the old exposure returns.
+        // A forked child cannot destroy inherited gRPC clients or stats: their
+        // destructors may wait for threads that exist only in the parent.
         if (owner_pid_ != 0 && owner_pid_ != current_pid()) {
             (void)grpc_agent_.release();
             (void)grpc_metadata_.release();
@@ -1527,13 +1511,7 @@ namespace pinpoint {
                        ? raw_sql_cache_->get(raw_sql, prepare).value
                        : prepare();
 
-        // The cap was checked on the raw input (SpanEventImpl::SetSqlQuery,
-        // SqlNormalizer::normalize), but the output can be longer: a literal
-        // becomes an indexed placeholder ("1" -> "0#", "'a'" -> "'0$'"), so a
-        // statement dense with short literals grows. The normalized text is
-        // the id/UID cache key and the queued metadata, which is what the cap
-        // bounds, so it is measured again here. Dropped, not cut, for the
-        // same reason as the input (see sql.h). Go's cacheSql re-measures too.
+        // The normalized cache key can exceed the raw input; reject it whole.
         if (sql->normalized_sql.size() > kMaxNormalizedSqlLength) {
             LOG_WARN_THROTTLED("dropping sql whose normalized form is {} bytes: over the {} byte limit",
                                sql->normalized_sql.size(), kMaxNormalizedSqlLength);
@@ -1608,8 +1586,8 @@ namespace pinpoint {
     void AgentImpl::recordException(const TraceId& trace_id, int64_t span_id,
                                     std::string_view url_template,
                                     std::vector<std::unique_ptr<Exception>>&& exceptions) const try {
-        // Legacy/direct callers use the current generation. Spans call the
-        // snapshot-taking overload below so their captured generation wins.
+        // Callers without a snapshot use the current generation; spans keep
+        // their captured generation through the overload below.
         const auto config = getConfig();
         if (!config) {
             return;

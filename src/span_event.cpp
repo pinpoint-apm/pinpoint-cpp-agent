@@ -348,23 +348,7 @@ namespace pinpoint {
     }
 
     void SpanEventImpl::recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack) {
-        // One exception, one chain of one entry. Java and Go build a cause
-        // chain from throwable identity (getCause()/Unwrap()) and number the
-        // causes exceptionDepth 0, 1, 2 ...; a C++ SetError carries no such
-        // link, so this agent cannot tell a cause from an unrelated exception
-        // nor order them. Sharing one exceptionId across links at depth 0,
-        // as the previous span-wide chain did, left the collector no way to
-        // order the chain (two entries at depth 0 under one id), so each call
-        // is its own chain: a fresh id, depth 0, admitted by the limiter on
-        // its own — what Java does for an exception whose predecessor is not
-        // in its cause chain (ExceptionRecordingState.NEW).
-        //
-        // A refusal by the limiter drops only this call stack; the plain
-        // error (SetError already ran and marked the span) stays. The one
-        // span-wide latch left is the buffer cap: it does not shrink before
-        // EndSpan, so once it is full every later exception would be
-        // refused too, and the latch keeps those from charging the limiter
-        // for a chain that cannot be stored.
+        // Each explicit error has an independent single-entry chain.
         if (span.exception_buffer_full_) {
             ++span.dropped_exceptions_;
             return;

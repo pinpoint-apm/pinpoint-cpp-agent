@@ -157,13 +157,6 @@ TEST(AgentStartResultTest, StartReportsLaunchRepeatAndShutdownRefusal) {
     EXPECT_FALSE(agent->Start()) << "a shut-down agent must refuse Start()";
 }
 
-// An unsampled span reaches everything it records into (AgentStats, the
-// url-stat sink) through its runtime snapshot, NOT through an agent
-// keep-alive: it must not pin the agent — the per-span selfRef() it used to
-// take was a CAS on the agent's one control block, measured as half the
-// four-thread cost of the unsampled path — and, the flip side of that coin,
-// ending the span after the agent is destroyed must stay safe because the
-// snapshot owns the sinks independently.
 TEST(AgentLifetimeTest, UnsampledSpanDoesNotPinAgentAndOutlivesItSafely) {
     auto cfg = make_test_config();
     cfg->sampling.counter_rate = 0;  // never sample → NewSpan yields UnsampledSpan
@@ -396,11 +389,6 @@ TEST_F(AgentImplTest, NewSpanWithUnrecognizedHeaderMapKeysStartsFreshTraceAndWar
     EXPECT_TRUE(warned) << "expected a throttled warning about unrecognized Pinpoint headers";
 }
 
-// A trace id that does not parse describes no hop this agent can attach to, so
-// the request starts its own transaction — it is not dropped. It used to become
-// a noop span: the trace id was parsed after the sampling decision, so a
-// malformed value spent a continue-sampler slot and then vanished from
-// Pinpoint entirely.
 TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapStartsFreshTrace) {
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "this-is-not-a-valid-trace-id"},
@@ -425,9 +413,6 @@ TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdHeaderStartsFreshTrace) {
     EXPECT_NE(span->GetSpanId(), 555) << "a fresh trace must not adopt the upstream span id";
 }
 
-// A present-but-blank Pinpoint-TraceID is not a continued trace: this agent
-// reads it as no header at all and starts a fresh trace. (Java disagrees and
-// throws instead — see doc/java_parity.md.)
 TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdHeaderStartsFreshTrace) {
     MockTraceContextReader reader;
     reader.SetContext(HEADER_TRACE_ID, "");
@@ -455,13 +440,6 @@ TEST_F(AgentImplTest, NewSpanWithEmptyTraceIdInHeaderMapStartsFreshTrace) {
 
 // ========== Inbound trace-header combinations ==========
 
-// The rule under test: a request continues an inbound trace only when the
-// trace id parses AND both id headers are present. The sampler choice and the
-// context extraction run off that one decision (readInboundTrace), so the
-// table asserts both per row and then asserts they agree.
-//
-// The same eight rows, in the same order, are the Go agent's
-// TestContinueHeaderCombinations table. Keep them identical.
 namespace {
     constexpr std::string_view kInboundTxid = "upstream-agent^1700000000^7";
 
@@ -777,8 +755,6 @@ TEST_F(AgentImplTest, PrepareSqlMetadataFailureRefreshesIdAndKeepsRawEntry) {
     EXPECT_NE(first_id, std::get<int32_t>(reloaded->identity));
 }
 
-// The regression the epoch mechanism used to cause: one failed send made every
-// raw entry unreachable, so unrelated hot statements paid a full re-normalize.
 TEST_F(AgentImplTest, PrepareSqlMetadataFailureLeavesUnrelatedRawEntriesIntact) {
     auto failing = agent_->prepareSql(
         "SELECT * FROM users WHERE id = 42", SqlMetaMode::Id);
@@ -929,11 +905,6 @@ TEST_F(AgentImplTest, PrepareSqlHonoursConfiguredCacheLengthLimit) {
     agent->Shutdown();
 }
 
-// A statement past the 64 KiB metadata cap is normalized whole and its UID
-// covers every byte of that output, as in Java: SqlCacheService hashes the
-// full normalized SQL and abbreviates only the copy PSqlMetaData.sql carries.
-// Cutting the normalizer's input at the cap instead (the earlier behavior)
-// produced a UID the Java agent never derives for the same statement.
 TEST_F(AgentImplTest, PrepareSqlUidCoversNormalizedSqlPastMetadataCap) {
     const std::string wide_projection(70000, 'a');
     const std::string raw_sql =
@@ -1128,12 +1099,6 @@ TEST_F(AgentImplTest, RepeatedShutdownStartSequencesStayRefused) {
     }
 }
 
-// --- Destructor safety tests ---
-//
-// These guard against the SIGABRT-on-exit reported when the host process
-// destroys the agent without first calling Shutdown(): the dtor used to
-// let exceptions escape (terminate()) and re-enter global_agent.reset()
-// while it was itself being destroyed.
 
 TEST_F(AgentImplTest, DtorAfterImplicitShutdownDoesNotThrow) {
     // The fixture's TearDown calls Shutdown(); take a separately-scoped
@@ -1178,10 +1143,6 @@ private:
 
 }  // namespace
 
-// Registration is the precondition for tracing (init_grpc_workers blocks on
-// registerAgentWithRetry): while the collector refuses AgentInfo the agent must
-// stay disabled — spans and stats under an unregistered agent id go nowhere —
-// and must come up on its own once the collector accepts.
 TEST(AgentRegistrationGateTest, StaysDisabledUntilRegistrationSucceeds) {
     auto cfg = make_test_config();
     cfg->collector.agent_info.send_retry_interval_ms = 10;
@@ -1343,10 +1304,6 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
         << "the reaper must release the agent once the wedged worker finishes";
 }
 
-// Regression: a detached reaper keeps logging after Shutdown() returns — the
-// stragglers' output and its own completion line are what make an overrun
-// teardown observable at all. Logger shutdown must allow the configured file
-// to reopen even though it releases the host callback and silences stdout.
 TEST(AgentShutdownDeadlineTest, DetachedTeardownRunnerStillReachesTheLog) {
     ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
 
@@ -1671,12 +1628,6 @@ TEST_F(AgentImplTest, ReloadConfigUpdatesSampling) {
     EXPECT_EQ(config->sampling.counter_rate, 100);
 }
 
-// A reload must not reset the sampler's counter. Rebuilding restarts
-// CounterSampler at 0, and the counter is tested pre-increment, so every
-// unrelated config edit would sample the request right after it — at
-// `CounterRate: 100` an operator who saves the file a few times gets far more
-// than 1% sampling. Go carries the previous instance over on an unchanged
-// Sampling.* (newTraceSampler, gated on sameValues).
 TEST(AgentReloadTest, UnchangedSamplingConfigKeepsSamplerCounterAcrossReloads) {
     auto cfg = make_test_config();
     cfg->sampling.counter_rate = 100;
@@ -1709,9 +1660,6 @@ TEST(AgentReloadTest, UnchangedSamplingConfigKeepsSamplerCounterAcrossReloads) {
     agent->Shutdown();
 }
 
-// Reloading PercentRate to 0 must actually stop collecting, and reloading back
-// must resume. `0` used to be raised to 0.01 by make_config(), so an operator
-// turning sampling off mid-incident kept getting traces at 0.01%.
 TEST(AgentReloadTest, PercentRateZeroReloadStopsAndResumesSampling) {
     auto percent_cfg = [](const double rate) {
         auto cfg = make_test_config();
@@ -1743,9 +1691,6 @@ TEST(AgentReloadTest, PercentRateZeroReloadStopsAndResumesSampling) {
     agent->Shutdown();
 }
 
-// Same contract for the exception-chain limiter (Go's newExceptionLimiter): a
-// rebuilt token bucket is a full second of new chains, so a reload landing in
-// an error storm would lift the cap it exists to enforce.
 TEST(AgentReloadTest, UnchangedCallstackThroughputKeepsExceptionLimiterAcrossReloads) {
     auto cfg = make_test_config();
     cfg->enable_callstack_trace = true;
@@ -2139,11 +2084,6 @@ TEST_F(StartAgentTest, ConfigFileWatcherReloadsChangesAndStopsPromptly) {
     EXPECT_FALSE(excluded->IsSampled());
     excluded->EndSpan();
 
-    // Stop must return promptly: Shutdown() joins the agent-owned watcher
-    // first, then the mocked gRPC workers (which finish immediately). The
-    // strict "stop wakes a long tick wait" regression coverage lives in
-    // ConfigFileWatcherStopWakesLongPollTick, which injects a tick far longer
-    // than this bound.
     const auto stop_started = std::chrono::steady_clock::now();
     agent->Shutdown();
     const auto stop_elapsed = std::chrono::steady_clock::now() - stop_started;
@@ -2216,10 +2156,6 @@ TEST_F(StartAgentTest, ConfigFileWatcherStopWakesLongPollTick) {
         << "stop must wake the poll-tick wait instead of sitting it out";
 }
 
-// Deleting the watched file used to throw once per poll tick and log an
-// unthrottled WARN for each one — a ConfigMap rollout, which replaces the file
-// rather than rewriting it, would fill the log for as long as the gap lasted.
-// The gap must be reported once, and the replacement must still be picked up.
 TEST_F(StartAgentTest, ConfigFileWatcherReportsAMissingFileOnceAndRecovers) {
     write_watcher_config(1, "test-app", false);
 
@@ -2463,9 +2399,6 @@ std::shared_ptr<AgentImpl> make_init_failed_agent(const std::shared_ptr<Config>&
 
 }  // namespace
 
-// An agent whose async initialization failed is permanently offline but not
-// exiting; StartAgent() used to return it as "the running agent" forever.
-// It must be treated like a shut-down agent: evicted and replaced.
 TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
     auto cfg = make_test_config_for_create_agent();
     auto dead_agent = make_init_failed_agent(cfg);
@@ -2622,11 +2555,6 @@ TEST_F(StartAgentTest, MakeConfigKeepsEnvSeededLogLevelOnReload) {
         << "env-seeded log settings must survive a config rebuild for reload";
 }
 
-// ============================================================
-// Injected cache size tests: the metadata caches used to be pinned at 1024
-// entries, which made eviction unreachable from agent-level tests. A
-// capacity-1 cache (one shard, one entry) makes eviction deterministic.
-// ============================================================
 
 // The cache* APIs return 0 until the boot AgentInfo registration enables the
 // agent, so each test must wait for enablement first.

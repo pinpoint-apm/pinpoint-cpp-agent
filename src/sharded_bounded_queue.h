@@ -107,10 +107,7 @@ namespace pinpoint {
             const size_t home = thread_shard_id() % shard_count_;
             ensure_active(home);
 
-            // Once there is no inactive quota left, enqueue and possible
-            // head-drop are deliberately combined under one shard lock. This
-            // is the common saturated path and matches the single-lock cost of
-            // the legacy queue without its process-wide contention.
+            // At capacity, enqueue and any head-drop share one shard lock.
             if (borrowable_shards_.load(std::memory_order_acquire) == 0) {
                 shards_[home]->enqueue_or_overwrite(value);
                 return;

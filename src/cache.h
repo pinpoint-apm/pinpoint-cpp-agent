@@ -765,15 +765,7 @@ namespace pinpoint {
          * @return CacheResult containing the identifier and whether the entry already existed.
          */
         CacheResult get(LookupKey key) {
-            // The collector keys metadata by this int32 id, so once the
-            // sequence wraps past INT32_MAX the next lap would recycle ids
-            // that already name other entries and the spans carrying them
-            // would point at another entry's text. Latch the wrap and issue
-            // nothing past it: id 0 with found=true is what every caller
-            // already reads as "no metadata" (and enqueues nothing for).
-            // Go's idGen does the same.
-            // Entries minted before the wrap keep serving their ids; only a
-            // miss is refused.
+            // Do not recycle metadata ids after the int32 sequence is exhausted.
             auto result = cache_.get(key, [this]() {
                 return wrapped_.load(std::memory_order_relaxed) ? 0 : ++id_sequence_;
             });

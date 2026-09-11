@@ -27,10 +27,7 @@ namespace pinpoint {
 class SqlTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Default: comments are removed, like the Java agent.
         normalizer_ = std::make_unique<SqlNormalizer>(kMaxNormalizedSqlLength);
-        // Opt-out comment retention (Sql.RemoveComments=false), which
-        // diverges from the Java agent.
         keep_comments_ = std::make_unique<SqlNormalizer>(kMaxNormalizedSqlLength, false);
     }
 
@@ -81,12 +78,6 @@ static void ExpectNormalize(const SqlNormalizer& normalizer, std::string_view sq
     EXPECT_EQ(result.parameters, expected_params);
 }
 
-// ---- Java OutputParameterParser/DefaultSqlParser combine ports -------------
-//
-// Test-only reimplementations of the Java agent's combine step (the Pinpoint
-// web UI recombines normalized SQL with its extracted parameters). Production
-// never combines — these live here purely to round-trip-verify normalize()
-// against the Java parser, byte for byte.
 
 static char LookAhead1(std::string_view sql, size_t index) {
     ++index;
@@ -267,21 +258,12 @@ TEST_F(SqlTest, DecimalNumberParameterTest) {
     EXPECT_EQ(result.parameters, "99.99");
 }
 
-// A digit following a non-ASCII (multibyte UTF-8) identifier character is
-// extracted as a numeric literal: every byte of a multibyte character takes
-// the default branch of updateNumberTokenStartEnable and re-enables number
-// token start. The Java agent behaves identically — its
-// ParserContext.isNumberTokenStart is the same ASCII-only check — so both
-// agents normalize such SQL to the same bytes and the same UID. ASCII
-// identifiers keep their digits. Do not "fix" this without the Java side
-// changing first.
 TEST_F(SqlTest, NonAsciiIdentifierDigitMatchesJavaAgentTest) {
     // ASCII identifier: the trailing digit is part of the identifier.
     auto result = normalizer_->normalize("SELECT col1 FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT col1 FROM users");
     EXPECT_EQ(result.parameters, "");
 
-    // Non-ASCII identifier: the trailing digit is extracted, as in Java.
     result = normalizer_->normalize("SELECT * FROM 테이블1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM 테이블0#");
     EXPECT_EQ(result.parameters, "1");
@@ -316,15 +298,8 @@ TEST_F(SqlTest, MixedParametersTest) {
 
 // ========== Comment Removal Tests ==========
 
-// The default is comment removal, matching the Java agent: DefaultJdbcOption
-// initializes removeComments to true and its profiler.jdbc.removecomments key
-// is absent from the shipped pinpoint.config, so the @Value placeholder never
-// resolves and the true initializer stands. Hints are therefore stripped on
-// both sides, and Sql.RemoveComments=false is the setting that diverges.
 TEST_F(SqlTest, DefaultRemovesCommentsTest) {
     auto result = normalizer_->normalize("SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 10");
-    // Nothing is spliced in where the comment was, so the spaces that framed
-    // it stay — two of them. This is byte-for-byte what Java emits.
     EXPECT_EQ(result.normalized_sql, "SELECT  * FROM t WHERE id = 0#");
     EXPECT_EQ(result.parameters, "10");
 
@@ -333,7 +308,6 @@ TEST_F(SqlTest, DefaultRemovesCommentsTest) {
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE id = 0#");
     EXPECT_EQ(result.parameters, "1");
 
-    // Sql.RemoveComments=false keeps them, at the cost of Java parity.
     result = keep_comments_->normalize("SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 10");
     EXPECT_EQ(result.normalized_sql, "SELECT /*+ INDEX(t idx) */ * FROM t WHERE id = 0#");
     EXPECT_EQ(result.parameters, "10");
@@ -359,7 +333,6 @@ TEST_F(SqlTest, BlockCommentRemovalTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test // single-line comment removal (matches Java agent behavior)
 TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
     auto result = normalizer_->normalize("SELECT * FROM t // trailing comment\nWHERE a=1");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a=0#");
@@ -385,9 +358,6 @@ TEST_F(SqlTest, CommentsWithParametersTest) {
     EXPECT_EQ(result.parameters, "456");
 }
 
-// Java parity (ParserContext with removeComments=true): a removed comment
-// leaves nothing behind — no space is spliced in and the number-token flag is
-// not touched, so the surrounding tokens merge exactly as Java merges them.
 TEST_F(SqlTest, CommentRemovalLeavesNoSeparatorTest) {
     auto result = normalizer_->normalize("SELECT/*c*/1 FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT1 FROM t");
@@ -443,8 +413,6 @@ TEST_F(SqlTest, StringLiteralHandlingTest) {
 // Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
-    // The trailing quote opens an unterminated (empty) literal: like Java, only
-    // the quote is kept and no placeholder is emitted.
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
     EXPECT_EQ(result.parameters, "John\\,");
 }
@@ -518,10 +486,6 @@ TEST_F(SqlTest, OversizeSqlIsDroppedNotCut) {
     EXPECT_EQ(result.parameters.size(), kMaxNormalizedSqlLength - 9);
 }
 
-// The agent's normalizer only enforces a hard memory cap, so a statement over
-// the 64 KiB metadata cap is still normalized whole: that output is the SQL
-// id/UID cache key, and Java likewise hashes the full normalized SQL and
-// abbreviates only PSqlMetaData.sql (SqlCacheService).
 TEST_F(SqlTest, NormalizesPastMetadataCapUpToHardCap) {
     SqlNormalizer agent_normalizer(kMaxNormalizedSqlLength);
     const std::string filler(70000, 'a');
@@ -579,11 +543,6 @@ TEST_F(SqlTest, MultibyteSqlAtCapIsAllOrNothing) {
     EXPECT_EQ(result.parameters, "\xEA\xB0\x80\xEA\xB0\x80");
 }
 
-// An unterminated string literal in the input keeps only its opening quote
-// and emits no placeholder; its content is still recorded in the parameters
-// (Java/Go parity). This is exactly why an oversize statement is dropped
-// rather than cut: a cut inside a literal would produce this shape for a
-// statement that is well-formed.
 TEST_F(SqlTest, UnterminatedStringLiteralNoPlaceholderTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE a = 'x' AND b = 'unclosed");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE a = '0$' AND b = '");
@@ -655,7 +614,6 @@ TEST_F(SqlTest, EmptyStringLiteralTest) {
     EXPECT_EQ(result.parameters, "hello");
 }
 
-// Test consecutive empty string literals (matches Java DefaultSqlNormalizer behavior)
 TEST_F(SqlTest, ConsecutiveEscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = ''''");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = ''''");
@@ -693,9 +651,6 @@ TEST_F(SqlTest, MinusBetweenNumbersTest) {
     EXPECT_EQ(result2.parameters, "10,3");
 }
 
-// Test string parameter containing comma (ambiguous with parameter separator).
-// Commas inside a string value are escaped as ",," so they are not confused with the
-// ',' separator between parameters (matches Java ParameterBuilder.appendSeparatorCheck).
 TEST_F(SqlTest, StringWithCommaParameterTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE name = 'Doe, John'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE name = '0$'");
@@ -745,9 +700,6 @@ TEST_F(SqlTest, LineCommentCROnlyTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test numbers embedded in identifiers (e.g., table1, col2). A digit that follows an
-// identifier character is part of the identifier and is NOT treated as a numeric literal
-// (matches Java ParserContext.numberTokenStartEnable).
 TEST_F(SqlTest, NumbersInIdentifiersTest) {
     auto result = normalizer_->normalize("SELECT col1 FROM table2 WHERE id = 5");
     // col1 and table2 are left intact; only the standalone 5 is a literal.
@@ -767,11 +719,6 @@ TEST_F(SqlTest, IdentifierEndingInDigitTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// The cap never alters the key. Whatever token a cut would have landed in — a
-// string literal, a number, a block comment — a statement under the cap
-// normalizes exactly as it does without one, and a statement over it yields
-// nothing. Cutting used to turn "'very long string value'" into an
-// unterminated literal with no placeholder, changing the SQL id/UID.
 TEST_F(SqlTest, CapNeverAltersTheKey) {
     struct Case { const char* sql; size_t cut_would_land_in_token; };
     const Case cases[] = {
@@ -863,13 +810,6 @@ TEST_F(SqlTest, MultipleDecimalPointsTest) {
     EXPECT_TRUE(result.parameters.find("1.2.3") != std::string::npos);
 }
 
-// ========== Java parity golden cases ==========
-//
-// Expected values are the Java agent's DefaultSqlNormalizer output for the
-// no-arg constructor (removeComments=false) that DefaultSqlNormalizerTest
-// uses — hence keep_comments_, not the agent default. The normalized SQL is
-// the SQL id/UID cache key and PSqlMetaData.sql, so it must match byte for
-// byte.
 
 TEST_F(SqlTest, JavaParityGoldenCases) {
     ExpectNormalize(*keep_comments_,
@@ -899,7 +839,6 @@ TEST_F(SqlTest, JavaParityGoldenCases) {
         "insert into t values (0#,1#,2#), ('3$','4$','5$') // trailing", "1,2,3,a,b,c");
 }
 
-// ========== Ported Java DefaultSqlNormalizer Tests ==========
 
 TEST_F(SqlTest, JavaDefaultComplexCases) {
     ExpectJavaCombine("select * from table a = 1 and b=50 and c=? and d='11'",

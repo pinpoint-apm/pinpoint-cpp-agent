@@ -334,8 +334,7 @@ namespace pinpoint {
         // No proxy headers, extract IP from RemoteAddr (may include port).
         // Every result is a substring of the header value or of remote_addr,
         // so a view is returned and the single copy is the span's
-        // SetRemoteAddress — this runs for every server request, including
-        // the unsampled majority, where it used to be the only allocation.
+        // SetRemoteAddress — this runs for every server request.
 
         // Handle IPv6 addresses enclosed in brackets [::]:port
         if (!remote_addr.empty() && remote_addr[0] == '[') {
@@ -491,9 +490,6 @@ namespace pinpoint {
         ///        web UI reads as "not reported" rather than a measured zero.
         constexpr int32_t kProxyUnset = -1;
 
-        /// @brief Microseconds from an apache/app `D=`, which is already a
-        ///        plain microsecond count. Unset when absent, not positive or
-        ///        beyond int32 (Java applies it only when `> 0`).
         int32_t parseProxyMicros(std::string_view value) {
             const auto micros = parseProxyDigits(value);
             if (!micros.has_value() || *micros <= 0 || *micros > std::numeric_limits<int32_t>::max()) {
@@ -691,9 +687,6 @@ namespace pinpoint {
                     // Pinpoint-Host takes precedence; this endpoint only fills
                     // the gap when the peer sent none.
                     impl->SetAcceptorHostIfAbsent(endpoint);
-                    // Java's ProxyRequestRecorderFactory hands out a disabled
-                    // recorder when profiler.proxy.http.header.enable is off;
-                    // the same switch here skips all four parsers.
                     const auto& server = impl->getConfig().http.server;
                     if (server.proxy_header_enable) {
                         HttpTracerUtil::setProxyHeader(

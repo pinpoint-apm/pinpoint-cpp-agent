@@ -326,7 +326,7 @@ namespace pinpoint {
 
         int64_t parent_span_id_{-1};
         std::string parent_app_name_;
-        int32_t parent_app_type_{-1};  // ServiceType.UNDEFINED until Pinpoint-pAppType names one (Java: parseShort(type, UNDEFINED))
+        int32_t parent_app_type_{-1};  // Undefined until supplied by the peer.
         std::string parent_service_name_;
 
         int32_t app_type_;
@@ -786,11 +786,7 @@ namespace pinpoint {
                 exceptions_.push_back(std::move(exception));
                 return true;
             }
-            // Links the cap refused, reported once at EndSpan (see
-            // sendExceptions) so a truncated chain is never silent: an
-            // operator reading the chain of a retry loop must be able to
-            // tell that it was cut, and by how much. Go counts the same way
-            // (errorChainDrop).
+            // Report call stacks dropped after the per-span buffer fills.
             uint32_t dropped_exceptions_{0};
     };
 
