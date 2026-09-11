@@ -307,3 +307,20 @@
   else can run, so a host under Kubernetes or systemd must route the signal
   to a normal exit. The rationale for shipping no signal helper is unchanged
   and recorded in [doc/java_parity.md](doc/java_parity.md#automatic-shutdown-at-process-exit--opt-in-default-off).
+
+- **An overflowed span event no longer injects the previous overflow's host.**
+
+  The one `DisabledSpanEvent` a span shares among its overflowed events kept
+  the last `SetDestination()` forever. After the stack came back under the
+  limit, a later overflow that recorded no destination injected that stale
+  host into `Pinpoint-Host`, drawing a server-map edge to a node the request
+  never called. The destination is cleared when the last outstanding overflow
+  ends ([src/span.cpp](src/span.cpp)), as the Go agent already does.
+
+- **Exception chain links dropped by the per-span cap are counted and
+  reported.** `SpanData::addException` refused silently past 100 links;
+  `EndSpan` now logs (throttled) how many links the cap cut and on which
+  operation, as the Go agent does. The `seal()` comment in
+  [src/annotation.h](src/annotation.h) no longer promises a concurrency
+  guarantee the flag does not provide; it is a misuse guard under the
+  span's single-thread contract.

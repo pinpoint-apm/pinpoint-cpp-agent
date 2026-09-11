@@ -190,11 +190,20 @@ namespace pinpoint {
         /**
          * @brief Permanently freezes the annotation list.
          *
-         * Called by the owning span/span event when the list is handed to the
-         * gRPC layer for serialization. Later Append calls become warn/no-ops:
-         * an append path that bypasses the owner's finished guard (e.g. the
-         * proxy-header recording through SpanData) would otherwise grow
-         * annotation_list_ concurrently with the worker's iteration.
+         * Called by the owning span/span event when it finishes, before the
+         * list is handed to the gRPC layer. Later Append calls become
+         * warn/no-ops, so an append path that bypasses the owner's finished
+         * guard (e.g. the proxy-header recording through SpanData) is
+         * rejected the same way a late SetAnnotation is.
+         *
+         * This is a misuse guard, not a synchronization: the flag is checked
+         * and the vector grown without a lock, so it only holds under the
+         * Span single-thread contract (pinpoint/tracer.h) — every Append
+         * and the seal() run on the span's owning thread, and the gRPC
+         * worker reads the list only after the finished event is published
+         * to it through the chunk queue. An Append racing seal() from
+         * another thread is a contract violation SpanImpl::checkOwnerThread
+         * reports; nothing here makes it safe.
          */
         void seal() noexcept { sealed_.store(true, std::memory_order_release); }
 

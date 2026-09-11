@@ -275,6 +275,14 @@ namespace pinpoint {
                            std::string_view value2) override {}
         void EndEvent() override;
 
+        /// @brief Forgets the destination once the last outstanding overflow
+        /// has ended (SpanData::endDisabledSpanEvent). This one instance stands
+        /// in for every overflowed event of the span, so without this a later
+        /// overflow that never called SetDestination would inject the previous
+        /// overflow's host into Pinpoint-Host and draw a server-map edge to a
+        /// node it never called.
+        void clearDestination() noexcept { destination_id_.clear(); }
+
     private:
         // The owning SpanData; the parent span is reached through it only
         // while it is still alive (see InjectContext).

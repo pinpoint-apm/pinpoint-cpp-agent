@@ -366,6 +366,11 @@ namespace pinpoint {
         // with its head missing - the half-recorded chain the reuse above
         // exists to avoid.
         if (span.exception_chain_disabled_) {
+            // Latched by a full buffer (not by the rate limiter): this link
+            // would have been buffered, so it counts as cut from the chain.
+            if (span.exceptions_.size() >= SpanImpl::kMaxBufferedExceptions) {
+                ++span.dropped_exceptions_;
+            }
             return;
         }
         if (span.exception_chain_id_ == 0 && !span.allowNewExceptionChain()) {

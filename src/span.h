@@ -593,6 +593,8 @@ namespace pinpoint {
         const Config& getConfig() const { return *config_; }
         const std::vector<std::unique_ptr<Exception>>& getExceptions() const { return exceptions_; }
         std::vector<std::unique_ptr<Exception>> takeExceptions() { return std::move(exceptions_); }
+        /// @brief Exception chain links dropped by the per-span buffer cap.
+        uint32_t droppedExceptions() const { return dropped_exceptions_; }
         std::string getUrlTemplate() const {
             if (url_stat_) {
                 return url_stat_->url_pattern_;
@@ -783,11 +785,18 @@ namespace pinpoint {
             // never sent.
             bool addException(std::unique_ptr<Exception> exception) {
                 if (exceptions_.size() >= kMaxBufferedExceptions) {
+                    ++dropped_exceptions_;
                     return false;
                 }
                 exceptions_.push_back(std::move(exception));
                 return true;
             }
+            // Links the cap refused, reported once at EndSpan (see
+            // sendExceptions) so a truncated chain is never silent: an
+            // operator reading the chain of a retry loop must be able to
+            // tell that it was cut, and by how much. Go counts the same way
+            // (errorChainDrop).
+            uint32_t dropped_exceptions_{0};
     };
 
 }  // namespace pinpoint

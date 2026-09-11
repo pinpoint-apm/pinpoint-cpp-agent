@@ -781,6 +781,8 @@ TEST_F(SpanTest, ExceptionBufferFullSkipsExceptionIdAnnotationTest) {
     EXPECT_EQ(span.getExceptions().size(), kMaxBufferedExceptions)
         << "Nothing past the cap is buffered";
     EXPECT_EQ(count_exception_ids(dropped), 0u);
+    EXPECT_EQ(span.droppedExceptions(), 2u)
+        << "every link the cap refused is counted, so the EndSpan report can say how much was cut";
 
     dropped->EndEvent();
     se->EndEvent();
@@ -1683,6 +1685,43 @@ TEST_F(SpanTest, DisabledSpanEventInjectContextOnOverflowTest) {
     span.EndSpan();
 
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0);
+}
+
+// S-3: the shared placeholder forgets its destination once the stack is back
+// within its limit. Otherwise a later overflow that never called
+// SetDestination would inject the previous overflow's host and draw a
+// server-map edge to a node this request never called. Go clears it the same
+// way (`overflowSe.destinationId.Store("")`, span.go).
+TEST_F(SpanTest, DisabledSpanEventForgetsDestinationAfterOverflowResolvesTest) {
+    auto config = std::make_shared<Config>();
+    config->span.max_event_depth = 2;
+    config->span.max_event_sequence = 512;
+    config->span.event_chunk_size = 100;
+    mock_agent_service_->reloadConfig(config);
+
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    extract_context(span, *mock_agent_service_, reader);
+
+    auto* outer = span.NewSpanEvent("outer-event");
+    auto* middle = span.NewSpanEvent("middle-event");
+    auto* real = span.NewSpanEvent("real-event");
+    auto* first_overflow = span.NewSpanEvent("first-overflow");
+    first_overflow->SetDestination("first-host:8080");
+    first_overflow->EndEvent();
+
+    auto* second_overflow = span.NewSpanEvent("second-overflow");
+    ASSERT_EQ(second_overflow, first_overflow) << "one shared placeholder per span";
+    MockTraceContextWriter writer;
+    second_overflow->InjectContext(writer);
+    EXPECT_FALSE(writer.Get(HEADER_HOST).has_value() && writer.Get(HEADER_HOST).value() == "first-host:8080")
+        << "an overflow that recorded no destination must not inject the previous overflow's host";
+    second_overflow->EndEvent();
+
+    real->EndEvent();
+    middle->EndEvent();
+    outer->EndEvent();
+    span.EndSpan();
 }
 
 // The single shared DisabledSpanEvent per span has no per-instance finished_

@@ -136,6 +136,11 @@ namespace pinpoint {
         while (pending > 0) {
             if (overflow_.compare_exchange_weak(pending, pending - 1,
                                                 std::memory_order_relaxed)) {
+                // Back within the stack limit: the shared placeholder must
+                // not carry this overflow's destination into the next one.
+                if (pending == 1) {
+                    disabled_event_.clearDestination();
+                }
                 return;
             }
         }
@@ -957,6 +962,10 @@ namespace pinpoint {
     }
 
     void SpanImpl::sendExceptions() {
+        if (dropped_exceptions_ > 0) {
+            LOG_WARN_THROTTLED("exception entry limit ({}) dropped {} error chain link(s): {}",
+                               kMaxBufferedExceptions, dropped_exceptions_, data_->getOperationName());
+        }
         if (!exceptions_.empty()) {
             agent_->recordException(data_->getTraceId(), data_->getSpanId(), getUrlTemplate(),
                                     takeExceptions(), *config_);
