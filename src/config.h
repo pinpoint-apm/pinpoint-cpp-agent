@@ -164,6 +164,8 @@ namespace pinpoint {
         constexpr const char* HTTP_SERVER_PROXY_USER_HEADER_NAMES = "HTTP_SERVER_PROXY_USER_HEADER_NAMES";
         constexpr const char* HTTP_SERVER_PROXY_HEADER_ENABLE = "HTTP_SERVER_PROXY_HEADER_ENABLE";
         constexpr const char* HTTP_SERVER_RECORD_REQUEST_PARAM = "HTTP_SERVER_RECORD_REQUEST_PARAM";
+        constexpr const char* HTTP_SERVER_REAL_IP_HEADER = "HTTP_SERVER_REAL_IP_HEADER";
+        constexpr const char* HTTP_SERVER_REAL_IP_EMPTY_VALUE = "HTTP_SERVER_REAL_IP_EMPTY_VALUE";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "HTTP_CLIENT_RECORD_REQUEST_HEADER";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
@@ -430,6 +432,13 @@ namespace pinpoint {
                 // Java profiler.server.tracerequestparam, but off by default:
                 // query strings carry tokens and ids.
                 bool record_request_param = false;
+                // Ordered headers the client address is taken from (Java
+                // profiler.server.realipheader). Java trusts none by default;
+                // the historical XFF / X-Real-Ip pair is kept for compatibility.
+                std::vector<std::string> real_ip_header = {"X-Forwarded-For", "X-Real-Ip"};
+                // A header value equal to this (case-insensitive) is skipped
+                // (Java profiler.server.realipemptyvalue, e.g. "unknown").
+                std::string real_ip_empty_value;
             } server;
 
             struct {

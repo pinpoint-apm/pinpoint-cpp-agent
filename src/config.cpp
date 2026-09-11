@@ -589,6 +589,8 @@ namespace pinpoint {
         {"Http.Server.ProxyUserHeaderNames", REF(http.server.proxy_user_header_names), RELOAD, env::HTTP_SERVER_PROXY_USER_HEADER_NAMES},
         {"Http.Server.ProxyHeaderEnable", REF(http.server.proxy_header_enable), RELOAD, env::HTTP_SERVER_PROXY_HEADER_ENABLE},
         {"Http.Server.RecordRequestParam", REF(http.server.record_request_param), RELOAD, env::HTTP_SERVER_RECORD_REQUEST_PARAM},
+        {"Http.Server.RealIpHeader", REF(http.server.real_ip_header), RELOAD, env::HTTP_SERVER_REAL_IP_HEADER},
+        {"Http.Server.RealIpEmptyValue", REF(http.server.real_ip_empty_value), RELOAD, env::HTTP_SERVER_REAL_IP_EMPTY_VALUE},
         {"Http.Client.RecordRequestHeader", REF(http.client.rec_request_header), RELOAD, env::HTTP_CLIENT_RECORD_REQUEST_HEADER},
         {"Http.Client.RecordRequestCookie", REF(http.client.rec_request_cookie), RELOAD, env::HTTP_CLIENT_RECORD_REQUEST_COOKIE},
         {"Http.Client.RecordResponseHeader", REF(http.client.rec_response_header), RELOAD, env::HTTP_CLIENT_RECORD_RESPONSE_HEADER},

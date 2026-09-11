@@ -319,6 +319,12 @@ namespace pinpoint {
         /// Resolved Http.Server.RecordRequestParam: true records the query
         /// string as ANNOTATION_HTTP_PARAM (see helper::FormatRequestParams).
         bool http_server_record_request_param = false;
+        /// Resolved Http.Server.RealIpHeader: the ordered headers the client
+        /// address is resolved from; empty trusts none.
+        std::vector<std::string> http_server_real_ip_header;
+        /// Resolved Http.Server.RealIpEmptyValue: a header value equal to this
+        /// (case-insensitive) is skipped.
+        std::string http_server_real_ip_empty_value;
     };
 
     /**

@@ -336,6 +336,8 @@ namespace pinpoint {
         snapshot.enable_callstack_trace = config.enable_callstack_trace;
         snapshot.http_client_record_url_query = config.http.client.record_url_query;
         snapshot.http_server_record_request_param = config.http.server.record_request_param;
+        snapshot.http_server_real_ip_header = config.http.server.real_ip_header;
+        snapshot.http_server_real_ip_empty_value = config.http.server.real_ip_empty_value;
         return snapshot;
     }
 

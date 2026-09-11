@@ -452,6 +452,22 @@ Rule of thumb: **URL pattern in → leave it `false`; raw URL in → set it `tru
 | `Http.Server.ProxyUserHeaderNames` | `PINPOINT_CPP_HTTP_SERVER_PROXY_USER_HEADER_NAMES` | list&lt;string&gt; | `[]` |
 | `Http.Server.ProxyHeaderEnable` | `PINPOINT_CPP_HTTP_SERVER_PROXY_HEADER_ENABLE` | bool | `true` |
 | `Http.Server.RecordRequestParam` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_PARAM` | bool | `false` |
+| `Http.Server.RealIpHeader` | `PINPOINT_CPP_HTTP_SERVER_REAL_IP_HEADER` | list&lt;string&gt; | `["X-Forwarded-For", "X-Real-Ip"]` |
+| `Http.Server.RealIpEmptyValue` | `PINPOINT_CPP_HTTP_SERVER_REAL_IP_EMPTY_VALUE` | string | `""` |
+
+`RealIpHeader` is Java's `profiler.server.realipheader` (`RealIpHeaderResolver`):
+the ordered request headers the client address (`remoteAddr`) is taken from.
+The first header present whose value yields a usable address wins. A header
+named `Forwarded` (RFC 7239) is parsed for its `for=` token, with a trailing
+`:port` removed; every other header contributes its first comma-separated hop.
+`RealIpEmptyValue` is Java's `profiler.server.realipemptyvalue`: a candidate
+equal to it (case-insensitive, typically `unknown`) is skipped. When no header
+yields an address the socket address is recorded, port stripped.
+
+**Java trusts no header by default (`realipheader` is empty); this agent keeps
+`X-Forwarded-For` then `X-Real-Ip`** so existing deployments record the same
+address as before. Set `RealIpHeader: []` to trust none, or list your edge's
+header first (`CF-Connecting-IP`, `True-Client-IP`, `Forwarded`). Reloadable.
 
 `RecordRequestParam` is Java's `profiler.server.tracerequestparam`: when on,
 the query string passed to `helper::TraceHttpServerRequest(..., query_string)`
@@ -586,6 +602,7 @@ are **non-reloadable** — changing them requires an application restart.
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
 | Proxy headers | `Http.Server.ProxyHeaderEnable`, `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
 | Query recording | `Http.Server.RecordRequestParam`, `Http.Client.RecordUrlQuery` | **Yes** (spans created after the reload) |
+| Real-IP headers | `Http.Server.RealIpHeader`, `Http.Server.RealIpEmptyValue` | **Yes** (spans created after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Active profile | `ActiveProfile` | **Yes** — the profile it names is re-applied on every reload |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |

@@ -317,55 +317,74 @@ namespace pinpoint {
         }
     }
 
-    std::string_view HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
+    namespace {
+        // host:port → host. "[::1]:80" → "[::1]"; an unbracketed IPv6 (more
+        // than one ':') is returned whole.
+        std::string_view stripPort(std::string_view addr) {
+            if (!addr.empty() && addr[0] == '[') {
+                if (const auto bracket_end = addr.find(']'); bracket_end != std::string_view::npos) {
+                    return addr.substr(0, bracket_end + 1);
+                }
+            }
+            const auto colon_pos = addr.rfind(':');
+            if (colon_pos == std::string_view::npos || addr.find(':') != colon_pos) {
+                return addr;
+            }
+            return addr.substr(0, colon_pos);
+        }
+
+        // Java RealIpHeaderResolver: `(?i:for)="?([^;,"]+)"?`, group 1, hand
+        // parsed. Returns empty when there is no for= token.
+        std::string_view forwardedFor(std::string_view value) {
+            for (size_t i = 0; i + 4 <= value.size(); ++i) {
+                if (!absl::EqualsIgnoreCase(value.substr(i, 3), "for") || value[i + 3] != '=') {
+                    continue;
+                }
+                size_t begin = i + 4;
+                if (begin < value.size() && value[begin] == '"') ++begin;
+                const auto end = std::min(value.find_first_of(";,\"", begin), value.size());
+                if (end > begin) {
+                    return value.substr(begin, end - begin);
+                }
+                return {};
+            }
+            return {};
+        }
+    }
+
+    std::string_view HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr,
+                                                   const std::vector<std::string>& real_ip_headers,
+                                                   std::string_view empty_value) try {
         // Canonical mixed-case lookups, here and in setProxyHeader/
         // recordHeader below: correct only under the Get contract in
         // pinpoint/tracer.h, which requires HTTP-backed readers to match
         // header names case-insensitively (HTTP/2/3 deliver them lowercase).
-        // Check X-Forwarded-For header
-        if (auto xff = reader.Get("X-Forwarded-For"); xff.has_value()) {
-            auto ip = extractFirstIp(xff.value());
-            if (!ip.empty()) {
-                return ip;
+        for (const auto& name : real_ip_headers) {
+            const auto value = reader.Get(name);
+            if (!value.has_value() || value->empty()) {
+                continue;
             }
+            const std::string_view ip = absl::EqualsIgnoreCase(name, "Forwarded")
+                ? stripPort(forwardedFor(*value))
+                : extractFirstIp(*value);
+            if (ip.empty() || (!empty_value.empty() && absl::EqualsIgnoreCase(ip, empty_value))) {
+                continue;
+            }
+            return ip;
         }
 
-        // Check X-Real-Ip header
-        if (auto xri = reader.Get("X-Real-Ip"); xri.has_value()) {
-            auto ip = extractFirstIp(xri.value());
-            if (!ip.empty()) {
-                return ip;
-            }
-        }
+        // No trusted header: the socket address, port stripped. Every result
+        // is a substring of a header value or of remote_addr, so a view is
+        // returned and the single copy is the span's SetRemoteAddress — this
+        // runs for every server request.
+        return stripPort(remote_addr);
+    } catch (...) {
+        return stripPort(remote_addr);
+    }
 
-        // No proxy headers, extract IP from RemoteAddr (may include port).
-        // Every result is a substring of the header value or of remote_addr,
-        // so a view is returned and the single copy is the span's
-        // SetRemoteAddress — this runs for every server request.
-
-        // Handle IPv6 addresses enclosed in brackets [::]:port
-        if (!remote_addr.empty() && remote_addr[0] == '[') {
-            auto bracket_end = remote_addr.find(']');
-            if (bracket_end != std::string_view::npos) {
-                // Extract IPv6 address with brackets
-                return remote_addr.substr(0, bracket_end + 1);
-            }
-        }
-
-        // Try to split host:port for IPv4
-        auto colon_pos = remote_addr.rfind(':');
-        if (colon_pos != std::string_view::npos) {
-            // Check if this is IPv6 without brackets (contains multiple colons)
-            auto first_colon = remote_addr.find(':');
-            if (first_colon != colon_pos) {
-                // Multiple colons, likely IPv6 without brackets - return as is
-                return remote_addr;
-            }
-            // Single colon, extract host part (IPv4:port)
-            return remote_addr.substr(0, colon_pos);
-        }
-
-        return remote_addr;
+    std::string_view HttpTracerUtil::getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr) {
+        static const std::vector<std::string> kDefaultHeaders{"X-Forwarded-For", "X-Real-Ip"};
+        return getRemoteAddr(reader, remote_addr, kDefaultHeaders, {});
     }
 
     namespace {
@@ -680,19 +699,29 @@ namespace pinpoint {
             void traceServerRequest(const SpanPtr& span, std::string_view remote_addr,
                                     std::string_view endpoint, HeaderReader& request_reader,
                                     std::string_view query_string = {}) {
+                // recordingSpanImpl() is non-null for SpanImpl only, without
+                // the RTTI walk a dynamic_cast per request would cost — and,
+                // unlike IsSampled(), a third-party Span cannot answer it.
+                auto* impl = span->recordingSpanImpl();
+
                 // View into the reader or remote_addr; consumed before the
-                // next Get() on request_reader (see getRemoteAddr).
-                span->SetRemoteAddress(HttpTracerUtil::getRemoteAddr(request_reader, remote_addr));
+                // next Get() on request_reader (see getRemoteAddr). The
+                // header list is the span's captured generation; a span
+                // without one (noop, third-party) gets the built-in default.
+                if (impl) {
+                    const auto& server = impl->getConfig().http.server;
+                    span->SetRemoteAddress(HttpTracerUtil::getRemoteAddr(
+                        request_reader, remote_addr, server.real_ip_header, server.real_ip_empty_value));
+                } else {
+                    span->SetRemoteAddress(HttpTracerUtil::getRemoteAddr(request_reader, remote_addr));
+                }
                 span->SetEndPoint(endpoint);
 
                 // The proxy-header annotation uses an internal-only payload
                 // format, so it is recorded straight into the recording
                 // span's annotation container; noop/unsampled spans have
                 // none and record nothing, as before.
-                // recordingSpanImpl() is non-null for SpanImpl only, without
-                // the RTTI walk a dynamic_cast per request would cost — and,
-                // unlike IsSampled(), a third-party Span cannot answer it.
-                if (auto* impl = span->recordingSpanImpl()) {
+                if (impl) {
                     // Pinpoint-Host takes precedence; this endpoint only fills
                     // the gap when the peer sent none.
                     impl->SetAcceptorHostIfAbsent(endpoint);

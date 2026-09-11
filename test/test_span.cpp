@@ -426,6 +426,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.enable_callstack_trace = true;
         config.http.client.record_url_query = true;
         config.http.server.record_request_param = true;
+        config.http.server.real_ip_header = {"CF-Connecting-IP"};
+        config.http.server.real_ip_empty_value = "unknown";
     });
 
     SpanImpl first(mock_agent_service_.get(), "first", "/first");
@@ -445,6 +447,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_TRUE(first_config.enable_callstack_trace);
     EXPECT_TRUE(first_config.http_client_record_url_query);
     EXPECT_TRUE(first_config.http_server_record_request_param);
+    EXPECT_EQ(first_config.http_server_real_ip_header, std::vector<std::string>{"CF-Connecting-IP"});
+    EXPECT_EQ(first_config.http_server_real_ip_empty_value, "unknown");
 
     mock_agent_service_->publishConfig([](Config& config) {
         config.revision = 2;
@@ -455,6 +459,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
         config.enable_callstack_trace = false;
         config.http.client.record_url_query = false;
         config.http.server.record_request_param = false;
+        config.http.server.real_ip_header = {};
+        config.http.server.real_ip_empty_value = "";
     });
 
     // An existing span keeps the generation (and revision) it was admitted under.
@@ -464,6 +470,7 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_TRUE(first.GetConfigSnapshot().enable_callstack_trace);
     EXPECT_TRUE(first.GetConfigSnapshot().http_client_record_url_query);
     EXPECT_TRUE(first.GetConfigSnapshot().http_server_record_request_param);
+    EXPECT_EQ(first.GetConfigSnapshot().http_server_real_ip_header, std::vector<std::string>{"CF-Connecting-IP"});
     EXPECT_EQ(first.GetConfigSnapshot().http_server_headers[HTTP_REQUEST],
               std::vector<std::string>{"X-First"});
 
@@ -479,6 +486,8 @@ TEST_F(SpanTest, SpanConfigSnapshotUsesTheSpansResolvedConfigGeneration) {
     EXPECT_FALSE(reloaded_config.enable_callstack_trace);
     EXPECT_FALSE(reloaded_config.http_client_record_url_query);
     EXPECT_FALSE(reloaded_config.http_server_record_request_param);
+    EXPECT_TRUE(reloaded_config.http_server_real_ip_header.empty());
+    EXPECT_EQ(reloaded_config.http_server_real_ip_empty_value, "");
 }
 
 TEST_F(SpanTest, SpanConfigSnapshotDefaultsBindValueCaptureOff) {
@@ -2072,6 +2081,34 @@ TEST_F(SpanTest, TraceHttpClientRequestStripsUrlQueryByDefaultTest) {
         helper::TraceHttpClientRequest(event, "h", "https://h/p?token=x", header_reader);
         EXPECT_EQ(string_annotation(event->getAnnotations(), ANNOTATION_HTTP_URL), "https://h/p?token=x");
     }
+}
+
+// The helper resolves the address with the span's generation: a reload that
+// changes the list does not touch a span admitted before it.
+TEST_F(SpanTest, TraceHttpServerRequestRealIpHeaderUsesSpanGenerationTest) {
+    MockHeaderReader header_reader;
+    header_reader.SetHeader("X-Forwarded-For", "1.1.1.1");
+    header_reader.SetHeader("CF-Connecting-IP", "5.5.5.5");
+
+    auto before = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.server.real_ip_header = {"CF-Connecting-IP"};
+    mock_agent_service_->reloadConfig(config);
+
+    helper::TraceHttpServerRequest(before, "10.0.0.1:1", "ep", header_reader);
+    EXPECT_EQ(before->getSpanData()->getRemoteAddr(), "1.1.1.1") << "previous generation: XFF first";
+
+    auto after = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    helper::TraceHttpServerRequest(after, "10.0.0.1:1", "ep", header_reader);
+    EXPECT_EQ(after->getSpanData()->getRemoteAddr(), "5.5.5.5");
+
+    config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.server.real_ip_header = {};
+    mock_agent_service_->reloadConfig(config);
+    auto none = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+    helper::TraceHttpServerRequest(none, "10.0.0.1:1", "ep", header_reader);
+    EXPECT_EQ(none->getSpanData()->getRemoteAddr(), "10.0.0.1") << "[] trusts no header";
 }
 
 TEST_F(SpanTest, TraceHttpServerRequestRecordsParamsOnlyWhenEnabledTest) {

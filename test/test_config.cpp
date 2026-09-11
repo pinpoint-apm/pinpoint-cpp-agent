@@ -2077,6 +2077,53 @@ TEST_F(ConfigTest, BooleanValueSpellingsTest) {
     unsetenv(env_name.c_str());
 }
 
+// Http.Server.RealIpHeader / RealIpEmptyValue: defaults, YAML, env, reload.
+TEST_F(ConfigTest, HttpServerRealIpHeaderConfigTest) {
+    set_config_string("ApplicationName: \"App\"\n");
+    auto config = make_config();
+    EXPECT_EQ(config->http.server.real_ip_header,
+              (std::vector<std::string>{"X-Forwarded-For", "X-Real-Ip"}))
+        << "compatibility default, unlike Java's empty list";
+    EXPECT_EQ(config->http.server.real_ip_empty_value, "");
+
+    set_config_string(R"(
+ApplicationName: "App"
+Http:
+  Server:
+    RealIpHeader: ["CF-Connecting-IP", "Forwarded"]
+    RealIpEmptyValue: "unknown"
+)");
+    auto yaml = make_config();
+    EXPECT_EQ(yaml->http.server.real_ip_header,
+              (std::vector<std::string>{"CF-Connecting-IP", "Forwarded"}));
+    EXPECT_EQ(yaml->http.server.real_ip_empty_value, "unknown");
+
+    set_config_string("ApplicationName: \"App\"\nHttp:\n  Server:\n    RealIpHeader: []\n");
+    EXPECT_TRUE(make_config()->http.server.real_ip_header.empty()) << "[] trusts no header";
+
+    set_config_string("ApplicationName: \"App\"\n");
+    setenv(full_env(env::HTTP_SERVER_REAL_IP_HEADER).c_str(), "True-Client-IP,X-Real-Ip", 1);
+    setenv(full_env(env::HTTP_SERVER_REAL_IP_EMPTY_VALUE).c_str(), "none", 1);
+    auto from_env = make_config();
+    unsetenv(full_env(env::HTTP_SERVER_REAL_IP_HEADER).c_str());
+    unsetenv(full_env(env::HTTP_SERVER_REAL_IP_EMPTY_VALUE).c_str());
+    EXPECT_EQ(from_env->http.server.real_ip_header,
+              (std::vector<std::string>{"True-Client-IP", "X-Real-Ip"}));
+    EXPECT_EQ(from_env->http.server.real_ip_empty_value, "none");
+
+    set_config_string(R"(
+ApplicationName: "App"
+Http:
+  Server:
+    RealIpHeader: ["Forwarded"]
+    RealIpEmptyValue: "unknown"
+)");
+    auto reloaded = make_config(config);
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_EQ(reloaded->http.server.real_ip_header, (std::vector<std::string>{"Forwarded"}));
+    EXPECT_EQ(reloaded->http.server.real_ip_empty_value, "unknown");
+}
+
 // Both HTTP recording toggles are RELOAD: a reload flips them on and off.
 TEST_F(ConfigTest, HttpRecordParamAndUrlQueryReloadTest) {
     set_config_string("ApplicationName: \"App\"\n");

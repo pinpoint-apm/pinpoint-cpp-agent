@@ -142,11 +142,19 @@ namespace pinpoint {
     /// @brief Utility functions for HTTP tracing.
     class HttpTracerUtil {
     public:
-        /// @brief Extracts the real remote address, checking X-Forwarded-For
-        ///        and X-Real-Ip before falling back to @p remote_addr.
-        /// @brief Returns a view into either a header value of @p reader (valid
+        /// @brief Resolves the client address from the ordered @p real_ip_headers
+        ///        (Java RealIpHeaderResolver): the first header present whose
+        ///        candidate is non-empty and not @p empty_value wins. A header
+        ///        named `Forwarded` is parsed for its `for=` token (port
+        ///        stripped); any other takes its first comma-separated hop.
+        ///        None → @p remote_addr with its port stripped. Never throws.
+        /// Returns a view into either a header value of @p reader (valid
         /// until the next Get() on it) or @p remote_addr; consume it before
         /// touching the reader again.
+        static std::string_view getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr,
+                                              const std::vector<std::string>& real_ip_headers,
+                                              std::string_view empty_value);
+        /// @brief As above with the default list (X-Forwarded-For, X-Real-Ip).
         static std::string_view getRemoteAddr(const HeaderReader& reader, std::string_view remote_addr);
 
         /**

@@ -1384,6 +1384,41 @@ TEST_F(HttpTest, TraceHttpHelpersNullHandlesAreSafeTest) {
     EXPECT_NO_FATAL_FAILURE(helper::TraceHttpClientResponse(SpanEventPtr{}, 200, reader));
 }
 
+// ========== getRemoteAddr: configurable real-IP headers ==========
+//
+// Java RealIpHeaderResolver: ordered list, `Forwarded` parsed for its for=
+// token, a value equal to the empty value skipped, else the socket address.
+TEST_F(HttpTest, GetRemoteAddrConfigurableHeadersTest) {
+    using Headers = std::vector<std::string>;
+    const auto resolve = [](std::map<std::string, std::string> headers, Headers names,
+                            std::string_view empty_value = {}) {
+        MockHeaderReader reader(headers);
+        return std::string(HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080", names, empty_value));
+    };
+    const Headers defaults{"X-Forwarded-For", "X-Real-Ip"};
+
+    EXPECT_EQ(resolve({{"X-Forwarded-For", "1.1.1.1, 2.2.2.2"}}, defaults), "1.1.1.1");
+    EXPECT_EQ(resolve({{"X-Forwarded-For", "1.1.1.1"}, {"CF-Connecting-IP", "5.5.5.5"}},
+                      {"CF-Connecting-IP", "X-Forwarded-For"}), "5.5.5.5")
+        << "configured order wins over the historical XFF-first order";
+    EXPECT_EQ(resolve({{"X-Forwarded-For", "1.1.1.1"}}, {}), "192.168.1.100")
+        << "[] trusts no header";
+    EXPECT_EQ(resolve({{"X-Forwarded-For", "Unknown, 3.3.3.3"}, {"X-Real-Ip", "4.4.4.4"}},
+                      defaults, "unknown"), "4.4.4.4")
+        << "RealIpEmptyValue skips the header (case-insensitive), not just the hop";
+
+    const Headers forwarded{"Forwarded"};
+    EXPECT_EQ(resolve({{"Forwarded", "for=1.2.3.4;proto=https, for=10.0.0.1"}}, forwarded), "1.2.3.4");
+    EXPECT_EQ(resolve({{"Forwarded", "for=\"[2001:db8::1]:4711\""}}, forwarded), "[2001:db8::1]");
+    EXPECT_EQ(resolve({{"Forwarded", "For=192.0.2.60:8080"}}, forwarded), "192.0.2.60");
+    EXPECT_EQ(resolve({{"Forwarded", "proto=https"}}, forwarded), "192.168.1.100")
+        << "no for= token falls through";
+    EXPECT_EQ(resolve({{"forwarded", "for=7.7.7.7"}}, {"forwarded"}), "7.7.7.7")
+        << "the Forwarded name matches case-insensitively";
+    EXPECT_EQ(resolve({{"Forwarded", "proto=https"}, {"X-Real-Ip", "9.9.9.9"}},
+                      {"Forwarded", "X-Real-Ip"}), "9.9.9.9");
+}
+
 // ========== helper::FormatRequestParams ==========
 //
 // Java HttpServletParameterExtractor: 64 chars per key/value, 512 total, "..."

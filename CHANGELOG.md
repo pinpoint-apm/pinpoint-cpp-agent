@@ -12,6 +12,12 @@
 
 ### Added
 
+- **Configurable real-IP headers.** `Http.Server.RealIpHeader` (ordered list,
+  default `["X-Forwarded-For", "X-Real-Ip"]` = today's behaviour, `[]` trusts
+  none) and `Http.Server.RealIpEmptyValue` port Java's `RealIpHeaderResolver`:
+  a `Forwarded` header is parsed for its `for=` token, other headers give
+  their first hop, a value equal to the empty value is skipped. Both
+  reloadable and appended to `SpanConfigSnapshot`.
 - **Request parameter recording, opt-in.** New `TraceHttpServerRequest`
   overloads taking a `query_string` (C: `pt_trace_http_server_request_with_query`)
   record it as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's
