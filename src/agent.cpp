@@ -1527,6 +1527,19 @@ namespace pinpoint {
                        ? raw_sql_cache_->get(raw_sql, prepare).value
                        : prepare();
 
+        // The cap was checked on the raw input (SpanEventImpl::SetSqlQuery,
+        // SqlNormalizer::normalize), but the output can be longer: a literal
+        // becomes an indexed placeholder ("1" -> "0#", "'a'" -> "'0$'"), so a
+        // statement dense with short literals grows. The normalized text is
+        // the id/UID cache key and the queued metadata, which is what the cap
+        // bounds, so it is measured again here. Dropped, not cut, for the
+        // same reason as the input (see sql.h). Go's cacheSql re-measures too.
+        if (sql->normalized_sql.size() > kMaxNormalizedSqlLength) {
+            LOG_WARN_THROTTLED("dropping sql whose normalized form is {} bytes: over the {} byte limit",
+                               sql->normalized_sql.size(), kMaxNormalizedSqlLength);
+            return std::nullopt;
+        }
+
         if (mode == SqlMetaMode::Id) {
             const auto id = cacheSql(sql->normalized_sql);
             if (id <= 0) {

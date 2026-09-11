@@ -16,6 +16,7 @@
 
 #include "../src/cache.h"
 #include <gtest/gtest.h>
+#include <limits>
 #include <thread>
 #include <chrono>
 #include <vector>
@@ -422,6 +423,29 @@ TEST_F(CacheTest, RemoveByHashEvictsOnlyTheMatchingIdTest) {
     cache.removeByHash(IdCache::hashKey(long_sql), 1);
     EXPECT_TRUE(cache.get(long_sql).found) << "a stale id must not evict the re-registered entry";
     EXPECT_NO_THROW(cache.removeByHash(12345, 99));
+}
+
+// C-5: the int32 id sequence must not wrap into negative ids that alias
+// other collector rows. Past INT32_MAX the cache latches, hands out id 0 as a
+// hit (so nothing is enqueued), and takes the wrapped entry back out.
+TEST_F(CacheTest, IdSequenceWrapLatchesAndStopsIssuingIdsTest) {
+    IdCache cache(8, 1);
+    cache.seedIdSequence(std::numeric_limits<int32_t>::max());
+
+    const auto last = cache.get("last-valid");
+    EXPECT_EQ(last.value, std::numeric_limits<int32_t>::max());
+    EXPECT_FALSE(last.found);
+    EXPECT_FALSE(cache.wrapped());
+
+    const auto wrapped = cache.get("one-too-many");
+    EXPECT_EQ(wrapped.value, 0) << "a wrapped id must never be issued";
+    EXPECT_TRUE(wrapped.found) << "reported as a hit so the caller enqueues no metadata for id 0";
+    EXPECT_TRUE(cache.wrapped());
+
+    EXPECT_EQ(cache.get("one-too-many").value, 0) << "the wrapped entry must not have been stored";
+    EXPECT_EQ(cache.get("another").value, 0) << "latched: nothing is issued after the wrap";
+    EXPECT_TRUE(cache.get("last-valid").found) << "entries issued before the wrap stay valid";
+    EXPECT_EQ(cache.get("last-valid").value, std::numeric_limits<int32_t>::max());
 }
 
 // Test remove non-existent key (should not crash)

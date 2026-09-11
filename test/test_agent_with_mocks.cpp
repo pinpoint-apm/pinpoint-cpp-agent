@@ -701,6 +701,27 @@ TEST_F(AgentImplTest, PrepareSqlCachesCompleteRawResult) {
     EXPECT_GT(std::get<int32_t>(first->identity), 0);
 }
 
+// C-3: the 1 MiB cap is re-measured on the normalized text. A statement
+// under the cap whose literals become longer placeholders ("1" -> "0#", then
+// "10#", "100#"...) grows past it and is dropped whole, never cached or
+// published — the normalized text is the cache key and the queued metadata.
+TEST_F(AgentImplTest, PrepareSqlDropsStatementWhoseNormalizedFormExceedsCap) {
+    std::string dense = "SELECT ";
+    dense.reserve(kMaxNormalizedSqlLength);
+    while (dense.size() + 2 < kMaxNormalizedSqlLength) {
+        dense += "1,";
+    }
+    dense.back() = ' ';
+    ASSERT_LE(dense.size(), kMaxNormalizedSqlLength) << "the raw input is within the cap";
+
+    EXPECT_FALSE(agent_->prepareSql(dense, SqlMetaMode::Id).has_value())
+        << "the normalized form is over the cap and must be dropped";
+    EXPECT_FALSE(agent_->prepareSql(dense, SqlMetaMode::Uid).has_value());
+
+    EXPECT_TRUE(agent_->prepareSql("SELECT 1", SqlMetaMode::Id).has_value())
+        << "an ordinary statement is unaffected";
+}
+
 TEST_F(AgentImplTest, PrepareSqlSkipsRawCacheWhenDisabled) {
     auto config = std::make_shared<Config>(*agent_->getConfig());
     config->sql.enable_raw_sql_cache = false;

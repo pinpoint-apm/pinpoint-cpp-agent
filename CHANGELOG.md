@@ -324,3 +324,13 @@
   [src/annotation.h](src/annotation.h) no longer promises a concurrency
   guarantee the flag does not provide; it is a misuse guard under the
   span's single-thread contract.
+
+- **The 1 MiB SQL cap is re-measured on the normalized text.** Literals become
+  indexed placeholders (`1` -> `0#`), so a statement dense with short literals
+  grows past the cap it passed on input; `AgentImpl::prepareSql` now drops it
+  whole instead of caching and queueing an over-cap key, as the Go agent does.
+
+- **The metadata id sequence no longer wraps into negative ids.** Past
+  `INT32_MAX` the id caches latch, log once, and hand out id 0 as a hit so no
+  metadata is enqueued and no span points at another entry's text
+  ([src/cache.h](src/cache.h)). Entries minted before the wrap keep their ids.

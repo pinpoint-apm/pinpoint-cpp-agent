@@ -32,6 +32,7 @@
 #include <variant>
 #include <vector>
 
+#include "logging.h"
 #include "utility.h"
 
 namespace pinpoint {
@@ -764,10 +765,35 @@ namespace pinpoint {
          * @return CacheResult containing the identifier and whether the entry already existed.
          */
         CacheResult get(LookupKey key) {
-            return cache_.get(key, [this]() {
-                return ++id_sequence_;
+            // The collector keys metadata by this int32 id, so once the
+            // sequence wraps past INT32_MAX the next lap would recycle ids
+            // that already name other entries and the spans carrying them
+            // would point at another entry's text. Latch the wrap and issue
+            // nothing past it: id 0 with found=true is what every caller
+            // already reads as "no metadata" (and enqueues nothing for).
+            // Go's idGen does the same.
+            // Entries minted before the wrap keep serving their ids; only a
+            // miss is refused.
+            auto result = cache_.get(key, [this]() {
+                return wrapped_.load(std::memory_order_relaxed) ? 0 : ++id_sequence_;
             });
+            if (result.value <= 0) {
+                // The generator ran unlocked, so the refused id was inserted
+                // before it could be seen here; take it back out.
+                cache_.remove(key, result.value);
+                if (!wrapped_.exchange(true, std::memory_order_relaxed)) {
+                    LOG_WARN("metadata id sequence overflowed int32; no further metadata of this kind is recorded");
+                }
+                return CacheResult{0, true};
+            }
+            return result;
         }
+
+        /// @brief True once the id sequence has wrapped (see get()).
+        bool wrapped() const noexcept { return wrapped_.load(std::memory_order_relaxed); }
+        /// @brief Positions the sequence so the next miss mints @p next.
+        ///        For tests that need to reach the wrap without 2^31 misses.
+        void seedIdSequence(int32_t next) noexcept { id_sequence_.store(next - 1); }
 
         /**
          * @brief Evicts a cached key that still maps to @p expected_id.
@@ -813,6 +839,7 @@ namespace pinpoint {
     private:
         ShardedLruCache<int32_t, ShardTraits> cache_;
         std::atomic<int32_t> id_sequence_{0};
+        std::atomic<bool> wrapped_{false};
     };
 
     using IdCache = IdCacheImpl<StringCacheShardTraits>;
