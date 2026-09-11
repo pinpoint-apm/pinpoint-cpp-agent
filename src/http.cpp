@@ -598,17 +598,20 @@ namespace pinpoint {
             const int64_t received_time = values.t_val.size() > 3
                 ? parseProxyDigits(values.t_val.substr(0, values.t_val.size() - 3)).value_or(0)
                 : 0;
-            int idle_percent = 0;
-            int busy_percent = 0;
-            if (!values.i_val.empty() && !absl::SimpleAtoi(values.i_val, &idle_percent)) {
-                idle_percent = 0;
-            }
-            if (!values.b_val.empty() && !absl::SimpleAtoi(values.b_val, &busy_percent)) {
-                busy_percent = 0;
-            }
+            // ApacheRequestParser applies a percent only inside [0, 100]; the
+            // header is peer-controlled, so out of range is unset, not truncated.
+            const auto percent = [](const std::string_view value) -> int32_t {
+                const auto parsed = parseProxyDigits(value);
+                if (!parsed.has_value() || *parsed > 100) {
+                    return 0;
+                }
+                return static_cast<int32_t>(*parsed);
+            };
+            const int32_t idle_percent = percent(values.i_val);
+            const int32_t busy_percent = percent(values.b_val);
             if (received_time > 0) {
                 append(kProxyCodeApache, received_time, parseProxyMicros(values.D_val),
-                       static_cast<int32_t>(idle_percent), static_cast<int32_t>(busy_percent), {});
+                       idle_percent, busy_percent, {});
             }
         }
 

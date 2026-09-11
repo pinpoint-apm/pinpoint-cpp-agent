@@ -3137,7 +3137,10 @@ TEST_F(SpanTest, UrlStatKeptForCallstackTemplateThenDroppedOnEndSpanTest) {
 // Java parity (DefaultShared.setUriTemplate is a null -> value CAS): the first
 // recorded url pattern wins. A framework that recorded the matched route must
 // not have it replaced by a later, less precise layer. The method and status
-// code are last-wins, as Java's plain setters.
+// code are last-wins here. Only the status matches Java for that: setStatusCode
+// (DefaultShared.java:128-131) is a plain setter, but setHttpMethods (:168-177)
+// is the same null -> value CAS as setUriTemplate, so both ports deliberately
+// diverge from Java on the method - see doc/java_parity.md.
 TEST_F(SpanTest, SetUrlStatKeepsTheFirstPatternTest) {
     SpanImpl span(mock_agent_service_.get(), "test-op", "/test");
 

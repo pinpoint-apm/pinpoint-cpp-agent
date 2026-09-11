@@ -38,28 +38,52 @@
 //   3  span chunk serialization          (test_span.cpp)
 //   4  async id / sequence sentinels
 //   5  propagation header names and transaction id format
-//   6  sampling formulas
+//   6  sampling formulas                 (limiter: test_limiter.cpp)
 //   7  URI histogram layout
 //   8  active trace histogram layout
 //   9  transaction counters              (test_stat.cpp)
 //  10  message truncation format
 //  11  gRPC channel constants
+//  12  error cause categories
+//  13  queue overflow policy             (test_sharded_bounded_queue.cpp)
+//  14  proxy request header pipeline     (test_http.cpp)
+//  15  logging level policy              (test_logging.cpp)
+//  16  shutdown contract                 (port consensus; test_agent_with_mocks.cpp)
 
 #include "pinpoint/tracer.h"
 
-#include "../src/agent_service.h"
 #include "../src/active_span.h"
+#include "../src/agent_service.h"
+#include "../src/annotation.h"
+#include "../src/cache.h"
 #include "../src/config.h"
+#include "../src/grpc_builders.h"
+#include "../src/http.h"
+#include "../src/limiter.h"
+#include "../src/logging.h"
 #include "../src/sampling.h"
+#include "../src/sharded_bounded_queue.h"
+#include "../src/span.h"
 #include "../src/sql.h"
 #include "../src/url_stat.h"
 #include "../src/utility.h"
+#include "v1/Span.pb.h"
 
 #include <gtest/gtest.h>
 
+#include <google/protobuf/arena.h>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace pinpoint {
@@ -204,6 +228,37 @@ TEST(JavaParityLockTest, SqlNormalizerEmptyLiteralConsumesNoIndex) {
     EXPECT_EQ(result.param_index, 1);
 }
 
+// A statement over the 1 MiB input cap is dropped WHOLE - empty text, empty
+// parameters, no placeholder count - never cut. This is a deliberate shared
+// divergence from Java, which has no input cap at all: what is locked here is
+// that the value and the drop policy are the SAME in both ports. The Go agent
+// carries the identical constant (maxSqlNormalizeLength = 1 << 20) and the
+// identical policy; test_sql.cpp covers the behaviour end to end
+// (SqlTest.OversizeSqlIsDroppedNotCut, SqlTest.DropsAtHardCap).
+//
+// Cutting instead of dropping is what the shared policy rules out: a cut
+// landing inside a literal loses that literal's placeholder, which changes the
+// normalized text and with it the SQL id/UID the collector keys metadata by.
+TEST(JavaParityLockTest, SqlNormalizerOversizeStatementIsDroppedWhole) {
+    EXPECT_EQ(kMaxNormalizedSqlLength, 1024u * 1024u)
+        << "Go maxSqlNormalizeLength = 1 << 20";
+
+    const SqlNormalizer normalizer(kMaxNormalizedSqlLength, false);
+
+    std::string at_cap = "select ";
+    at_cap.append(kMaxNormalizedSqlLength - at_cap.size(), 'a');
+    ASSERT_EQ(at_cap.size(), kMaxNormalizedSqlLength);
+    // EXPECT_TRUE, not EXPECT_EQ: a failure here must not print a megabyte.
+    EXPECT_TRUE(normalizer.normalize(at_cap).normalized_sql == at_cap)
+        << "exactly at the cap is still normalized, whole";
+
+    const std::string over_cap = at_cap + "a";
+    const auto dropped = normalizer.normalize(over_cap);
+    EXPECT_TRUE(dropped.normalized_sql.empty()) << "one byte over the cap drops the statement";
+    EXPECT_TRUE(dropped.parameters.empty()) << "and its parameters with it";
+    EXPECT_EQ(dropped.param_index, 0);
+}
+
 // ===========================================================================
 // Group 2 - span event depth / sequence numbering
 // ===========================================================================
@@ -250,6 +305,77 @@ TEST(JavaParityLockTest, SpanEventOverflowBoundaries) {
         << "exactly maxSequence events are recorded";
 }
 
+// The (sequence, depth) position a new span event takes is reserved with
+// atomics, so two threads recording an event on one span can never be handed
+// the same sequence. Java has no such guard: DefaultCallStack.push does a
+// plain sequence++ under a single-thread call-stack contract. Both ports made
+// it atomic, because a span here may be driven from several threads of one
+// logical call stack, and a duplicate PSpanEvent.sequence breaks the
+// collector's call-tree rebuild - a silent wrong-tree, not a dropped event.
+//
+// Each counter is one fetch_add, so each is unique and gap-free on its own;
+// which depth pairs with which sequence under concurrency is not part of the
+// contract and is not asserted. SpanData::nextEventSequenceAndDepth is the
+// reservation itself: SpanImpl::NewSpanEvent is thread-bound past it (it
+// pushes onto a plain vector and warns through checkOwnerThread), so the
+// counters are exactly what the concurrent callers share.
+TEST(JavaParityLockTest, SpanEventPositionsAreReservedAtomically) {
+    constexpr int kThreads = 8;
+    constexpr int kPerThread = 512;
+    constexpr int kTotal = kThreads * kPerThread;
+
+    SpanData span_data("parity-op", 1000, 0);
+
+    std::vector<std::vector<std::pair<int32_t, int32_t>>> claimed(kThreads);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        claimed[t].reserve(kPerThread);
+        threads.emplace_back([&, t] {
+            ready.fetch_add(1, std::memory_order_relaxed);
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < kPerThread; ++i) {
+                claimed[t].push_back(span_data.nextEventSequenceAndDepth());
+            }
+        });
+    }
+    while (ready.load(std::memory_order_relaxed) < kThreads) {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    std::vector<int32_t> sequences;
+    std::vector<int32_t> depths;
+    sequences.reserve(kTotal);
+    depths.reserve(kTotal);
+    for (const auto& per_thread : claimed) {
+        for (const auto& [sequence, depth] : per_thread) {
+            sequences.push_back(sequence);
+            depths.push_back(depth);
+        }
+    }
+    ASSERT_EQ(sequences.size(), static_cast<size_t>(kTotal));
+
+    std::sort(sequences.begin(), sequences.end());
+    std::sort(depths.begin(), depths.end());
+    for (int i = 0; i < kTotal; ++i) {
+        // No duplicate and no gap: sorted, the reservations are exactly the
+        // contiguous range each counter started from.
+        EXPECT_EQ(sequences[i], i) << "sequences must be unique and contiguous from 0";
+        EXPECT_EQ(depths[i], i + 1) << "depths must be unique and contiguous from 1";
+    }
+    EXPECT_EQ(span_data.getEventSequence(), kTotal);
+    EXPECT_EQ(span_data.getEventDepth(), kTotal + 1);
+}
+
 // ===========================================================================
 // Group 3 - span chunk serialization
 // ===========================================================================
@@ -262,10 +388,10 @@ TEST(JavaParityLockTest, SpanEventOverflowBoundaries) {
 // Test_javaParityLock_Chunk{KeyTimeAndStartElapsed,SortsBySequence,SnapshotsEndPoint}.
 //
 // Depth compression (an event at the same depth as its predecessor travels as
-// depth 0) is locked on this side only: the Go agent's optimizeSpanEvents does
-// not seed prevDepth on its first iteration, so its second event is never
-// compressed. That is gap S4 of the 4th cross-agent review, and its Go test is
-// skipped until the fix lands.
+// depth 0) is now locked on both sides: gap S4 of the 4th cross-agent review -
+// the Go agent's optimizeSpanEvents not seeding prevDepth on its first
+// iteration, so its second event was never compressed - is fixed, and
+// Test_javaParityLock_ChunkDepthCompression covers it there.
 
 // ===========================================================================
 // Group 4 - async id sentinel
@@ -453,6 +579,81 @@ TEST(JavaParityLockTest, CountingSamplerEdgeRates) {
     }
 }
 
+namespace {
+
+// The bucket reads time only through now_nanos(), so its schedule can be
+// checked exactly and without sleeping. baseline_at re-does what the base
+// constructor could not: it read the real clock, because virtual dispatch
+// during construction does not reach this override. Same shape as
+// test_limiter.cpp's FakeClockLimiter, kept local so this file does not
+// depend on that one.
+class ParityFakeClockLimiter final : public RateLimiter {
+public:
+    explicit ParityFakeClockLimiter(const uint64_t tps) : RateLimiter(tps) { baseline_at(now_ns_); }
+    void advance_ms(const int64_t ms) { now_ns_ += ms * 1000000; }
+
+protected:
+    int64_t now_nanos() const override { return now_ns_; }
+
+private:
+    int64_t now_ns_{0};
+};
+
+int countAllowed(RateLimiter& limiter, const int calls) {
+    int allowed = 0;
+    for (int i = 0; i < calls; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+    return allowed;
+}
+
+}  // namespace
+
+// The initial state of the throughput bucket behind Sampling.NewThroughput /
+// Sampling.ContinueThroughput (and CallstackTraceNewThroughput). Java builds
+// these on Guava's RateLimiter.create (RateLimitTraceSampler), a SmoothBursty
+// whose maxBurstSeconds is 1 and whose initial storedPermits is 0, and whose
+// stopwatch is resynced in setRate() - so idle time before the first acquire
+// is already worth permits. Both ports reproduce that; the Go suite locks it
+// as Test_javaParityLock_ThroughputLimiterInitialState. test_limiter.cpp
+// covers the rest of the schedule (SteadyCallsNeverExceedTps,
+// LongIdleDoesNotAccumulate, the real-clock variants).
+TEST(JavaParityLockTest, ThroughputLimiterInitialState) {
+    constexpr uint64_t kTps = 10;  // one token per 100ms
+
+    // Called at once, the bucket is empty: the first call passes (Guava lets
+    // the first caller borrow against the future) and the next has to wait a
+    // whole token interval.
+    ParityFakeClockLimiter immediate(kTps);
+    EXPECT_TRUE(immediate.allow()) << "the first call passes";
+    EXPECT_FALSE(immediate.allow()) << "and exactly one: no token is due yet";
+    immediate.advance_ms(50);
+    EXPECT_FALSE(immediate.allow()) << "half an interval is not a token";
+    immediate.advance_ms(50);
+    EXPECT_TRUE(immediate.allow()) << "one interval elapsed, one token due";
+
+    // The refill clock starts at construction, not at the first call: an agent
+    // that sits idle for a second owes its first caller a second of tokens.
+    // Were the clock started lazily this would admit 1, the empty-bucket case
+    // above. The +1 on top of the stored second is the token that comes due at
+    // the instant of the call - the same one Guava lets through, and the one
+    // test_limiter.cpp's LongIdleDoesNotAccumulate documents.
+    ParityFakeClockLimiter idle_one_second(kTps);
+    idle_one_second.advance_ms(1000);
+    const int after_one_second = countAllowed(idle_one_second, 5 * static_cast<int>(kTps));
+    EXPECT_EQ(after_one_second, static_cast<int>(kTps) + 1)
+        << "one second of stored permits, plus the one due at the baseline";
+
+    // Capacity is one second of permits: idling for ten releases no more than
+    // idling for one - Guava's maxBurstSeconds = 1.
+    ParityFakeClockLimiter idle_ten_seconds(kTps);
+    idle_ten_seconds.advance_ms(10 * 1000);
+    EXPECT_EQ(countAllowed(idle_ten_seconds, 5 * static_cast<int>(kTps)), after_one_second)
+        << "ten idle seconds are worth no more than one: the bucket caps at a second";
+}
+
 // ===========================================================================
 // Group 7 - URI histogram layout
 // ===========================================================================
@@ -528,6 +729,63 @@ TEST(JavaParityLockTest, UrlStatEmptyHistogram) {
     EXPECT_FALSE(histogram.empty()) << "a 0ms sample lands in bucket 0 and is not empty";
     EXPECT_EQ(histogram.total(), 0);
     EXPECT_EQ(histogram.histogram(0), 1);
+}
+
+// The URI template a span records is FIRST-write-wins, with an explicit force
+// override, while the HTTP method and the status code are last-write-wins.
+// Java: DefaultShared.setUriTemplate (:139-160) is a null -> value
+// compareAndSet with a setUriTemplate(value, force) overload that sets
+// unconditionally, and setStatusCode (:129-136) is a plain setter. Both ports
+// agree with Java on both of those. Span::SetUrlStat vs Span::ForceUrlStat
+// (src/span.cpp:803-834) is the same pair here, and mergeUrlStat is the Go
+// counterpart.
+//
+// One divergence found while locking this, deliberately NOT asserted as Java
+// parity: DefaultShared.setHttpMethods (:168-177) is also a null -> value CAS
+// in Java, so Java is first-wins on the method where both ports are
+// last-wins. That half is a two-port consensus (a status code is only final
+// at the end of a request, and the method belongs with it), not Java parity -
+// the pre-existing comment on SpanTest.SetUrlStatKeepsTheFirstPatternTest
+// calls Java's method setter "plain", which is wrong.
+//
+// Not asserted here: SpanImpl needs an AgentService, so exercising the three
+// rules means standing up MockAgentService. test_span.cpp already does, in
+// SetUrlStatKeepsTheFirstPatternTest (first-wins, and method/status last-wins
+// in the same test), SetUrlStatEmptyPatternDoesNotClaimTheSlotTest (an empty
+// pattern is Java's null) and ForceUrlStatReplacesTheRecordedPatternTest.
+
+// An entry whose end time was never set is SKIPPED, not keyed under tick 0.
+// Java does exactly this in AgentUriStatData.add (:56-64): endTime == 0 logs
+// and returns true, so the entry is neither bucketed nor counted as a
+// capacity drop. Keying it under tick 0 would file the sample in 1970 and
+// pin the snapshot's watermark there, dragging every later sample with it.
+TEST(JavaParityLockTest, UrlStatEntryWithoutAnEndTimeIsSkipped) {
+    UrlStatSnapshot snapshot;
+    const Config config;
+    TickClock tick_clock(1);
+
+    UrlStatEntry no_end_time("/parity/api", "GET", 200);
+    no_end_time.elapsed_ = 10;
+    ASSERT_EQ(no_end_time.end_time_, std::chrono::system_clock::time_point{})
+        << "a fresh entry carries no end time";
+
+    EXPECT_TRUE(snapshot.add(&no_end_time, config, tick_clock))
+        << "Java returns true too: a producer bug is not a capacity drop";
+    EXPECT_TRUE(snapshot.empty()) << "no key under tick 0";
+    EXPECT_EQ(snapshot.tick(), 0) << "and no watermark pinned in 1970";
+
+    // A real entry alongside it is unaffected, and the skipped one does not
+    // move the watermark back afterwards either.
+    UrlStatEntry recorded("/parity/api", "GET", 200);
+    recorded.elapsed_ = 10;
+    recorded.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(700));
+    EXPECT_TRUE(snapshot.add(&recorded, config, tick_clock));
+    ASSERT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(recorded.end_time_));
+
+    EXPECT_TRUE(snapshot.add(&no_end_time, config, tick_clock));
+    EXPECT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(recorded.end_time_));
 }
 
 // ===========================================================================
@@ -680,5 +938,528 @@ TEST(JavaParityLockTest, SqlCacheDefaults) {
     EXPECT_EQ(defaults::SQL_MAX_BIND_ARGS_SIZE, 1024) << "Java profiler.jdbc.maxsqlbindvaluesize";
     EXPECT_EQ(defaults::SQL_ERROR_COUNT, 100) << "Java profiler.sql.error.count";
 }
+
+// Sql.CacheLengthLimit gates the UID cache and ONLY the UID cache; the SQL id
+// cache has no length limit at all. Java is the same shape: UidCache.put
+// (:17-23) bypasses the store when `key.length() >= bypassLength`, and
+// SimpleCacheFactory (:42-48) passes that length to newSqlUidCache() while
+// newSqlCache() -> SimpleCache.newIdCache(sqlCacheSize) takes none. Here the
+// bypass is SqlUidCache::bypasses (src/cache.h:810) and the id cache is built
+// with a size only (src/agent.cpp:212) - IdCacheImpl has no length-limit
+// parameter to pass.
+//
+// Two consecutive cross-agent reviews raised "the id cache is missing the
+// length limit" as a defect. It is not: it is the Java behaviour. Asserted as
+// behaviour rather than as a constant so the next review can see why.
+TEST(JavaParityLockTest, SqlCacheLengthLimitAppliesToTheUidCacheOnly) {
+    constexpr size_t kLengthLimit = 16;
+    const std::string under_limit(kLengthLimit - 1, 'a');
+    const std::string at_limit(kLengthLimit, 'b');
+
+    SqlUidCache uid_cache(/*max_size=*/64, kDefaultCacheShardCount, kLengthLimit);
+    EXPECT_FALSE(uid_cache.bypasses(under_limit));
+    EXPECT_TRUE(uid_cache.bypasses(at_limit)) << "Java stores only key.length() < bypassLength";
+
+    // A bypassed statement is never "found", so its UID metadata is published
+    // again on every use; a short one is cached after the first miss.
+    EXPECT_FALSE(uid_cache.get(at_limit).found);
+    EXPECT_FALSE(uid_cache.get(at_limit).found) << "still a miss on the second lookup";
+    EXPECT_FALSE(uid_cache.get(under_limit).found);
+    EXPECT_TRUE(uid_cache.get(under_limit).found) << "a short statement is stored";
+
+    // The id cache takes no limit and caches a statement of any length: the id
+    // is a counter, so re-minting one for a long statement would leak ids and
+    // re-publish PSqlMetaData forever.
+    IdCache id_cache(/*max_size=*/64);
+    const std::string very_long(kLengthLimit * 100, 'c');
+    const auto first = id_cache.get(very_long);
+    EXPECT_FALSE(first.found) << "first sight of a statement is a miss";
+    const auto second = id_cache.get(very_long);
+    EXPECT_TRUE(second.found) << "Java newSqlCache() passes no bypass length";
+    EXPECT_EQ(first.value, second.value) << "and the id is stable";
+}
+
+// ===========================================================================
+// Group 12 - error cause categories
+// ===========================================================================
+
+// The four bits, against Java's ErrorCategory (:19-23). They travel in
+// PSpan.err, where the collector reads them to tell an exception apart from a
+// failing HTTP status, so renumbering one silently changes what the UI says
+// each affected transaction failed on.
+TEST(JavaParityLockTest, ErrorCategoryBitValues) {
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kUnknown), 1 << 0) << "Java ErrorCategory.UNKNOWN";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kException), 1 << 1) << "Java ErrorCategory.EXCEPTION";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kHttpStatus), 1 << 2) << "Java ErrorCategory.HTTP_STATUS";
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kSql), 1 << 3) << "Java ErrorCategory.SQL";
+    EXPECT_EQ(ALL_ERROR_CATEGORIES, 15) << "kUnknown|kException|kHttpStatus|kSql";
+}
+
+// The mask resolution rules, against Java's
+// ConfigurableErrorRecorderFactory.getEnabledTypes (:28-61): an unset mark
+// enables every category, exclude is subtracted, UNKNOWN is added back last
+// whatever the two lists say, tokens are trimmed and lower-cased before
+// matching `exception` / `http-status` / `sql`, and an unrecognized token is
+// logged and ignored rather than failing the parse.
+TEST(JavaParityLockTest, ErrorMarkMaskResolution) {
+    constexpr int kUnknown = static_cast<int>(ErrorCategory::kUnknown);
+    constexpr int kException = static_cast<int>(ErrorCategory::kException);
+    constexpr int kHttpStatus = static_cast<int>(ErrorCategory::kHttpStatus);
+    constexpr int kSql = static_cast<int>(ErrorCategory::kSql);
+
+    EXPECT_EQ(error_mark_mask({}, {}), ALL_ERROR_CATEGORIES)
+        << "Java: a null errorMarkString is EnumSet.allOf";
+    EXPECT_EQ(error_mark_mask({"exception"}, {}), kUnknown | kException)
+        << "a non-empty mark is the whole allow-list";
+    EXPECT_EQ(error_mark_mask({}, {"http-status"}), ALL_ERROR_CATEGORIES & ~kHttpStatus)
+        << "exclude subtracts from the default everything";
+    EXPECT_EQ(error_mark_mask({"exception", "sql"}, {"sql"}), kUnknown | kException)
+        << "exclude wins over mark (Java mark.removeAll(exclude))";
+
+    // kUnknown survives every combination, including one that names it: it has
+    // no spelling of its own, so the token is simply unrecognized and ignored,
+    // and the bit is OR-ed back in afterwards.
+    EXPECT_EQ(error_mark_mask({"exception"}, {"exception"}), kUnknown)
+        << "Java mark.add(ErrorCategory.UNKNOWN) runs after removeAll";
+    EXPECT_EQ(error_mark_mask({}, {"unknown"}), ALL_ERROR_CATEGORIES)
+        << "UNKNOWN is not selectable and cannot be excluded";
+    EXPECT_EQ(error_mark_mask({""}, {}), kUnknown)
+        << "Java: an empty token is skipped, leaving an empty (not default) set";
+
+    // Case-insensitive, trimmed, and comma-separated inside one entry - Java
+    // splits the whole string on ',' and does category.trim().toLowerCase().
+    EXPECT_EQ(error_mark_mask({"EXCEPTION", " Http-Status ", "sQl"}, {}), ALL_ERROR_CATEGORIES);
+    EXPECT_EQ(error_mark_mask({"exception,sql"}, {}), kUnknown | kException | kSql);
+
+    // An unrecognized token is warned about and dropped; the rest of the list
+    // still resolves, exactly as Java's `default: logger.warn(...)` arm does.
+    EXPECT_EQ(error_mark_mask({"exception", "nonsense"}, {}), kUnknown | kException);
+    EXPECT_EQ(error_mark_mask({}, {"nonsense"}), ALL_ERROR_CATEGORIES);
+
+    // Every category excluded still leaves kUnknown, which is what stops the
+    // two keys from adding up to "never fail a transaction".
+    EXPECT_EQ(error_mark_mask({}, {"exception", "http-status", "sql"}), kUnknown);
+}
+
+// An excluded category records NOTHING - not the category bit, and not an
+// UNKNOWN fallback either. Java: ConfigurableErrorRecorder.recordError
+// (:20-24) masks the error code only when the category is in the enabled set,
+// with no else branch. SpanImpl::markSpanError (src/span.h:717-723) returns
+// early the same way.
+//
+// Not asserted here: marking an error needs a SpanImpl and so a
+// MockAgentService. test_span.cpp covers it end to end, on the trace root and
+// on the URL stat, in ErrorMarkExcludeHttpStatusLeavesA5xxUnmarkedTest,
+// ErrorMarkExcludeHttpStatusStillMarksExceptionsTest,
+// ErrorMarkExcludeExceptionLeavesUrlStatSuccessfulTest and - through the real
+// YAML loader - ErrorMarkExcludeFromYamlLeavesA5xxUnmarkedTest.
+
+// ===========================================================================
+// Group 13 - queue overflow policy
+// ===========================================================================
+
+// A full span queue HEAD-drops: the oldest entry is discarded, the newest is
+// kept, and the drop is counted. That matches Java's DEFAULT span sender.
+// Verified in the Java tree rather than assumed:
+//
+//   * agent-module/agent/src/main/resources/pinpoint-root.config:135 ships
+//     profiler.transport.grpc.span.sender.type=BATCH (the release and local
+//     profiles set it to BATCH too), so SpanBatchGrpcDataSender is what a
+//     stock Java agent runs;
+//   * SpanBatchGrpcDataSender.send (:95-111) does queue.offer(data), and on
+//     failure queue.poll() - discarding the oldest, logging "discard oldest
+//     message" - then re-offers the new one.
+//
+// An earlier cross-agent review cited GrpcDataSender.send (:56-68) instead
+// and called this a divergence. That is the STREAM sender's base class: it
+// tail-drops ("reject message") and is only reached when sender.type is set
+// to STREAM. It has been raised five times now, always against that class;
+// the config default above is where to check it before raising it a sixth.
+//
+// test_sharded_bounded_queue.cpp covers the queue itself - per-producer FIFO,
+// quota borrowing, concurrent overflow accounting. What is locked here is the
+// policy: which end is dropped, and that the drop is observable.
+TEST(JavaParityLockTest, SpanQueueHeadDropsTheOldest) {
+    constexpr size_t kCapacity = 4;
+    constexpr int kEnqueued = 10;
+
+    ShardedBoundedQueue<std::unique_ptr<int>> queue(kCapacity, /*requested_shards=*/1);
+    ASSERT_EQ(queue.capacity(), kCapacity);
+    ASSERT_EQ(queue.shard_count(), 1u) << "one shard, so retention order is the global one";
+
+    for (int value = 0; value < kEnqueued; ++value) {
+        auto item = std::make_unique<int>(value);
+        queue.enqueue(item);
+        EXPECT_EQ(item, nullptr) << "enqueue always takes the value: nothing is refused";
+    }
+
+    EXPECT_EQ(queue.dropped_oldest(), static_cast<uint64_t>(kEnqueued) - kCapacity)
+        << "every overflow is counted, as Java's discard-oldest log line is";
+
+    std::vector<std::unique_ptr<int>> drained;
+    EXPECT_EQ(queue.try_dequeue_batch(drained, 2 * kCapacity), kCapacity);
+
+    std::vector<int> survivors;
+    survivors.reserve(drained.size());
+    for (const auto& value : drained) {
+        survivors.push_back(*value);
+    }
+    EXPECT_EQ(survivors, (std::vector<int>{6, 7, 8, 9}))
+        << "the newest survive; head-drop discards the oldest, never the arrival";
+}
+
+// ===========================================================================
+// Group 14 - proxy request header pipeline
+// ===========================================================================
+
+namespace {
+
+class ParityHeaderReader final : public HeaderReader {
+public:
+    explicit ParityHeaderReader(std::map<std::string, std::string> headers)
+        : headers_(std::move(headers)) {}
+
+    std::optional<std::string_view> Get(std::string_view key) const override {
+        const auto it = headers_.find(std::string{key});
+        if (it == headers_.end()) {
+            return std::nullopt;
+        }
+        return std::string_view{it->second};
+    }
+
+    void ForEach(std::function<bool(std::string_view, std::string_view)> callback) const override {
+        for (const auto& [key, value] : headers_) {
+            if (!callback(key, value)) {
+                break;
+            }
+        }
+    }
+
+private:
+    std::map<std::string, std::string> headers_;
+};
+
+// Runs the whole proxy pipeline over one request and hands back the proxy
+// annotations it recorded, in order.
+std::vector<LongIntIntByteByteStringValue> recordProxyHeaders(
+        std::map<std::string, std::string> headers,
+        const std::vector<std::string>& user_header_names = {}) {
+    const ParityHeaderReader reader(std::move(headers));
+    PinpointAnnotation annotation;
+    HttpTracerUtil::setProxyHeader(reader, &annotation, user_header_names);
+
+    std::vector<LongIntIntByteByteStringValue> recorded;
+    for (const auto& [key, data] : annotation.getAnnotations()) {
+        if (key == ANNOTATION_HTTP_PROXY_HEADER) {
+            recorded.push_back(std::get<LongIntIntByteByteStringValue>(data.data));
+        }
+    }
+    return recorded;
+}
+
+}  // namespace
+
+// All four parsers run INDEPENDENTLY, so a request that came through two
+// proxies records two annotations rather than only the hop nearest the agent.
+// Java: DefaultProxyRequestRecorder.record (:52-53) loops over every
+// registered parser, and parseHeaderAndRecord records one annotation per
+// valid header. A first-match if/else chain reports one hop and silently
+// drops the rest of the chain.
+TEST(JavaParityLockTest, ProxyParsersRunIndependently) {
+    const auto recorded = recordProxyHeaders({
+        {"Pinpoint-ProxyApache", "t=1000000000000 D=100 i=5 b=95"},
+        {"Pinpoint-ProxyNginx", "t=2000000.000 D=0.200"},
+        {"Pinpoint-ProxyApp", "t=3000000000000 app=OtherApp"},
+        {"Pinpoint-ProxyUser", "t=4000000000000 D=300"},
+    }, {"Pinpoint-ProxyUser"});
+
+    std::vector<int32_t> codes;
+    codes.reserve(recorded.size());
+    for (const auto& value : recorded) {
+        codes.push_back(value.intValue1);
+    }
+    std::sort(codes.begin(), codes.end());
+    EXPECT_EQ(codes, (std::vector<int32_t>{1, 2, 3, 4}))
+        << "app=1, nginx=2, apache=3, user=4 - one annotation per valid header";
+}
+
+// Every parser is gated on a POSITIVE received time: no `t=`, `t=0` or a `t=`
+// that does not parse records nothing at all. Java: each parser calls
+// setValid(false) in that case and DefaultProxyRequestRecorder (:71) records
+// only a valid header. An annotation whose received time is 0 is worse than
+// no annotation - the web UI charts the proxy-to-agent gap from that field,
+// and 0 renders as a gap of five decades. test_http.cpp
+// (SetProxyHeaderDiscardsHeaderWithoutValidReceivedTime) carries the full
+// per-parser matrix; one case per parser is locked here.
+TEST(JavaParityLockTest, ProxyHeaderNeedsAPositiveReceivedTime) {
+    struct Case {
+        const char* header;
+        const char* value;
+    };
+    const Case cases[] = {
+        {"Pinpoint-ProxyApache", "D=1500 i=10 b=90"},  // no t= at all
+        {"Pinpoint-ProxyNginx", "t=0.000 D=0.123"},    // t= present, not positive
+        {"Pinpoint-ProxyApp", "t=abc app=MyApp"},      // t= present, unparseable
+        {"Pinpoint-ProxyUser", "t=0000000000000 D=1500"},
+    };
+
+    for (const auto& c : cases) {
+        const auto recorded = recordProxyHeaders({{c.header, c.value}}, {"Pinpoint-ProxyUser"});
+        EXPECT_TRUE(recorded.empty())
+            << c.header << ": '" << c.value << "' must record no annotation";
+    }
+}
+
+// nginx's `t=` ($msec) and `D=` ($request_time) are seconds with EXACTLY
+// three decimals, and both are computed with integer arithmetic. Java
+// (NginxRequestParser.java:74-110) checks `length - millisPosition != 4` and
+// converts by deleting the '.' and parsing the result - never by scaling a
+// double, which is what makes this exact: 0.123 has no binary representation,
+// so double(0.123) * 1e6 truncates to 122999.
+TEST(JavaParityLockTest, ProxyNginxTimestampsAreExactThreeDecimals) {
+    const auto recorded = recordProxyHeaders(
+        {{"Pinpoint-ProxyNginx", "t=1504230492.763 D=0.123"}});
+    ASSERT_EQ(recorded.size(), 1u);
+    EXPECT_EQ(recorded[0].longValue, 1504230492763) << "sec.mmm recorded as milliseconds";
+    EXPECT_EQ(recorded[0].intValue2, 123000) << "0.123s is exactly 123000us, not 122999";
+
+    // Anything but sec.mmm records no duration rather than a guess - the
+    // plain microsecond integer apache sends included, which read as seconds
+    // would inflate the duration a millionfold.
+    for (const char* d_val : {"0.1", "0.12", "0.1234", "123", "-0.123"}) {
+        const auto other = recordProxyHeaders(
+            {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + d_val}});
+        ASSERT_EQ(other.size(), 1u) << d_val << " must not discard the header";
+        EXPECT_EQ(other[0].intValue2, 0) << "D=" << d_val << " is not sec.mmm";
+    }
+
+    // The same format rule on `t=`, where failing it drops the header.
+    for (const char* t_val : {"1504230492.76", "1504230492", "1504230492.7634"}) {
+        EXPECT_TRUE(recordProxyHeaders(
+                        {{"Pinpoint-ProxyNginx", std::string("t=") + t_val + " D=0.123"}})
+                        .empty())
+            << "t=" << t_val << " is not sec.mmm";
+    }
+}
+
+// The user proxy parser infers the writer from the value's shape, as
+// UserRequestParser.toReceivedTimeMillis does: fewer than 13 characters is
+// rejected; 16 or more is apache's microseconds, converted by dropping the
+// last three digits before parsing; a '.' at index 10 or later is nginx's
+// sec.mmm; anything else is an app's milliseconds. toDurationTimeMicros reads
+// D= the same way and applies it only when positive. Reading t= as plain
+// milliseconds would put an apache hop 47,000 years out and drop an nginx
+// hop whole. The Go agent locks the same table in
+// Test_javaParityLock_ProxyUserHeaderInfersItsWriter.
+TEST(JavaParityLockTest, ProxyUserHeaderInfersItsWriter) {
+    struct Case {
+        const char* value;
+        int64_t received_time;
+        int32_t duration;
+    };
+    for (const Case c : {
+             Case{"t=1504230492763123 D=1500", 1504230492763LL, 1500},
+             Case{"t=1504230492.763 D=0.123", 1504230492763LL, 123000},
+             Case{"t=1504230492763 D=42", 1504230492763LL, 42},
+             Case{"t=1504230492763 D=-5", 1504230492763LL, 0},
+             Case{"t=1504230492763 D=-0.123", 1504230492763LL, 0},
+             Case{"t=1504230492763 D=3000000.000", 1504230492763LL, 0},
+         }) {
+        const auto recorded = recordProxyHeaders({{"X-Proxy-Time", c.value}}, {"X-Proxy-Time"});
+        ASSERT_EQ(recorded.size(), 1u) << c.value;
+        EXPECT_EQ(recorded[0].longValue, c.received_time) << c.value;
+        EXPECT_EQ(recorded[0].intValue2, c.duration) << c.value;
+        EXPECT_EQ(recorded[0].stringValue, "X-Proxy-Time") << "the header name is the app";
+    }
+
+    for (const char* bad : {"150423049276", "15042304.9276", "1504230492.76", "abc"}) {
+        EXPECT_TRUE(recordProxyHeaders({{"X-Proxy-Time", std::string("t=") + bad}}, {"X-Proxy-Time"}).empty())
+            << "t=" << bad << " fits no proxy's format";
+    }
+}
+
+// The value gates the standard parsers share with UserRequestParser: D= is
+// applied only when positive, the nginx product is reported as no duration
+// rather than a wrapped int32, and apache i=/b= are applied only inside
+// [0, 100] (ApacheRequestParser). The Go agent locks the same in
+// Test_javaParityLock_ProxyDurationAndPercentAreGated.
+TEST(JavaParityLockTest, ProxyDurationAndPercentAreGated) {
+    auto nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=-0.123"}});
+    ASSERT_EQ(nginx.size(), 1u);
+    EXPECT_EQ(nginx[0].intValue2, 0) << "negative nginx D= is unset";
+
+    nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=3000000.000"}});
+    ASSERT_EQ(nginx.size(), 1u);
+    EXPECT_EQ(nginx[0].intValue2, 0) << "nginx D= past int32/1000 is unset, not wrapped";
+
+    auto apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=-7 i=101 b=-1"}});
+    ASSERT_EQ(apache.size(), 1u);
+    EXPECT_EQ(apache[0].intValue2, 0) << "negative apache D= is unset";
+    EXPECT_EQ(apache[0].byteValue1, 0) << "i= above 100 is unset";
+    EXPECT_EQ(apache[0].byteValue2, 0) << "b= below 0 is unset";
+
+    apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=7 i=0 b=100"}});
+    ASSERT_EQ(apache.size(), 1u);
+    EXPECT_EQ(apache[0].intValue2, 7);
+    EXPECT_EQ(apache[0].byteValue1, 0);
+    EXPECT_EQ(apache[0].byteValue2, 100);
+}
+
+// PParentInfo is emitted only when the parent application name is non-empty.
+// Java: ServerRequestRecorder.record (:76) records parent info only for a
+// non-root span, and recordParentInfo (:82-83) only when the Pinpoint-pAppName
+// header is present - the acceptor host is recorded inside that same branch.
+//
+// This is the invariant that keeps the acceptor-host fallback both ports
+// recently added (fall back to the endpoint when the peer sent no
+// Pinpoint-Host) from inventing a parent node: the fallback fills
+// acceptorHost, and without this guard a span with an acceptor host but no
+// parent would ship a PParentInfo naming an empty application, which the
+// server map draws as an unnamed caller node.
+TEST(JavaParityLockTest, ParentInfoOnlyWhenParentAppNameIsPresent) {
+    const auto build = [](const std::string_view parent_app_name) {
+        auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
+        span_data->setTraceId(TraceId{std::string_view{"test-agent"}, 1600000000000LL, 7LL});
+        span_data->setEndPoint("api.example.com:8080");
+        span_data->setRemoteAddr("10.0.0.1:54321");
+        // Set on both paths: an acceptor host alone must not produce a parent.
+        span_data->setAcceptorHost("api.example.com:8080");
+        if (!parent_app_name.empty()) {
+            span_data->setParentAppName(parent_app_name);
+            span_data->setParentAppType(1010);
+            span_data->setParentServiceName("parent-service");
+        }
+        return std::make_unique<SpanChunk>(span_data, /*final=*/true);
+    };
+
+    google::protobuf::Arena arena;
+
+    const auto* orphan = build_grpc_span(build(""), &arena);
+    ASSERT_TRUE(orphan->has_acceptevent());
+    EXPECT_FALSE(orphan->acceptevent().has_parentinfo())
+        << "an acceptor host on its own must not invent a parent node";
+
+    const auto* child = build_grpc_span(build("ParentApp"), &arena);
+    ASSERT_TRUE(child->has_acceptevent());
+    ASSERT_TRUE(child->acceptevent().has_parentinfo());
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationname(), "ParentApp");
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationtype(), 1010);
+    EXPECT_EQ(child->acceptevent().parentinfo().acceptorhost(), "api.example.com:8080");
+    EXPECT_EQ(child->acceptevent().parentinfo().parentservicename(), "parent-service");
+}
+
+// ===========================================================================
+// Group 15 - logging level policy
+// ===========================================================================
+
+// An unsupported level string leaves the CURRENT level unchanged and says so
+// in the log (src/logging.cpp:41-45). Java has no direct counterpart - its
+// level comes from a log4j2 configuration file, which fails or falls back on
+// its own terms - so this is a TWO-PORT CONSENSUS, not Java parity: silently
+// ignoring a typo looks like a successful change, and on a config reload it
+// would silently leave an operator debugging at the old level.
+//
+// `warn` and `warning` are both accepted - LOG_LEVEL_WARN_ALIAS
+// (src/logging.h:37-43), matched alongside LOG_LEVEL_WARN in setLogLevel
+// (src/logging.cpp:37). The agent writes "warning" on its own lines, and
+// refusing the spelling every other logger uses would land an operator in
+// exactly the silent-no-op above.
+TEST(JavaParityLockTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
+    auto& logger = Logger::getInstance();
+
+    logger.setLogLevel("error");
+    ASSERT_TRUE(logger.errorEnabled());
+    ASSERT_FALSE(logger.warnEnabled()) << "error suppresses warn";
+
+    // Matching is case-insensitive but NOT trimmed, so "WARN " is unsupported
+    // where "WARN" would be a level change.
+    for (const char* unsupported : {"warnign", "trace", "fatal", "", "WARN ", "2"}) {
+        logger.setLogLevel(unsupported);
+        EXPECT_TRUE(logger.errorEnabled());
+        EXPECT_FALSE(logger.warnEnabled())
+            << "'" << unsupported << "' must leave the level where it was";
+    }
+
+    // Both spellings of warn are accepted, and each is a real level change.
+    logger.setLogLevel("warn");
+    EXPECT_TRUE(logger.warnEnabled()) << "'warn' is accepted";
+    EXPECT_FALSE(logger.infoEnabled());
+
+    logger.setLogLevel("error");
+    ASSERT_FALSE(logger.warnEnabled());
+    logger.setLogLevel("warning");
+    EXPECT_TRUE(logger.warnEnabled()) << "'warning' is accepted";
+    EXPECT_FALSE(logger.infoEnabled());
+
+    logger.setLogLevel("info");  // back to the agent default for the rest of the suite
+    EXPECT_TRUE(logger.infoEnabled());
+    EXPECT_FALSE(logger.debugEnabled());
+}
+
+// The rotation defaults, and the floor under MaxBackups. Also a two-port
+// consensus: Java rotates through log4j2 policies, not through agent config
+// keys. 0 backups would read as either "keep none" or "keep all" depending on
+// which agent the reader knows, so it is restored to the default of 1 rather
+// than honoured.
+TEST(JavaParityLockTest, LogRotationDefaults) {
+    EXPECT_EQ(defaults::LOG_MAX_BACKUPS, 1);
+    EXPECT_EQ(defaults::LOG_MAX_FILE_SIZE_MB, 10) << "10 MB before rotation";
+
+    AgentOptions options;
+    options.config_yaml =
+        "ApplicationName: ParityLockApp\n"
+        "Log:\n"
+        "  MaxBackups: 0\n";
+    const auto config = make_config(options, nullptr);
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->log.max_backups, defaults::LOG_MAX_BACKUPS)
+        << "a value below 1 is restored to the default, not honoured";
+    EXPECT_EQ(config->log.max_file_size, defaults::LOG_MAX_FILE_SIZE_MB)
+        << "and an unset MaxFileSize stays at 10 MB";
+}
+
+// ===========================================================================
+// Group 16 - shutdown contract (port consensus, no Java counterpart)
+// ===========================================================================
+//
+// This group locks a PORT CONSENSUS, not Java parity. The Java agent has no
+// equivalent of any of it: shutdown there is per-component (each DataSender
+// and scheduler stops itself), with no overall wall-clock deadline and no
+// report of what was still running when it gave up.
+//
+// What the two ports agreed on, and where it lives here:
+//
+//   * a 3 s deadline bounds the blocking phase of shutdown
+//     (kDefaultShutdownDeadline, src/agent.cpp:78). Past it the teardown is
+//     handed to a detached reaper and Shutdown() returns, because gRPC
+//     cancellation is best-effort and the config watcher can be stuck in a
+//     filesystem call on a hung mount - neither join can be bounded on its
+//     own. The public contract is stated on Agent::Shutdown in
+//     include/pinpoint/tracer.h.
+//   * Shutdown() is idempotent and safe under concurrent calls: do_shutdown
+//     latches on shutting_down_.exchange(true) (src/agent.cpp:1190) and every
+//     later caller returns immediately, including the SharedDeleter's own
+//     terminal teardown.
+//   * a deadline overrun reports the still-running workers BY NAME
+//     (running_worker_names(), src/agent.cpp:780-818) - the table workers plus
+//     the three threads outside the table (AgentInfo scheduler, config
+//     watcher, a channel close in progress). "Shutdown timed out" without the
+//     names is not actionable in a host process.
+//   * the worker table is the single source of truth: worker_specs() and
+//     kTeardownOrder are both permutations of the Worker enum, with a name, a
+//     body and a stop signal per row. That is enforced at compile time by the
+//     static_asserts at src/agent.cpp:671-672 (plus
+//     worker_table_consistent()), so there is nothing for a runtime test to
+//     restate - a row added to the enum and forgotten in either array does
+//     not compile.
+//
+// Not asserted here: all of it needs a live AgentImpl, which means the gRPC
+// mocks. test_agent_with_mocks.cpp covers each point -
+// AgentShutdownDeadlineTest.ShutdownReturnsByDeadlineWithWedgedWorker and
+// ReleaseWithoutShutdownDefersDestructionWhenWedged for the deadline,
+// AgentImplTest.ShutdownIsIdempotent / DoubleShutdownIsNoOp for the latch,
+// and AgentShutdownDeadlineTest.DeadlineReportNamesTheStragglingWorker /
+// DeadlineReportNamesTheAgentInfoScheduler for the straggler report. The Go
+// suite mirrors the group with its own lifecycle tests.
 
 }  // namespace pinpoint
