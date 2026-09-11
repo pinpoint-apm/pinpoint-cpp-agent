@@ -33,7 +33,7 @@ tree and for this repository's own sources.
 |---|---|---|
 | Tracing before agent registration | `AgentInfoSender`, `DefaultApplicationContext.start()` | **Declined** — see [below](#tracing-before-agent-registration--declined) |
 | Per-URL sampler | `UrlTraceSampler`, `UrlSamplerConfig`, `TraceSamplerProvider` | **Declined** — see [below](#per-url-sampler--declined) |
-| Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined** — see [below](#retrying-a-rejected-metadata-send--declined) |
+| Retrying a rejected metadata send | `RetryResponseStreamObserver.onNext` | **Declined, shared with Go** — see [below](#retrying-a-rejected-metadata-send--declined-shared-with-go) |
 | Error on an unsampled span event | `DisableSpanEventRecorder.recordException` | **Exceeds Java** — see [below](#error-on-an-unsampled-span-event--exceeds-java) |
 | URL statistics tick in progress at shutdown | `AsyncQueueingExecutor.stop`, `UriStatCollectingJob` | **Exceeds Java** — see [below](#url-statistics-tick-in-progress-at-shutdown--exceeds-java) |
 | Oversize SQL statement | `DefaultSqlNormalizer` (no cap) | **Exceeds Java, shared with Go** — see [below](#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go) |
@@ -60,7 +60,7 @@ tree and for this repository's own sources.
 | URI template recorded twice on one span | `DefaultShared.setUriTemplate`, `DefaultSpanRecorder.recordUriTemplate` | **Same as Java** — see [below](#uri-template-is-first-wins--same-as-java) |
 | URL stat entry without an end time | `AgentUriStatData.add` | **Same as Java** — see [below](#url-stat-entry-without-an-end-time-is-skipped--same-as-java) |
 | Worker thread lifecycle | `GrpcModuleLifeCycle`, `DefaultApplicationContext`, each `DataSender.close()` | **Same goal, declared as a table** — see [below](#worker-thread-lifecycle--same-goal-declared-as-a-table) |
-| Locked parity invariants (16 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption`, `ErrorCategory`, `SpanBatchGrpcDataSender`, `DefaultProxyRequestRecorder` | **Verified identical** (groups 15 and 16 are a port consensus with no Java counterpart) — see [below](#locked-parity-invariants--verified-identical) |
+| Locked parity invariants (17 groups) | `ParserContext`, `DefaultCallStack`, `GrpcSpanProcessorV2`, `Header`, `CountingSampler`, `UriStatHistogramBucket`, `BaseHistogramSchema`, `DefaultTransactionCounter`, `StringUtils`, `ClientOption`, `ErrorCategory`, `SpanBatchGrpcDataSender`, `DefaultProxyRequestRecorder` | **Verified identical** (groups 15, 16 and the policy half of 17 are a port consensus) — see [below](#locked-parity-invariants--verified-identical) |
 
 ---
 
@@ -184,7 +184,7 @@ per-entry sampler state and a config shape to carry it.
 
 ---
 
-## Retrying a rejected metadata send — declined
+## Retrying a rejected metadata send — declined, shared with Go
 
 **Java.** `RetryResponseStreamObserver.onNext` treats
 `PResult.getSuccess() == false` exactly like a transport failure and calls
@@ -197,8 +197,18 @@ entry so the next span re-registers the id and sends a *new* request.
 unsupported field, rejected payload), and a retry would replay the same bytes
 for the same verdict.
 
-**Decision: intentional divergence.** The retry cannot change the answer, and
-the release is what preserves a recovery path at all. Note that agent
+**Go.** Same policy: `metaVerdictOf` (`agent.go`) classifies
+`PResult.success=false` as `metaRejected`, no retry, and parks the item in
+`agent.metaRetry` as a release-only entry so the cache slot is freed one
+`metaRetryDelay` later — the counterpart of `schedule_cache_release`. The Go
+agent's `doc/java_parity.md` records the same decision from its side.
+
+**Decision: intentional divergence, fixed as a port consensus.** The retry
+cannot change the answer, and the release is what preserves a recovery path at
+all. Because the policy is a three-way split (Java retries, both ports drop),
+it is locked as group 17 of the invariants below so a change in either port
+cannot silently leave the two disagreeing; a change of policy is a change in
+both ports, made together. Note that agent
 *registration* does the opposite — a rejected AgentInfo is retried forever
 (`GrpcAgent::registerAgentWithRetry`) — because registration is the precondition
 for tracing and a rejection there can be transient on the collector's side.

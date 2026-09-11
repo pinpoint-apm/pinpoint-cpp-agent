@@ -385,3 +385,11 @@
   cumulative `span drops: N in total (...)` line that says how many came
   from the queue and how many were never sent, as the Go agent's `spanDrops`
   does. `GrpcSpan::droppedSpans()` exposes the same total.
+
+- **The metadata rejection policy is locked as a port consensus.** Both ports
+  drop a `PResult.success=false` reply and release the cache entry after one
+  retry delay where Java retries it; the retry budget (3 attempts, 1 s, a
+  1000-entry queue) is Java's. Group 17 of the parity invariants
+  (`test/test_java_parity_lock.cpp`) pins the numbers so a change in either
+  port is a deliberate joint change. **The Go lock suite needs the same
+  group.**

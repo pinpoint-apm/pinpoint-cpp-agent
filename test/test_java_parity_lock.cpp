@@ -65,6 +65,7 @@
 #include "../src/sharded_bounded_queue.h"
 #include "../src/span.h"
 #include "../src/sql.h"
+#include "../src/grpc.h"
 #include "../src/url_stat.h"
 #include "../src/utility.h"
 #include "v1/Span.pb.h"
@@ -1487,5 +1488,42 @@ TEST(JavaParityLockTest, LogRotationDefaults) {
 // and AgentShutdownDeadlineTest.DeadlineReportNamesTheStragglingWorker /
 // DeadlineReportNamesTheAgentInfoScheduler for the straggler report. The Go
 // suite mirrors the group with its own lifecycle tests.
+
+// ===========================================================================
+// Group 17 - metadata retry budget and rejection policy (port consensus)
+// ===========================================================================
+//
+// The retry BUDGET is Java's: MetadataGrpcDataSender retries a failed send
+// up to profiler.transport.grpc.metadata.sender.retry.max.count (3) times,
+// retry.delay.millis (1000) apart, and queues new metadata on an executor
+// queue of metadata.sender.executor.queue.size (1000) entries. The two ports
+// keep the same three numbers, and both keep the retry schedule on its own
+// bound of the same size as the new-metadata queue (Java has no separate
+// schedule: the HashedWheelTimer is unbounded).
+//
+// The rejection POLICY is a port consensus that diverges from Java, and is
+// locked so a change in either port cannot leave the two disagreeing
+// silently: a reply with PResult.success=false is NOT retried (Java's
+// RetryResponseStreamObserver retries it like a transport failure). The
+// item is dropped and its cache entry released after one retry delay, so
+// the next span re-registers the id at a bounded rate instead of on the very
+// next request. Rationale in doc/java_parity.md ("Retrying a rejected
+// metadata send"). The behaviour itself needs the gRPC mocks and is pinned
+// by test_grpc_with_mocks.cpp: GrpcMetadataDropsRejectedResultAndEvictsCache
+// (no retry, cache released) and
+// GrpcMetadataDelaysCacheReleaseAfterPermanentRejection (released after one
+// retry delay, not inline). The Go suite mirrors both.
+TEST(JavaParityLockTest, MetadataRetryBudget) {
+    const GrpcClientTuning tuning{};
+    EXPECT_EQ(tuning.meta_retry_max_attempts, 3)
+        << "Java profiler.transport.grpc.metadata.sender.retry.max.count";
+    EXPECT_EQ(tuning.meta_retry_delay, std::chrono::milliseconds(1000))
+        << "Java profiler.transport.grpc.metadata.sender.retry.delay.millis";
+    EXPECT_EQ(tuning.meta_retry_queue_size, 1000u)
+        << "port consensus: the retry schedule is bounded like the new-metadata queue "
+           "(Java metadata.sender.executor.queue.size)";
+    EXPECT_EQ(Config{}.collector.grpc.channel.sender_queue_size, 1000)
+        << "Java profiler.transport.grpc.metadata.sender.executor.queue.size";
+}
 
 }  // namespace pinpoint
