@@ -691,9 +691,15 @@ namespace pinpoint {
                     // Pinpoint-Host takes precedence; this endpoint only fills
                     // the gap when the peer sent none.
                     impl->SetAcceptorHostIfAbsent(endpoint);
-                    HttpTracerUtil::setProxyHeader(
-                        request_reader, impl->getSpanData()->getAnnotations(),
-                        impl->getConfig().http.server.proxy_user_header_names);
+                    // Java's ProxyRequestRecorderFactory hands out a disabled
+                    // recorder when profiler.proxy.http.header.enable is off;
+                    // the same switch here skips all four parsers.
+                    const auto& server = impl->getConfig().http.server;
+                    if (server.proxy_header_enable) {
+                        HttpTracerUtil::setProxyHeader(
+                            request_reader, impl->getSpanData()->getAnnotations(),
+                            server.proxy_user_header_names);
+                    }
                 }
                 span->RecordHeader(HTTP_REQUEST, request_reader);
             }

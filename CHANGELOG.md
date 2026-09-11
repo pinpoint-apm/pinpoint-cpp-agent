@@ -393,3 +393,13 @@
   (`test/test_java_parity_lock.cpp`) pins the numbers so a change in either
   port is a deliberate joint change. **The Go lock suite needs the same
   group.**
+
+- **`Http.Server.ProxyHeaderEnable` switches proxy header recording off.**
+  Java's `profiler.proxy.http.header.enable` and the Go agent's key of the
+  same name had no counterpart, so the three built-in parsers ran on every
+  request even with `ProxyUserHeaderNames` empty. Default `true`, reloadable.
+
+- **An unparseable `Pinpoint-pSpanID` is warned about like an unparseable
+  `Pinpoint-SpanID`** (throttled). It used to be silent here and logged in
+  the Go agent, so the two agents each reported a different half of the
+  same broken hop.

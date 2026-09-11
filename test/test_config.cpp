@@ -2024,10 +2024,16 @@ TEST_F(ConfigTest, BooleanConfigKeysTest) {
          [](const Config& c) { return c.http.url_stat.enable; }, false, true, "CollectUrlStat"},
         {"Http", "UrlStatEnableTrimPath", env::HTTP_URL_STAT_ENABLE_TRIM_PATH,
          [](const Config& c) { return c.http.url_stat.enable_trim_path; }, false, true, "UrlStatEnableTrimPath"},
+        {"Http:\n  Server", "ProxyHeaderEnable", env::HTTP_SERVER_PROXY_HEADER_ENABLE,
+         [](const Config& c) { return c.http.server.proxy_header_enable; }, true, true, "ProxyHeaderEnable"},
     };
 
     const auto yaml_for = [](const BoolKey& k, const char* value) {
-        const std::string nesting = *k.section ? std::string(k.section) + ":\n  " : "";
+        // A two-level section is spelled "Outer:\n  Inner" and indents its
+        // leaf one level deeper.
+        const std::string section(k.section);
+        const bool nested = section.find('\n') != std::string::npos;
+        const std::string nesting = section.empty() ? "" : section + ":\n" + (nested ? "    " : "  ");
         return nesting + k.key + ": " + value + "\n";
     };
 

@@ -2035,6 +2035,56 @@ TEST_F(SpanTest, SpanImplExtractContextWithUnparsableSpanIdGeneratesNewTest) {
     EXPECT_NE(span_id, kNullSpanId) << "A generated span id must never be the NULL sentinel";
 }
 
+// X-6: an unparseable Pinpoint-pSpanID used to be silent while an unparseable
+// Pinpoint-SpanID warned; both halves of one broken hop now log the same way.
+TEST_F(SpanTest, SpanImplExtractContextWarnsOnUnparsableParentSpanIdTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    MockTraceContextReader reader;
+    reader.SetContext(HEADER_TRACE_ID, "agent^1234567890^1");
+    reader.SetContext(HEADER_SPAN_ID, "555");
+    reader.SetContext(HEADER_PARENT_SPAN_ID, "not-a-number");
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    extract_context(span, *mock_agent_service_, reader);
+    std::cout.flush();
+    const auto out = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(out.find("unparseable Pinpoint-pSpanID header = 'not-a-number'"), std::string::npos) << out;
+    EXPECT_EQ(span.getSpanData()->getSpanId(), 555);
+}
+
+// X-6: Http.Server.ProxyHeaderEnable (Java profiler.proxy.http.header.enable,
+// Go Http.Server.ProxyHeaderEnable) switches every proxy parser off, the three
+// built-in ones included, which an empty ProxyUserHeaderNames cannot.
+TEST_F(SpanTest, TraceHttpServerRequestSkipsProxyHeadersWhenDisabledTest) {
+    const auto count_proxy = [](SpanImpl& s) {
+        int n = 0;
+        for (const auto& [key, value] : s.getSpanData()->getAnnotations()->getAnnotations()) {
+            if (key == ANNOTATION_HTTP_PROXY_HEADER) n++;
+        }
+        return n;
+    };
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        MockHeaderReader header_reader;
+        header_reader.SetHeader("Pinpoint-ProxyApache", "t=1234567890000 D=1500 i=10 b=90");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
+        EXPECT_EQ(count_proxy(*span), 1) << "on by default, like Java and Go";
+    }
+
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->http.server.proxy_header_enable = false;
+    mock_agent_service_->reloadConfig(config);
+    {
+        auto span = std::make_shared<SpanImpl>(mock_agent_service_.get(), "test-op", "test-rpc");
+        MockHeaderReader header_reader;
+        header_reader.SetHeader("Pinpoint-ProxyApache", "t=1234567890000 D=1500 i=10 b=90");
+        helper::TraceHttpServerRequest(span, "10.0.0.1:54321", "api.example.com:8080", header_reader);
+        EXPECT_EQ(count_proxy(*span), 0) << "off: no proxy header is read at all";
+    }
+}
+
 // InjectContext writes this span's id as the callee's parent span id, so the
 // generated child id must differ from it (Java SpanId.nextSpanID).
 TEST_F(SpanTest, SpanEventInjectContextChildSpanIdDiffersFromParentTest) {

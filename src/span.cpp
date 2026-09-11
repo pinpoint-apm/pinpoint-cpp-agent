@@ -641,6 +641,14 @@ namespace pinpoint {
             return {};
         }
         inbound.parent_span_id = stoll_(parent_span_id.value());
+        if (!inbound.parent_span_id) {
+            // Same fault class as the span id above and the same policy
+            // (the caller keeps the default and continues), so it gets the
+            // same throttled line; a silent half left this agent and the Go
+            // agent each logging a different half of one broken hop.
+            LOG_WARN_THROTTLED("unparseable {} header = '{}', parent span id left unset",
+                               HEADER_PARENT_SPAN_ID, parent_span_id.value());
+        }
         return inbound;
     }
 

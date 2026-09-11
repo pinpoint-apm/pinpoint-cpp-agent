@@ -163,6 +163,7 @@ namespace pinpoint {
         constexpr const char* HTTP_SERVER_RECORD_REQUEST_COOKIE = "HTTP_SERVER_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_SERVER_RECORD_RESPONSE_HEADER = "HTTP_SERVER_RECORD_RESPONSE_HEADER";
         constexpr const char* HTTP_SERVER_PROXY_USER_HEADER_NAMES = "HTTP_SERVER_PROXY_USER_HEADER_NAMES";
+        constexpr const char* HTTP_SERVER_PROXY_HEADER_ENABLE = "HTTP_SERVER_PROXY_HEADER_ENABLE";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_HEADER = "HTTP_CLIENT_RECORD_REQUEST_HEADER";
         constexpr const char* HTTP_CLIENT_RECORD_REQUEST_COOKIE = "HTTP_CLIENT_RECORD_REQUEST_COOKIE";
         constexpr const char* HTTP_CLIENT_RECORD_RESPONSE_HEADER = "HTTP_CLIENT_RECORD_RESPONSE_HEADER";
@@ -430,6 +431,11 @@ namespace pinpoint {
                 // default: the user proxy type records nothing until a name is
                 // configured.
                 std::vector<std::string> proxy_user_header_names;
+                // Java's profiler.proxy.http.header.enable, Go's
+                // Http.Server.ProxyHeaderEnable: off, no proxy header is read
+                // at all — the three built-in parsers included, which an empty
+                // proxy_user_header_names cannot switch off.
+                bool proxy_header_enable = true;
             } server;
 
             struct {

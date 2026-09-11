@@ -450,6 +450,13 @@ Rule of thumb: **URL pattern in → leave it `false`; raw URL in → set it `tru
 | `Http.Server.RecordRequestCookie` | `PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_COOKIE` | list&lt;string&gt; | `[]` |
 | `Http.Server.RecordResponseHeader` | `PINPOINT_CPP_HTTP_SERVER_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 | `Http.Server.ProxyUserHeaderNames` | `PINPOINT_CPP_HTTP_SERVER_PROXY_USER_HEADER_NAMES` | list&lt;string&gt; | `[]` |
+| `Http.Server.ProxyHeaderEnable` | `PINPOINT_CPP_HTTP_SERVER_PROXY_HEADER_ENABLE` | bool | `true` |
+
+`ProxyHeaderEnable` is Java's `profiler.proxy.http.header.enable` (the Go
+agent's `Http.Server.ProxyHeaderEnable`): `false` stops the agent reading any
+proxy header — `Pinpoint-ProxyApache`, `-ProxyNginx`, `-ProxyApp` and the user
+names below alike — so no proxy annotation is recorded. Emptying
+`ProxyUserHeaderNames` switches off only the user type.
 
 `ProxyUserHeaderNames` names the request headers that carry a *user-defined*
 proxy header — a proxy that writes the Pinpoint proxy format under a header
@@ -560,7 +567,7 @@ are **non-reloadable** — changing them requires an application restart.
 | HTTP filters | `Http.Server.ExcludeUrl`, `Http.Server.ExcludeMethod` | **Yes** |
 | HTTP status errors | `Http.Server.StatusCodeErrors` | **Yes** |
 | HTTP header recording | `Http.Server.RecordRequest/ResponseHeader`, `RecordRequestCookie`, `Http.Client.*` | **Yes** |
-| Proxy header names | `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
+| Proxy headers | `Http.Server.ProxyHeaderEnable`, `Http.Server.ProxyUserHeaderNames` | **Yes** (requests traced after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Active profile | `ActiveProfile` | **Yes** — the profile it names is re-applied on every reload |
 | Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `build_agent_info()` reads the published config, not the pinned boot snapshot (`src/grpc.cpp:1759`). |
