@@ -270,7 +270,14 @@ namespace pinpoint {
             scratch.next.swap(scratch.current);
         }
 
-        return scratch.next[0] != 0;
+        const bool matched = scratch.next[0] != 0;
+        // ponytail: one huge URL must not pin its buffers in this thread's TLS
+        // for the thread's lifetime; ordinary URLs keep the retained capacity.
+        constexpr size_t kMaxRetainedScratch = 4096;
+        if (scratch.next.capacity() > kMaxRetainedScratch) {
+            scratch = MatchScratch{};
+        }
+        return matched;
     }
 
     HttpMethodFilter::HttpMethodFilter(std::vector<std::string> cfg)
@@ -406,12 +413,13 @@ namespace pinpoint {
 
                 // The '=' must belong to the current space-delimited token;
                 // otherwise a malformed token would swallow its neighbors.
-                size_t eq_pos = value.find('=', pos);
-                if (eq_pos == std::string_view::npos || eq_pos >= token_end) {
+                size_t eq_pos = value.substr(pos, token_end - pos).find('=');
+                if (eq_pos == std::string_view::npos) {
                     pos = token_end;
                     continue;
                 }
 
+                eq_pos += pos;
                 std::string_view key = value.substr(pos, eq_pos - pos);
                 std::string_view val = value.substr(eq_pos + 1, token_end - eq_pos - 1);
 

@@ -851,6 +851,9 @@ namespace pinpoint {
         std::thread runner;
         try {
             state = std::make_shared<TeardownState>();
+            // Same mask as every other agent thread (see Start()): the runner
+            // may outlive the deadline on the detached path.
+            ScopedSignalBlock signal_block;
             runner = std::thread([this, state] {
                 teardown_workers();
                 bool abandoned;

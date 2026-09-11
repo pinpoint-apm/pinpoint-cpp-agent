@@ -707,6 +707,9 @@ namespace pinpoint {
 
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation) try {
         CHECK_FINISHED_WITH_RETURN(noopSpan());
+        // Mutates the top event's async id, so it is as thread-bound as
+        // NewSpanEvent (see doc/api_contracts.md section 1).
+        checkOwnerThread();
         CHECK_OVERFLOW_WITH_RETURN(noopSpan());
 
         auto se = data_->topSpanEvent();
@@ -749,6 +752,7 @@ namespace pinpoint {
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation,
                                    int32_t async_id, int32_t async_sequence) try {
         CHECK_FINISHED_WITH_RETURN(noopSpan());
+        checkOwnerThread();
 
         // The caller manages its span events outside this library (see
         // RecordSpanEvent), so the async link arrives as arguments instead of

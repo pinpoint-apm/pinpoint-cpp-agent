@@ -175,7 +175,7 @@ namespace pinpoint {
         const char* digit_start = p;
         while (p < line_end && isdigit(static_cast<unsigned char>(*p))) p++;
         if (p > digit_start) {
-            return stoi_(std::string_view(digit_start, p - digit_start));
+            return stoll_(std::string_view(digit_start, p - digit_start));
         }
         return std::nullopt;
     }

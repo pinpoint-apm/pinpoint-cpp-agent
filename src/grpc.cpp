@@ -1053,7 +1053,7 @@ namespace pinpoint {
             return;
         }
         if (retry_count > tuning_.meta_retry_max_attempts) {
-            LOG_INFO("drop metadata after retry exhaustion: retryCount={}", retry_count);
+            LOG_WARN_THROTTLED("drop metadata after retry exhaustion: retryCount={}", retry_count);
             // Outside the pipeline mutex: removeCache* takes the agent
             // caches' internal locks, and nesting those under the pipeline
             // mutex extends enqueueMeta contention on application threads
@@ -1157,9 +1157,9 @@ namespace pinpoint {
                     schedule_cache_release(std::move(call->meta));
                     continue;
                 }
-                LOG_ERROR("failed to send {} metadata: {}, {}", call->operation_name,
-                          static_cast<int>(call->status.error_code()),
-                          call->status.error_message());
+                LOG_WARN_THROTTLED("failed to send {} metadata: {}, {}", call->operation_name,
+                                   static_cast<int>(call->status.error_code()),
+                                   call->status.error_message());
                 retry_or_drop(std::move(call->meta), call->retry_count + 1);
                 continue;
             }
@@ -2709,8 +2709,8 @@ namespace pinpoint {
                     state->completeCall(pending);
                     if (!status.ok()) {
                         state->recordDrop(batch_count);
-                        LOG_INFO("SendSpanBatch failed: {}, {}",
-                                 static_cast<int>(status.error_code()), status.error_message());
+                        LOG_WARN_THROTTLED("SendSpanBatch failed: {}, {}",
+                                           static_cast<int>(status.error_code()), status.error_message());
                         return;
                     }
                     LOG_DEBUG("SendSpanBatch success: batchSize={}", batch_count);
