@@ -486,12 +486,18 @@ namespace pinpoint {
             return seconds * 1000 + *millis;
         }
 
+        /// @brief Wire value of an optional proxy field that was absent or
+        ///        refused: -1, ProxyRequestHeaderBuilder's default, which the
+        ///        web UI reads as "not reported" rather than a measured zero.
+        constexpr int32_t kProxyUnset = -1;
+
         /// @brief Microseconds from an apache/app `D=`, which is already a
-        ///        plain microsecond count. 0 when absent or unparseable.
+        ///        plain microsecond count. Unset when absent, not positive or
+        ///        beyond int32 (Java applies it only when `> 0`).
         int32_t parseProxyMicros(std::string_view value) {
             const auto micros = parseProxyDigits(value);
-            if (!micros.has_value() || *micros > std::numeric_limits<int32_t>::max()) {
-                return 0;
+            if (!micros.has_value() || *micros <= 0 || *micros > std::numeric_limits<int32_t>::max()) {
+                return kProxyUnset;
             }
             return static_cast<int32_t>(*micros);
         }
@@ -502,8 +508,8 @@ namespace pinpoint {
             const auto millis = parseProxySecondsWithMillis(value);
             // The wire field is an int32, so an out-of-range product is reported
             // as "no duration" instead of as a wrapped one.
-            if (!millis.has_value() || *millis > std::numeric_limits<int32_t>::max() / 1000) {
-                return 0;
+            if (!millis.has_value() || *millis <= 0 || *millis > std::numeric_limits<int32_t>::max() / 1000) {
+                return kProxyUnset;
             }
             return static_cast<int32_t>(*millis * 1000);
         }
@@ -603,7 +609,7 @@ namespace pinpoint {
             const auto percent = [](const std::string_view value) -> int32_t {
                 const auto parsed = parseProxyDigits(value);
                 if (!parsed.has_value() || *parsed > 100) {
-                    return 0;
+                    return kProxyUnset;
                 }
                 return static_cast<int32_t>(*parsed);
             };
@@ -623,7 +629,7 @@ namespace pinpoint {
             const int64_t received_time = parseProxySecondsWithMillis(values.t_val).value_or(0);
             if (received_time > 0) {
                 append(kProxyCodeNginx, received_time,
-                       parseProxyNginxDurationMicros(values.D_val), 0, 0, {});
+                       parseProxyNginxDurationMicros(values.D_val), kProxyUnset, kProxyUnset, {});
             }
         }
 
@@ -638,7 +644,7 @@ namespace pinpoint {
             const bool app_valid =
                 app.empty() || (app.size() <= kProxyAppMaxIdLength && isIdChars(app));
             if (received_time > 0 && app_valid) {
-                append(kProxyCodeApp, received_time, 0, 0, 0, app);
+                append(kProxyCodeApp, received_time, kProxyUnset, kProxyUnset, kProxyUnset, app);
             }
         }
 
@@ -656,7 +662,7 @@ namespace pinpoint {
             const int64_t received_time = parseProxyUserReceivedTimeMillis(values.t_val);
             if (received_time > 0) {
                 append(kProxyCodeUser, received_time,
-                       parseProxyUserDurationMicros(values.D_val), 0, 0, name);
+                       parseProxyUserDurationMicros(values.D_val), kProxyUnset, kProxyUnset, name);
             }
         }
     }

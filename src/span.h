@@ -326,7 +326,7 @@ namespace pinpoint {
 
         int64_t parent_span_id_{-1};
         std::string parent_app_name_;
-        int32_t parent_app_type_{1};
+        int32_t parent_app_type_{-1};  // ServiceType.UNDEFINED until Pinpoint-pAppType names one (Java: parseShort(type, UNDEFINED))
         std::string parent_service_name_;
 
         int32_t app_type_;

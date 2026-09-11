@@ -914,6 +914,22 @@ values become real; annotations that carried a received time of 0 disappear;
 and an `app=` value over 30 characters or outside `[a-zA-Z0-9._-]` now drops
 its header instead of being truncated to 32 characters.
 
+**Optional fields, later.** An absent or refused `D=`, `i=` or `b=` goes on
+the wire as -1 (`kProxyUnset` in `src/http.cpp`), the
+`ProxyRequestHeaderBuilder` default the web UI reads as "not reported", rather
+than as a 0 it cannot tell from a measured zero; `D=` is applied only when
+positive, as every Java parser's `durationTimeMicroseconds > 0` guard does,
+and apache `i=`/`b=` only inside `[0, 100]` (`ApacheRequestParser`). The Go
+agent made the same change at the same time (`proxyUnset` in
+`plugin/http/server.go`); locked in group 14 (`ProxyDurationAndPercentAreGated`).
+
+**Parent application type.** `SpanData::parent_app_type_` starts at -1
+(`ServiceType.UNDEFINED`), the value Java's `ServerRequestRecorder` records
+through `NumberUtils.parseShort(type, UNDEFINED)` when `Pinpoint-pAppType` is
+absent or unparseable; both ports used to default to 1 (UNKNOWN), a real
+service type. Sent only next to a parent application name, as before. Locked
+in group 5 (`ParentAppTypeDefaultsToUndefined`).
+
 ---
 
 ## Acceptor host without `Pinpoint-Host` — same as Java, shared with Go

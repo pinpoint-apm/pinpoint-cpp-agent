@@ -861,7 +861,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxDurationIsExact) {
     const Case cases[] = {
         {"0.123", 123000},
         {"0.001", 1000},
-        {"0.000", 0},
+        {"0.000", -1},  // not positive: unset, as Java's `> 0` guard leaves it
         {"1.999", 1999000},
         {"12.345", 12345000},
     };
@@ -895,7 +895,7 @@ TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedDuration) {
         const auto recorded = record_proxy_headers(
             {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + d_val}});
         ASSERT_EQ(recorded.size(), 1u) << d_val << " must not discard the header";
-        EXPECT_EQ(recorded[0].intValue2, 0) << "D=" << d_val << " must record no duration";
+        EXPECT_EQ(recorded[0].intValue2, -1) << "D=" << d_val << " must record no duration (unset is -1)";
     }
 }
 

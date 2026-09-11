@@ -87,7 +87,7 @@ TEST_F(SpanTest, SpanDataConstructorTest) {
     EXPECT_EQ(span_data.getServiceType(), defaults::SPAN_SERVICE_TYPE) << "Default service type should be set";
     EXPECT_GT(span_data.getApiId(), 0) << "API ID should be cached and positive";
     EXPECT_EQ(span_data.getParentSpanId(), -1) << "Initial parent span ID should be -1";
-    EXPECT_EQ(span_data.getParentAppType(), 1) << "Default parent app type should be 1";
+    EXPECT_EQ(span_data.getParentAppType(), -1) << "Default parent app type is UNDEFINED (-1), as Java records without a parseable Pinpoint-pAppType";
     EXPECT_EQ(span_data.getEventSequence(), 0) << "Initial event sequence should be 0";
     EXPECT_EQ(span_data.getEventDepth(), 1) << "Initial event depth should be 1";
     EXPECT_GT(span_data.getStartTime(), 0) << "Start time should be set";
@@ -3149,7 +3149,7 @@ TEST_F(SpanTest, ExtractContextIgnoresMalformedParentHeadersTest) {
     const auto& data = span.getSpanData();
     EXPECT_EQ(data->getSpanId(), 555) << "the well-formed headers still apply";
     EXPECT_EQ(data->getParentSpanId(), -1) << "an unparsable parent span id keeps the default";
-    EXPECT_EQ(data->getParentAppType(), 1) << "an unparsable parent app type keeps the default";
+    EXPECT_EQ(data->getParentAppType(), -1) << "an unparsable parent app type keeps the UNDEFINED default";
     EXPECT_EQ(data->getFlags(), SPAN_FLAG_NONE) << "an unparsable flag keeps the default";
 }
 
