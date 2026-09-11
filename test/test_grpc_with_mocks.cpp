@@ -580,6 +580,18 @@ private:
 };
 
 // Testable gRPC classes that inject mock stubs
+// Mirrors GrpcClient::readyChannel()'s contract for a mock: block while the
+// injected channel state is "down", return true once it is up and false only
+// when the client is stopping first.
+template <typename Client>
+static bool wait_ready_or_stopping(Client& client, const std::atomic<bool>& ready) {
+    while (!ready.load()) {
+        if (client.stoppingForTest()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return !client.stoppingForTest();
+}
+
 class TestableGrpcMetadata : public GrpcMetadata {
 public:
     explicit TestableGrpcMetadata(AgentService* agent, const GrpcClientTuning& tuning = {})
@@ -590,8 +602,11 @@ public:
     void setMockMetaStub(std::unique_ptr<v1::Metadata::StubInterface> mock_stub) {
         set_meta_stub(std::move(mock_stub));
     }
+    bool stoppingForTest() const { return stopping(); }
 
-    bool readyChannel() override {
+    // The non-waiting probe the metadata pipeline uses (see
+    // GrpcClient::channelReadyNow): false while the channel is down.
+    bool channelReadyNow() override {
         if (ready_channel_throws_.load() > 0) {
             ready_channel_throws_.fetch_sub(1);
             throw std::runtime_error("injected metadata channel setup failure");
@@ -602,6 +617,12 @@ public:
         }
         return ready_channel_;
     }
+
+    // Models the production contract: waits out the outage and returns
+    // false only once the client is stopping. If the metadata worker ever
+    // goes back to calling this while holding a permit and an item, the
+    // outage tests below stall and fail instead of passing by accident.
+    bool readyChannel() override { return wait_ready_or_stopping(*this, ready_channel_); }
 
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
@@ -697,8 +718,12 @@ public:
     void setMockSpanStub(std::unique_ptr<v1::Span::StubInterface> mock_stub) {
         set_span_stub(std::move(mock_stub));
     }
+    bool stoppingForTest() const { return stopping(); }
 
-    bool readyChannel() override { return ready_channel_; }
+    // Production readyChannel() blocks through a collector outage and returns
+    // false only once the client is stopping (or no channel was opened); the
+    // mock does the same so outage tests exercise the real worker behavior.
+    bool readyChannel() override { return wait_ready_or_stopping(*this, ready_channel_); }
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
 private:
@@ -3284,7 +3309,11 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterWithRetryPacesAndStopsPromptly) {
 // become ready, and recovery once it can again.
 // ============================================================
 
-TEST_F(GrpcMockTest, GrpcSpanCollectorOutageDropsBatchAndRecoveryResumesSending) {
+// Production outage behavior: readyChannel() blocks the worker on the batch
+// it already collected, the queue keeps filling behind it (oldest-drop once
+// full), and on recovery the held batch and the queued spans are delivered.
+// Nothing is dropped for the outage itself.
+TEST_F(GrpcMockTest, GrpcSpanCollectorOutageQueuesSpansAndRecoveryDeliversThem) {
     auto& cfg = mock_agent_service_->mutableConfig();
     cfg->collector.span_batch.size = 1;
     cfg->collector.span_batch.flush_interval_ms = 50;
@@ -3300,31 +3329,29 @@ TEST_F(GrpcMockTest, GrpcSpanCollectorOutageDropsBatchAndRecoveryResumesSending)
     ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
                      [&span_client] { span_client.sendSpanWorker(); });
 
-    // Outage policy: a batch collected while the channel cannot become ready
-    // is dropped (not retried), and the worker keeps running.
     auto outage_span = make_test_span_data_ptr(*mock_agent_service_, "outage-op");
+    const auto outage_api_id = outage_span->getApiId();
     span_client.enqueueSpan(std::make_unique<SpanChunk>(outage_span, true));
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    EXPECT_EQ(fake->batchCount(), 0u)
-        << "a batch collected during an outage must not be sent";
+    auto queued_span = make_test_span_data_ptr(*mock_agent_service_, "queued-op");
+    const auto queued_api_id = queued_span->getApiId();
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(queued_span, true));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(fake->batchCount(), 0u) << "nothing can be sent while the channel is down";
 
-    // Collector recovery: newly enqueued spans flow again.
     span_client.setReadyChannel(true);
-    auto recovery_span_data = make_test_span_data_ptr(*mock_agent_service_, "recovery-op");
-    const auto recovery_api_id = recovery_span_data->getApiId();
-    span_client.enqueueSpan(std::make_unique<SpanChunk>(recovery_span_data, true));
-    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
-        << "spans enqueued after channel recovery should be sent";
+    ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
+        << "the batch held through the outage and the queued span must both be sent on recovery";
 
     mock_agent_service_->setExiting(true);
     span_client.stopSpanWorker();
     if (worker.joinable()) worker.join();
 
-    ASSERT_EQ(fake->batchCount(), 1u);
-    const auto request = fake->request(0);
-    ASSERT_EQ(request.span_size(), 1);
-    EXPECT_EQ(request.span(0).span().apiid(), recovery_api_id)
-        << "the batch dropped during the outage must not reappear after recovery";
+    ASSERT_EQ(fake->batchCount(), 2u);
+    ASSERT_EQ(fake->request(0).span_size(), 1);
+    ASSERT_EQ(fake->request(1).span_size(), 1);
+    EXPECT_EQ(fake->request(0).span(0).span().apiid(), outage_api_id)
+        << "the batch collected during the outage is sent first, not dropped";
+    EXPECT_EQ(fake->request(1).span(0).span().apiid(), queued_api_id);
 }
 
 TEST_F(GrpcMockTest, GrpcSpanShutdownDuringCollectorOutageDropsRemainingSpans) {
@@ -3593,6 +3620,52 @@ TEST_F(GrpcMockTest, GrpcMetadataRetryBacklogDoesNotStarveNewMetaQueue) {
     EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_, 0);
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 0u)
         << "no RPC can have been sent while the channel was never ready";
+}
+
+// T-1 regression: the metadata worker must not park inside a blocking
+// readiness wait while holding an item and a permit. With the new queue
+// sized 1, a stalled worker would leave the first item in hand, the second
+// in the queue and drop every later one, releasing their cache entries. The
+// non-waiting probe fails each item straight into the retry schedule instead,
+// so the queue never overflows and no cache entry is released during the
+// outage. On recovery the parked items are delivered.
+TEST_F(GrpcMockTest, GrpcMetadataWorkerKeepsDrainingQueueDuringCollectorOutage) {
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.sender_queue_size = 1;
+
+    GrpcClientTuning tuning;
+    tuning.meta_retry_delay = std::chrono::milliseconds(200);
+    tuning.meta_retry_max_attempts = 100;
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+    metadata.setReadyChannel(false);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                             [&metadata] { metadata.sendMetaWorker(); });
+
+    for (int i = 1; i <= 5; ++i) {
+        metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(i, 100, "outage.api." + std::to_string(i))));
+        // Let the worker take each item before the next arrives: a worker
+        // stuck in a readiness wait cannot, and the queue (size 1) overflows.
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 0u)
+        << "no RPC can be sent while the channel is down";
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0)
+        << "a draining worker never overflows the new queue, so no cache entry is released";
+
+    metadata.setReadyChannel(true);
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 5, std::chrono::seconds(5)))
+        << "every item parked through the outage must be delivered on recovery";
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+    EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataEnqueueNullMetaIsNoop) {

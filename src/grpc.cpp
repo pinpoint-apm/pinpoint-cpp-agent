@@ -508,6 +508,42 @@ namespace pinpoint {
         return true;
     }
 
+    bool GrpcClient::channelReadyNow() {
+        std::unique_lock<std::mutex> lock(channel_mutex_);
+        if (stopping()) {
+            return false;
+        }
+        rotate_channel_if_due();
+        const auto transport = transport_.load();
+        if (!transport || !transport->channel) {
+            return false;
+        }
+        auto& channel = *transport->channel;
+        // try_to_connect: an IDLE channel (never used, or past gRPC's idle
+        // timeout) only connects when asked; without this the probe would
+        // report "not ready" forever and the retry path would drop every
+        // item. A connect in progress is waited for, but only as long as the
+        // RPC itself would wait for it (request_timeout, its deadline) — the
+        // same cost Java and Go pay by firing the RPC on a connecting
+        // channel. TRANSIENT_FAILURE is an outage and returns at once: gRPC
+        // reconnects on its own backoff, and readyChannel()'s unbounded wait
+        // is exactly what this probe exists to avoid.
+        auto state = channel.GetState(true);
+        const auto deadline = std::chrono::steady_clock::now() + tuning_.request_timeout;
+        while ((state == GRPC_CHANNEL_IDLE || state == GRPC_CHANNEL_CONNECTING) && !stopping()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                break;
+            }
+            const auto wait_for = std::min(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now),
+                tuning_.backoff_sleep_slice);
+            channel.WaitForStateChange(state, std::chrono::system_clock::now() + wait_for);
+            state = channel.GetState(false);
+        }
+        return state == GRPC_CHANNEL_READY;
+    }
+
     void GrpcClient::arm_channel_rotation(std::chrono::steady_clock::time_point from) {
         const auto max_age = std::chrono::milliseconds(config_->collector.grpc.channel.channel_max_age_ms);
         channel_rotate_at_ = max_age.count() > 0
@@ -1289,16 +1325,20 @@ namespace pinpoint {
                 continue;
             }
 
-            // Outside the pipeline lock: readyChannel() may block through its
-            // whole reconnect backoff while completions accumulate. Must not
-            // throw past this frame — the permit is held and the item owned
-            // here, so an escaping exception would destroy the item without
-            // releasing its cache entry AND leak the permit, permanently
-            // shrinking the pipeline. Treat a throwing readiness check like an
-            // unready channel: a failed attempt on the normal retry path.
+            // Non-waiting probe, never readyChannel(): this is the pipeline's
+            // only thread and it holds a permit and the item, so waiting out
+            // a collector outage here froze the pipeline while enqueueMeta
+            // overflowed, released cache entries and the next span re-enqueued
+            // the same metadata (see channelReadyNow()). An unready channel
+            // is a failed attempt: the item takes the retry schedule and the
+            // worker goes back to draining the queue. Must not throw past
+            // this frame — the permit is held and the item owned here, so an
+            // escaping exception would destroy the item without releasing its
+            // cache entry AND leak the permit, permanently shrinking the
+            // pipeline. A throwing probe is treated like an unready channel.
             bool channel_ready = false;
             try {
-                channel_ready = readyChannel();
+                channel_ready = channelReadyNow();
             } catch (const std::exception& e) {
                 LOG_ERROR("metadata channel readiness threw an exception: {}", e.what());
             } catch (...) {
