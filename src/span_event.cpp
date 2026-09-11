@@ -299,7 +299,12 @@ namespace pinpoint {
         SetError("Error", error_message);
     }
 
-    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) try {
+    void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message) {
+        setError(error_name, error_message, true);
+    }
+
+    void SpanEventImpl::setError(std::string_view error_name, std::string_view error_message,
+                                 bool mark_error) try {
         if (warnIfFinished()) return;
         // Before the agent call, not after: agent_ is only pinned for as long
         // as the span is (see spanIfAlive). Nothing is lost by returning here
@@ -310,8 +315,11 @@ namespace pinpoint {
         error_func_id_ = agent_->cacheError(error_name);
         error_string_ = abbreviateErrorString(error_message);
         // Propagate to the owning span (the async child span for async
-        // events) so PSpan.err and the URL stat failure flag see it.
-        span->markSpanError(ErrorCategory::kException, error_name, error_message);
+        // events) so PSpan.err and the URL stat failure flag see it — unless
+        // the caller already matched an ignore rule of its own.
+        if (mark_error) {
+            span->markSpanError(ErrorCategory::kException, error_name, error_message);
+        }
     } CATCH_AND_LOG("set error")
 
     template <typename FillFrames>
@@ -350,8 +358,20 @@ namespace pinpoint {
     void SpanEventImpl::SetError(std::string_view error_name, std::string_view error_message,
                                  const std::vector<CallStackFrame>& frames,
                                  const std::vector<ExceptionChainEntry>& causes) {
+        setErrorChain(error_name, error_message, frames, causes, true);
+    }
+
+    void SpanEventImpl::SetIgnoredError(std::string_view error_name, std::string_view error_message,
+                                        const std::vector<CallStackFrame>& frames,
+                                        const std::vector<ExceptionChainEntry>& causes) {
+        setErrorChain(error_name, error_message, frames, causes, false);
+    }
+
+    void SpanEventImpl::setErrorChain(std::string_view error_name, std::string_view error_message,
+                                      const std::vector<CallStackFrame>& frames,
+                                      const std::vector<ExceptionChainEntry>& causes, bool mark_error) {
         if (warnIfFinished()) return;
-        SetError(error_name, error_message);
+        setError(error_name, error_message, mark_error);
 
         auto* span = spanIfAlive();
         if (span == nullptr || !span->config_->enable_callstack_trace) {

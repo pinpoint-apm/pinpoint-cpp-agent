@@ -56,6 +56,9 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames,
                       const std::vector<ExceptionChainEntry>& causes) override;
+        void SetIgnoredError(std::string_view error_name, std::string_view error_message,
+                             const std::vector<CallStackFrame>& frames,
+                             const std::vector<ExceptionChainEntry>& causes) override;
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
@@ -152,6 +155,12 @@ namespace pinpoint {
         /// chain id, or 0 when the exception was dropped.
         int64_t recordException(SpanImpl& span, std::unique_ptr<CallStack> callstack,
                                 int64_t chain_id = 0, int32_t depth = 0);
+        /// @brief Bodies of SetError / SetIgnoredError: `mark_error` false
+        /// records the error fields and chain but skips the transaction mark.
+        void setError(std::string_view error_name, std::string_view error_message, bool mark_error);
+        void setErrorChain(std::string_view error_name, std::string_view error_message,
+                           const std::vector<CallStackFrame>& frames,
+                           const std::vector<ExceptionChainEntry>& causes, bool mark_error);
         /// @brief Builds the CallStack for the reader-based SetError and
         /// records it as a single-link chain.
         template <typename FillFrames>
@@ -267,6 +276,9 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames,
                       const std::vector<ExceptionChainEntry>& causes) override { SetError(error_name, error_message); }
+        void SetIgnoredError(std::string_view error_name, std::string_view error_message,
+                             const std::vector<CallStackFrame>& frames,
+                             const std::vector<ExceptionChainEntry>& causes) override {}
         void SetSqlQuery(std::string_view sql_query,
                          const std::vector<SqlBindValue>& bind_args) override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}

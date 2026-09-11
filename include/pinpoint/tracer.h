@@ -240,6 +240,16 @@ namespace pinpoint {
                               const std::vector<ExceptionChainEntry>& causes) {
             SetError(error_name, error_message, frames);
         }
+        /// @brief Like the chained SetError, but never marks the transaction
+        ///        failed: for an exception the caller has already matched
+        ///        against an ignore rule the agent cannot evaluate itself
+        ///        (subclass or cause matching). The default records it as an
+        ///        ordinary error.
+        virtual void SetIgnoredError(std::string_view error_name, std::string_view error_message,
+                                     const std::vector<CallStackFrame>& frames,
+                                     const std::vector<ExceptionChainEntry>& causes) {
+            SetError(error_name, error_message, frames, causes);
+        }
         /// @brief Records a SQL query and its bound parameters, joined with
         ///        ", " up to the configured bind-value size limit.
         virtual void SetSqlQuery(std::string_view sql_query,
@@ -467,6 +477,11 @@ namespace pinpoint {
         /// this to preserve the verdict of DisabledSpanEvent::SetError. The
         /// default no-op keeps third-party Span implementations source
         /// compatible; recording and unsampled native spans override it.
+        /// @brief Records a span-level error without marking the transaction
+        ///        failed; see SpanEvent::SetIgnoredError.
+        virtual void SetIgnoredError(std::string_view error_name, std::string_view error_message) {
+            SetError(error_name, error_message);
+        }
         virtual void MarkError(std::string_view error_name,
                                std::string_view error_message) {}
         /// @brief Records the HTTP status code for the span.

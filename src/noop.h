@@ -109,6 +109,9 @@ namespace pinpoint {
         void SetError(std::string_view error_name, std::string_view error_message,
                       const std::vector<CallStackFrame>& frames,
                       const std::vector<ExceptionChainEntry>& causes) override { SetError(error_name, error_message); }
+        void SetIgnoredError(std::string_view error_name, std::string_view error_message,
+                             const std::vector<CallStackFrame>& frames,
+                             const std::vector<ExceptionChainEntry>& causes) override {}
 
     private:
         // Non-owning: this event lives inside that span, so it cannot outlive

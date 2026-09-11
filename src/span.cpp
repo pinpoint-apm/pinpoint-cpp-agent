@@ -892,6 +892,15 @@ namespace pinpoint {
         markSpanError(ErrorCategory::kException, error_name, error_message);
     } CATCH_AND_LOG("set error")
 
+    void SpanImpl::SetIgnoredError(std::string_view error_name, std::string_view error_message) try {
+        CHECK_FINISHED();
+
+        // Recorded, not marked: the caller matched an ignore rule natively
+        // unevaluable (subclass / cause), see SpanEvent::SetIgnoredError.
+        data_->setErrorFuncId(agent_->cacheError(error_name));
+        data_->setErrorString(abbreviateErrorString(error_message));
+    } CATCH_AND_LOG("set ignored error")
+
     void SpanImpl::MarkError(std::string_view error_name,
                              std::string_view error_message) try {
         CHECK_FINISHED();

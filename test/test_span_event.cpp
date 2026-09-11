@@ -625,6 +625,21 @@ TEST_F(SpanEventTest, SetErrorWithCausesSharesOneChainTest) {
     EXPECT_EQ(annotation_count, 1) << "one exception id annotation per chain";
 }
 
+// SetIgnoredError records exceptionInfo and the chain but leaves the
+// transaction unmarked.
+TEST_F(SpanEventTest, SetIgnoredErrorRecordsWithoutMarkingTest) {
+    auto span_event = make_test_span_event(*test_span_, "test-op");
+
+    span_event.SetIgnoredError("ConnectionResetError", "peer closed",
+                               std::vector<CallStackFrame>{{"app", "send", "app.py", 3}},
+                               {{"OSError", "root", {}}});
+
+    EXPECT_GT(span_event.getErrorFuncId(), 0);
+    EXPECT_EQ(span_event.getErrorString(), "peer closed");
+    EXPECT_EQ(test_span_->getExceptions().size(), 2u);
+    EXPECT_EQ(test_span_->getSpanData()->getErr(), 0) << "ignored errors never fail the transaction";
+}
+
 // ========== Async Operations Tests ==========
 
 TEST_F(SpanEventTest, IncrAsyncSeqTest) {
