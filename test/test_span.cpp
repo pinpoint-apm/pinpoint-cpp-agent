@@ -1207,7 +1207,11 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
     const auto recorded_before = mock_agent_service_->getRecordedSpansCount();
 
     // Used only on the worker thread. main thread blocks on join(), so there is
-    // no concurrent access to the async span or the mock recorder.
+    // no concurrent access to the async span or the mock recorder. The worker
+    // owns the async span from its first call on, so its trace id is read
+    // there too (GetTraceId() is owner-checked like every other accessor) and
+    // handed back as a value.
+    std::string async_trace_id;
     std::thread worker([&]() {
         auto se = async_span->NewSpanEvent("thread-event");
         EXPECT_NE(se, nullptr) << "Async span event should be created on the worker thread";
@@ -1215,6 +1219,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
         // that legally owns the span (a Debug build asserts if it does not).
         EXPECT_EQ(async_span->GetSpanEvent(), se)
             << "the owning thread must reach its own innermost event";
+        async_trace_id = async_span->GetTraceId();
         se->EndEvent();
         async_span->EndSpan();
     });
@@ -1224,7 +1229,7 @@ TEST_F(SpanTest, AsyncSpanOnSeparateThreadTest) {
         << "Async span should record its own chunk from the worker thread";
     EXPECT_EQ(async_span->GetSpanId(), parent.GetSpanId())
         << "Async child should inherit the parent span id";
-    EXPECT_EQ(async_span->GetTraceId(), parent.GetTraceId())
+    EXPECT_EQ(async_trace_id, parent.GetTraceId())
         << "Async child should inherit the parent trace id";
 
     prepare_event->EndEvent();
@@ -1256,6 +1261,37 @@ TEST_F(SpanTest, GetSpanEventFromForeignThreadWarnsTest) {
 
     EXPECT_NE(logged.find("must be used by a single thread"), std::string::npos)
         << "GetSpanEvent from a foreign thread must report the violation; got: " << logged;
+
+    se->EndEvent();
+    span.EndSpan();
+}
+
+// GetTraceId() looks like a pure getter, which makes it the accessor a host is
+// most likely to call from a logging or metrics thread — but it fills the wire
+// form cache on first use, so such a call races the owner's InjectContext()
+// on a std::string. It is owner-checked like GetSpanEvent() so the violation
+// is reported instead of silently corrupting memory. Release-only for the
+// same reason as above.
+TEST_F(SpanTest, GetTraceIdFromForeignThreadReportsViolationTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+    // Binds the span to this thread.
+    auto se = span.NewSpanEvent("owned-event");
+    const auto owner_view = span.GetTraceId();
+    ASSERT_FALSE(owner_view.empty());
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    std::string foreign_view;
+    std::thread foreign([&]() { foreign_view = span.GetTraceId(); });
+    foreign.join();
+    std::cout.flush();
+    const auto logged = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(logged.find("must be used by a single thread"), std::string::npos)
+        << "GetTraceId from a foreign thread must report the violation; got: " << logged;
+    EXPECT_EQ(foreign_view, owner_view)
+        << "the violation is reported, not turned into a failure: the id is still returned";
 
     se->EndEvent();
     span.EndSpan();

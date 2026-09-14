@@ -429,6 +429,11 @@ namespace pinpoint {
         /// @brief Returns the distributed trace identifier for the span in its
         ///        wire form (`agentId^startTime^sequence`), or an empty string
         ///        when the span carries no trace (e.g. a noop/unsampled span).
+        ///
+        /// Subject to the span's single-thread contract like every other
+        /// method: call it on the thread that uses the span and hand the
+        /// returned string to other threads (a logger, a metrics tag). A call
+        /// from another thread is reported as a contract violation.
         virtual std::string GetTraceId() = 0;
         /// @brief Returns the span identifier.
         virtual int64_t GetSpanId() = 0;

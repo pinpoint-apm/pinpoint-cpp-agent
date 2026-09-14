@@ -952,6 +952,13 @@ namespace pinpoint {
     } CATCH_AND_LOG("record header")
 
     std::string SpanImpl::GetTraceId() try {
+        // Not a pure read: getTraceIdWire() fills its cache on first use, so a
+        // call from a non-owning thread (a logging or metrics thread reading
+        // the id) would race that std::string write with the owner's
+        // InjectContext(). Enforce the single-thread contract here like every
+        // other accessor, so the violation is reported instead of corrupting
+        // the heap silently.
+        checkOwnerThread();
         return data_->getTraceIdWire();
     } CATCH_AND_LOG_RETURN("get trace id", std::string{})
 
