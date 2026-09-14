@@ -11,15 +11,17 @@ protobuf_generate(
     IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
     PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
     PROTOS ${IT_TEST_PROTO}
+    DEPENDENCIES ${PINPOINT_PROTOC_BINARY}
 )
 protobuf_generate(
     TARGET it_test_proto
     LANGUAGE grpc
-    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+    PLUGIN protoc-gen-grpc=${PINPOINT_GRPC_CPP_PLUGIN_BINARY}
     GENERATE_EXTENSIONS .grpc.pb.h .grpc.pb.cc
     IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
     PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}
     PROTOS ${IT_TEST_PROTO}
+    DEPENDENCIES ${PINPOINT_PROTOC_BINARY} ${PINPOINT_GRPC_CPP_PLUGIN_BINARY}
 )
 target_link_libraries(it_test_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 

@@ -140,3 +140,14 @@ else()
   )
   FetchContent_MakeAvailable(fmt)
 endif()
+
+# `protobuf_generate()` names protoc in the generated custom command's DEPENDS
+# by *target* rather than by file, which Ninja lowers to an order-only edge:
+# the edge sequences the build but never marks the gencode out of date. A
+# protobuf upgrade under an existing binary dir therefore leaves last
+# version's .pb.cc/.pb.h in place, and they fail their own PROTOBUF_VERSION
+# check against the new runtime headers. Depend on the compiler binaries
+# themselves so the sources are regenerated with whichever protobuf the
+# runtime actually comes from.
+set(PINPOINT_PROTOC_BINARY $<TARGET_FILE:protobuf::protoc>)
+set(PINPOINT_GRPC_CPP_PLUGIN_BINARY $<TARGET_FILE:gRPC::grpc_cpp_plugin>)
