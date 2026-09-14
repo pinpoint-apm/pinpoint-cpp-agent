@@ -18,9 +18,14 @@
   that inject the context into their logger themselves — a language binding, or
   a logging framework with its own context carrier — instead of through a
   `TraceContextWriter`. The existing `SetLogging(writer)` overload is
-  unchanged, and remains what the C API's `pt_span_set_logging()` maps to.
-  Documented in
+  unchanged. Documented in
   [Instrumentation Guide §3](doc/instrument.md#linking-application-logs-to-the-trace).
+- **`pt_span_set_logging_flag()`, the C counterpart of the above.** The C API
+  could previously only mark a span through `pt_span_set_logging(span, writer)`,
+  which also writes `PtxId`/`PspanId` into the carrier; a `NULL` writer there
+  records nothing rather than marking. A C host that writes those two keys
+  itself now has a way to mark the span without one. Documented in
+  [C API Guide §5](doc/instrument_c.md#linking-application-logs-to-the-trace).
 - **`SetIgnoredError()` on `Span` and `SpanEvent`.** Records an error exactly
   as `SetError()` does but never marks the transaction failed, for a caller
   that matched an ignore rule `Span.IgnoreErrors` cannot express (Java's

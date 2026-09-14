@@ -3707,6 +3707,9 @@ TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
     ASSERT_NE(continued, nullptr);
     EXPECT_NE(pt_span_is_sampled(continued), 0);
     pt_span_set_acceptor_host(continued, "c-api.acceptor.example.test:8080");
+    // The flag-only overload: no carrier, so nothing is written anywhere, but
+    // the span still reaches the collector marked as logged.
+    pt_span_set_logging_flag(continued);
     pt_span_end(continued);
     pt_span_destroy(continued);
 
@@ -3747,6 +3750,10 @@ TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {
     ASSERT_TRUE(continued_wire->acceptevent().has_parentinfo());
     EXPECT_EQ(continued_wire->acceptevent().parentinfo().acceptorhost(),
               "c-api.acceptor.example.test:8080");
+    EXPECT_NE(continued_wire->loggingtransactioninfo(), 0)
+        << "pt_span_set_logging_flag() marks the span without a carrier";
+    EXPECT_EQ(wire->loggingtransactioninfo(), 0)
+        << "and the span that never asked for it stays unmarked";
 
     const auto events = events_for_span(snapshot, span_id);
     ASSERT_EQ(events.size(), 1U);

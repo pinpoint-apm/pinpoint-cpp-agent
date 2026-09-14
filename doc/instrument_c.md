@@ -394,11 +394,24 @@ pt_context_writer_t log_ctx = { &request_log_ctx, my_mdc_set };
 pt_span_set_logging(span, &log_ctx);
 ```
 
-Call it before `pt_span_end()`. A `NULL` writer is ignored: unlike the C++
-`Span::SetLogging()` overload that takes no argument, the C API has no way to
-set the mark alone, so a host that writes `PtxId`/`PspanId` itself (from
-`pt_span_get_trace_id()` / `pt_span_get_span_id()`) still has to pass a writer
-here to get the transaction marked. On a noop or unsampled span nothing is
+A host that puts the two identifiers into its logger itself — from
+`pt_span_get_trace_id()` and `pt_span_get_span_id()`, or through a logging
+framework with its own context carrier — only needs the span marked, and uses
+the flag-only entry point instead:
+
+```c
+char tid[PT_TRACE_ID_MAX];
+pt_span_get_trace_id(span, tid, sizeof tid);
+my_logger_ctx_put(&request_log_ctx, "PtxId", tid);
+/* ... and PspanId from pt_span_get_span_id() ... */
+
+pt_span_set_logging_flag(span);   /* marks the span, writes nothing */
+```
+
+Call either before `pt_span_end()`; afterwards both are a warning no-op like
+every other setter. Passing a `NULL` writer to `pt_span_set_logging()` records
+nothing at all — it does not fall back to setting the mark, so use
+`pt_span_set_logging_flag()` for that. On a noop or unsampled span nothing is
 marked and no key is written.
 
 ---

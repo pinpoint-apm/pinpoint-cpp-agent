@@ -715,8 +715,30 @@ void pt_span_set_url_stat(pt_span_t span, const char* url_pattern,
 void pt_span_force_url_stat(pt_span_t span, const char* url_pattern,
                             const char* method, int status_code);
 
-/** Mirrors pinpoint::Span::SetLogging(). */
+/**
+ * @brief Marks the span as logged and writes its identifiers into a logging
+ *        context: "PtxId" (the transaction id) and "PspanId" (the span id).
+ *
+ * The Pinpoint Web UI lists a transaction's application log lines only for
+ * spans carrying this mark. A NULL @p writer records nothing at all — use
+ * pt_span_set_logging_flag() when the host writes the two identifiers itself.
+ *
+ * Mirrors pinpoint::Span::SetLogging(TraceContextWriter&).
+ */
 void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer);
+
+/**
+ * @brief Marks the span as logged without writing anything.
+ *
+ * For a host that puts the identifiers into its logger itself — from
+ * pt_span_get_trace_id() and pt_span_get_span_id(), or through a logging
+ * framework with its own context carrier — and only needs the span marked.
+ * Recording on an already-ended span is a warning no-op, as it is for every
+ * other setter.
+ *
+ * Mirrors pinpoint::Span::SetLogging().
+ */
+void pt_span_set_logging_flag(pt_span_t span);
 
 /** Mirrors pinpoint::Span::RecordHeader(). */
 void pt_span_record_header(pt_span_t span, pt_header_type_t which,

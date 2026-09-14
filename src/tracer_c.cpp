@@ -978,6 +978,14 @@ void pt_span_set_logging(pt_span_t span, pt_context_writer_t* writer) {
     });
 }
 
+void pt_span_set_logging_flag(pt_span_t span) {
+    pt_api_call(__func__, [&] {
+        pt_handle_call(span, [&](pt_span_t valid) {
+            valid->ptr->SetLogging();
+        });
+    });
+}
+
 void pt_span_record_header(pt_span_t span, pt_header_type_t which,
                            const pt_header_reader_t* reader) {
     pt_api_call(__func__, [&] {

@@ -386,6 +386,7 @@ TEST(TracerCNullSafetyTest, NullSpanCalls) {
     EXPECT_NO_FATAL_FAILURE(pt_span_set_url_stat(nullptr, "/", "GET", 200));
     EXPECT_NO_FATAL_FAILURE(pt_span_force_url_stat(nullptr, "/", "GET", 200));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_logging(nullptr, nullptr));
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_logging_flag(nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_record_header(nullptr, PT_HTTP_REQUEST, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_int(nullptr, PT_ANNOTATION_API, 0));
     EXPECT_NO_FATAL_FAILURE(pt_span_set_annotation_long(nullptr, PT_ANNOTATION_API, 0));
@@ -1186,6 +1187,25 @@ TEST_F(TracerCApiTest, SetLoggingWritesToCarrier) {
     EXPECT_FALSE(mdc.empty());
 
     pt_span_end(span);
+    pt_span_destroy(span);
+}
+
+TEST_F(TracerCApiTest, SetLoggingWithoutACarrierWritesNothing) {
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr);
+
+    // Documented contract: a NULL writer records nothing at all. The
+    // flag-only entry point is how a host marks the span instead.
+    HeaderMap mdc;
+    pt_span_set_logging(span, nullptr);
+    EXPECT_TRUE(mdc.empty());
+
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_logging_flag(span));
+    EXPECT_TRUE(mdc.empty()) << "the flag-only overload writes to no carrier";
+
+    pt_span_end(span);
+    // Sealed like every other setter once the span has ended.
+    EXPECT_NO_FATAL_FAILURE(pt_span_set_logging_flag(span));
     pt_span_destroy(span);
 }
 
