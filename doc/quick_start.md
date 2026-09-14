@@ -254,12 +254,14 @@ SQL span event and an async span in
 
 ### Build and Run
 
-cpp-httplib is header-only and is not installed with the agent, so point the
-compiler at it and at `http_trace_context.h`:
+cpp-httplib is header-only and is not installed with the agent. Install it
+yourself (`vcpkg install cpp-httplib`, `apt install libcpp-httplib-dev`, or drop
+`httplib.h` next to your source) and point the compiler at it and at
+`http_trace_context.h`:
 
 ```bash
 g++ -std=c++17 -o my_app my_app.cpp -lpinpoint_cpp -pthread \
-    -I/path/to/pinpoint-cpp-agent/3rd_party \
+    -I/path/to/cpp-httplib \
     -I/path/to/pinpoint-cpp-agent/example
 ```
 

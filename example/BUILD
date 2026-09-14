@@ -9,7 +9,7 @@ cc_library(
     includes = ["."],
     deps = [
         "//:pinpoint-cpp",
-        "//3rd_party:httplib",
+        "@cpp_httplib//:httplib",
     ],
 )
 
@@ -20,7 +20,7 @@ cc_binary(
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
-        "//3rd_party:httplib",
+        "@cpp_httplib//:httplib",
     ],
 )
 
@@ -30,6 +30,6 @@ cc_binary(
     deps = [
         ":example_common",
         "//:pinpoint-cpp",
-        "//3rd_party:httplib",
+        "@cpp_httplib//:httplib",
     ],
 )

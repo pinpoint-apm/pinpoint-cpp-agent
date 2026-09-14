@@ -49,6 +49,12 @@ if(PINPOINT_VCPKG_TOOLCHAIN_ACTIVE AND NOT PINPOINT_FORCE_FETCHCONTENT)
   pinpoint_find_vcpkg_package(fmt)
   pinpoint_find_vcpkg_package(gRPC)
 
+  # The agent library never includes httplib; only the examples and the e2e
+  # test binaries serve HTTP. See PINPOINT_NEEDS_HTTPLIB below.
+  if(PINPOINT_NEEDS_HTTPLIB)
+    pinpoint_find_vcpkg_package(httplib)
+  endif()
+
   # vcpkg's protobuf port installs the generation helper next to its config.
   # Avoid FindProtobuf here because it can fall through to a system package.
   if(NOT COMMAND protobuf_generate)
@@ -139,6 +145,23 @@ else()
     GIT_TAG        11.2.0
   )
   FetchContent_MakeAvailable(fmt)
+
+  if(PINPOINT_NEEDS_HTTPLIB)
+    FetchContent_Declare(
+      httplib
+      GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+      GIT_TAG        v0.49.0
+    )
+    # Match the vcpkg port: header-only, and no TLS/compression backends
+    # probed off the host, so the examples build the same everywhere.
+    set(HTTPLIB_COMPILE OFF CACHE BOOL "" FORCE)
+    set(HTTPLIB_TEST OFF CACHE BOOL "" FORCE)
+    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+    set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+    set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(httplib)
+  endif()
 endif()
 
 # `protobuf_generate()` names protoc in the generated custom command's DEPENDS

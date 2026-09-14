@@ -57,7 +57,7 @@ cc_binary(
     ],
     deps = [
         "//:pinpoint-cpp",
-        "//3rd_party:httplib",
+        "@cpp_httplib//:httplib",
         "//example:example_common",
     ],
 )
@@ -75,7 +75,7 @@ cc_binary(
     deps = [
         ":testapp_grpc_cc",
         "//:pinpoint-cpp",
-        "//3rd_party:httplib",
+        "@cpp_httplib//:httplib",
         "//example:example_common",
         "@com_github_grpc_grpc//:grpc++",
     ],

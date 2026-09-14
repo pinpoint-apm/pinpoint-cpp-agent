@@ -216,7 +216,7 @@ pinpoint-cpp-agent/
 │       ├── tracer.h
 │       └── tracer_c.h
 ├── src/                 # Library source files
-├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
+├── 3rd_party/           # Vendored third-party code (MurmurHash3)
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
 ├── example/             # Example applications (C++; C examples live in pinpoint-cpp-examples)
 ├── benchmark/           # Microbenchmarks (span queue, caches, active spans)

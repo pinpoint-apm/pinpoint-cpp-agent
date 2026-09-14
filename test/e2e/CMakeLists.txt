@@ -46,10 +46,9 @@ target_link_libraries(grpc_server ${PINPOINT_CPP_LIBRARY} it_test_proto gRPC::gr
 add_executable(http_downstream_server http_downstream_server.cpp)
 target_include_directories(http_downstream_server PRIVATE
     ${CMAKE_SOURCE_DIR}/example
-    ${CMAKE_SOURCE_DIR}/3rd_party
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(http_downstream_server ${PINPOINT_CPP_LIBRARY})
+target_link_libraries(http_downstream_server ${PINPOINT_CPP_LIBRARY} httplib::httplib)
 
 # =============================================================================
 # it_test_server (HTTP + gRPC client + SQL tracing)
@@ -57,13 +56,13 @@ target_link_libraries(http_downstream_server ${PINPOINT_CPP_LIBRARY})
 add_executable(it_test_server e2e_server.cpp)
 target_include_directories(it_test_server PRIVATE
     ${CMAKE_SOURCE_DIR}/example
-    ${CMAKE_SOURCE_DIR}/3rd_party
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 target_link_libraries(it_test_server
     ${PINPOINT_CPP_LIBRARY}
     it_test_proto
+    httplib::httplib
 )
 # =============================================================================
 # Standalone public API/lifecycle scenarios

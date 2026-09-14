@@ -8,7 +8,11 @@
     "abseil",
     "yaml-cpp",
     "fmt",
-    "gtest"
+    "gtest",
+    {
+      "name": "cpp-httplib",
+      "default-features": false
+    }
   ],
   "overrides": [
     { "name": "grpc",     "version": "1.81.1" },

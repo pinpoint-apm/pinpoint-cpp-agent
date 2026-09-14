@@ -15,15 +15,6 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-cc_library(
-    name = "httplib",
-    hdrs = [
-        "httplib.h",
-    ],
-    includes = ["."],
-    visibility = ["//visibility:public"],
-)
-
 # Pinpoint gRPC IDL — vendored via git submodule at pinpoint-grpc-idl/.
 # The submodule ships no BUILD file, so its files are part of //3rd_party.
 # strip_import_prefix trims the on-disk prefix so `import "v1/X.proto";`

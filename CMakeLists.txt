@@ -113,6 +113,15 @@ endif()
 # dependency sources are always built through FetchContent; system packages and
 # other package managers are intentionally ignored.
 # =============================================================================
+# cpp-httplib serves the example applications and the e2e test servers. It is
+# not a dependency of the agent library, so a library-only build resolves it
+# from neither provider.
+if(BUILD_EXAMPLES OR BUILD_TESTING)
+  set(PINPOINT_NEEDS_HTTPLIB ON)
+else()
+  set(PINPOINT_NEEDS_HTTPLIB OFF)
+endif()
+
 include(cmake/PinpointDependencies.cmake)
 
 list(APPEND LINK_LIBS
