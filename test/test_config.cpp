@@ -548,6 +548,21 @@ TEST_F(ConfigTest, EmptyYamlConfigurationTest) {
 
 // ========== Environment Variable Tests ==========
 
+// NaN passes every ordered range check (all comparisons are false), so a
+// dedicated finiteness check must turn it off; otherwise PercentSampler would
+// static_cast<int>(NaN), which is undefined behavior.
+TEST_F(ConfigTest, NonFinitePercentRateDisablesPercentSamplingTest) {
+    for (const char* raw : {"nan", "inf", "-inf"}) {
+        setenv(full_env(env::SAMPLING_TYPE).c_str(), "PERCENT", 1);
+        setenv(full_env(env::SAMPLING_PERCENT_RATE).c_str(), raw, 1);
+
+        auto config = make_config();
+
+        EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.0)
+            << "a non-finite percent rate (" << raw << ") must be normalized to 0";
+    }
+}
+
 TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     // Set environment variables
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvApp", 1);

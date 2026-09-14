@@ -722,7 +722,12 @@ namespace pinpoint {
         ///   host's handler should stop the application and let the normal
         ///   exit path (or the guard) call Shutdown().
         /// - The hook shuts the agent down within the usual 3-second bound,
-        ///   which adds that much to a slow exit in the worst case.
+        ///   which adds that much to a slow exit in the worst case. Unlike an
+        ///   explicit Shutdown(), a worker that is still wedged when the
+        ///   bound expires is then waited for rather than left draining in
+        ///   the background: a detached teardown running while static
+        ///   destruction proceeds could crash the exiting process, so the
+        ///   hook prefers a slower exit to that.
         bool install_atexit_shutdown = false;
 
         /// Optional host log sink, for embedders that already own a log

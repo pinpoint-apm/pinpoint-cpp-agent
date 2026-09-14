@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -75,6 +76,12 @@ namespace pinpoint {
             // Clamping the product (not the result) keeps this defined for
             // out-of-range rates that bypass the config validation, and leaves
             // the class well-defined at both ends: never-sample / always-sample.
+            // NaN survives std::clamp and static_cast<int>(NaN) is undefined,
+            // so a non-finite rate is treated as "never sample" here as well.
+            if (!std::isfinite(rate)) {
+                rate_ = 0;
+                return;
+            }
             rate_ = static_cast<int>(std::clamp(
                 rate * 100, 0.0, static_cast<double>(MAX_PERCENT_RATE)));
         }

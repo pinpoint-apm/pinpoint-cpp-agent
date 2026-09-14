@@ -21,6 +21,7 @@
 #include "../src/config.h"
 #include "mock_agent_service.h"
 #include <gtest/gtest.h>
+#include <limits>
 #include <thread>
 #include <chrono>
 #include <vector>
@@ -164,6 +165,22 @@ TEST_F(SamplingTest, PercentSamplerOutOfRangeRateClampTest) {
     for (int i = 0; i < 100; ++i) {
         EXPECT_TRUE(over_sampler.isSampled())
             << "Call " << i << " should return true with a rate above 100%";
+    }
+}
+
+// A non-finite rate (NaN slips through every ordered comparison in the config
+// validation; static_cast<int>(NaN) would be undefined) must behave as
+// never-sample instead of invoking undefined behavior.
+TEST_F(SamplingTest, PercentSamplerNonFiniteRateNeverSamplesTest) {
+    const double rates[] = {std::numeric_limits<double>::quiet_NaN(),
+                            std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity()};
+    for (const double rate : rates) {
+        PercentSampler sampler(rate);
+        for (int i = 0; i < 100; ++i) {
+            EXPECT_FALSE(sampler.isSampled())
+                << "Call " << i << " should return false with rate " << rate;
+        }
     }
 }
 

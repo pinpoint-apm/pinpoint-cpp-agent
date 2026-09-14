@@ -15,6 +15,7 @@
  */
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -1034,7 +1035,13 @@ namespace pinpoint {
         // positive rate below 0.01 is different: the operator asked for
         // sampling and truncation silently gives them none, so that one keeps
         // the warning.
-        if (config->sampling.percent_rate < 0.0) {
+        if (!std::isfinite(config->sampling.percent_rate)) {
+            // NaN passes every ordered comparison below and inf would clamp
+            // to the maximum silently; both are operator mistakes, not rates.
+            LOG_WARN("sampling percent rate {} is not a finite number, disabling percent sampling",
+                     config->sampling.percent_rate);
+            config->sampling.percent_rate = 0.0;
+        } else if (config->sampling.percent_rate < 0.0) {
             LOG_INFO("sampling percent rate {} is not positive, disabling percent sampling",
                      config->sampling.percent_rate);
             config->sampling.percent_rate = 0.0;

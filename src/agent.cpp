@@ -93,6 +93,15 @@ namespace pinpoint {
         // __cxa_atexit" invariant documented at global_agent() above.
         std::atomic<bool> atexit_shutdown_hook_installed_{false};
 
+        // Set while atexit_shutdown_hook() runs. teardown_workers_with_deadline()
+        // reads it to refuse the detach-on-deadline path: a teardown runner
+        // detached from an atexit handler would keep tearing down gRPC and
+        // logging state on its own thread while __cxa_finalize continues to
+        // destroy statics on the main thread — a crash at exit rather than the
+        // clean one the hook exists to provide. Joining unbounded instead
+        // trades a slow exit for that.
+        std::atomic<bool> atexit_shutdown_hook_running_{false};
+
         void atexit_shutdown_hook() noexcept {
             std::shared_ptr<AgentImpl> agent;
             try {
@@ -103,7 +112,9 @@ namespace pinpoint {
                 // Shutdown() (not a plain release) so the teardown is the
                 // shared-owned one: a straggler past the deadline is parked on
                 // a keep-alive instead of a deferred destroy.
+                atexit_shutdown_hook_running_.store(true, std::memory_order_release);
                 agent->Shutdown();
+                atexit_shutdown_hook_running_.store(false, std::memory_order_release);
             }
         }
 
@@ -915,6 +926,20 @@ namespace pinpoint {
         // or handing over ownership when the SharedDeleter is the caller. An
         // object that is neither dies with its scope regardless, so the
         // unbounded join stays its only lifetime-safe option.
+        // Inside the atexit hook the detached path is never taken (see
+        // atexit_shutdown_hook_running_): static destruction is already under
+        // way on this thread, so the runner must not outlive the hook.
+        if (atexit_shutdown_hook_running_.load(std::memory_order_acquire)) {
+            try {
+                LOG_WARN("agent shutdown exceeded the {}ms deadline inside the atexit hook; "
+                         "waiting for workers to finish so no teardown runs during "
+                         "static destruction; still running: {}",
+                         agent_shutdown_deadline().count(), running_worker_names());
+            } catch (...) {}
+            runner.join();
+            return false;
+        }
+
         std::shared_ptr<AgentImpl> keep_alive = weak_from_this().lock();
         if (keep_alive == nullptr && !may_defer_destroy) {
             try {
