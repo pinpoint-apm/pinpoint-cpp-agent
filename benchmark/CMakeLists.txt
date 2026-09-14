@@ -10,11 +10,14 @@ add_executable(span_queue_benchmark span_queue_benchmark.cpp)
 target_include_directories(span_queue_benchmark PRIVATE ../src)
 target_link_libraries(span_queue_benchmark PRIVATE Threads::Threads)
 
-# Header-only usage of src/cache.h: needs the public include dir for the
-# pinpoint/tracer.h that utility.h pulls in, but no library to link.
+# src/cache.h is header-only, but it logs, so the benchmark still needs the
+# public include dir for the pinpoint/tracer.h that utility.h pulls in and the
+# library that defines Logger::write.
 add_executable(id_cache_benchmark id_cache_benchmark.cpp)
 target_include_directories(id_cache_benchmark PRIVATE ../src ../include)
-target_link_libraries(id_cache_benchmark PRIVATE Threads::Threads)
+target_link_libraries(id_cache_benchmark PRIVATE
+  ${PINPOINT_CPP_LIBRARY}
+  Threads::Threads)
 
 add_executable(atomic_shared_ptr_benchmark atomic_shared_ptr_benchmark.cpp)
 target_include_directories(atomic_shared_ptr_benchmark PRIVATE ../src)

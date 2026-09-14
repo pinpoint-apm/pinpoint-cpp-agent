@@ -26,7 +26,10 @@ cc_binary(
     srcs = ["id_cache_benchmark.cpp"],
     copts = BENCHMARK_COPTS,
     local_defines = BENCHMARK_DEFINES,
-    deps = ["//:internal_headers"],
+    deps = [
+        "//:internal_headers",
+        "//:pinpoint-cpp",
+    ],
 )
 
 cc_binary(
