@@ -104,16 +104,18 @@ namespace pinpoint {
         std::chrono::milliseconds registration_wait_log_interval{30000};
         /// Bounded wait for a stream write to complete (for the ping stream:
         /// write + server pong) before cancellation is requested and the
-        /// worker begins stream cleanup.
-        std::chrono::milliseconds stream_write_timeout{5000};
+        /// worker begins stream cleanup. Fixed: no caller, test included, has
+        /// ever needed a different value.
+        static constexpr std::chrono::milliseconds stream_write_timeout{5000};
         /// Bounded wait for the one shutdown URL-stat flush write (see
         /// GrpcStats::flush_url_stats_on_shutdown). Deliberately far below
         /// stream_write_timeout: the flush and the finish_stats_stream() that
         /// follows it share one kDefaultShutdownDeadline (3s), so the flush
         /// takes a small slice and, on expiry, closes and cancels instead of
         /// waiting longer — leaving the only OnDone wait on the path to the
-        /// close, where it was already budgeted.
-        std::chrono::milliseconds stats_shutdown_flush_timeout{500};
+        /// close, where it was already budgeted. Fixed, like the timeout it is
+        /// derived from.
+        static constexpr std::chrono::milliseconds stats_shutdown_flush_timeout{500};
         /// Pause before a worker loop is restarted after an unexpected
         /// exception, so a persistent failure cannot become a hot spin.
         std::chrono::milliseconds worker_restart_delay{1000};
@@ -160,8 +162,9 @@ namespace pinpoint {
         /// 3-second agent shutdown deadline so the in-flight await that
         /// follows still gets a slice of it.
         std::chrono::milliseconds span_shutdown_flush_budget{1500};
-        /// Minimum spacing between cumulative span-queue-drop reports.
-        std::chrono::seconds span_queue_drop_log_interval{60};
+        /// Minimum spacing between cumulative span-queue-drop reports. Fixed:
+        /// the drop-reporting tests drive QueueDropReporter directly.
+        static constexpr std::chrono::seconds span_queue_drop_log_interval{60};
 
         /// Bounded wait for a channel-rotation successor to become READY
         /// before the rotation is abandoned and the current channel kept
