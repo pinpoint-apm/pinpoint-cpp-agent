@@ -590,6 +590,42 @@ TEST_F(SpanTest, RecordSpanEventEnforcesLimitsTest) {
         << "records past the limits are dropped, the valid one is kept";
 }
 
+// The binding-oriented overloads do not enforce the owner-thread contract:
+// a binding that serializes access itself may flush one chunk from thread A
+// (binding the owner lazily in the checked paths) and end the span from
+// thread B. With checkOwnerThread() in these paths a debug build would abort
+// here; the contract for a shared span is "trace may be wrong, never crash".
+TEST_F(SpanTest, RecordSpanEventAndLinkedAsyncSpanSkipOwnerThreadCheckTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    const int64_t now_ms = 1700000000000;
+
+    // Bind the owner on this thread through a checked path.
+    span.NewSpanEvent("owner-binding")->EndEvent();
+
+    std::thread other([&] {
+        auto event = span.RecordSpanEvent("replayed-elsewhere", 2100, 1, 1,
+                                          now_ms, now_ms + 5, NONE_ASYNC_ID);
+        ASSERT_NE(event, nullptr);
+        event->EndEvent();
+        auto async_child = span.NewAsyncSpan("async-elsewhere", 42, 1);
+        ASSERT_NE(async_child, nullptr);
+        async_child->EndSpan();
+        span.EndSpan();
+    });
+    other.join();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    bool replayed_recorded = false;
+    for (const auto& chunk : mock_agent_service_->recorded_spans_) {
+        for (const auto* ev : chunk->getSpanEventChunk()) {
+            if (ev->getSequence() == 1) {
+                replayed_recorded = true;
+            }
+        }
+    }
+    EXPECT_TRUE(replayed_recorded) << "cross-thread replay must record, not drop or abort";
+}
+
 // The returned handle must be OPEN: a batch-replaying wrapper carries the
 // event's destination, endpoint, child span id and every annotation (SQL and
 // errors included) on the handle, because RecordSpanEvent's arguments cover

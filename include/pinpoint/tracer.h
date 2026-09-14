@@ -405,6 +405,10 @@ namespace pinpoint {
         /// has none, so it assigns `async_id` to its own parent event (flushed
         /// later with that event) and passes the per-event `async_sequence`
         /// here instead.
+        ///
+        /// Unlike the single-argument overload, this one does not enforce
+        /// the owner-thread contract: the calling binding is expected to
+        /// serialize access to the span itself.
         virtual SpanPtr NewAsyncSpan(std::string_view async_operation,
                                      int32_t async_id, int32_t async_sequence) = 0;
         /// @brief Records one already-completed span event (batch replay).
@@ -418,7 +422,9 @@ namespace pinpoint {
         /// next RecordSpanEvent or EndSpan call. `async_id` marks an event
         /// that spawned async children (NONE_ASYNC_ID otherwise). Events
         /// beyond the configured max depth/sequence are dropped (a shared
-        /// no-op event is returned).
+        /// no-op event is returned). The owner-thread contract is not
+        /// enforced here (see the three-argument NewAsyncSpan); the binding
+        /// serializes access to the span itself.
         virtual SpanEventPtr RecordSpanEvent(std::string_view operation,
                                              int32_t service_type,
                                              int32_t sequence, int32_t depth,

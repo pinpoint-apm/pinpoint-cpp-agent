@@ -756,7 +756,12 @@ namespace pinpoint {
     SpanPtr SpanImpl::NewAsyncSpan(std::string_view async_operation,
                                    int32_t async_id, int32_t async_sequence) try {
         CHECK_FINISHED_WITH_RETURN(noopSpan());
-        checkOwnerThread();
+        // No checkOwnerThread(): this overload exists for language bindings
+        // that own their span events and serialize every crossing into the
+        // span themselves. Nothing on this span's native stack is mutated
+        // (the async link arrives as arguments), so the owner-thread
+        // contract has nothing to protect here, and a binding that ends a
+        // shared span from another thread must degrade, not assert.
 
         // The caller manages its span events outside this library (see
         // RecordSpanEvent), so the async link arrives as arguments instead of
@@ -784,7 +789,12 @@ namespace pinpoint {
                                            int64_t start_time_ms, int64_t end_time_ms,
                                            int32_t async_id) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
-        checkOwnerThread();
+        // No checkOwnerThread(): batch replay is driven by a language binding
+        // that already serializes access to this span (the Python agent holds
+        // a per-span lock across the whole flush). A binding may legitimately
+        // replay from a thread other than the one that flushed an earlier
+        // chunk, and asserting there would turn a documented "may be
+        // inaccurate" case into a process abort. See doc/api_contracts.md.
 
         // Backstop only: a wrapper batching events enforces these limits at
         // event-creation time with its own copy of the config. Dropping here
