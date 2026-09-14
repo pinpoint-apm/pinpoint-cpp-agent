@@ -67,6 +67,33 @@ namespace {
         EXPECT_EQ(queue.dropped_oldest(), 9999u);
     }
 
+    // The return value drives the consumer wakeup: only the enqueue that
+    // activates a shard reports true, so the producer notifies unconditionally
+    // exactly when the release/acquire handshake alone could lose the wakeup.
+    TEST(ShardedBoundedQueueTest, EnqueueReportsShardActivationOnlyOnce) {
+        ShardedBoundedQueue<std::unique_ptr<int>> queue(16, 4);
+
+        auto first = std::make_unique<int>(1);
+        EXPECT_TRUE(queue.enqueue(first)) << "first enqueue from this thread activates its shard";
+
+        for (int value = 2; value < 40; ++value) {
+            auto item = std::make_unique<int>(value);
+            EXPECT_FALSE(queue.enqueue(item))
+                << "value " << value << ": the shard is already active";
+        }
+
+        std::thread other([&queue] {
+            // Another thread maps to its own shard (or, if it hashes onto the
+            // same one, finds it active); either way at most one activation.
+            auto a = std::make_unique<int>(100);
+            const bool first_from_thread = queue.enqueue(a);
+            auto b = std::make_unique<int>(101);
+            EXPECT_FALSE(queue.enqueue(b));
+            (void)first_from_thread;
+        });
+        other.join();
+    }
+
     TEST(ShardedBoundedQueueTest, OneShardIsFifoAndHeadDropsAcrossWraparound) {
         ShardedBoundedQueue<std::unique_ptr<int>> queue(3, 1);
 

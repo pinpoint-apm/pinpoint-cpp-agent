@@ -103,18 +103,32 @@ namespace pinpoint {
         ShardedBoundedQueue(ShardedBoundedQueue&&) = delete;
         ShardedBoundedQueue& operator=(ShardedBoundedQueue&&) = delete;
 
-        void enqueue(T& value) {
+        /**
+         * @brief Enqueues value into the calling thread's home shard.
+         * @return true when this call activated the home shard, i.e. the
+         *         consumer may have scanned active_shards_ before that bit
+         *         was published. The consumer's empty-check/sleep handshake
+         *         (e.g. GrpcSpan::wait_dequeue_until) pairs its waiting flag
+         *         with active_shards_ through release/acquire only, which does
+         *         not order a store on one variable before a load of the other
+         *         (store-buffering): both sides can miss each other on the very
+         *         first enqueue from a thread. Steady-state enqueues onto an
+         *         active shard are ordered through the shard mutex the consumer
+         *         also takes, so only this first activation needs the caller to
+         *         notify unconditionally.
+         */
+        bool enqueue(T& value) {
             const size_t home = thread_shard_id() % shard_count_;
-            ensure_active(home);
+            const bool activated = ensure_active(home);
 
             // At capacity, enqueue and any head-drop share one shard lock.
             if (borrowable_shards_.load(std::memory_order_acquire) == 0) {
                 shards_[home]->enqueue_or_overwrite(value);
-                return;
+                return activated;
             }
 
             if (shards_[home]->try_enqueue(value)) {
-                return;
+                return activated;
             }
 
             // An isolated producer grows beyond its initial quota by borrowing
@@ -123,10 +137,11 @@ namespace pinpoint {
             // read-only branch directly to one-lock head-drop.
             if (try_borrow_inactive_quota(home) &&
                     shards_[home]->try_enqueue(value)) {
-                return;
+                return activated;
             }
 
             shards_[home]->enqueue_or_overwrite(value);
+            return activated;
         }
 
         bool try_dequeue(T& value) {
@@ -377,14 +392,15 @@ namespace pinpoint {
             std::atomic<uint64_t> dropped_oldest_{0};
         };
 
-        void ensure_active(size_t home) {
+        /// @return true when this call performed the activation.
+        bool ensure_active(size_t home) {
             if (shards_[home]->is_active()) {
-                return;
+                return false;
             }
 
             std::lock_guard<std::mutex> rebalance_lock(rebalance_mutex_);
             if (shards_[home]->is_active()) {
-                return;
+                return false;
             }
 
             const uint64_t home_bit = shard_bit(home);
@@ -406,6 +422,7 @@ namespace pinpoint {
 
             shards_[home]->mark_active();
             active_shards_.fetch_or(home_bit, std::memory_order_release);
+            return true;
         }
 
         bool try_borrow_inactive_quota(size_t home) {

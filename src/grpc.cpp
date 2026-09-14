@@ -2514,15 +2514,24 @@ namespace pinpoint {
         // Each service thread is mapped to a stable shard. Head-drop and insert
         // complete in one short shard-local critical section with no allocation
         // and no process-wide counter write on the hot path.
-        span_queue_.enqueue(span);
-        notify_span_worker();
+        const bool shard_activated = span_queue_.enqueue(span);
+        notify_span_worker(shard_activated);
     } CATCH_AND_LOG("failed to enqueue span:")
 
-    void GrpcSpan::notify_span_worker() {
+    void GrpcSpan::notify_span_worker(bool shard_activated) {
         // The fast path never takes the wait mutex. If the worker has announced
         // that it is about to sleep, pairing the notify with the same mutex used
         // by wait_dequeue_until closes the empty-check / sleep lost-wakeup gap.
-        if (!span_consumer_waiting_.load(std::memory_order_acquire)) {
+        //
+        // That pairing relies on the shard mutex for ordering, which a first
+        // enqueue onto a not-yet-active shard never shares with the consumer:
+        // the consumer's waiting-flag store and its active_shards_ load are
+        // ordered against the producer's active_shards_ store and waiting-flag
+        // load by release/acquire only, so both can read the stale value and
+        // the wakeup is lost until the flush deadline. Activation is rare (at
+        // most once per shard per queue), so take the mutex unconditionally
+        // then; the consumer's re-check under the same mutex sees the new bit.
+        if (!shard_activated && !span_consumer_waiting_.load(std::memory_order_acquire)) {
             return;
         }
         std::lock_guard<std::mutex> lock(span_wait_mutex_);
@@ -2986,6 +2995,12 @@ namespace pinpoint {
                 await_stream_done(lock, "stats write-timeout recycle");
             }
 
+            // grpc_status_ is no longer STREAM_WRITE here (completion, or
+            // OnDone after the recycle), so the write no longer references
+            // msg_: free it now rather than holding a full URL-stat table
+            // until the next build.
+            release_written_message_locked();
+
             if (grpc_status_ == STREAM_DONE) {
                 if (!stream_status_.ok()) {
                     LOG_ERROR("failed to send stats: {}, {}",
@@ -3042,7 +3057,10 @@ namespace pinpoint {
 
     void GrpcStats::OnWriteDone(bool ok) {
         LOG_DEBUG("stats - OnWriteDone: {}", ok);
-        arena_.Reset(); // reset arena after write completes to free all memory at once
+        // The written message is released by the worker (release_written_
+        // message_locked) once it observes this completion under stream_mutex_,
+        // not here: resetting the arena on gRPC's callback thread would be
+        // correct only through the non-local "one outstanding write" invariant.
 
         if (ok) {
             // Only record the completion and wake the worker; the next
@@ -3082,9 +3100,19 @@ namespace pinpoint {
         stream_cv_.notify_one();
     }
 
+    void GrpcStats::release_written_message_locked() noexcept {
+        // Caller holds stream_mutex_ and has observed grpc_status_ !=
+        // STREAM_WRITE (or STREAM_DONE), so the StartWrite that referenced msg_
+        // has completed and the arena may be freed. Reset on an empty arena
+        // is a no-op, which lets the build paths call this unconditionally.
+        msg_ = nullptr;
+        arena_.Reset();
+    }
+
     GrpcStreamStatus GrpcStats::next_write() try {
         LOG_DEBUG("stats - next_write");
         // should be hold stream_mutex_
+        release_written_message_locked();
 
         StatsType stats;
         {
@@ -3139,11 +3167,11 @@ namespace pinpoint {
         return STREAM_WRITE;
     } catch (const std::exception &e) {
         LOG_ERROR("failed to send stats: exception = {}", e.what());
-        // No StartWrite was issued for this msg_, so OnWriteDone will not run to
-        // reset the arena. Reset here so a failed build does not accumulate
-        // allocations across consecutive failures (compounding memory pressure
-        // in exactly the OOM scenario that triggers this path).
-        arena_.Reset();
+        // No StartWrite was issued for this msg_. Release it here so a failed
+        // build does not hold its partial allocations until the next build
+        // (compounding memory pressure in exactly the OOM scenario that
+        // triggers this path).
+        release_written_message_locked();
         // Treated like an empty queue: the worker waits for the next payload.
         return STREAM_CONTINUE;
     }
@@ -3180,6 +3208,7 @@ namespace pinpoint {
             return STREAM_CONTINUE;
         }
 
+        release_written_message_locked();
         msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
         msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
         LOG_INFO("flushing {} url stat entries on shutdown", entries);
@@ -3187,8 +3216,8 @@ namespace pinpoint {
     } catch (const std::exception& e) {
         LOG_ERROR("failed to build the shutdown url stat flush: exception = {}", e.what());
         // Same reasoning as next_write's handler: no StartWrite was issued for
-        // this msg_, so nothing will reset the arena.
-        arena_.Reset();
+        // this msg_, so release its partial allocations now.
+        release_written_message_locked();
         return STREAM_CONTINUE;
     }
 
@@ -3238,6 +3267,7 @@ namespace pinpoint {
             [this] { return grpc_status_ != STREAM_WRITE; });
         shutdown_flush_writing_ = false;
         if (completed) {
+            release_written_message_locked();
             return;
         }
 

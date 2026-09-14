@@ -986,7 +986,10 @@ namespace pinpoint {
         void maybe_log_span_drops();
         bool wait_dequeue_until(std::unique_ptr<SpanChunk>& span,
                                 std::chrono::steady_clock::time_point deadline);
-        void notify_span_worker();
+        /// @param shard_activated true when the enqueue activated a shard for
+        ///        the first time; the notify then takes the wait mutex
+        ///        unconditionally (see ShardedBoundedQueue::enqueue).
+        void notify_span_worker(bool shard_activated = false);
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
         bool try_acquire_permit(std::chrono::milliseconds timeout);
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
@@ -1071,6 +1074,13 @@ namespace pinpoint {
         void flush_url_stats_on_shutdown();
 
     private:
+        /// @brief Frees msg_ and its arena. Call only under stream_mutex_ once
+        ///        grpc_status_ != STREAM_WRITE, i.e. no StartWrite references
+        ///        msg_ any more; idempotent.
+        void release_written_message_locked() noexcept;
+
+        /// Owns msg_. Reset by the worker under stream_mutex_ (see
+        /// release_written_message_locked), never on a gRPC callback thread.
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
         std::atomic<uint64_t> shutdown_dropped_url_stats_{0};
