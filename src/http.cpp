@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/numbers.h"
@@ -301,19 +302,11 @@ namespace pinpoint {
 
             // Extract first IP from comma-separated list
             auto comma_pos = value.find(',');
-            std::string_view first_ip = (comma_pos != std::string::npos) 
+            std::string_view first_ip = (comma_pos != std::string::npos)
                 ? value.substr(0, comma_pos)
                 : value;
 
-            // Trim leading/trailing whitespace
-            auto start = first_ip.find_first_not_of(" \t");
-            auto end = first_ip.find_last_not_of(" \t");
-            
-            if (start != std::string::npos && end != std::string::npos) {
-                return first_ip.substr(start, end - start + 1);
-            }
-
-            return {};
+            return absl::StripAsciiWhitespace(first_ip);
         }
     }
 
@@ -571,15 +564,6 @@ namespace pinpoint {
             }
             return parseProxyMicros(value);
         }
-
-        /// @brief Trims ASCII blanks a space-split token can still hold (tab, CR).
-        std::string_view trimProxyValue(std::string_view value) {
-            const auto start = value.find_first_not_of(" \t\r\n");
-            if (start == std::string_view::npos) {
-                return {};
-            }
-            return value.substr(start, value.find_last_not_of(" \t\r\n") - start + 1);
-        }
     }
 
     void HttpTracerUtil::setProxyHeader(const HeaderReader& reader, PinpointAnnotation* annotation,
@@ -663,7 +647,8 @@ namespace pinpoint {
                 proxy_app.has_value() && !proxy_app->empty()) {
             const auto values = parseProxyHeaderInline(*proxy_app);
             const int64_t received_time = parseProxyDigits(values.t_val).value_or(0);
-            const std::string_view app = trimProxyValue(values.app_val);
+            // The space-split token can still hold a tab or a trailing CR.
+            const std::string_view app = absl::StripAsciiWhitespace(values.app_val);
             const bool app_valid =
                 app.empty() || (app.size() <= kProxyAppMaxIdLength && isIdChars(app));
             if (received_time > 0 && app_valid) {

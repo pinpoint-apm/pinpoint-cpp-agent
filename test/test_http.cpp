@@ -761,6 +761,19 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForWithSpacesTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "Should trim whitespace from IP";
 }
 
+// A header value reaching the agent with the line terminator still attached
+// must not carry it into the span: the address is trimmed of every ASCII blank,
+// not just space and tab.
+TEST_F(HttpTest, GetRemoteAddrXForwardedForStripsLineTerminatorTest) {
+    std::map<std::string, std::string> headers = {
+        {"X-Forwarded-For", "203.0.113.45\r\n"}
+    };
+    MockHeaderReader reader(headers);
+
+    std::string_view addr = HttpTracerUtil::getRemoteAddr(reader, "192.168.1.100:8080");
+    EXPECT_EQ(addr, "203.0.113.45") << "Should trim CR/LF from IP";
+}
+
 // Test getRemoteAddr with X-Real-Ip header
 TEST_F(HttpTest, GetRemoteAddrXRealIpTest) {
     std::map<std::string, std::string> headers = {
