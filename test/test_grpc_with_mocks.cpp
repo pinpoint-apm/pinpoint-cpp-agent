@@ -28,6 +28,7 @@
 #include <future>
 #include <mutex>
 #include <memory>
+#include <optional>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -716,10 +717,20 @@ public:
     bool readyChannel() override { return wait_ready_or_stopping(*this, ready_channel_); }
     void setReadyChannel(bool ready) { ready_channel_ = ready; }
 
+    // The shutdown drain probes the channel without waiting; with a bare
+    // stub there is no channel, so tests that want the drain to send set
+    // this (mirrors TestableGrpcStats::setStatsChannelReady).
+    bool span_channel_ready() const override {
+        return span_channel_ready_.has_value() ? *span_channel_ready_
+                                               : GrpcSpan::span_channel_ready();
+    }
+    void setSpanChannelReady(bool ready) { span_channel_ready_ = ready; }
+
 private:
     // Toggled by the test body while the worker thread polls readyChannel();
     // atomic so TSan-clean, like ready_channel_failures_.
     std::atomic<bool> ready_channel_{true};
+    std::optional<bool> span_channel_ready_;
 };
 
 class TestableGrpcStats : public GrpcStats {
@@ -3335,6 +3346,68 @@ TEST_F(GrpcMockTest, GrpcSpanShutdownDuringCollectorOutageDropsRemainingSpans) {
     EXPECT_TRUE(finished) << "the shutdown flush must finish, not block indefinitely";
     EXPECT_LT(elapsed, std::chrono::seconds(3))
         << "the shutdown flush must not block waiting for a dead collector";
+}
+
+// A collector that accepts the connection but stops acknowledging holds every
+// in-flight permit. Without a drain-wide budget each remaining batch would wait
+// a full flush interval for a permit, so a full queue could keep the agent
+// alive for minutes past its shutdown deadline. The drain must instead launch
+// what the budget allows, count the rest as dropped, and return promptly.
+TEST_F(GrpcMockTest, GrpcSpanShutdownDrainStopsLaunchingWhenBudgetIsSpent) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 5000;  // per-batch permit wait, if unbudgeted
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+
+    GrpcClientTuning tuning;
+    tuning.span_shutdown_flush_budget = std::chrono::milliseconds(200);
+    tuning.span_shutdown_await_timeout = std::chrono::milliseconds(50);
+    TestableGrpcSpan span_client(mock_agent_service_.get(), tuning);
+    span_client.setReadyChannel(false);
+    span_client.setSpanChannelReady(true);
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    constexpr int kSpans = 5;
+    for (int i = 0; i < kSpans; ++i) {
+        auto span_data = make_test_span_data_ptr(
+            *mock_agent_service_, "shutdown-budget-op-" + std::to_string(i));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+
+    // Stop before the worker runs so every span is still queued when the
+    // shutdown drain executes.
+    span_client.stopSpanWorker();
+
+    const auto start = std::chrono::steady_clock::now();
+    std::atomic<bool> worker_done{false};
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                        [&span_client, &worker_done] {
+                            span_client.sendSpanWorker();
+                            worker_done.store(true);
+                        });
+    const bool finished = wait_for_condition(
+        [&worker_done] { return worker_done.load(); }, std::chrono::seconds(3));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    if (finished && worker.joinable()) worker.join();
+
+    ASSERT_TRUE(finished) << "the drain must return once its budget is spent";
+    // Budget (200ms) + two bounded in-flight awaits (50ms each) + slack; the
+    // unbudgeted drain would need >= 4 * 5000ms of permit waits here.
+    EXPECT_LT(elapsed, std::chrono::milliseconds(1500))
+        << "the drain must not wait a full flush interval per remaining batch";
+    // The single permit is taken by the first batch and never returned by
+    // the held collector, so exactly one batch reaches the stub.
+    EXPECT_EQ(fake->batchCount(), 1u);
+    EXPECT_EQ(span_client.droppedSpans(), static_cast<uint64_t>(kSpans - 1))
+        << "every span the budget could not launch must be counted as dropped";
+
+    // Release the held callback after the client is done: completion state
+    // is shared, so a late reply stays memory-safe.
+    fake->releaseHeldCallbacks(grpc::Status::OK);
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataResendsAfterChannelRecoveryWithoutCacheEviction) {

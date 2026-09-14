@@ -2620,7 +2620,13 @@ namespace pinpoint {
         }
     }
 
-    void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch) try {
+    void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch) {
+        send_batch_async(batch,
+                         std::chrono::milliseconds(config_->collector.span_batch.flush_interval_ms));
+    }
+
+    void GrpcSpan::send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch,
+                                    const std::chrono::milliseconds permit_timeout) try {
         if (batch.empty()) {
             return;
         }
@@ -2632,10 +2638,9 @@ namespace pinpoint {
         // Every drop path below charges this count: the batch is cleared as
         // soon as it is serialized, so the size is taken up front.
         const auto batch_count = batch.size();
-        const auto flush_timeout = std::chrono::milliseconds(config_->collector.span_batch.flush_interval_ms);
-        if (!try_acquire_permit(flush_timeout)) {
+        if (!try_acquire_permit(permit_timeout)) {
             LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
-                     flush_timeout.count());
+                     permit_timeout.count());
             inflight_->recordDrop(batch_count);
             batch.clear();
             return;
@@ -2794,25 +2799,49 @@ namespace pinpoint {
             remaining.push_back(std::move(span));
         }
         if (!remaining.empty()) {
-            // readyChannel() refuses to wait once the agent is exiting, so probe
-            // the channel state directly and send only over a live connection.
-            // The transport (or its channel) is null if the agent was never
-            // brought online via Start() (openChannel() opens it), in which
-            // case there is nothing to flush to.
-            const auto transport = current_transport<SpanStub>();
-            const auto channel = transport ? transport->channel : nullptr;
-            if (channel && channel->GetState(false) == GRPC_CHANNEL_READY) {
+            if (span_channel_ready()) {
                 LOG_INFO("flushing {} remaining spans on shutdown", remaining.size());
                 const auto batch_size = std::max<size_t>(1, static_cast<size_t>(config_->collector.span_batch.size));
+                // The drain as a whole is budgeted, not each batch: every
+                // launch waits for an in-flight permit, and a collector that
+                // stopped acknowledging would otherwise stretch the drain to
+                // queue_size / batch_size permit waits while the agent stays
+                // alive past its shutdown deadline. Each batch may wait only
+                // for what is left of the budget; once it is spent, the rest
+                // is counted as dropped.
+                const auto deadline = std::chrono::steady_clock::now() + tuning_.span_shutdown_flush_budget;
+                const auto remaining_budget = [deadline] {
+                    const auto now = std::chrono::steady_clock::now();
+                    return now >= deadline
+                        ? std::chrono::milliseconds{0}
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+                };
                 std::vector<std::unique_ptr<SpanChunk>> batch;
                 batch.reserve(std::min(batch_size, remaining.size()));
+                size_t launched = 0;
+                size_t out_of_budget = 0;
                 for (auto& chunk : remaining) {
+                    const auto budget = remaining_budget();
+                    if (budget.count() <= 0) {
+                        ++out_of_budget;
+                        continue;
+                    }
                     batch.push_back(std::move(chunk));
                     if (batch.size() >= batch_size) {
-                        send_batch_async(batch);
+                        launched += batch.size();
+                        send_batch_async(batch, budget);
                     }
                 }
-                send_batch_async(batch);
+                if (!batch.empty()) {
+                    launched += batch.size();
+                    send_batch_async(batch, std::max(remaining_budget(), std::chrono::milliseconds{1}));
+                }
+                if (out_of_budget > 0) {
+                    inflight_->recordDrop(out_of_budget);
+                    LOG_WARN("drop {} remaining spans on shutdown: drain exceeded its {}ms budget "
+                             "({} launched)",
+                             out_of_budget, tuning_.span_shutdown_flush_budget.count(), launched);
+                }
             } else {
                 inflight_->recordDrop(remaining.size());
                 LOG_INFO("drop {} remaining spans on shutdown: channel not ready", remaining.size());
@@ -2820,6 +2849,15 @@ namespace pinpoint {
             remaining.clear();
         }
         await_in_flight_requests();
+    }
+
+    bool GrpcSpan::span_channel_ready() const {
+        // The transport (or its channel) is null if the agent was never
+        // brought online via Start() (openChannel() opens it), in which case
+        // there is nothing to flush to.
+        const auto transport = current_transport<SpanStub>();
+        const auto channel = transport ? transport->channel : nullptr;
+        return channel != nullptr && channel->GetState(false) == GRPC_CHANNEL_READY;
     }
 
     void GrpcSpan::sendSpanWorker() {

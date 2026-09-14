@@ -150,6 +150,16 @@ namespace pinpoint {
         /// Bounded wait for in-flight SendSpanBatch calls at shutdown before
         /// TryCancel is requested (and again after that request).
         std::chrono::milliseconds span_shutdown_await_timeout{3000};
+        /// Total wall-clock budget for launching the shutdown span drain
+        /// (see GrpcSpan::flush_remaining). Each batch waits for an in-flight
+        /// permit, so with a slow collector the drain of a full queue could
+        /// otherwise take queue_size / batch.size * flush_interval — minutes —
+        /// while the agent object stays alive past its shutdown deadline.
+        /// Once the budget is spent the remaining chunks are counted as
+        /// dropped instead of waiting for further permits. Kept below the
+        /// 3-second agent shutdown deadline so the in-flight await that
+        /// follows still gets a slice of it.
+        std::chrono::milliseconds span_shutdown_flush_budget{1500};
         /// Minimum spacing between cumulative span-queue-drop reports.
         std::chrono::seconds span_queue_drop_log_interval{60};
 
@@ -926,7 +936,9 @@ namespace pinpoint {
      *   without a process-wide lock. FIFO per shard; cross-shard order is
      *   unspecified. Cumulative drops are logged at most once per minute.
      * - **partial_success.** Rejected spans are logged, never retried.
-     * - **Shutdown.** Drains remaining chunks (if the channel is connected),
+     * - **Shutdown.** Drains remaining chunks (if the channel is connected)
+     *   within @c span_shutdown_flush_budget — chunks it cannot launch inside
+     *   that budget are counted as dropped — then
      *   waits @c span_shutdown_await_timeout for in-flight permits, TryCancels
      *   what remains, then waits once more.
      */
@@ -956,6 +968,11 @@ namespace pinpoint {
         uint64_t droppedSpans() const noexcept;
 
     protected:
+        /// @brief Whether the span channel can carry the shutdown drain right
+        /// now, asked without waiting (readyChannel() refuses to wait once the
+        /// agent is exiting). Virtual so tests can drive the drain without a
+        /// live collector, like GrpcStats::stats_channel_ready().
+        virtual bool span_channel_ready() const;
         using SpanStub = v1::Span::StubInterface;
         void set_span_stub(std::unique_ptr<SpanStub> stub, std::shared_ptr<grpc::Channel> channel = nullptr) {
             publish_transport(std::move(channel), std::move(stub));
@@ -990,6 +1007,11 @@ namespace pinpoint {
         ///        the first time; the notify then takes the wait mutex
         ///        unconditionally (see ShardedBoundedQueue::enqueue).
         void notify_span_worker(bool shard_activated = false);
+        /// @param permit_timeout how long to wait for an in-flight permit
+        ///        before dropping the batch; the periodic sender passes the
+        ///        flush interval, the shutdown drain what is left of its budget.
+        void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch,
+                              std::chrono::milliseconds permit_timeout);
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
         bool try_acquire_permit(std::chrono::milliseconds timeout);
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
