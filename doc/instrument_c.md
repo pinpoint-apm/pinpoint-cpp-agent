@@ -136,6 +136,49 @@ pt_start_agent(opts);
 pt_agent_options_free(opts);
 ```
 
+### The remaining options setters
+
+| Function | Effect |
+|---|---|
+| `pt_agent_options_set_app_type(opts, type)` | Application type reported to the collector. Defaults to `PT_APP_TYPE_CPP` (`1300`). |
+| `pt_agent_options_set_env_prefix(opts, prefix)` | Reads `<prefix>_*` instead of `PINPOINT_CPP_*` (e.g. `"MYAPP"` → `MYAPP_APPLICATION_NAME`). `NULL` or `""` selects the default. |
+| `pt_agent_options_set_log_sink(opts, sink, userdata)` | Routes the agent's own log lines to the host's logger. See below. |
+
+### Routing the agent log into the host's logger
+
+A host that already owns a log pipeline (nginx `error_log`, an application
+logger) can take the agent's lines instead of letting them go to
+`Log.FilePath` or stdout:
+
+```c
+static void my_log_sink(void* ud, const char* level, const char* message) {
+    my_logger_write((my_logger_t*)ud, level, message);   /* copy what you keep */
+}
+
+pt_agent_options_t opts = pt_agent_options_new();
+pt_agent_options_set_log_sink(opts, my_log_sink, my_logger);
+pt_start_agent(opts);
+pt_agent_options_free(opts);
+```
+
+A sink **replaces** the built-in sinks, so lines are never duplicated and
+`Log.FilePath` / `Log.MaxFileSize` / `Log.MaxBackups` then apply to nothing. It
+is installed before the configuration is parsed, so configuration errors reach
+it too. Read the full contract on `pt_log_sink_fn` in the header before writing
+one; the parts that decide whether your sink is correct:
+
+- **It must not block, and it must be thread-safe.** It runs inline on whichever
+  thread logged — host request threads and the agent's gRPC workers alike.
+- **`userdata` is not owned by the agent.** It must outlive the last log line,
+  which is the `pt_agent_shutdown()` that clears the sink — or the
+  `pt_start_agent()` call itself when that returns `0`, since a failed start
+  drops the sink too. After either returns, no call is in flight on any thread
+  and `userdata` may be freed.
+- **Calling `pt_*` from inside it is safe** (the sink runs without the agent's
+  logger mutex held); a line the agent would log from inside the sink on that
+  thread is dropped rather than recursing.
+- Passing `NULL` for `sink` clears it.
+
 ### Using the global agent
 
 `pt_global_agent()` returns a C handle wrapper around the singleton agent that was installed by the most recent `pt_start_agent()` call. If no global agent exists, it returns a disabled no-op agent handle. Release the returned wrapper with `pt_agent_destroy()` when done. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
@@ -259,6 +302,12 @@ pt_header_reader_t hdr_reader = {
     .get      = my_hdr_get,
     .for_each = my_hdr_for_each,
 };
+
+/* Records the headers named by Http.Server.RecordRequestHeader (or the
+   Http.Client.* lists on an event). The group is PT_HTTP_REQUEST,
+   PT_HTTP_RESPONSE or PT_HTTP_COOKIE. */
+pt_span_record_header(span, PT_HTTP_REQUEST, &hdr_reader);
+pt_span_event_record_header(se, PT_HTTP_RESPONSE, &hdr_reader);
 ```
 
 > **Tip**: If your HTTP library's `get` and `for_each` function signatures already match `pt_reader_get_fn` and `pt_header_for_each_fn`, assign them directly without writing adapter functions.
@@ -328,6 +377,29 @@ if (!pt_span_is_sampled(span)) {
     /* skip expensive annotation collection */
 }
 ```
+
+### Linking application logs to the trace
+
+The Pinpoint Web UI lists a transaction's application log lines only for spans
+**marked as logged**. `pt_span_set_logging()` sets that mark and writes the two
+identifiers into a logging context through a `pt_context_writer_t`: `PtxId`
+(the transaction id) and `PspanId` (the span id).
+
+```c
+static void my_mdc_set(void* ud, const char* key, const char* value) {
+    my_logger_ctx_put((my_logger_ctx_t*)ud, key, value);
+}
+
+pt_context_writer_t log_ctx = { &request_log_ctx, my_mdc_set };
+pt_span_set_logging(span, &log_ctx);
+```
+
+Call it before `pt_span_end()`. A `NULL` writer is ignored: unlike the C++
+`Span::SetLogging()` overload that takes no argument, the C API has no way to
+set the mark alone, so a host that writes `PtxId`/`PspanId` itself (from
+`pt_span_get_trace_id()` / `pt_span_get_span_id()`) still has to pass a writer
+here to get the transaction marked. On a noop or unsampled span nothing is
+marked and no key is written.
 
 ---
 
@@ -542,9 +614,16 @@ pt_trace_http_server_response(span, url_pattern, method,
 /* Client: records host, URL, and request headers on the span event */
 pt_trace_http_client_request(se, host, url, &req_hdr_reader);
 
+/* Client with cookies */
+pt_trace_http_client_request_with_cookie(se, host, url,
+                                         &req_hdr_reader, &cookie_reader);
+
 /* Client: records status code and response headers on the span event */
 pt_trace_http_client_response(se, status_code, &resp_hdr_reader);
 ```
+
+The client URL annotation is cut at its first `?` unless
+`Http.Client.RecordUrlQuery` is on (default off).
 
 ### Complete HTTP server handler
 
@@ -704,11 +783,15 @@ pt_span_event_set_error_with_callstack(se, "OperationFailed",
                                        error_message, &reader);
 ```
 
-Call-stack errors recorded on one span — from this event or any other event of
-the span — share one exception id and are sent as one flat chain
-([§9](api_contracts.md#9-error-recording-and-exception-buffering)); recording
-the same exception again on the event that catches it does not start a new
-chain or spend the new-chain budget again.
+**Every call with a call stack is its own exception chain of one entry**
+([§9](api_contracts.md#9-error-recording-and-exception-buffering)): each one
+buffers an exception with a fresh exception id and stamps
+`PT_ANNOTATION_EXCEPTION_ID` on the event that recorded it. This agent has no
+throwable identity to join calls by, so recording the same exception again on
+the event that catches it produces a *second* chain and asks the
+`CallstackTraceNewThroughput` limiter a second time. A call stack the limiter
+refuses is still reported as a plain error (`exceptionInfo` and the failed
+transaction), just without its frames.
 
 ### SQL error pattern
 

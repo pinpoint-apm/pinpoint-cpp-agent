@@ -126,12 +126,14 @@ Measured on a 20-core x86-64 host, from a bare container to green tests:
 | Dependency closure (14 packages) | 11 min | **13 s** (restored) |
 | Checkout | — | 1 s |
 | Build (146 targets, `-j20`) | — | 33 s |
-| `ctest` (24 tests) | — | 79 s |
+| `ctest` (25 tests) | — | 79 s |
 | **Total** | | **~2 min** |
 
 `ctest` is the largest remaining slice, and `agent_integration_test` is 56 s of
 it. It talks to an in-process mock collector over real sockets, so it stays
-serial; the other 23 tests finish in about 23 s together.
+serial; the other 24 tests finish in about 23 s together. Ask the build system
+for the current list rather than trusting this count:
+`ctest --preset default -N`.
 
 Building the image itself takes about 13 minutes and yields 1.95 GB (899 MB of
 binary cache, 410 MB of vcpkg checkout, the rest base image and toolchain), so
@@ -216,7 +218,7 @@ pinpoint-cpp-agent/
 ├── src/                 # Library source files
 ├── 3rd_party/           # Vendored third-party code (httplib, MurmurHash3)
 │   └── pinpoint-grpc-idl/  # Protobuf/gRPC IDL (git submodule)
-├── example/             # Example applications (C++, C)
+├── example/             # Example applications (C++; C examples live in pinpoint-cpp-examples)
 ├── benchmark/           # Microbenchmarks (span queue, caches, active spans)
 ├── test/                # Unit tests
 │   ├── it/              # Integration test against an in-process mock collector
@@ -377,6 +379,7 @@ The following CMake options are available:
 | `BUILD_STATIC_LIBS` | ON | Build as a static library (.a) |
 | `BUILD_COVERAGE` | OFF | Enable coverage instrumentation (Clang/LLVM or GCC) |
 | `BUILD_PROFILING` | OFF | Preserve symbols and reliable call stacks for sampling profilers |
+| `BUILD_BENCHMARKS` | OFF | Build the standalone microbenchmarks in `benchmark/` (always compiled `-O3`; see [benchmark/README.md](../benchmark/README.md)) |
 | `SANITIZE` | (empty) | Enable a sanitizer: `address`, `thread`, or `undefined`. Dependencies are rebuilt from source with the same instrumentation |
 
 Example:

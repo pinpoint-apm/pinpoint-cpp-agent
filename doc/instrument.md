@@ -146,15 +146,46 @@ Create a span at the **entry point** of each transaction: HTTP/gRPC server handl
 
 ### Span Creation Methods
 
-There are three overloads:
+There are four overloads:
 
 - `Agent::NewSpan(operation, rpc_point)` — starts a **new** transaction.
 - `Agent::NewSpan(operation, rpc_point, TraceContextReader& reader)` — continues a transaction when the upstream trace headers are present. Continuing needs all three of `Pinpoint-TraceID` (parseable), `Pinpoint-SpanID` and `Pinpoint-pSpanID`; anything less starts a new transaction ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers)).
 - `Agent::NewSpan(operation, rpc_point, method, TraceContextReader& reader)` — same, plus the HTTP method, so the `Http.Server.ExcludeMethod` filter can apply. Prefer this one in HTTP servers.
+- `Agent::NewSpan(operation, rpc_point, method, const std::map<std::string, std::string>& pinpoint_headers)` — same, for callers that have already extracted the `Pinpoint-*` headers into a map and would rather not implement a `TraceContextReader`. See [below](#passing-pre-extracted-headers-instead-of-a-reader).
 
 A `HeaderReader` is also a `TraceContextReader`, so one object serves both the
 context extraction and the header recording. See [§7](#7-http-request-tracing)
 for a complete server handler.
+
+An empty `method` means "not HTTP" (a messaging consumer, gRPC) on both
+method-taking overloads, and the `Http.Server.ExcludeMethod` filter is skipped
+for it.
+
+#### Passing pre-extracted headers instead of a reader
+
+Binding layers that already dumped the request's `Pinpoint-*` headers can hand
+them over as a map and skip the adapter:
+
+```cpp
+std::map<std::string, std::string> headers = collect_pinpoint_headers(req);
+auto span = agent->NewSpan("MyService", req.path, req.method, headers);
+```
+
+The agent wraps the map in its own reader, which keeps the contract
+`tracer.h` places on HTTP-backed readers:
+
+- **Keys are matched case-insensitively.** The canonical spellings
+  (`Pinpoint-TraceID`, ...) are the fast path — an exact map lookup — and any
+  other casing, including the all-lowercase form HTTP/2 and HTTP/3 deliver,
+  falls back to a case-insensitive scan. Pass the headers as received; there is
+  no need to re-case them.
+- **Values are taken verbatim.** Only the key comparison ignores case.
+- A **non-empty map carrying no trace id under any spelling** starts a fresh
+  transaction exactly as an empty map does, and logs a throttled warning,
+  `Pinpoint headers present but unrecognized`, so a binding bug that turns
+  every request into its own trace is visible in the agent log.
+
+The three-header rule is unchanged ([API Contracts §12](api_contracts.md#key-rules-for-the-header-map-newspan-overload)).
 
 ### Setting Span Properties
 
@@ -187,6 +218,66 @@ if (!sampled) {
     // This span will not be sent — skip expensive data collection
 }
 ```
+
+### Linking Application Logs to the Trace
+
+The Pinpoint Web UI can list the application log lines belonging to a
+transaction, but only for spans that are **marked as logged**. `SetLogging()`
+sets that mark (`PSpan.loggingTransactionInfo` on the wire); without it the UI
+shows no log link for the transaction however many lines the application wrote.
+
+Two overloads, differing only in who writes the identifiers into the logging
+context:
+
+```cpp
+// 1. The agent writes them: PtxId (transaction id) and PspanId (span id) are
+//    set through your TraceContextWriter, e.g. an MDC-style logger context.
+MyLoggerContextWriter writer(logger_ctx);
+span->SetLogging(writer);
+
+// 2. You write them yourself, from GetTraceId()/GetSpanId(), and only need
+//    the span marked. For a logging framework with its own context carrier,
+//    or a language binding that already owns the log plumbing.
+logger_ctx.put("PtxId", span->GetTraceId());
+logger_ctx.put("PspanId", std::to_string(span->GetSpanId()));
+span->SetLogging();
+```
+
+Call it before `EndSpan()`, like every other recording method
+([Contracts §2](api_contracts.md#2-end-exactly-once-and-record-before-ending)).
+On a noop or unsampled span both overloads record nothing, and the writer
+overload writes no keys — an unsampled transaction has no log view to link to.
+
+### Reading the Resolved Configuration
+
+`Agent::GetConfigSnapshot()` returns a `SpanConfigSnapshot`: the configuration
+values the agent actually resolved (application name and type, the resolved
+`Span.MaxEventDepth` / `MaxEventSequence`, the recorded-header lists,
+`Sql.TraceBindValue`, `EnableCallstackTrace`, the HTTP query/real-IP settings),
+plus a `revision` counter.
+
+This is for **binding layers** that reimplement part of the recording path —
+computing event positions, formatting bind values, capturing stack frames — and
+must gate that work on the same settings the agent uses. Application
+instrumentation does not need it: the agent applies every one of these itself.
+
+Because a [hot reload](config.md#configuration-hot-reload) can change them,
+cache the snapshot and re-fetch it only when a span reports a newer revision:
+
+```cpp
+auto snapshot = agent->GetConfigSnapshot();          // once, after StartAgent()
+
+// ... per span ...
+if (span->GetConfigRevision() > snapshot.revision) {
+    snapshot = agent->GetConfigSnapshot();           // a reload happened
+}
+```
+
+`Span::GetConfigSnapshot()` returns the snapshot that span was created with,
+which is what its own recording obeys for its whole lifetime. A `revision` of
+`0` means "no resolved configuration" (a noop agent, or a third-party `Agent`
+implementation that does not override these); treat every capture flag in such
+a snapshot as off rather than guessing.
 
 ### Key Rules
 
@@ -299,11 +390,19 @@ pinpoint::ANNOTATION_SQL_ID                 // SQL statement ID
 pinpoint::ANNOTATION_SQL_UID                // SQL UID
 pinpoint::ANNOTATION_EXCEPTION_ID           // Exception information
 pinpoint::ANNOTATION_HTTP_URL               // HTTP URL
+pinpoint::ANNOTATION_HTTP_PARAM             // HTTP query string
 pinpoint::ANNOTATION_HTTP_STATUS_CODE       // HTTP status code
 pinpoint::ANNOTATION_HTTP_COOKIE            // HTTP cookies
 pinpoint::ANNOTATION_HTTP_REQUEST_HEADER    // HTTP request headers
 pinpoint::ANNOTATION_HTTP_RESPONSE_HEADER   // HTTP response headers
+pinpoint::ANNOTATION_HTTP_PROXY_HEADER      // Proxy header metadata
 ```
+
+The agent records most of these itself — `ANNOTATION_HTTP_PARAM` through
+`helper::TraceHttpServerRequest` when `Http.Server.RecordRequestParam` is on,
+`ANNOTATION_HTTP_PROXY_HEADER` from the proxy headers, the header and cookie
+keys through `RecordHeader()`. The constants are public so a host that does its
+own HTTP recording lands on the same keys as every other Pinpoint agent.
 
 ### Annotation Values
 
@@ -629,6 +728,36 @@ span->SetError("DatabaseError", "Connection timeout after 30s");
 // For span events
 span_event->SetError("QueryError", "Invalid SQL syntax");
 ```
+
+Every `SetError` marks the whole transaction as failed, including one recorded
+on a span event ([Contracts §9](api_contracts.md#9-error-recording-and-exception-buffering)).
+
+### Recording an Error Without Failing the Transaction
+
+`Span.IgnoreErrors` ([config.md](config.md#ignoring-errors-spanignoreerrors))
+keeps matched errors out of the failure statistics while still recording them,
+but it matches on an exact error name and a message substring — it cannot
+express Java's subclass or cause matching. `SetIgnoredError()` is the escape
+hatch for a caller that evaluated such a rule itself:
+
+```cpp
+if (my_ignore_policy.matches(e)) {           // e.g. "any subclass of AppFault"
+    span->SetIgnoredError("AppFault", e.what());
+} else {
+    span->SetError("AppFault", e.what());
+}
+```
+
+The error is recorded exactly as `SetError` records it — the error name is
+interned, the message is abbreviated to 256 bytes, and it appears on the span
+in the UI — but `PSpan.err` is not set and the URL statistics entry is not
+flagged as failed. `SpanEvent` has the chained overload
+`SetIgnoredError(name, message, frames, causes)` with the same meaning for an
+exception chain the caller supplies.
+
+Prefer `Span.IgnoreErrors` when the rule fits it: the configured list is
+reloadable and applies to every recording path, while this call moves the
+decision into the application binary.
 
 ### Recording Stack Traces
 

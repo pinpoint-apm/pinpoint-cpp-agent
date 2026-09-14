@@ -480,6 +480,15 @@ namespace pinpoint {
         virtual void SetError(std::string_view error_message) = 0;
         /// @brief Records a named error message at the span level.
         virtual void SetError(std::string_view error_name, std::string_view error_message) = 0;
+        /// @brief Records a span-level error without marking the transaction
+        ///        failed; see SpanEvent::SetIgnoredError.
+        ///
+        /// The default records it as an ordinary error, which keeps
+        /// third-party Span implementations source compatible; the native
+        /// spans override it.
+        virtual void SetIgnoredError(std::string_view error_name, std::string_view error_message) {
+            SetError(error_name, error_message);
+        }
         /// @brief Applies an exception to the transaction error policy without
         ///        recording span/event error fields or exception metadata.
         ///
@@ -488,11 +497,6 @@ namespace pinpoint {
         /// this to preserve the verdict of DisabledSpanEvent::SetError. The
         /// default no-op keeps third-party Span implementations source
         /// compatible; recording and unsampled native spans override it.
-        /// @brief Records a span-level error without marking the transaction
-        ///        failed; see SpanEvent::SetIgnoredError.
-        virtual void SetIgnoredError(std::string_view error_name, std::string_view error_message) {
-            SetError(error_name, error_message);
-        }
         virtual void MarkError(std::string_view error_name,
                                std::string_view error_message) {}
         /// @brief Records the HTTP status code for the span.
@@ -756,9 +760,8 @@ namespace pinpoint {
         /// stdout, so the lines are not duplicated. Installed by StartAgent()
         /// before the configuration is parsed, so config errors reach it too,
         /// and dropped again by Shutdown() — the host's logger is free to die
-        /// after that. Read AgentOptions::log_sink's contract at @ref LogSink
-        /// before writing one: it is called under the agent's logger mutex and
-        /// must not re-enter the agent.
+        /// after that. Read the callback contract at @ref LogSink before
+        /// writing one: it must not block and must be thread-safe.
         LogSink log_sink;
     };
 

@@ -282,15 +282,23 @@ followed by `grpc span worker end`.
      MaxEventSequence: 500     # Reduce from default 5000
 
    Http:
-     UrlStatLimit: 512         # Reduce from default 1024
+     UrlStatLimit: 512         # Reduce from default 1000
 
    Sql:
+     CacheSize: 512            # Reduce from default 1024
      CacheLengthLimit: 512     # Reduce from default 2048
    ```
 
-   The SQL caches hold up to 1024 entries each, so `Sql.CacheLengthLimit`
-   is what bounds them: statements at or above it are never cached. Lower it
-   if the application issues large generated SQL.
+   `Sql.CacheSize` (default `1024`) is how many entries each of the three
+   SQL caches holds; `Sql.CacheLengthLimit` (default `2048`) is the statement
+   length at or above which SQL bypasses the **SQL-UID and raw-SQL caches**,
+   bounding those two at entries x limit instead of at the largest statement
+   ever seen. The SQL-ID cache is exempt from the length limit, as in Java, so
+   `CacheSize` is what bounds it. Lower `CacheLengthLimit` when the application
+   issues large generated SQL; lower `CacheSize` only down to the number of
+   statements it actually repeats, since a cache too small to hold them churns
+   and re-sends metadata instead (see
+   [SQL Configuration](config.md#sql-configuration)). Both are startup-only.
 
 ### High CPU Usage or Slow Responses
 

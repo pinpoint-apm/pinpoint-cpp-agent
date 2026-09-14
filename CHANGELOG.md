@@ -12,6 +12,20 @@
 
 ### Added
 
+- **`Span::SetLogging()`, a flag-only overload.** Marks the span as one whose
+  transaction and span ids reached an application log
+  (`PSpan.loggingTransactionInfo`), without writing them anywhere. For hosts
+  that inject the context into their logger themselves — a language binding, or
+  a logging framework with its own context carrier — instead of through a
+  `TraceContextWriter`. The existing `SetLogging(writer)` overload is
+  unchanged, and remains what the C API's `pt_span_set_logging()` maps to.
+  Documented in
+  [Instrumentation Guide §3](doc/instrument.md#linking-application-logs-to-the-trace).
+- **`SetIgnoredError()` on `Span` and `SpanEvent`.** Records an error exactly
+  as `SetError()` does but never marks the transaction failed, for a caller
+  that matched an ignore rule `Span.IgnoreErrors` cannot express (Java's
+  subclass or cause matching). Documented in
+  [Instrumentation Guide §9](doc/instrument.md#recording-an-error-without-failing-the-transaction).
 - **Configurable real-IP headers.** `Http.Server.RealIpHeader` (ordered list,
   default `["X-Forwarded-For", "X-Real-Ip"]` = today's behaviour, `[]` trusts
   none) and `Http.Server.RealIpEmptyValue` port Java's `RealIpHeaderResolver`:
@@ -194,9 +208,9 @@
   `-1` to switch the feature off kept counting and kept marking transactions
   failed at 100 statements — the exact opposite of what it asked for. A
   negative value now warns and is published as `0`
-  ([src/config.cpp:866-875](src/config.cpp#L866-L875)), and the runtime's
-  existing `limit <= 0` guard ([src/span.h:661-664](src/span.h#L661-L664))
-  disables marking.
+  (`make_config()` in [src/config.cpp](src/config.cpp)), and the runtime's
+  existing `limit <= 0` guard (`SpanImpl::countSqlExecution()` in
+  [src/span.h](src/span.h)) disables marking.
 
   `Sql.ErrorCount` merges the Java agent's two keys, where `0` means
   `profiler.sql.error.enable=false` (`SqlCountServiceProvider.java:21-27`).
@@ -223,7 +237,7 @@
   Up to and including v2.0.0, `make_config()` raised any non-negative
   `PercentRate` below `0.01` — exactly `0` included — to `0.01`, so a
   deployment that configured `0` kept collecting traces at 0.01%. That floor is
-  gone ([src/config.cpp:795-824](src/config.cpp#L795-L824)): `0` and below now
+  gone (`make_config()` in [src/config.cpp](src/config.cpp)): `0` and below now
   disable percent sampling outright, and a positive rate below `0.01` (e.g.
   `0.005`) truncates to `0` and disables it too, with a warning.
 
@@ -252,8 +266,8 @@
   Java's `ServiceUid.DEFAULT_SERVICE_UID_NAME`). That fallback is gone:
   `resolve_object_name()` now returns `std::nullopt` for a missing or invalid
   `ServiceName`, and the caller aborts agent startup
-  ([src/object_name.cpp:211-218](src/object_name.cpp#L211-L218),
-  [src/object_name.h:126-132](src/object_name.h#L126-L132)). This matches Java's
+  (`resolve_object_name()` in [src/object_name.cpp](src/object_name.cpp) /
+  [src/object_name.h](src/object_name.h)). This matches Java's
   `ObjectNameResolverV4` ("ServiceName not provided") and the Go agent.
 
   **Symptom if you do not migrate:** the process does **not** start — this is a

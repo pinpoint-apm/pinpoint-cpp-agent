@@ -551,7 +551,7 @@ belongs to the recorder and not to the event, and the failure reaches the trace
 root separately through `recordError(ErrorCategory.EXCEPTION)`.
 
 **Both ports.** Neither keeps anything but the failure verdict.
-`DisabledSpanEvent::SetError` (`src/span_event.cpp:531-539`) routes to the
+`DisabledSpanEvent::SetError` (`src/span_event.cpp`) routes to the
 owning span's `markSpanError` with `ErrorCategory::kException`; the Go agent's
 `overflowSpanEvent.SetError` (`span.go:69-81`) sets `span.root().err`. No
 exception info, no annotation, no chain link. `Span.IgnoreErrors`
@@ -1384,15 +1384,18 @@ they cannot drift back apart unnoticed.
 The suites are `test/test_java_parity_lock.cpp` (C++) and
 `java_parity_lock_test.go` (Go), plus
 `plugin/http/java_parity_lock_test.go` for the half of group 14 that lives in
-the Go agent's `plugin/http` package. They are organised into the same sixteen
-groups, in the same order, as the table below. Where an older suite already
-covered a group, the lock file cross-references it instead of duplicating it —
-the table's "locked by" column names whichever file holds the assertions.
+the Go agent's `plugin/http` package. They are organised into the same
+seventeen groups, in the same order, as the table below. Where an older suite
+already covered a group, the lock file cross-references it instead of
+duplicating it — the table's "locked by" column names whichever file holds the
+assertions.
 
 Groups 15 and 16 are the exception to the section's own rule: they lock a
 **port consensus** rather than Java parity, because Java has no counterpart to
 either. They are kept here because they are still two-agent contracts that must
-not drift apart, and each row says so.
+not drift apart, and each row says so. Group 17 is half of each — Java's own
+retry budget, plus a port consensus on what to do with a rejection — and its
+row marks which half is which.
 
 **Changing a locked value is a three-agent change.** If one of these assertions
 fails, either the change is wrong, or all three implementations, this table and
@@ -1417,7 +1420,8 @@ divergence entry above saying why.
 | 13 | queue overflow policy | `pinpoint-root.config:135` (`profiler.transport.grpc.span.sender.type=BATCH`), `SpanBatchGrpcDataSender.send` | the span queue **head-drops** — the oldest entry is discarded, the newest is always taken, and every drop is counted — which is Java's *default* sender: `SpanBatchGrpcDataSender.send` offers, and on a full queue `queue.poll()`s the head away before re-offering. The tail-drop of `GrpcDataSender.send` ("reject message") belongs to the non-default STREAM sender's base class and has been **mis-cited as the reference in five successive reviews**; the config default above is where to check it before raising it a sixth time. | `…SpanQueueHeadDropsTheOldest` · `test_sharded_bounded_queue.cpp` | `…SpanQueueHeadDrops` · `span_queue_test.go` |
 | 14 | proxy request header pipeline | `DefaultProxyRequestRecorder.record`, `NginxRequestParser`, `ApacheRequestParser`, `AppRequestParser`, `UserRequestParser`, `ServerRequestRecorder.recordParentInfo` | all four parsers run **independently**, so a request behind two proxies records two annotations rather than only the hop nearest the agent; each is gated on a **positive received time**, so no `t=`, a `t=0` or one that does not parse records nothing at all; nginx's `t=` (`$msec`) and `D=` (`$request_time`) accept only `sec.mmm` — exactly three decimals — and are converted with integer arithmetic, never a float multiply (`0.123` is 123000 µs, not 122999); `PParentInfo` is emitted **only when `parentAppName` is non-empty**, which is the invariant that keeps the acceptor-host fallback from shipping a parent node with no application name. The nginx **duration** gate is deliberately *not* in this group — see [Proxy request headers](#proxy-request-headers--same-as-java-shared-with-go). | `…ProxyParsersRunIndependently`, `…ProxyHeaderNeedsAPositiveReceivedTime`, `…ProxyNginxTimestampsAreExactThreeDecimals`, `…ParentInfoOnlyWhenParentAppNameIsPresent` · `test_http.cpp` | `plugin/http/java_parity_lock_test.go` (`…ProxyParsersRunIndependently`, `…ProxyHeaderNeedsAPositiveReceivedTime`, `…ProxyNginxTimestampsAreExactThreeDecimals`) · `…ParentInfoRequiresAParentAppName` |
 | 15 | logging level policy | **none** — the Java agent's own level comes from its log4j2 configuration, which fails or falls back on its own terms | an **unsupported level string leaves the level in effect unchanged** and logs that it did, rather than resetting to a default: silently ignoring a typo looks like a successful change, and on a config reload it would leave an operator debugging at the old level with no line explaining why; `warn` and `warning` are both accepted; `MaxBackups` defaults to 1 and a value below 1 is restored to it rather than honoured, since `0` reads as "keep none" to one reader and "keep all" to another; the maximum file size defaults to 10 MB. A **two-port consensus**, not Java parity — Java has no counterpart to the first rule. | `…UnsupportedLogLevelKeepsTheCurrentLevel`, `…LogRotationDefaults` | `…UnsupportedLogLevelKeepsTheCurrentLevel`, `…ConfigRejectsAnUnsupportedLogLevel`, `…LogRotationDefaults` |
-| 16 | shutdown contract | **none** — shutdown in Java is per-component (each `DataSender.close()` / `GrpcDataSender.release` awaits its own executor for 3 s), with no wall-clock bound on the teardown as a whole and no report of what was still running | a **3 s deadline** bounds the blocking phase of shutdown, after which the teardown is abandoned and `Shutdown()` returns, because neither a gRPC cancellation nor a filesystem-bound watcher join can be bounded on its own; `Shutdown()` is **idempotent** and safe under concurrent callers; a deadline overrun names the **straggler workers by name**, not a count, since "shutdown timed out" alone is not actionable in a host process; the **worker table is the single source of truth** for spawn, stop, join and that report, so the goroutine/thread set and the drain cannot disagree. A **port consensus**, not Java parity. | group 16 of `test_java_parity_lock.cpp` (narrative) · `test_agent_with_mocks.cpp` (`AgentShutdownDeadlineTest.*`, `AgentImplTest.ShutdownIsIdempotent`), and the `static_assert`s on `worker_specs()` / `kTeardownOrder` in `src/agent.cpp` | `…ShutdownDeadline`, `…ShutdownIsIdempotent`, `…ShutdownNamesStragglers`, `…WorkerTableIsTheSingleSourceOfTruth` · `agent_test.go` |
+| 16 | shutdown contract | **none** — shutdown in Java is per-component (each `DataSender.close()` / `GrpcDataSender.release` awaits its own executor for 3 s), with no wall-clock bound on the teardown as a whole and no report of what was still running | a **3 s deadline** bounds the blocking phase of shutdown, after which the teardown is abandoned and `Shutdown()` returns, because neither a gRPC cancellation nor a filesystem-bound watcher join can be bounded on its own; `Shutdown()` is **idempotent** and safe under concurrent callers; a deadline overrun names the **straggler workers by name**, not a count, since "shutdown timed out" alone is not actionable in a host process; the **worker table is the single source of truth** for spawn, stop, join and that report, so the goroutine/thread set and the drain cannot disagree. A **port consensus**, not Java parity. | `test_agent_with_mocks.cpp` (`AgentShutdownDeadlineTest.*`, `AgentImplTest.ShutdownIsIdempotent`), and the `static_assert`s on `worker_specs()` / `kTeardownOrder` in `src/agent.cpp` | `…ShutdownDeadline`, `…ShutdownIsIdempotent`, `…ShutdownNamesStragglers`, `…WorkerTableIsTheSingleSourceOfTruth` · `agent_test.go` |
+| 17 | metadata retry budget and rejection policy | `MetadataGrpcDataSender`, `RetryResponseStreamObserver`, `pinpoint-root.config` | retry budget 3 attempts / 1000 ms / a 1000-entry metadata queue, with the retry schedule bounded at the same 1000 in both ports; **port consensus**: a `PResult.success=false` reply is not retried and its cache entry is released after one retry delay, where Java retries it — see [Retrying a rejected metadata send](#retrying-a-rejected-metadata-send--declined-shared-with-go) | `…MetadataRetryBudget` · `test/it` (`RetriesTransientMetadataFailureButNotRejection`) | `…MetadataRetryBudget` |
 
 ### Deliberately not locked
 
@@ -1469,6 +1473,3 @@ None. The two that used to be here are both resolved and now run:
   deployment no longer splits its "no URI recorded" traffic across two
   server-side keys. `Test_javaParityLock_UrlStatUnknownKey` asserts it without
   a skip, on both the sampled and the unsampled path.
-
-The group 3 note in `test/test_java_parity_lock.cpp` still describes S4 as open
-and its Go test as skipped; that comment is stale, not this table.
