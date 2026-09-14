@@ -933,6 +933,28 @@ TEST_F(SpanTest, SpanImplSetLoggingTest) {
     EXPECT_TRUE(pspan_id.has_value()) << "PspanId should be injected";
 }
 
+TEST_F(SpanTest, SpanImplSetLoggingFlagOnlyTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+    EXPECT_EQ(span.getSpanData()->getLoggingFlag(), SPAN_LOGGING_FLAG_OFF);
+
+    // The flag-only overload marks the span without touching any carrier:
+    // the host has written the ids into its own logger.
+    span.SetLogging();
+    EXPECT_EQ(span.getSpanData()->getLoggingFlag(), SPAN_LOGGING_FLAG_ON);
+
+    span.SetLogging();  // idempotent
+    EXPECT_EQ(span.getSpanData()->getLoggingFlag(), SPAN_LOGGING_FLAG_ON);
+}
+
+TEST_F(SpanTest, SpanImplSetLoggingFlagOnlyAfterFinishTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    span.EndSpan();
+
+    span.SetLogging();
+    EXPECT_EQ(span.getSpanData()->getLoggingFlag(), SPAN_LOGGING_FLAG_OFF)
+        << "SetLogging() should be no-op after EndSpan";
+}
+
 TEST_F(SpanTest, TraceIdWireConsistentAcrossSurfacesTest) {
     SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
     MockTraceContextReader reader;

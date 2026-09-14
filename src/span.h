@@ -617,6 +617,8 @@ namespace pinpoint {
         void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         /// @brief Records the logging flag and injects the context into a logger.
         void SetLogging(TraceContextWriter& writer) override;
+        /// @brief Records only the logging flag.
+        void SetLogging() override;
         void RecordHeader(HeaderType which, HeaderReader& reader) override;
 
     private:

@@ -516,6 +516,15 @@ namespace pinpoint {
         }
         /// @brief Records the logging flag and injects the span context into a logger.
         virtual void SetLogging(TraceContextWriter& writer) = 0;
+        /// @brief Records only the logging flag, marking the span as one whose
+        ///        transaction id and span id were written to an application log.
+        ///
+        /// For hosts that inject the trace context (GetTraceId()/GetSpanId())
+        /// into their logger themselves instead of through a
+        /// TraceContextWriter — a language binding, or a logging framework
+        /// with its own context carrier. The Pinpoint web UI lists a span's
+        /// log lines only when this flag is set.
+        virtual void SetLogging() = 0;
         /// @brief Records HTTP headers for the span.
         virtual void RecordHeader(HeaderType which, HeaderReader& reader) = 0;
 

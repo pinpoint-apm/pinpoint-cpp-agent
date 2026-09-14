@@ -144,6 +144,7 @@ namespace pinpoint {
         void SetStatusCode(int status) override {}
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override {}
         void SetLogging(TraceContextWriter& writer) override {}
+        void SetLogging() override {}
         void RecordHeader(HeaderType which, HeaderReader& reader) override {}
         void SetAnnotation(int32_t key, int32_t value) override {}
         void SetAnnotation(int32_t key, int64_t value) override {}

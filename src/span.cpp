@@ -1006,6 +1006,12 @@ namespace pinpoint {
         }
     }
 
+    void SpanImpl::SetLogging() try {
+        CHECK_FINISHED();
+
+        data_->setLoggingFlag();
+    } CATCH_AND_LOG("set logging flag")
+
     void SpanImpl::SetLogging(TraceContextWriter& writer) try {
         CHECK_FINISHED();
 
