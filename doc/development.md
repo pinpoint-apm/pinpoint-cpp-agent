@@ -850,7 +850,7 @@ Three places where this agent **deliberately differs**, and why:
 | Comment stripping on by default | `DefaultJdbcOption.removeComments` initializes to `true`, and `profiler.jdbc.removecomments` is absent from the shipped `pinpoint.config`, so the initializer stands |
 | `Sql.ErrorCount` merges two Java keys | `SqlCountServiceProvider.java:21-27` picks `DisableSqlCountService` or `DefaultSqlCountService` on `profiler.sql.error.enable`; `DefaultSqlCountService.java:15-25` compares with `>=` |
 | Bind-value join and truncation marker | `BindValueUtils.bindValueToString` |
-| URL stat "no URI recorded" bucket — `/NULL` | `URITemplate.NULL_URI` (the Go agent uses its own `UNKNOWN_URL`) |
+| URL stat "no URI recorded" bucket — `/NULL` | `URITemplate.NULL_URI` (the Go agent uses the same key; it carried its own `UNKNOWN_URL` until that was aligned) |
 | Completed-tick-only sending, on the stat scheduler | `UriStatCollectingJob` |
 | Ignore-error handler leaf matchers | `profiler.ignore-error-handler.<id>.class-name\|exception-message@contains` (Java's `nested` / `parent` matchers are not implemented) |
 | Error-cause bitmask values | `common/trace/ErrorCategory` |
