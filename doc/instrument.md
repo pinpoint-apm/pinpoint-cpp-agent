@@ -2,7 +2,7 @@
 
 This document is the consolidated reference for instrumenting C++ applications with the Pinpoint C++ agent (`pinpoint-cpp-agent`). It covers the full tracer API declared in `include/pinpoint/tracer.h`, from bootstrapping through production best practices.
 
-The C++ tracer API mirrors the design of the [Pinpoint Go agent](https://github.com/pinpoint-apm/pinpoint-go-agent). For conceptual background, see the Go agent's [quick start](https://github.com/pinpoint-apm/pinpoint-go-agent/blob/main/doc/quick_start.md) and [instrumentation guide](https://github.com/pinpoint-apm/pinpoint-go-agent/blob/main/doc/instrument.md).
+For a first end-to-end example, start with the [Getting Started Guide](getting_started.md); the rules this API enforces are collected in [API Contracts](api_contracts.md).
 
 **Target readers**: C++ service owners and library authors who want to add Pinpoint tracing.
 
@@ -202,7 +202,7 @@ span->SetStartTime(start_time);                          // override start time
 
 `SetRemoteAddress` and `SetEndPoint` both default to the acceptor host when you
 do not call them. With no acceptor host either, the span reaches the collector
-with `remoteAddr` and `endPoint` set to `"UNKNOWN"` (matching the Java agent)
+with `remoteAddr` and `endPoint` set to `"UNKNOWN"`
 rather than an empty string.
 
 ### Inspecting Span State
@@ -477,7 +477,7 @@ pinpoint::HEADER_HOST              // "Pinpoint-Host"
 
 **The injected header set is conditional — do not assume every header is present.**
 `InjectContext()` omits a header whose value is unset rather than writing an empty
-string, matching the Java agent's `DefaultRequestTraceWriter`. A receiver that gets
+string. A receiver that gets
 `Pinpoint-pAppNamespace: ""` instead of no header at all breaks the trace when it
 has a cluster namespace configured. Currently omitted:
 
@@ -490,7 +490,7 @@ has a cluster namespace configured. Currently omitted:
 An unsampled or dead-span event writes only `Pinpoint-Sampled: s0`. A
 `TraceContextWriter` implementation must therefore tolerate any subset of these keys.
 
-> **Limitation**: cluster namespaces (Java's `profiler.cluster.namespace`) are not
+> **Limitation**: cluster namespaces are not
 > supported in either direction — no config key sets one, and `Pinpoint-pAppNamespace`
 > is neither written nor read on inbound requests.
 
@@ -626,7 +626,7 @@ pinpoint::helper::TraceHttpClientResponse(se, res.status, res_reader);
 | `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader)` | Sets remote address, endpoint, and records request headers |
 | `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader, cookie_reader)` | Same as above, plus records cookies |
 | `TraceHttpServerRequest(span, remote_addr, endpoint, header_reader[, cookie_reader], query_string)` | Same as above, plus records the query string as `ANNOTATION_HTTP_PARAM` when `Http.Server.RecordRequestParam` is on (default off) |
-| `FormatRequestParams(query_string)` | The `k=v&k=v` formatter used above (Java limits: 64 chars per key/value, 512 total) |
+| `FormatRequestParams(query_string)` | The `k=v&k=v` formatter used above (64 chars per key/value, 512 total) |
 | `TraceHttpServerResponse(span, url_pattern, method, status_code, response_reader)` | Sets status code, URL stat, and records response headers |
 | `TraceHttpClientRequest(span_event, host, url, header_reader)` | Sets endpoint, destination, and records request headers; the URL annotation is cut at its first `?` unless `Http.Client.RecordUrlQuery` is on |
 | `TraceHttpClientRequest(span_event, host, url, header_reader, cookie_reader)` | Same as above, plus records cookies |
@@ -640,7 +640,7 @@ span->SetUrlStat("/users/:id", "GET", 200);
 
 This collects statistics normalized by URL pattern, HTTP method, and response status code. Enable it with `Http.CollectUrlStat`.
 
-The URL pattern is first-wins, as in the Java agent: once a non-empty pattern has been recorded on a span, later `SetUrlStat()` calls keep it and only refresh the method and status code. To replace a pattern deliberately (for example, to correct an early guess with the route that was eventually matched), use `ForceUrlStat()`:
+The URL pattern is first-wins: once a non-empty pattern has been recorded on a span, later `SetUrlStat()` calls keep it and only refresh the method and status code. To replace a pattern deliberately (for example, to correct an early guess with the route that was eventually matched), use `ForceUrlStat()`:
 
 ```cpp
 span->ForceUrlStat("/users/{id}", "GET", 200);
@@ -737,7 +737,7 @@ on a span event ([Contracts §9](api_contracts.md#9-error-recording-and-exceptio
 `Span.IgnoreErrors` ([config.md](config.md#ignoring-errors-spanignoreerrors))
 keeps matched errors out of the failure statistics while still recording them,
 but it matches on an exact error name and a message substring — it cannot
-express Java's subclass or cause matching. `SetIgnoredError()` is the escape
+express subclass or cause matching. `SetIgnoredError()` is the escape
 hatch for a caller that evaluated such a rule itself:
 
 ```cpp
@@ -928,8 +928,9 @@ continued one ([API Contracts §12](api_contracts.md#12-continuing-an-inbound-tr
 All three are configured under `Sampling.*` — see the
 [Configuration Guide](config.md#sampling-configuration) for keys and ranges.
 
-- **CounterSampler** (`Type: COUNTER`, or Java's `COUNTING`) — samples 1 out of
-  every N transactions with an atomic counter, starting with the first one:
+- **CounterSampler** (`Type: COUNTER`; `COUNTING` is an accepted alias) —
+  samples 1 out of every N transactions with an atomic counter, starting with
+  the first one:
   `CounterRate: 10` admits transactions 1, 11, 21, … `CounterRate: 1` samples
   everything (development), `10` samples 10%, `0` samples nothing.
 - **PercentSampler** (`Type: PERCENT`) — samples a configured percentage,
@@ -944,17 +945,17 @@ All three are configured under `Sampling.*` — see the
   only the limiter. This is the production-friendly option: it caps trace volume
   regardless of traffic spikes.
 
-  The limiter is a **token bucket** on a monotonic clock, matching the Java and
-  Go agents: it holds up to `Throughput` tokens and refills at `Throughput`
-  tokens per second, so an idle period buys at most one second of burst. It is
+  The limiter is a **token bucket** on a monotonic clock: it holds up to
+  `Throughput` tokens and refills at `Throughput` tokens per second, so an idle
+  period buys at most one second of burst. It is
   not a fixed wall-clock window, which would let a spike straddling a second
   boundary through at twice the configured rate.
 
   A freshly built limiter starts empty and **fills from the moment it is
-  built**, not from its first call, which is what Guava's `SmoothBursty` gives
-  the Java agent. So an agent that idles a second before its first request
-  admits a full `Throughput` burst, while one whose traffic starts immediately
-  admits a single transaction and paces the rest at the refill interval. Either
+  built**, not from its first call. So an agent that idles a second before its
+  first request admits a full `Throughput` burst, while one whose traffic starts
+  immediately admits a single transaction and paces the rest at the refill
+  interval. Either
   way a burst may exceed the stored tokens by one: a caller that finds the
   bucket empty with its next token already due takes it, as Guava does.
 

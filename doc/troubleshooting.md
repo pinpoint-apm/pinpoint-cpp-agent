@@ -24,8 +24,7 @@ simply lost. Registration is retried indefinitely, and the agent logs an INFO
 line every 30 seconds while it waits (`still waiting for agent registration
 after ...`). A collector whose **agent port (9991) alone** is unreachable
 therefore produces zero spans even with 9992/9993 open — check that port first
-when the agent looks alive but the UI stays empty. (The Java agent differs here:
-it sends spans while registration retries in the background.)
+when the agent looks alive but the UI stays empty.
 
 **A `false` return is a *synchronous* configuration or setup failure** (it never
 throws). Nothing is installed as the global agent, and a later `StartAgent()`
@@ -292,7 +291,7 @@ followed by `grpc span worker end`.
    SQL caches holds; `Sql.CacheLengthLimit` (default `2048`) is the statement
    length at or above which SQL bypasses the **SQL-UID and raw-SQL caches**,
    bounding those two at entries x limit instead of at the largest statement
-   ever seen. The SQL-ID cache is exempt from the length limit, as in Java, so
+   ever seen. The SQL-ID cache is exempt from the length limit, so
    `CacheSize` is what bounds it. Lower `CacheLengthLimit` when the application
    issues large generated SQL; lower `CacheSize` only down to the number of
    statements it actually repeats, since a cache too small to hold them churns
@@ -348,8 +347,7 @@ span grpc channel ready again after 9231ms; lifetime: not ready 3 times, 21877ms
   cycle boundary and is waiting for it; one line per backoff step (3s growing
   to 30s) with the cumulative wait.
 - `grpc channel state A -> B`: a connectivity-state transition observed while
-  waiting (the equivalent of the Java agent's ConnectivityStateMonitor lines).
-  `... -> READY` is the moment of recovery. Transition lines are rate-limited
+  waiting. `... -> READY` is the moment of recovery. Transition lines are rate-limited
   per client to one per minute; a suppressed run is reported by the next
   granted line as `(N transitions since the last state line)`. The first
   `-> READY` after a loss (and the first connect) is always written, so a
@@ -357,8 +355,7 @@ span grpc channel ready again after 9231ms; lifetime: not ready 3 times, 21877ms
   `grpc successor channel state ...` lines belong to the channel a rotation is
   connecting, not to the one in use.
 - `grpc channel ready again after Nms; lifetime: ...`: the outage summary,
-  also at most one per minute per client. The lifetime counters are the
-  log-only counterpart of the Java agent's Channelz reporting: how many times
+  also at most one per minute per client. The lifetime counters record how many times
   this client found its channel not READY, how long it waited for READY in
   total, and how many channel rotations it made — `forced` ones were triggered
   by stream stalls (see `stream write timeouts ... connecting a successor`),

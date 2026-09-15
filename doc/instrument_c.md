@@ -578,8 +578,8 @@ PT_HEADER_HOST                  /* "Pinpoint-Host"           */
 The injected set is conditional: `PT_HEADER_PARENT_SERVICE_NAME` is written only
 when the agent has a service name (`uid.version=v4`), `PT_HEADER_HOST` only when the
 span event has a destination, and `PT_HEADER_PARENT_APP_NAMESPACE` never — cluster
-namespaces are unsupported, and sending an empty one breaks the trace on a Java
-receiver that has `profiler.cluster.namespace` set. A `pt_context_writer_t` must
+namespaces are unsupported, and sending an empty one breaks the trace on a
+receiver that has a cluster namespace configured. A `pt_context_writer_t` must
 tolerate any subset of these keys.
 
 ### Server side — extracting incoming context
