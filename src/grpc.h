@@ -992,6 +992,12 @@ namespace pinpoint {
         std::mutex span_wait_mutex_{};
         std::condition_variable span_queue_cv_{};
         std::atomic<bool> span_consumer_waiting_{false};
+        // Raised only while collect_batch accumulates a batch, where producer
+        // wakeups are otherwise off. A producer takes the wait mutex on this
+        // flag just when its own shard has reached the wake watermark, so an
+        // ordinary enqueue still pays nothing and a burst no longer has to sit
+        // out the rest of a collect slice while the queue head-drops.
+        std::atomic<bool> span_consumer_accumulating_{false};
         // Rate-limited drop reporting, fed the queue's own drop counter plus
         // the send-side count via report_if_due() — see maybe_log_span_drops().
         QueueDropReporter span_drop_reporter_;
@@ -1009,7 +1015,12 @@ namespace pinpoint {
         /// @param shard_activated true when the enqueue activated a shard for
         ///        the first time; the notify then takes the wait mutex
         ///        unconditionally (see ShardedBoundedQueue::enqueue).
-        void notify_span_worker(bool shard_activated = false);
+        /// @param queue_pressured true when the enqueue left its home shard at
+        ///        or above the wake watermark; the notify then also reaches a
+        ///        consumer that is accumulating a batch, not just one that is
+        ///        idle-waiting.
+        void notify_span_worker(bool shard_activated = false,
+                                bool queue_pressured = false);
         /// @param permit_timeout how long to wait for an in-flight permit
         ///        before dropping the batch; the periodic sender passes the
         ///        flush interval, the shutdown drain what is left of its budget.

@@ -94,6 +94,47 @@ namespace {
         other.join();
     }
 
+    // The pressure out-parameter drives the other half of the wakeup policy:
+    // a consumer batching with producer notifies switched off takes them again
+    // once a shard is half full, which is what stops a burst from head-dropping
+    // through a collect slice (GrpcSpan::collect_batch).
+    TEST(ShardedBoundedQueueTest, EnqueueReportsHomeShardPressureFromHalfQuota) {
+        // One shard, so this thread's home shard owns the whole capacity and
+        // the quota arithmetic is exact: pressure from the 4th of 8 values.
+        ShardedBoundedQueue<std::unique_ptr<int>> queue(8, 1);
+
+        for (int value = 1; value <= 3; ++value) {
+            auto item = std::make_unique<int>(value);
+            bool pressured = true;
+            queue.enqueue(item, pressured);
+            EXPECT_FALSE(pressured) << "value " << value << ": below half quota";
+        }
+
+        for (int value = 4; value <= 8; ++value) {
+            auto item = std::make_unique<int>(value);
+            bool pressured = false;
+            queue.enqueue(item, pressured);
+            EXPECT_TRUE(pressured) << "value " << value << ": at or above half quota";
+        }
+
+        // Past the quota every enqueue head-drops, so pressure stays set
+        // whatever the watermark arithmetic says.
+        auto overflow = std::make_unique<int>(9);
+        bool pressured = false;
+        queue.enqueue(overflow, pressured);
+        EXPECT_TRUE(pressured) << "the shard is now head-dropping";
+        EXPECT_EQ(queue.dropped_oldest(), 1u);
+
+        // Draining clears it again: the consumer caught up, so the next
+        // enqueue must not pay the wake handshake.
+        std::vector<std::unique_ptr<int>> drained;
+        EXPECT_EQ(queue.try_dequeue_batch(drained, 8), 8u);
+        auto after_drain = std::make_unique<int>(10);
+        pressured = true;
+        queue.enqueue(after_drain, pressured);
+        EXPECT_FALSE(pressured) << "an empty shard is not under pressure";
+    }
+
     TEST(ShardedBoundedQueueTest, OneShardIsFifoAndHeadDropsAcrossWraparound) {
         ShardedBoundedQueue<std::unique_ptr<int>> queue(3, 1);
 

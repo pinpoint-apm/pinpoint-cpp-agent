@@ -118,16 +118,35 @@ namespace pinpoint {
          *         notify unconditionally.
          */
         bool enqueue(T& value) {
+            bool pressured = false;
+            return enqueue(value, pressured);
+        }
+
+        /**
+         * @brief Enqueues value and reports its home shard's fill level.
+         *
+         * Same contract and return value as the one-argument overload, plus
+         * @p home_shard_pressured, set to true when the home shard sits at or
+         * above its wake watermark (or has just head-dropped). A consumer that
+         * batches with the producer wakeups switched off uses it as the signal
+         * to take them again for this enqueue, so a burst reaches it inside a
+         * collect slice instead of at the end of one. It describes the home
+         * shard alone: drops are per shard, so that is the level which decides
+         * whether this producer's next values survive, and reading it costs
+         * nothing extra — it is computed under the shard lock the enqueue
+         * already holds, with no process-wide counter on the hot path.
+         */
+        bool enqueue(T& value, bool& home_shard_pressured) {
             const size_t home = thread_shard_id() % shard_count_;
             const bool activated = ensure_active(home);
 
             // At capacity, enqueue and any head-drop share one shard lock.
             if (borrowable_shards_.load(std::memory_order_acquire) == 0) {
-                shards_[home]->enqueue_or_overwrite(value);
+                shards_[home]->enqueue_or_overwrite(value, home_shard_pressured);
                 return activated;
             }
 
-            if (shards_[home]->try_enqueue(value)) {
+            if (shards_[home]->try_enqueue(value, home_shard_pressured)) {
                 return activated;
             }
 
@@ -136,11 +155,11 @@ namespace pinpoint {
             // contended steady state), borrowable_shards_ is zero and this is a
             // read-only branch directly to one-lock head-drop.
             if (try_borrow_inactive_quota(home) &&
-                    shards_[home]->try_enqueue(value)) {
+                    shards_[home]->try_enqueue(value, home_shard_pressured)) {
                 return activated;
             }
 
-            shards_[home]->enqueue_or_overwrite(value);
+            shards_[home]->enqueue_or_overwrite(value, home_shard_pressured);
             return activated;
         }
 
@@ -213,16 +232,18 @@ namespace pinpoint {
                 active_.store(true, std::memory_order_release);
             }
 
-            bool try_enqueue(T& value) {
+            bool try_enqueue(T& value, bool& pressured) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (size_ == quota_) {
+                    pressured = true;
                     return false;
                 }
                 push(value);
+                pressured = at_wake_watermark_locked();
                 return true;
             }
 
-            void enqueue_or_overwrite(T& value) {
+            void enqueue_or_overwrite(T& value, bool& pressured) {
                 // Declared before the guard so the dropped value's destructor
                 // runs after the lock is released: ~T of a dropped span chunk
                 // is a cascade of frees, and this head-drop path runs exactly
@@ -233,8 +254,13 @@ namespace pinpoint {
                     std::lock_guard<std::mutex> lock(mutex_);
                     if (size_ < quota_) {
                         push(value);
+                        pressured = at_wake_watermark_locked();
                         return;
                     }
+                    // Past the quota every further enqueue head-drops, so the
+                    // consumer is behind by definition however the watermark
+                    // reads.
+                    pressured = true;
                     // Every active shard is restored to at least its non-zero
                     // base quota before its first enqueue.
                     if (quota_ == 0) {
@@ -356,6 +382,16 @@ namespace pinpoint {
             }
 
         private:
+            // True once this shard holds at least half its quota. The consumer
+            // is woken here rather than at the quota itself: enqueue_or_
+            // overwrite head-drops the moment the quota is reached, so the
+            // wake has to leave producers enough headroom to keep filling
+            // while the consumer returns from its collect slice and drains.
+            // Half the quota is that headroom.
+            bool at_wake_watermark_locked() const noexcept {
+                return quota_ != 0 && size_ * 2 >= quota_;
+            }
+
             void push(T& value) noexcept {
                 cells_[tail_] = std::move(value);
                 tail_ = next(tail_);

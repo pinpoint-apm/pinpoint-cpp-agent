@@ -2514,11 +2514,12 @@ namespace pinpoint {
         // Each service thread is mapped to a stable shard. Head-drop and insert
         // complete in one short shard-local critical section with no allocation
         // and no process-wide counter write on the hot path.
-        const bool shard_activated = span_queue_.enqueue(span);
-        notify_span_worker(shard_activated);
+        bool queue_pressured = false;
+        const bool shard_activated = span_queue_.enqueue(span, queue_pressured);
+        notify_span_worker(shard_activated, queue_pressured);
     } CATCH_AND_LOG("failed to enqueue span:")
 
-    void GrpcSpan::notify_span_worker(bool shard_activated) {
+    void GrpcSpan::notify_span_worker(bool shard_activated, bool queue_pressured) {
         // The fast path never takes the wait mutex. If the worker has announced
         // that it is about to sleep, pairing the notify with the same mutex used
         // by wait_dequeue_until closes the empty-check / sleep lost-wakeup gap.
@@ -2531,11 +2532,24 @@ namespace pinpoint {
         // the wakeup is lost until the flush deadline. Activation is rare (at
         // most once per shard per queue), so take the mutex unconditionally
         // then; the consumer's re-check under the same mutex sees the new bit.
-        if (!shard_activated && !span_consumer_waiting_.load(std::memory_order_acquire)) {
+        //
+        // A consumer accumulating a batch deliberately leaves the waiting flag
+        // down, so none of the above reaches it. That is the cheap path only
+        // while the queue keeps up: the accumulate loop sleeps in fixed slices
+        // and, with no wakeup arriving, a burst can fill the remaining shard
+        // quota and start head-dropping before the slice ends. Producers
+        // therefore take the handshake again once their own shard reports the
+        // wake watermark — rare by construction, and it costs one relaxed load
+        // on every other enqueue.
+        const bool wake_accumulating = queue_pressured &&
+                span_consumer_accumulating_.load(std::memory_order_acquire);
+        if (!shard_activated && !wake_accumulating &&
+                !span_consumer_waiting_.load(std::memory_order_acquire)) {
             return;
         }
         std::lock_guard<std::mutex> lock(span_wait_mutex_);
-        if (span_consumer_waiting_.load(std::memory_order_relaxed)) {
+        if (span_consumer_waiting_.load(std::memory_order_relaxed) ||
+                span_consumer_accumulating_.load(std::memory_order_relaxed)) {
             span_queue_cv_.notify_one();
         }
     }
@@ -2584,9 +2598,18 @@ namespace pinpoint {
         }
         buffer.push_back(std::move(span));
 
-        // Accumulate without re-arming producer wakeups; shutdown interrupts the wait.
+        // Accumulate without re-arming producer wakeups per item; shutdown
+        // interrupts the wait. The accumulating flag is the one exception: a
+        // producer whose shard reaches the wake watermark notifies through it,
+        // so a burst is drained inside the current slice instead of overrunning
+        // the shard quota while this loop sleeps (notify_span_worker).
         const auto deadline = std::chrono::steady_clock::now() + collect_deadline_ms;
         constexpr auto kCollectSlice = std::chrono::milliseconds(5);
+        span_consumer_accumulating_.store(true, std::memory_order_release);
+        struct AccumulatingFlagReset {
+            std::atomic<bool>& flag;
+            ~AccumulatingFlagReset() { flag.store(false, std::memory_order_release); }
+        } accumulating_reset{span_consumer_accumulating_};
         while (buffer.size() < batch_size) {
             span_queue_.try_dequeue_batch(buffer, batch_size - buffer.size());
             const auto now = std::chrono::steady_clock::now();
@@ -2594,6 +2617,16 @@ namespace pinpoint {
                 break;
             }
             std::unique_lock<std::mutex> lock(span_wait_mutex_);
+            // Re-check under the wait mutex before sleeping. A producer that
+            // enqueued after the drain above pairs its notify with this mutex,
+            // so without this the wakeup lands before the wait and is lost —
+            // exactly the burst this loop must not sleep through. Taking a
+            // shard lock under the wait mutex is the order wait_dequeue_until
+            // already uses, and producers release their shard lock before
+            // notifying, so the two never nest the other way.
+            if (span_queue_.try_dequeue_batch(buffer, batch_size - buffer.size()) > 0) {
+                continue;
+            }
             span_queue_cv_.wait_until(lock, std::min(deadline, now + kCollectSlice));
         }
         LOG_DEBUG("collect_batch: collected={} batch_size_limit={}", buffer.size(), batch_size);
