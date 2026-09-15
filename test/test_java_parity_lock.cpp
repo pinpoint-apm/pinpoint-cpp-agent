@@ -715,7 +715,9 @@ TEST(JavaParityLockTest, AgentInfoSchedule) {
     EXPECT_EQ(defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT, 3)
         << "Java AgentInfoSender maxTryPerAttempt";
     EXPECT_EQ(defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS, 3000)
-        << "matches the Go agent, not Java's effective 300000ms - see doc/java_parity.md";
+        << "matches the Go agent, not Java's effective 300000ms: registration "
+           "gates tracing in both ports, so it has to retry far more often - "
+           "see doc/development.md";
 }
 
 TEST(JavaParityLockTest, SpanBatchDefaults) {
