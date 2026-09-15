@@ -1,4 +1,4 @@
-# Pinpoint C++ Agent - Configuration Guide
+# Pinpoint C++ Agent — Configuration Guide
 
 This document is a consolidated reference for all configuration options available in the Pinpoint C++ Agent (`pinpoint-cpp-agent`). Every option is listed once, in the table for its section, with its YAML key, environment variable, type and default.
 
@@ -125,7 +125,7 @@ pinpoint::StartAgent(options);
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars); a missing value aborts agent startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
 | `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
-| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](trouble_shooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
+| `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](troubleshooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
 > **Note:** The Pinpoint service type (formerly the `ApplicationType` YAML key) is no longer a configuration option. It is passed in code as `AgentOptions::app_type` and defaults to `APP_TYPE_CPP` (`1300`).
 
@@ -757,7 +757,7 @@ Beyond them:
 
 ## Symptom → Key Index
 
-Diagnosis lives in the [Troubleshooting Guide](trouble_shooting.md). What
+Diagnosis lives in the [Troubleshooting Guide](troubleshooting.md). What
 belongs here is the reverse index — which key to reach for once you know the
 symptom:
 

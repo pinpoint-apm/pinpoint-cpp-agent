@@ -1,11 +1,11 @@
-# Pinpoint C++ Agent - Development Guide
+# Pinpoint C++ Agent — Development Guide
 
 This guide is for people working **on** the agent: the repository layout, the
 Docker and CI environments, how to run the test suites, coverage, sanitizers,
 benchmarks, and the design decisions the code rests on.
 
 If you only want to *use* the agent in your application, you do not need this
-document. Start with the [Quick Start Guide](quick_start.md), and see the
+document. Start with the [Getting Started Guide](getting_started.md), and see the
 [Build Guide](build.md) for building and linking the library.
 
 For the pull-request and CLA process, see [CONTRIBUTING.md](../CONTRIBUTING.md).

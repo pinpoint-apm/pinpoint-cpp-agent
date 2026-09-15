@@ -1,4 +1,4 @@
-# Pinpoint C++ Agent - Quick Start Guide
+# Pinpoint C++ Agent — Getting Started Guide
 
 This guide helps you get started with the Pinpoint C++ Agent (`pinpoint-cpp-agent`) for monitoring your C++ applications.
 
@@ -144,14 +144,14 @@ programs in `example/` use. The workflow is five steps:
 > installs no exit hook or signal handler of its own (it is embedded in your
 > process; see `AgentOptions::install_atexit_shutdown` for the opt-in hook), so
 > make your signal handler stop the server loop and let `main()` return. See
-> [Spans from just before exit are missing](trouble_shooting.md#spans-from-just-before-exit-are-missing).
+> [Spans from just before exit are missing](troubleshooting.md#spans-from-just-before-exit-are-missing).
 >
 > `StartAgent()` returns before the agent has registered with the collector, and
 > `Shutdown()` is terminal for an agent instance. Both contracts — including how
 > to tell a real failure from a deliberate `Enable: false`, and how to resume
 > tracing after a shutdown — are described in
-> [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup) and
-> [Stopping and Resuming the Agent](trouble_shooting.md#stopping-and-resuming-the-agent).
+> [Verifying Agent Startup](troubleshooting.md#verifying-agent-startup) and
+> [Stopping and Resuming the Agent](troubleshooting.md#stopping-and-resuming-the-agent).
 
 `HttpHeaderReader` comes from
 [`example/http_trace_context.h`](../example/http_trace_context.h); it implements
@@ -292,7 +292,7 @@ The request appears in the Pinpoint Web UI as a transaction for
 
 **Start with the agent log** — it answers almost every first-run problem, and it
 is the only authoritative startup signal. See
-[Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup).
+[Verifying Agent Startup](troubleshooting.md#verifying-agent-startup).
 
 Nothing in the UI despite `AgentInfo sent`? The three usual causes are sampling
 (`Type: COUNTER` with `CounterRate: 1` samples everything — use both while
@@ -300,4 +300,4 @@ testing), a span that is never ended (`EndSpan()` must run on every code path),
 and the collection interval (wait a few seconds).
 
 For everything else — connection failures, memory or CPU concerns, missing
-distributed traces — see the [Troubleshooting Guide](trouble_shooting.md).
+distributed traces — see the [Troubleshooting Guide](troubleshooting.md).

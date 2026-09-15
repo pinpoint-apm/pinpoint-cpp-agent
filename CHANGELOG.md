@@ -358,7 +358,7 @@
   falling through to `flushQueue()`. The Go agent's `collectUrlStatWorker`
   drains `urlStatChan` on the stop signal the same way.
 
-- **`doc/quick_start.md` step 5 now names `SIGTERM`.** The default
+- **`doc/getting_started.md` step 5 now names `SIGTERM`.** The default
   disposition kills the process before `install_atexit_shutdown` or anything
   else can run, so a host under Kubernetes or systemd must route the signal
   to a normal exit. The rationale for shipping no signal helper is unchanged.

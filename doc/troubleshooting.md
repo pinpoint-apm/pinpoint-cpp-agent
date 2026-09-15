@@ -1,4 +1,4 @@
-# Pinpoint C++ Agent - Troubleshooting Guide
+# Pinpoint C++ Agent — Troubleshooting Guide
 
 This guide helps you diagnose and resolve common issues with the Pinpoint C++ Agent.
 

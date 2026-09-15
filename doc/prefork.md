@@ -1,4 +1,4 @@
-# Pre-fork Integration Guide
+# Pinpoint C++ Agent — Pre-fork Integration Guide
 
 How to run the Pinpoint C++ agent inside pre-fork servers — hosts where a
 master process `fork()`s a pool of worker processes that handle the actual
@@ -168,7 +168,7 @@ Notes:
 ## Other process models
 
 - **Single-process applications** need nothing special: call `StartAgent()` at
-  startup as shown in the [Quick Start Guide](quick_start.md).
+  startup as shown in the [Getting Started Guide](getting_started.md).
 - **Daemonizing hosts** (fork + `setsid` at startup) are fine as long as
   `StartAgent()` runs after the daemonization fork.
 - **A traced worker forking a grandchild** that keeps running without `exec()`

@@ -1,4 +1,4 @@
-# Pinpoint C++ Agent - Instrumentation Guide
+# Pinpoint C++ Agent — Instrumentation Guide
 
 This document is the consolidated reference for instrumenting C++ applications with the Pinpoint C++ agent (`pinpoint-cpp-agent`). It covers the full tracer API declared in `include/pinpoint/tracer.h`, from bootstrapping through production best practices.
 
@@ -42,7 +42,7 @@ Before you can create spans, you must start an `Agent` instance with `StartAgent
 > **The startup contract — asynchronous registration, what a `false` return means,
 > why `Enable()` is not a startup check, and how `Enable: false` takes the same
 > return path — is documented once in
-> [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup).** Read it
+> [Verifying Agent Startup](troubleshooting.md#verifying-agent-startup).** Read it
 > before wiring `StartAgent()` into your application's error handling.
 
 ### Starting an Agent
@@ -73,7 +73,7 @@ int main() {
 back online and only produces noop spans from then on. To stop and later resume
 tracing in a long-running process, build a new agent with `StartAgent()` for each
 cycle — see
-[Stopping and Resuming the Agent](trouble_shooting.md#stopping-and-resuming-the-agent).
+[Stopping and Resuming the Agent](troubleshooting.md#stopping-and-resuming-the-agent).
 
 ### Sending AgentInfo Metadata
 
@@ -106,7 +106,7 @@ void someFunction() {
 ### Checking Agent Status
 
 `Enable()` is **not** a startup success check — see
-[Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup). Use it for
+[Verifying Agent Startup](troubleshooting.md#verifying-agent-startup). Use it for
 one purpose only: as a **fast-fail guard before creating a span**, to skip
 instrumentation work (span creation, header capture, context extraction) while
 tracing is off. The request itself is served normally either way:
@@ -1035,7 +1035,7 @@ span->RecordHeader(pinpoint::HTTP_RESPONSE, response_headers);
 
 ## 13. Troubleshooting
 
-The [Troubleshooting Guide](trouble_shooting.md) owns the full diagnostic
+The [Troubleshooting Guide](troubleshooting.md) owns the full diagnostic
 procedure — agent startup, collector connectivity, memory and CPU, and the
 commands to run. This section covers only the failure modes whose cause is in
 **your instrumentation code**, and where to look for each.
@@ -1059,7 +1059,7 @@ agent log usually names the bug before you have to reason about it.
 
 - [API Contracts](api_contracts.md) — the span/event/annotation rules the agent enforces
 - [Configuration Guide](config.md) — every configuration option
-- [Troubleshooting Guide](trouble_shooting.md) — startup contract and diagnostics
+- [Troubleshooting Guide](troubleshooting.md) — startup contract and diagnostics
 - [C API Guide](instrument_c.md) — the same API for plain C
 - API header: [`include/pinpoint/tracer.h`](../include/pinpoint/tracer.h)
 - Examples: [`example/`](../example/) (`proxy.cpp`, `server.cpp`)

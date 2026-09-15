@@ -1,11 +1,11 @@
-# Pinpoint C++ Agent - Build Guide
+# Pinpoint C++ Agent — Build Guide
 
 This document describes how to build the Pinpoint C++ Agent from source and link
 it into your application. Two build systems are supported: **Bazel** and **CMake**.
 
 To consume the agent without building it yourself first — a `FetchContent` block
 or a `bazel_dep` in your own project — see the
-[Quick Start Guide](quick_start.md#installation).
+[Getting Started Guide](getting_started.md#installation).
 
 > Working **on** the agent rather than with it? The test suites, coverage,
 > sanitizers, benchmarks and CI environments are in the
@@ -192,7 +192,7 @@ coverage and the sanitizer builds — is in the
 
 For runtime problems — the agent starting but not reporting, collector
 connectivity, missing spans — see the
-[Troubleshooting Guide](trouble_shooting.md). This section covers build failures
+[Troubleshooting Guide](troubleshooting.md). This section covers build failures
 only.
 
 ### Bazel: slow first build

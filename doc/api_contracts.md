@@ -141,7 +141,7 @@ The C API's `start_time_ms` arguments take **milliseconds** since the Unix epoch
 
 ## 11. Noop and Unsampled Spans Are Deliberately Silent
 
-`NewSpan()` never returns null. When the agent is disabled, not started or not yet registered with the collector (registration is retried indefinitely and tracing stays off — with no statistics collected either — until it succeeds; see [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup)), the URL/method is excluded by filters, or sampling rejects the transaction, you receive a no-op or unsampled span on which every call succeeds and records nothing:
+`NewSpan()` never returns null. When the agent is disabled, not started or not yet registered with the collector (registration is retried indefinitely and tracing stays off — with no statistics collected either — until it succeeds; see [Verifying Agent Startup](troubleshooting.md#verifying-agent-startup)), the URL/method is excluded by filters, or sampling rejects the transaction, you receive a no-op or unsampled span on which every call succeeds and records nothing:
 
 - `IsSampled()` returns `false`, `GetTraceId()` returns an empty string, and `GetSpanId()` returns 0 for no-op spans (unsampled spans do carry a real span id).
 - An unsampled span is never sent, but it still feeds the response-time and **URL statistics**. `SetError()` on it, or on its span event, marks that URL stat entry as failed — otherwise the failure rate would be biased toward zero, since unsampled requests are the majority once sampling is on. Nothing else about the error is kept.

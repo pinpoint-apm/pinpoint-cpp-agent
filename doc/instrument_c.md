@@ -102,7 +102,7 @@ int main(void) {
 ```
 
 > **The startup contract is documented once in
-> [Verifying Agent Startup](trouble_shooting.md#verifying-agent-startup)**, and it
+> [Verifying Agent Startup](troubleshooting.md#verifying-agent-startup)**, and it
 > applies here with C spellings: `pt_start_agent()` returns `0` for a
 > *synchronous* configuration or setup failure (and a deliberate `Enable: false`
 > takes that same path, writing nothing to the agent log), registration happens
@@ -112,7 +112,7 @@ int main(void) {
 `pt_agent_shutdown()` is terminal for that agent: the same handle can never come
 back online. To stop and later resume tracing, destroy the handle and run
 `pt_start_agent()` again for each cycle — the full contract is in
-[Stopping and Resuming the Agent](trouble_shooting.md#stopping-and-resuming-the-agent):
+[Stopping and Resuming the Agent](troubleshooting.md#stopping-and-resuming-the-agent):
 
 ```c
 pt_agent_shutdown(agent);
@@ -879,6 +879,6 @@ PT_API_TYPE_INVOCATION  /* 200 */
 - [api_contracts.md](api_contracts.md) — the span/event/annotation rules, shared with the C++ API
 - [instrument.md](instrument.md) — C++ API guide
 - [config.md](config.md) — full configuration reference
-- [trouble_shooting.md](trouble_shooting.md) — startup contract and diagnostics
+- [troubleshooting.md](troubleshooting.md) — startup contract and diagnostics
 - API header: [`include/pinpoint/tracer_c.h`](../include/pinpoint/tracer_c.h)
 - C examples: the [civetweb example](https://github.com/pinpoint-apm/pinpoint-cpp-examples/tree/main/civetweb) and the [nginx module](https://github.com/pinpoint-apm/pinpoint-cpp-examples/blob/main/nginx/ngx_http_pinpoint_module.c) in [pinpoint-cpp-examples](https://github.com/pinpoint-apm/pinpoint-cpp-examples)
