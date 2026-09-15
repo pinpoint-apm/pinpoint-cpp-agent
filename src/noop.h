@@ -95,28 +95,14 @@ namespace pinpoint {
      */
     class UnsampledSpanEvent final : public NoopSpanEvent {
     public:
-        explicit UnsampledSpanEvent(UnsampledSpan* owner) : owner_(owner) {}
-
         void InjectContext(TraceContextWriter& writer) override;
-        void SetError(std::string_view error_message) override { SetError("Error", error_message); }
-        void SetError(std::string_view error_name, std::string_view error_message) override;
-        // Frames are dropped (an unsampled span buffers no exceptions); only
-        // the failure verdict survives, as in the plain overload.
-        void SetError(std::string_view error_name, std::string_view error_message,
-                      CallStackReader& reader) override { SetError(error_name, error_message); }
-        void SetError(std::string_view error_name, std::string_view error_message,
-                      const std::vector<CallStackFrame>& frames) override { SetError(error_name, error_message); }
-        void SetError(std::string_view error_name, std::string_view error_message,
-                      const std::vector<CallStackFrame>& frames,
-                      const std::vector<ExceptionChainEntry>& causes) override { SetError(error_name, error_message); }
-        void SetIgnoredError(std::string_view error_name, std::string_view error_message,
-                             const std::vector<CallStackFrame>& frames,
-                             const std::vector<ExceptionChainEntry>& causes) override {}
 
-    private:
-        // Non-owning: this event lives inside that span, so it cannot outlive
-        // it. Never null.
-        UnsampledSpan* owner_;
+        // Every SetError overload is inherited from NoopSpanEvent, i.e. a
+        // no-op. An error recorded on the *event* of an unsampled request is
+        // dropped, matching Java's DisableSpanEventRecorder.recordException
+        // and the Go agent's noopSpanEvent.SetError. The span's own SetError
+        // still fails the URL stat entry, as Java's DisableSpanRecorder and
+        // Go's noopSpan.SetError do.
     };
 
     /// @brief Span implementation used when tracing is disabled.
@@ -174,16 +160,16 @@ namespace pinpoint {
         ~UnsampledSpan() override;
 
         // Hand out this span's own unsampled event so that InjectContext on
-        // the event still propagates the `s0` sampling decision downstream,
-        // and SetError on it still fails this span.
+        // the event still propagates the `s0` sampling decision downstream.
+        // Everything else on it, SetError included, is a no-op.
         SpanEventPtr NewSpanEvent(std::string_view operation) override { return &event_; }
         SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return &event_; }
         SpanEventPtr GetSpanEvent() override { return &event_; }
 
         // An unsampled span records nothing and is never sent, but it still
-        // produces a URL stat entry — so an error has to fail that entry, or
-        // the failure rate is structurally biased toward zero on the path that
-        // carries most of the traffic when sampling is on.
+        // produces a URL stat entry, so a span-level error fails that entry.
+        // This is the span half of Java's DisableSpanRecorder.recordException;
+        // the event half is a no-op there, in the Go agent and here.
         void SetError(std::string_view error_message) override { markError("Error", error_message); }
         void SetError(std::string_view error_name, std::string_view error_message) override {
             markError(error_name, error_message);
@@ -199,8 +185,6 @@ namespace pinpoint {
         }
 
     private:
-        friend class UnsampledSpanEvent;
-
         // Single point that flips err_, so the Span.IgnoreErrors filter is
         // applied in exactly one place, as SpanImpl::markSpanError does.
         void markError(std::string_view error_name, std::string_view error_message);
@@ -221,7 +205,7 @@ namespace pinpoint {
         std::atomic<bool> err_{false};
         // Handed out by NewSpanEvent/GetSpanEvent; by value, so an unsampled
         // request pays no allocation for it.
-        UnsampledSpanEvent event_{this};
+        UnsampledSpanEvent event_;
         // Registration in the active-request registry (see active_span.h):
         // linked by the constructor, unlinked by EndSpan; the destructor and
         // releaseActiveSpanOnError unlink as idempotent backstops.

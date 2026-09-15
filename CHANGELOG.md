@@ -4,6 +4,20 @@
 
 ### Breaking
 
+- **`SetError()` on an unsampled span's *event* no longer fails its URL stat
+  entry.** It now records nothing, matching Java's no-op
+  `DisableSpanEventRecorder.recordException` and the Go agent's
+  `noopSpanEvent.SetError`; the three agents agree on this path for the first
+  time. `SetError()` on the unsampled **span** is unchanged and still marks the
+  entry failed, as Java's `DisableSpanRecorder` and Go's `noopSpan.SetError`
+  do. The previous behaviour was a deliberate step past Java, taken so that a
+  host reporting failures only on the failing step would not bias the URL stat
+  failure rate toward zero; the cost of keeping it was that the same
+  application reported a different unsampled failure rate under this agent than
+  under the Go one. **A host that records step failures on the event and needs
+  them in the URL statistics must record them on the span instead** — the
+  failed-request count on unsampled traffic will otherwise drop after the
+  upgrade.
 - **`helper::TraceHttpClientRequest` strips the URL query by default.** The
   `ANNOTATION_HTTP_URL` value is cut at its first `?` unless the new
   `Http.Client.RecordUrlQuery` (default `false`) is on, matching Java's

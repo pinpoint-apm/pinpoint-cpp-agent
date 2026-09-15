@@ -208,7 +208,7 @@ TEST_F(NoopTest, UnsampledSpanEventIsPerSpanTest) {
         << "Unsampled span event is distinct from the plain noop span event";
 }
 
-TEST_F(NoopTest, UnsampledSpanEventSetErrorFailsUrlStatTest) {
+TEST_F(NoopTest, UnsampledSpanEventSetErrorDoesNotFailUrlStatTest) {
     UnsampledSpan span(mock_agent_service_.get());
     span.SetUrlStat("/api/users", "GET", 200);
 
@@ -216,8 +216,9 @@ TEST_F(NoopTest, UnsampledSpanEventSetErrorFailsUrlStatTest) {
     span.EndSpan();
 
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
-    EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
-        << "an event exception must fail the unsampled request's URL stat";
+    EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_)
+        << "an error on the event of an unsampled request is dropped, as Java's "
+           "DisableSpanEventRecorder and the Go agent's noopSpanEvent do";
     EXPECT_TRUE(mock_agent_service_->recorded_spans_.empty())
         << "the span itself is still never sent";
 }
@@ -262,7 +263,7 @@ TEST_F(NoopTest, UnsampledSpanIgnoredErrorKeepsUrlStatSuccessfulTest) {
 
     UnsampledSpan ignored(mock_agent_service_.get(), runtime);
     ignored.SetUrlStat("/api/users", "GET", 200);
-    ignored.NewSpanEvent("db-query")->SetError("NotFound", "no such row");
+    ignored.SetError("NotFound", "no such row");
     ignored.EndSpan();
 
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 1);
@@ -271,7 +272,7 @@ TEST_F(NoopTest, UnsampledSpanIgnoredErrorKeepsUrlStatSuccessfulTest) {
 
     UnsampledSpan failed(mock_agent_service_.get(), runtime);
     failed.SetUrlStat("/api/users", "GET", 200);
-    failed.NewSpanEvent("db-query")->SetError("SQLException", "connection refused");
+    failed.SetError("SQLException", "connection refused");
     failed.EndSpan();
 
     EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 2);
@@ -905,10 +906,10 @@ TEST_F(NoopTest, NoopSpanEventIgnoresEveryCallTest) {
     SUCCEED() << "every noop event call is a no-op that must not crash";
 }
 
-// An unsampled request's only visible output is its URL stat entry, so all
-// four SetError overloads have to reach the span — a DB exception recorded
-// through the frames overload must not be the one that silently passes.
-TEST_F(NoopTest, UnsampledSpanEventEveryErrorOverloadFailsTheUrlStatTest) {
+// The event of an unsampled request drops every error, so no SetError
+// overload may reach the span — one that still did would fail the URL stat on
+// a path Java and the Go agent leave untouched.
+TEST_F(NoopTest, UnsampledSpanEventNoErrorOverloadFailsTheUrlStatTest) {
     MockCallStackReader stack;
     stack.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);
 
@@ -930,8 +931,8 @@ TEST_F(NoopTest, UnsampledSpanEventEveryErrorOverloadFailsTheUrlStatTest) {
         span.EndSpan();
 
         ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "overload " << i;
-        EXPECT_TRUE(mock_agent_service_->last_url_stat_failed_)
-            << "SetError overload " << i << " must fail the url stat";
+        EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_)
+            << "SetError overload " << i << " must not fail the url stat";
     }
 }
 

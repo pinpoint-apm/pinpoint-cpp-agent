@@ -98,13 +98,6 @@ namespace pinpoint {
         }
     }
 
-    void UnsampledSpanEvent::SetError(std::string_view error_name, std::string_view error_message) {
-        // Mirrors SpanEventImpl::SetError routing to SpanImpl::markSpanError:
-        // an exception on a step fails the transaction. Nothing else of the
-        // error is kept — an unsampled span has nowhere to keep it.
-        owner_->markError(error_name, error_message);
-    }
-
     void UnsampledSpan::markError(std::string_view error_name, std::string_view error_message) try {
         // Span.IgnoreErrors must apply here too: an error the operator has
         // excluded would otherwise fail the URL stat of unsampled requests

@@ -824,12 +824,8 @@ configured `0` to `0.01`; see the [changelog](../CHANGELOG.md).
 | Inbound-trace continuation: four ordered checks | `DefaultTraceHeaderReader.java:54-70` |
 | Conditional injected-header set | `DefaultRequestTraceWriter` |
 
-Two places where this agent **deliberately differs**, and why:
+Three places where this agent **deliberately differs**, and why:
 
-- **An unsampled span *event*'s error fails the transaction.** Java's
-  `DisableSpanEventRecorder.recordException` is a no-op. With sampling on,
-  unsampled requests are the majority, so ignoring their step errors would bias
-  the URL stat failure rate toward zero.
 - **Deferring the `PSpan` store until the last async child ends** exists only on
   Java's `AsyncDefaultTrace` path (`AsyncDefaultTrace.java:24-31` awaits;
   `SpanAsyncStateListener.java:59` stores), whose entry points are the vert.x-only
