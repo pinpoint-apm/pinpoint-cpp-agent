@@ -185,7 +185,7 @@ traced request's worth of traffic. The second holds the population fixed and
 only looks up, isolating reader contention from the exclusive-lock insert/erase
 traffic — and showing the cost the sharding does carry, since scattering a
 thread's handles across shards loses map locality. See
-[Measured Complexity Decisions](../doc/complexity_decisions.md) §7.
+[Measured Complexity Decisions](../doc/development.md#measured-complexity-decisions) §7.
 
 ```sh
 cmake --preset default -DBUILD_BENCHMARKS=ON

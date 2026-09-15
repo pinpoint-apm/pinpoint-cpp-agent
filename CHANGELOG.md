@@ -86,8 +86,7 @@
   **The Go agent still has all four.** `setProxyHeader`
   (`plugin/http/server.go`) is unchanged there, so until the matching change
   lands a C++ service and a Go service behind the same nginx report different
-  proxy annotations to the same collector. See
-  [doc/java_parity.md](doc/java_parity.md#proxy-request-headers--same-as-java-shared-with-go).
+  proxy annotations to the same collector.
 
 - **The acceptor host falls back to the request endpoint without
   `Pinpoint-Host`.**
@@ -101,8 +100,7 @@
   `helper::TraceHttpServerRequest` now fills the gap
   ([src/http.cpp](src/http.cpp), [src/span.cpp](src/span.cpp)); a header that
   is present still wins. The Go agent's `Extract` (`span.go`) still leaves it
-  blank. See
-  [doc/java_parity.md](doc/java_parity.md#acceptor-host-without-pinpoint-host--same-as-java-shared-with-go).
+  blank.
 
 - **`PSpan.err` now carries the error cause, not a flat `1`.**
 
@@ -133,8 +131,7 @@
 
   **The Go agent still sends `1`.** Until the matching change lands there, a
   C++ service and a Go service that failed the same way report different `err`
-  values to the same collector. See
-  [doc/java_parity.md](doc/java_parity.md#pspanerr-carries-the-error-cause-mask--same-as-java-shared-with-go).
+  values to the same collector.
 
 - **Continuing an inbound trace now requires all three trace headers.**
 
@@ -176,8 +173,7 @@
   the context extracted can no longer disagree. `Pinpoint-Sampled: s0` still
   short-circuits ahead of all of it, a present-but-unparseable
   `Pinpoint-SpanID` still continues the trace with a generated span id, and an
-  absent `Pinpoint-Flags` still means `0` — see
-  [doc/java_parity.md](doc/java_parity.md).
+  absent `Pinpoint-Flags` still means `0`.
 
 - **`Sql.ErrorCount` now applies per transaction, not per span.**
 
@@ -203,8 +199,7 @@
   **Migration.** Nothing to change if the new marking is what you want. To keep
   the old volume of failures, raise `Sql.ErrorCount`; to stop SQL-count marking
   altogether, set `Sql.ErrorCount: 0`. Traces without async spans are
-  unaffected — a single span was already the whole transaction. See
-  [doc/java_parity.md](doc/java_parity.md#sqlerrorcount-is-a-per-transaction-budget--same-as-java).
+  unaffected — a single span was already the whole transaction.
 
 - **A negative `Sql.ErrorCount` now turns SQL-count error marking off.**
 
@@ -309,9 +304,7 @@
   while the stats stream is down (was four: Java compares `size() > 4`
   before offering) and `Http.UrlStatLimit` defaults to `1000` (was `1024`,
   Java's `completed.data.limit.size`). The sharded input queue keeps its
-  shape; see
-  [doc/java_parity.md](doc/java_parity.md#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded).
-  The Go agent made the same two moves.
+  shape. The Go agent made the same two moves.
 
 - **`Stat.BatchInterval` is capped at `10000` ms, Java's
   `DefaultAgentStatMonitor` maximum** (was `60000`); a larger value falls back
@@ -368,8 +361,7 @@
 - **`doc/quick_start.md` step 5 now names `SIGTERM`.** The default
   disposition kills the process before `install_atexit_shutdown` or anything
   else can run, so a host under Kubernetes or systemd must route the signal
-  to a normal exit. The rationale for shipping no signal helper is unchanged
-  and recorded in [doc/java_parity.md](doc/java_parity.md#automatic-shutdown-at-process-exit--opt-in-default-off).
+  to a normal exit. The rationale for shipping no signal helper is unchanged.
 
 - **An overflowed span event no longer injects the previous overflow's host.**
 
@@ -404,8 +396,7 @@
   no two entries of a chain share a depth). Each recorded exception now gets
   its own id and its own `ANNOTATION_EXCEPTION_ID`, and asks the
   `CallstackTraceNewThroughput` limiter on its own; a refusal is no longer
-  latched for the rest of the span. See
-  [doc/java_parity.md](doc/java_parity.md#exception-chain-scope-and-depth--one-entry-per-exception).
+  latched for the rest of the span.
 
 - **Unknown configuration keys are warned about.** The loader only ever
   looked up known paths, so a misspelled key (`Sampling.CounterRte`) was
@@ -448,5 +439,4 @@
 - **The active-span registry keeps its warning and takes no cap.** The Go
   agent adopted Java's 10240-entry eviction; this agent's registry is an
   intrusive list of nodes the spans own, so eviction would free nothing and
-  cost a heap copy per request. The rationale is expanded in
-  [doc/java_parity.md](doc/java_parity.md#active-span-registry-cap--declined-replaced-by-a-warning).
+  cost a heap copy per request.

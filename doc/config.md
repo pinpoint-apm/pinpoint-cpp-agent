@@ -240,8 +240,8 @@ The same `Grpc` channel options are applied to the agent, metadata, span, and st
 What the collector receives in each `PAgentStat` row, since the C++ agent has no JVM to report on:
 
 - **Memory** is the process's **resident** memory, not a JVM heap: `jvmMemoryHeapUsed` is the current resident set (`VmRSS` on Linux, Mach `resident_size` on macOS) and `jvmMemoryHeapMax` is the resident **high-water mark** (`VmHWM` / `resident_size_max`). Both are process-wide totals — code, stacks and mapped files included — so the Inspector's "Heap Usage" chart reads as process memory growth, and `Max` is the largest resident set the process has ever held rather than a configured limit. Neither value counts address space that was only reserved.
-- **Non-heap and GC** (`jvmMemoryNonHeapUsed`, `jvmMemoryNonHeapMax`, `jvmGcOldCount`, `jvmGcOldTime`) are **not collected** and travel as **`-1`**, the same uncollected sentinel the Java agent sends (`MemoryMetric.UNCOLLECTED_VALUE`). `gcType` is always `JVM_GC_TYPE_UNKNOWN`. They cannot simply be omitted: they are proto3 implicit-presence scalars, so an unset field arrives at the collector as `0` and would be stored and plotted as a real measurement.
-- **`collectInterval`** is the interval **actually measured** since the previous collection, not `Stat.BatchInterval` — a collect tick delayed by load reports the longer period it really covered, matching the Java agent's `CollectJob`. CPU load in the same row is computed over that same measured period.
+- **Non-heap and GC** (`jvmMemoryNonHeapUsed`, `jvmMemoryNonHeapMax`, `jvmGcOldCount`, `jvmGcOldTime`) are **not collected** and travel as **`-1`**, the same uncollected sentinel the Java agent sends. `gcType` is always `JVM_GC_TYPE_UNKNOWN`. They cannot simply be omitted: they are proto3 implicit-presence scalars, so an unset field arrives at the collector as `0` and would be stored and plotted as a real measurement.
+- **`collectInterval`** is the interval **actually measured** since the previous collection, not `Stat.BatchInterval` — a collect tick delayed by load reports the longer period it really covered, matching the Java agent. CPU load in the same row is computed over that same measured period.
 
 ---
 
@@ -251,7 +251,7 @@ What the collector receives in each `PAgentStat` row, since the C++ agent has no
 |---|---|---|---|---|
 | `Sampling.Type` | `PINPOINT_CPP_SAMPLING_TYPE` | string | `"COUNTER"` | `"COUNTER"` or `"PERCENT"` (case-insensitive). `"COUNTING"` — the Java agent's name for the same mode — is accepted as an alias for `"COUNTER"`. An unrecognised value logs a warning and falls back to `"COUNTER"`. |
 | `Sampling.CounterRate` | `PINPOINT_CPP_SAMPLING_COUNTER_RATE` | int | `1` | Sample 1/N transactions, starting with the first one. `0` = disable. |
-| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | `0` or below = never sample (percent sampling off); values above `100` become `100` = always sample. A positive rate below `0.01` truncates to `0`, so it never samples either — the agent logs a warning for it. Matches the Java agent's `PercentSamplerFactory.createSampler` (`PercentSamplerFactory.java:40-48,56-58`). |
+| `Sampling.PercentRate` | `PINPOINT_CPP_SAMPLING_PERCENT_RATE` | double | `100` | `0` or below = never sample (percent sampling off); values above `100` become `100` = always sample. A positive rate below `0.01` truncates to `0`, so it never samples either — the agent logs a warning for it. Matches the Java agent. |
 | `Sampling.NewThroughput` | `PINPOINT_CPP_SAMPLING_NEW_THROUGHPUT` | int | `0` | Target TPS for new transactions. `0` = unlimited. |
 | `Sampling.ContinueThroughput` | `PINPOINT_CPP_SAMPLING_CONTINUE_THROUGHPUT` | int | `0` | Target TPS for continuing transactions. `0` = unlimited. |
 
@@ -261,19 +261,17 @@ Throughput limiting is not a separate `Sampling.Type`; it is enabled automatical
 
 ### Counter sampling phase
 
-The counter is tested **before** it is incremented, so the first transaction after startup — or after a config reload that changes `Sampling.*`, which rebuilds the sampler — is always sampled, then every Nth one after it: `CounterRate: 10` samples transactions 1, 11, 21, … This matches the Java agent's `CountingSampler` (`counter.getAndIncrement()`). Sampling the Nth transaction first instead would hide the very first request, which is what a low-traffic service or a manual smoke test usually looks at.
+The counter is tested **before** it is incremented, so the first transaction after startup — or after a config reload that changes `Sampling.*`, which rebuilds the sampler — is always sampled, then every Nth one after it: `CounterRate: 10` samples transactions 1, 11, 21, … This matches the Java agent's counting sampler. Sampling the Nth transaction first instead would hide the very first request, which is what a low-traffic service or a manual smoke test usually looks at.
 
 ### PercentRate truncates, matching Java and Go
 
-`PercentRate` is stored internally as hundredths of a percent, and the conversion **truncates** — the same `(long) (rate * 100)` the Java agent's `PercentSamplerFactory` does, and the same `uint64(percent * 100)` the Go agent does. A configured `0.29` samples 0.28% in all three.
+`PercentRate` is stored internally as hundredths of a percent, and the conversion **truncates**, exactly as the Java and Go agents do. A configured `0.29` samples 0.28% in all three, so one configuration file deployed across a polyglot fleet produces one sampling rate.
 
-Truncation is an artifact of IEEE-754, not a policy: `0.29 * 100` is `28.999999999999996`, so the cast drops a hundredth. This agent rounded to nearest for a while, on the argument that it hands the operator back the rate they typed. That was reverted — one configuration file deployed across a polyglot fleet should produce one sampling rate, and a hundredth of a percentage point is not worth being the one agent that disagrees.
+The practical effect is nil for an integer rate (`1.0`, `10.0`, `100.0` are exact) and at most one hundredth of a percentage point otherwise — the resolution of the setting itself. `0.01` is the smallest rate that still samples; anything positive below it truncates to `0` and samples nothing, as in Java. The agent logs a warning in that case, since an operator who typed a rate meant to get some sampling.
 
-The practical effect is nil for an integer rate (`1.0`, `10.0`, `100.0` are exact) and at most one hundredth of a percentage point otherwise — the resolution of the setting itself. `0.01 * 100` is exactly `1.0`, so `0.01` is the smallest rate that still samples; anything positive below it truncates to `0` and samples nothing, which is what Java does as well (`parseSamplingRate` truncates, then `createSampler` sends a non-positive rate to `FalseSampler`). The agent logs a warning in that case, since an operator who typed a rate meant to get some sampling.
+`PercentRate: 0` — or any negative value — means **never sample**, not "sample a little". Releases up to and including v2.0.0 raised `0` to `0.01`; see the [changelog](../CHANGELOG.md).
 
-`PercentRate: 0` — or any negative value — means **never sample**, not "sample a little": it produces the same outcome as Java's `FalseSampler` (`PercentSamplerFactory.java:40-42`). Releases up to and including v2.0.0 raised `0` to `0.01`; see the [changelog](../CHANGELOG.md).
-
-The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, like Java's `PercentRateSampler`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup — or after a config reload that changes `Sampling.*` — is always sampled. `PercentRate: 100` is short-circuited to always-sample, which is where Java uses a separate `TrueSampler`.
+The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, so `PercentRate: 50` samples transactions 1, 3, 5, … and the first transaction after startup — or after a config reload that changes `Sampling.*` — is always sampled. `PercentRate: 100` is short-circuited to always-sample.
 
 ---
 
@@ -282,7 +280,7 @@ The *phase* matches Java too: the sampler admits on a remainder in `(0, rate]`, 
 | YAML Key | Environment Variable | Type | Default | Range / Notes |
 |---|---|---|---|---|
 | `Span.QueueSize` | `PINPOINT_CPP_SPAN_QUEUE_SIZE` | int | `1024` | Valid range: `1`-`65536`. |
-| `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. The allowance is **`MaxEventDepth + 1` nesting levels**, not `MaxEventDepth`: the limit is compared against the events already on the stack, so the event landing one level past it is still recorded and the next one overflows. Mirrors the Java agent's `profiler.callstack.max.depth` (`DefaultCallStack.isOverflow()` compares `maxDepth < index`), including the min-2 clamp. |
+| `Span.MaxEventDepth` | `PINPOINT_CPP_SPAN_MAX_EVENT_DEPTH` | int | `64` | Min `2`. `-1` = unlimited. The allowance is **`MaxEventDepth + 1` nesting levels**, not `MaxEventDepth`: the limit is compared against the events already on the stack, so the event landing one level past it is still recorded and the next one overflows. Mirrors the Java agent's `profiler.callstack.max.depth`, including the min-2 clamp. |
 | `Span.MaxEventSequence` | `PINPOINT_CPP_SPAN_MAX_EVENT_SEQUENCE` | int | `5000` | Min `4`. `-1` = unlimited — every ended event keeps a small handle object alive until the span ends (a few hundred bytes each), so a very long-lived span with unlimited events grows without bound. |
 | `Span.EventChunkSize` | `PINPOINT_CPP_SPAN_EVENT_CHUNK_SIZE` | int | `20` | Min `1`. Events per transmission chunk. |
 | `Span.IgnoreErrors` | `PINPOINT_CPP_SPAN_IGNORE_ERRORS` | list of `{ Name, MessageContains }` | empty | Errors matching a rule are still reported (`exceptionInfo`) but do not mark the transaction as failed. See below. |
@@ -335,7 +333,7 @@ throwable-only. Java's `nested` / `parent` matchers are not implemented.
 
 `PSpan.err` is a **bitmask of error causes**, not a boolean, so the server can
 tell *why* a transaction failed. The bit values are shared with the Java and Go
-agents (Java's `common/trace/ErrorCategory`):
+agents:
 
 | Cause | Configuration name | Bit | Set by |
 |---|---|---|---|
@@ -373,9 +371,9 @@ PINPOINT_CPP_SPAN_ERROR_MARK_EXCLUDE="http-status,sql"
 
 Leaving both keys unset reproduces the Java agent's default
 (`profiler.error.enable=true` with no mark string, i.e. every cause enabled).
-There is no counterpart to `profiler.error.enable=false` — Java's
-`SimpleErrorRecorder`, which reports a flat `1` for every cause — because
-excluding causes individually covers the same ground.
+There is no counterpart to `profiler.error.enable=false`, which reports a flat
+`1` for every cause, because excluding causes individually covers the same
+ground.
 
 ---
 
@@ -387,7 +385,7 @@ excluding causes individually covers the same ground.
 |---|---|---|---|---|
 | `Http.CollectUrlStat` | `PINPOINT_CPP_HTTP_COLLECT_URL_STAT` | bool | `false` | Enable URL statistics collection. |
 | `Http.UrlStatLimit` | `PINPOINT_CPP_HTTP_URL_STAT_LIMIT` | int | `1000` | Max unique URL stat keys tracked per 30-second tick (Java's `profiler.uri.stat.completed.data.limit.size`). `0` records none; negative values fall back to the default. |
-| `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered per request-thread queue shard (16 shards) while waiting for aggregation, which runs every 10 ms; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. Java buffers on one queue of `5192`; here the bound is per shard, so one thread can buffer 1024 and the process up to 16 × 1024 — see [Java parity](java_parity.md#url-stat-capacities--completed-ticks-and-uri-limit-as-java-input-queue-sharded). |
+| `Http.UrlStatQueueSize` | `PINPOINT_CPP_HTTP_URL_STAT_QUEUE_SIZE` | int | `1024` | Max URL stat records buffered per request-thread queue shard (16 shards) while waiting for aggregation, which runs every 10 ms; records beyond it are dropped. Valid range `1`–`65536`; out-of-range values fall back to the default. Java buffers on one queue of `5192`; here the bound is per shard, so one thread can buffer 1024 and the process up to 16 × 1024. |
 | `Http.UrlStatEnableTrimPath` | `PINPOINT_CPP_HTTP_URL_STAT_ENABLE_TRIM_PATH` | bool | `false` | Trim the recorded URL to `UrlStatTrimPathDepth` leading segments plus `*`. **Off by default, like Java and Go: a recorded URI template is aggregated verbatim. Turn it on only if the caller can pass nothing but the raw request URL** — see the note below. |
 | `Http.UrlStatTrimPathDepth` | `PINPOINT_CPP_HTTP_URL_STAT_TRIM_PATH_DEPTH` | int | `3` | Number of leading path segments kept during normalisation; a trimmed path gets a `*` suffix (depth `1`: `/api/users` → `/api/*`; depth `2`: `/api/v1/users` → `/api/v1/*`). A path with no more segments than the depth is kept as-is, so depth `3` keeps `/api/users/123` and trims only from the fourth segment (`/api/users/123/comments` → `/api/users/123/*`). Values below `1` are treated as `1`. Requires `UrlStatEnableTrimPath: true`. |
 | `Http.UrlStatMethodPrefix` | `PINPOINT_CPP_HTTP_URL_STAT_METHOD_PREFIX` | bool | `false` | Prefix URL stat key with the HTTP method and a space (e.g., `GET /api/users`). |
@@ -401,16 +399,16 @@ arrives, by the send timer once the tick's 30-second window has elapsed, so an
 agent whose traffic stops still reports its last tick. **A completed tick is
 sent as soon as it is closed**, not on the next timer expiry. The send timer
 itself has no key of its own: it follows `Stat.BatchInterval` (default 5 s),
-the way Java's `UriStatCollectingJob` runs on the agent stat scheduler, so
+the way Java runs URL stat collection on the agent stat scheduler, so
 under traffic a tick leaves within milliseconds of its boundary and after
 traffic stops the last tick is closed within one `Stat.BatchInterval`. **A
 send with no completed tick sends no message at all**, so an idle agent puts
-nothing on the stats stream. This matches Java, whose `UriStatCollectingJob`
-drains only the completed queue and stops as soon as it polls empty. The one
+nothing on the stats stream. This matches Java, which drains only the completed queue and stops as
+soon as it polls empty. The one
 exception is agent shutdown, which flushes the tick in progress rather than
 dropping it.
 
-A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's `URITemplate.NULL_URI` verbatim, so a mixed Java/C++ application keeps one "no URI recorded" bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
+A request recorded without a URL is aggregated under the key `/NULL` rather than an empty string. That is Java's own "no URI recorded" key verbatim, so a mixed Java/C++ application keeps one bucket instead of two. The Go agent uses its own `UNKNOWN_URL` for this and still differs.
 
 #### Turn trimming on only when you pass a raw URL
 
@@ -455,7 +453,7 @@ Rule of thumb: **URL pattern in → leave it `false`; raw URL in → set it `tru
 | `Http.Server.RealIpHeader` | `PINPOINT_CPP_HTTP_SERVER_REAL_IP_HEADER` | list&lt;string&gt; | `["X-Forwarded-For", "X-Real-Ip"]` |
 | `Http.Server.RealIpEmptyValue` | `PINPOINT_CPP_HTTP_SERVER_REAL_IP_EMPTY_VALUE` | string | `""` |
 
-`RealIpHeader` is Java's `profiler.server.realipheader` (`RealIpHeaderResolver`):
+`RealIpHeader` is Java's `profiler.server.realipheader`:
 the ordered request headers the client address (`remoteAddr`) is taken from.
 The first header present whose value yields a usable address wins. A header
 named `Forwarded` (RFC 7239) is parsed for its `for=` token, with a trailing
@@ -471,8 +469,8 @@ header first (`CF-Connecting-IP`, `True-Client-IP`, `Forwarded`). Reloadable.
 
 `RecordRequestParam` is Java's `profiler.server.tracerequestparam`: when on,
 the query string passed to `helper::TraceHttpServerRequest(..., query_string)`
-is recorded as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's
-`HttpServletParameterExtractor` format — `k=v&k=v`, percent-decoded, each key
+is recorded as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's format
+— `k=v&k=v`, percent-decoded, each key
 and value cut to 64 characters and the whole string to 512, with `...` marking
 every cut. **Java defaults this to on; the C++ agent defaults it to off**
 because query strings routinely carry tokens, session ids and user ids.
@@ -487,8 +485,7 @@ names below alike — so no proxy annotation is recorded. Emptying
 `ProxyUserHeaderNames` names the request headers that carry a *user-defined*
 proxy header — a proxy that writes the Pinpoint proxy format under a header
 name of its own instead of `Pinpoint-ProxyApache` / `-ProxyNginx` /
-`-ProxyApp`. It is Java's `profiler.proxy.http.headers`
-(`UserRequestParser`), and like Java it is empty by default: nothing is read
+`-ProxyApp`. It is Java's `profiler.proxy.http.headers`, and like Java it is empty by default: nothing is read
 until a name is listed. Each configured name that is present on a request
 records its own proxy annotation under type code 4, labelled with the header
 name it was read from.
@@ -514,8 +511,7 @@ read and need no configuration.
 | `Http.Client.RecordResponseHeader` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_RESPONSE_HEADER` | list&lt;string&gt; | `[]` |
 | `Http.Client.RecordUrlQuery` | `PINPOINT_CPP_HTTP_CLIENT_RECORD_URL_QUERY` | bool | `false` |
 
-`RecordUrlQuery` is Java's per-plugin `profiler.<plugin>.param`
-(`ClientRequestRecorder`, `InterceptorUtils.getHttpUrl`): by default
+`RecordUrlQuery` is Java's per-plugin `profiler.<plugin>.param`: by default
 `helper::TraceHttpClientRequest` records the URL annotation cut at its first
 `?`, so `https://h/p?token=x` is stored as `https://h/p`. Set `true` to keep
 the query. The endpoint and destination are never affected. Reloadable.
@@ -532,19 +528,19 @@ Exclusion patterns, `HEADERS-ALL`, and the wildcard rules for `ExcludeUrl` are d
 | `Sql.EnableSqlStats` | `PINPOINT_CPP_SQL_ENABLE_SQL_STATS` | bool | `false` | Record SQL metadata keyed by UID (`SQL-UID` annotation) instead of ID (`SQL-ID`), for collectors that aggregate SQL statistics by uid. Applies to sampled spans only. |
 | `Sql.EnableRawSqlCache` | `PINPOINT_CPP_SQL_ENABLE_RAW_SQL_CACHE` | bool | `true` | Cache normalized SQL and bind parameters by raw SQL text to avoid repeated normalization. |
 | `Sql.CacheSize` | `PINPOINT_CPP_SQL_CACHE_SIZE` | int | `1024` | Entries each of the three SQL caches holds: the `SQL-ID` cache, the `SQL-UID` cache and the raw-SQL normalization cache. Once a cache is full, the least recently used statement is evicted; its next use re-registers it under a fresh id (or re-sends its UID metadata) and re-normalizes the raw text, so an application with more distinct statements than this churns metadata traffic and can leave spans referencing ids the collector never resolved. Raise it for high-cardinality SQL; the worst-case memory is roughly entries x `Sql.CacheLengthLimit` per cache. Valid range `1`–`65536`; a value outside it logs a warning and the default is used. Startup-only (FIXED): the caches are built when the agent starts, and resizing them mid-run would orphan ids referenced by in-flight spans. Applies to the SQL caches only: the API and error caches keep their fixed default of 1024, as in Java. Mirrors the Java agent's `profiler.jdbc.sqlcachesize`; the Go agent exposes the same setting as `SQL.CacheSize`. |
-| `Sql.CacheLengthLimit` | `PINPOINT_CPP_SQL_CACHE_LENGTH_LIMIT` | int | `2048` | Statement length at or above which SQL bypasses the SQL-UID cache and the raw-SQL cache, bounding their memory at entries x this limit instead of at the largest statement ever seen. A bypassed statement is still traced correctly, but its UID metadata is re-sent on every use and its raw text is re-normalized every time. Each of those re-sends carries at most `kMaxSqlMetaLength` (64 KiB) of SQL through the metadata queue, not the whole statement: the transmitted copy is abbreviated up front and a bypassed statement carries no cache key (`SqlUidMeta` in `src/grpc.h`). The re-send *frequency* is unchanged, so a hot statement just over the limit still adds steady queue pressure and, on a full queue, costs other metadata its slot (the newest item is dropped). Raise the limit past such a statement if that shows up as dropped-metadata warnings. Compared against the raw text for the raw cache and the normalized text for the UID cache. `-1` caches everything (pre-limit behaviour), `0` caches nothing. Startup-only. Mirrors the Java agent's `profiler.jdbc.sqlcachelengthlimit`. The `SQL-ID` cache is deliberately exempt: its ids come from a sequence, so bypassing it would burn a new id and a new metadata record on every use. |
+| `Sql.CacheLengthLimit` | `PINPOINT_CPP_SQL_CACHE_LENGTH_LIMIT` | int | `2048` | Statement length at or above which SQL bypasses the SQL-UID cache and the raw-SQL cache, bounding their memory at entries x this limit instead of at the largest statement ever seen. A bypassed statement is still traced correctly, but its UID metadata is re-sent on every use and its raw text is re-normalized every time. Each of those re-sends carries at most 64 KiB of SQL through the metadata queue, not the whole statement, because the transmitted copy is abbreviated up front. The re-send *frequency* is unchanged, so a hot statement just over the limit still adds steady queue pressure and, on a full queue, costs other metadata its slot (the newest item is dropped). Raise the limit past such a statement if that shows up as dropped-metadata warnings. Compared against the raw text for the raw cache and the normalized text for the UID cache. `-1` caches everything (pre-limit behaviour), `0` caches nothing. Startup-only. Mirrors the Java agent's `profiler.jdbc.sqlcachelengthlimit`. The `SQL-ID` cache is deliberately exempt: its ids come from a sequence, so bypassing it would burn a new id and a new metadata record on every use. |
 | `Sql.CacheExpireHours` | `PINPOINT_CPP_SQL_CACHE_EXPIRE_HOURS` | int | `168` | Hours after which a cached SQL UID is re-published to the collector. A cache hit suppresses re-publication, so without expiry the collector's `SqlUidMetaData` row for a statement is written exactly once — and that row has a server-side TTL of its own (180 days by default). A process running longer than that TTL would keep reporting UIDs whose SQL text the collector has already dropped, and the web UI would show an empty statement until the process restarts. Expiring on write re-sends the metadata in time to refresh the row. Only the SQL-UID cache expires; the API, error and SQL-ID caches have no TTL, matching Java. `0` disables expiry, which is only safe for processes shorter-lived than the collector's TTL. Startup-only. Mirrors the Java agent's `profiler.jdbc.sqlcacheexpirehours`. |
 | `Sql.TraceBindValue` | `PINPOINT_CPP_SQL_TRACE_BIND_VALUE` | bool | `true` | Record SQL bind values in span-event annotations. |
-| `Sql.ErrorCount` | `PINPOINT_CPP_SQL_ERROR_COUNT` | int | `100` | SQL statements one transaction may run before the span is marked failed, which is how an N+1 query pattern surfaces in the UI. `0` = never mark; a negative value is warned about and treated as `0`, so it turns counting off too — it does not fall back to the default. This one key merges the Java agent's two: `0` ≡ `profiler.sql.error.enable=false`, and a positive N ≡ `enable=true` with `profiler.sql.error.count=N` (`SqlCountServiceProvider.java:21-27` picks `DisableSqlCountService` or `DefaultSqlCountService` on that flag). Java's `count` gets no range validation of its own, so `enable=true` with a count of `0` or less marks the very first statement failed (`DefaultSqlCountService.java:15-25` compares with `>=`); that is a gap in Java's validation rather than a feature, and the merged key cannot express it anyway because `0` already means "off". Counted **per transaction**: the budget belongs to the trace root, so a trace's async spans all draw on the same one rather than each getting a fresh count. The failure it raises lands on the trace root too, like every other error. Statements the normalizer rejects are not counted, and a transaction already marked failed stops counting. |
-| `Sql.RemoveComments` | `PINPOINT_CPP_SQL_REMOVE_COMMENTS` | bool | `true` | Strip SQL comments (`/* */`, `--`, `//`) before normalization, without inserting anything in their place. On by default because the Java agent strips them too: `DefaultJdbcOption.removeComments` initializes to `true` and its `profiler.jdbc.removecomments` key is absent from the shipped `pinpoint.config`, so the placeholder never resolves and the `true` initializer stands. Keeping the default is what makes the normalized SQL — and therefore the SQL id/UID — byte-identical to the Java agent; setting it to `false` keeps comments (e.g. Oracle `/*+ INDEX */` hints) in the normalized text but diverges from Java, which in UID mode splits one query across two UIDs when Java and C++ agents report the same service. Startup-only: changing it mid-run would re-key already cached SQL. |
+| `Sql.ErrorCount` | `PINPOINT_CPP_SQL_ERROR_COUNT` | int | `100` | SQL statements one transaction may run before the span is marked failed, which is how an N+1 query pattern surfaces in the UI. `0` = never mark; a negative value is warned about and treated as `0`, so it turns counting off too — it does not fall back to the default. This one key merges the Java agent's two: `0` ≡ `profiler.sql.error.enable=false`, and a positive N ≡ `enable=true` with `profiler.sql.error.count=N`. Counted **per transaction**: the budget belongs to the trace root, so a trace's async spans all draw on the same one rather than each getting a fresh count. The failure it raises lands on the trace root too, like every other error. Statements the normalizer rejects are not counted, and a transaction already marked failed stops counting. |
+| `Sql.RemoveComments` | `PINPOINT_CPP_SQL_REMOVE_COMMENTS` | bool | `true` | Strip SQL comments (`/* */`, `--`, `//`) before normalization, without inserting anything in their place. On by default because the Java agent strips them too (its `profiler.jdbc.removecomments` is effectively `true`). Keeping the default is what makes the normalized SQL — and therefore the SQL id/UID — byte-identical to the Java agent; setting it to `false` keeps comments (e.g. Oracle `/*+ INDEX */` hints) in the normalized text but diverges from Java, which in UID mode splits one query across two UIDs when Java and C++ agents report the same service. Startup-only: changing it mid-run would re-key already cached SQL. |
 
 ### SQL Length Handling
 
 Not configurable, but wire-visible, and matching the Java agent:
 
-- A statement is normalized **whole**, and the **complete** normalized SQL is the SQL id cache key and the input to the SQL UID hash (MurmurHash3-128, little-endian — `UidGenerator.Murmur` in Java). Two agents therefore report the same id/UID for the same statement however long it is.
-- Only the copy transmitted in `PSqlMetaData.sql` / `PSqlUidMetaData.sql` is abbreviated, at **65536 bytes** (Java's `profiler.jdbc.maxsqllength`, applied by `SqlCacheService`): the first 65536 bytes — cut back to a whole UTF-8 character — plus a `...(<original length>)` suffix.
-- A hard cap of **1 MiB** on the text the normalizer processes protects against a pathological statement. A statement over it is **dropped whole** — no SQL annotation, and it does not count toward `Sql.ErrorCount` — never cut: a cut landing inside a literal would give the statement an id/UID no other agent computes for it. A warning is logged (throttled). See [Java parity](java_parity.md#oversize-sql-is-dropped-not-cut--exceeds-java-shared-with-go).
+- A statement is normalized **whole**, and the **complete** normalized SQL is the SQL id cache key and the input to the SQL UID hash (MurmurHash3-128, little-endian, the same hash the Java agent uses). Two agents therefore report the same id/UID for the same statement however long it is.
+- Only the copy transmitted in `PSqlMetaData.sql` / `PSqlUidMetaData.sql` is abbreviated, at **65536 bytes** (Java's `profiler.jdbc.maxsqllength`): the first 65536 bytes — cut back to a whole UTF-8 character — plus a `...(<original length>)` suffix.
+- A hard cap of **1 MiB** on the text the normalizer processes protects against a pathological statement. A statement over it is **dropped whole** — no SQL annotation, and it does not count toward `Sql.ErrorCount` — never cut: a cut landing inside a literal would give the statement an id/UID no other agent computes for it. A warning is logged (throttled).
 
 ---
 
@@ -583,7 +579,7 @@ are **non-reloadable** — changing them requires an application restart.
 
 | Category | Options | Reloadable? |
 |---|---|---|
-| Agent toggle | `Enable` | No — it is read once, when the agent is constructed (`make_agent()` in `src/agent.cpp`), so a reload could neither start nor stop tracing. The running value is retained and the attempt is warned about, like any other non-reloadable field. |
+| Agent toggle | `Enable` | No — it is read once, when the agent is constructed, so a reload could neither start nor stop tracing. The running value is retained and the attempt is warned about, like any other non-reloadable field. |
 | Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
 | Collector / gRPC transport | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*`, `Collector.AgentInfo.*`, `Collector.SpanBatch.*` | No |
 | Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
@@ -605,7 +601,7 @@ are **non-reloadable** — changing them requires an application restart.
 | Real-IP headers | `Http.Server.RealIpHeader`, `Http.Server.RealIpEmptyValue` | **Yes** (spans created after the reload) |
 | SQL tracing | `Sql.MaxBindArgsSize`, `Sql.EnableSqlStats`, `Sql.EnableRawSqlCache`, `Sql.TraceBindValue`, `Sql.ErrorCount` | **Yes** |
 | Active profile | `ActiveProfile` | **Yes** — the profile it names is re-applied on every reload |
-| Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration: `GrpcAgent::build_agent_info()` (`src/grpc.cpp`) reads the published config, not the pinned boot snapshot. |
+| Container flag | `IsContainer` | **Yes** — carried by the next periodic AgentInfo re-registration, which reads the current config rather than the boot snapshot. |
 
 The reload is **always applied**: a change to a non-reloadable field is ignored —
 the running value is kept — and logged as a warning, while reloadable changes in
@@ -640,7 +636,7 @@ editing the file. When one of these *does* change, the replacement starts
 clean: an empty token bucket that refills to its cap over the second that
 follows (see [Instrumentation Guide §11](instrument.md#11-sampling-policy) —
 the refill runs from the rebuild, whether or not anything is calling the
-limiter). This mirrors the Go agent's `newTraceSampler` / `newExceptionLimiter`.
+limiter).
 
 Rebuilt components are published together in a **single atomic swap**, so
 in-flight requests can never observe a half-applied reload. Each span snapshots

@@ -101,16 +101,16 @@ repository.
 | [C API Instrumentation Guide](doc/instrument_c.md) | The same, for plain C via `tracer_c.h` (`pt_*` functions) |
 | [API Contracts](doc/api_contracts.md) | Threading, end-exactly-once, overflow and noop-span rules the agent enforces on spans, events and annotations |
 | [Pre-fork Integration Guide](doc/prefork.md) | Running the agent inside pre-fork servers (nginx, Apache prefork, uWSGI) |
-| [Build Guide](doc/build.md) | Building from source with Bazel and CMake |
+| [Build Guide](doc/build.md) | Building from source with Bazel and CMake, and linking the library |
 | [Troubleshooting](doc/trouble_shooting.md) | Startup contract, logging, common issues and solutions |
-| [Java Agent Feature Parity Decisions](doc/java_parity.md) | Java behaviours deliberately not matched, why, and what would make us revisit |
-| [Measured Complexity Decisions](doc/complexity_decisions.md) | Benchmark-adjudicated verdicts on the perf/semantics machinery kept after the code audit |
 
 ## Contributing
 
 We are looking forward to your contributions via pull requests.
 
 For tips on contributing code fixes or enhancements, please see the [Contributing Guide](CONTRIBUTING.md).
+
+The [Development Guide](doc/development.md) covers the repository layout, the Docker and CI environments, the test suites, coverage, sanitizers, benchmarks, and the design decisions behind the implementation.
 
 To report bugs or request features, please create an [Issue](https://github.com/pinpoint-apm/pinpoint-cpp-agent/issues).
 
