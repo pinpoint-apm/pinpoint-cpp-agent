@@ -51,6 +51,24 @@ asserts their collector wire representation:
   reconnect
 - the noop agent produced by `Enable: false`, and C API double-destroy safety
 
+## Standalone collector process
+
+`mock_collector_server` runs the same `MockCollector` as its own process on
+fixed ports, which the in-process collector cannot do: a soak needs a collector
+that can be `SIGKILL`ed and restarted on the ports the agent was configured
+with, so the agent sees a vanished host rather than a cooperative shutdown.
+
+```bash
+cmake --build --preset debug --target mock_collector_server
+./build/debug/test/it/mock_collector_server \
+    --agent-port 9991 --span-port 9993 --stat-port 9992 --report-interval 30
+```
+
+It prints a `mock collector ready: ...` line once bound, then a periodic
+counter report. The counters start at zero with the process, so a report from
+a restarted incarnation is the collector-side proof that the agent reconnected
+to it. `test/e2e/leak_soak_test.sh` drives it that way.
+
 ## Failure injection
 
 `MockCollector` also provides deterministic transport failure controls:

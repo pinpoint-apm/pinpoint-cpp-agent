@@ -120,12 +120,20 @@ struct CollectorSnapshot {
  *   - Span on span_port()
  *   - Stat on stat_port()
  *
- * Every server binds to 127.0.0.1:0, so the operating system selects an
- * ephemeral port. All records and waits are thread-safe.
+ * Every server binds to 127.0.0.1:0 by default, so the operating system
+ * selects an ephemeral port; the three-port constructor binds fixed ports
+ * instead. All records and waits are thread-safe.
  */
 class MockCollector final {
 public:
     MockCollector();
+    /**
+     * Binds the three endpoints to fixed ports instead of ephemeral ones.
+     * Only a long-lived collector that outlives the agent pointed at it needs
+     * this: a restarted process must reappear on the ports the agent was
+     * configured with. Start() fails when a port is already taken.
+     */
+    MockCollector(int agent_port, int span_port, int stat_port);
     ~MockCollector();
 
     MockCollector(const MockCollector&) = delete;

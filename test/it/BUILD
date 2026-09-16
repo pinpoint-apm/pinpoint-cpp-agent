@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -14,6 +14,13 @@ cc_library(
         "//3rd_party:service_grpc_cc",
         "@com_github_grpc_grpc//:grpc++",
     ],
+)
+
+cc_binary(
+    name = "mock_collector_server",
+    testonly = True,
+    srcs = ["mock_collector_server.cpp"],
+    deps = [":mock_collector"],
 )
 
 cc_test(

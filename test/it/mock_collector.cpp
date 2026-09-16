@@ -336,8 +336,16 @@ struct MockCollector::Impl {
         Impl& owner_;
     };
 
-    Impl()
-        : agent_service(*this),
+    Impl() : Impl(0, 0, 0) {}
+
+    Impl(int agent, int span, int stat)
+        : requested_agent_port(agent),
+          requested_span_port(span),
+          requested_stat_port(stat),
+          agent_port(agent),
+          span_port(span),
+          stat_port(stat),
+          agent_service(*this),
           metadata_service(*this),
           span_service(*this),
           stat_service(*this),
@@ -673,9 +681,9 @@ struct MockCollector::Impl {
         stop_endpoint_locked(CollectorEndpoint::Agent, false);
         stop_endpoint_locked(CollectorEndpoint::Span, false);
         stop_endpoint_locked(CollectorEndpoint::Stat, false);
-        agent_port = 0;
-        span_port = 0;
-        stat_port = 0;
+        agent_port = requested_agent_port;
+        span_port = requested_span_port;
+        stat_port = requested_stat_port;
     }
 
     CollectorSnapshot snapshot() const {
@@ -742,9 +750,17 @@ struct MockCollector::Impl {
     std::vector<grpc::ServerContext*> live_calls;
     bool stopping{false};
 
-    int agent_port{0};
-    int span_port{0};
-    int stat_port{0};
+    // Requested ports: 0 asks the OS for an ephemeral one. The live *_port
+    // fields carry the selected port while an endpoint is up and are restored
+    // to the requested values by shutdown(), so a fixed-port collector can be
+    // restarted on the same ports.
+    const int requested_agent_port{0};
+    const int requested_span_port{0};
+    const int requested_stat_port{0};
+
+    int agent_port{requested_agent_port};
+    int span_port{requested_span_port};
+    int stat_port{requested_stat_port};
     std::unique_ptr<grpc::Server> agent_server;
     std::unique_ptr<grpc::Server> span_server;
     std::unique_ptr<grpc::Server> stat_server;
@@ -757,6 +773,9 @@ struct MockCollector::Impl {
 };
 
 MockCollector::MockCollector() : impl_(std::make_unique<Impl>()) {}
+
+MockCollector::MockCollector(int agent_port, int span_port, int stat_port)
+    : impl_(std::make_unique<Impl>(agent_port, span_port, stat_port)) {}
 
 MockCollector::~MockCollector() {
     Shutdown();

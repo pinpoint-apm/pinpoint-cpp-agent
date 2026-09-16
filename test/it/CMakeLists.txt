@@ -12,6 +12,12 @@ target_link_libraries(pinpoint_mock_collector PUBLIC
     protobuf::libprotobuf
     Threads::Threads
 )
+# Standalone collector process for soak/fault runs: the in-process collector
+# cannot be killed and restarted on the same ports, which is exactly the fault
+# a collector-outage soak needs.
+add_executable(mock_collector_server mock_collector_server.cpp)
+target_link_libraries(mock_collector_server PRIVATE pinpoint_mock_collector)
+
 add_executable(agent_integration_test test_agent_integration.cpp)
 target_include_directories(agent_integration_test PRIVATE
     ${CMAKE_SOURCE_DIR}

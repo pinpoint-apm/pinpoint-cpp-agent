@@ -1,6 +1,6 @@
 # Pinpoint C++ Agent live integration tests
 
-This directory contains two complementary suites:
+This directory contains three complementary suites:
 
 - `smoke_test.sh` is a deterministic correctness suite. It checks agent
   registration, the public C++ and C APIs, HTTP/gRPC propagation, all four gRPC
@@ -13,6 +13,10 @@ This directory contains two complementary suites:
   unthrottled saturation test whose workers reuse HTTP connections and issue
   the next request immediately after each response. `--rss-pid` additionally
   samples the server's memory across the run (useful for leak/stress passes).
+- `leak_soak_test.sh` is the long-running leak check. It drives the stack
+  against the integration suite's mock collector, kills and restarts that
+  collector on a cycle, and reads the verdict from macOS `leaks`. See
+  [Collector-outage leak soak](#collector-outage-leak-soak-macos).
 
 The correctness stack uses separate processes because a Pinpoint agent is a
 process-global singleton:
@@ -172,6 +176,59 @@ occasional request reaches the generator's 30s client timeout:
   --load-mode full --load-duration 180 --load-concurrency 20 \
   --max-error-rate 0.5
 ```
+
+## Collector-outage leak soak (macOS)
+
+`leak_soak_test.sh` answers a different question from the load passes above:
+does the agent leak memory when the collector keeps dying? It needs no dev
+collector and no network -- the integration suite's `MockCollector` runs as its
+own process (`test/it:mock_collector_server`) on the ports the agent is
+configured with, and the script `SIGKILL`s it on a fixed cycle and restarts it
+on the same ports. Every reconnect path (span batches, the stat and command
+streams, metadata retries) therefore runs once per cycle for the length of the
+run.
+
+```bash
+cmake --preset debug
+cmake --build --preset debug --target \
+  mock_collector_server it_test_server http_downstream_server grpc_server
+
+./test/e2e/leak_soak_test.sh --build-dir ./build/debug
+```
+
+Defaults: a 1 h run at 20 RPS in `full` mode, the collector killed every 300 s
+and left dead for 60 s, and a `leaks` snapshot every 300 s. The build must be
+`Debug`; the script refuses anything else, because a leak report from an
+optimized build names inlined frames.
+
+The verdict comes from macOS `leaks`, not from RSS. RSS cannot separate a leak
+from fragmentation or a cache that grew once; `leaks` walks the live heap for
+blocks no root still references, so a per-reconnect leak shows up as leaked
+bytes climbing cycle over cycle even when RSS is flat. The run also samples
+RSS, VSZ, thread and fd counts, and reports the second-half trend of each with
+its standard error, so a slope is only called growth when it stands clear of
+its own noise.
+
+Two things the script does that are easy to get wrong by hand:
+
+- It re-signs the agent binaries with `com.apple.security.get-task-allow`
+  (`codesign -s - -f --entitlements`). Without that entitlement `leaks` still
+  prints a report for an ordinary CMake binary -- one that says
+  `is not debuggable` and then claims 0 leaks. Every snapshot re-checks for
+  that message, so the false negative cannot pass as a clean run.
+- It sets `MallocStackLogging=1` on the agent processes, which is what turns
+  "1.2 kB leaked" into a named allocation site. Use `--no-stack-logging` to
+  drop the overhead and keep only the counts.
+
+The summary prints the last counter report of every collector incarnation.
+That is the collector-side proof the agent came back each time: the counters
+reset with the process, so a generation still showing `span_batches=0` is one
+the agent never reached -- a run where the agent silently gave up after the
+first kill otherwise looks exactly like a clean one.
+
+Artifacts land in `--out-dir` (default `./leaksoak-<timestamp>`):
+`resources.csv`, `leaks.csv`, the full `leaks/*.txt` reports, `chaos.log` with
+every kill and restart, and the three server logs.
 
 ## Performance profiling
 
